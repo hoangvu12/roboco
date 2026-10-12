@@ -551,6 +551,9 @@ impl EngineHandle {
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
                 capabilities: Vec::new(),
+                version: None,
+                protocol_version: None,
+                min_client_protocol_version: None,
             },
             deferred_state: None,
         }
@@ -583,6 +586,11 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
                 capabilities: Vec::new(),
+                // A daemon this old predates the compatibility fields; the
+                // accessors read them back as protocol 1.
+                version: None,
+                protocol_version: None,
+                min_client_protocol_version: None,
             })
         }
         Err(err) => Err(err),
@@ -3711,6 +3719,9 @@ mod tests {
                     workspace_scope: WorkspaceScope::Local,
                     cursor_sdk_version: None,
                     capabilities: roboco_proto::capabilities::current(),
+                    version: None,
+                    protocol_version: None,
+                    min_client_protocol_version: None,
                 },
                 state: state_rx,
             }),

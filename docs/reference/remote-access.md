@@ -161,3 +161,66 @@ remain readable. A compact strip marks the offline view, and sending is refused.
 The client retries with capped backoff and restores live updates after reconnecting.
 Each engine owns its files, terminals, queue and history; pairing does not copy
 engine data between machines.
+
+## Protocol compatibility
+
+The first call on every connection is `EngineInfo`. Besides the engine's
+identity (`deviceId`, `workspaceScope`) it is the compatibility handshake: the
+engine advertises the release that built it, its wire protocol generation, and
+the features it supports. Old clients ignore fields they do not know; new
+clients read missing fields as "protocol 1, version unknown".
+
+| Field | JSON | Meaning | Absent means |
+|---|---|---|---|
+| `version` | `"version":"0.9.2"` | The Roboco release that built this engine (`CARGO_PKG_VERSION`). For display and the newer-engine notice only. Never gate features on it. | An engine older than the field; the client may read the engine's `Device.version` row instead |
+| `protocolVersion` | `"protocolVersion":1` | The wire protocol *generation*. Bumped only for an incompatible change (a removed or renamed method or field, a changed frame or auth meaning). ADR 0005 freezes wire names, so expect this to stay 1 for a long time. | Treat as `1` |
+| `minClientProtocolVersion` | `"minClientProtocolVersion":1` | The oldest client protocol generation this engine still serves correctly. Raised only together with a bump of `protocolVersion` that drops the old generation. | Treat as `1` |
+
+Clients assess the handshake with `roboco_proto::compat::assess` (a pure
+module any client can call):
+
+1. `minClientProtocolVersion` above the client's protocol generation → the
+   engine refuses this client: **park the connection** (no reconnect loop),
+   re-assess on app start or manual "Try again".
+2. Engine `protocolVersion` below the client's oldest drivable generation →
+   the engine predates what the client can drive: park, same as above.
+3. Engine `protocolVersion` above the client's generation → a newer engine:
+   keep working, decode leniently, show a non-blocking notice once per engine
+   version.
+4. The engine's `major.minor` is newer than the client's → a newer engine
+   (rule 3 applies to the notice). A newer *patch* is silent; an unparseable
+   version never blocks.
+5. Otherwise compatible: features gate on capabilities, never on version
+   numbers. An older engine is never flagged as a whole — each missing feature
+   says so individually when its capability is absent.
+
+The web client is served by its engine (ADR 0006), so it cannot skew and does
+not park on these rules. The Android app is installed separately and follows
+them in full (client-side lenient decoding lands with it).
+
+### When a change needs a capability
+
+| Change on the engine side | Gate | Why |
+|---|---|---|
+| New RPC method | none: older engines answer `unknown method: X`. Clients hide or degrade that feature | engine RPC dispatch |
+| New param on an existing method, new `Mutate` op, new command kind or enum variant clients send, or changed semantics | **new capability string `<feature>-vN`** | older engines ignore unknown params silently or fail with `bad params` |
+| New field in a reply or stream item | none: additive and serde-defaulted, and clients ignore unknown fields | ADR 0005 |
+| New enum variant engines *send* (`MessagePart`, `ToolCall`, status) | none on the engine side; clients must decode leniently | unknown variants fail decoding in strict clients |
+| Removing or renaming anything on the wire | forbidden (ADR 0005). If ever unavoidable: bump `PROTOCOL_VERSION` and decide `MIN_CLIENT_PROTOCOL_VERSION`, in an ADR | — |
+
+Capability strings are never reused or removed within a protocol generation.
+
+### Gate catalogue (Android app)
+
+| Feature | Gate |
+|---|---|
+| Queue a message, watch the queue | `message-queue-v1` |
+| Queue send-now, steer-now, remove | `message-queue-actions-v1` |
+| Queue with attachments | `message-queue-attachments-v1` |
+| Clean attachment text in queued rows | `message-queue-clean-attachment-text-v1` |
+| Edit a queued message (60 s lease, renew every 20 s) | `message-queue-edit-lease-v1` |
+| Mid-run steer (`QueueCommand{command:{kind:"steer"}}`) | per harness, not per engine: `HarnessDescriptor.supportsSteering` / `steeringMode` from `ListHarnesses` |
+| `roboco-file:` mentions decoded by the host | `composer-references-v1` |
+| Transcript resume on reconnect | `transcript-resume-v1` |
+| `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
+| Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |

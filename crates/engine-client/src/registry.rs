@@ -163,7 +163,10 @@ impl RegistrySnapshot {
                     platform: String::new(),
                     last_seen_at: None,
                     created_at: None,
-                    version: None,
+                    // `EngineInfo.version` is authoritative on the first round
+                    // trip; the Devices page can show it before the devices
+                    // stream arrives.
+                    version: engine.info.version.clone(),
                     cursor_sdk_version: None,
                     capabilities: engine.info.capabilities.clone(),
                 }]
