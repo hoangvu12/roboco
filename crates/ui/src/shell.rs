@@ -3781,6 +3781,7 @@ impl Shell {
                         replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
                         frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
                         context_usage: None,
+                        digests: None,
                     };
                     let prepared = crate::transcript::TranscriptPreparation::default()
                         .prepare(&update)

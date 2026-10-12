@@ -22,6 +22,10 @@ pub mod capabilities {
     /// the remote listener root, CORS-open pairing redeem, and first-frame
     /// `Auth` WebSocket authentication.
     pub const WEB_CLIENT: &str = "web-client";
+    /// The engine accepts `digests` / `resume` on `WatchDocMessages` and
+    /// attaches engine-computed entry digests to transcript frames, so a
+    /// reconnecting client can catch up with a delta instead of a reset.
+    pub const TRANSCRIPT_RESUME_V1: &str = "transcript-resume-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -32,6 +36,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_EDIT_LEASE_V1,
         HARNESS_UPDATES_V1,
         WEB_CLIENT,
+        TRANSCRIPT_RESUME_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -112,10 +117,17 @@ mod tests {
                     "message-queue-clean-attachment-text-v1",
                     "message-queue-edit-lease-v1",
                     "harness-updates-v1",
-                    "web-client"
+                    "web-client",
+                    "transcript-resume-v1"
                 ],
             })
         );
+    }
+
+    #[test]
+    fn transcript_resume_is_advertised() {
+        assert!(capabilities::CURRENT.contains(&capabilities::TRANSCRIPT_RESUME_V1));
+        assert!(capabilities::current().contains(&capabilities::TRANSCRIPT_RESUME_V1.to_string()));
     }
 
     #[test]

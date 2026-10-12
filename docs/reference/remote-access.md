@@ -161,3 +161,83 @@ remain readable. A compact strip marks the offline view, and sending is refused.
 The client retries with capped backoff and restores live updates after reconnecting.
 Each engine owns its files, terminals, queue and history; pairing does not copy
 engine data between machines.
+
+## Transcript resume
+
+A phone loses its transcript socket constantly (Doze, network handoffs, going to
+background), and every reconnect used to re-download the whole transcript: a
+`WatchDocMessages` stream always opens with a full `reset` (7.6 MB on a large
+chat — minutes over a slow relay). Resume is an opt-in, capability-gated fix:
+
+- The engine advertises `transcript-resume-v1` in `EngineInfo.capabilities`.
+- A client that kept a transcript copy sends a summary of what it holds with its
+  next `WatchDocMessages {chatId}` call.
+- When the summary matches, the first stream item is an ordinary **delta** that
+  brings the client's copy up to date; otherwise it is the usual `reset`, exactly
+  as before. Clients apply either with the existing `apply_transcript_frame`.
+
+### Subscribe params
+
+| Param | Type | Meaning |
+|---|---|---|
+| `digests` | `bool`, default `false` | Attach `digests` to every frame of this stream |
+| `resume` | `TranscriptResume?` | Try to resume from the client's copy. Implies `digests: true`. Takes precedence over `openingTail` |
+
+```jsonc
+// TranscriptResume
+{ "count": 412,                                  // entries the client holds
+  "prefix": "e3b0c44298fc1c149afbf4c8996fb924", // digest of the first count − tail.length entries
+  "tail": [ { "id": "e380", "digest": "9f2c0a1b44d0e7aa" } ] } // the last W held entries; W ≤ 512
+```
+
+A malformed `resume` object never fails the call: the engine logs it at debug
+level and serves the stream as `digests: true` without resume, so a corrupt
+cache can never block a transcript. Engines that predate the capability ignore
+both params entirely.
+
+### The `digests` frame field
+
+`TranscriptUpdate` gains one optional field, present only when the stream opted
+in:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `digests` | `{ [entryId]: string }` | **Reset**: the digest of every entry. **Delta**: the digest of every entry this frame upserts or appends to; removed ids drop out client-side. An empty delta carries `{}` |
+
+The `historyPending` preview frames of `openingTail` never carry digests: they
+are partial, and clients must never store them as resumable state.
+
+### Digest definitions
+
+| Function | Definition |
+|---|---|
+| `entry_digest(entry)` | lowercase hex of the first 8 bytes of `SHA-256(serde_json::to_vec(entry))` — 16 chars |
+| `prefix_digest(digests)` | lowercase hex of the first 16 bytes of `SHA-256(d₀ ‖ "\n" ‖ d₁ ‖ "\n" ‖ …)`, each entry digest followed by one `\n` — 32 chars; empty input is `e3b0c44298fc1c149afbf4c8996fb924` |
+
+Digests are opaque to clients: they store what the engine sent and send it
+back, never recompute it. A different engine build may serialize entries
+differently (for example after adding a field). Its digests then differ, the
+prefix does not match, and the client gets a full reset — that costs bandwidth
+but is always correct. Digests are deterministic within one build, so resume
+also works across an engine restart on the same data dir.
+
+### Client rules
+
+- Store `{entries, digests}` per chat only from **complete** state: after a
+  reset or delta on a `digests` stream. Never store an `openingTail` preview
+  (`historyPending: true`) as resumable state.
+- On (re)subscribe: if the engine advertises `transcript-resume-v1` and a
+  resume summary can be built from the held copy, send `resume`. Otherwise
+  send `digests: true`, plus `openingTail: true` when nothing is cached.
+  The reference builder is `roboco_doc::TranscriptResume::from_held` (the
+  default client window is the last 64 entries).
+- After a `TranscriptDesync`, resubscribe **without** `resume` (a plain reset),
+  so a bad summary cannot loop.
+- If `roboco_doc::apply_update_digests` returns `false`, drop the stored
+  digests: the update changed entries but carried none (an older engine).
+
+Resume never changes `contextUsage`, the `replayBaseline` watermark (the first
+frame of a stream always carries it, so resumed catch-up content is treated as
+history and not animated), or `diff_transcript`'s behaviour on streams that did
+not opt in — a plain subscription is byte-for-byte what it was before the
+capability existed.

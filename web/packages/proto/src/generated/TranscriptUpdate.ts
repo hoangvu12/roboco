@@ -15,7 +15,16 @@ export type TranscriptUpdate = { contextUsage: ContextUsage | null,
  * Historical content included in this update, independent of reset/delta
  * encoding. Omitted on ordinary live updates and by older engines.
  */
-replayBaseline?: TranscriptBaseline | null, } & ({ reset: Array<SessionMessageEntry>, } | { upsert: Array<TranscriptUpsert>, append: Array<TextAppend>, remove: Array<string>, 
+replayBaseline?: TranscriptBaseline | null, 
+/**
+ * Engine-computed `entry_digest` values, keyed by entry id, present only
+ * when the stream opted in (`digests: true` or a `resume` summary).
+ * A reset carries every entry; a delta exactly the ids it upserts or
+ * appends to (an empty delta carries `{}`). Digests are opaque to
+ * clients: they store them and send them back, never recompute them.
+ * Keys serialize in sorted order, so frames are deterministic.
+ */
+digests?: { [key in string]: string } | null, } & ({ reset: Array<SessionMessageEntry>, } | { upsert: Array<TranscriptUpsert>, append: Array<TextAppend>, remove: Array<string>, 
 /**
  * Expected transcript length after applying this frame — the desync
  * tripwire: a consumer that lands elsewhere resubscribes for a reset.
