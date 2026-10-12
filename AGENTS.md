@@ -72,8 +72,8 @@ Android builds and tests run on these runners ([ADR 0009](docs/adr/0009-android-
 - `web-codegen.yml` — ubuntu: `wiregen --check` wire-type freshness gate + `pnpm -r build` typecheck of `web/`
 - `theme-artifact.yml` — web theme artifact freshness gate (`roboco-theme-export --check`) + `@roboco/theme` typecheck
 - `web-engine-client.yml` — ubuntu: `@roboco/engine-client` vitest suites (codec, scripted fake server, conformance against the real `web_conformance` engine example)
-- `android.yml` — ubuntu + windows: Android debug APK (`apps/android`, cargo-ndk core) + JVM unit tests
-- `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
+- `android.yml` — ubuntu + windows: Android debug APK (`apps/android`, cargo-ndk core) + JVM unit tests; on pushes to main, an unsigned x86_64 `assembleRelease` R8 smoke (the signed APKs come from `release.yml`)
+- `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip + signed Android APKs (arm64-v8a, x86_64) → GitHub Release with `manifest.json` (updater checksums, APKs included; R8 mapping attached outside the manifest). No macOS/iOS/R2/Play.
 - Keep CI focused on Roboco engine, desktop and Android builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports. Android has no Play Store, Firebase or other Google-services deployment.
 
 ## Naming conventions

@@ -1,21 +1,33 @@
 name: release
 
-# Build release artifacts for Roboco's platforms (Windows + Linux) and
-# publish them to a GitHub Release:
+# Build release artifacts for Roboco's platforms (Windows + Linux + Android)
+# and publish them to a GitHub Release:
 #   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
 #   - Windows per-user setup exes, portable zips, and updater exes (x86_64 +
 #     aarch64) via scripts/package-windows.ps1
+#   - Android signed, minified, stripped, ABI-split APKs (arm64-v8a +
+#     x86_64) via Gradle `:app:assembleRelease` (android-app#31); the R8
+#     mapping ships as a release asset outside the updater manifest
 #   - scripts/install-windows.ps1, published as `install.ps1` (the Windows
 #     one-liner: irm .../releases/latest/download/install.ps1 | iex)
-# The in-app updater reads back from this repo's GitHub Releases.
+# The in-app updater reads back from this repo's GitHub Releases; the
+# Android APKs are listed in manifest.json (sha256) so sideloaders can verify
+# them, while desktop updaters ignore the unknown names.
 #
 # Trigger: push a tag `v<version>` matching the workspace version in
 # Cargo.toml (bump it in the same commit), or run manually via
-# workflow_dispatch (builds + uploads artifacts, no release publish).
+# workflow_dispatch (builds + uploads artifacts, no release publish; the
+# Android job then builds unsigned APKs when the signing secrets are
+# absent).
 #
 # The web client bundle is built before the engine compiles (the engine's
 # build.rs stages web/packages/app/dist into crates/engine/web-staging/ for
 # rust-embed to bake into the binary — see crates/engine/build.rs).
+#
+# Android signing: the ANDROID_KEYSTORE_* secrets (see
+# docs/reference/android-development.md → Release signing). A tag push
+# without them fails before publishing; workflow_dispatch continues
+# unsigned.
 
 on:
   push:
@@ -152,9 +164,228 @@ jobs:
             target/package/*.exe
           if-no-files-found: error
 
+  android:
+    # Signed, minified, stripped, ABI-split release APKs (android-app#31).
+    # In `publish.needs`, so an Android failure blocks the release: app and
+    # engine stay on one version (ticket 11's newer-engine notice assumes it).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      ANDROID_NDK_VERSION: 28.2.13676358
+      CARGO_NDK_VERSION: 4.1.2
+      # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS
+      # overrides (they would replace the 16 KB PT_LOAD alignment
+      # rustflags).
+      RUSTFLAGS: ''
+      CARGO_ENCODED_RUSTFLAGS: 
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add Android Rust targets
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-release
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          set -euo pipefail
+          installed=$(cargo ndk --version 2>/dev/null | grep -F "cargo-ndk $CARGO_NDK_VERSION" || true)
+          if [ -z "$installed" ]; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+        working-directory: .
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install Android SDK pieces
+        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Provide the release keystore (secrets → env)
+        # secrets.* cannot appear in a job-level if:, so the tag/dispatch
+        # decision is made here in the shell. Secret values are only piped
+        # into GITHUB_ENV, never echoed.
+        working-directory: .
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            keystore="$RUNNER_TEMP/roboco-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$keystore"
+            {
+              echo "ROBOCO_ANDROID_KEYSTORE=$keystore"
+              echo "ROBOCO_ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+              echo "ROBOCO_ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+              echo "ROBOCO_ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "::error::release signing secrets are missing — a tag build must be signed"
+            exit 1
+          else
+            echo "No signing secrets: building unsigned APKs (workflow_dispatch path)."
+          fi
+      - name: Build release APKs (R8, resource shrinking, ABI splits)
+        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a,x86_64 :app:assembleRelease
+      - name: Verify and stage APKs
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          readelf="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' ../../Cargo.toml | head -1)"
+          if [ -z "$ver" ]; then
+            echo "::error::could not parse the workspace version from Cargo.toml"
+            exit 1
+          fi
+          # Tag == versionName: the tag, the APKs and the desktop artifacts
+          # must all carry the same version (app and engine in lockstep).
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag_ver="${GITHUB_REF_NAME#v}"
+            if [ "$ver" != "$tag_ver" ]; then
+              echo "::error::tag v$tag_ver does not match the workspace version $ver in Cargo.toml"
+              exit 1
+            fi
+          fi
+
+          signed="false"
+          [ -n "${ROBOCO_ANDROID_KEYSTORE:-}" ] && signed="true"
+          mkdir -p ../../target/package ../../target/package-extra
+
+          {
+            echo "### Android release APKs"
+            echo ""
+            echo "| ABI | APK (bytes) | uncompressed libroboco_mobile.so (bytes) |"
+            echo "| --- | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for abi in arm64-v8a x86_64; do
+            src="app/build/outputs/apk/release/app-$abi-release.apk"
+            if [ ! -f "$src" ] && [ "$signed" = "true" ]; then
+              echo "::error::signing was configured but $src was not produced — check the build log"
+              exit 1
+            fi
+            suffix=""
+            if [ ! -f "$src" ]; then
+              src="app/build/outputs/apk/release/app-$abi-release-unsigned.apk"
+              suffix="-unsigned"
+              if [ ! -f "$src" ]; then
+                echo "::error::missing release APK for $abi under app/build/outputs/apk/release/"
+                ls -l app/build/outputs/apk/release/ || true
+                exit 1
+              fi
+            fi
+
+            # Package identity, version, and exactly this one ABI.
+            badging="$($bt/aapt2 dump badging "$src")"
+            echo "$badging" | grep -F "package: name='sh.roboco.android'" > /dev/null || {
+              echo "::error::$src has the wrong application id"; exit 1; }
+            echo "$badging" | grep -F "versionName='$ver'" > /dev/null || {
+              echo "::error::$src versionName is not the workspace version $ver"; exit 1; }
+            native="$(echo "$badging" | grep '^native-code:' || true)"
+            if [ -z "$native" ]; then
+              echo "::error::$src packages no native code"; exit 1
+            fi
+            if [ "$native" != "native-code: '$abi'" ]; then
+              echo "::error::$src must package exactly one ABI ($abi); badging says: $native"
+              exit 1
+            fi
+
+            # 16 KB zip alignment.
+            "$bt/zipalign" -c -P 16 -v 4 "$src" > /dev/null || {
+              echo "::error::$src fails zipalign -c -P 16 -v 4"; exit 1; }
+
+            # The packaged core: no .debug_* sections (AGP strips with the
+            # NDK llvm-strip) and every LOAD segment 16 KB aligned.
+            tmp="$(mktemp -d)"
+            unzip -q "$src" "lib/$abi/libroboco_mobile.so" -d "$tmp"
+            so="$tmp/lib/$abi/libroboco_mobile.so"
+            if "$readelf" -S "$so" | grep -F '.debug_'; then
+              echo "::error::$src ships an unstripped libroboco_mobile.so (#621: 45 MB instead of 18)"
+              exit 1
+            fi
+            if ! "$readelf" -l "$so" | awk '$1 == "LOAD" && $NF != "0x4000" { bad = 1; print "::error::LOAD segment is not 16 KB aligned: " $0 } END { exit bad }'; then
+              echo "::error::$abi core has LOAD segments that are not 16 KB aligned"
+              exit 1
+            fi
+
+            # Signer certificate pin — catches an accidental key swap. The
+            # digest is public information (published in the README).
+            if [ "$signed" = "true" ]; then
+              certs="$($bt/apksigner verify --print-certs "$src")"
+              digest="$(echo "$certs" | grep -F 'Signer #1 certificate SHA-256 digest:' | sed 's/^.*digest: *//' | tr 'A-F' 'a-f')"
+              if [ -z "$digest" ]; then
+                echo "::error::$src has no signer certificate"; exit 1
+              fi
+              if [ -n "${ANDROID_CERT_SHA256:-}" ]; then
+                expected="$(printf '%s' "$ANDROID_CERT_SHA256" | tr 'A-F' 'a-f' | tr -d ':')"
+                if [ "$digest" != "$expected" ]; then
+                  echo "::error::$src signer SHA-256 $digest does not match ANDROID_CERT_SHA256 ($expected)"
+                  exit 1
+                fi
+              else
+                echo "ANDROID_CERT_SHA256 variable is not set; signer SHA-256: $digest"
+              fi
+              echo "Signer SHA-256 ($abi): $digest" >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            # Size budget (the APK file, which is compressed; the .so size
+            # is reported, not gated).
+            size="$(stat -c%s "$src")"
+            so_size="$(stat -c%s "$so")"
+            echo "| $abi$suffix | $size | $so_size |" >> "$GITHUB_STEP_SUMMARY"
+            case "$abi" in
+              arm64-v8a) budget=26214400 ;; # 25 MiB
+              x86_64) budget=31457280 ;;   # 30 MiB
+            esac
+            if [ "$size" -gt "$budget" ]; then
+              echo "::error::$abi$suffix APK is $size bytes, over the $budget-byte budget"
+              exit 1
+            fi
+
+            cp "$src" "../../target/package/roboco-$ver-android-$abi$suffix.apk"
+            rm -rf "$tmp"
+          done
+
+          # The R8 mapping: a release asset, staged OUTSIDE dist/ so it gets
+          # no updater-manifest sha256 entry (like install.ps1).
+          mapping="app/build/outputs/mapping/release/mapping.txt"
+          if [ ! -f "$mapping" ]; then
+            echo "::error::missing R8 mapping at $mapping"
+            exit 1
+          fi
+          cp "$mapping" "../../target/package-extra/roboco-$ver-android-mapping.txt"
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: target/package/*.apk
+          if-no-files-found: error
+      - name: Upload R8 mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-mapping
+          path: target/package-extra/*
+          if-no-files-found: error
+
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows]
+    needs: [linux, windows, android]
     runs-on: ubuntu-latest
     steps:
       # Checked out beside (not into) the artifact dir: the install script is
@@ -164,17 +395,47 @@ jobs:
         with:
           path: repo
           sparse-checkout: scripts
-      - uses: actions/download-artifact@v4
+      # Explicit patterns instead of one merge-everything download: the R8
+      # mapping must land OUTSIDE dist/ (no manifest entry for it), while the
+      # APKs go INTO dist/ so manifest.json carries their sha256.
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: linux-*
           merge-multiple: true
+          if-no-files-found: error
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: windows-*
+          merge-multiple: true
+          if-no-files-found: error
+      - name: Download Android APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apks
+          path: dist
+          merge-multiple: true
+          if-no-files-found: error
+      - name: Download the R8 mapping (outside dist/)
+        uses: actions/download-artifact@v4
+        with:
+          name: android-mapping
+          path: extra
+          merge-multiple: true
+          if-no-files-found: error
       - name: version guard (tag == artifact version)
         run: |
           ver="${GITHUB_REF_NAME#v}"
           ls dist/
+          # The Android APKs must be the signed names: unsigned ones never
+          # reach publish (the tag push fails when the secrets are missing).
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
               windows-x86_64.zip windows-x86_64.exe windows-x86_64-setup.exe \
-              windows-aarch64.zip windows-aarch64.exe windows-aarch64-setup.exe; do
+              windows-aarch64.zip windows-aarch64.exe windows-aarch64-setup.exe \
+              android-arm64-v8a.apk android-x86_64.apk; do
             test -f "dist/roboco-$ver-$platform" \
               || { echo "missing artifact for tag v$ver: $platform — check builds and Cargo.toml version"; exit 1; }
           done
@@ -199,4 +460,5 @@ jobs:
             dist/*
             manifest.json
             install.ps1
+            extra/*
           generate_release_notes: true

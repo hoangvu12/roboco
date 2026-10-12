@@ -1,0 +1,460 @@
+package sh.roboco.android.pairing
+
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.job
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runTest
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import uniffi.roboco_core.PairedEngine
+import java.io.File
+import java.util.Base64
+
+/**
+ * `PairedEngineStore` behaviour (ticket 71): pairing-order persistence,
+ * restart round-trip, pin merging, orphan cleanup, and the
+ * "decrypt failure keeps the engine" degradation that makes a lost
+ * Keystore key show "Pair again" instead of a vanished engine.
+ *
+ * Robolectric: `org.json` is a stub on the plain JVM and the generated
+ * `PairedEngine` record needs the Android runtime.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class PairedEngineStoreTest {
+
+    @get:Rule
+    val tmpFolder: TemporaryFolder = TemporaryFolder()
+
+    private val engineA = newEngine(
+        engineId = "11111111-1111-4111-8111-111111111111",
+        credential = "cred-AAA",
+    )
+    private val engineB = newEngine(
+        engineId = "22222222-2222-4222-8222-222222222222",
+        credential = "cred-BBB",
+        sessionId = "s2",
+    )
+
+    private class Fixture(
+        val store: PairedEngineStore,
+        val dataStore: DataStore<Preferences>,
+        val scope: CoroutineScope,
+    )
+
+    /** One DataStore per file at a time; the scope is cancellable for restarts. */
+    private fun TestScope.newStore(
+        cipher: FakeSecretCipher = FakeSecretCipher(),
+        fileName: String = "t.preferences_pb",
+    ): Fixture {
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = scope,
+            produceFile = { File(tmpFolder.root, fileName) },
+        )
+        return Fixture(
+            PairedEngineStore(dataStore, cipher, StandardTestDispatcher(testScheduler)),
+            dataStore,
+            scope,
+        )
+    }
+
+    /** A process restart: new DataStore in a new scope over the same file. */
+    private suspend fun TestScope.restart(
+        fixture: Fixture,
+        cipher: FakeSecretCipher,
+    ): Fixture {
+        fixture.scope.cancel()
+        fixture.scope.coroutineContext.job.join()
+        return newStore(cipher)
+    }
+
+    private fun storeFile(): File = File(tmpFolder.root, "t.preferences_pb")
+
+    private suspend fun Fixture.prefNames(): Set<String> =
+        dataStore.data.first().asMap().keys.map { it.name }.toSet()
+
+    private fun credKey(engineId: String) = stringPreferencesKey("cred:$engineId")
+
+    private suspend fun Fixture.credValue(engineId: String): String? =
+        dataStore.data.first()[credKey(engineId)]
+
+    private suspend fun Fixture.writeCred(engineId: String, value: String) {
+        dataStore.edit { it[credKey(engineId)] = value }
+    }
+
+    /** Flips a byte in the tag region, keeping the blob shape valid Base64. */
+    private fun corrupt(base64: String): String {
+        val blob = Base64.getDecoder().decode(base64)
+        val flipped = blob.copyOf()
+        flipped[flipped.size - 1] = (flipped[flipped.size - 1].toInt() xor 0x5A).toByte()
+        return Base64.getEncoder().encodeToString(flipped)
+    }
+
+    private fun ByteArray.indexOf(other: ByteArray): Int {
+        if (other.isEmpty() || size < other.size) return -1
+        outer@ for (i in 0..size - other.size) {
+            for (j in other.indices) {
+                if (this[i + j] != other[j]) continue@outer
+            }
+            return i
+        }
+        return -1
+    }
+
+    @Test
+    fun aFreshInstallLoadsNoEngines() = runTest {
+        val fixture = newStore()
+
+        assertEquals(emptyList<PairedEngine>(), fixture.store.load())
+        assertFalse(fixture.store.has(engineA.engineId))
+    }
+
+    @Test
+    fun upsertThenRestartRoundTripsAllEightFieldsInOrder() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+
+        val restarted = restart(fixture, cipher)
+
+        assertEquals(listOf(engineA, engineB), restarted.store.load())
+    }
+
+    @Test
+    fun aReUpsertKeepsThePositionAndReplacesTheRecord() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        val prime = engineA.copy(
+            credential = "cred-AAA2",
+            baseUrl = "http://10.0.2.2:27656",
+            sessionId = "s9",
+        )
+
+        fixture.store.upsert(prime)
+
+        assertEquals(listOf(prime, engineB), fixture.store.load())
+    }
+
+    @Test
+    fun pinPersistsTheDeviceIdAndANonBlankName() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+
+        fixture.store.pin(engineA.engineId, "dev-1", "MacBook Pro")
+
+        val restarted = restart(fixture, cipher)
+        assertEquals(
+            listOf(engineA.copy(deviceId = "dev-1", name = "MacBook Pro")),
+            restarted.store.load(),
+        )
+    }
+
+    @Test
+    fun aBlankPinNameKeepsThePreviousName() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA.copy(name = "Old Name"))
+
+        fixture.store.pin(engineA.engineId, "dev-1", "   ")
+
+        val restarted = restart(fixture, cipher)
+        assertEquals(
+            listOf(engineA.copy(deviceId = "dev-1", name = "Old Name")),
+            restarted.store.load(),
+        )
+    }
+
+    @Test
+    fun aPinThatChangesNothingSkipsTheWrite() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+        fixture.store.pin(engineA.engineId, "dev-1", "MacBook Pro")
+        val bytesBefore = storeFile().readBytes()
+
+        fixture.store.pin(engineA.engineId, "dev-1", "MacBook Pro")
+
+        assertTrue(storeFile().readBytes().contentEquals(bytesBefore))
+    }
+
+    @Test
+    fun aPinThatRacedAheadOfTheUpsertMergesIntoIt() = runTest {
+        val fixture = newStore()
+
+        fixture.store.pin(engineA.engineId, "dev-1", "MacBook Pro")
+
+        assertTrue(
+            "a pin for an unknown id writes nothing",
+            fixture.dataStore.data.first().asMap().isEmpty(),
+        )
+        fixture.store.upsert(engineA)
+        assertEquals(
+            listOf(engineA.copy(deviceId = "dev-1", name = "MacBook Pro")),
+            fixture.store.load(),
+        )
+    }
+
+    @Test
+    fun hasTracksThePersistedIds() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+
+        assertTrue(fixture.store.has(engineA.engineId))
+
+        val restarted = restart(fixture, cipher)
+        assertFalse("before load() the id snapshot is empty", restarted.store.has(engineA.engineId))
+        restarted.store.load()
+        assertTrue(restarted.store.has(engineA.engineId))
+        restarted.store.remove(engineA.engineId)
+        assertFalse(restarted.store.has(engineA.engineId))
+    }
+
+    @Test
+    fun removeDropsTheMetadataTheCredentialAndOrphanCredKeys() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        writeOrphan(fixture)
+
+        fixture.store.remove(engineA.engineId)
+
+        assertEquals(
+            setOf("engines", "cred:${engineB.engineId}"),
+            fixture.prefNames(),
+        )
+        assertFalse(fixture.store.has(engineA.engineId))
+    }
+
+    @Test
+    fun removingAnUnknownIdIsANoOp() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+        val bytesBefore = storeFile().readBytes()
+
+        fixture.store.remove("33333333-3333-4333-8333-333333333333")
+
+        assertTrue(storeFile().readBytes().contentEquals(bytesBefore))
+        assertEquals(listOf(engineA), fixture.store.load())
+    }
+
+    @Test
+    fun orphanCredKeysDisappearOnTheNextWrite() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+        writeOrphan(fixture)
+
+        fixture.store.upsert(engineB)
+
+        assertEquals(
+            setOf("engines", "cred:${engineA.engineId}", "cred:${engineB.engineId}"),
+            fixture.prefNames(),
+        )
+    }
+
+    @Test
+    fun aCorruptedBlobDegradesOnlyThatEngine() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        fixture.writeCred(engineB.engineId, corrupt(fixture.credValue(engineB.engineId)!!))
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load()
+
+        assertEquals(engineA, loaded[0])
+        assertEquals(engineB.copy(credential = ""), loaded[1])
+        assertTrue("a failed decrypt still counts as known", restarted.store.has(engineB.engineId))
+    }
+
+    @Test
+    fun aMissingCredentialKeyDegradesToAnEmptyCredential() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        ShadowLog.clear()
+        fixture.dataStore.edit { it.remove(credKey(engineB.engineId)) }
+
+        val restarted = restart(fixture, cipher)
+
+        assertEquals(engineB.copy(credential = ""), restarted.store.load()[1])
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue(
+            "expected the missing-credential log, got $logged",
+            logged.any { it == "engine credential missing engine=${engineB.engineId}" },
+        )
+    }
+
+    @Test
+    fun aBlobCopiedToAnotherEngineFailsItsAad() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        ShadowLog.clear()
+        fixture.writeCred(engineB.engineId, fixture.credValue(engineA.engineId)!!)
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load()
+
+        assertEquals(engineA, loaded[0])
+        assertEquals(engineB.copy(credential = ""), loaded[1])
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue(
+            "expected the AAD failure log, got $logged",
+            logged.any {
+                it == "engine credential unreadable engine=${engineB.engineId} cause=AEADBadTagException"
+            },
+        )
+    }
+
+    @Test
+    fun aLostKeyDegradesEveryEngineButKeepsThemListed() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+        cipher.rotateKey()
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load()
+
+        assertEquals(2, loaded.size)
+        assertTrue(loaded.all { it.credential == "" })
+        assertEquals(engineB.baseUrl, loaded[1].baseUrl)
+        assertEquals(engineB.label, loaded[1].label)
+    }
+
+    @Test
+    fun aFailingEncryptThrowsAndChangesNothing() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        val bytesBefore = storeFile().readBytes()
+        cipher.failEncrypt = true
+
+        val thrown: Throwable? = try {
+            fixture.store.upsert(engineB)
+            null
+        } catch (expected: CredentialStoreException) {
+            expected
+        }
+
+        assertNotNull("upsert must throw CredentialStoreException", thrown)
+        assertTrue(fixture.store.has(engineA.engineId))
+        assertFalse("a failed upsert never lands", fixture.store.has(engineB.engineId))
+        assertTrue("the atomic edit wrote nothing", storeFile().readBytes().contentEquals(bytesBefore))
+        assertEquals(listOf(engineA), fixture.store.load())
+    }
+
+    @Test
+    fun aNonArrayEnginesValueLoadsEmptyAndLogsIt() = runTest {
+        val fixture = newStore()
+        fixture.dataStore.edit { it[stringPreferencesKey("engines")] = "not-a-json-array" }
+        ShadowLog.clear()
+
+        assertEquals(emptyList<PairedEngine>(), fixture.store.load())
+        assertEquals(listOf("paired engines unreadable"), ShadowLog.getLogs().mapNotNull { it.msg })
+    }
+
+    @Test
+    fun aStoreElementMissingARequiredFieldIsSkippedWhileTheOthersLoad() = runTest {
+        val fixture = newStore()
+        fixture.dataStore.edit { it[stringPreferencesKey("engines")] = enginesJsonWithABrokenElement() }
+
+        assertEquals(listOf(engineB.copy(credential = "")), fixture.store.load())
+    }
+
+    @Test
+    fun noCredentialBytesAreWrittenAtRest() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA.copy(credential = "cred-ATREST"))
+        fixture.store.upsert(engineB.copy(credential = "cred-ATREST-TOO"))
+
+        val needles = listOf("cred-ATREST", "cred-ATREST-TOO").map { it.toByteArray(Charsets.UTF_8) }
+        val files = tmpFolder.root.walkBottomUp().filter { it.isFile }.toList()
+        assertTrue(files.isNotEmpty())
+        for (file in files) {
+            val bytes = file.readBytes()
+            for (needle in needles) {
+                assertTrue("$file contains a credential in the clear", bytes.indexOf(needle) < 0)
+            }
+        }
+    }
+
+    @Test
+    fun noLogLineEverContainsTheCredential() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        ShadowLog.clear()
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(engineB)
+
+        val restarted = restart(fixture, cipher)
+        assertEquals(listOf(engineA, engineB), restarted.store.load())
+        cipher.rotateKey()
+        val degraded = restarted.store.load()
+        assertEquals(listOf("", ""), degraded.map { it.credential })
+        restarted.store.pin(engineA.engineId, "dev-1", "MacBook Pro")
+        restarted.store.remove(engineB.engineId)
+        restarted.store.clearAll()
+
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue(
+            "a log leaked a credential: $logged",
+            logged.none { it.contains("cred-AAA") || it.contains("cred-BBB") },
+        )
+    }
+
+    @Test
+    fun clearAllResetsTheStore() = runTest {
+        val fixture = newStore()
+        fixture.store.upsert(engineA)
+
+        fixture.store.clearAll()
+
+        assertEquals(emptySet<String>(), fixture.prefNames())
+        assertFalse(fixture.store.has(engineA.engineId))
+        assertEquals(emptyList<PairedEngine>(), fixture.store.load())
+    }
+
+    private suspend fun writeOrphan(fixture: Fixture) {
+        fixture.writeCred("orphan-id", Base64.getEncoder().encodeToString(ByteArray(28)))
+    }
+
+    private fun enginesJsonWithABrokenElement(): String {
+        val good = JSONObject()
+            .put("engineId", engineB.engineId)
+            .put("baseUrl", engineB.baseUrl)
+            .put("sessionId", engineB.sessionId)
+            .put("label", engineB.label)
+            .put("pairedAtMs", engineB.pairedAtMs)
+        val broken = JSONObject(good.toString()).apply { remove("baseUrl") }
+        return JSONArray().put(broken).put(good).toString()
+    }
+}

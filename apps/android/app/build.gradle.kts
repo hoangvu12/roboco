@@ -1,9 +1,11 @@
 import roboco.gradle.AndroidAssetsGen
 import roboco.gradle.AndroidCoreBuild
+import roboco.gradle.LicensesSync
 import roboco.gradle.RepoPaths
 import roboco.gradle.RobocoFonts
 import roboco.gradle.RobocoVersion
 import java.io.File
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -112,6 +114,79 @@ for (buildType in listOf("debug", "release")) {
 val debugHostDir: File = RepoPaths.androidCore(project, coreProfile("debug")).resolve("host")
 
 // ---------------------------------------------------------------------------
+// Release signing (android-app#31): CI env vars first, then a local
+// properties file. With neither, the release build stays **unsigned** —
+// never debug-signed (upstream #609's review bug 10). Read through
+// `providers` so the configuration cache tracks the inputs; nothing is
+// consulted unless a source is present, and only the release signingConfig
+// ever sees these values.
+//
+// Env: ROBOCO_ANDROID_KEYSTORE (path), ROBOCO_ANDROID_KEYSTORE_PASSWORD,
+//      ROBOCO_ANDROID_KEY_ALIAS, ROBOCO_ANDROID_KEY_PASSWORD
+// Local: -ProbocoKeystoreProperties=<path> with storeFile/storePassword/
+//        keyAlias/keyPassword (path resolution: apps/android/app-relative).
+// ---------------------------------------------------------------------------
+/** One resolved signing source; `null` means build unsigned. */
+data class ReleaseKeystore(
+    val storeFile: File,
+    val storePassword: String,
+    val keyAlias: String,
+    val keyPassword: String,
+)
+
+fun requiredKeystoreValue(name: String, source: String, value: String?): String =
+    requireNotNull(value?.takeIf { it.isNotBlank() }) {
+        "$name must be set ($source)"
+    }
+
+fun keystorePropertiesFile(path: String): ReleaseKeystore {
+    val props = Properties().apply { file(path).inputStream().use { load(it) } }
+    fun required(key: String): String =
+        requiredKeystoreValue(key, "-ProbocoKeystoreProperties ($path)", props.getProperty(key))
+    return ReleaseKeystore(
+        storeFile = file(required("storeFile")),
+        storePassword = required("storePassword"),
+        keyAlias = required("keyAlias"),
+        keyPassword = required("keyPassword"),
+    )
+}
+
+val releaseKeystore: ReleaseKeystore? =
+    providers.environmentVariable("ROBOCO_ANDROID_KEYSTORE").orNull
+        ?.takeIf { it.isNotBlank() }
+        ?.let { path ->
+            ReleaseKeystore(
+                storeFile = file(path),
+                storePassword = requiredKeystoreValue(
+                    "ROBOCO_ANDROID_KEYSTORE_PASSWORD",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
+                    providers.environmentVariable("ROBOCO_ANDROID_KEYSTORE_PASSWORD").orNull,
+                ),
+                keyAlias = requiredKeystoreValue(
+                    "ROBOCO_ANDROID_KEY_ALIAS",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
+                    providers.environmentVariable("ROBOCO_ANDROID_KEY_ALIAS").orNull,
+                ),
+                keyPassword = requiredKeystoreValue(
+                    "ROBOCO_ANDROID_KEY_PASSWORD",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
+                    providers.environmentVariable("ROBOCO_ANDROID_KEY_PASSWORD").orNull,
+                ),
+            )
+        }
+        ?: providers.gradleProperty("robocoKeystoreProperties").orNull
+            ?.let(::keystorePropertiesFile)
+
+// ---------------------------------------------------------------------------
+// ABI-split release APKs (android-app#31): one APK per ABI, no universal APK
+// (it would double the download for every phone). Intersected with
+// -ProbocoAbis, so a local -ProbocoAbis=arm64-v8a build produces one split.
+// Splits apply to every variant: debug is also split, and Gradle's install
+// task picks the APK matching the connected device's ABI.
+// ---------------------------------------------------------------------------
+val splitAbis: List<String> = requestedAbis.filter { it in setOf("arm64-v8a", "x86_64") }
+
+// ---------------------------------------------------------------------------
 // The asset pipeline (android-app#13): roboco-android-assets converts the
 // shared line icons to VectorDrawables and rasterizes tool/file icons.
 // ---------------------------------------------------------------------------
@@ -155,6 +230,21 @@ val syncFonts = tasks.register<roboco.gradle.FontsSync>("syncRobocoFonts") {
     assetsDir.set(fontsDir)
 }
 
+// The repo's distribution licenses (android-app#31): a sideloaded APK is the
+// whole distribution, so LICENSE and THIRD_PARTY_NOTICES.md ship inside it
+// under assets/licenses/, beside the font licenses above.
+val licensesDir = layout.buildDirectory.dir("generated/roboco-licenses")
+
+val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
+    group = "roboco"
+    description = "Copies the repository LICENSE and THIRD_PARTY_NOTICES.md into the APK assets."
+    noticeFiles.setFrom(
+        repoRootDir.resolve("LICENSE"),
+        repoRootDir.resolve("THIRD_PARTY_NOTICES.md"),
+    )
+    assetsDir.set(licensesDir)
+}
+
 androidComponents {
     onVariants { variant ->
         val buildType = variant.buildType ?: return@onVariants
@@ -167,6 +257,7 @@ androidComponents {
         variant.sources.res?.addGeneratedSourceDirectory(generateAssets) { it.resDir }
         variant.sources.assets?.addGeneratedSourceDirectory(generateAssets) { it.assetsDir }
         variant.sources.assets?.addGeneratedSourceDirectory(syncFonts) { it.assetsDir }
+        variant.sources.assets?.addGeneratedSourceDirectory(syncLicenses) { it.assetsDir }
     }
 }
 
@@ -182,15 +273,57 @@ android {
         targetSdk = 36 // compile 37; target stays 36 for local-network permission
         versionCode = appVersionCode
         versionName = appVersionName
-        ndk {
-            abiFilters += requestedAbis
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // No ndk.abiFilters here: AGP refuses abiFilters alongside the ABI
+        // splits below, and the splits' include (intersected with
+        // -ProbocoAbis) now decides which libroboco_mobile.so is packaged
+        // per APK. The core build tasks take the ABIs directly.
+    }
+
+    signingConfigs {
+        // Filled only when a signing source resolved above. PKCS12 needs no
+        // storeType: the JDK's default KeyStore type handles it. Declared
+        // before buildTypes, which look the config up by name.
+        releaseKeystore?.let { keystore ->
+            create("release") {
+                storeFile = keystore.storeFile
+                storePassword = keystore.storePassword
+                keyAlias = keystore.keyAlias
+                keyPassword = keystore.keyPassword
+            }
         }
     }
 
     buildTypes {
         release {
-            // No debug signing and no R8 here: ticket 31 (release packaging).
-            isMinifyEnabled = false
+            // R8 + resource shrinking (android-app#31). The keep rules for the
+            // reflection- and native-reached JNA/UniFFI layers live in
+            // proguard-rules.pro; the R8 mapping lands in
+            // build/outputs/mapping/release/ and ships as a release asset.
+            // Minification is unconditional: the unsigned and signed paths
+            // must produce the same R8 output.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // Only when a signing source is present; otherwise the APK is
+            // built unsigned (CI's workflow_dispatch path) — never the
+            // debug key.
+            releaseKeystore?.let { signingConfig = signingConfigs.getByName("release") }
+        }
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*splitAbis.toTypedArray())
+            // A universal APK would double the download for every phone.
+            // versionCode stays identical across splits: sideload-only, a
+            // device installs exactly one.
+            isUniversalApk = false
         }
     }
 
@@ -227,7 +360,7 @@ android {
 // core on jna.library.path, and the generated dirs for the plain tests.
 // ---------------------------------------------------------------------------
 tasks.withType<Test>().configureEach {
-    dependsOn(tasks.named(coreTaskName("debug")), generateAssets, syncFonts)
+    dependsOn(tasks.named(coreTaskName("debug")), generateAssets, syncFonts, syncLicenses)
     javaLauncher.set(
         javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) },
     )
@@ -250,6 +383,9 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.reflect=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED",
+        // UniFFI objects register with android.system.SystemCleaner, which
+        // Robolectric backs with jdk.internal.ref.CleanerFactory.
+        "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
     systemProperty("jna.library.path", debugHostDir.absolutePath)
@@ -259,6 +395,7 @@ tasks.withType<Test>().configureEach {
     systemProperty("roboco.generatedAssets", iconsAssetsDir.get().asFile.absolutePath)
     systemProperty("roboco.generatedRes", iconsResDir.get().asFile.absolutePath)
     systemProperty("roboco.generatedFonts", fontsDir.get().asFile.absolutePath)
+    systemProperty("roboco.generatedLicenses", licensesDir.get().asFile.absolutePath)
 }
 
 roborazzi {
@@ -288,12 +425,19 @@ dependencies {
     implementation(libs.haze.blur)
 
     implementation(libs.kotlinx.coroutines.android)
+    // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
+    // androidx.security:security-crypto is deliberately absent (deprecated
+    // and forbidden by android-app#18).
+    implementation(libs.androidx.datastore.preferences)
     // The AAR carries arm64/x86_64 libjnidispatch.so (16 KB aligned).
     implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    // ApplicationProvider for the Robolectric pairing/core tests.
+    testImplementation(libs.androidx.test.core)
     // Plain jar: the host libjnidispatch for JVM (Robolectric) tests.
     testImplementation(libs.jna)
     testImplementation(libs.robolectric)
@@ -304,4 +448,9 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
 
     debugImplementation(libs.compose.ui.test.manifest)
+
+    // Instrumented Keystore tests (ticket 71) — CI-only, no emulator locally.
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
