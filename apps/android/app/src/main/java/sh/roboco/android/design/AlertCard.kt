@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -435,11 +436,11 @@ private fun AlertCardPreviewContent() {
             AlertButton("Create", requiresText = true),
         ),
     )
-    Box(Modifier.fillMaxWidth()) {
+    Box(Modifier.fillMaxSize()) {
         AlertStripes()
-        Box(Modifier.fillMaxWidth().background(rgba(0x000000, 0.2)))
+        Box(Modifier.fillMaxSize().background(rgba(0x000000, 0.2)))
         Box(
-            Modifier.fillMaxWidth().padding(16.dp),
+            Modifier.fillMaxSize().padding(16.dp),
             contentAlignment = Alignment.Center,
         ) {
             RobocoAlertCard(

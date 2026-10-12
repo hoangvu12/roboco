@@ -143,6 +143,10 @@ internal fun AlertField.keyboardOptions(): KeyboardOptions = KeyboardOptions(
  * action and carries only `alert-primary`.
  */
 internal fun alertButtonTag(index: Int, buttons: List<AlertButton>): String {
+    // A single button is both the primary and the cancel action, and carries
+    // only the primary tag — even a lone Cancel button (primary is null when
+    // every button is Cancel, so the check alone would miss it).
+    if (buttons.size == 1) return "alert-primary"
     if (index == primaryIndex(buttons)) return "alert-primary"
     return when (buttons[index].role) {
         AlertButtonRole.Cancel -> "alert-cancel"

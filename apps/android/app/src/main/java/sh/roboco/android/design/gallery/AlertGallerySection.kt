@@ -100,7 +100,7 @@ fun AlertGallerySection() {
                 Spacer12()
 
                 // Ticket 94: acknowledgement, one button, no field.
-                Row("OK — Couldn't start the session") {
+                AlertDemoRow("OK — Couldn't start the session") {
                     alerts.show(
                         RobocoAlert(
                             title = "Couldn't start the session",
@@ -111,7 +111,7 @@ fun AlertGallerySection() {
                 }
 
                 // Ticket 99: two buttons, the cancel action carries a handler.
-                Row("Two buttons — Notifications are off") {
+                AlertDemoRow("Two buttons — Notifications are off") {
                     alerts.show(
                         RobocoAlert(
                             title = "Notifications are off",
@@ -127,7 +127,7 @@ fun AlertGallerySection() {
                 }
 
                 // Ticket 43: placeholder + Words capitalization.
-                Row("New Section — placeholder, Words") {
+                AlertDemoRow("New Section — placeholder, Words") {
                     alerts.show(
                         RobocoAlert(
                             title = "New Section",
@@ -143,7 +143,7 @@ fun AlertGallerySection() {
                 }
 
                 // Ticket 43: pre-filled, the caret at the end (decision FOUNDATION-D2).
-                Row("Rename (pre-filled) — Rename Session") {
+                AlertDemoRow("Rename (pre-filled) — Rename Session") {
                     alerts.show(
                         RobocoAlert(
                             title = "Rename Session",
@@ -159,10 +159,10 @@ fun AlertGallerySection() {
                 }
 
                 // Ticket 111 + PR #685: requiresText and the retry.
-                Row("New Folder — requires text + retry") { showNewFolder("") }
+                AlertDemoRow("New Folder — requires text + retry") { showNewFolder("") }
 
                 // Destructive role (gallery-only copy).
-                Row("Destructive — Remove wallpaper?") {
+                AlertDemoRow("Destructive — Remove wallpaper?") {
                     alerts.show(
                         RobocoAlert(
                             title = "Remove wallpaper?",
@@ -177,7 +177,7 @@ fun AlertGallerySection() {
                 }
 
                 // Three buttons: always stacked, Cancel last.
-                Row("Three buttons (stacked)") {
+                AlertDemoRow("Three buttons (stacked)") {
                     alerts.show(
                         RobocoAlert(
                             title = "Version conflict",
@@ -192,7 +192,7 @@ fun AlertGallerySection() {
                 }
 
                 // Two long titles: wider than the 108 dp half-capsule budget.
-                Row("Long titles (stack)") {
+                AlertDemoRow("Long titles (stack)") {
                     alerts.show(
                         RobocoAlert(
                             title = "Version conflict",
@@ -206,7 +206,7 @@ fun AlertGallerySection() {
 
                 // Two shows in one frame: the second presents after the first
                 // faded out (the FIFO queue).
-                Row("Show twice — the FIFO queue") {
+                AlertDemoRow("Show twice — the FIFO queue") {
                     alerts.show(
                         RobocoAlert(
                             title = "First",
@@ -228,7 +228,7 @@ fun AlertGallerySection() {
 }
 
 @Composable
-private fun Row(label: String, onClick: () -> Unit) {
+private fun AlertDemoRow(label: String, onClick: () -> Unit) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
     BasicText(

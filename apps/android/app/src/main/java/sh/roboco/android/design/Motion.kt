@@ -181,7 +181,9 @@ object Motion {
     /** Section header chevron rotation 0 ↔ −π/2. ios:Threads/SessionCell.swift:284 (39) */
     val SectionChevron = IosSpring("sectionChevron", 0.30, 0.85f)
 
-    /** Every spring this ticket owns, in table order. */
+    /** Every spring of ticket 04's Motion table, in table order (MotionTest pins
+     * this list; later tickets' springs — e.g. 18's AlertScaleIn — stay out and
+     * are pinned by their own tickets' tests). */
     val allSprings: List<IosSpring> = listOf(
         ComposerMorph,
         ActionButton,

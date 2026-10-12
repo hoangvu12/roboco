@@ -182,6 +182,9 @@ class AlertRulesTest {
     fun aSingleButtonCarriesOnlyThePrimaryTag() {
         // It is both the primary and the cancel action; primary wins.
         assertEquals("alert-primary", alertButtonTag(0, listOf(ok)))
+        // Even a lone Cancel button: the a11y table says a single button
+        // carries only alert-primary.
+        assertEquals("alert-primary", alertButtonTag(0, listOf(cancel)))
     }
 
     // -------------------------------------------------- this ticket's motion

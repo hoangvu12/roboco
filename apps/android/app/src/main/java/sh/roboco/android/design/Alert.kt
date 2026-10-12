@@ -463,8 +463,8 @@ private fun AlertProgressSemantics(
     val s = scale.value
     Box(
         Modifier.semantics {
-            AlertAlphaKey = a
-            AlertScaleKey = s
+            this[AlertAlphaKey] = a
+            this[AlertScaleKey] = s
         },
     )
 }
