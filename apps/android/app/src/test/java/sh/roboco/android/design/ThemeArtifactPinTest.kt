@@ -47,7 +47,7 @@ class ThemeArtifactPinTest {
         val body = hex.removePrefix("#")
         return when (body.length) {
             6 -> (0xFF shl 24) or body.toInt(16)
-            8 -> (body.substring(2).toInt(16) shl 24) or body.substring(0, 2).toInt(16)
+            8 -> (body.substring(6).toInt(16) shl 24) or body.substring(0, 6).toInt(16)
             else -> error("unexpected hex length in artifact: $hex")
         }
     }
