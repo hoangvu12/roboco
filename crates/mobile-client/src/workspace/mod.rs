@@ -1261,6 +1261,7 @@ mod tests {
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
+                show_mock_harness: true,
             },
             Vec::new(),
             recorder.clone(),

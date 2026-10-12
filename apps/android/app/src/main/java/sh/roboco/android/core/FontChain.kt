@@ -125,7 +125,7 @@ object FontChain {
                     fileName = file.name,
                     path = file.path,
                     ttcIndex = font.ttcIndex,
-                    locales = font.localeList?.toList() ?: emptyList(),
+                    locales = font.localeList?.let { list -> List(list.size()) { list[it] } } ?: emptyList(),
                     variable = font.axes?.any { it.tag == "wght" } == true ||
                         file.name.contains("VF", ignoreCase = true) ||
                         file.name == FIXED_CJK_FILE,

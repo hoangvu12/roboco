@@ -1,6 +1,6 @@
 package sh.roboco.android.transcript
 
-import androidx.compose.runtime.Snapshot
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.unit.Density
 import java.util.concurrent.atomic.AtomicInteger

@@ -1,8 +1,8 @@
 package sh.roboco.android.design.glass
 
-import androidx.compose.ui.geometry.IntRect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.max
 import kotlin.math.min
@@ -35,8 +35,8 @@ data class MenuPlacement(
      */
     val origin: TransformOrigin
         get() = TransformOrigin(
-            pivotFractionalX = if (alignEnd) 1f else 0f,
-            pivotFractionalY = if (below) 0f else 1f,
+            if (alignEnd) 1f else 0f,
+            if (below) 0f else 1f,
         )
 }
 

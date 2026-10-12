@@ -17,17 +17,18 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -124,7 +125,10 @@ class ActionSheetHostTest {
 
     private fun text(value: String) = compose.onNodeWithText(value, useUnmergedTree = true)
 
-    private fun bounds(tag: String): Rect = node(tag).getBoundsInRoot()
+    /** `getBoundsInRoot` is a [androidx.compose.ui.unit.DpRect]; the assertions compare px. */
+    private fun SemanticsNodeInteraction.pxBounds(): Rect = with(compose.density) { getBoundsInRoot().toRect() }
+
+    private fun bounds(tag: String): Rect = node(tag).pxBounds()
 
     /** Presents [model] on the frozen clock and advances past the 0.4 s spring. */
     private fun presentFrozen(state: ActionSheetHostState, model: ActionSheetModel) {
@@ -171,7 +175,7 @@ class ActionSheetHostTest {
         val state = host()
         presentFrozen(state, wallpaperSheet)
 
-        val window = compose.onRoot().getBoundsInRoot()
+        val window = compose.onRoot().pxBounds()
         val card = bounds("action-sheet-card")
         val cancel = bounds("action-sheet-cancel")
 
@@ -208,8 +212,8 @@ class ActionSheetHostTest {
 
         // Title and message centred on the card (unmerged: the BasicText
         // nodes themselves).
-        val title = text("Delete “Backend”?").getBoundsInRoot()
-        val message = text("Its sessions move back to the main list.").getBoundsInRoot()
+        val title = text("Delete “Backend”?").pxBounds()
+        val message = text("Its sessions move back to the main list.").pxBounds()
         assertEquals(card.center.x, title.center.x, 1f)
         assertEquals(card.center.x, message.center.x, 1f)
         assertTrue("title above message", title.bottom <= message.top)
@@ -222,7 +226,7 @@ class ActionSheetHostTest {
         presentFrozen(state, wallpaperSheet)
         val card = bounds("action-sheet-card")
         assertEquals(px(377), card.width, 1f)
-        assertEquals(card.left, compose.onRoot().getBoundsInRoot().right - card.right, 1f)
+        assertEquals(card.left, compose.onRoot().pxBounds().right - card.right, 1f)
     }
 
     // ---------------------------------------------------- the checked row
@@ -244,7 +248,7 @@ class ActionSheetHostTest {
         // With a check present every title pads to 44 yet stays centred on
         // the card — including the checked row's own.
         for (i in 0..4) {
-            val title = text(WallpaperEffectLabels[i]).getBoundsInRoot()
+            val title = text(WallpaperEffectLabels[i]).pxBounds()
             assertEquals("row $i title centred", card.center.x, title.center.x, 1.5f)
         }
     }
@@ -586,7 +590,7 @@ class ActionSheetHostTest {
         val state = host()
         presentFrozen(state, manyRowsSheet)
 
-        val window = compose.onRoot().getBoundsInRoot()
+        val window = compose.onRoot().pxBounds()
         val card = bounds("action-sheet-card")
         val cancel = bounds("action-sheet-cancel")
 
@@ -597,7 +601,7 @@ class ActionSheetHostTest {
 
         // The header stays put at the top of the card; the tail rows are
         // offscreen until scrolled.
-        val title = text("Move to Section").getBoundsInRoot()
+        val title = text("Move to Section").pxBounds()
         assertEquals(px(14), title.top - card.top, 1.5f)
         node("action-sheet-row-0").assertIsDisplayed()
         node("action-sheet-row-19").assertIsNotDisplayed()
@@ -632,7 +636,7 @@ class ActionSheetHostTest {
 
         // scaled(18) = 29 dp → line box 37.7 dp → row 24 + 37.7 = 61.7 dp.
         assertEquals(px(61.7f), bounds("action-sheet-row-0").height, 1.5f)
-        val title = text("None").getBoundsInRoot()
+        val title = text("None").pxBounds()
         assertEquals("the 29 dp title's 1.3 line box", px(37.7f), title.height, 1.5f)
     }
 

@@ -20,12 +20,14 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
@@ -62,16 +64,18 @@ import androidx.compose.ui.semantics.dismiss
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
-import kotlin.coroutines.CoroutineScope
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.Appearance
@@ -235,6 +239,7 @@ interface GlassSheetScope {
  * animating"), and Compose's duration scale already collapses the springs
  * when the system removes animations.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun GlassSheet(
     onDismiss: () -> Unit,
@@ -347,7 +352,7 @@ fun GlassSheet(
                 Modifier
                     .fillMaxSize()
                     .drawBehind { drawRect(Color.Black, alpha = scrimAlpha * state.presentFraction) }
-                    .clearAndSetSemantics { testTag("glass-sheet-scrim") }
+                    .clearAndSetSemantics { testTag = "glass-sheet-scrim" }
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)

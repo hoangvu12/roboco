@@ -7,7 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled

@@ -12,6 +12,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.semantics.SemanticsPropertyKey
@@ -112,5 +113,5 @@ fun Modifier.glassPress(
         // observed by the semantics tree (LayoutNode observes reads around
         // calculateSemanticsConfiguration), so the key follows the animation
         // without recomposing anything.
-        .semantics { GlassPressModifierScaleKey = 1f + (Glass.PressScale - 1f) * s.value }
+        .semantics { this[GlassPressModifierScaleKey] = 1f + (Glass.PressScale - 1f) * s.value }
 }

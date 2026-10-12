@@ -118,6 +118,7 @@ class CoreStartup(
                     deviceName = DeviceLabel.read(context),
                     platform = "android",
                     appVersion = BuildConfig.VERSION_NAME,
+                    showMockHarness = BuildConfig.DEBUG,
                 )
                 // 3. Never log `engines`; the constructor never dials.
                 val client = try {
