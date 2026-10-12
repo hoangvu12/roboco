@@ -8,6 +8,7 @@ import sh.roboco.android.core.CoreLoader
 import sh.roboco.android.core.CoreStartup
 import sh.roboco.android.core.CoreStatus
 import sh.roboco.android.core.FontGate
+import sh.roboco.android.core.TextEngine
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import uniffi.roboco_core.CoreClient
@@ -55,6 +56,12 @@ class RobocoApplication : Application() {
         // builds crash here; release builds store FontStatus.Missing and
         // MainActivity shows FontsMissingScreen instead of the app.
         FontGate.check(assets, BuildConfig.DEBUG)
+        // Ticket 60: the shared text engine (one Rust TextSystem over the
+        // same font bytes) is built off the main thread — the prewarm
+        // daemon races the first transcript open. A late load failure
+        // reports itself through FontGate.fail.
+        TextEngine.init(this)
+        TextEngine.prewarm()
         core = CoreLoader.load()
         // Tickets 40/42/51 register their event sinks here, before start().
         if (core is CoreStatus.Loaded) {
