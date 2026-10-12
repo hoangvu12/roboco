@@ -87,13 +87,13 @@ object Gallery {
         GallerySection("Icons") { IconsGallerySection() },
         GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() },
         GallerySection("Alert", GalleryLayout.Scroll, screenshotHeightDp = 640) { AlertGallerySection() },
+        GallerySection("Status glyph") { StatusGlyphGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
         // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
-        GallerySection("Status glyph") { StatusGlyphGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
