@@ -348,6 +348,16 @@ object Motion {
     const val ActionSheetFadeMs = 250
     fun <T> actionSheetFade(): TweenSpec<T> = tween(ActionSheetFadeMs, easing = EaseInOut)
 
+    // ------------------------------------------------------ large title (25)
+    // The end-of-scroll snap of a large title: UIKit's snap is internal with
+    // no exposed numbers, so ticket 25 approximates it as a 0.46 s critically
+    // damped settle — stiffness ≈ 400 (the ticket's tunable `SnapStiffness`
+    // in spirit, carried as an [IosSpring] so no literal is ever pasted,
+    // FOUNDATION-D1). Large titles never rest half-collapsed; this is the
+    // only 25 motion token, everything else follows the finger.
+
+    /** Large-title end-of-scroll snap: 0.46 s critically damped (stiffness ≈ 400). ui-parity#25 (chosen, not measured). */
+    val LargeTitleSnap = IosSpring("largeTitleSnap", 0.4617, 1f)
 
     // ------------------------------------------------------ handoff timing set
 

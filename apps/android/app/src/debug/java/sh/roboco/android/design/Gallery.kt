@@ -29,6 +29,7 @@ import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
+import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
@@ -116,6 +117,8 @@ object Gallery {
         // the screen edges, so the section owns its scrolling unpadded.
         GallerySection("Grouped list", layout = GalleryLayout.Fill, screenshotHeightDp = 1300) { GroupedListGallerySection() },
         GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() },
+        // Ticket 25: Fill, the scaffold owns the LazyColumn.
+        GallerySection("Large title scaffold", layout = GalleryLayout.Fill) { LargeTitleGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
