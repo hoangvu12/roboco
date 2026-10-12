@@ -4,6 +4,8 @@ import android.content.res.AssetManager
 import android.util.Log
 import java.io.IOException
 import java.io.InputStream
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * The startup font check's result: [Ok], or the bad asset paths in `Face`
@@ -32,7 +34,9 @@ sealed interface FontStatus {
  *
  * Only 4 magic bytes per file are read (≈1.6 MB of faces are never touched
  * on the main thread here); ticket 60 reads the full bytes off-thread for
- * the `TextSystem`.
+ * the `TextSystem` and reports later failures (unreadable bytes, a bad
+ * pack after an incremental update) through [fail], which merges into
+ * this gate and recomposes the host through [statusFlow].
  */
 object FontGate {
 
@@ -41,10 +45,33 @@ object FontGate {
     /** TrueType version 1.0: every bundled face starts `00 01 00 00`. */
     private val TRUE_TYPE_MAGIC = byteArrayOf(0, 1, 0, 0)
 
-    /** The last result of [check]; `MainActivity` branches on it. */
-    @Volatile
-    var status: FontStatus = FontStatus.Ok
-        private set
+    private val _status = MutableStateFlow<FontStatus>(FontStatus.Ok)
+
+    /**
+     * The gate's status as a state flow: `MainActivity` collects it, so a
+     * late [fail] (ticket 60's loaders) swaps the content for the fatal
+     * screen without recreating the activity.
+     */
+    val statusFlow: StateFlow<FontStatus> = _status
+
+    /** The last result of [check] (or [fail]); `MainActivity` branches on it. */
+    val status: FontStatus
+        get() = _status.value
+
+    /**
+     * Records a face that failed to load after startup (ticket 60's
+     * `FontLoadException` paths): merges the path into [FontStatus.Missing]
+     * without duplicates and logs it. The release fatal screen then lists
+     * it; debug builds have usually already crashed.
+     */
+    fun fail(path: String) {
+        val next = when (val current = _status.value) {
+            FontStatus.Ok -> FontStatus.Missing(listOf(path))
+            is FontStatus.Missing -> FontStatus.Missing((current.paths + path).distinct())
+        }
+        _status.value = next
+        Log.e(TAG, "Unreadable font asset: $path")
+    }
 
     /**
      * The production entry point: checks the APK's merged assets. Debug
@@ -72,7 +99,7 @@ object FontGate {
             if (faceIsGood(open, face.assetPath)) null else face.assetPath
         }
         val result = if (missing.isEmpty()) FontStatus.Ok else FontStatus.Missing(missing)
-        status = result
+        _status.value = result
         if (missing.isNotEmpty()) {
             val message = "Missing font asset(s): ${missing.joinToString(", ")}"
             log(message)

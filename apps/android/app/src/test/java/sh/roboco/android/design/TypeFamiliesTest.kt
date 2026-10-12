@@ -1,6 +1,7 @@
 package sh.roboco.android.design
 
 import android.content.Context
+import android.graphics.Typeface
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.ui.platform.LocalDensity
@@ -15,9 +16,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Density
 import androidx.test.core.app.ApplicationProvider
+import java.io.ByteArrayInputStream
+import java.io.FileNotFoundException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,10 +30,15 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.Face
+import sh.roboco.android.core.FontGate
+import sh.roboco.android.core.FontLoadException
+import sh.roboco.android.core.FontStatus
+import sh.roboco.android.core.Fonts
 
 /**
  * The type system end to end under Robolectric (native graphics, so real
- * TTFs load): the families resolve the 12 shipped faces, `uiStyle` renders
+ * TTFs load): the families resolve the 12 shipped faces through ticket
+ * 60's `ChainFont`s (the shared `FontChain` typefaces), `uiStyle` renders
  * the italic faces #609 omitted, `RobocoTheme` provides the locals and
  * rebuilds the type scale on a font-scale change, and GeistMono's glyph
  * advances prove the text is Geist, not a system fallback.
@@ -145,6 +154,65 @@ class TypeFamiliesTest {
         assertTrue("factor ${typeScale.factor} should be > 1", typeScale.factor > 1.0f)
         assertTrue("factor ${typeScale.factor} should be < 1.3", typeScale.factor < 1.3f)
         assertEquals(13f, with(density) { typeScale.fixed(13f).toDp().value }, 0.01f)
+    }
+
+    @Test
+    fun italicFacesResolveThroughTheChainLoader() {
+        // Ticket 60's swap: the italic faces #609 omitted now resolve
+        // through ChainLoader, which the load counter proves (and the
+        // composition does not throw).
+        RobocoFonts.resetForTest()
+        try {
+            compose.setContent {
+                RobocoTheme {
+                    val typeScale = LocalTypeScale.current
+                    BasicText(
+                        "sans semibold italic chain",
+                        style = uiStyle(Face.SansSemiboldItalic, typeScale.fixed(17f)),
+                    )
+                    BasicText(
+                        "mono italic chain",
+                        style = uiStyle(Face.MonoItalic, typeScale.fixed(13f)),
+                    )
+                }
+            }
+            compose.onNodeWithText("sans semibold italic chain").assertExists()
+            compose.onNodeWithText("mono italic chain").assertExists()
+            compose.waitForIdle()
+            assertTrue(
+                "ChainLoader resolved ${RobocoFonts.chainLoads.get()} typefaces, expected at least 1",
+                RobocoFonts.chainLoads.get() > 0,
+            )
+        } finally {
+            RobocoFonts.resetForTest()
+        }
+    }
+
+    @Test
+    fun chainLoaderFailureReturnsDefaultInReleaseAndThrowsInDebug() {
+        // §7's Compose-loader row: an injected Fonts failure (release)
+        // returns Typeface.DEFAULT for one frame and marks the gate
+        // Missing; (debug) rethrows the FontLoadException.
+        val path = "fonts/Geist.ttf"
+        Fonts.resetForTest()
+        try {
+            FontGate.check({ ByteArrayInputStream(byteArrayOf(0, 1, 0, 0)) }, debug = false, log = {})
+            Fonts.load({ _ -> throw FileNotFoundException(path) }, { emptyMap() }, { null })
+
+            val releaseTypeface = loadChainTypeface(appContext(), Face.Sans, debug = false)
+            assertSame(Typeface.DEFAULT, releaseTypeface)
+            assertEquals(FontStatus.Missing(listOf(path)), FontGate.status)
+
+            try {
+                loadChainTypeface(appContext(), Face.Sans, debug = true)
+                fail("expected FontLoadException")
+            } catch (expected: FontLoadException) {
+                assertEquals(path, expected.path)
+            }
+        } finally {
+            Fonts.resetForTest()
+            FontGate.check({ ByteArrayInputStream(byteArrayOf(0, 1, 0, 0)) }, debug = false, log = {})
+        }
     }
 
     @Test
