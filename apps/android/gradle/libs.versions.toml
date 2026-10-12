@@ -13,6 +13,9 @@ lifecycle = "2.11.0"
 coroutines = "1.11.0"
 jna = "5.19.1"
 junit = "4.13.2"
+# Squircle corners (SmoothRoundedShape): newest stable 1.x on maven.google.com
+# as of 2026-10-12. Multiplatform umbrella; Gradle resolves the -android variant.
+graphicsShapes = "1.1.0"
 robolectric = "4.17"
 roborazzi = "1.76.0"
 
@@ -29,6 +32,7 @@ compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling
 compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphicsShapes" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
