@@ -89,9 +89,7 @@ class PairingRootScreenshotTest {
     fun errorLight() {
         shot(
             "pairing_root_error_light.png",
-            PairingRootStatus.Error(
-                "That pairing link did not work — it may have expired or already have been used.",
-            ),
+            PairingRootStatus.Error(PairingRootExampleError),
             Appearance.Light,
         )
     }
@@ -101,9 +99,7 @@ class PairingRootScreenshotTest {
     fun errorDark() {
         shot(
             "pairing_root_error_dark.png",
-            PairingRootStatus.Error(
-                "That pairing link did not work — it may have expired or already have been used.",
-            ),
+            PairingRootStatus.Error(PairingRootExampleError),
             Appearance.Dark,
         )
     }

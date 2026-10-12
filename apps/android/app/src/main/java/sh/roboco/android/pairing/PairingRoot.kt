@@ -228,8 +228,12 @@ fun PairingRoot(
 /** An iPhone-ish safe area, so the previews match the goldens' geometry. */
 private val PreviewSafeInsets = WindowInsets(top = 59.dp, bottom = 34.dp)
 
-/** The ticket's example error copy (ticket 72's error mapping output). */
-private const val PreviewError =
+/**
+ * The ticket's example error message (ticket 72's error mapping output),
+ * shared by the previews, the gallery's Error toggle and the screenshot
+ * goldens so the three never drift.
+ */
+internal const val PairingRootExampleError =
     "That pairing link did not work — it may have expired or already have been used."
 
 @Preview(name = "Pairing root light", widthDp = 393, heightDp = 852)
@@ -264,7 +268,7 @@ private fun PairingRootRedeemingDarkPreview() {
 @Preview(name = "Pairing root error light", widthDp = 393, heightDp = 852)
 @Composable
 private fun PairingRootErrorLightPreview() {
-    PairingRootPreviewBody(Appearance.Light, PairingRootStatus.Error(PreviewError))
+    PairingRootPreviewBody(Appearance.Light, PairingRootStatus.Error(PairingRootExampleError))
 }
 
 @Preview(
@@ -275,7 +279,7 @@ private fun PairingRootErrorLightPreview() {
 )
 @Composable
 private fun PairingRootErrorDarkPreview() {
-    PairingRootPreviewBody(Appearance.Dark, PairingRootStatus.Error(PreviewError))
+    PairingRootPreviewBody(Appearance.Dark, PairingRootStatus.Error(PairingRootExampleError))
 }
 
 @Composable

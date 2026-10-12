@@ -27,10 +27,6 @@ import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
 
-/** The example error copy (ticket 72's error mapping output). */
-private const val GalleryError =
-    "That pairing link did not work — it may have expired or already have been used."
-
 /**
  * The "Pairing root" page of the debug design gallery (android-ui-parity
  * #34), registered in ticket 22's `Gallery.sections` as
@@ -68,7 +64,7 @@ fun PairingRootGallerySection() {
                 status = PairingRootStatus.Redeeming
             }
             StatusToggle("Error", status is PairingRootStatus.Error) {
-                status = PairingRootStatus.Error(GalleryError)
+                status = PairingRootStatus.Error(PairingRootExampleError)
             }
         }
         BasicText(
