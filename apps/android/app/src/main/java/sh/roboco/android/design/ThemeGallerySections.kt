@@ -23,27 +23,19 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.tooling.preview.Preview
+import sh.roboco.android.core.Face
 
 // ---------------------------------------------------------------------------
 // Debug design-gallery sections (registered by ticket 22; this file only
 // draws them). Neither section scrolls vertically: the gallery frame does.
-// Monospace labels keep this file independent of the Geist type scale;
-// ticket 22 restyles the gallery when it registers TypeSpecimen's
-// "Typography" section (ticket 03).
 // ---------------------------------------------------------------------------
 
-/** Monospace label style; ticket 22 swaps it for `uiStyle(Face.Mono, …)`. */
-private fun labelStyle(color: Color): TextStyle =
-    TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = color)
-
+/** The label style the gallery chrome uses: Geist Mono at a fixed 12 dp. */
 @Composable
 private fun Label(text: String, color: Color, modifier: Modifier = Modifier) {
-    BasicText(text, style = labelStyle(color), modifier = modifier)
+    BasicText(text, style = uiStyle(Face.Mono, LocalTypeScale.current.fixed(12f), color), modifier = modifier)
 }
 
 /** A 4×4 checkerboard, so translucent swatches show their alpha. */

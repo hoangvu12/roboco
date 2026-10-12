@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- The debug-only design gallery (android-ui-parity #22). No intent
+             filter, so it gets no launcher icon; exported because
+             `adb shell am start -n` runs as the shell uid and cannot start a
+             non-exported activity. Release builds merge no such activity:
+             this manifest (and the class) exist only in src/debug. -->
+        <activity
+            android:name=".design.DesignGalleryActivity"
+            android:exported="true"
+            android:label="Design Gallery"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>

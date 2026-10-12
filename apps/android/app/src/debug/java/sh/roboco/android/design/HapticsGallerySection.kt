@@ -4,7 +4,6 @@ import android.content.res.Configuration.UI_MODE_NIGHT_YES
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,51 +21,40 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// TODO(01): Palette — these hexes are Palette.text / secondary / background / hairline.
-private val TextLight = Color(0xFF27272C)
-private val TextDark = Color(0xFFE8E8EA)
-private val SecondaryLight = Color(0xFF62626A)
-private val SecondaryDark = Color(0xFFA9A9AE)
-private val BackgroundLight = Color(0xFFF3F3F5)
-private val BackgroundDark = Color(0xFF060606)
-private val HairlineLight = Color(0xFFE2E2E6)
-private val HairlineDark = Color(0xFF1E1E22)
-
 /**
  * The "Haptics" entry of the design gallery (android-ui-parity #05): one
  * capability line, then one row per moment with its iOS source and the plan
  * this device would run. Tapping a row fires it through `LocalFeedback`, so
  * the real gate applies — a fast double tap shows the rate limit in logcat.
- * Ticket 22 owns the registration (`HapticsGalleryHost` in `design/Gallery.kt`).
+ * Ticket 22 registers it through `HapticsGalleryHost` in `design/Gallery.kt`
+ * and provides the theme; colours are palette roles, so the gallery's
+ * appearance control reaches this section.
  */
 @Composable
 fun HapticsGallerySection(hardware: HapticHardware, hasView: Boolean) {
-    val dark = isSystemInDarkTheme()
-    val text = if (dark) TextDark else TextLight
-    val secondary = if (dark) SecondaryDark else SecondaryLight
-    val hairline = if (dark) HairlineDark else HairlineLight
+    val palette = RobocoTheme.palette
     val feedback = LocalFeedback.current
     val caps = hardware.caps(hasView)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(if (dark) BackgroundDark else BackgroundLight),
+            .background(palette.background),
     ) {
         BasicText(
             text = capabilityLine(hardware, hasView),
-            style = TextStyle(fontSize = 13.sp, color = secondary),
+            style = TextStyle(fontSize = 13.sp, color = palette.secondary),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         )
         Haptic.entries.forEachIndexed { index, haptic ->
-            if (index > 0) Hairline(hairline)
+            if (index > 0) Hairline(palette.hairline)
             HapticRow(
                 haptic = haptic,
                 plan = HapticPlanner.describe(HapticPlanner.plan(haptic, caps)),
-                text = text,
-                secondary = secondary,
+                text = palette.text,
+                secondary = palette.secondary,
                 onClick = { feedback.haptic(haptic) },
             )
         }
@@ -122,7 +110,9 @@ private fun Hairline(color: Color) {
 @Composable
 private fun HapticsGallerySectionLight() {
     ProvideFeedback {
-        HapticsGallerySection(HapticHardware(34, ALL_PRIMITIVES.toSet(), hasVibrator = true), hasView = true)
+        RobocoTheme(Appearance.System) {
+            HapticsGallerySection(HapticHardware(34, ALL_PRIMITIVES.toSet(), hasVibrator = true), hasView = true)
+        }
     }
 }
 
@@ -130,6 +120,8 @@ private fun HapticsGallerySectionLight() {
 @Composable
 private fun HapticsGallerySectionDark() {
     ProvideFeedback {
-        HapticsGallerySection(HapticHardware(34, ALL_PRIMITIVES.toSet(), hasVibrator = true), hasView = true)
+        RobocoTheme(Appearance.System) {
+            HapticsGallerySection(HapticHardware(34, ALL_PRIMITIVES.toSet(), hasVibrator = true), hasView = true)
+        }
     }
 }

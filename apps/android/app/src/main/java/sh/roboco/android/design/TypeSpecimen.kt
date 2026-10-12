@@ -18,13 +18,11 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.core.Face
 
-// TODO(22): register TypeSpecimen in the design gallery's "Typography" section.
-
 /**
  * The type specimen: one line per [Face] in `fixed(17)`, the fixed /
  * scaled / bodyScaled comparison trio at 16.5, and the factor readout.
- * For previews, screenshots and the design gallery — no other component
- * uses it.
+ * For previews, screenshots and the design gallery's "Type" section
+ * (android-ui-parity #22) — no other component uses it.
  *
  * The sample text only uses characters Geist covers (`ä` is; `⎇` is not
  * and would silently fall back to the system font, making the specimen
