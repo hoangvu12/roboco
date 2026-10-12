@@ -299,6 +299,25 @@ object Motion {
     fun <T> shimmerSweep(): InfiniteRepeatableSpec<T> =
         infiniteRepeatable(tween(ShimmerSweepMs, easing = LinearEasing), RepeatMode.Restart)
 
+    // ----------------------------------------------------------- alert (18)
+    // The UIAlertController present/dismiss set. UIKit draws the alert with
+    // system chrome, so these numbers are chosen to read like iOS 26 (the
+    // ticket's Comments own the choice); ui-parity#18 is the consumer.
+
+    /** Alert present: scrim and card alpha 0 → 1. ui-parity#18 (chosen, not measured). */
+    const val AlertFadeInMs = 250
+    fun <T> alertFadeIn(): TweenSpec<T> = tween(AlertFadeInMs, easing = EaseOut)
+
+    /**
+     * Alert present: card scale 1.1 → 1, UIKit-style 0.4 s critically damped
+     * (settle-matched stiffness 532.85). ui-parity#18 (chosen, not measured).
+     */
+    val AlertScaleIn = IosSpring("alertScaleIn", 0.40, 1f)
+
+    /** Alert dismiss: scrim and card alpha → 0, no scale. ui-parity#18 (chosen, not measured). */
+    const val AlertFadeOutMs = 200
+    fun <T> alertFadeOut(): TweenSpec<T> = tween(AlertFadeOutMs, easing = EaseInOut)
+
     // ------------------------------------------------------ handoff timing set
 
     /** The full handoff timing set, normal or reduced. ios:Session/DraftHandoff.swift:59-131,162-174 */
