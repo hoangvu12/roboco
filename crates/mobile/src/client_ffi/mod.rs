@@ -11,10 +11,12 @@
 //! `workspace.rs` carries the workspace reads/mutations and the catalog
 //! label helpers (ticket 07).
 
+mod new_session;
 mod session;
 mod types;
 mod workspace;
 
+pub use new_session::*;
 pub use session::*;
 pub use types::*;
 

@@ -12,7 +12,10 @@
 //! [`workspace`] derives the merged multi-engine snapshot the Sessions
 //! tab, Search, folders, Archived and Settings render, and routes the
 //! workspace mutations (archive, rename, mark seen, pins, sections) to
-//! the owning engine; [`catalog`] holds the static harness/model labels.
+//! the owning engine; [`catalog`] holds the static harness/model labels;
+//! [`new_session`] creates chats (ticket 09) with the optimistic pending
+//! overlay; [`projects`] browses folders, drives and refs and creates
+//! projects; [`host_paths`] speaks the engine's own path style.
 //!
 //! Pure Rust + tokio, UniFFI-free, so `cargo test` runs on any host.
 //! `roboco-mobile` wraps this crate in `crates/mobile/src/client_ffi`.
@@ -26,12 +29,18 @@ pub mod compat;
 pub mod engines;
 pub mod events;
 pub mod files;
+pub mod host_paths;
 pub mod lenient;
+pub mod new_session;
 pub mod pairing;
+pub mod projects;
 pub mod runtime;
 pub mod session;
 pub mod timings;
 pub mod workspace;
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use cache::{CacheCommand, CacheWriter, EngineCacheHandle};
 use engines::{EngineCommand, EngineEntry, host_of};
@@ -54,6 +63,10 @@ pub use engines::{
 pub use events::{ClientEvent, ClientListener};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
 pub use files::FileMatch;
+pub use new_session::{
+    NewSession, PENDING_CHAT_TTL_MS, PendingChat, ProjectGroup, SessionTarget, group_projects,
+};
+pub use projects::PreparedPath;
 pub use session::{
     BusyPolicy, ComposerState, HostCapabilities, HostInfo, InputRequest, LiveStatus,
     OutgoingAttachment, PendingKind, PendingSend, QueueEditAction, QueueEditFinish, QueueEditLease,

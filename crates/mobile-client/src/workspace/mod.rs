@@ -45,6 +45,7 @@ pub use view::{
 };
 
 use crate::engines::{EngineHandle, EngineState};
+use crate::new_session::PendingChat;
 use crate::{ClientError, ClientInner, lock};
 
 /// The mobile sidebar write failure notice (the web's
@@ -67,6 +68,10 @@ pub(crate) struct WorkspaceStore {
     pr: change_requests::ChangeRequestWatches,
     /// Ticket 08's pending-send state per scoped chat id (rows read it).
     send_states: Arc<Mutex<HashMap<String, SendState>>>,
+    /// Ticket 09's pending chats, keyed by scoped chat id: an extra row
+    /// source for the derive (the optimistic row before `WatchChats`
+    /// echoes the id) and a `cwd`/`config` source for 08's send.
+    pending_chats: Arc<Mutex<HashMap<String, PendingChat>>>,
 }
 
 /// The mutable, lock-guarded half of the store.
@@ -99,6 +104,7 @@ impl WorkspaceStore {
             cancel: CancellationToken::new(),
             pr: change_requests::ChangeRequestWatches::new(weak.clone(), notify),
             send_states: Arc::new(Mutex::new(HashMap::new())),
+            pending_chats: Arc::new(Mutex::new(HashMap::new())),
         });
         // Seed with the derive of an empty fleet: a client with no engines
         // stays silent (its first recompute reproduces this content hash),
@@ -109,6 +115,7 @@ impl WorkspaceStore {
             overlays: &Overlays::default(),
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
+            pending_chats: &HashMap::new(),
             previous: None,
         });
         *store
@@ -168,6 +175,22 @@ impl WorkspaceStore {
             .collect();
         let overlays = state.overlays.clone();
         let send_states = lock(&self.send_states).clone();
+        // Ticket 09: drop pending chats the engine has echoed (or whose
+        // 30 s TTL ran out); the survivors are the derive's extra rows.
+        let pending_chats = {
+            let now_ms = crate::engines::now_ms();
+            let mut pending = lock(&self.pending_chats);
+            pending.retain(|_id, chat| {
+                let echoed = gathered
+                    .iter()
+                    .find(|engine| engine.engine_id == chat.engine_id)
+                    .is_some_and(|engine| {
+                        engine.rows.chats.iter().any(|row| row.id == chat.raw_chat_id)
+                    });
+                !chat.finished(echoed, now_ms)
+            });
+            pending.clone()
+        };
         drop(state);
         // PR badges: reconcile the watch set, then read the statuses.
         let pr = self.pr.inner();
@@ -180,6 +203,7 @@ impl WorkspaceStore {
             overlays: &overlays,
             change_requests: &statuses,
             send_states: &send_states,
+            pending_chats: &pending_chats,
             previous: Some(&previous),
         });
         if next.content_hash() == previous.content_hash() {
@@ -202,15 +226,23 @@ impl WorkspaceStore {
     }
 
     /// A chat's run configuration, wire-string form — the chat row's
-    /// config, or ticket 08's optimistic override if one exists.
+    /// config, ticket 08's optimistic override if one exists, or ticket
+    /// 09's pending chat (a chat created a moment ago).
     pub fn session_config(&self, chat_id: &str) -> Option<SessionConfig> {
         if let Some(config) = lock(&self.state).overlays.configs.get(chat_id) {
             return Some(config.clone());
         }
         let inner = self.weak.upgrade()?;
         let scoped = ScopedId::parse(chat_id).ok()?;
-        let chat = chat_of(&inner, &scoped)?;
-        chat.config.as_ref().map(SessionConfig::of_chat)
+        if let Some(chat) = chat_of(&inner, &scoped) {
+            return chat.config.as_ref().map(SessionConfig::of_chat);
+        }
+        // Ticket 09: the pending chat's config (before the echo).
+        lock(&self.pending_chats)
+            .get(chat_id)?
+            .config
+            .as_ref()
+            .map(SessionConfig::of_chat)
     }
 
     /// Ticket 08's optimistic config override (the `set_session_config`
@@ -252,6 +284,24 @@ impl WorkspaceStore {
                 }
             }
         }
+    }
+
+    // ── ticket 09's pending chats ──────────────────────────────────────────
+
+    /// Register the optimistic pending chat of a just-created session
+    /// (`create_session`): 07's derive renders it as a synthetic row until
+    /// `WatchChats` echoes the id (or the 30 s TTL drops it), and 08's
+    /// send reads its `cwd`/`config`. Recomputes.
+    pub(crate) fn register_pending_chat(&self, pending: PendingChat) {
+        let chat_id = pending.chat_id.clone();
+        lock(&self.pending_chats).insert(chat_id, pending);
+        self.notify.notify_one();
+    }
+
+    /// A pending chat by scoped id (08's `send` reads `cwd`/`config` off
+    /// it while the row is still in flight).
+    pub(crate) fn pending_chat(&self, chat_id: &str) -> Option<PendingChat> {
+        lock(&self.pending_chats).get(chat_id).cloned()
     }
 
     // ── chat mutations ────────────────────────────────────────────────────
@@ -1121,8 +1171,9 @@ fn chat_of(inner: &Arc<ClientInner>, scoped: &ScopedId) -> Option<Chat> {
 }
 
 /// Writes need a connected engine: parked fails `Auth`, anything else
-/// fails `HostUnavailable` (never queued).
-fn ensure_writable(handle: &EngineHandle) -> Result<(), ClientError> {
+/// fails `HostUnavailable` (never queued). Shared by the workspace
+/// mutations and ticket 09's session/project creates.
+pub(crate) fn ensure_writable(handle: &EngineHandle) -> Result<(), ClientError> {
     match handle.state() {
         EngineState::Connected => Ok(()),
         EngineState::Parked { .. } => Err(ClientError::Auth {
@@ -1213,21 +1264,7 @@ mod tests {
             },
             Vec::new(),
             recorder.clone(),
-            crate::timings::Timings {
-                initial_backoff: Duration::from_millis(50),
-                max_backoff: Duration::from_millis(200),
-                backoff_reset_after: Duration::from_secs(1),
-                identity_timeout: Duration::from_secs(2),
-                subscribe_timeout: Duration::from_secs(2),
-                sync_deadline: Duration::from_secs(5),
-                probe_every: Duration::from_millis(200),
-                lag_every: Duration::from_millis(300),
-                lag_timeout: Duration::from_millis(400),
-                cache_debounce: Duration::from_millis(50),
-                background_flush: Duration::from_secs(1),
-                refresh_cap: Duration::from_secs(1),
-                workspace_tick: Duration::from_millis(100),
-            },
+            crate::test_support::test_timings(),
         )
         .unwrap();
         let store = client

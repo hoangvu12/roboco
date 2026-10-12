@@ -310,25 +310,31 @@ impl SessionCore {
             .and_then(|inner| inner.workspace.get().cloned())
     }
 
-    /// `cwd: chat.cwd ?? <space path> ?? "~"` for the RunRequest.
+    /// `cwd: chat.cwd ?? <space path> ?? "~"` for the RunRequest — or,
+    /// for a chat created a moment ago (ticket 09), the pending chat's
+    /// cwd (the `NewSession.cwd` override, the space path, or `~`).
     pub(crate) fn chat_cwd(&self) -> Option<String> {
-        let chat = self.chat_row()?;
-        if let Some(cwd) = chat.cwd.clone() {
-            return Some(cwd);
+        if let Some(chat) = self.chat_row() {
+            if let Some(cwd) = chat.cwd.clone() {
+                return Some(cwd);
+            }
+            let space_id = chat.space_id.clone()?;
+            let inner = self.client.upgrade()?;
+            let state = lock(&inner.engines);
+            let entry = state
+                .entries
+                .iter()
+                .find(|entry| entry.paired.engine_id == self.engine_id)?;
+            return entry
+                .rows
+                .spaces
+                .iter()
+                .find(|space| space.id == space_id)
+                .map(|space| space.path.clone());
         }
-        let space_id = chat.space_id.clone()?;
-        let inner = self.client.upgrade()?;
-        let state = lock(&inner.engines);
-        let entry = state
-            .entries
-            .iter()
-            .find(|entry| entry.paired.engine_id == self.engine_id)?;
-        entry
-            .rows
-            .spaces
-            .iter()
-            .find(|space| space.id == space_id)
-            .map(|space| space.path.clone())
+        self.workspace_store()
+            .and_then(|store| store.pending_chat(&self.chat_id))
+            .map(|pending| pending.cwd)
     }
 
     /// The chat row off the engine's cached rows (raw ids on the wire side,
