@@ -82,8 +82,10 @@ import sh.roboco.android.design.rgba
  *
  * **Layout:** this component has no layout of its own. The caller sizes it
  * through [modifier] and puts content inside; the surface adds no padding
- * and no minimum size. The content is clipped to [shape] (iOS masks
- * `contentView` to the corner configuration).
+ * and no minimum size. [content] defaults to empty, like foundation's
+ * `Box` — the ticket's fixture (the probe capsule) renders it bare. The
+ * content is clipped to [shape] (iOS masks `contentView` to the corner
+ * configuration).
  *
  * **Shadow extent:** the 20 dp outer shadow draws *outside* the bounds.
  * `GlassSurface` never clips it, so a parent with `clipToBounds()` /
@@ -131,7 +133,7 @@ fun GlassSurface(
     interactionSource: MutableInteractionSource? = null,
     contentAlignment: Alignment = Alignment.TopStart,
     propagateMinConstraints: Boolean = false,
-    content: @Composable BoxScope.() -> Unit,
+    content: @Composable BoxScope.() -> Unit = {},
 ) {
     val dark = LocalIsDark.current
     val colors = Glass.colors(dark)
@@ -248,7 +250,10 @@ private fun GlassShadow(base: Modifier, shape: Shape, colors: GlassColors, progr
             .drawWithCache {
                 val interior = shape.createOutline(size, layoutDirection, this).toPath()
                 onDrawWithContent {
-                    clipPath(interior, ClipOp.Difference) { drawContent() }
+                    // drawContent() lives on this lambda's ContentDrawScope;
+                    // the clipPath lambda's DrawScope receiver hides it (K2
+                    // DSL-scope rule), so the call needs the explicit label.
+                    clipPath(interior, ClipOp.Difference) { this@onDrawWithContent.drawContent() }
                 }
             }
             .dropShadow(

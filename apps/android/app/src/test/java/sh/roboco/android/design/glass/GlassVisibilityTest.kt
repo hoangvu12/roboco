@@ -130,7 +130,9 @@ class GlassVisibilityTest {
                     animateVisibility = animated,
                     materializeOnEnter = materializeOnEnter,
                 ) {
-                    val click: () -> Unit = onClick ?: {}
+                    // Parenthesized lambda: an unambiguously-parsed no-op
+                    // default keeps the clickable in the tree for the taps.
+                    val click: () -> Unit = if (onClick != null) onClick else ({})
                     Box(
                         Modifier
                             .testTag("content")
