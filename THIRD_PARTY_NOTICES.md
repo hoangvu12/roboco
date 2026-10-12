@@ -158,3 +158,28 @@ Attribution is retained in the pinned Zui dependency’s `NOTICE`.
 Parakeet TDT 0.6B v3 model weights are by NVIDIA under CC BY 4.0. The optional download uses Ivan Stupakov's INT8 ONNX conversion, pinned to revision `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`, with per-file SHA-256 verification. Original: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3. Conversion: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx. License: https://creativecommons.org/licenses/by/4.0/.
 
 Native runtime dependencies: parakeet-rs 0.3.8 (MIT OR Apache-2.0), ort/ort-sys 2.0.0-rc.13 (MIT OR Apache-2.0), ONNX Runtime 1.28.0 (MIT), cpal 0.17.3 (Apache-2.0), and rubato 0.16.2 (MIT). See `crates/voice/NOTICE.md` for exact conversion provenance, changes, runtime/platform limitations and supported languages. Models are not included in the application bundle.
+
+## Android app
+
+The Android client (`apps/android`) bundles the components below in its
+release APKs. The repository `LICENSE` and this notices file ship inside
+every APK under `assets/licenses/` (android-app#31), so a sideloaded APK
+carries its own distribution terms.
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| JNA | 5.19.1 | Apache-2.0 (the Apache-2.0 option of its Apache-2.0/LGPL-2.1 dual license) | https://github.com/java-native-access/jna |
+| AndroidX Core (core-ktx) | 1.19.1 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/core |
+| AndroidX Activity (activity-compose) | 1.13.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/activity |
+| AndroidX Lifecycle | 2.11.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/lifecycle |
+| Jetpack Compose (BOM: ui, foundation, runtime) | 2026.09.00 | Apache-2.0 | https://developer.android.com/jetpack/compose/bom |
+| Kotlin standard library | 2.4.21 | Apache-2.0 | https://github.com/JetBrains/kotlin |
+| kotlinx-coroutines | 1.11.0 | Apache-2.0 | https://github.com/Kotlin/kotlinx.coroutines |
+| UniFFI runtime (compiled into `libroboco_mobile.so`) | 0.32.2 | MPL-2.0 | https://crates.io/crates/uniffi |
+| Geist typefaces | 12 bundled faces | OFL-1.1 | `assets/licenses/Geist-OFL.txt` in the APK; https://github.com/vercel/geist-font |
+| vscode-symbols icon set | bundled | MIT | `assets/licenses/vscode-symbols-LICENSE.txt` in the APK; https://github.com/miguelsolorio/vscode-symbols |
+
+Rust crates compiled into `libroboco_mobile.so` (the mobile core and the
+tree-sitter grammars it carries) are pinned in `Cargo.lock`, as in the
+tables above. The UniFFI-generated Kotlin bindings (`uniffi.roboco_core`)
+are Roboco source code.

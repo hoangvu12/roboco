@@ -83,7 +83,9 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         LocalIndication provides NoIndication,
         LocalFonts provides fonts,
         LocalTypeScale provides typeScale,
-        content = content,
+        // Ticket 04: LocalReduceMotion follows the system "remove animations"
+        // setting inside the theme (ticket 35's app root relies on this).
+        content = { ProvideReduceMotion(content) },
     )
 }
 

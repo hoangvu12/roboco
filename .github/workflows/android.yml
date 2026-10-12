@@ -5,6 +5,9 @@ name: Android
 # the JVM unit suite — Robolectric against the host core, plus the plain
 # version/asset/network tests — on both hosts the project supports. The
 # ubuntu job uploads the APK; windows proves the build needs no bash/WSL.
+# On pushes to main it also runs the unsigned x86_64 assembleRelease R8
+# smoke (android-app#31) so R8 breakage surfaces before a tag; the signed
+# release APKs are built by release.yml only.
 
 on:
   pull_request:
@@ -72,16 +75,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 90: the push-to-main R8 smoke (below) adds a mobile-dist core
+          # build plus R8 on top of the debug build and the JVM tests.
           - os: ubuntu-24.04
             abis: arm64-v8a,x86_64
             upload: true
+            timeout: 90
           # Windows-host proof: the Gradle tasks are bash-free, and the
           # xtask handles .dll/.exe naming (upstream #609 was mac/Linux-only).
           - os: windows-2022
             abis: arm64-v8a
             upload: false
+            timeout: 60
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
     defaults:
       run:
         working-directory: apps/android
@@ -134,6 +141,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           ABIS: ${{ matrix.abis }}
+      - name: "R8 smoke — unsigned release build (pushes to main only)"
+        # Proves R8 plus the JNA/UniFFI keep rules build before a tag
+        # (release.yml runs the real signed build). PRs skip it to keep their
+        # time down. Unsigned on purpose: no signing secrets here, and the
+        # unsigned path must produce the same R8 output as the signed one
+        # (android-app#31).
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        run: ./gradlew --stacktrace -ProbocoAbis=x86_64 :app:assembleRelease
+      - name: Upload the unsigned release APK (manual emulator smoke)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-release-unsigned
+          path: apps/android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
+          if-no-files-found: error
       - name: Test the asset generator (Rust)
         if: runner.os == 'Linux'
         run: cargo test --locked -p roboco-android-assets
@@ -142,10 +165,17 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $apk = Get-Item "app/build/outputs/apk/debug/app-debug.apk" -ErrorAction SilentlyContinue
-          if ($apk) {
+          # ABI splits (android-app#31) name every APK after its ABI.
+          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk" -ErrorAction SilentlyContinue
+          foreach ($apk in $apks) {
             $kb = [math]::Round($apk.Length / 1KB)
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "APK: $kb KB", ""
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "APK $($apk.Name): $kb KB", ""
+          }
+          # The push-to-main R8 smoke, when it ran this build.
+          $release = Get-ChildItem "app/build/outputs/apk/release/*.apk" -ErrorAction SilentlyContinue
+          foreach ($apk in $release) {
+            $kb = [math]::Round($apk.Length / 1KB)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Release APK $($apk.Name): $kb KB (unsigned R8 smoke)", ""
           }
           # The xtask's sizes.json, when the core was built this run.
           $sizes = Get-Content "../../target/android-core/mobile/sizes.json" -Raw -ErrorAction SilentlyContinue
