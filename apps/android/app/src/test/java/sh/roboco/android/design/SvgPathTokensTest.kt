@@ -52,19 +52,11 @@ class SvgPathTokensTest {
             "opencode" to 24,
             "antigravity" to 43,
         )
-        for ((name, count) in expected) {
-            val d = when (name) {
-                "claude" -> CLAUDE_PATH_DATA
-                "openai" -> OPENAI_PATH_DATA
-                "cursor" -> CURSOR_PATH_DATA
-                "devin" -> DEVIN_PATH_DATA
-                "grok" -> GROK_PATH_DATA
-                "hermes" -> HERMES_PATH_DATA
-                "pi" -> PI_PATH_DATA
-                "opencode" -> OPENCODE_PATH_DATA
-                else -> ANTIGRAVITY_PATH_DATA
-            }
-            assertEquals("$name token count", count, SvgPathTokens.normalize(d).split(' ').size)
+        assertEquals("every mark pinned", expected.size, BrandMark.entries.size)
+        for (mark in BrandMark.entries) {
+            val count = expected[mark.svgName]
+                ?: throw AssertionError("no expected token count for ${mark.svgName}")
+            assertEquals("${mark.svgName} token count", count, SvgPathTokens.normalize(mark.pathData).split(' ').size)
         }
     }
 }
