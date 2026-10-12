@@ -896,7 +896,7 @@ pub struct IncrementalParser {
     source: String,
     tree: BlockTree,
     /// Display-only replacement for the last top-level block when its source
-    /// has hanging inline markers ([`super::mend`]): `None` means the display
+    /// has hanging inline markers ([`crate::mend`]): `None` means the display
     /// tree is exactly [`Self::tree`]. Never fed back into the incremental
     /// state — the canonical tree stays parity-exact with `parse_full`.
     display_tail: Option<Vec<Arc<TopBlock>>>,
@@ -1043,7 +1043,7 @@ impl IncrementalParser {
             return;
         }
         let start = last.range.start;
-        let Some(mended) = super::mend::close_hanging(&self.source[start..]) else {
+        let Some(mended) = crate::mend::close_hanging(&self.source[start..]) else {
             return;
         };
         // Count toward the O(tail) instrumentation — this is real parse work,
@@ -1478,7 +1478,7 @@ mod tests {
         assert_eq!(link.text, "docs");
         assert_eq!(
             link.style.link.as_deref(),
-            Some(crate::markdown::mend::PENDING_LINK_URL)
+            Some(crate::mend::PENDING_LINK_URL)
         );
     }
 

@@ -61,6 +61,19 @@ jobs:
           cargo test --locked -p roboco-update --lib
           cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings
 
+  mobile-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Mobile layout core crates
+        # UI-free crates shared with the Android app; no GPUI system deps
+        # needed. Tickets 02/04/05 append their crates here.
+        run: cargo test --locked -p roboco-markdown
+
   tailcat-adapter:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

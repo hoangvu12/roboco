@@ -87,6 +87,10 @@ jobs:
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
       - name: Engine, RPC, and harness unit tests
         run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
+      - name: Mobile core crates
+        # UI-free crates shared with the Android app (tickets 02/04/05 append
+        # their -p flags here).
+        run: cargo nextest run --release --locked -p roboco-markdown -P ci
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests
