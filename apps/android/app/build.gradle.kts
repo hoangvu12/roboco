@@ -278,6 +278,8 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.foundation)
+    // iOS continuous (squircle) corners for SmoothRoundedShape (ui-parity#01).
+    implementation(libs.graphics.shapes)
 
     implementation(libs.kotlinx.coroutines.android)
     // The AAR carries arm64/x86_64 libjnidispatch.so (16 KB aligned).
