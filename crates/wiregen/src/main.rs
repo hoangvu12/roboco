@@ -271,6 +271,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_doc::QueuedMessage,
         roboco_doc::QueueDeliveryGate,
         roboco_doc::TranscriptUpdate,
+        roboco_doc::TranscriptResume,
+        roboco_doc::TranscriptResumeEntry,
         roboco_doc::TranscriptBaseline,
         roboco_doc::TranscriptFrame,
         roboco_doc::TranscriptUpsert,
@@ -339,6 +341,10 @@ fn constants_ts() -> String {
     out.push_str(&format!(
         "export const WEB_CLIENT = {:?};\n",
         capabilities::WEB_CLIENT
+    ));
+    out.push_str(&format!(
+        "export const TRANSCRIPT_RESUME_V1 = {:?};\n",
+        capabilities::TRANSCRIPT_RESUME_V1
     ));
     out.push_str("\n/** Every capability this build of the engine advertises. */\n");
     let current: Vec<String> = capabilities::CURRENT

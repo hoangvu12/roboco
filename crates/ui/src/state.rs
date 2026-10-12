@@ -4599,6 +4599,7 @@ mod tests {
                 frame: TranscriptFrame::reset(&[user_entry(id)]),
                 context_usage: None,
                 replay_baseline: None,
+                digests: None,
             };
             state.select_chat(Some("whale".into()), cx);
             state

@@ -10,6 +10,7 @@
 //! that must not diverge per surface live in one place).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use ts_rs::TS;
 
@@ -29,6 +30,14 @@ pub struct TranscriptUpdate {
     /// encoding. Omitted on ordinary live updates and by older engines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_baseline: Option<TranscriptBaseline>,
+    /// Engine-computed `entry_digest` values, keyed by entry id, present only
+    /// when the stream opted in (`digests: true` or a `resume` summary).
+    /// A reset carries every entry; a delta exactly the ids it upserts or
+    /// appends to (an empty delta carries `{}`). Digests are opaque to
+    /// clients: they store them and send them back, never recompute them.
+    /// Keys serialize in sorted order, so frames are deterministic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digests: Option<BTreeMap<String, String>>,
 }
 
 /// Compact presentation watermark: stable part ids and text byte lengths.
@@ -518,6 +527,7 @@ mod context_update_tests {
                 tokens: Some(0),
                 window: Some(200000),
             }),
+            digests: None,
         })
         .unwrap();
         assert_eq!(value["contextUsage"]["tokens"], 0);

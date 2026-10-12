@@ -121,6 +121,8 @@ export * from "./ToolDiff";
 export * from "./ToolDiffStat";
 export * from "./TranscriptBaseline";
 export * from "./TranscriptFrame";
+export * from "./TranscriptResume";
+export * from "./TranscriptResumeEntry";
 export * from "./TranscriptUpdate";
 export * from "./TranscriptUpsert";
 export * from "./TransferProgress";

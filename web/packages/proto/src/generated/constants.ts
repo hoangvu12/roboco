@@ -9,9 +9,10 @@ export const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1 = "message-queue-clean-attac
 export const MESSAGE_QUEUE_EDIT_LEASE_V1 = "message-queue-edit-lease-v1";
 export const HARNESS_UPDATES_V1 = "harness-updates-v1";
 export const WEB_CLIENT = "web-client";
+export const TRANSCRIPT_RESUME_V1 = "transcript-resume-v1";
 
 /** Every capability this build of the engine advertises. */
-export const CAPABILITIES_CURRENT: readonly string[] = ["composer-references-v1", "message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "harness-updates-v1", "web-client"];
+export const CAPABILITIES_CURRENT: readonly string[] = ["composer-references-v1", "message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "harness-updates-v1", "web-client", "transcript-resume-v1"];
 
 /** Wire protocol generation this engine speaks; absent on older engines means 1. */
 export const PROTOCOL_VERSION = 1;
