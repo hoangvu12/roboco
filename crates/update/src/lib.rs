@@ -1562,6 +1562,70 @@ mod tests {
         assert!(bare.files.is_empty());
     }
 
+    #[test]
+    fn manifest_with_android_apk_entries_parses_and_desktop_lookups_are_unaffected() {
+        // The release workflow stages the ABI-split APKs into dist/
+        // (android-app#31), so manifest.json gains entries desktop updaters
+        // must ignore: they resolve their own exact asset names, and Android
+        // ABI tokens (arm64-v8a) never collide with the Rust arch tokens the
+        // desktop names use.
+        let manifest: Manifest = serde_json::from_str(
+            r#"{
+                "version": "0.9.2",
+                "files": {
+                    "roboco-0.9.2-linux-x86_64.tar.gz": {"sha256": "1111"},
+                    "roboco-0.9.2-linux-aarch64.tar.gz": {"sha256": "2222"},
+                    "roboco-0.9.2-windows-x86_64.exe": {"sha256": "3333"},
+                    "roboco-0.9.2-android-arm64-v8a.apk": {"sha256": "aaaa"},
+                    "roboco-0.9.2-android-x86_64.apk": {"sha256": "bbbb"}
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.version, "0.9.2");
+        assert_eq!(manifest.files.len(), 5);
+        // The APK entries keep their checksums: a future Android update
+        // check reads them from the same manifest.
+        for (name, sha) in [
+            ("roboco-0.9.2-android-arm64-v8a.apk", "aaaa"),
+            ("roboco-0.9.2-android-x86_64.apk", "bbbb"),
+        ] {
+            assert_eq!(manifest.files[name].sha256.as_deref(), Some(sha));
+        }
+        // Desktop lookups still hit their own entries exactly — extra
+        // entries neither shadow nor shift them.
+        assert_eq!(
+            manifest.files["roboco-0.9.2-linux-x86_64.tar.gz"]
+                .sha256
+                .as_deref(),
+            Some("1111")
+        );
+        let (os, arch) = platform_key();
+        let headless = headless_artifact("0.9.2");
+        assert_eq!(headless, format!("roboco-0.9.2-{os}-{arch}.tar.gz"));
+        assert_ne!(headless, "roboco-0.9.2-android-arm64-v8a.apk");
+        // Android names can never match a desktop artifact name: "android"
+        // is not a desktop OS token (linux/macos/windows), and the desktop
+        // extensions (.tar.gz, .exe) differ from .apk.
+        assert!(os != "android");
+        for name in [
+            headless_artifact("0.9.2").as_str(),
+            mac_app_artifact("0.9.2").as_str(),
+            format!("roboco-0.9.2-windows-{}.exe", std::env::consts::ARCH).as_str(),
+        ] {
+            assert!(!name.contains("android"));
+            assert!(!name.ends_with(".apk"));
+        }
+        // The Windows updater's own entry is still read back exactly as
+        // staged (the same lookup windows::stage performs).
+        assert_eq!(
+            manifest.files["roboco-0.9.2-windows-x86_64.exe"]
+                .sha256
+                .as_deref(),
+            Some("3333")
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn headless_symlink_swap() {

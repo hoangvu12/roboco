@@ -53,17 +53,125 @@ WHPX for the emulator.
 
 ```bash
 cd apps/android
-./gradlew :app:assembleDebug          # APK in app/build/outputs/apk/debug/
+./gradlew :app:assembleDebug          # one APK per ABI in app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest
-./gradlew :app:installDebug           # adb install -r equivalent
+./gradlew :app:installDebug           # installs the split matching the device's ABI
 adb shell am start -n sh.roboco.android/.MainActivity
 adb logcat -s Roboco                  # core load/version handshake logs
 ```
 
+ABI splits (android-app#31) apply to every variant, so debug APKs are named
+after their ABI too: `app-arm64-v8a-debug.apk`, `app-x86_64-debug.apk`. A
+local single-ABI build stays single: `./gradlew
+-ProbocoAbis=arm64-v8a :app:assembleDebug`.
+
 Rebuilds with no source changes run no Rust work: the core/assets tasks are
 `UP-TO-DATE`, and `-ProbocoSkipCore` skips them (unless an output is
-missing). Never run `assembleRelease` locally — release signing and R8 are
-CI-only (ticket 31).
+missing). Release builds (R8 + the `mobile-dist` core) are heavyweight and
+mostly a CI concern — see [Release builds](#release-builds) for the local
+path.
+
+## Release builds
+
+Release APKs are built by CI on a `v*` tag (`.github/workflows/release.yml`):
+R8 plus resource shrinking with the JNA/UniFFI keep rules
+(`apps/android/app/proguard-rules.pro`), the stripped `mobile-dist` Rust
+profile, ABI splits (`arm64-v8a` and `x86_64`, no universal APK), and the
+release signing key from GitHub secrets. Local release builds work the same
+way, unsigned by default (never debug-signed):
+
+```bash
+cd apps/android
+./gradlew :app:assembleRelease                    # unsigned, every split
+./gradlew -ProbocoAbis=arm64-v8a :app:assembleRelease   # one split only
+```
+
+Outputs: `app/build/outputs/apk/release/app-<abi>-release.apk` (signed) or
+`app-<abi>-release-unsigned.apk` (unsigned), and the R8 mapping at
+`app/build/outputs/mapping/release/mapping.txt`. Unsigned and signed
+builds produce the same R8 output — signing never branches the build type.
+
+Signing locally (a throwaway key is fine for a device test):
+
+```powershell
+keytool -genkeypair -keystore $env:TEMP\t.jks -storetype PKCS12 -alias roboco `
+    -keyalg RSA -keysize 2048 -validity 1 -dname "CN=test" -storepass testtest -keypass testtest
+Set-Content -Encoding ascii $env:TEMP\k.properties `
+    "storeFile=$($env:TEMP -replace '\\','/')/t.jks`nstorePassword=testtest`nkeyAlias=roboco`nkeyPassword=testtest"
+cd apps\android
+.\gradlew.bat -ProbocoKeystoreProperties=$env:TEMP\k.properties :app:assembleRelease
+```
+
+`storeFile` in the properties file resolves against `apps/android/app`. In
+CI, the four `ROBOCO_ANDROID_KEYSTORE*`/`ROBOCO_ANDROID_KEY_PASSWORD`
+environment variables fill the same signing config.
+
+Verify a release APK (build-tools from `$ANDROID_HOME`):
+
+```powershell
+$bt = Get-ChildItem "$env:ANDROID_HOME\build-tools" | Sort-Object Name | Select-Object -Last 1
+& "$($bt.FullName)\apksigner.bat" verify --print-certs app\build\outputs\apk\release\app-arm64-v8a-release.apk
+& "$($bt.FullName)\zipalign.exe" -c -P 16 -v 4 app\build\outputs\apk\release\app-x86_64-release.apk
+```
+
+`release.yml` gates all of this per APK on the tag: package name,
+`tag == versionName`, exactly one ABI, `zipalign -c -P 16`, a stripped
+`libroboco_mobile.so` (no `.debug_*` sections, 16 KB `LOAD` alignment), the
+signer SHA-256 pin, and the size budget (25 MiB arm64 / 30 MiB x86_64).
+
+## Release signing
+
+One-time, offline, by the maintainer — the key that signs every public APK:
+
+```bash
+keytool -genkeypair -v -keystore roboco-release.jks -storetype PKCS12 \
+  -alias roboco -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=Roboco, O=hoangvu12"
+keytool -list -v -keystore roboco-release.jks -alias roboco   # note the SHA-256 fingerprint
+base64 -w0 roboco-release.jks > roboco-release.jks.b64
+# PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes("roboco-release.jks"))
+```
+
+| GitHub setting | Kind | Value |
+|---|---|---|
+| `ANDROID_KEYSTORE_BASE64` | secret | the base64 keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | secret | store password |
+| `ANDROID_KEY_ALIAS` | secret | `roboco` |
+| `ANDROID_KEY_PASSWORD` | secret | key password (with PKCS12, equal to the store password) |
+| `ANDROID_CERT_SHA256` | **variable** (public) | the signer certificate SHA-256, colon-free lowercase hex, as printed by `apksigner verify --print-certs` |
+
+- Keep the keystore and passwords in a password manager **and** an offline
+  backup. **Losing the key means no update can ever install over existing
+  installs.** Users would have to uninstall — which deletes their
+  paired-engine credentials — and re-pair every engine.
+- Never commit the keystore. The root `.gitignore` already ignores `/ignore/`
+  for local credentials; keep it there or outside the repo.
+- Publish the certificate SHA-256 in the README's Android install section
+  (keep it in sync if the key is ever rotated). `release.yml` pins the digest
+  via `ANDROID_CERT_SHA256` and fails the release on a key swap.
+- A tag push without the secrets fails before publishing; a
+  `workflow_dispatch` run builds unsigned APKs instead.
+
+## Install a release
+
+1. On the phone, open `https://github.com/hoangvu12/roboco/releases/latest`
+   and download `roboco-<version>-android-arm64-v8a.apk`. The `x86_64` APK
+   is only for emulators and x86 Chromebooks or tablets.
+2. Optional checks: the file's SHA-256 equals
+   `files["roboco-<version>-android-arm64-v8a.apk"].sha256` in that
+   release's `manifest.json`, and `apksigner verify --print-certs <apk>`
+   shows the published signer certificate SHA-256 (README, "Install →
+   Android").
+3. Allow your browser or file manager to install apps (Settings → Apps →
+   Special app access → Install unknown apps), open the APK and install.
+   Play Protect may warn about an app from an unknown developer.
+4. Updating: install the newer APK over the old one. Same key, so data and
+   pairings are kept. Never install a locally built debug APK over a release
+   (different key: Android refuses). Uninstalling removes your paired
+   engines.
+5. Update tracking without a store: [Obtainium](https://github.com/ImranR98/Obtainium)
+   can follow `https://github.com/hoangvu12/roboco` with the APK filter
+   `android-arm64-v8a\.apk$`. Releases also carry desktop assets.
 
 ## The emulator
 
@@ -76,10 +184,12 @@ real engine see below.
 ```powershell
 adb devices
 adb pair <ip:port>                    # wireless pairing, first time
-adb install -r apps\android\app\build\outputs\apk\debug\app-debug.apk
+adb install -r apps\android\app\build\outputs\apk\debug\app-arm64-v8a-debug.apk
 ```
 
 USB debugging or wireless ADB both work; the app is a plain sideload.
+(`./gradlew :app:installDebug` picks the APK matching the device's ABI
+itself.)
 
 ## Testing against a local engine
 
