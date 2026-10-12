@@ -37,6 +37,7 @@ import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
+import sh.roboco.android.transcript.TextRunsSpecimen
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -140,6 +141,9 @@ object Gallery {
         GallerySection("Search tab morph", GalleryLayout.Scroll, screenshotHeightDp = 1240) {
             SearchTabMorphGallerySection()
         },
+        // Ticket 63 (text runs): every run-painting case through the real
+        // RowModel path — Rust positions, decorations, mono double-width.
+        GallerySection("Transcript · Text runs") { TextRunsSpecimen(dark = RobocoTheme.isDark) },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
