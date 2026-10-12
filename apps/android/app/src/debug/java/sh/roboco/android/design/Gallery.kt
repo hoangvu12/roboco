@@ -109,12 +109,13 @@ object Gallery {
         GallerySection("Tab bar minimize", GalleryLayout.Scroll, screenshotHeightDp = 1120) {
             TabBarMinimizeGallerySection()
         },
+        // Ticket 16 (context menu): long-press lift, dimmed backdrop, menu at the row.
+        GallerySection("Context menu", GalleryLayout.Fill, screenshotHeightDp = 891) { ContextMenuGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
-        // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
         // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
         // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
@@ -151,7 +152,10 @@ fun GalleryProviders(appearance: Appearance, capture: Boolean = false, content: 
         ProvideReduceMotion {
             val inner: @Composable () -> Unit = {
                 CompositionLocalProvider(LocalGalleryCapture provides capture) {
-                    AlertHost { ToastHost { content() } }
+                    // Ticket 16: the context-menu host sits outermost (its
+                    // overlay dims and blurs everything below it, top bar
+                    // and the alert/toast hosts included).
+                    ContextMenuHost { AlertHost { ToastHost { content() } } }
                 }
             }
             if (capture) {
