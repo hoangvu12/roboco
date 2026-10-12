@@ -133,6 +133,23 @@ class RowModel(val display: RowDisplay) {
         fonts.useDensity(density)
         if (layer !in 0 until layers) return
 
+        /**
+         * Runs run [i] with its guards: skipped when the run's UTF-16 range
+         * exceeds [RowDisplay.text] (iOS `RowModel.swift:28`) or when
+         * [fonts] holds no style for it (logged inside [StyleFonts.get]).
+         * Local to [draw] — the only [StyleFonts] reference this class
+         * makes outside its parameter — and called directly for plain runs
+         * and through [FadePainter]'s lambda for faded runs. Both are on
+         * the drawing thread.
+         */
+        fun drawRun(i: Int) {
+            val run = display.runs[i]
+            val start = run.start.toInt()
+            if (start + run.len.toInt() > display.text.length) return
+            val font = fonts[run.style] ?: return
+            TextRunPainter.draw(canvas, display.text, run, font, palette.color(run.color), density)
+        }
+
         // 1. Boxes (never in a Range pass: Range is text-only).
         if (pass !is Pass.Range) {
             for (i in boxesByLayer[layer]) {
@@ -147,7 +164,7 @@ class RowModel(val display: RowDisplay) {
             for (i in runsByLayer[layer]) {
                 if (faded[i]) continue // faded runs paint only through their fade
                 if (range == null) {
-                    drawRun(i, canvas, density, palette, fonts)
+                    drawRun(i)
                     continue
                 }
                 val run = display.runs[i]
@@ -169,10 +186,10 @@ class RowModel(val display: RowDisplay) {
                         else CLIP_EXTENT
                     val save = canvas.save()
                     canvas.clipRect(left, -CLIP_EXTENT, right, CLIP_EXTENT)
-                    drawRun(i, canvas, density, palette, fonts)
+                    drawRun(i)
                     canvas.restoreToCount(save)
                 } else {
-                    drawRun(i, canvas, density, palette, fonts)
+                    drawRun(i)
                 }
             }
         }
@@ -183,26 +200,10 @@ class RowModel(val display: RowDisplay) {
                 if (g.runs.isEmpty()) continue // a fade that claimed nothing draws nothing
                 val fade = display.fades[g.fade]
                 FadePainter.draw(canvas, fade, density) {
-                    for (i in g.runs) drawRun(i, canvas, density, palette, fonts)
+                    for (i in g.runs) drawRun(i)
                 }
             }
         }
-    }
-
-    /**
-     * Draws run [i] with its guards: skipped when the run's UTF-16 range
-     * exceeds [RowDisplay.text] (iOS `RowModel.swift:28`) or when [fonts]
-     * holds no style for it (logged inside [StyleFonts.get]). Called by
-     * [draw] for plain runs and through [FadePainter]'s lambda for faded
-     * runs — the only [StyleFonts] references this class makes, both on
-     * the drawing thread.
-     */
-    private fun drawRun(i: Int, canvas: Canvas, density: Float, palette: IntArray, fonts: StyleFonts) {
-        val run = display.runs[i]
-        val start = run.start.toInt()
-        if (start + run.len.toInt() > display.text.length) return
-        val font = fonts[run.style] ?: return
-        TextRunPainter.draw(canvas, display.text, run, font, palette.color(run.color), density)
     }
 
     /** Two counting passes into per-layer [IntArray]s, ascending index order. */
