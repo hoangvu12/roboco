@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
+import sh.roboco.android.composer.MentionStyleDemo
+import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
@@ -119,6 +121,13 @@ object Gallery {
         GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() },
         // Ticket 25: Fill, the scaffold owns the LazyColumn.
         GallerySection("Large title scaffold", layout = GalleryLayout.Fill) { LargeTitleGallerySection() },
+        // Ticket 53 (mentions): the composer's live @token accent styling
+        // (typing @ in the section shows the live activeQuery readout).
+        // Under capture the encode readout is off — it calls the native
+        // core (ticket 60's LocalGalleryCapture rule).
+        GallerySection("Mentions", screenshotHeightDp = 420) {
+            if (LocalGalleryCapture.current) MentionStyleDemo() else MentionsGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
