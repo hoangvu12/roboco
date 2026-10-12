@@ -17,3 +17,18 @@ already live in `crates/ui/assets/{icons,file-icons}/` and the generator
 reads them there. Dark-variant provenance and the vscode-symbols license
 live in `crates/ui/assets/file-icons/LICENSE.symbols`, copied into the APK
 at `assets/licenses/vscode-symbols-LICENSE.txt`.
+
+## Solar Icons
+
+`tray`, `tray-arrow-up`, `tray-arrow-up-fill`, `archivebox-fill`,
+`folder-fill`, `folder-badge-plus`, `folder-badge-gear`, `clipboard`,
+`check-circle`, `check-circle-fill`, `check-square-fill`,
+`arrow-up-circle-fill`, `xmark-circle-fill`, `stop-circle`,
+`exclamation-circle`, `speedometer`, `gallery`, `gallery-stack`, `camera`,
+`link`, `layers`, `share`, `line-3-horizontal` are [Solar
+Icons](https://www.figma.com/community/file/1166834396438034778) by 480
+Design (CC BY 4.0,
+https://creativecommons.org/licenses/by/4.0/), unmodified except for
+removing `width`/`height`. `pin-fill`, `pin-slash`, `square`, `circle-half`,
+`text-cursor`, `arrow-turn-down-right`, `arrow-turn-left-up` are drawn for
+Roboco in the Solar Linear style (24 grid, stroke 1.5, round caps).
