@@ -88,6 +88,10 @@ object Gallery {
         GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() },
         GallerySection("Alert", GalleryLayout.Scroll, screenshotHeightDp = 640) { AlertGallerySection() },
         GallerySection("Status glyph") { StatusGlyphGallerySection() },
+        // Ticket 60: fixed values under capture keep the golden host-independent.
+        GallerySection("Text engine", GalleryLayout.Fill) {
+            if (LocalGalleryCapture.current) TextEngineSpecimen(cjkSource = "fixture", measurerCalls = 0) else TextEngineSpecimen()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
