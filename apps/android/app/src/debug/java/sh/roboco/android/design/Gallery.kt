@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
 
@@ -97,7 +98,8 @@ object Gallery {
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
         // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
-        // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
+        // Ticket 09 (ui-parity): the scroll-edge effect, Fill because it owns the LazyColumn.
+        GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() },
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
