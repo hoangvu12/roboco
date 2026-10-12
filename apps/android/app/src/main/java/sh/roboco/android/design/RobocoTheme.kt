@@ -13,6 +13,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.node.DelegatableNode
+import sh.roboco.android.design.glass.ProvideGlass
 
 /**
  * The appearance setting as the iOS app stores it
@@ -71,7 +72,9 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         LocalIndication provides NoIndication,
         // Ticket 04: LocalReduceMotion follows the system "remove animations"
         // setting inside the theme (ticket 35's app root relies on this).
-        content = { ProvideReduceMotion(content) },
+        // Ticket 07: ProvideGlass resolves the blur tier inside the theme
+        // too, next to ProvideReduceMotion, so GlassSurface needs no wiring.
+        content = { ProvideReduceMotion { ProvideGlass(content) } },
     )
 }
 

@@ -18,6 +18,9 @@ junit = "4.13.2"
 graphicsShapes = "1.1.0"
 robolectric = "4.17"
 roborazzi = "1.76.0"
+# Liquid-glass backdrop blur (ui-parity#07): android-app#14's recipe.
+# The blur module only — haze-blur-materials is not the iOS look.
+haze = "2.0.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -33,6 +36,7 @@ compose-foundation = { group = "androidx.compose.foundation", name = "foundation
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphicsShapes" }
+haze-blur = { module = "dev.chrisbanes.haze:haze-blur", version.ref = "haze" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
