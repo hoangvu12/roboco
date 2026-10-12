@@ -26,6 +26,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -120,6 +121,8 @@ class ActionSheetHostTest {
     }
 
     private fun px(dp: Float): Float = with(compose.density) { dp.dp.toPx() }
+
+    private fun px(dp: Int): Float = px(dp.toFloat())
 
     private fun node(tag: String) = compose.onNodeWithTag(tag, useUnmergedTree = true)
 

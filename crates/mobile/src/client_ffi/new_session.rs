@@ -247,8 +247,8 @@ mod tests {
         // The host-path helpers, through the FFI names.
         assert_eq!(host_path_parent("C:\\Users".into()), Some("C:\\".into()));
         assert_eq!(host_path_parent("/".into()), None);
-        assert_eq!(host_path_join("/home".into(), "vu".into()), "/home/vu".into());
-        assert_eq!(host_path_name("C:\\Users\\me".into()), "me".into());
+        assert_eq!(host_path_join("/home".into(), "vu".into()), String::from("/home/vu"));
+        assert_eq!(host_path_name("C:\\Users\\me".into()), String::from("me"));
         assert!(host_path_is_root("C:".into()));
         assert!(!host_path_is_root("C:\\Users".into()));
         assert!(host_path_is_windows("\\\\srv\\share".into()));

@@ -122,7 +122,7 @@ class ScrollEdgeEffectTest {
         compose.onNodeWithTag("band").captureToImage().toPixelMap()
 
     /** Composes the 120 × 60 dp red source with a scrim-only effect on top. */
-    private fun redSource(engaged: () -> Boolean, appearance: Appearance = Appearance.Light) {
+    private fun redSource(appearance: Appearance = Appearance.Light, engaged: () -> Boolean) {
         compose.setContent {
             RobocoTheme(appearance) {
                 Box(Modifier.testTag("band").size(120.dp, 60.dp).background(red)) {
@@ -203,7 +203,7 @@ class ScrollEdgeEffectTest {
 
     @Test
     fun scrimFadesRedIntoTheDarkBackground() {
-        redSource({ true }, Appearance.Dark)
+        redSource(Appearance.Dark) { true }
         val px = bandPixels()
         assertBlend(px, 60, 0, ScrollEdgeEffectDefaults.TopScrimAlpha, darkBackground, "dark top row")
         assertBlend(px, 60, 30, ScrollEdgeEffectDefaults.TopScrimAlpha / 2f, darkBackground, "dark middle row")
@@ -252,8 +252,8 @@ class ScrollEdgeEffectTest {
         // y = 10 dp and y = height − 2 dp, at the horizontal centre: the band
         // is no hit target, so both taps land on the row's clickable.
         compose.onNodeWithTag("row").apply {
-            performTouchInput { click(Offset(size.width / 2f, 10.dp.toPx())) }
-            performTouchInput { click(Offset(size.width / 2f, 58.dp.toPx())) }
+            performTouchInput { click(Offset(centerX, 10.dp.toPx())) }
+            performTouchInput { click(Offset(centerX, 58.dp.toPx())) }
         }
         compose.runOnIdle { assertEquals("the band swallowed a tap", 2, taps) }
     }

@@ -89,7 +89,7 @@ class ActionSheetScreenshotTest {
         title = "Delete “Backend”?",
         message = "Its sessions move back to the main list.",
         actions = listOf(
-            ActionSheetAction("Delete Section", style = ActionSheetStyle.Destructive),
+            ActionSheetAction("Delete Section", style = ActionSheetStyle.Destructive) {},
         ),
     )
 
@@ -102,12 +102,12 @@ class ActionSheetScreenshotTest {
             "Design review",
             "A very long section name that will not fit on one line",
             "No Section",
-        ).map { name -> ActionSheetAction(name) },
+        ).map { name -> ActionSheetAction(name) {} },
     )
 
     // 20 rows, no header: the height cap + scroll fixture.
     private val manyRowsSheet = ActionSheetModel(
-        actions = (1..20).map { i -> ActionSheetAction("Section $i") },
+        actions = (1..20).map { i -> ActionSheetAction("Section $i") {} },
     )
 
     @Test

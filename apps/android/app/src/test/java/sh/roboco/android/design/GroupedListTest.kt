@@ -5,7 +5,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyItemScope
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -28,7 +30,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.test.unclippedBoundsInRoot
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
@@ -225,7 +227,7 @@ class GroupedListTest {
     @Test
     fun groupedSectionEmitsTheHeaderForAnEmptyListAndNoHeaderForNull() {
         val empty = RecordingLazyListScope()
-        empty.groupedSection(key = "e", header = "E", items = emptyList(), itemKey = { it }, itemContent = { _, _ -> })
+        empty.groupedSection(key = "e", header = "E", items = emptyList<String>(), itemKey = { it }, itemContent = { _, _ -> })
         assertEquals(listOf("grouped:e:header|grouped-header"), empty.calls)
 
         val noHeader = RecordingLazyListScope()
@@ -378,7 +380,7 @@ class GroupedListTest {
         }
         // 30 + 20.8 = 50.8 → 52 by the minimum; + 16.9; + 2 × 16.9.
         for ((tag, height) in listOf("t0" to 52.dp, "t1" to 68.dp, "t2" to 84.dp)) {
-            assertDp(heightOf(compose.onNodeWithTag(tag).unclippedBoundsInRoot), height, "row height $tag")
+            assertDp(heightOf(compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()), height, "row height $tag")
         }
     }
 
@@ -408,7 +410,7 @@ class GroupedListTest {
                 GroupedRow("Remove Wallpaper", GroupedPosition.Single, testTag = "r4", onClick = null)
             }
         }
-        val row = compose.onNodeWithTag("r0").unclippedBoundsInRoot
+        val row = compose.onNodeWithTag("r0").getUnclippedBoundsInRoot()
         assertDp(row.left, 16.dp, "card left")
         assertDp(row.right, 386.dp, "card right")
         assertDp(widthOf(row), 370.dp, "card width")
@@ -416,12 +418,12 @@ class GroupedListTest {
         assertDp(row.top, 57.8.dp, "first row top = the header block (27 + 20.8 + 10)")
 
         // The title starts 56 dp inside the card (72 from the screen).
-        val title = compose.onNodeWithText("System", useUnmergedTree = true).unclippedBoundsInRoot
+        val title = compose.onNodeWithText("System", useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertDp(title.left, 72.dp, "title left")
 
         // The header: text 32 from the screen, its line box 20.8, the block
         // 57.8 (= the first row's top).
-        val header = compose.onNodeWithText("Appearance", useUnmergedTree = true).unclippedBoundsInRoot
+        val header = compose.onNodeWithText("Appearance", useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertDp(header.left, 32.dp, "header text left")
         assertDp(header.top, 27.dp, "header text top")
         assertDp(heightOf(header), 20.8.dp, "header line box")
@@ -429,13 +431,13 @@ class GroupedListTest {
         // The value accessory's box ends 16 dp before the card edge (the
         // long string is capped at 50 % = 185 dp, so the node reports the
         // full box, not the ink).
-        val value = compose.onNodeWithText(longValue, useUnmergedTree = true).unclippedBoundsInRoot
+        val value = compose.onNodeWithText(longValue, useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertDp(value.right, 370.dp, "value text right")
         assertDp(widthOf(value), 185.dp, "value text max width")
 
         // The blank header keeps the block's height (no text, no semantics).
-        val r3 = compose.onNodeWithTag("r3").unclippedBoundsInRoot
-        val r4 = compose.onNodeWithTag("r4").unclippedBoundsInRoot
+        val r3 = compose.onNodeWithTag("r3").getUnclippedBoundsInRoot()
+        val r4 = compose.onNodeWithTag("r4").getUnclippedBoundsInRoot()
         assertDp(r4.top - r3.bottom, 57.8.dp, "blank header block height")
     }
 
@@ -556,9 +558,9 @@ class GroupedListTest {
         }
         // Same content, same layout: an off checkmark reserves no space at
         // all — its row measures exactly like a row with no accessories.
-        val off = compose.onNodeWithTag("off").unclippedBoundsInRoot
-        val none = compose.onNodeWithTag("none").unclippedBoundsInRoot
-        assertEquals("Check(false) must not reserve space", heightOf(none).value, heightOf(off).value, 0.05)
+        val off = compose.onNodeWithTag("off").getUnclippedBoundsInRoot()
+        val none = compose.onNodeWithTag("none").getUnclippedBoundsInRoot()
+        assertEquals("Check(false) must not reserve space", heightOf(none).value, heightOf(off).value, 0.05f)
         // And nothing is drawn: no accent ink anywhere in the off row.
         val px = rowImage("off")
         var accent = 0
@@ -791,7 +793,7 @@ class GroupedListTest {
         // The override row's title node is shorter than the 20.8 dp line box
         // of the default 16 dp style (13 dp → 16.9 dp), proving the style
         // was replaced, not merged.
-        val title = compose.onNodeWithText("..", useUnmergedTree = true).unclippedBoundsInRoot
+        val title = compose.onNodeWithText("..", useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertDp(heightOf(title), 16.9.dp, "overridden title line box")
     }
 }

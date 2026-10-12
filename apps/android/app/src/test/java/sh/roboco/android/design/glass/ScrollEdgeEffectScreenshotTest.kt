@@ -11,7 +11,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.RobocoTheme
-import sh.roboco.android.design.gallery.ScrollEdgeEffectEngagedMode
+import sh.roboco.android.design.gallery.ScrollEdgeEngagedMode
 import sh.roboco.android.design.gallery.ScrollEdgeEffectFixture
 
 /**
@@ -45,7 +45,7 @@ class ScrollEdgeEffectScreenshotTest {
         compose.setContent {
             RobocoTheme(appearance) {
                 ScrollEdgeEffectFixture(
-                    mode = ScrollEdgeEffectEngagedMode.Always,
+                    mode = ScrollEdgeEngagedMode.Always,
                     blur = blur,
                 )
             }

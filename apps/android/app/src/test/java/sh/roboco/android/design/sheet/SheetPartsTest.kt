@@ -39,7 +39,7 @@ class SheetPartsTest {
 
     private fun region(outline: Outline): Region {
         val path = (outline as Outline.Generic).path.asAndroidPath()
-        return Region().apply { set(path) }
+        return Region().apply { setPath(path, Region(-10_000, -10_000, 10_000, 10_000)) }
     }
 
     @Test

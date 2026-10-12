@@ -90,7 +90,7 @@ class GlassVisibilityTest {
      * Advances single frames until [still] stops holding — the animation's
      * first tick — leaving the clock at 16 ms of playtime.
      */
-    private fun advanceToFirstTick(still: (Float) -> Boolean, maxFrames: Int = 12) {
+    private fun advanceToFirstTick(maxFrames: Int = 12, still: (Float) -> Boolean) {
         var frames = 0
         while (still(progress()) && frames < maxFrames) {
             compose.mainClock.advanceTimeByFrame()
