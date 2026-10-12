@@ -1,0 +1,35 @@
+[package]
+name = "roboco-mobile-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The data plane of the Roboco Android app (spec D1 "Option A"): pairing,
+# supervised multi-engine connections (feed / calls / transcript / spare),
+# lenient decoding of newer engines' payloads, the phone-clock re-stamper and
+# the offline cache. Pure Rust + tokio, UniFFI-free, so `cargo test` runs on
+# any host. `roboco-mobile` (the UniFFI library Kotlin links) wraps it in
+# `client_ffi`.
+#
+# `roboco-engine` must never appear here as a normal dependency: tests drive
+# real in-process engines (spec "Testing Decisions" — no protocol mocks).
+
+[dependencies]
+roboco-proto.workspace = true
+roboco-doc.workspace = true
+roboco-rpc.workspace = true
+roboco-engine-client.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+roboco-engine.workspace = true
+tempfile.workspace = true

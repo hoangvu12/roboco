@@ -8,11 +8,11 @@ use std::{
 };
 
 use roboco_doc::SessionMessageEntry;
-use roboco_proto::{Chat, Device, Session, Space};
+use roboco_proto::{Chat, Device, Session, SidebarStateSnapshot, Space};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CachedRows {
     pub chats: Vec<Chat>,
     pub spaces: Vec<Space>,
@@ -34,6 +34,22 @@ impl EngineCache {
 
     fn engine_dir(&self, engine_key: &str) -> PathBuf {
         self.root.join(digest(engine_key))
+    }
+
+    /// The on-disk directory of one engine's cache (layout owner's own
+    /// path; the mobile client's startup prune walks it).
+    pub fn engine_directory(&self, engine_key: &str) -> PathBuf {
+        self.engine_dir(engine_key)
+    }
+
+    /// The last `WatchSidebarState` snapshot (the mobile client caches it so
+    /// the list paints immediately on restart).
+    pub fn load_sidebar(&self, engine_key: &str) -> Option<SidebarStateSnapshot> {
+        read(&self.engine_dir(engine_key).join("sidebar.json"))
+    }
+
+    pub fn save_sidebar(&self, engine_key: &str, sidebar: &SidebarStateSnapshot) -> io::Result<()> {
+        write(&self.engine_dir(engine_key).join("sidebar.json"), sidebar)
     }
 
     pub fn load_rows(&self, engine_key: &str) -> Option<CachedRows> {

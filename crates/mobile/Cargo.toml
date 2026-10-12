@@ -20,6 +20,11 @@ roboco-text.workspace = true
 roboco-doc.workspace = true
 roboco-proto.workspace = true
 roboco-syntax.workspace = true
+roboco-mobile-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

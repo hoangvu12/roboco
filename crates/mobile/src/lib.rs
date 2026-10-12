@@ -5,11 +5,15 @@
 //! - [`wallpaper`]: chat wallpaper effects and the contrast guard.
 //! - [`attachments`]: pure attachment-transport helpers (the layout's user
 //!   message parsing; the mobile client reuses them).
+//! - [`client_ffi`]: the engine-connection data plane (`CoreClient`,
+//!   pairing, per-engine supervision, the offline cache) over
+//!   `roboco-mobile-client`.
 
 uniffi::setup_scaffolding!("roboco_core");
 
-pub mod layout;
 pub mod attachments;
+pub mod client_ffi;
+pub mod layout;
 pub mod wallpaper;
 
 /// Version handshake: the Kotlin bindings must match the linked library.

@@ -1,0 +1,31 @@
+# Kotlin-only renames: Kotlin exceptions already own `message`, and
+# AutoCloseable already owns `close()`.
+#
+# Rule for future FFI work: any exported object method named `close`, and
+# any error-variant field named `message`, needs a rename here, or the
+# generated Kotlin does not compile. Kotlin callers then call
+# `view.shutdown()` (stop the worker) and `view.close()` (free the Rust
+# object), as upstream #609 does.
+[bindings.kotlin]
+android = true
+# no package_name: the default `uniffi.roboco_core` matches #609's
+# `uniffi.zeron_core` imports after the rename.
+
+[bindings.kotlin.rename]
+"TranscriptView.close" = "shutdown"
+# One line per variant with a `message` field, for every `uniffi::Error`
+# enum this crate exports (ticket 06's PairError + CoreError).
+"PairError.InvalidUrl.message" = "reason"
+"PairError.Unreachable.message" = "reason"
+"PairError.Failed.message" = "reason"
+"PairError.Storage.message" = "reason"
+"CoreError.NotFound.message" = "reason"
+"CoreError.InvalidArgument.message" = "reason"
+"CoreError.HostUnavailable.message" = "reason"
+"CoreError.Unsupported.message" = "reason"
+"CoreError.HostError.message" = "reason"
+"CoreError.Network.message" = "reason"
+"CoreError.Auth.message" = "reason"
+"CoreError.Storage.message" = "reason"
+"CoreError.NotImplemented.message" = "reason"
+"CoreError.Internal.message" = "reason"

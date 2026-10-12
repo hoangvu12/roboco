@@ -386,7 +386,7 @@ impl EngineTarget {
 /// must fail fast. Mirrors the tiered forward deadlines the engine-side
 /// relay forwarder uses upstream — Roboco is engine-local, so this client
 /// deadline is the only one that can cut remote discovery off.
-fn call_deadline(method: &str) -> Duration {
+pub fn call_deadline(method: &str) -> Duration {
     if method.contains("Clone") || method.contains("Fetch") {
         return Duration::from_secs(900);
     }
