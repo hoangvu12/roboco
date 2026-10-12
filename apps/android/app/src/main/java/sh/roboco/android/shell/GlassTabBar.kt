@@ -2,8 +2,6 @@ package sh.roboco.android.shell
 
 import android.content.res.Configuration
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.AnimationSpec
-import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -53,8 +51,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.CapsuleShape
 import sh.roboco.android.design.GlassStage
@@ -185,13 +181,13 @@ fun GlassTabBar(
  *
  * The content morph (#28's step 8) is a two-layer custom [Layout]:
  *
- *  - the **expanded layer** — 26's platter + items — is measured once at
- *    the expanded pill size ([expandedWidth] × 62 dp) so its internal
- *    layout never reflows, shifted vertically by `(h − 62) / 2` so it stays
- *    centred, and faded with `alpha = 1 − p̂` (draw-phase). The glass
- *    capsule's clip hides whatever sticks out. While [minimized] is true
- *    the layer is `clearAndSetSemantics` so the faded items are not
- *    focusable;
+ *  - the **expanded layer** — 26's platter + items, via
+ *    [TabPillCellsAndPlatter] — is measured once at the expanded pill
+ *    size ([expandedWidth] × 62 dp) so its internal layout never reflows,
+ *    shifted vertically by `(h − 62) / 2` so it stays centred, and faded
+ *    with `alpha = 1 − p̂` (draw-phase). The glass capsule's clip hides
+ *    whatever sticks out. While [minimized] is true the layer is
+ *    `clearAndSetSemantics` so the faded items are not focusable;
  *  - the **selected-icon layer** — the selected tab's 24 dp glyph in
  *    `palette.text` — sits at its expanded cell centre at p = 0 and
  *    travels horizontally to the circle's centre `(24, 24)` at p = 1,
@@ -205,6 +201,11 @@ fun GlassTabBar(
  * underneath would otherwise still receive. Otherwise 26's per-item
  * clicks and semantics apply unchanged, and the whole-pill press swell
  * (07) works in both states through the shared [pillInteractionSource].
+ *
+ * While Search is selected the slot is **not composed** at all — ticket
+ * 29's [SearchReturnCircle] owns the pill slot through the morph, which
+ * is why this pill no longer carries 26's interim "Search selected"
+ * platter fade (29 deleted it; the look belongs to the morph now).
  *
  * @param selected the tab to show as selected (drives the platter).
  * @param onTabTap called on a tap of either pill cell.
@@ -235,36 +236,30 @@ fun GlassTabPill(
     val palette = RobocoTheme.palette
     val reduce = LocalReduceMotion.current
 
-    // The pill's own selection: while Search is selected (29 owns that
-    // layout) the pill keeps its last pill selection, like the platter —
-    // and minimize is disabled on Search, so the morph never runs there.
+    // The pill's own selection: while Search is selected the pill slot is
+    // ticket 29's [SearchReturnCircle], so this is never composed with
+    // `selected == Search` in the shell — the wrapper/gallery may still
+    // pass it, in which case the pill keeps its last pill selection (the
+    // platter stays where the pill last had it).
     val pillSelection = if (selected == TabId.Settings) TabId.Settings else TabId.Sessions
     val selectedIndex = if (pillSelection == TabId.Settings) 1 else 0
 
     // ------------------------------------------------ platter motion (26)
-    // The platter index 0 ↔ 1 (float so it slides), and the pill-platter
-    // alpha (the interim Search look). In Search the index is left where
-    // the pill last had it — it fades instead.
+    // The platter index 0 ↔ 1 (float so it slides), interruptible from
+    // the current value. (The interim "Search selected" platter fade was
+    // deleted by ticket 29: the search morph owns that look now.)
     val platterIndex = remember { Animatable(if (selected == TabId.Settings) 1f else 0f) }
-    val platterAlpha = remember { Animatable(if (selected != TabId.Search) 1f else 0f) }
     LaunchedEffect(selected, reduce) {
         if (reduce) {
             if (selected != TabId.Search) {
                 platterIndex.snapTo(if (selected == TabId.Settings) 1f else 0f)
             }
-            platterAlpha.snapTo(if (selected != TabId.Search) 1f else 0f)
         } else {
-            coroutineScope {
-                if (selected != TabId.Search) {
-                    // Interruptible: always animate from the current value.
-                    launch {
-                        platterIndex.animateTo(
-                            if (selected == TabId.Settings) 1f else 0f,
-                            Motion.ActionButton.spec(),
-                        )
-                    }
-                }
-                launch { platterAlpha.glassFadeTo(selected != TabId.Search) }
+            if (selected != TabId.Search) {
+                platterIndex.animateTo(
+                    if (selected == TabId.Settings) 1f else 0f,
+                    Motion.ActionButton.spec(),
+                )
             }
         }
     }
@@ -288,47 +283,22 @@ fun GlassTabPill(
                         .then(if (minimized) Modifier.clearAndSetSemantics { } else Modifier)
                         .graphicsLayer { alpha = 1f - minimizeProgress().coerceIn(0f, 1f) },
                 ) {
-                    // The selection platter first (under the cells), inset
-                    // 4 dp on all sides. Modifier.offset mirrors in RTL, and
-                    // the state read lives in the placement lambda.
-                    Box(
-                        Modifier
-                            .offset {
-                                IntOffset(
-                                    (GlassTabBarDefaults.PlatterInset + cellWidth * platterIndex.value).roundToPx(),
-                                    GlassTabBarDefaults.PlatterInset.roundToPx(),
-                                )
-                            }
-                            .size(cellWidth, GlassTabBarDefaults.PlatterHeight)
-                            .graphicsLayer { alpha = platterAlpha.value }
-                            .background(palette.controlFill, CapsuleShape)
-                            .testTag("tab-platter"),
+                    // 26's expanded look: the platter under the two cells,
+                    // shared with ticket 29's return circle. The pill hides
+                    // the selected cell's glyph — its icon layer draws it.
+                    TabPillCellsAndPlatter(
+                        platterIndex = { platterIndex.value },
+                        selectedCell = when (selected) {
+                            TabId.Settings -> TabId.Settings
+                            TabId.Search -> null
+                            else -> TabId.Sessions
+                        },
+                        onTabTap = onTabTap,
+                        pillSource = pillInteractionSource,
+                        hideSessionsIcon = pillSelection == TabId.Sessions,
+                        hideSettingsIcon = pillSelection == TabId.Settings,
+                        cellWidth = cellWidth,
                     )
-                    Row(
-                        Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = GlassTabBarDefaults.PlatterInset),
-                    ) {
-                        TabCell(
-                            tab = TabId.Sessions,
-                            icon = RobocoIcons.TabChat,
-                            selected = selected == TabId.Sessions,
-                            onTabTap = onTabTap,
-                            pillSource = pillInteractionSource,
-                            // The icon layer draws this one itself.
-                            hideIcon = pillSelection == TabId.Sessions,
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                        TabCell(
-                            tab = TabId.Settings,
-                            icon = RobocoIcons.TabSettings,
-                            selected = selected == TabId.Settings,
-                            onTabTap = onTabTap,
-                            pillSource = pillInteractionSource,
-                            hideIcon = pillSelection == TabId.Settings,
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                    }
                 }
                 // ---- layer 1: the selected tab's travelling icon ----
                 IconInBox(
@@ -395,9 +365,14 @@ fun GlassTabPill(
  * `Role.Tab`, "Search", the 22 pt magnifier glyph centred in
  * `palette.text`. **Fills its incoming constraints** — 62 dp expanded,
  * 48 dp minimized — so the glass itself reshapes; the glyph keeps its iOS
- * point size in both states. The interim `controlFill` selection circle
- * (shown only while Search is selected, until ticket 29's morph) insets
- * with the surface instead of hard-coding 54 dp.
+ * point size in both states.
+ *
+ * The interim `controlFill` selection circle that 26 drew while Search
+ * was selected was **deleted by ticket 29**: the shell's search slot is
+ * [SearchTabField], whose morph (not an inner platter) is the
+ * Search-selected look. This wrapper stays for [GlassTabBar] (26's
+ * expanded-only wrapper: the gallery frames and the previews) and the
+ * #28 chrome fixtures.
  */
 @Composable
 fun GlassSearchButton(
@@ -406,18 +381,7 @@ fun GlassSearchButton(
     modifier: Modifier = Modifier,
 ) {
     val palette = RobocoTheme.palette
-    val reduce = LocalReduceMotion.current
     val searchSource = remember { MutableInteractionSource() }
-
-    // The interim selection circle until ticket 29's morph.
-    val searchPlatterAlpha = remember { Animatable(if (selected == TabId.Search) 1f else 0f) }
-    LaunchedEffect(selected, reduce) {
-        if (reduce) {
-            searchPlatterAlpha.snapTo(if (selected == TabId.Search) 1f else 0f)
-        } else {
-            searchPlatterAlpha.glassFadeTo(selected == TabId.Search)
-        }
-    }
 
     GlassSurface(
         modifier = modifier
@@ -435,18 +399,80 @@ fun GlassSearchButton(
         interactionSource = searchSource,
         contentAlignment = Alignment.Center,
     ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(GlassTabBarDefaults.PlatterInset)
-                .graphicsLayer { alpha = searchPlatterAlpha.value }
-                .background(palette.controlFill, CircleShape),
-        )
         Icon(
             RobocoIcons.Magnifyingglass,
             tint = palette.text,
             sizePt = GlassTabBarDefaults.SearchIconPt,
         )
+    }
+}
+
+/**
+ * 26's expanded pill look — the grey `controlFill` selection platter under
+ * the two tab cells (internal): the one piece [GlassTabPill] and ticket
+ * 29's [SearchReturnCircle] share, so the morph's fading layer and the
+ * normal pill can never drift apart.
+ *
+ * The platter sits [GlassTabBarDefaults.PlatterInset] from every edge and
+ * slides between the cells with [platterIndex] (0 = Sessions, 1 =
+ * Settings; a snapshot read in the offset's placement lambda, so the
+ * slide animates without re-measuring). [hideSessionsIcon] /
+ * [hideSettingsIcon] leave a cell's 24 dp glyph box empty — 28's
+ * travelling-icon trick — while [selectedCell] drives the cells'
+ * `selectable(selected = …)` state (null while Search is selected).
+ */
+@Composable
+internal fun TabPillCellsAndPlatter(
+    platterIndex: () -> Float,
+    selectedCell: TabId?,
+    onTabTap: (TabId) -> Unit,
+    pillSource: MutableInteractionSource,
+    hideSessionsIcon: Boolean,
+    hideSettingsIcon: Boolean,
+    cellWidth: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val palette = RobocoTheme.palette
+    Box(modifier) {
+        // The selection platter first (under the cells), inset 4 dp on all
+        // sides. Modifier.offset mirrors in RTL, and the state read lives
+        // in the placement lambda.
+        Box(
+            Modifier
+                .offset {
+                    IntOffset(
+                        (GlassTabBarDefaults.PlatterInset + cellWidth * platterIndex()).roundToPx(),
+                        GlassTabBarDefaults.PlatterInset.roundToPx(),
+                    )
+                }
+                .size(cellWidth, GlassTabBarDefaults.PlatterHeight)
+                .background(palette.controlFill, CapsuleShape)
+                .testTag("tab-platter"),
+        )
+        Row(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = GlassTabBarDefaults.PlatterInset),
+        ) {
+            TabCell(
+                tab = TabId.Sessions,
+                icon = RobocoIcons.TabChat,
+                selected = selectedCell == TabId.Sessions,
+                onTabTap = onTabTap,
+                pillSource = pillSource,
+                hideIcon = hideSessionsIcon,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+            )
+            TabCell(
+                tab = TabId.Settings,
+                icon = RobocoIcons.TabSettings,
+                selected = selectedCell == TabId.Settings,
+                onTabTap = onTabTap,
+                pillSource = pillSource,
+                hideIcon = hideSettingsIcon,
+                modifier = Modifier.weight(1f).fillMaxHeight(),
+            )
+        }
     }
 }
 
@@ -509,12 +535,6 @@ private fun TabCell(
             softWrap = false,
         )
     }
-}
-
-/** Appearing with `Motion.glassIn()`, hiding with `Motion.glassOut()`. */
-private suspend fun Animatable<Float, AnimationVector1D>.glassFadeTo(visible: Boolean) {
-    val spec: AnimationSpec<Float> = if (visible) Motion.glassIn() else Motion.glassOut()
-    animateTo(if (visible) 1f else 0f, spec)
 }
 
 /**

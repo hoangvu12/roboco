@@ -26,6 +26,7 @@ import java.util.Locale
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
+import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
@@ -111,6 +112,11 @@ object Gallery {
         },
         // Ticket 16 (context menu): long-press lift, dimmed backdrop, menu at the row.
         GallerySection("Context menu", GalleryLayout.Fill, screenshotHeightDp = 891) { ContextMenuGallerySection() },
+        // Ticket 29 (search tab morph): the bar-to-field morph, the IME
+        // ride and the accessory fade.
+        GallerySection("Search tab morph", GalleryLayout.Scroll, screenshotHeightDp = 1240) {
+            SearchTabMorphGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

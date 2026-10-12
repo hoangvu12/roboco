@@ -51,6 +51,15 @@ class MainTabState internal constructor(
     /** The tab roots' scroll-to-top handlers (the status-bar-tap port). */
     val scrollToTop: TabScrollToTop = TabScrollToTop()
 
+    /**
+     * Ticket 29: invoked from [select] on every real selection change
+     * (taps, `onTabTap`, the router, deep links, `backFromRoot` — the one
+     * place every route goes through) with the old and new tab. The shell
+     * wires `SearchTabState::onTabSelected` here so entering Search
+     * activates the field; null by default (tests wire it by hand).
+     */
+    internal var onSelected: ((old: TabId, new: TabId) -> Unit)? = null
+
     private val stacks = mutableMapOf<TabId, NavStack>()
 
     /**
@@ -68,8 +77,10 @@ class MainTabState internal constructor(
      */
     fun select(tab: TabId) {
         if (tab == selected) return
-        if (selected != TabId.Search) previousTab = selected
+        val old = selected
+        if (old != TabId.Search) previousTab = old
         selected = tab
+        onSelected?.invoke(old, tab)
     }
 
     /**

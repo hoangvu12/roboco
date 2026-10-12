@@ -58,8 +58,20 @@ object TabChromeMetrics {
  * accessory; `chromeTop` is the min of the placed pieces' tops (the value
  * ticket 30 publishes as the toast anchor / list padding bound), which is
  * never `+∞` because the pill is always placed.
+ *
+ * #29 adds the row box ([rowLeft]/[rowWidth] — 26's centred, capped row)
+ * and the IME lift the search chrome applied to the pill and search
+ * rects ([imeLift], dp — 0 whenever the search chrome is off screen).
  */
-data class TabChromeRects(val pill: Rect, val search: Rect, val accessory: Rect?, val chromeTop: Float)
+data class TabChromeRects(
+    val pill: Rect,
+    val search: Rect,
+    val accessory: Rect?,
+    val chromeTop: Float,
+    val rowLeft: Float = 0f,
+    val rowWidth: Float = 0f,
+    val imeLift: Float = 0f,
+)
 
 /**
  * The expanded tab pill's width — the geometry's p = 0 pill rect width:
@@ -141,7 +153,14 @@ fun tabChromeGeometry(
     val search = lerpRect(search0, search1, progress)
     val accessory = if (hasAccessory) lerpRect(accessory0, accessory1, progress) else null
     val chromeTop = minOf(pill.top, search.top, accessory?.top ?: Float.POSITIVE_INFINITY)
-    return TabChromeRects(pill = pill, search = search, accessory = accessory, chromeTop = chromeTop)
+    return TabChromeRects(
+        pill = pill,
+        search = search,
+        accessory = accessory,
+        chromeTop = chromeTop,
+        rowLeft = rowL,
+        rowWidth = rowW,
+    )
 }
 
 /** Component-wise `a + (b − a) · p` on all four edges. */
