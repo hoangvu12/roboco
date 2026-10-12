@@ -28,6 +28,7 @@ use roboco_proto::{
 };
 
 use crate::catalog;
+use crate::new_session::PendingChat;
 
 /// Size of the project color palette [`ProjectRef::color_index`] indexes —
 /// the desktop's monogram palette (`ui/src/shell/project_icon.rs`).
@@ -462,6 +463,11 @@ pub struct DeriveContext<'a> {
     pub change_requests: &'a ChangeRequests,
     /// Pending-send state per scoped chat id (ticket 08; empty before).
     pub send_states: &'a HashMap<String, SendState>,
+    /// Ticket 09's pending chats (keyed by scoped chat id): chats created
+    /// on an engine whose `WatchChats` echo has not landed — the derive
+    /// renders them as synthetic rows so the Sessions list shows a new
+    /// chat at once. An engine row with the same id wins.
+    pub pending_chats: &'a HashMap<String, PendingChat>,
     pub previous: Option<&'a WorkspaceSnapshot>,
 }
 
@@ -724,6 +730,20 @@ pub fn derive(cx: &DeriveContext<'_>) -> WorkspaceSnapshot {
     for engine in cx.engines {
         merge_engine(engine, cx.overlays, &mut merged);
     }
+    // 1b. Ticket 09's pending chats: synthetic rows (scoped ids) for chats
+    //     created on an engine whose WatchChats echo has not landed — the
+    //     engine's own row wins if it arrives first. A pending chat whose
+    //     engine is not in the fleet renders nothing (the store's TTL
+    //     clears it): every merged chat must have a row below.
+    let engine_ids: HashSet<&str> = cx.engines.iter().map(|e| e.engine_id.as_str()).collect();
+    for (scoped, pending) in cx.pending_chats {
+        if engine_ids.contains(pending.engine_id.as_str()) {
+            merged
+                .chats
+                .entry(scoped.clone())
+                .or_insert_with(|| pending.synthetic_chat(scoped));
+        }
+    }
     let spaces: HashMap<&str, &Space> =
         merged.spaces.iter().map(|s| (s.id.as_str(), s)).collect();
     let devices: HashMap<&str, &Device> =
@@ -767,6 +787,15 @@ pub fn derive(cx: &DeriveContext<'_>) -> WorkspaceSnapshot {
 
     // 3. Rows, one context per engine.
     let mut rows: HashMap<String, Arc<SessionRow>> = HashMap::new();
+    // Pending chats grouped by their engine — they render through their
+    // engine's own row context (device names, engine online state).
+    let mut pending_by_engine: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (scoped, pending) in cx.pending_chats {
+        pending_by_engine
+            .entry(pending.engine_id.as_str())
+            .or_default()
+            .push(scoped.as_str());
+    }
     for engine in cx.engines {
         let key = EngineKey(engine.engine_id.clone());
         let rc = RowContext {
@@ -784,6 +813,18 @@ pub fn derive(cx: &DeriveContext<'_>) -> WorkspaceSnapshot {
             if let Some(chat) = merged.chats.get(&scoped) {
                 let row = build_row(chat, &rc, cx);
                 rows.insert(scoped, row);
+            }
+        }
+        // Ticket 09: the pending chats of this engine (skipped when the
+        // engine's own row already won in the merge above).
+        if let Some(pending) = pending_by_engine.remove(engine.engine_id.as_str()) {
+            for scoped in pending {
+                if !rows.contains_key(scoped)
+                    && let Some(chat) = merged.chats.get(scoped)
+                {
+                    let row = build_row(chat, &rc, cx);
+                    rows.insert(scoped.to_owned(), row);
+                }
             }
         }
     }
@@ -1264,6 +1305,7 @@ mod tests {
             overlays: &Overlays::default(),
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
+            pending_chats: &HashMap::new(),
             previous: None,
         })
     }
@@ -1545,6 +1587,7 @@ mod tests {
             overlays: &Overlays::default(),
             change_requests: &HashMap::new(),
             send_states: &send_states,
+            pending_chats: &HashMap::new(),
             previous: None,
         });
         snapshot
@@ -1916,6 +1959,104 @@ mod tests {
             Vec::new(),
         )]);
         assert!(snapshot.search("hidden", 60).is_empty());
+    }
+
+    // ── ticket 09: the pending-chat overlay ──────────────────────────
+
+    fn pending_chat(engine_id: &str, raw: &str, space: Option<&str>) -> PendingChat {
+        PendingChat {
+            engine_id: engine_id.into(),
+            chat_id: row_id(engine_id, raw),
+            raw_chat_id: raw.into(),
+            space_id: space.map(|id| row_id(engine_id, id)),
+            device_id: row_id(engine_id, "dev-1"),
+            cwd: "/repo".into(),
+            config: None,
+            branch: Some("main".into()),
+            created_at: at(NOW_SECS - 5),
+        }
+    }
+
+    /// A pending chat renders a row with no engine row behind it: in the
+    /// `sessions` map, in `recent` (most recent), titled "New session",
+    /// not archived, with the created cwd/branch and the engine's online
+    /// state and device name.
+    #[test]
+    fn a_pending_chat_renders_before_the_engine_echo() {
+        let space = space("space-1", "/repo", None, 0);
+        let engines = [engine("e1", Vec::new(), vec![space], Vec::new())];
+        let mut pending = HashMap::new();
+        pending.insert(row_id("e1", "new-chat"), pending_chat("e1", "new-chat", Some("space-1")));
+        let snapshot = derive(&DeriveContext {
+            engines: &engines,
+            now: at(NOW_SECS),
+            overlays: &Overlays::default(),
+            change_requests: &HashMap::new(),
+            send_states: &HashMap::new(),
+            pending_chats: &pending,
+            previous: None,
+        });
+        let row = snapshot
+            .session(&row_id("e1", "new-chat"))
+            .expect("the pending chat renders");
+        assert_eq!(row.title, "New session");
+        assert!(!row.has_title);
+        assert!(!row.archived);
+        assert_eq!(row.cwd.as_deref(), Some("/repo"));
+        assert_eq!(row.branch.as_deref(), Some("main"));
+        assert!(row.device_online && row.engine_online);
+        assert_eq!(row.device_name.as_deref(), Some("Studio"));
+        // It carries the project ref and leads `recent` (created just now).
+        assert_eq!(row.project.as_ref().unwrap().id, row_id("e1", "space-1"));
+        assert_eq!(snapshot.front.recent[0].id, row.id);
+        // The project's session list includes it, so the project is alive.
+        assert_eq!(snapshot.projects[0].sessions.len(), 1);
+    }
+
+    /// The engine's own row wins once it arrives: the pending overlay
+    /// adds no duplicate, and a projectless pending chat groups under its
+    /// host device like any other.
+    #[test]
+    fn the_engine_row_wins_and_projectless_pending_chats_render() {
+        let mut echoed = chat("new-chat");
+        echoed.title = Some("Engine title".into());
+        activity(&mut echoed, 10);
+        let engines = [engine("e1", vec![echoed], Vec::new(), Vec::new())];
+        let mut pending = HashMap::new();
+        pending.insert(row_id("e1", "new-chat"), pending_chat("e1", "new-chat", None));
+        let snapshot = derive(&DeriveContext {
+            engines: &engines,
+            now: at(NOW_SECS),
+            overlays: &Overlays::default(),
+            change_requests: &HashMap::new(),
+            send_states: &HashMap::new(),
+            pending_chats: &pending,
+            previous: None,
+        });
+        // One row, and it is the engine's (titled), not the synthetic one.
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(snapshot.session(&row_id("e1", "new-chat")).unwrap().title, "Engine title");
+        // A projectless pending chat lands in `projectless`.
+        assert_eq!(snapshot.projectless.len(), 1);
+    }
+
+    /// A pending chat whose engine is absent from the fleet renders
+    /// nothing (its 30 s TTL clears it); the derive stays total.
+    #[test]
+    fn a_pending_chat_of_an_absent_engine_renders_nothing() {
+        let mut pending = HashMap::new();
+        pending.insert(row_id("gone", "new-chat"), pending_chat("gone", "new-chat", None));
+        let snapshot = derive(&DeriveContext {
+            engines: &[],
+            now: at(NOW_SECS),
+            overlays: &Overlays::default(),
+            change_requests: &HashMap::new(),
+            send_states: &HashMap::new(),
+            pending_chats: &pending,
+            previous: None,
+        });
+        assert!(snapshot.sessions.is_empty());
+        assert!(snapshot.front.recent.is_empty());
     }
 }
 

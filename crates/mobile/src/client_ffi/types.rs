@@ -1073,3 +1073,175 @@ impl From<mc::FileMatch> for FileMatch {
         }
     }
 }
+
+// ── new session / projects (ticket 09; upstream types.rs 842-1031) ─────────
+
+/// Where a new session runs.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SessionTarget {
+    /// In a project (host = its device, cwd = its folder or `cwd` override).
+    Project { space_id: String },
+    /// No project: the chosen host's home folder.
+    Projectless { device_id: String },
+}
+
+/// The New Session canvas's commit payload. `config` is the picked run
+/// configuration — the caller sets `sandbox: workspaceWrite` (iOS always
+/// does); `branch` is the picked ref (sent only when not creating a
+/// worktree); `cwd` overrides the checkout (an existing worktree's path);
+/// a non-blank `title` is applied right after the create.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct NewSession {
+    pub target: SessionTarget,
+    pub config: Option<ChatConfig>,
+    pub branch: Option<String>,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+}
+
+impl TryFrom<NewSession> for mc::NewSession {
+    type Error = CoreError;
+
+    fn try_from(new: NewSession) -> CoreResult<Self> {
+        Ok(mc::NewSession {
+            target: match new.target {
+                SessionTarget::Project { space_id } => mc::SessionTarget::Project { space_id },
+                SessionTarget::Projectless { device_id } => {
+                    mc::SessionTarget::Projectless { device_id }
+                }
+            },
+            config: new.config.map(|config| config.try_into()).transpose()?,
+            branch: new.branch,
+            cwd: new.cwd,
+            title: new.title,
+        })
+    }
+}
+
+/// One repository's checkouts, as the New Session project menu shows them
+/// (#799, project-first then device): one entry per `group_key` — clones
+/// of one repository, on any device or engine, are one group named for
+/// the representative (oldest) checkout, with its hosts in the subtitle.
+/// Without a project, the host menu is `execution_devices()`.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ProjectGroup {
+    /// `"repo:<repositoryId>"`, else the scoped space id.
+    pub group_key: String,
+    /// The representative checkout's name.
+    pub name: String,
+    pub color_index: u32,
+    /// Any checkout of the repository carries git.
+    pub git_detected: bool,
+    /// Most urgent indicator among the checkouts' sessions (Idle when none).
+    pub indicator: ChatIndicator,
+    /// The checkouts: online first, then device name, then path.
+    pub checkouts: Vec<ProjectView>,
+}
+
+impl From<&mc::ProjectGroup> for ProjectGroup {
+    fn from(group: &mc::ProjectGroup) -> Self {
+        Self {
+            group_key: group.group_key.clone(),
+            name: group.name.clone(),
+            color_index: group.color_index,
+            git_detected: group.git_detected,
+            indicator: group.indicator.into(),
+            checkouts: group.checkouts.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// One row of a folder listing. `is_repo` marks a `.git`-carrying folder.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FolderEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub is_repo: bool,
+}
+
+/// One folder level on an engine device. `path` is the host's own string
+/// (`C:\…` on a Windows engine) — compute joins and parents with the
+/// `host_path_*` helpers and send the result back verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FolderListing {
+    pub path: String,
+    pub entries: Vec<FolderEntry>,
+    /// The listing hit the engine's entry cap.
+    pub truncated: bool,
+}
+
+impl From<roboco_proto::FolderListing> for FolderListing {
+    fn from(listing: roboco_proto::FolderListing) -> Self {
+        Self {
+            path: listing.path,
+            truncated: listing.truncated,
+            entries: listing
+                .entries
+                .into_iter()
+                .map(|entry| FolderEntry {
+                    name: entry.name,
+                    is_dir: entry.is_dir,
+                    is_repo: entry.is_repo,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A browse root beyond home: a mounted drive / volume.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DriveEntry {
+    /// Volume label / mount folder name.
+    pub name: String,
+    /// Absolute mount point, host style.
+    pub path: String,
+}
+
+impl From<roboco_proto::DriveEntry> for DriveEntry {
+    fn from(drive: roboco_proto::DriveEntry) -> Self {
+        Self {
+            name: drive.name,
+            path: drive.path,
+        }
+    }
+}
+
+/// A manually typed project path, interpreted on the engine: `~` expanded
+/// there, existence checked there, `create_if_missing` materialized there.
+/// Always pass `path` on to `create_project` — never the raw input.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PreparedPath {
+    pub path: String,
+    pub exists: bool,
+    pub git_detected: bool,
+}
+
+impl From<mc::PreparedPath> for PreparedPath {
+    fn from(prepared: mc::PreparedPath) -> Self {
+        Self {
+            path: prepared.path,
+            exists: prepared.exists,
+            git_detected: prepared.git_detected,
+        }
+    }
+}
+
+/// One ref of a repository: a branch plus its checkout state.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RepoRef {
+    pub name: String,
+    /// Checked out in the repo's main folder right now.
+    pub current: bool,
+    /// Linked worktree this branch is checked out in, if any.
+    pub worktree_path: Option<String>,
+}
+
+impl From<roboco_proto::RepoRef> for RepoRef {
+    fn from(reference: roboco_proto::RepoRef) -> Self {
+        Self {
+            name: reference.name,
+            current: reference.current,
+            worktree_path: reference.worktree_path,
+        }
+    }
+}
