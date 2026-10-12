@@ -79,10 +79,11 @@ pub struct PendingChat {
 }
 
 impl PendingChat {
-    /// Drop the overlay: the engine's frame carries the row (the echo), or
-    /// the 30 s TTL ran out (the row is restored by the frame when it
-    /// arrives). Pure — the store's recompute calls it on every pass.
-    pub(crate) fn done(&self, echoed: bool, now_ms: i64) -> bool {
+    /// Whether the overlay is finished — the engine's frame carries the
+    /// row (the echo), or the 30 s TTL ran out (the row is restored by the
+    /// frame when it arrives). Pure — the store's recompute calls it on
+    /// every pass.
+    pub(crate) fn finished(&self, echoed: bool, now_ms: i64) -> bool {
         echoed
             || now_ms.saturating_sub(self.created_at.timestamp_millis())
                 >= PENDING_CHAT_TTL_MS
@@ -257,7 +258,11 @@ impl Client {
                     })?;
                 // The workspace only holds scoped ids, so this parse is
                 // the raw wire form of a space the merge scoped.
-                let raw_space_id = ScopedId::parse(&space_id).raw_id;
+                let raw_space_id = ScopedId::parse(&space_id)
+                    .map_err(|_| ClientError::InvalidArgument {
+                        message: format!("Unknown project: {space_id}"),
+                    })?
+                    .raw_id;
                 let handle = self.engine_handle(&project.engine_id)?;
                 ResolvedTarget {
                     handle,
@@ -453,12 +458,12 @@ mod tests {
             branch: None,
             created_at: DateTime::<Utc>::from_timestamp_millis(10_000).unwrap(),
         };
-        assert!(pending.done(true, 10_050));
-        assert!(!pending.done(false, 10_050));
-        assert!(!pending.done(false, 10_000 + PENDING_CHAT_TTL_MS - 1));
-        assert!(pending.done(false, 10_000 + PENDING_CHAT_TTL_MS));
+        assert!(pending.finished(true, 10_050));
+        assert!(!pending.finished(false, 10_050));
+        assert!(!pending.finished(false, 10_000 + PENDING_CHAT_TTL_MS - 1));
+        assert!(pending.finished(false, 10_000 + PENDING_CHAT_TTL_MS));
         // A clock behind the create never finishes it early.
-        assert!(!pending.done(false, 9_000));
+        assert!(!pending.finished(false, 9_000));
     }
 
     /// The synthetic chat is exactly a merged engine row's shape: title
@@ -542,7 +547,7 @@ mod tests {
             .expect("create_session");
         // Scoped id.
         assert!(ScopedId::is_scoped(&chat_id));
-        let raw = ScopedId::parse(&chat_id).raw_id;
+        let raw = ScopedId::parse(&chat_id).expect("scoped id parses").raw_id;
         // The engine row: space, config sandbox, branch, title, cwd.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let chat = loop {
@@ -554,7 +559,7 @@ mod tests {
         };
         assert_eq!(
             chat.space_id.as_deref(),
-            Some(ScopedId::parse(&space_id).raw_id.as_str())
+            Some(ScopedId::parse(&space_id).expect("scoped id parses").raw_id.as_str())
         );
         let config = chat.config.expect("config stamped");
         assert_eq!(config.sandbox, roboco_proto::SandboxLevel::WorkspaceWrite);
@@ -590,7 +595,7 @@ mod tests {
             })
             .await
             .expect("create_session");
-        let raw = ScopedId::parse(&chat_id).raw_id;
+        let raw = ScopedId::parse(&chat_id).expect("scoped id parses").raw_id;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let chat = loop {
             if let Ok(Some(chat)) = rig.core.workspace.chat(&raw) {
@@ -777,7 +782,7 @@ mod tests {
         assert!(matches!(outcome, crate::SendOutcome::Started { .. }), "{outcome:?}");
         // The engine stamps the chat row's cwd and `roboco/<name>` branch
         // while draining the Run.
-        let raw = ScopedId::parse(&chat_id).raw_id;
+        let raw = ScopedId::parse(&chat_id).expect("scoped id parses").raw_id;
         let repo_path = repo.to_string_lossy().to_string();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let cwd = loop {

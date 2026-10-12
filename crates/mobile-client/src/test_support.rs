@@ -219,7 +219,7 @@ impl Rig {
 
     /// The engine's own device id (raw wire form).
     pub(crate) fn raw_device_id(&self) -> String {
-        ScopedId::parse(&self.device_id()).raw_id
+        ScopedId::parse(&self.device_id()).expect("scoped id parses").raw_id
     }
 
     /// A scratch folder under the engine's tempdir (spaces, repos, …).
@@ -250,7 +250,8 @@ impl Rig {
         raw_id: &str,
         git_detected: bool,
     ) -> String {
-        let raw_device = ScopedId::parse(&self.device_id_of(engine_id)).raw_id;
+        let raw_device =
+            ScopedId::parse(&self.device_id_of(engine_id)).expect("scoped id parses").raw_id;
         self.core_of(engine_id)
             .workspace
             .create_space(

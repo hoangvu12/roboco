@@ -478,7 +478,9 @@ pub(crate) fn device_display_name(device: &Device) -> Option<String> {
     (!name.is_empty() && name != "unknown-device").then(|| name.to_owned())
 }
 
-fn is_execution_host(platform: &str) -> bool {
+/// The execution-host gate shared with ticket 09's device resolution
+/// (`refuse_non_host`): phones and tablets never run sessions.
+pub(crate) fn is_execution_host(platform: &str) -> bool {
     !matches!(platform, "ios" | "android" | "ipados")
 }
 

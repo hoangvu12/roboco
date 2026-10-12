@@ -63,11 +63,6 @@ pub use engines::{
 pub use events::{ClientEvent, ClientListener};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
 pub use files::FileMatch;
-pub use host_paths::{
-    is_root as host_path_is_root, is_windows as host_path_is_windows,
-    join as host_path_join, name as host_path_name, parent as host_path_parent,
-    same_folder as host_path_same_folder,
-};
 pub use new_session::{
     NewSession, PENDING_CHAT_TTL_MS, PendingChat, ProjectGroup, SessionTarget, group_projects,
 };

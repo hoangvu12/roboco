@@ -33,17 +33,17 @@ const SPACE_POLL_EVERY: Duration = Duration::from_millis(100);
 const SPACE_POLL_TRIES: usize = 50;
 
 /// The execution-host gate: phones and tablets never run sessions
-/// (`uc:730-734`). `None` (WatchDevices not delivered yet) never hides a
-/// host — 07's `DeviceView` makes the same call.
+/// (`uc:730-734`), the one predicate 07's `DeviceView` also applies.
+/// `None` (WatchDevices not delivered yet) never hides a host.
 pub(crate) fn refuse_non_host(platform: Option<&str>) -> Result<(), ClientError> {
-    match platform {
-        Some(platform) if matches!(platform, "ios" | "android" | "ipados") => {
-            Err(ClientError::InvalidArgument {
-                message: "that device can't host sessions".into(),
-            })
-        }
-        _ => Ok(()),
+    if platform.is_some_and(|platform| {
+        !crate::workspace::view::is_execution_host(platform)
+    }) {
+        return Err(ClientError::InvalidArgument {
+            message: "that device can't host sessions".into(),
+        });
     }
+    Ok(())
 }
 
 /// A device the client resolved to its owning engine.
@@ -535,7 +535,9 @@ mod tests {
 
     /// `create_project`: creates the space, returns its scoped id, the
     /// project appears in `projects()`, `git_detected` passes through, and
-    /// a second call in the same folder dedupes without a second space.
+    /// a second call in the same folder dedupes without a second space —
+    /// case- and separator-insensitive on Windows-style paths, trailing
+    /// separators on both styles (#621).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn create_project_creates_and_dedupes() {
         let rig = Rig::start().await;
@@ -575,9 +577,24 @@ mod tests {
             .await
             .expect("dedupe");
         assert_eq!(again, id);
-        // Exactly one space on the engine.
+        // The Windows case-insensitive rule, exercised on any host: the
+        // engine stores the path verbatim, so a Windows-style space dedupes
+        // against its case-folded twin.
+        let windows = "C:\\Repo\\Alpha";
+        let windows_id = rig
+            .client
+            .create_project(&device, windows, false)
+            .await
+            .expect("windows-style create");
+        let folded = rig
+            .client
+            .create_project(&device, "c:/repo/ALPHA\\", false)
+            .await
+            .expect("windows-style dedupe");
+        assert_eq!(folded, windows_id);
+        // Exactly the two spaces the engine was asked for.
         let spaces = rig.core.workspace.read_spaces().expect("spaces");
-        assert_eq!(spaces.len(), 1, "no second createSpace: {spaces:?}");
+        assert_eq!(spaces.len(), 2, "no extra createSpace: {spaces:?}");
         rig.stop().await;
     }
 

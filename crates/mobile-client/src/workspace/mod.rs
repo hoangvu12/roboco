@@ -187,7 +187,7 @@ impl WorkspaceStore {
                     .is_some_and(|engine| {
                         engine.rows.chats.iter().any(|row| row.id == chat.raw_chat_id)
                     });
-                !chat.done(echoed, now_ms)
+                !chat.finished(echoed, now_ms)
             });
             pending.clone()
         };
