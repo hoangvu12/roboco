@@ -89,7 +89,7 @@ object Gallery {
         // 06 "Icons"              GallerySection("Icons") { IconsGallerySection() }
         // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
-        // 11 "Status glyph"       GallerySection("Status glyph") { StatusGlyphGallerySection() }
+        GallerySection("Status glyph") { StatusGlyphGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 14 "Toast"              GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() }  + ToastHost in GalleryProviders
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }

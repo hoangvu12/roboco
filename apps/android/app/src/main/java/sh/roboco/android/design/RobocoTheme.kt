@@ -88,7 +88,11 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         // setting inside the theme (ticket 35's app root relies on this).
         // Ticket 07: ProvideGlass resolves the blur tier inside the theme
         // too, next to ProvideReduceMotion, so GlassSurface needs no wiring.
-        content = { ProvideReduceMotion { ProvideGlass(content) } },
+        // Ticket 11: one shared GlyphClock, nested innermost so a nested
+        // ProvideGlyphClock (a frozen test/preview clock) overrides it —
+        // every animated StatusGlyph on screen pulses in phase off one
+        // frame loop.
+        content = { ProvideReduceMotion { ProvideGlass { ProvideGlyphClock(content = content) } } },
     )
 }
 
