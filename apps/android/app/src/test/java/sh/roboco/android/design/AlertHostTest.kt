@@ -11,15 +11,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -97,7 +97,10 @@ class AlertHostTest {
 
     private fun px(dp: Int): Float = with(compose.density) { dp.dp.toPx() }
 
-    private fun bounds(tag: String): Rect = compose.onNodeWithTag(tag).getBoundsInRoot()
+    /** `getBoundsInRoot` is a [androidx.compose.ui.unit.DpRect]; the assertions compare px. */
+    private fun SemanticsNodeInteraction.pxBounds(): Rect = with(compose.density) { getBoundsInRoot().toRect() }
+
+    private fun bounds(tag: String): Rect = compose.onNodeWithTag(tag).pxBounds()
 
     private val okAlert = RobocoAlert(
         title = "Couldn't start the session",
@@ -184,7 +187,7 @@ class AlertHostTest {
         val field = bounds("alert-field")
         val cancel = bounds("alert-cancel")
         val primary = bounds("alert-primary")
-        val window = compose.onRoot().getBoundsInRoot()
+        val window = compose.onRoot().pxBounds()
 
         // 320 dp wide, centred horizontally (|left gap − right gap| ≤ 1 px).
         assertEquals(px(320), card.width, 1f)
@@ -197,7 +200,7 @@ class AlertHostTest {
         assertEquals(px(16), card.right - field.right, 1f)
 
         // Title: leading, 30 dp from the card edge.
-        val title = compose.onNodeWithText("New Folder").getBoundsInRoot()
+        val title = compose.onNodeWithText("New Folder").pxBounds()
         assertEquals(px(30), title.left - card.left, 1f)
 
         // Buttons: 48 dp capsules, 140 dp each, 8 dp gap, 20 dp below the
