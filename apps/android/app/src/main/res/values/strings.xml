@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">Roboco</string>
+
+    <!-- The pairing root (android-ui-parity #34): the iOS SignIn layout with
+         Roboco's copy (web app-shell.tsx Welcome strings, "browser"→"phone"). -->
+    <string name="pairing_root_title" translatable="false">Roboco</string>
+    <string name="pairing_root_tagline">This phone has no paired engine yet.</string>
+    <string name="pairing_root_pair">Pair an engine</string>
+    <string name="pairing_root_redeeming">Redeeming the pairing link…</string>
 </resources>
