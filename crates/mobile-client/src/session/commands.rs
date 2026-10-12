@@ -311,15 +311,7 @@ impl SessionCore {
         let outcome = match decision {
             Decision::Queue => {
                 let caps = { self.composer().host.capabilities.clone() };
-                let body = if refs.is_empty() || caps.clean_attachment_text {
-                    if text.is_empty() {
-                        crate::attachments::ATTACHMENT_ONLY_TEXT.to_owned()
-                    } else {
-                        text.clone()
-                    }
-                } else {
-                    crate::attachments::with_attachments(&text, &paths)
-                };
+                let body = queued_body(&text, &refs, &paths, &caps);
                 let id = self.queue_message_row(&body, paths, request.busy == BusyPolicy::Queue).await?;
                 SendOutcome::Queued { queue_id: id }
             }
@@ -327,16 +319,9 @@ impl SessionCore {
                 // "Stop and send": park the row (hold_for_turn_end: false),
                 // then send it now — Send-now interrupts the active turn
                 // before dispatching, and the engine keeps the queue id as
-                // the dispatched user message id.
-                let body = if refs.is_empty() {
-                    if text.is_empty() {
-                        crate::attachments::ATTACHMENT_ONLY_TEXT.to_owned()
-                    } else {
-                        text.clone()
-                    }
-                } else {
-                    crate::attachments::with_attachments(&text, &paths)
-                };
+                // the dispatched user message id. The queued-body rule is
+                // the same as the Queue outcome's.
+                let body = queued_body(&text, &refs, &paths, &self.composer().host.capabilities);
                 let id = self.queue_message_row(&body, paths, false).await?;
                 let sent = self
                     .engine_handle()?
@@ -455,8 +440,10 @@ impl SessionCore {
         hold_for_turn_end: bool,
     ) -> Result<String, ClientError> {
         if text.trim().is_empty() {
+            // The engine's own refusal (the wire table's message), failed
+            // fast client-side.
             return Err(ClientError::InvalidArgument {
-                message: "empty message".into(),
+                message: "queued message text required".into(),
             });
         }
         self.queue_message_row(text, attachments, hold_for_turn_end).await
@@ -540,6 +527,26 @@ impl SessionCore {
         }
         self.recompute_composer();
         Ok(())
+    }
+}
+
+/// The queued row's text: the bare text (the placeholder when it is empty)
+/// when the trailer is not needed — no attachments, or
+/// `clean_attachment_text` — otherwise the trailer form.
+fn queued_body(
+    text: &str,
+    refs: &[String],
+    paths: &[String],
+    caps: &HostCapabilities,
+) -> String {
+    if refs.is_empty() || caps.clean_attachment_text {
+        if text.is_empty() {
+            crate::attachments::ATTACHMENT_ONLY_TEXT.to_owned()
+        } else {
+            text.to_owned()
+        }
+    } else {
+        crate::attachments::with_attachments(text, paths)
     }
 }
 

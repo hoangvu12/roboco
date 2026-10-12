@@ -1,7 +1,7 @@
 //! Attachment transport (use-attachments.ts / message-attachments.ts
 //! ports) and the attachment byte cache.
 //!
-//! Images ride the prompt TEXT as a trailer of absolute paths on the host:
+//! Images ride the prompt TEXT as a trailer of absolute paths on the engine:
 //!
 //! ```text
 //! <prompt>
@@ -623,7 +623,13 @@ impl crate::Client {
         progress: Option<ProgressFn>,
     ) -> Result<String, ClientError> {
         let handle = crate::catalog_live::resolve_engine(&self.inner, device_id)?;
+        // Keep a copy for the read cache: the upload consumes the bytes,
+        // and the path names the engine's own filesystem.
+        let bytes = Arc::new(data.clone());
         let path = upload_attachment(&handle, name, data, progress).await?;
+        // Seed the read cache under the returned path: own bubbles never
+        // round-trip.
+        self.inner.attachments.put(handle.engine_id(), &path, bytes);
         Ok(path)
     }
 

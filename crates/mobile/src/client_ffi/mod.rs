@@ -36,7 +36,7 @@ impl mc::ClientListener for ListenerBridge {
     }
 }
 
-async fn on_runtime<T, F>(fut: F) -> CoreResult<T>
+pub(crate) async fn on_runtime<T, F>(fut: F) -> CoreResult<T>
 where
     F: std::future::Future<Output = Result<T, mc::ClientError>> + Send + 'static,
     T: Send + 'static,

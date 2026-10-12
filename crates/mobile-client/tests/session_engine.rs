@@ -343,10 +343,10 @@ async fn open_session_sends_adopts_and_streams() {
         "the assistant reply arrives",
     )
     .await;
-    let status = handle.transcript_status_fields();
-    assert!(status.1, "hydrated");
-    assert_eq!(status.3, 0, "no pending echo left");
-    assert!(status.7.is_some(), "a last entry id exists");
+    let status = handle.transcript_status();
+    assert!(status.hydrated, "hydrated");
+    assert_eq!(status.pending_count, 0, "no pending echo left");
+    assert!(status.last_entry_id.is_some(), "a last entry id exists");
     // Events flowed for the transcript and the composer.
     let events = rig.recorder.events();
     assert!(events.iter().any(|event| matches!(
@@ -1060,8 +1060,18 @@ impl Rig {
 /// view-attached session is never evicted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_warm_set_keeps_at_most_six_detached_sessions() {
-    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    with_mock_env(&[("ROBOCO_MOCK_DELAY_MS", "700")], async {
     let rig = rig().await;
+    // A streaming session is never evicted: start a delayed turn in one
+    // chat and leave it detached while its tail streams.
+    let streaming_id = rig.chat_id();
+    let streaming = rig.client.open_session(&streaming_id).unwrap();
+    streaming.send(SendRequest::text("the streaming tail")).await.unwrap();
+    wait_until(
+        || streaming.snapshot().streaming,
+        "the tail streams",
+    )
+    .await;
     // 8 chats on the engine.
     for i in 0..8 {
         rig.core
@@ -1097,13 +1107,11 @@ async fn the_warm_set_keeps_at_most_six_detached_sessions() {
         rig.client.close_session(id);
     }
     let open = rig.client.open_session_ids();
-    let detached = open
-        .iter()
-        .filter(|id| **id != attached_id && **id != extra)
-        .count();
+    let protected = [attached_id.clone(), streaming_id.clone()];
+    let detached = open.iter().filter(|id| !protected.contains(id)).count();
     assert!(
-        open.len() <= roboco_mobile_client::session::WARM_SESSION_CAP + 2,
-        "at most the cap plus the view-attached session and the just-opened one: {open:?}"
+        open.len() <= roboco_mobile_client::session::WARM_SESSION_CAP + 3,
+        "at most the cap plus the view-attached, streaming and just-opened          sessions: {open:?}"
     );
     assert!(
         detached <= roboco_mobile_client::session::WARM_SESSION_CAP,
@@ -1113,7 +1121,13 @@ async fn the_warm_set_keeps_at_most_six_detached_sessions() {
         open.contains(&attached_id),
         "the view-attached session survives: {open:?}"
     );
+    assert!(
+        open.contains(&streaming_id),
+        "the streaming session survives: {open:?}"
+    );
     rig.client.shutdown();
+    })
+    .await;
 }
 
 // ── catalogs ───────────────────────────────────────────────────────────────
@@ -1477,4 +1491,171 @@ fn find_file(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
         None
     }
     walk(root, name, 0)
+}
+
+/// Stopping lease renewal for >60 s turns the gate into `ReviewRequired`
+/// (the lease is 60 s engine-side, with no short-lease test knob — hence
+/// `#[ignore]`: a slow test for the batch run).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow: waits out the 60 s engine lease"]
+async fn an_expired_edit_lease_gates_the_row_for_review() {
+    with_mock_env(&[("ROBOCO_MOCK_DELAY_MS", "700")], async {
+    // A busy turn keeps the queue from draining while the lease is taken
+    // (once gated, the row survives even after the turn ends).
+    let rig = rig().await;
+    let handle = rig.open();
+    handle.send(SendRequest::text("a turn to keep the queue parked")).await.unwrap();
+    wait_until(|| handle.composer().live.turn_running, "the turn starts").await;
+    let row = handle.enqueue("edit me", Vec::new(), false).await.unwrap();
+    wait_until(
+        || handle.composer().queue.iter().any(|r| r.id == row),
+        "the row arrives",
+    )
+    .await;
+    let lease = match handle.begin_queued_edit(&row, "expiry-instance").await {
+        roboco_mobile_client::QueueEditStart::Acquired(lease) => lease,
+        other => panic!("the row acquires: {other:?}"),
+    };
+    // No renewal: the engine's 60 s lease expires and the gate flips to
+    // ReviewRequired (never silently sendable again).
+    tokio::time::sleep(Duration::from_secs(65)).await;
+    wait_until(
+        || {
+            handle
+                .composer()
+                .queue
+                .iter()
+                .any(|r| r.id == row && matches!(r.gate, Some(roboco_mobile_client::QueueGate::ReviewRequired { .. })))
+        },
+        "the lapsed lease gates the row for review",
+    )
+    .await;
+    // Renewal on the dead lease returns false.
+    assert!(!handle.renew_queued_edit(&lease).await);
+    rig.client.shutdown();
+    })
+    .await;
+}
+
+/// A frozen transcript connection (06's stall proxy) is closed by the lag
+/// check; the session recovers on a NEW connection within 30 s of the
+/// freeze and the content catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_frozen_transcript_connection_is_replaced() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    // Pair through the stall proxy so every connection can be frozen.
+    let engine_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let core = engine_core(engine_dir.path());
+    let direct = serve(&core, engine_dir.path()).await;
+    let proxy = support::stall_proxy::StallProxy::start(direct.address).await;
+    let host = proxy.address.to_string();
+    let url = format!("http://{host}/pair#token={}", {
+        let store = roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap();
+        store.create_code("test", 300).unwrap().credential
+    });
+    let recorder = Arc::new(Recorder::default());
+    let client = test_client(data_dir.path(), Vec::new(), recorder);
+    let record = client.pair_engine(&url, None).await.unwrap();
+    wait_for_view(&client, &record.engine_id, "connected", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    let chat_id = client.scope(&record.engine_id, "same-chat");
+    let handle = client.open_session(&chat_id).unwrap();
+    let outcome = handle.send(SendRequest::text("before the freeze")).await.unwrap();
+    let SendOutcome::Started { message_id } = outcome else {
+        panic!("idle send: {outcome:?}")
+    };
+    wait_until(
+        || handle.snapshot().entries.iter().any(|e| e.id == message_id),
+        "the message lands",
+    )
+    .await;
+    // Freeze everything: the lag check closes the frozen transcript
+    // connection, the feed supervisor notices, and nothing flows.
+    proxy.pause();
+    let froze_at = Instant::now();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    proxy.resume();
+    // The session resubscribes on a fresh connection; a message sent after
+    // the freeze still lands within 30 s of it.
+    let outcome = handle.send(SendRequest::text("after the freeze")).await.unwrap();
+    let SendOutcome::Started { message_id: after } = outcome else {
+        panic!("post-freeze send: {outcome:?}")
+    };
+    wait_until(
+        || {
+            handle
+                .snapshot()
+                .entries
+                .iter()
+                .any(|e| e.id == after && e.role == MessageRole::User)
+        },
+        "the post-freeze message lands",
+    )
+    .await;
+    assert!(
+        Instant::now().duration_since(froze_at) < Duration::from_secs(30),
+        "the session recovered on a new connection within 30 s of the freeze"
+    );
+    assert!(!handle.snapshot().history_pending);
+    client.shutdown();
+}
+
+/// The slow streaming test (`--ignored`): `ROBOCO_MOCK_CHARS` streams
+/// N-char deltas with pacing, and the snapshot's tail entry grows in place
+/// — the Arc-stable apply keeps the entry id stable across appends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow: streams a paced long reply"]
+async fn a_streaming_reply_grows_in_place() {
+    with_mock_env(
+        &[("ROBOCO_MOCK_DELAY_MS", "500"), ("ROBOCO_MOCK_CHARS", "40")],
+        async {
+            let rig = rig().await;
+            let handle = rig.open();
+            handle.send(SendRequest::text("stream me")).await.unwrap();
+            // Wait for the streaming tail, then watch it grow.
+            wait_until(
+                || handle.snapshot().streaming,
+                "the tail streams",
+            )
+            .await;
+            let mut seen_growth = 0;
+            let mut last_len = 0usize;
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while Instant::now() < deadline && seen_growth < 3 {
+                let snapshot = handle.snapshot();
+                if let Some(last) = snapshot.entries.last() {
+                    let len: usize = last
+                        .parts
+                        .iter()
+                        .map(|part| match part {
+                            roboco_doc::MessagePart::Text { text, .. } => text.len(),
+                            _ => 0,
+                        })
+                        .sum();
+                    if len > last_len {
+                        last_len = len;
+                        seen_growth += 1;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(seen_growth >= 3, "the streaming tail never grew");
+            // The entry ids stay stable across the appends.
+            let ids: Vec<String> = handle
+                .snapshot()
+                .entries
+                .iter()
+                .map(|e| e.id.clone())
+                .collect();
+            assert!(
+                ids.windows(2).all(|w| w[0] != w[1]),
+                "each entry id is unique (no rebuild churn)"
+            );
+            rig.client.shutdown();
+        },
+    )
+    .await;
 }

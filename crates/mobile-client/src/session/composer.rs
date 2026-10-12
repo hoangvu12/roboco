@@ -18,8 +18,10 @@ use super::pending::{SendState, headline_state};
 use super::queue::QueueItem;
 use super::SessionCore;
 
-/// Host-advertised features that gate composer affordances. Mapped from
+/// Engine-advertised features that gate composer affordances. Mapped from
 /// `EngineInfo.capabilities` (`roboco_proto::workspace::capabilities`).
+/// The name is the ticket's pinned record shape (upstream's
+/// `HostCapabilities`, kept so the PR #609 composer ports with renames).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostCapabilities {
     pub message_queue: bool,
@@ -51,6 +53,9 @@ impl HostCapabilities {
     }
 }
 
+/// The engine's identity + feature set (upstream's `HostInfo` record
+/// shape, kept for Kotlin parity; "host" here always means the Roboco
+/// engine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostInfo {
     pub device_id: String,
@@ -452,21 +457,6 @@ mod tests {
     }
 
     fn test_core() -> SessionCore {
-        let core = SessionCore::new(
-            "engine-1",
-            "engine-1:v1:chat",
-            "chat",
-            std::sync::Weak::new(),
-            test_cache_handle(),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        Arc::try_unwrap(core).unwrap_or_else(|_| unreachable!("the only reference"))
-    }
-
-    fn test_cache_handle() -> crate::cache::EngineCacheHandle {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = roboco_engine_client::cache::EngineCache::new(dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        crate::cache::EngineCacheHandle::new("engine-1".into(), cache, tx)
+        crate::session::testkit::core()
     }
 }

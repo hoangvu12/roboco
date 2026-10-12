@@ -258,17 +258,16 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
             let applied = core.apply_decoded(decoded);
             match applied {
                 Ok(()) => {
-                    // Cache write: a quiet tail writes every frame; a
-                    // streaming tail at most once a second. Never while a
-                    // historyPending preview is showing.
                     let write = {
                         let state = lock(&core.state);
-                        !state.history_pending
-                            && (state
+                        should_write_cache(
+                            state.history_pending,
+                            state
                                 .entries
                                 .last()
-                                .is_none_or(|e| e.status != Some(MessageStatus::Streaming))
-                                || last_cache_write.elapsed() >= CACHE_WRITE_MIN_INTERVAL)
+                                .map(|e| e.status == Some(MessageStatus::Streaming)),
+                            last_cache_write.elapsed(),
+                        )
                     };
                     if write {
                         last_cache_write = std::time::Instant::now();
@@ -287,6 +286,23 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
         if !immediate && !sleep_cancellable(sleep_backoff(&mut backoff), &cancel).await {
             return;
         }
+    }
+}
+
+/// The cache-write rule: a quiet tail writes every frame; a streaming
+/// tail at most once per [`CACHE_WRITE_MIN_INTERVAL`]; a `historyPending`
+/// preview is never written. Pure — the unit test crafts the frames.
+pub(crate) fn should_write_cache(
+    history_pending: bool,
+    tail_streaming: Option<bool>,
+    since_last_write: Duration,
+) -> bool {
+    if history_pending {
+        return false;
+    }
+    match tail_streaming {
+        Some(true) => since_last_write >= CACHE_WRITE_MIN_INTERVAL,
+        _ => true,
     }
 }
 
@@ -348,19 +364,28 @@ async fn wait_while_disconnected(
 }
 
 /// Build the ticket-12 resume summary when the engine advertises
-/// `transcript-resume-v1` and this session holds a digest-carrying copy.
+/// `transcript-resume-v1` and this session holds a digest-carrying copy —
+/// cached or live ("on a heal or a reopen that has a cached or held
+/// copy"). `from_held` rejects copies without digests, which degrade to a
+/// plain digests subscription and a reset.
 fn resume_summary(core: &Arc<SessionCore>) -> Option<roboco_doc::TranscriptResume> {
     if !core.resume_capable() {
         return None;
     }
     let state = lock(&core.state);
-    if state.entries.is_empty() || !state.has_full_reset {
+    if state.entries.is_empty() {
         return None;
     }
     let entries: Vec<SessionMessageEntry> = state.entries.iter().map(|e| (**e).clone()).collect();
     roboco_doc::TranscriptResume::from_held(&entries, &state.digests, RESUME_WINDOW)
 }
 
+/// Reconciler note (deleted chats): the engine never rejects a
+/// subscription for an unknown chat id — `DocHost::open` materializes an
+/// empty doc for it — so there is no terminal open error to surface; a
+/// chat deleted on the engine opens empty here and the parity-75 give-up
+/// path is what runs. Verified against `crates/engine/src/doc_host.rs:746`.
+///
 /// Sanitize, read `historyPending`, decode, and scope one stream item.
 fn decode_item(mut value: Value, key: &EngineKey) -> Option<DecodedFrame> {
     crate::lenient::sanitize_transcript_update(&mut value);
@@ -789,26 +814,20 @@ mod tests {
             "the stale preview never replaces the authoritative content"
         );
         assert!(!state.history_pending);
-        // And the cache write gate: a history-pending state is skipped.
-        assert!(!state.history_pending, "the gate holds");
+        // And the cache-write gate: a history-pending view is never written.
+        assert!(!should_write_cache(true, Some(false), CACHE_WRITE_MIN_INTERVAL * 10));
+        assert!(!should_write_cache(true, None, CACHE_WRITE_MIN_INTERVAL * 10));
+        // A quiet tail writes every frame; a streaming tail is throttled.
+        assert!(should_write_cache(false, Some(false), Duration::ZERO));
+        assert!(!should_write_cache(false, Some(true), Duration::ZERO));
+        assert!(should_write_cache(
+            false,
+            Some(true),
+            CACHE_WRITE_MIN_INTERVAL + Duration::from_millis(1)
+        ));
     }
 
     fn test_core() -> SessionCore {
-        let core = SessionCore::new(
-            "engine-1",
-            "engine-1:v1:chat",
-            "chat",
-            std::sync::Weak::new(),
-            test_cache_handle(),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        Arc::try_unwrap(core).unwrap_or_else(|_| unreachable!("the only reference"))
-    }
-
-    fn test_cache_handle() -> crate::cache::EngineCacheHandle {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = roboco_engine_client::cache::EngineCache::new(dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        crate::cache::EngineCacheHandle::new("engine-1".into(), cache, tx)
+        crate::session::testkit::core()
     }
 }

@@ -63,7 +63,7 @@ pub struct SessionSnapshot {
     pub entries: Vec<Arc<SessionMessageEntry>>,
     /// This device's un-adopted sends (the pending echo rows).
     pub pending: Vec<PendingSend>,
-    /// A turn is running (the engine's host status is Working, or the tail
+    /// A turn is running (the engine's own status is Working, or the tail
     /// streams). Never set by a pending send alone (#777).
     pub working: bool,
     pub working_since_ms: Option<i64>,
@@ -195,7 +195,8 @@ impl SessionCore {
     }
 
     /// A handle to the owning engine.
-    /// A handle to the owning engine, when it is still registered.
+    /// A handle to the owning engine. Fails with `Closed` once the client
+    /// shut down or the engine was forgotten.
     pub(crate) fn engine_handle(&self) -> Result<EngineHandle, ClientError> {
         let inner = self
             .client
@@ -1077,20 +1078,34 @@ impl SessionHandle {
     }
 
     /// Transcript-level facts the platform needs without the rows.
-    pub fn transcript_status_fields(&self) -> (u64, bool, usize, usize, bool, bool, Option<i64>, Option<String>, bool) {
+    pub fn transcript_status(&self) -> TranscriptFacts {
         let snapshot = self.core.snapshot();
-        (
-            snapshot.revision,
-            snapshot.hydrated,
-            snapshot.entries.len(),
-            snapshot.pending.len(),
-            snapshot.streaming,
-            snapshot.working,
-            snapshot.working_since_ms,
-            snapshot.entries.last().map(|e| e.id.clone()),
-            snapshot.history_pending,
-        )
+        TranscriptFacts {
+            revision: snapshot.revision,
+            hydrated: snapshot.hydrated,
+            entry_count: snapshot.entries.len(),
+            pending_count: snapshot.pending.len(),
+            streaming: snapshot.streaming,
+            working: snapshot.working,
+            working_since_ms: snapshot.working_since_ms,
+            last_entry_id: snapshot.entries.last().map(|e| e.id.clone()),
+            history_pending: snapshot.history_pending,
+        }
     }
+}
+
+/// The `transcript_status()` payload (what the FFI record mirrors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptFacts {
+    pub revision: u64,
+    pub hydrated: bool,
+    pub entry_count: usize,
+    pub pending_count: usize,
+    pub streaming: bool,
+    pub working: bool,
+    pub working_since_ms: Option<i64>,
+    pub last_entry_id: Option<String>,
+    pub history_pending: bool,
 }
 
 impl SessionCore {
@@ -1168,16 +1183,24 @@ impl Client {
         if let Some(config) = self.inner.sessions.override_of(chat_id) {
             return Some(config);
         }
-        let (handle, raw_id) = self.resolve(chat_id).ok()?;
-        handle
-            .cache()
-            .load_rows()
-            .and_then(|rows| {
-                rows.chats
-                    .iter()
-                    .find(|chat| chat.id == raw_id)
-                    .and_then(|chat| chat.config.clone())
-            })
+        self.row_config(chat_id)
+    }
+
+    /// The engine's own `Chat.config` (no override) — the echo watcher's
+    /// comparison, so an override never matches itself. Reads the live
+    /// engine rows, never the debounced disk cache.
+    fn row_config(&self, chat_id: &str) -> Option<roboco_proto::ChatConfig> {
+        let scoped = roboco_engine_client::registry::ScopedId::parse(chat_id).ok()?;
+        let state = lock(&self.inner.engines);
+        state
+            .entries
+            .iter()
+            .find(|entry| entry.paired.engine_id == scoped.engine.0)?
+            .rows
+            .chats
+            .iter()
+            .find(|chat| chat.id == scoped.raw_id)
+            .and_then(|chat| chat.config.clone())
     }
 
     /// Store a chat config (PR #664 immediate refresh): validate, store the
@@ -1221,8 +1244,10 @@ impl Client {
                     let mut fleet = inner.fleet.subscribe();
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
                     loop {
+                        // The ENGINE's row, not the merged view (which would
+                        // read the override itself and match at once).
                         let now_matches = Client::from_inner(inner.clone())
-                            .session_config(&chat_id)
+                            .row_config(&chat_id)
                             .is_some_and(|current| current == wanted);
                         if now_matches
                             && inner.sessions.clear_override(&chat_id)
@@ -1349,6 +1374,31 @@ fn profile_key(info: &roboco_proto::EngineInfo, device_id: Option<&str>) -> Stri
                 None => name.to_owned(),
             }
         }
+    }
+}
+
+/// A session core with no client behind it, for pure-logic tests.
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+
+    pub(crate) fn core() -> SessionCore {
+        let core = SessionCore::new(
+            "engine-1",
+            "engine-1:v1:chat",
+            "chat",
+            std::sync::Weak::new(),
+            cache_handle(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        Arc::try_unwrap(core).unwrap_or_else(|_| unreachable!("the only reference"))
+    }
+
+    fn cache_handle() -> crate::cache::EngineCacheHandle {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = roboco_engine_client::cache::EngineCache::new(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::cache::EngineCacheHandle::new("engine-1".into(), cache, tx)
     }
 }
 

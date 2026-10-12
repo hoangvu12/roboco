@@ -12,6 +12,7 @@ use std::sync::Arc;
 use roboco_mobile_client as mc;
 
 use super::CoreClient;
+use super::on_runtime;
 use super::types::{
     ChatConfig, ChatIndicator, CoreResult, FileMatch, HarnessInfo, ModelInfo, ParsedUserMessage,
     SendState,
@@ -505,15 +506,6 @@ impl SessionHandle {
     }
 }
 
-/// Run an async client call on the client runtime (executor-agnostic).
-async fn on_runtime<T, F>(fut: F) -> CoreResult<T>
-where
-    F: std::future::Future<Output = Result<T, mc::ClientError>> + Send + 'static,
-    T: Send + 'static,
-{
-    mc::runtime::run(fut).await.map_err(Into::into)
-}
-
 #[uniffi::export]
 impl SessionHandle {
     pub fn chat_id(&self) -> String {
@@ -531,27 +523,17 @@ impl SessionHandle {
     }
 
     pub fn transcript_status(&self) -> TranscriptStatus {
-        let (
-            revision,
-            hydrated,
-            entry_count,
-            pending_count,
-            streaming,
-            working,
-            working_since_ms,
-            last_entry_id,
-            history_pending,
-        ) = self.inner.transcript_status_fields();
+        let facts = self.inner.transcript_status();
         TranscriptStatus {
-            revision,
-            hydrated,
-            entry_count: entry_count as u32,
-            pending_count: pending_count as u32,
-            streaming,
-            working,
-            working_since_ms,
-            last_entry_id,
-            history_pending,
+            revision: facts.revision,
+            hydrated: facts.hydrated,
+            entry_count: facts.entry_count as u32,
+            pending_count: facts.pending_count as u32,
+            streaming: facts.streaming,
+            working: facts.working,
+            working_since_ms: facts.working_since_ms,
+            last_entry_id: facts.last_entry_id,
+            history_pending: facts.history_pending,
         }
     }
 
