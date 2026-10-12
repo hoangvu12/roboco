@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
@@ -17,6 +18,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.KeyboardActionHandler
+import androidx.compose.foundation.text.input.TextFieldDecorator
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.placeCursorAtEnd
@@ -45,6 +47,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -211,6 +214,7 @@ fun rememberSearchMorphProgress(searchSelected: Boolean): State<Float> {
  * @param active Search is the selected tab (the target)
  * @param onSearchTabTap 26's `onTabTap(TabId.Search)`, used while `!active`
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SearchTabField(
     state: SearchTabState,
@@ -440,7 +444,7 @@ private fun SearchFieldText(
         lineLimits = TextFieldLineLimits.SingleLine,
         interactionSource = interactionSource,
         cursorBrush = SolidColor(palette.accent),
-        decorator = { innerTextField ->
+        decorator = TextFieldDecorator { innerTextField ->
             Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
                 if (!hasText) {
                     BasicText(
@@ -479,7 +483,7 @@ private fun SearchClearButton(
                 indication = null,
                 role = Role.Button,
             ) {
-                clearText(state.text)
+                state.text.clearText()
                 if (!focused) {
                     runCatching { focusRequester.requestFocus() }
                     keyboard?.show()
@@ -747,7 +751,7 @@ internal fun SearchMorphFixture(
 private fun SearchMorphPreviewContent() {
     RobocoTheme {
         val state = remember {
-            SearchTabState().also { setTextAndPlaceCursorAtEnd(it.text, "zeron") }
+            SearchTabState().also { it.text.setTextAndPlaceCursorAtEnd("zeron") }
         }
         SearchMorphFixture(
             state = state,

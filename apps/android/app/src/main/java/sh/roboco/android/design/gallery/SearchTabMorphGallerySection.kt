@@ -108,9 +108,9 @@ internal fun SearchTabMorphGallerySection() {
                 onClick = {
                     hasText = !hasText
                     if (hasText) {
-                        setTextAndPlaceCursorAtEnd(searchState.text, "zeron")
+                        searchState.text.setTextAndPlaceCursorAtEnd("zeron")
                     } else {
-                        clearText(searchState.text)
+                        searchState.text.clearText()
                     }
                 },
             )

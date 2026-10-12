@@ -111,7 +111,7 @@ class SearchTabStateTest {
         // Raw, never trimmed: the spaces belong to ticket 49's search.
         s.text.edit { append(" ") }
         assertEquals("ze ", s.query)
-        clearText(s.text)
+        s.text.clearText()
         assertEquals("", s.query)
     }
 
