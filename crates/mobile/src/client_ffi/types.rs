@@ -124,7 +124,7 @@ impl From<CoreConfig> for mc::ClientConfig {
 /// stores the whole record Keystore-encrypted (ticket 18); Rust keeps it in
 /// memory only. Never log this type — the Kotlin data class's `toString`
 /// includes every field.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct PairedEngine {
     /// Client-minted UUID v4, stable across re-pairs (the `EngineKey`).
     pub engine_id: String,
@@ -138,6 +138,22 @@ pub struct PairedEngine {
     pub device_id: Option<String>,
     /// Last known engine device name, for offline display.
     pub name: Option<String>,
+}
+
+impl std::fmt::Debug for PairedEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the derived Debug would print the credential.
+        f.debug_struct("PairedEngine")
+            .field("engine_id", &self.engine_id)
+            .field("base_url", &self.base_url)
+            .field("credential", &"[redacted]")
+            .field("session_id", &self.session_id)
+            .field("label", &self.label)
+            .field("paired_at_ms", &self.paired_at_ms)
+            .field("device_id", &self.device_id)
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl From<mc::PairedEngine> for PairedEngine {
@@ -349,10 +365,20 @@ impl From<mc::Connectivity> for Connectivity {
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum ClientEvent {
     /// `workspace()` advanced (ticket 07 emits it).
-    WorkspaceChanged { revision: u64 },
-    SessionChanged { chat_id: String, revision: u64 },
-    ComposerChanged { chat_id: String, revision: u64 },
-    ConnectivityChanged { connectivity: Connectivity },
+    WorkspaceChanged {
+        revision: u64,
+    },
+    SessionChanged {
+        chat_id: String,
+        revision: u64,
+    },
+    ComposerChanged {
+        chat_id: String,
+        revision: u64,
+    },
+    ConnectivityChanged {
+        connectivity: Connectivity,
+    },
     /// Any engine view changed (state, name, notice, diagnostics,
     /// capabilities): pull `engines()`.
     EnginesChanged,

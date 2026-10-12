@@ -211,12 +211,10 @@ pub(crate) fn sanitize_transcript_update(update: &mut Value) -> usize {
             Some(v) if key == "contextUsage" => {
                 serde_json::from_value::<ContextUsage>(v.clone()).is_err()
             }
-            Some(v) => {
-                serde_json::from_value::<roboco_doc::transcript_delta::TranscriptBaseline>(
-                    v.clone(),
-                )
-                .is_err()
-            }
+            Some(v) => serde_json::from_value::<roboco_doc::transcript_delta::TranscriptBaseline>(
+                v.clone(),
+            )
+            .is_err(),
         };
         if bad {
             map.remove(key);
@@ -431,7 +429,11 @@ mod tests {
         assert_eq!(decoded.errors.len(), 1);
         // ...and a newer engine must never blank the list: a wholly
         // undecodable frame is reported, not applied.
-        let bad = decode_rows::<Session>(json!({"wrapped": "nope"}), &session_substitutions(), "chatId");
+        let bad = decode_rows::<Session>(
+            json!({"wrapped": "nope"}),
+            &session_substitutions(),
+            "chatId",
+        );
         assert!(bad.is_err());
     }
 
@@ -443,12 +445,14 @@ mod tests {
         let decoded = decode_rows::<Session>(frame, &session_substitutions(), "chatId").unwrap();
         assert_eq!(decoded.rows.len(), 1);
         // Two arrays or a non-array wrapper is a frame error.
-        assert!(decode_rows::<Session>(
-            json!({"a": [], "b": []}),
-            &session_substitutions(),
-            "chatId"
-        )
-        .is_err());
+        assert!(
+            decode_rows::<Session>(
+                json!({"a": [], "b": []}),
+                &session_substitutions(),
+                "chatId"
+            )
+            .is_err()
+        );
         assert!(decode_rows::<Session>(json!("nope"), &session_substitutions(), "chatId").is_err());
     }
 
@@ -469,8 +473,7 @@ mod tests {
         // Two repairs: the entry (it did not parse as a whole) and the part.
         let repaired = sanitize_transcript_update(&mut update);
         assert_eq!(repaired, 2);
-        let parsed: roboco_doc::TranscriptUpdate =
-            serde_json::from_value(update.clone()).unwrap();
+        let parsed: roboco_doc::TranscriptUpdate = serde_json::from_value(update.clone()).unwrap();
         let roboco_doc::TranscriptFrame::Reset { reset } = parsed.frame else {
             panic!("expected a reset frame")
         };
@@ -529,20 +532,17 @@ mod tests {
         });
         let repaired = sanitize_transcript_update(&mut update);
         assert_eq!(repaired, 2);
-        let parsed: roboco_doc::TranscriptUpdate =
-            serde_json::from_value(update).unwrap();
+        let parsed: roboco_doc::TranscriptUpdate = serde_json::from_value(update).unwrap();
         let roboco_doc::TranscriptFrame::Reset { reset } = parsed.frame else {
             panic!("expected a reset frame")
         };
         match &reset[0].parts[0] {
-            roboco_doc::MessagePart::Tool { call, .. } => {
-                match call {
-                    roboco_proto::ToolCall::Unknown { name, .. } => {
-                        assert_eq!(name, "backflip");
-                    }
-                    other => panic!("unexpected call: {other:?}"),
+            roboco_doc::MessagePart::Tool { call, .. } => match call {
+                roboco_proto::ToolCall::Unknown { name, .. } => {
+                    assert_eq!(name, "backflip");
                 }
-            }
+                other => panic!("unexpected call: {other:?}"),
+            },
             other => panic!("unexpected part: {other:?}"),
         }
     }

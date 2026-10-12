@@ -23,7 +23,8 @@ mod pump;
 mod server;
 
 pub use client::{
-    MAX_MESSAGE_BYTES, RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated, is_auth_refused,
+    MAX_MESSAGE_BYTES, RpcClient, RpcSubscription, connect_ws, connect_ws_authenticated,
+    is_auth_refused,
 };
 pub use pump::{Connection, Progress, ProgressIo};
 pub use server::{serve_connection, serve_websocket, serve_ws_listener};

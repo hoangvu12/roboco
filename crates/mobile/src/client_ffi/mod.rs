@@ -176,7 +176,9 @@ impl CoreClient {
 /// Parse a pairing link for the confirm UI. The token never crosses.
 #[uniffi::export]
 pub fn parse_pairing_url(input: String) -> Result<PairingTarget, PairError> {
-    mc::parse_pairing_url(&input).map(PairingTarget::from).map_err(PairError::from)
+    mc::parse_pairing_url(&input)
+        .map(PairingTarget::from)
+        .map_err(PairError::from)
 }
 
 #[cfg(test)]

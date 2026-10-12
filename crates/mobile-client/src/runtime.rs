@@ -11,8 +11,8 @@
 //! executor-agnostic: UniFFI's Kotlin coroutines (or any other executor)
 //! can poll them directly.
 //!
-//! Port of `um:crates/client/src/runtime.rs` (renamed: thread
-//! `roboco-client`).
+//! Port of upstream zeronsh/zeron's `crates/client/src/runtime.rs`
+//! (renamed: thread `roboco-client`).
 
 use std::future::Future;
 use std::sync::OnceLock;

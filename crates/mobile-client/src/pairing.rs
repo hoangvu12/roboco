@@ -7,7 +7,8 @@
 //! expires. See `crates/engine/src/pairing.rs` and
 //! `crates/engine/src/listener.rs` for the engine side.
 //!
-//! This module is the Rust twin of `ec:pairing.ts` and the desktop's
+//! This module is the Rust twin of the web client's `web/packages/app/src/lib/pairing.ts`
+//! and the desktop's
 //! `crates/engine-client/src/registry.rs` parser (identical rules).
 
 use roboco_proto::PairedSession;
@@ -78,9 +79,7 @@ fn parse(input: &str) -> Result<ParsedPairing, PairError> {
         None => return Err(PairError::invalid("pairing URL has no host")),
     };
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(PairError::invalid(
-            "pairing URL must use HTTP or HTTPS",
-        ));
+        return Err(PairError::invalid("pairing URL must use HTTP or HTTPS"));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(PairError::invalid(
@@ -102,7 +101,7 @@ fn parse(input: &str) -> Result<ParsedPairing, PairError> {
         _ => {
             return Err(PairError::invalid(
                 "pairing URL is missing its fragment credential",
-            ))
+            ));
         }
     };
     let base_path = url
@@ -159,11 +158,21 @@ pub fn sanitize_label(device_name: &str) -> String {
 }
 
 /// The `POST {base}/pairing/redeem` reply.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Grant {
     session: PairedSession,
     credential: String,
+}
+
+impl std::fmt::Debug for Grant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the derived Debug would print the credential.
+        f.debug_struct("Grant")
+            .field("session", &self.session)
+            .field("credential", &"[redacted]")
+            .finish()
+    }
 }
 
 /// The engine's WebSocket endpoint: scheme swapped (`http→ws`,
@@ -229,12 +238,24 @@ async fn redeem(base_url: &str, code: &str, label: &str) -> Result<Grant, PairEr
 }
 
 /// One completed pairing: the stored record's raw material.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct Redeemed {
     pub session: PairedSession,
     pub credential: String,
     pub base_url: String,
     pub endpoint: String,
+}
+
+impl std::fmt::Debug for Redeemed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the derived Debug would print the credential.
+        f.debug_struct("Redeemed")
+            .field("session", &self.session)
+            .field("credential", &"[redacted]")
+            .field("base_url", &self.base_url)
+            .field("endpoint", &self.endpoint)
+            .finish()
+    }
 }
 
 /// Parse, redeem, and compute the endpoint. The caller dials.
@@ -356,7 +377,10 @@ mod tests {
                 if let Ok((mut socket, _)) = listener.accept().await {
                     let mut scratch = [0u8; 4096];
                     let _ = socket.read(&mut scratch).await;
-                    let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
                     let _ = socket.write_all(head.as_bytes()).await;
                 }
             });

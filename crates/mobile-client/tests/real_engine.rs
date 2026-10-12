@@ -6,10 +6,13 @@
 
 mod support;
 
-use roboco_mobile_client::{Client, ClientError, EngineState, ParkReason, PairedEngine};
+use roboco_mobile_client::{Client, ClientError, EngineState, PairedEngine, ParkReason};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use support::{CountingListener, Recorder, pairing_url, serve, serve_on_port, test_client, wait_for_fleet, wait_for_view};
+use support::{
+    CountingListener, Recorder, pairing_url, serve, serve_on_port, test_client, wait_for_fleet,
+    wait_for_view,
+};
 
 fn engine_rows(client: &Client, engine_id: &str) -> usize {
     client
@@ -64,7 +67,10 @@ async fn pair_pins_identity_connects_and_receives_feed_rows() {
     let view = client.engine(&record.engine_id).unwrap();
     assert!(!view.from_cache, "live frames arrived");
     assert_eq!(view.notice, None, "same version: no notice");
-    assert!(!view.capabilities.is_empty(), "capabilities flow into the view");
+    assert!(
+        !view.capabilities.is_empty(),
+        "capabilities flow into the view"
+    );
     assert!(view.diagnostics.generation >= 1);
     // The platform got the pin to persist.
     assert!(recorder.events().iter().any(|event| matches!(
@@ -81,10 +87,9 @@ async fn pair_pins_identity_connects_and_receives_feed_rows() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let events = recorder.events();
     assert!(
-        events.iter().any(|event| matches!(
-            event,
-            roboco_mobile_client::ClientEvent::EnginesChanged
-        )),
+        events
+            .iter()
+            .any(|event| matches!(event, roboco_mobile_client::ClientEvent::EnginesChanged)),
         "EnginesChanged must reach the listener: {events:?}"
     );
     assert!(
@@ -138,13 +143,25 @@ async fn listener_restart_reconnects_with_a_new_generation() {
         view.state == EngineState::Connected
     })
     .await;
-    let first_generation = client.engine(&record.engine_id).unwrap().diagnostics.generation;
-    client.engine_handle(&record.engine_id).unwrap().cache().flush().await;
+    let first_generation = client
+        .engine(&record.engine_id)
+        .unwrap()
+        .diagnostics
+        .generation;
+    client
+        .engine_handle(&record.engine_id)
+        .unwrap()
+        .cache()
+        .flush()
+        .await;
     // Kill the listener.
     listener.stop().await;
-    wait_for_view(&client, &record.engine_id, "reconnecting with a retry", |view| {
-        view.state == EngineState::Reconnecting && view.retry_at_ms.is_some()
-    })
+    wait_for_view(
+        &client,
+        &record.engine_id,
+        "reconnecting with a retry",
+        |view| view.state == EngineState::Reconnecting && view.retry_at_ms.is_some(),
+    )
     .await;
     // The rows stay readable (the in-memory mirror of the cached rows).
     assert!(engine_rows(&client, &record.engine_id) >= 1);
@@ -154,8 +171,15 @@ async fn listener_restart_reconnects_with_a_new_generation() {
         view.state == EngineState::Connected
     })
     .await;
-    let second_generation = client.engine(&record.engine_id).unwrap().diagnostics.generation;
-    assert!(second_generation > first_generation, "generation increments");
+    let second_generation = client
+        .engine(&record.engine_id)
+        .unwrap()
+        .diagnostics
+        .generation;
+    assert!(
+        second_generation > first_generation,
+        "generation increments"
+    );
     assert!(engine_rows(&client, &record.engine_id) >= 1);
     client.shutdown();
     listener.stop().await;
@@ -188,9 +212,10 @@ async fn revoked_session_parks_and_stops_dialing() {
         .unwrap();
     let mut listener = serve_on_port(&core, engine_dir.path(), port).await;
     wait_for_view(&client, &record.engine_id, "parked as revoked", |view| {
-        view.state == EngineState::Parked {
-            reason: ParkReason::Revoked,
-        }
+        view.state
+            == EngineState::Parked {
+                reason: ParkReason::Revoked,
+            }
     })
     .await;
     // Parked engines do not dial: swap in a counting listener for 3 s.
@@ -231,11 +256,17 @@ async fn identity_change_parks() {
     .unwrap();
     let core_b = support::core(engine_b_dir.path());
     let mut listener = serve_on_port(&core_b, engine_b_dir.path(), port).await;
-    wait_for_view(&client, &record.engine_id, "parked as identity changed", |view| {
-        view.state == EngineState::Parked {
-            reason: ParkReason::IdentityChanged,
-        }
-    })
+    wait_for_view(
+        &client,
+        &record.engine_id,
+        "parked as identity changed",
+        |view| {
+            view.state
+                == EngineState::Parked {
+                    reason: ParkReason::IdentityChanged,
+                }
+        },
+    )
     .await;
     client.shutdown();
     listener.stop().await;
@@ -271,9 +302,10 @@ async fn re_pairing_a_parked_engine_keeps_the_engine_id() {
     let core_b = support::core(engine_b_dir.path());
     let mut listener = serve_on_port(&core_b, engine_b_dir.path(), port).await;
     wait_for_view(&client, &record.engine_id, "parked", |view| {
-        view.state == EngineState::Parked {
-            reason: ParkReason::IdentityChanged,
-        }
+        view.state
+            == EngineState::Parked {
+                reason: ParkReason::IdentityChanged,
+            }
     })
     .await;
     // Re-pair onto the same engine id with a fresh code from engine B.
@@ -283,10 +315,16 @@ async fn re_pairing_a_parked_engine_keeps_the_engine_id() {
         .await
         .unwrap();
     assert_eq!(re_paired.engine_id, record.engine_id, "engine id is stable");
-    assert_eq!(re_paired.device_id.as_deref(), Some(core_b.device_id.as_str()));
-    wait_for_view(&client, &record.engine_id, "connected after re-pair", |view| {
-        view.state == EngineState::Connected
-    })
+    assert_eq!(
+        re_paired.device_id.as_deref(),
+        Some(core_b.device_id.as_str())
+    );
+    wait_for_view(
+        &client,
+        &record.engine_id,
+        "connected after re-pair",
+        |view| view.state == EngineState::Connected,
+    )
     .await;
     client.shutdown();
     listener.stop().await;
@@ -313,11 +351,17 @@ async fn an_empty_credential_parks_without_dialing() {
     };
     let recorder = Arc::new(Recorder::default());
     let client = test_client(data_dir.path(), vec![record], recorder);
-    wait_for_view(client.as_ref(), &client.engines()[0].engine_id, "parked", |view| {
-        view.state == EngineState::Parked {
-            reason: ParkReason::Revoked,
-        }
-    })
+    wait_for_view(
+        client.as_ref(),
+        &client.engines()[0].engine_id,
+        "parked",
+        |view| {
+            view.state
+                == EngineState::Parked {
+                    reason: ParkReason::Revoked,
+                }
+        },
+    )
     .await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(counter.accepts(), 0, "an empty credential must never dial");
@@ -397,7 +441,12 @@ async fn offline_restart_serves_cached_rows_and_never_writes_the_credential() {
     .await;
     // Let the 50 ms write debounce land, then prove the write is on disk.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    client.engine_handle(&record.engine_id).unwrap().cache().flush().await;
+    client
+        .engine_handle(&record.engine_id)
+        .unwrap()
+        .cache()
+        .flush()
+        .await;
     client.shutdown();
     listener.stop().await;
     // Restart with the engine down.
@@ -407,8 +456,7 @@ async fn offline_restart_serves_cached_rows_and_never_writes_the_credential() {
         fleet
             .engine(&record.engine_id)
             .map(|engine| {
-                engine.rows.chats.iter().any(|chat| chat.id == "same-chat")
-                    && engine.from_cache
+                engine.rows.chats.iter().any(|chat| chat.id == "same-chat") && engine.from_cache
             })
             .unwrap_or(false)
     })
@@ -449,7 +497,9 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// `forget_engine` removes the engine directory and its view; scoped ids
@@ -472,7 +522,12 @@ async fn forget_engine_removes_the_cache_and_the_view() {
     })
     .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    client.engine_handle(&record.engine_id).unwrap().cache().flush().await;
+    client
+        .engine_handle(&record.engine_id)
+        .unwrap()
+        .cache()
+        .flush()
+        .await;
     let cache_dir = roboco_engine_client::cache::EngineCache::new(data_dir.path())
         .engine_directory(&record.engine_id);
     assert!(cache_dir.exists());
@@ -548,18 +603,24 @@ async fn a_stalled_link_is_dropped_by_the_probe_and_recovers() {
     .await;
     proxy.pause();
     let started = Instant::now();
-    wait_for_view(&client, &record.engine_id, "reconnecting after a stall", |view| {
-        view.state == EngineState::Reconnecting
-    })
+    wait_for_view(
+        &client,
+        &record.engine_id,
+        "reconnecting after a stall",
+        |view| view.state == EngineState::Reconnecting,
+    )
     .await;
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "the probe must drop a stalled link within 20 s"
     );
     proxy.resume();
-    wait_for_view(&client, &record.engine_id, "connected after resume", |view| {
-        view.state == EngineState::Connected
-    })
+    wait_for_view(
+        &client,
+        &record.engine_id,
+        "connected after resume",
+        |view| view.state == EngineState::Connected,
+    )
     .await;
     client.shutdown();
     drop(proxy);
@@ -667,7 +728,9 @@ async fn refresh_resolves_and_reconnects() {
     .await;
     // Pull-to-refresh while connected: bounded by the cap.
     let cap = Duration::from_secs(2);
-    tokio::time::timeout(cap, client.refresh()).await.expect("refresh resolves within the cap");
+    tokio::time::timeout(cap, client.refresh())
+        .await
+        .expect("refresh resolves within the cap");
     // Down: refresh resolves quickly (the engine reports failure).
     listener.stop().await;
     wait_for_view(&client, &record.engine_id, "reconnecting", |view| {
@@ -675,7 +738,9 @@ async fn refresh_resolves_and_reconnects() {
     })
     .await;
     let started = Instant::now();
-    tokio::time::timeout(cap, client.refresh()).await.expect("refresh resolves while down");
+    tokio::time::timeout(cap, client.refresh())
+        .await
+        .expect("refresh resolves while down");
     assert!(started.elapsed() < cap);
     client.shutdown();
     core.shutdown().await;
@@ -709,7 +774,11 @@ async fn scoped_ids_feed_watches_and_transcript_connections_work() {
     assert_eq!(raw_id, "same-chat");
     assert_eq!(handle.engine_id(), record.engine_id);
     // A feed watch delivers items tagged with the live generation.
-    let generation = client.engine(&record.engine_id).unwrap().diagnostics.generation;
+    let generation = client
+        .engine(&record.engine_id)
+        .unwrap()
+        .diagnostics
+        .generation;
     let mut watch = handle.watch_feed("WatchChats", serde_json::json!({}));
     let item = tokio::time::timeout(Duration::from_secs(5), watch.recv())
         .await
@@ -724,7 +793,10 @@ async fn scoped_ids_feed_watches_and_transcript_connections_work() {
         .expect("transcript frame arrives")
         .expect("transcript stream stays open");
     let text = serde_json::to_string(&frame).unwrap();
-    assert!(text.contains("hello"), "the reset carries the engine's message");
+    assert!(
+        text.contains("hello"),
+        "the reset carries the engine's message"
+    );
     drop(transcript);
     connection.stop();
     client.shutdown();

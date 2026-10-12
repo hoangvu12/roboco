@@ -42,11 +42,7 @@ pub async fn serve(core: &EngineCore, dir: &Path) -> EngineListener {
 /// Serve the same engine again on a *fixed* port (the reconnect test):
 /// re-binding a just-freed port can need retries on Windows
 /// (`TcpListener::bind` sets `SO_REUSEADDR` on Unix only).
-pub async fn serve_on_port(
-    core: &EngineCore,
-    dir: &Path,
-    port: u16,
-) -> EngineListener {
+pub async fn serve_on_port(core: &EngineCore, dir: &Path, port: u16) -> EngineListener {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
         let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
@@ -205,7 +201,11 @@ pub fn test_client(
 }
 
 /// Wait until the fleet snapshot satisfies `predicate`.
-pub async fn wait_for_fleet(client: &Client, label: &str, predicate: impl Fn(&FleetSnapshot) -> bool) {
+pub async fn wait_for_fleet(
+    client: &Client,
+    label: &str,
+    predicate: impl Fn(&FleetSnapshot) -> bool,
+) {
     let mut fleet = client.fleet();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {

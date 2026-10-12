@@ -146,7 +146,10 @@ pub(crate) struct CacheWriter {
 }
 
 impl CacheWriter {
-    pub(crate) fn start(cache: EngineCache, debounce: Duration) -> mpsc::UnboundedSender<CacheCommand> {
+    pub(crate) fn start(
+        cache: EngineCache,
+        debounce: Duration,
+    ) -> mpsc::UnboundedSender<CacheCommand> {
         let (tx, rx) = mpsc::unbounded_channel();
         let writer = Self { cache, debounce };
         crate::runtime::shared().spawn(writer.drive(rx));
@@ -194,11 +197,7 @@ impl CacheWriter {
         queue.push_back(command);
     }
 
-    async fn flush(
-        &self,
-        queue: &mut VecDeque<CacheCommand>,
-        barrier: Option<CacheCommand>,
-    ) {
+    async fn flush(&self, queue: &mut VecDeque<CacheCommand>, barrier: Option<CacheCommand>) {
         while let Some(command) = queue.pop_front() {
             self.write(command).await;
         }
@@ -211,12 +210,12 @@ impl CacheWriter {
         let cache = self.cache.clone();
         let result = tokio::task::spawn_blocking(move || match command {
             CacheCommand::SaveRows { engine, rows } => cache.save_rows(&engine, &rows),
-            CacheCommand::SaveSidebar { engine, sidebar } => {
-                cache.save_sidebar(&engine, &sidebar)
-            }
-            CacheCommand::SaveTranscript { engine, chat, entries } => {
-                cache.save_transcript(&engine, &chat, &entries)
-            }
+            CacheCommand::SaveSidebar { engine, sidebar } => cache.save_sidebar(&engine, &sidebar),
+            CacheCommand::SaveTranscript {
+                engine,
+                chat,
+                entries,
+            } => cache.save_transcript(&engine, &chat, &entries),
             CacheCommand::Flush(_) => Ok(()),
         })
         .await;
@@ -311,7 +310,13 @@ mod tests {
         });
         handle.save_transcript("chat", vec![]);
         handle.flush().await;
-        assert!(handle.load_sidebar().unwrap().pins_by_profile.contains_key("p"));
+        assert!(
+            handle
+                .load_sidebar()
+                .unwrap()
+                .pins_by_profile
+                .contains_key("p")
+        );
         assert!(handle.load_transcript("chat").unwrap().is_empty());
     }
 
@@ -321,16 +326,20 @@ mod tests {
         let cache = EngineCache::new(dir.path());
         for i in 0..102 {
             cache
-                .save_transcript("engine", &format!("chat-{i}"), &[SessionMessageEntry {
-                    id: format!("m{i}"),
-                    role: roboco_doc::MessageRole::User,
-                    parts: vec![],
-                    created_at: i,
-                    device_id: String::new(),
-                    status: None,
-                    continuation_of: None,
-                    duration_ms: None,
-                }])
+                .save_transcript(
+                    "engine",
+                    &format!("chat-{i}"),
+                    &[SessionMessageEntry {
+                        id: format!("m{i}"),
+                        role: roboco_doc::MessageRole::User,
+                        parts: vec![],
+                        created_at: i,
+                        device_id: String::new(),
+                        status: None,
+                        continuation_of: None,
+                        duration_ms: None,
+                    }],
+                )
                 .unwrap();
             // Distinct mtimes: same-timestamp pruning would be arbitrary.
             std::thread::sleep(Duration::from_millis(15));

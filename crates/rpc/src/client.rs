@@ -593,11 +593,19 @@ mod auth_and_close_tests {
         client.close();
         let deadline = std::time::Duration::from_secs(5);
         assert!(matches!(
-            tokio::time::timeout(deadline, pending).await.unwrap().unwrap(),
+            tokio::time::timeout(deadline, pending)
+                .await
+                .unwrap()
+                .unwrap(),
             Err(RpcError::Closed)
         ));
-        tokio::time::timeout(deadline, client.closed()).await.unwrap();
-        assert!(held.is_closed(), "the held clone must see the transport closed");
+        tokio::time::timeout(deadline, client.closed())
+            .await
+            .unwrap();
+        assert!(
+            held.is_closed(),
+            "the held clone must see the transport closed"
+        );
         server.abort();
     }
 }

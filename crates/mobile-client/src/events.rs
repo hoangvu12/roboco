@@ -8,7 +8,8 @@
 //! `on_event` runs: a JNA callback into Kotlin that re-enters Rust under the
 //! same lock deadlocks.
 //!
-//! Port of `um:crates/client/src/events.rs`, minus the auth events.
+//! Port of upstream zeronsh/zeron's `crates/client/src/events.rs`, minus
+//! the auth events.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -26,23 +27,13 @@ pub const MIN_INTERVAL: Duration = Duration::from_millis(16);
 pub enum ClientEvent {
     /// The derived workspace advanced to `revision`. Emitted by ticket 07;
     /// declared here so the platform surface is stable.
-    WorkspaceChanged {
-        revision: u64,
-    },
+    WorkspaceChanged { revision: u64 },
     /// A session's transcript advanced. Emitted by ticket 08.
-    SessionChanged {
-        chat_id: String,
-        revision: u64,
-    },
+    SessionChanged { chat_id: String, revision: u64 },
     /// A session's composer state advanced. Emitted by ticket 08.
-    ComposerChanged {
-        chat_id: String,
-        revision: u64,
-    },
+    ComposerChanged { chat_id: String, revision: u64 },
     /// The aggregate connectivity posture changed.
-    ConnectivityChanged {
-        connectivity: Connectivity,
-    },
+    ConnectivityChanged { connectivity: Connectivity },
     /// Any engine view changed (state, name, notice, capabilities,
     /// diagnostics): pull `engines()`.
     EnginesChanged,

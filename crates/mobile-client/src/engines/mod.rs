@@ -4,8 +4,8 @@
 mod handle;
 pub(crate) mod link;
 
-pub use handle::{EngineHandle, FeedItem, FeedWatch, TranscriptConnection};
 pub(crate) use handle::rpc_error_to_client_error;
+pub use handle::{EngineHandle, FeedItem, FeedWatch, TranscriptConnection};
 pub(crate) use link::EngineCommand;
 
 use crate::cache::EngineCacheHandle;
@@ -68,9 +68,7 @@ pub enum EngineState {
     Connected,
     Reconnecting,
     Offline,
-    Parked {
-        reason: ParkReason,
-    },
+    Parked { reason: ParkReason },
 }
 
 /// Why an engine stopped dialing. `Incompatible` covers ticket 11's
@@ -232,24 +230,22 @@ impl EngineEntry {
 }
 
 /// Display name fallback chain: the engine's own device row name (trimmed,
-/// and not the engine's "unknown-device" placeholder), then the paired
-/// label, then the host.
+/// and not the engine's "unknown-device" placeholder), then the last known
+/// engine device name from the paired record, then the host.
 pub(crate) fn display_name(
     engine_device_name: Option<&str>,
-    paired_label: &str,
+    paired_name: Option<&str>,
     host: &str,
 ) -> String {
     engine_device_name
         .map(str::trim)
         .filter(|name| !name.is_empty() && *name != "unknown-device")
-        .unwrap_or_else(|| {
-            let label = paired_label.trim();
-            if label.is_empty() {
-                host
-            } else {
-                label
-            }
+        .or_else(|| {
+            paired_name
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && *name != "unknown-device")
         })
+        .unwrap_or(host)
         .to_owned()
 }
 
@@ -290,11 +286,24 @@ mod tests {
 
     #[test]
     fn display_name_falls_back_in_order() {
-        assert_eq!(display_name(Some("  Studio Mac "), "phone-label", "h:1"), "Studio Mac");
-        assert_eq!(display_name(Some("unknown-device"), "phone-label", "h:1"), "phone-label");
-        assert_eq!(display_name(Some("   "), "phone-label", "h:1"), "phone-label");
-        assert_eq!(display_name(None, "phone-label", "h:1"), "phone-label");
-        assert_eq!(display_name(None, "  ", "host:8123"), "host:8123");
+        assert_eq!(
+            display_name(Some("  Studio Mac "), None, "h:1"),
+            "Studio Mac"
+        );
+        assert_eq!(
+            display_name(Some("unknown-device"), Some("engine-name"), "h:1"),
+            "engine-name"
+        );
+        assert_eq!(
+            display_name(Some("   "), Some("engine-name"), "h:1"),
+            "engine-name"
+        );
+        assert_eq!(
+            display_name(None, Some("engine-name"), "h:1"),
+            "engine-name"
+        );
+        assert_eq!(display_name(None, Some("  "), "host:8123"), "host:8123");
+        assert_eq!(display_name(None, None, "host:8123"), "host:8123");
     }
 
     #[test]

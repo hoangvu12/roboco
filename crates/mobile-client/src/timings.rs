@@ -2,9 +2,10 @@
 //! shrink them through [`Client::new_with_timings`] so liveness behaviour
 //! runs in seconds; production uses [`Timings::default`].
 //!
-//! Sources: `crates/ui/src/engine_registry.rs`,
-//! `ec:backoff.ts`, `ec:registry.ts`, zeron #621's `host.rs`, and the
-//! mobile adaptations (ADAPT) this ticket calls out.
+//! Sources: the desktop's `crates/ui/src/engine_registry.rs`, the web
+//! client's `web/packages/app/src/lib/backoff.ts` and `registry.ts`,
+//! upstream zeron PR #621's `host.rs`, and the mobile adaptations (ADAPT)
+//! this ticket calls out.
 
 use std::time::Duration;
 

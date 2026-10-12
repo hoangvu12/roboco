@@ -48,11 +48,7 @@ impl EngineCache {
         read(&self.engine_dir(engine_key).join("sidebar.json"))
     }
 
-    pub fn save_sidebar(
-        &self,
-        engine_key: &str,
-        sidebar: &SidebarStateSnapshot,
-    ) -> io::Result<()> {
+    pub fn save_sidebar(&self, engine_key: &str, sidebar: &SidebarStateSnapshot) -> io::Result<()> {
         write(&self.engine_dir(engine_key).join("sidebar.json"), sidebar)
     }
 

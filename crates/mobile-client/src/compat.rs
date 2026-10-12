@@ -66,9 +66,7 @@ pub(crate) fn assess_engine(
                 "{engine_name} needs a newer Roboco app. Update the app to connect."
             )),
         },
-        Compatibility::EngineTooOld {
-            engine_version, ..
-        } => VersionVerdict {
+        Compatibility::EngineTooOld { engine_version, .. } => VersionVerdict {
             notice: None,
             incompatible: true,
             last_error: Some(format!(
@@ -86,11 +84,7 @@ mod tests {
 
     const APP: &str = "0.9.2";
 
-    fn info(
-        version: Option<&str>,
-        protocol: Option<u32>,
-        min_client: Option<u32>,
-    ) -> EngineInfo {
+    fn info(version: Option<&str>, protocol: Option<u32>, min_client: Option<u32>) -> EngineInfo {
         EngineInfo {
             device_id: "engine-1".into(),
             workspace_scope: WorkspaceScope::Local,
@@ -108,7 +102,9 @@ mod tests {
         assert!(!verdict.incompatible);
         assert_eq!(
             verdict.notice.as_deref(),
-            Some("Studio Mac runs Roboco 0.10.0, newer than this app (0.9.2). Everything should keep working; if something looks wrong, update the app.")
+            Some(
+                "Studio Mac runs Roboco 0.10.0, newer than this app (0.9.2). Everything should keep working; if something looks wrong, update the app."
+            )
         );
         assert_eq!(verdict.last_error, None);
     }
@@ -138,7 +134,9 @@ mod tests {
         assert!(verdict.incompatible);
         assert_eq!(
             verdict.last_error.as_deref(),
-            Some("Studio Mac runs an older Roboco (0.1.0). Update Roboco on that device to connect.")
+            Some(
+                "Studio Mac runs an older Roboco (0.1.0). Update Roboco on that device to connect."
+            )
         );
     }
 

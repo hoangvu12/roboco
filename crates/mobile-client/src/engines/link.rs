@@ -2,7 +2,8 @@
 //! connections over authenticated WebSockets, with reconnect backoff, park
 //! rules, sync deadlines, health probes and lenient frame application.
 //!
-//! Design ported from zeron #621's `crates/client/src/direct/host.rs`
+//! Design ported from upstream zeronsh/zeron PR #621's
+//! `crates/client/src/direct/host.rs`
 //! (mapped onto authenticated WebSockets instead of SSH channels):
 //!
 //! - **feed** — `EngineInfo` identity + health, and the five registry
@@ -67,6 +68,9 @@ pub(crate) enum EngineCommand {
         generation: u64,
         result: Result<Arc<RpcClient>, RpcError>,
     },
+    /// An auxiliary dial (spare, transcript) was refused on upgrade: the
+    /// session is revoked — park, exactly like a refused feed dial.
+    DialRefused,
 }
 
 /// Everything one supervisor task needs. The task owns the live
@@ -89,12 +93,17 @@ pub(crate) struct EngineCtx {
 /// How the steady loop ended.
 enum LinkEnd {
     /// The link died with this reason (`None` keeps the previous error).
-    Drop { error: Option<String> },
+    Drop {
+        error: Option<String>,
+    },
     /// The OS network went definitively offline.
     Offline,
     /// Clean redial request (`reconnect_engine`): dial now, keep the error.
     Redial,
-    Parked { reason: ParkReason, message: String },
+    Parked {
+        reason: ParkReason,
+        message: String,
+    },
     Cancelled,
 }
 
@@ -106,10 +115,7 @@ enum FrameEvent {
 
 /// Streams that have not delivered a frame this link, excluding the ones
 /// this engine generation does not serve.
-fn stream_missing(
-    seen: &HashSet<&'static str>,
-    unsupported: &[&'static str],
-) -> Vec<String> {
+fn stream_missing(seen: &HashSet<&'static str>, unsupported: &[&'static str]) -> Vec<String> {
     let mut missing = Vec::new();
     for method in FEED_STREAMS {
         if !unsupported.contains(&method) && !seen.contains(&method) {
@@ -169,8 +175,9 @@ async fn run(mut ctx: EngineCtx) {
             Some(client) if !client.is_closed() => client,
             prior => {
                 let _ = prior; // A closed pair-time client: dial fresh.
-                let (endpoint, credential) = entry_pair(&ctx);
-                let dial = roboco_rpc::connect_ws_authenticated(&endpoint, &credential);
+                let target = entry_pair(&ctx);
+                let dial =
+                    roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential);
                 tokio::select! {
                     _ = ctx.cancel.cancelled() => return,
                     _ = wait_offline(&ctx.network) => { continue; }
@@ -266,7 +273,7 @@ async fn run(mut ctx: EngineCtx) {
                     device_id: info.device_id.clone(),
                     name: display_name(
                         entry.engine_name.as_deref(),
-                        &entry.paired.label,
+                        entry.paired.name.as_deref(),
                         &super::host_of(&entry.paired.base_url),
                     ),
                 });
@@ -422,17 +429,8 @@ async fn steady(
                                 let _ = reply.send(Ok(client));
                             }
                             None => {
-                                let (endpoint, credential) = entry_pair(ctx);
-                                tokio::spawn(async move {
-                                    let result =
-                                        roboco_rpc::connect_ws_authenticated(&endpoint, &credential)
-                                            .await
-                                            .map(Arc::new)
-                                            .map_err(|err| ClientError::HostUnavailable {
-                                                message: err.to_string(),
-                                            });
-                                    let _ = reply.send(result);
-                                });
+                                let target = entry_pair(ctx);
+                                spawn_aux_dial(command_tx_of(ctx), target, reply);
                             }
                         }
                         maybe_refill_spare(ctx);
@@ -492,6 +490,12 @@ async fn steady(
                             }
                         }
                     }
+                    Some(EngineCommand::DialRefused) => {
+                        return LinkEnd::Parked {
+                            reason: ParkReason::Revoked,
+                            message: "Session revoked; pair again to connect.".into(),
+                        };
+                    }
                     Some(EngineCommand::CallsResult { generation: calls_generation, result }) => {
                         if calls_generation == generation {
                             match result {
@@ -508,6 +512,16 @@ async fn steady(
                                     publish(ctx);
                                 }
                                 Err(err) => {
+                                    if roboco_rpc::is_auth_refused(&err) {
+                                        // The session was revoked: park like a
+                                        // refused feed dial (HTTP 401 on the
+                                        // upgrade), never retry.
+                                        return LinkEnd::Parked {
+                                            reason: ParkReason::Revoked,
+                                            message: "Session revoked; pair again to connect."
+                                                .into(),
+                                        };
+                                    }
                                     tracing::warn!(engine = %ctx.engine_id, %err, "calls redial failed");
                                     calls_retry_at = Some(Instant::now());
                                 }
@@ -617,23 +631,35 @@ fn apply_frame(ctx: &EngineCtx, clock: &mut SessionClock, method: &'static str, 
                 &crate::lenient::chat_substitutions(),
                 "id",
             );
-            apply_rows(ctx, decoded, previous, |rows| &mut rows.chats, |row| {
-                row.id.as_str()
-            });
+            apply_rows(
+                ctx,
+                decoded,
+                previous,
+                |rows| &mut rows.chats,
+                |row| row.id.as_str(),
+            );
         }
         methods::WATCH_SPACES => {
             let previous = entry_field(ctx, |entry| entry.rows.spaces.clone());
             let decoded = crate::lenient::decode_rows::<Space>(value, &[], "id");
-            apply_rows(ctx, decoded, previous, |rows| &mut rows.spaces, |row| {
-                row.id.as_str()
-            });
+            apply_rows(
+                ctx,
+                decoded,
+                previous,
+                |rows| &mut rows.spaces,
+                |row| row.id.as_str(),
+            );
         }
         methods::WATCH_DEVICES => {
             let previous = entry_field(ctx, |entry| entry.rows.devices.clone());
             let decoded = crate::lenient::decode_rows::<Device>(value, &[], "id");
-            apply_rows(ctx, decoded, previous, |rows| &mut rows.devices, |row| {
-                row.id.as_str()
-            });
+            apply_rows(
+                ctx,
+                decoded,
+                previous,
+                |rows| &mut rows.devices,
+                |row| row.id.as_str(),
+            );
             // The engine's own row: display name, platform, version.
             if let Some(device_id) =
                 entry_field(ctx, |entry| entry.paired.device_id.clone()).flatten()
@@ -664,7 +690,7 @@ fn apply_frame(ctx: &EngineCtx, clock: &mut SessionClock, method: &'static str, 
                                     device_id: device.id.clone(),
                                     name: display_name(
                                         name.as_deref(),
-                                        &entry.paired.label,
+                                        entry.paired.name.as_deref(),
                                         &super::host_of(&entry.paired.base_url),
                                     ),
                                 });
@@ -686,21 +712,14 @@ fn apply_frame(ctx: &EngineCtx, clock: &mut SessionClock, method: &'static str, 
                     // The clock rebases freshly decoded rows on the phone's
                     // clock; kept (undecodable) rows keep the phone stamp
                     // they already carry.
+                    let stats = decode_stats(&decoded);
                     let rebased = clock.rebase(decoded.rows, super::now());
-                    let merged = merge_rows(previous.as_deref(), rebased, &decoded.ids, |row| {
+                    let merged = merge_rows(previous.as_deref(), rebased, &stats.ids, |row| {
                         row.chat_id.as_str()
                     });
                     update_entry(ctx, |entry| {
                         entry.rows.sessions = merged.0;
-                        entry.diagnostics.repaired_rows = entry
-                            .diagnostics
-                            .repaired_rows
-                            .saturating_add(decoded.repaired.len() as u32 + merged.1);
-                        entry.diagnostics.skipped_rows = entry
-                            .diagnostics
-                            .skipped_rows
-                            .saturating_add(decoded.errors.len() as u32);
-                        entry.diagnostics.last_decode_error = decoded.errors.first().cloned();
+                        record_decode(entry, &stats, merged.1);
                         entry.from_cache = false;
                     });
                 }
@@ -744,23 +763,47 @@ fn apply_rows<T>(
 {
     match decoded {
         Ok(decoded) => {
-            let merged = merge_rows(previous.as_deref(), decoded.rows, &decoded.ids, id_of);
+            let stats = decode_stats(&decoded);
+            let merged = merge_rows(previous.as_deref(), decoded.rows, &stats.ids, id_of);
             update_entry(ctx, |entry| {
                 *set(&mut entry.rows) = merged.0;
-                entry.diagnostics.repaired_rows = entry
-                    .diagnostics
-                    .repaired_rows
-                    .saturating_add(decoded.repaired.len() as u32 + merged.1);
-                entry.diagnostics.skipped_rows = entry
-                    .diagnostics
-                    .skipped_rows
-                    .saturating_add(decoded.errors.len() as u32);
-                entry.diagnostics.last_decode_error = decoded.errors.first().cloned();
+                record_decode(entry, &stats, merged.1);
                 entry.from_cache = false;
             });
         }
         Err(error) => count_frame_error(ctx, error),
     }
+}
+
+/// The pieces of a decoded frame the diagnostics fold needs, split out
+/// before the rows move into the merge.
+struct DecodeStats {
+    ids: HashSet<String>,
+    repaired: usize,
+    errors: Vec<String>,
+}
+
+fn decode_stats<T>(decoded: &crate::lenient::DecodedRows<T>) -> DecodeStats {
+    DecodeStats {
+        ids: decoded.ids.iter().cloned().collect(),
+        repaired: decoded.repaired.len(),
+        errors: decoded.errors.clone(),
+    }
+}
+
+/// Fold one decoded frame into the engine's lenient-decoding counters
+/// (link-lifetime totals: `repaired` rows kept after a repair, `kept`
+/// previous copies of undecodable rows, and the skipped rows).
+fn record_decode(entry: &mut EngineEntry, stats: &DecodeStats, kept: u32) {
+    entry.diagnostics.repaired_rows = entry
+        .diagnostics
+        .repaired_rows
+        .saturating_add(stats.repaired as u32 + kept);
+    entry.diagnostics.skipped_rows = entry
+        .diagnostics
+        .skipped_rows
+        .saturating_add(stats.errors.len() as u32);
+    entry.diagnostics.last_decode_error = stats.errors.first().cloned();
 }
 
 fn count_frame_error(ctx: &EngineCtx, error: String) {
@@ -782,10 +825,7 @@ fn merge_rows<T: Clone>(
     id_of: fn(&T) -> &str,
 ) -> (Vec<T>, u32) {
     let mut out = rows;
-    let decoded_ids: HashSet<String> = out
-        .iter()
-        .map(|row| id_of(row).to_owned())
-        .collect();
+    let decoded_ids: HashSet<String> = out.iter().map(|row| id_of(row).to_owned()).collect();
     let mut kept = 0;
     if let Some(previous) = previous {
         for row in previous {
@@ -863,16 +903,8 @@ async fn drop_with_retry(ctx: &mut EngineCtx, backoff: &mut Backoff, error: Stri
                     }
                     Some(EngineCommand::Refresh(ack)) => { let _ = ack.send(()); }
                     Some(EngineCommand::TakeSpare { reply }) => {
-                        let (endpoint, credential) = entry_pair(ctx);
-                        tokio::spawn(async move {
-                            let result = roboco_rpc::connect_ws_authenticated(&endpoint, &credential)
-                                .await
-                                .map(Arc::new)
-                                .map_err(|err| ClientError::HostUnavailable {
-                                    message: err.to_string(),
-                                });
-                            let _ = reply.send(result);
-                        });
+                        let target = entry_pair(ctx);
+                        spawn_aux_dial(command_tx_of(ctx), target, reply);
                     }
                     None => return,
                     _ => {}
@@ -946,13 +978,13 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
     let Some(inner) = ctx.weak.upgrade() else {
         return VersionVerdict::default();
     };
-    let (label, engine_name, base_url) = lock(&inner.engines)
+    let (paired_name, engine_name, base_url) = lock(&inner.engines)
         .entries
         .iter()
         .find(|entry| entry.paired.engine_id == ctx.engine_id)
         .map(|entry| {
             (
-                entry.paired.label.clone(),
+                entry.paired.name.clone(),
                 entry.engine_name.clone(),
                 entry.paired.base_url.clone(),
             )
@@ -960,7 +992,7 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
         .unwrap_or_default();
     let name = display_name(
         engine_name.as_deref(),
-        &label,
+        paired_name.as_deref(),
         &super::host_of(&base_url),
     );
     compat::assess_engine(info, &inner.config.app_version, &name)
@@ -968,8 +1000,8 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
 
 /// Dial an auxiliary connection (calls, spares).
 async fn dial_aux(ctx: &EngineCtx) -> Result<Arc<RpcClient>, RpcError> {
-    let (endpoint, credential) = entry_pair(ctx);
-    roboco_rpc::connect_ws_authenticated(&endpoint, &credential)
+    let target = entry_pair(ctx);
+    roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential)
         .await
         .map(Arc::new)
 }
@@ -1023,25 +1055,23 @@ fn spawn_probe(ctx: &EngineCtx, feed: &Arc<RpcClient>, generation: u64, timings:
     let feed = feed.clone();
     let budget = timings.identity_timeout;
     crate::runtime::shared().spawn(async move {
-        let result = match tokio::time::timeout(
-            budget,
-            feed.call_as(methods::ENGINE_INFO, json!({})),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(RpcError::Transport("Engine health check timed out".into())),
-        };
+        let result =
+            match tokio::time::timeout(budget, feed.call_as(methods::ENGINE_INFO, json!({}))).await
+            {
+                Ok(result) => result,
+                Err(_) => Err(RpcError::Transport("Engine health check timed out".into())),
+            };
         let _ = command_tx.send(EngineCommand::ProbeResult { generation, result });
     });
 }
 
 fn spawn_calls_dial(ctx: &EngineCtx, generation: u64) {
     let command_tx = command_tx_of(ctx);
-    let (endpoint, credential) = entry_pair(ctx);
+    let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
-        let result =
-            roboco_rpc::connect_ws_authenticated(&endpoint, &credential).await.map(Arc::new);
+        let result = roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential)
+            .await
+            .map(Arc::new);
         let _ = command_tx.send(EngineCommand::CallsResult { generation, result });
     });
 }
@@ -1053,10 +1083,16 @@ fn maybe_refill_spare(ctx: &EngineCtx) {
         return;
     }
     let command_tx = command_tx_of(ctx);
-    let (endpoint, credential) = entry_pair(ctx);
+    let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
-        if let Ok(client) = roboco_rpc::connect_ws_authenticated(&endpoint, &credential).await {
-            let _ = command_tx.send(EngineCommand::StoreSpare(Arc::new(client)));
+        match roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential).await {
+            Ok(client) => {
+                let _ = command_tx.send(EngineCommand::StoreSpare(Arc::new(client)));
+            }
+            Err(err) if roboco_rpc::is_auth_refused(&err) => {
+                let _ = command_tx.send(EngineCommand::DialRefused);
+            }
+            Err(_) => {}
         }
     });
 }
@@ -1073,11 +1109,49 @@ fn command_tx_of(ctx: &EngineCtx) -> CommandSender {
     .expect("engine command channel")
 }
 
-fn entry_pair(ctx: &EngineCtx) -> (String, String) {
-    entry_field(ctx, |entry| {
-        (entry.paired.endpoint(), entry.paired.credential.clone())
+/// What an auxiliary dial needs — the engine's WebSocket endpoint and its
+/// credential — handed around as one thing.
+#[derive(Clone, Default)]
+pub(crate) struct DialTarget {
+    pub endpoint: String,
+    pub credential: String,
+}
+
+fn entry_pair(ctx: &EngineCtx) -> DialTarget {
+    entry_field(ctx, |entry| DialTarget {
+        endpoint: entry.paired.endpoint(),
+        credential: entry.paired.credential.clone(),
     })
     .unwrap_or_default()
+}
+
+/// Dial a transcript/calls/spare connection and reply through `reply`.
+/// A refused upgrade parks the engine (the session is revoked) instead of
+/// retrying forever.
+fn spawn_aux_dial(
+    command_tx: CommandSender,
+    target: DialTarget,
+    reply: oneshot::Sender<Result<Arc<RpcClient>, ClientError>>,
+) {
+    crate::runtime::shared().spawn(async move {
+        let result = match roboco_rpc::connect_ws_authenticated(
+            &target.endpoint,
+            &target.credential,
+        )
+        .await
+        {
+            Ok(client) => Ok(Arc::new(client)),
+            Err(err) => {
+                if roboco_rpc::is_auth_refused(&err) {
+                    let _ = command_tx.send(EngineCommand::DialRefused);
+                }
+                Err(ClientError::HostUnavailable {
+                    message: err.to_string(),
+                })
+            }
+        };
+        let _ = reply.send(result);
+    });
 }
 
 fn entry_missing(ctx: &EngineCtx) -> bool {
@@ -1119,12 +1193,7 @@ fn update_entry(ctx: &EngineCtx, f: impl FnOnce(&mut EngineEntry)) -> bool {
     crate::update_engine(&inner, &ctx.engine_id, f)
 }
 
-fn update_state(
-    ctx: &EngineCtx,
-    state: EngineState,
-    error: Option<String>,
-    retry_at: Option<i64>,
-) {
+fn update_state(ctx: &EngineCtx, state: EngineState, error: Option<String>, retry_at: Option<i64>) {
     update_entry(ctx, |entry| {
         entry.state = state;
         if error.is_some() {

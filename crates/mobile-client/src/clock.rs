@@ -58,8 +58,7 @@ impl SessionClock {
             };
             // Millisecond precision, like the workspace doc stores it, so an
             // unchanged row compares equal to its stored copy.
-            let local =
-                DateTime::from_timestamp_millis(local.timestamp_millis()).unwrap_or(local);
+            let local = DateTime::from_timestamp_millis(local.timestamp_millis()).unwrap_or(local);
             let shift = local - raw;
             row.started_at = row.started_at.map(|t| t + shift);
             row.updated_at = local;

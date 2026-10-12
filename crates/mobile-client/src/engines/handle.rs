@@ -6,13 +6,14 @@ use super::link::EngineCommand;
 use super::{EngineEntry, EngineState, LiveClient};
 use crate::cache::EngineCacheHandle;
 use crate::{ClientError, ClientInner, lock};
-use roboco_engine_client::registry::{EngineKey, ScopedId, call_deadline};
+use roboco_engine_client::registry::{EngineKey, ScopedId};
 use roboco_engine_client::routing::wire_params;
 use roboco_proto::EngineInfo;
 use roboco_rpc::{RpcClient, RpcSubscription, methods};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -77,9 +78,12 @@ impl TranscriptConnection {
     /// `targetDeviceId` stripped).
     pub async fn watch_doc_messages(&self, chat_id: &str) -> Result<RpcSubscription, ClientError> {
         let key = EngineKey(self.engine_id.clone());
-        let params =
-            wire_params(&key, methods::WATCH_DOC_MESSAGES, serde_json::json!({"chatId": chat_id}))
-            .map_err(rpc_error_to_client_error)?;
+        let params = wire_params(
+            &key,
+            methods::WATCH_DOC_MESSAGES,
+            serde_json::json!({"chatId": chat_id}),
+        )
+        .map_err(rpc_error_to_client_error)?;
         self.client
             .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
             .await
@@ -124,9 +128,7 @@ impl EngineHandle {
     }
 
     fn inner(&self) -> Result<Arc<ClientInner>, ClientError> {
-        self.weak
-            .upgrade()
-            .ok_or(ClientError::Closed)
+        self.weak.upgrade().ok_or(ClientError::Closed)
     }
 
     fn entry<R>(&self, f: impl FnOnce(&EngineEntry) -> R) -> Result<R, ClientError> {
@@ -146,13 +148,15 @@ impl EngineHandle {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.entry(|entry| entry.state == EngineState::Connected).unwrap_or(false)
+        self.entry(|entry| entry.state == EngineState::Connected)
+            .unwrap_or(false)
     }
 
     pub fn state(&self) -> EngineState {
-        self.entry(|entry| entry.state.clone()).unwrap_or(EngineState::Parked {
-            reason: super::ParkReason::Revoked,
-        })
+        self.entry(|entry| entry.state.clone())
+            .unwrap_or(EngineState::Parked {
+                reason: super::ParkReason::Revoked,
+            })
     }
 
     pub fn engine_info(&self) -> Option<EngineInfo> {
@@ -197,11 +201,9 @@ impl EngineHandle {
                 .as_ref()
                 .map(|live| live.client.clone())
                 .filter(|client| !client.is_closed());
-            calls
-                .or(feed)
-                .ok_or_else(|| ClientError::HostUnavailable {
-                    message: "Engine is offline; reconnecting".into(),
-                })
+            calls.or(feed).ok_or_else(|| ClientError::HostUnavailable {
+                message: "Engine is offline; reconnecting".into(),
+            })
         })??;
         let params = wire_params(&self.key, &method, params).map_err(rpc_error_to_client_error)?;
         let deadline = call_deadline(&method);
@@ -260,7 +262,7 @@ impl EngineHandle {
                             if Some(live.generation) != subscribed_generation
                                 && !live.client.is_closed() =>
                         {
-                            break live
+                            break live;
                         }
                         _ => {
                             if slot.changed().await.is_err() {
@@ -294,36 +296,14 @@ impl EngineHandle {
                             }
                         }
                     }
-                    Err(roboco_rpc::RpcError::UnknownMethod(_)) => {
-                        // Unsupported on this engine generation: wait for a
-                        // new generation before trying again.
-                        subscribed_generation = Some(live.generation);
-                        loop {
-                            let current = slot.borrow_and_update().clone();
-                            match current {
-                                Some(next) if next.generation > live.generation => break,
-                                _ => {
-                                    if slot.changed().await.is_err() {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
                     Err(_) => {
-                        // Connection-level failure: wait for the next
-                        // connection.
+                        // `unknown method` (unsupported on this engine
+                        // generation) or a connection-level failure: both
+                        // wait for a new generation before trying again —
+                        // the feed itself is never torn down for either.
                         subscribed_generation = Some(live.generation);
-                        loop {
-                            let current = slot.borrow_and_update().clone();
-                            match current {
-                                Some(next) if next.generation > live.generation => break,
-                                _ => {
-                                    if slot.changed().await.is_err() {
-                                        return;
-                                    }
-                                }
-                            }
+                        if !wait_for_newer_generation(&mut slot, live.generation).await {
+                            return;
                         }
                     }
                 }
@@ -349,11 +329,9 @@ impl EngineHandle {
             .map_err(|_| ClientError::NotFound {
                 message: format!("Unknown engine: {}", self.key.0),
             })?;
-        let client = receipt
-            .await
-            .map_err(|_| ClientError::HostUnavailable {
-                message: "Engine connection is unavailable.".into(),
-            })??;
+        let client = receipt.await.map_err(|_| ClientError::HostUnavailable {
+            message: "Engine connection is unavailable.".into(),
+        })??;
         let timings = self
             .inner()
             .map(|inner| inner.timings.clone())
@@ -368,6 +346,25 @@ impl EngineHandle {
             engine_id: self.key.0.clone(),
             cancel,
         })
+    }
+}
+
+/// Wait until the slot carries a connection of a later generation.
+/// `false` when the engine is gone.
+async fn wait_for_newer_generation(
+    slot: &mut watch::Receiver<Option<LiveClient>>,
+    after: u64,
+) -> bool {
+    loop {
+        let current = slot.borrow_and_update().clone();
+        if let Some(next) = current {
+            if next.generation > after {
+                return true;
+            }
+        }
+        if slot.changed().await.is_err() {
+            return false;
+        }
     }
 }
 
@@ -389,9 +386,27 @@ pub(crate) fn rpc_error_to_client_error(error: roboco_rpc::RpcError) -> ClientEr
     }
 }
 
+/// The mobile unary deadline table, on top of the shared desktop table
+/// (`roboco_engine_client::registry::call_deadline`): the catalogs get
+/// 100 s (cold-booting an adapter CLI), chunked transfers 900 s — the
+/// tiers `ec:client.ts` ships and the ticket's table pins.
+fn call_deadline(method: &str) -> Duration {
+    if method == roboco_rpc::methods::LIST_SKILLS {
+        return Duration::from_secs(100);
+    }
+    if matches!(
+        method,
+        roboco_rpc::methods::UPLOAD_CHUNK
+            | roboco_rpc::methods::UPLOAD_COMMIT
+            | roboco_rpc::methods::READ_ATTACHMENT_CHUNK
+    ) {
+        return Duration::from_secs(900);
+    }
+    roboco_engine_client::registry::call_deadline(method)
+}
+
 /// Scope helper shared with ticket 08's frame consumption.
 #[allow(dead_code)] // consumed by ticket 08
 pub(crate) fn scope_id(engine_id: &str, raw_id: &str) -> String {
     ScopedId::encode(&EngineKey(engine_id.to_owned()), raw_id)
 }
-

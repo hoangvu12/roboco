@@ -38,14 +38,15 @@ use tokio_util::sync::CancellationToken;
 
 pub use engines::{
     Connectivity, ConnectivityState, EngineDiagnostics, EngineHandle, EngineSnapshot, EngineState,
-    EngineView, FeedItem, FeedWatch, FleetSnapshot, ParkReason, PairedEngine,
-    TranscriptConnection,
+    EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason, TranscriptConnection,
 };
 pub use events::{ClientEvent, ClientListener};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
 
 pub(crate) fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    value
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Static per-install configuration.
@@ -84,7 +85,7 @@ pub enum ClientError {
     Auth { message: String },
     #[error("storage: {message}")]
     Storage { message: String },
-    #[error("not implemented: {message}")]
+    #[error("not implemented yet: {message}")]
     NotImplemented { message: String },
     #[error("client is shut down")]
     Closed,
@@ -166,37 +167,10 @@ impl Client {
             {
                 let cache = cache.clone();
                 let engine_id = paired.engine_id.clone();
-                crate::runtime::shared().spawn_blocking(move || {
-                    crate::cache::prune_transcripts(&cache, &engine_id)
-                });
+                crate::runtime::shared()
+                    .spawn_blocking(move || crate::cache::prune_transcripts(&cache, &engine_id));
             }
-            let (feed_slot, _) = watch::channel(None);
-            let (calls_slot, _) = watch::channel(None);
-            entries.push(EngineEntry {
-                paired,
-                state: EngineState::Connecting,
-                last_error: None,
-                retry_at_ms: None,
-                last_connected_ms: None,
-                info: None,
-                engine_name: None,
-                notice: None,
-                generation: 0,
-                // No live feed frame has arrived yet this process.
-                from_cache: true,
-                rows,
-                sidebar,
-                diagnostics: EngineDiagnostics::default(),
-                cache: handle,
-                feed_slot,
-                calls_slot,
-                command_tx: {
-                    let (tx, _rx) = mpsc::unbounded_channel();
-                    tx
-                },
-                cancel: CancellationToken::new(),
-                task: finished_task(),
-            });
+            entries.push(pending_entry(paired, handle, rows, sidebar));
         }
         let inner = Arc::new(ClientInner {
             config,
@@ -240,35 +214,36 @@ impl Client {
         pairing_url: &str,
         replace_engine_id: Option<String>,
     ) -> Result<PairedEngine, PairError> {
-        let redeemed =
-            pairing::redeem_pairing(pairing_url, &self.inner.config.device_name).await?;
+        let redeemed = pairing::redeem_pairing(pairing_url, &self.inner.config.device_name).await?;
         let label = pairing::sanitize_label(&self.inner.config.device_name);
         // Dial and pin. A failed dial still returns the record: the
         // credential is already minted and single-use codes cannot be
         // re-redeemed; the engine shows `Reconnecting` and the first
         // successful connect pins it.
-        let (initial_feed, device_id) =
-            match roboco_rpc::connect_ws_authenticated(&redeemed.endpoint, &redeemed.credential)
+        let (initial_feed, device_id) = match roboco_rpc::connect_ws_authenticated(
+            &redeemed.endpoint,
+            &redeemed.credential,
+        )
+        .await
+        {
+            Ok(client) => {
+                let client = Arc::new(client);
+                let info: Option<EngineInfo> = match tokio::time::timeout(
+                    self.inner.timings.identity_timeout,
+                    client.call_as(roboco_rpc::methods::ENGINE_INFO, serde_json::json!({})),
+                )
                 .await
-            {
-                Ok(client) => {
-                    let client = Arc::new(client);
-                    let info: Option<EngineInfo> = match tokio::time::timeout(
-                        Duration::from_secs(10),
-                        client.call_as(roboco_rpc::methods::ENGINE_INFO, serde_json::json!({})),
-                    )
-                    .await
-                    {
-                        Ok(Ok(info)) => Some(info),
-                        _ => None,
-                    };
-                    (Some(client), info.map(|info| info.device_id))
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "pairing dial failed; engine will reconnect in the background");
-                    (None, None)
-                }
-            };
+                {
+                    Ok(Ok(info)) => Some(info),
+                    _ => None,
+                };
+                (Some(client), info.map(|info| info.device_id))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "pairing dial failed; engine will reconnect in the background");
+                (None, None)
+            }
+        };
         // Duplicate engines: an explicit replacement, or the same engine
         // re-paired under a new link — one row per engine (the web's rule:
         // re-pairing an origin replaces its credential).
@@ -284,7 +259,7 @@ impl Client {
                     None => {
                         return Err(PairError::Failed {
                             message: format!("Unknown engine to replace: {id}"),
-                        })
+                        });
                     }
                 },
                 None => device_id.as_ref().and_then(|device_id| {
@@ -345,10 +320,7 @@ impl Client {
                 old_task.abort();
                 let _ = old_task.await;
                 start_supervision(&self.inner, &engine_id, initial_feed);
-                lock(&self.inner.engines)
-                    .entries[index]
-                    .paired
-                    .clone()
+                lock(&self.inner.engines).entries[index].paired.clone()
             }
             None => {
                 let record = PairedEngine {
@@ -361,8 +333,6 @@ impl Client {
                     device_id: device_id.clone(),
                     name: None,
                 };
-                let (feed_slot, _) = watch::channel(None);
-                let (calls_slot, _) = watch::channel(None);
                 let handle = EngineCacheHandle::new(
                     record.engine_id.clone(),
                     self.inner.cache.clone(),
@@ -370,30 +340,12 @@ impl Client {
                 );
                 let engine_id = record.engine_id.clone();
                 let mut state = lock(&self.inner.engines);
-                state.entries.push(EngineEntry {
-                    paired: record.clone(),
-                    state: EngineState::Connecting,
-                    last_error: None,
-                    retry_at_ms: None,
-                    last_connected_ms: None,
-                    info: None,
-                    engine_name: None,
-                    notice: None,
-                    generation: 0,
-                    from_cache: true,
-                    rows: CachedRows::default(),
-                    sidebar: None,
-                    diagnostics: EngineDiagnostics::default(),
-                    cache: handle,
-                    feed_slot,
-                    calls_slot,
-                    command_tx: {
-                        let (tx, _rx) = mpsc::unbounded_channel();
-                        tx
-                    },
-                    cancel: CancellationToken::new(),
-                    task: finished_task(),
-                });
+                state.entries.push(pending_entry(
+                    record.clone(),
+                    handle,
+                    CachedRows::default(),
+                    None,
+                ));
                 drop(state);
                 start_supervision(&self.inner, &engine_id, initial_feed);
                 record
@@ -403,7 +355,11 @@ impl Client {
             self.inner.pump.pinned(ClientEvent::EngineIdentityPinned {
                 engine_id: record.engine_id.clone(),
                 device_id: device_id.clone(),
-                name: engines::display_name(None, &record.label, &host_of(&record.base_url)),
+                name: engines::display_name(
+                    None,
+                    record.name.as_deref(),
+                    &host_of(&record.base_url),
+                ),
             });
         }
         publish(&self.inner);
@@ -571,10 +527,24 @@ impl Client {
                 })
                 .collect()
         };
+        // One hard cap across every engine (the ticket's "hard cap of 3 s"),
+        // not one per engine: the receipts always resolve on their own
+        // within the per-engine refresh deadline.
         let cap = self.inner.timings.refresh_cap;
-        for receipt in acks {
-            let _ = tokio::time::timeout(cap, receipt).await;
-        }
+        let waits: Vec<_> = acks
+            .into_iter()
+            .map(|receipt| {
+                tokio::spawn(async move {
+                    let _ = receipt.await;
+                })
+            })
+            .collect();
+        let _ = tokio::time::timeout(cap, async move {
+            for wait in waits {
+                let _ = wait.await;
+            }
+        })
+        .await;
     }
 
     /// The aggregate connectivity posture.
@@ -615,7 +585,10 @@ impl Client {
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
             let _ = entry.command_tx.send(EngineCommand::Foreground);
-            if !matches!(entry.state, EngineState::Connected | EngineState::Parked { .. }) {
+            if !matches!(
+                entry.state,
+                EngineState::Connected | EngineState::Parked { .. }
+            ) {
                 let _ = entry.command_tx.send(EngineCommand::DialNow);
             }
         }
@@ -678,7 +651,10 @@ impl Client {
 
     /// Scope a raw id to an engine (ticket 04's `ScopedId::encode`).
     pub fn scope(&self, engine_id: &str, raw_id: &str) -> String {
-        ScopedId::encode(&roboco_engine_client::registry::EngineKey(engine_id.to_owned()), raw_id)
+        ScopedId::encode(
+            &roboco_engine_client::registry::EngineKey(engine_id.to_owned()),
+            raw_id,
+        )
     }
 
     /// The per-engine snapshot stream tickets 07/08/09 consume.
@@ -696,6 +672,43 @@ fn rpc_error_to_client_error(error: roboco_rpc::RpcError) -> ClientError {
 /// no-op and it leaks nothing.
 fn finished_task() -> tokio::task::JoinHandle<()> {
     crate::runtime::shared().spawn(async {})
+}
+
+/// A fresh engine entry, before supervision starts: cached rows and
+/// sidebar loaded (if any), no live frame yet, placeholder task. The
+/// command channel and watch slots exist only so the entry is complete
+/// before `start_supervision` fills in the real ones.
+fn pending_entry(
+    paired: PairedEngine,
+    cache: EngineCacheHandle,
+    rows: CachedRows,
+    sidebar: Option<roboco_proto::SidebarStateSnapshot>,
+) -> EngineEntry {
+    let (feed_slot, _) = watch::channel(None);
+    let (calls_slot, _) = watch::channel(None);
+    let (command_tx, _command_rx) = mpsc::unbounded_channel();
+    EngineEntry {
+        paired,
+        state: EngineState::Connecting,
+        last_error: None,
+        retry_at_ms: None,
+        last_connected_ms: None,
+        info: None,
+        engine_name: None,
+        notice: None,
+        generation: 0,
+        // No live feed frame has arrived yet this process.
+        from_cache: true,
+        rows,
+        sidebar,
+        diagnostics: EngineDiagnostics::default(),
+        cache,
+        feed_slot,
+        calls_slot,
+        command_tx,
+        cancel: CancellationToken::new(),
+        task: finished_task(),
+    }
 }
 
 /// Spawn (or restart) one engine's supervisor.
@@ -765,11 +778,7 @@ pub(crate) fn publish(inner: &Arc<ClientInner>) {
     let mut state = lock(&inner.engines);
     let views: Vec<EngineView> = state.entries.iter().map(engine_view).collect();
     let fleet = Arc::new(FleetSnapshot {
-        engines: state
-            .entries
-            .iter()
-            .map(engine_snapshot_of)
-            .collect(),
+        engines: state.entries.iter().map(engine_snapshot_of).collect(),
     });
     let connectivity = connectivity_of(inner, &state.entries);
     let engines_changed = views != state.last_views;
@@ -800,7 +809,7 @@ fn engine_view(entry: &EngineEntry) -> EngineView {
         engine_device
             .map(|device| device.name.as_str())
             .or(entry.engine_name.as_deref()),
-        &entry.paired.label,
+        entry.paired.name.as_deref(),
         &host,
     );
     let version = entry
@@ -867,7 +876,10 @@ fn connectivity_of(inner: &ClientInner, entries: &[EngineEntry]) -> Connectivity
         .iter()
         .filter(|entry| !matches!(entry.state, EngineState::Parked { .. }))
         .collect();
-    if non_parked.iter().any(|entry| entry.state != EngineState::Connected) {
+    if non_parked
+        .iter()
+        .any(|entry| entry.state != EngineState::Connected)
+    {
         let retry_at_ms = non_parked
             .iter()
             .filter_map(|entry| entry.retry_at_ms)
