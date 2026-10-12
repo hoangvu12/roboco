@@ -34,6 +34,7 @@ import kotlin.math.ceil
 import sh.roboco.android.R
 import sh.roboco.android.core.Face
 import sh.roboco.android.core.GeistMetrics
+import sh.roboco.android.core.assetPath
 
 /**
  * The GeistMono-Medium [Typeface] for the tile's native `Paint` — the
@@ -192,13 +193,13 @@ object ProjectTiles {
     ): ImageBitmap {
         val sidePx = ceil(side.value * density.density).toInt()
         val toneIndex = Math.floorMod(colorIndex, Palette.PROJECT_TONE_COUNT)
-        val l = letter(name)
-        val key = TileKey(l, toneIndex, sidePx, dark)
+        val monogram = letter(name)
+        val key = TileKey(monogram, toneIndex, sidePx, dark)
         bitmapCache.get(key)?.let { return it }
         val tone = Palette.of(dark).projectTone(colorIndex).toArgb()
         val pixels = Bitmap.createBitmap(sidePx, sidePx, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(pixels)
-        draw(canvas, sidePx.toFloat(), l, tone, typeface, cornerPath(sidePx.toFloat()))
+        draw(canvas, sidePx.toFloat(), monogram, tone, typeface, cornerPath(sidePx.toFloat()))
         val image = pixels.asImageBitmap()
         bitmapCache.put(key, image)
         return image

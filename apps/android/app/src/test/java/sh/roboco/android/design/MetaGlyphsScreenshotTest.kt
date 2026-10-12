@@ -217,6 +217,59 @@ class MetaGlyphsScreenshotTest {
         }
     }
 
+    @Test
+    fun tileColorIndexWrapsByFloorMod() {
+        // colorIndex 9 renders as 1 and −1 as 7: the same tone, byte-for-byte.
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                Row {
+                    ProjectTile("roboco", 1, Modifier.testTag("one"), side = 14.dp)
+                    ProjectTile("roboco", 9, Modifier.testTag("nine"), side = 14.dp)
+                    ProjectTile("roboco", 7, Modifier.testTag("seven"), side = 14.dp)
+                    ProjectTile("roboco", -1, Modifier.testTag("minus-one"), side = 14.dp)
+                }
+            }
+        }
+        val one = compose.onNodeWithTag("one").captureToImage().toPixelMap()
+        val nine = compose.onNodeWithTag("nine").captureToImage().toPixelMap()
+        val seven = compose.onNodeWithTag("seven").captureToImage().toPixelMap()
+        val minusOne = compose.onNodeWithTag("minus-one").captureToImage().toPixelMap()
+        assertTrue("9 should render like 1", one.buffer.contentEquals(nine.buffer))
+        assertTrue("-1 should render like 7", seven.buffer.contentEquals(minusOne.buffer))
+        assertFalse("1 and 7 are different tones", one.buffer.contentEquals(seven.buffer))
+    }
+
+    @Test
+    fun badgeFillIsTheToneAtEightPercentForEveryStateInLightAndDark() {
+        // Sample a fill-only pixel of the badge (7 px in from the left edge,
+        // mid-height — left of the icon at x = pad = 15 px, away from the
+        // rounded corners' curvature) and check the background blended with
+        // the tone at 20/255, within ±2/255. H = 18 dp = 54 px at xxhdpi.
+        // The tone is the real prTone(state), captured in composition.
+        var state by mutableStateOf(PrState.Open)
+        var dark by mutableStateOf(false)
+        val tones = HashMap<PrState, Color>()
+        compose.setContent {
+            RobocoTheme(if (dark) Appearance.Dark else Appearance.Light) {
+                val palette = RobocoTheme.palette
+                val tone = prTone(state)
+                SideEffect { tones[state] = tone }
+                Box(Modifier.testTag("host").background(palette.background)) {
+                    PrBadge(102u, state)
+                }
+            }
+        }
+        for (mode in listOf(false, true)) {
+            compose.runOnIdle { dark = mode }
+            val palette = Palette.of(mode)
+            for (candidate in PrState.entries) {
+                compose.runOnIdle { state = candidate }
+                val px = compose.onNodeWithTag("host").captureToImage().toPixelMap()
+                assertBlendedFill(px[7, 27], palette.background, tones.getValue(candidate))
+            }
+        }
+    }
+
     private fun assertBlendedFill(actual: Color, background: Color, tone: Color) {
         val a = ProjectTiles.FILL_ALPHA / 255f
         fun near(name: String, expected: Float, got: Float) {
