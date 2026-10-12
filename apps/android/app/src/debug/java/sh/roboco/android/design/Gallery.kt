@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
+import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
@@ -85,6 +86,7 @@ object Gallery {
         GallerySection("Navigation", GalleryLayout.Scroll, screenshotHeightDp = 891) { NavGallerySection() },
         GallerySection("Icons") { IconsGallerySection() },
         GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() },
+        GallerySection("Alert", GalleryLayout.Scroll, screenshotHeightDp = 640) { AlertGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
@@ -96,7 +98,6 @@ object Gallery {
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
         // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
-        // 18 "Alert"              GallerySection("Alert") { AlertGallerySection() }  + AlertHost in GalleryProviders
         // 19 "Action sheet"       GallerySection("Action sheet") { ActionSheetGallerySection() }  (wraps its own ActionSheetHost)
         // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
@@ -133,8 +134,7 @@ fun GalleryProviders(appearance: Appearance, capture: Boolean = false, content: 
         ProvideReduceMotion {
             val inner: @Composable () -> Unit = {
                 CompositionLocalProvider(LocalGalleryCapture provides capture) {
-                    // Ticket 18 wraps ToastHost in AlertHost { } here (18 step 7).
-                    ToastHost { content() }
+                    AlertHost { ToastHost { content() } }
                 }
             }
             if (capture) {
