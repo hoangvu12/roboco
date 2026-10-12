@@ -27,6 +27,7 @@ import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
+import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -92,6 +93,8 @@ object Gallery {
         GallerySection("Text engine", GalleryLayout.Fill) {
             if (LocalGalleryCapture.current) TextEngineSpecimen(cjkSource = "fixture", measurerCalls = 0) else TextEngineSpecimen()
         },
+        // Ticket 27 (the ticket names this registration line):
+        GallerySection("New session accessory") { NewSessionAccessoryGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
