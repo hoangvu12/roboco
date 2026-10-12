@@ -153,7 +153,10 @@ class TranscriptPaletteTest {
 
     // ---------------------------------------------------------------------
     // The alpha quantisation rule: (alpha * 255 + 0.5).toInt(), round half
-    // up. Truncation would give 24 / 30 / 14 — all wrong for 0.12.
+    // up. Truncation would give 24 / 30 / 14: only the 0.12 case is wrong
+    // (30, one 8-bit step low; the correct value is 31 — the ticket's
+    // Pitfall), but the rule is what keeps every alpha bit-for-bit equal to
+    // Compose `Color.toArgb()`.
     // ---------------------------------------------------------------------
 
     @Test
