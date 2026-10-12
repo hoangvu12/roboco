@@ -111,6 +111,9 @@ object Gallery {
         },
         // Ticket 16 (context menu): long-press lift, dimmed backdrop, menu at the row.
         GallerySection("Context menu", GalleryLayout.Fill, screenshotHeightDp = 891) { ContextMenuGallerySection() },
+        // Ticket 70 (inset-grouped list): Fill — the cards sit 16 dp from
+        // the screen edges, so the section owns its scrolling unpadded.
+        GallerySection("Grouped list", layout = GalleryLayout.Fill, screenshotHeightDp = 1300) { GroupedListGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
