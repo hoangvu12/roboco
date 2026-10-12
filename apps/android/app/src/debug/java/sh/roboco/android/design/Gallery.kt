@@ -95,11 +95,11 @@ object Gallery {
         },
         // Ticket 27 (the ticket names this registration line):
         GallerySection("New session accessory") { NewSessionAccessoryGallerySection() },
+        GallerySection("Glass buttons") { GlassButtonsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
