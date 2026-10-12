@@ -27,9 +27,13 @@ pub fn wire_params(
         *value = serde_json::Value::String(parsed.raw_id);
         Ok(())
     }
-    fn fields(owner: &EngineKey, object: &mut serde_json::Map<String, serde_json::Value>) -> Result<(), RpcError> {
+    fn fields(
+        owner: &EngineKey,
+        object: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), RpcError> {
         for field in [
             "chatId",
+            "sourceChatId",
             "spaceId",
             "deviceId",
             "checkoutId",
@@ -102,6 +106,30 @@ mod tests {
         for key in ["text", "options", "path"] {
             assert_eq!(wire[key], params[key]);
         }
+    }
+
+    #[test]
+    fn wire_boundary_decodes_source_chat_id() {
+        let owner = EngineKey("engine-b".into());
+        let scoped = ScopedId::encode(&owner, "side-chat");
+        // A scoped source chat id is decoded back to the owner's raw id, so a
+        // remote engine's ForkSideChat reaches it with local ids again (the
+        // TS twin has always decoded this field).
+        let wire = wire_params(
+            &owner,
+            "ForkSideChat",
+            json!({"chatId": scoped, "sourceChatId": scoped}),
+        )
+        .unwrap();
+        assert_eq!(wire["chatId"], "side-chat");
+        assert_eq!(wire["sourceChatId"], "side-chat");
+        // Raw ids pass through unchanged — local desktop requests are identical.
+        let wire =
+            wire_params(&owner, "ForkSideChat", json!({"sourceChatId": "raw-chat"})).unwrap();
+        assert_eq!(wire["sourceChatId"], "raw-chat");
+        // A scoped id from a foreign engine is rejected client-side.
+        let foreign = ScopedId::encode(&EngineKey("engine-a".into()), "side-chat");
+        assert!(wire_params(&owner, "ForkSideChat", json!({"sourceChatId": foreign})).is_err());
     }
 
     #[test]

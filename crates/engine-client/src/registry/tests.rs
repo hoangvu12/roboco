@@ -1,4 +1,5 @@
 use super::*;
+use crate::{FileSessionStore, PairingResolver, RegistryOptions, ResolvedPairing, SessionStore};
 use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing::PairingStore};
 
 fn core(dir: &std::path::Path) -> EngineCore {
@@ -208,6 +209,121 @@ async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
     remote.shutdown().await;
 }
 
+/// A phone registry has no local engine: `open_with(local: None)` holds
+/// only paired engines, every projected id is scoped, reconnects ride the
+/// saved credentials, and forgetting drops both rows and cache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_only_registry_pairs_reconnects_and_forgets() {
+    let remote_dir = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let remote = core(remote_dir.path());
+    let registry = EngineRegistry::open_with(RegistryOptions {
+        data_dir: client_dir.path().to_path_buf(),
+        sessions: Arc::new(FileSessionStore::new(
+            client_dir.path().join("paired-engines-v1.json"),
+        )),
+        local: None,
+        resolvers: Vec::new(),
+    })
+    .await
+    .unwrap();
+    let listener = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        remote.rpc_service(),
+        remote_dir.path(),
+    )
+    .await
+    .unwrap();
+    let address = listener.address;
+    let store = PairingStore::open(remote_dir.path()).unwrap();
+    let code = store.create_code("remote-only test", 300).unwrap();
+    let key = registry
+        .pair(
+            &format!("http://{address}/pair#token={}", code.credential),
+            "Test phone",
+        )
+        .await
+        .unwrap();
+    // Only the paired engine exists — no local entry, so every projected id
+    // must be scoped to it.
+    wait_for(&registry, |snapshot| {
+        let projected = snapshot.projected();
+        snapshot.engines.len() == 1
+            && projected.chats.len() == 1
+            && projected.spaces.len() == 1
+            && snapshot.engines.iter().all(|e| {
+                e.chats_loaded && e.spaces_loaded && e.state == EngineConnectionState::Connected
+            })
+    })
+    .await;
+    let projected = registry.snapshot().projected();
+    assert_eq!(
+        ScopedId::parse(&projected.chats[0].id).unwrap().engine,
+        key,
+        "remote-only registries never leave ids raw"
+    );
+    assert_eq!(
+        ScopedId::parse(&projected.spaces[0].id).unwrap().engine,
+        key
+    );
+    let saved = FileSessionStore::new(client_dir.path().join("paired-engines-v1.json"))
+        .load()
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].key, key);
+    drop(listener);
+    remote.shutdown().await;
+    drop(remote);
+    wait_for(&registry, |snapshot| {
+        snapshot
+            .engines
+            .iter()
+            .any(|e| e.key == key && e.state == EngineConnectionState::Reconnecting)
+    })
+    .await;
+    assert_eq!(
+        registry.snapshot().projected().chats.len(),
+        1,
+        "cached history survives the outage"
+    );
+    let remote = EngineCore::assemble_with_profile(
+        EngineProfile::local(remote_dir.path()).unwrap(),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+    )
+    .unwrap();
+    let listener =
+        roboco_engine::serve_engine_remote(address, remote.rpc_service(), remote_dir.path())
+            .await
+            .unwrap();
+    wait_for(&registry, |snapshot| {
+        snapshot.engines.iter().any(|e| {
+            e.key == key && e.state == EngineConnectionState::Connected && e.generation >= 2
+        })
+    })
+    .await;
+    let target = registry.target(&key).unwrap();
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    registry.forget(&key).await.unwrap();
+    assert!(registry.snapshot().engines.is_empty());
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_err());
+    assert!(
+        crate::cache::EngineCache::new(client_dir.path())
+            .load_rows(&key.0)
+            .is_none(),
+        "forgetting the engine drops its cache"
+    );
+    assert!(
+        FileSessionStore::new(client_dir.path().join("paired-engines-v1.json"))
+            .load()
+            .unwrap()
+            .is_empty()
+    );
+    registry.shutdown().await;
+    drop(listener);
+    remote.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn damaged_pairing_config_preserves_local_access_and_original_bytes() {
     let dir = tempfile::tempdir().unwrap();
@@ -241,6 +357,95 @@ async fn damaged_pairing_config_preserves_local_access_and_original_bytes() {
     local.shutdown().await;
 }
 
+/// A store implementation Android can back with Keystore: the on-disk JSON
+/// stays frozen (ADR 0005), and a fixture in today's format must load and
+/// re-save to the same value.
+#[test]
+fn file_session_store_reads_todays_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paired-engines-v1.json");
+    std::fs::write(&path, include_str!("fixtures/paired-engines-v1.json")).unwrap();
+    let engines = FileSessionStore::new(path.clone()).load().unwrap();
+    assert_eq!(engines.len(), 1);
+    assert_eq!(
+        engines[0].key,
+        EngineKey("f47ac10b-58cc-4372-a567-0e02b2c3d479".into())
+    );
+    assert_eq!(engines[0].endpoint, "ws://127.0.0.1:27655/");
+    assert_eq!(
+        engines[0].credential,
+        "fixture-session-credential-not-a-real-secret"
+    );
+    assert_eq!(engines[0].info.device_id, "fixture-engine-device");
+    assert_eq!(
+        engines[0].info.capabilities,
+        vec![
+            "composer-references-v1".to_string(),
+            "message-queue-v1".to_string(),
+            "web-client".to_string()
+        ]
+    );
+    let out = dir.path().join("roundtrip.json");
+    FileSessionStore::new(out.clone()).save(&engines).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(original, rewritten, "the JSON format is frozen");
+    // And the file the engines came from still loads identically afterwards.
+    assert_eq!(FileSessionStore::new(path).load().unwrap().len(), 1);
+}
+
+/// A `SessionStore` that is present but unreadable must never be written:
+/// the registry parks in configuration-error mode, refuses to pair, and
+/// leaves the stored bytes untouched for repair.
+#[tokio::test]
+async fn unreadable_store_never_writes() {
+    struct Unreadable {
+        saves: std::sync::atomic::AtomicUsize,
+    }
+    impl SessionStore for Unreadable {
+        fn load(&self) -> anyhow::Result<Vec<SavedEngine>> {
+            anyhow::bail!("store unreadable")
+        }
+        fn save(&self, _engines: &[SavedEngine]) -> anyhow::Result<()> {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let store = Arc::new(Unreadable {
+        saves: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let registry = EngineRegistry::open_with(RegistryOptions {
+        data_dir: std::env::temp_dir(),
+        sessions: store.clone(),
+        local: None,
+        resolvers: Vec::new(),
+    })
+    .await
+    .unwrap();
+    let snapshot = registry.snapshot();
+    assert_eq!(snapshot.engines.len(), 0);
+    assert_eq!(
+        snapshot.configuration_error.as_deref(),
+        Some(
+            "Saved engine configuration could not be read. The file is preserved; pairing is unavailable until it is repaired."
+        )
+    );
+    assert!(
+        registry
+            .pair("http://localhost/pair#token=code", "test")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.saves.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an unreadable store must never be written"
+    );
+    registry.shutdown().await;
+}
+
 /// A service that fails every call while `down` is set — a stand-in for the
 /// wedged-engine / dead-transport conditions that end a `drive` loop
 /// mid-session.
@@ -271,6 +476,93 @@ fn local_entry(
         .engines
         .iter()
         .find(|e| e.key.is_local() && e.state == state)
+}
+
+/// A resolver claims a non-URL pairing input before `pair()` ever reaches
+/// the URL parser, and its keepalive lives exactly as long as the entry:
+/// dropped on `forget`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolver_claims_input_before_url_parsing() {
+    /// Counts drops of the resolver's keepalive.
+    struct KeepaliveCounter(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for KeepaliveCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    struct FakeResolver {
+        base: String,
+        code: String,
+        dropped: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl PairingResolver for FakeResolver {
+        fn resolve(
+            &self,
+            input: &str,
+            _data_dir: &std::path::Path,
+        ) -> Option<anyhow::Result<ResolvedPairing>> {
+            if input != "fake:xyz" {
+                return None;
+            }
+            Some(Ok(ResolvedPairing {
+                base: self.base.clone(),
+                code: self.code.clone(),
+                keepalive: Some(Box::new(KeepaliveCounter(self.dropped.clone()))),
+            }))
+        }
+    }
+    let remote_dir = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let remote = core(remote_dir.path());
+    let listener = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        remote.rpc_service(),
+        remote_dir.path(),
+    )
+    .await
+    .unwrap();
+    let store = PairingStore::open(remote_dir.path()).unwrap();
+    let code = store.create_code("resolver test", 300).unwrap();
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry = EngineRegistry::open_with(RegistryOptions {
+        data_dir: client_dir.path().to_path_buf(),
+        sessions: Arc::new(FileSessionStore::new(
+            client_dir.path().join("paired-engines-v1.json"),
+        )),
+        local: None,
+        resolvers: vec![Arc::new(FakeResolver {
+            base: format!("http://{}", listener.address),
+            code: code.credential.clone(),
+            dropped: dropped.clone(),
+        })],
+    })
+    .await
+    .unwrap();
+    // "fake:xyz" is not a URL: without the resolver, pairing would reject it.
+    let key = registry.pair("fake:xyz", "Test phone").await.unwrap();
+    let target = registry.target(&key).unwrap();
+    wait_for(&registry, |snapshot| {
+        snapshot
+            .engines
+            .iter()
+            .any(|e| e.key == key && e.state == EngineConnectionState::Connected)
+    })
+    .await;
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert_eq!(
+        dropped.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the keepalive lives while the entry does"
+    );
+    registry.forget(&key).await.unwrap();
+    assert_eq!(
+        dropped.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "forgetting the entry drops the resolver's keepalive"
+    );
+    registry.shutdown().await;
+    drop(listener);
+    remote.shutdown().await;
 }
 
 /// The local entry must survive its transport failing mid-session. Without
@@ -325,16 +617,27 @@ async fn in_process_engine_reconnects_after_its_transport_fails() {
     })
     .await;
     // The entry answers offline while wedged — the symptom users saw.
-    assert!(registry.local().call(methods::ENGINE_INFO, json!({})).await.is_err());
+    assert!(
+        registry
+            .local()
+            .call(methods::ENGINE_INFO, json!({}))
+            .await
+            .is_err()
+    );
 
     // Unwedge: supervision mints a fresh transport and recovers.
     down.store(false, std::sync::atomic::Ordering::SeqCst);
     wait_for(&registry, |snapshot| {
-        local_entry(snapshot, EngineConnectionState::Connected)
-            .is_some_and(|e| e.generation >= 2)
+        local_entry(snapshot, EngineConnectionState::Connected).is_some_and(|e| e.generation >= 2)
     })
     .await;
-    assert!(registry.local().call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert!(
+        registry
+            .local()
+            .call(methods::ENGINE_INFO, json!({}))
+            .await
+            .is_ok()
+    );
     assert!(minted.load(std::sync::atomic::Ordering::SeqCst) >= 1);
     registry.shutdown().await;
     engine.shutdown().await;

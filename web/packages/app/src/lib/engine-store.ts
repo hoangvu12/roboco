@@ -36,7 +36,7 @@ export interface FleetState {
    * parse: pairing and persisting refuse until it is repaired, and the
    * damaged bytes are preserved untouched — never overwritten with a
    * blank/default value (`damaged_pairing_config_preserves_local_access_
-   * and_original_bytes`, engine_registry/tests.rs:196).
+   * and_original_bytes`, `crates/engine-client/src/registry/tests.rs`).
    */
   readonly configurationError: string | null;
 }
@@ -165,7 +165,7 @@ export class EngineStore {
    * Redeem a pairing URL, store the grant, and make the engine active.
    * Refuses while the persisted configuration is damaged — pairing stays
    * blocked until the stored value is repaired (registry `pair()`'s
-   * `ensure!` in engine_registry.rs:478-483).
+   * `ensure!` in `crates/engine-client/src/registry.rs`).
    */
   async redeemPairingUrl(pairingUrl: string, label: string): Promise<StoredEngine> {
     if (this.#configurationError !== null) {

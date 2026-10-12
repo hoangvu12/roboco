@@ -1,4 +1,7 @@
 //! Paired engine connections and engine-scoped client identity. No GPUI dependency.
+use crate::{
+    FileSessionStore, LocalEngine, PairingResolver, RegistryOptions, ResolvedPairing, SessionStore,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use roboco_proto::{Chat, Device, EngineInfo, Session, Space};
 use roboco_rpc::{RpcClient, RpcError, methods};
@@ -221,22 +224,23 @@ pub fn scope_transcript_frame(key: &EngineKey, update: &mut roboco_doc::Transcri
 
 // Session credentials are deliberately excluded from Debug and public snapshots.
 #[derive(Clone, Serialize, Deserialize)]
-struct SavedEngine {
-    key: EngineKey,
-    endpoint: String,
-    credential: String,
-    info: EngineInfo,
+pub struct SavedEngine {
+    pub key: EngineKey,
+    pub endpoint: String,
+    pub credential: String,
+    pub info: EngineInfo,
 }
 #[derive(Default, Serialize, Deserialize)]
-struct SavedRegistry {
-    engines: Vec<SavedEngine>,
+pub(crate) struct SavedRegistry {
+    pub(crate) engines: Vec<SavedEngine>,
 }
 struct Entry {
     snapshot: EngineSnapshot,
     client: Option<Arc<RpcClient>>,
     saved: Option<SavedEngine>,
-    /// Keeps a Tailcat `connect` forwarder alive for this registry entry.
-    tailcat: Option<roboco_engine::tailcat::TailcatClient>,
+    /// Keeps a pairing forwarder (a Tailcat `connect` client) alive for this
+    /// registry entry; dropped when the entry is forgotten. Never read.
+    keepalive: Option<Box<dyn std::any::Any + Send>>,
 }
 struct RegistryState {
     entries: BTreeMap<EngineKey, Entry>,
@@ -257,7 +261,9 @@ enum CacheCommand {
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 struct Inner {
-    path: PathBuf,
+    data_dir: PathBuf,
+    sessions: Arc<dyn SessionStore>,
+    resolvers: Vec<Arc<dyn PairingResolver>>,
     configuration_error: Option<String>,
     runtime: tokio::runtime::Handle,
     state: Mutex<RegistryState>,
@@ -417,7 +423,7 @@ fn entry(
     key: EngineKey,
     info: EngineInfo,
     saved: Option<SavedEngine>,
-    tailcat: Option<roboco_engine::tailcat::TailcatClient>,
+    keepalive: Option<Box<dyn std::any::Any + Send>>,
 ) -> Entry {
     Entry {
         snapshot: EngineSnapshot {
@@ -435,37 +441,65 @@ fn entry(
         },
         client: None,
         saved,
-        tailcat,
+        keepalive,
     }
 }
 impl EngineRegistry {
     /// Adopt the local bootstrap's client. `reconnect` revives the local entry
     /// when its transport dies (a URL to dial, or an in-process client factory);
     /// remote entries reconnect independently through their saved credentials.
+    /// Today's desktop shape: a JSON file session store, a mandatory local
+    /// engine, no extra pairing resolvers.
     pub async fn open(
         path: PathBuf,
         local_info: EngineInfo,
         client: Arc<RpcClient>,
         reconnect: Option<Reconnect>,
     ) -> anyhow::Result<Self> {
-        let loaded = match std::fs::read(&path) {
-            Ok(bytes) => {
-                serde_json::from_slice::<SavedRegistry>(&bytes).map_err(anyhow::Error::from)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(SavedRegistry::default()),
-            Err(err) => Err(err.into()),
-        };
-        let (saved, mut configuration_error) = match loaded {
+        let data_dir = path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        Self::open_with(RegistryOptions {
+            data_dir,
+            sessions: Arc::new(FileSessionStore::new(path)),
+            local: Some(LocalEngine {
+                info: local_info,
+                client,
+                reconnect,
+            }),
+            resolvers: Vec::new(),
+        })
+        .await
+    }
+
+    /// Open a registry from explicit parts. `local: None` is the phone shape:
+    /// no `EngineKey::local()` entry, every projected id scoped, and pairing
+    /// as the only way in. `sessions` decides where credentials live —
+    /// Android wraps them in Keystore behind its own `SessionStore`.
+    pub async fn open_with(options: RegistryOptions) -> anyhow::Result<Self> {
+        let RegistryOptions {
+            data_dir,
+            sessions,
+            local,
+            resolvers,
+        } = options;
+        let (saved_engines, mut configuration_error) = match sessions.load() {
             Ok(saved) => (saved, None),
-            Err(_) => (SavedRegistry::default(), Some("Saved engine configuration could not be read. The file is preserved; pairing is unavailable until it is repaired.".to_string())),
+            Err(_) => (
+                Vec::new(),
+                Some("Saved engine configuration could not be read. The file is preserved; pairing is unavailable until it is repaired.".to_string()),
+            ),
         };
         let (updates, _) = watch::channel(RegistrySnapshot::default());
         let mut entries = BTreeMap::new();
-        entries.insert(
-            EngineKey::local(),
-            entry(EngineKey::local(), local_info, None, None),
-        );
-        for saved in saved.engines {
+        if let Some(local) = &local {
+            entries.insert(
+                EngineKey::local(),
+                entry(EngineKey::local(), local.info.clone(), None, None),
+            );
+        }
+        for saved in saved_engines {
             if saved.key.is_local() || saved.key.0.is_empty() || entries.contains_key(&saved.key) {
                 configuration_error = Some("Saved engine configuration contains invalid identities. The file is preserved; pairing is unavailable until it is repaired.".into());
                 continue;
@@ -475,9 +509,7 @@ impl EngineRegistry {
                 entry(saved.key.clone(), saved.info.clone(), Some(saved), None),
             );
         }
-        let cache = crate::cache::EngineCache::new(
-            path.parent().unwrap_or(std::path::Path::new(".")),
-        );
+        let cache = crate::cache::EngineCache::new(&data_dir);
         for (key, entry) in &mut entries {
             if let Some(rows) = cache.load_rows(&key.0) {
                 entry.snapshot.chats = rows.chats;
@@ -509,7 +541,9 @@ impl EngineRegistry {
         });
         let registry = Self {
             inner: Arc::new(Inner {
-                path,
+                data_dir,
+                sessions,
+                resolvers,
                 configuration_error,
                 runtime: tokio::runtime::Handle::current(),
                 state: Mutex::new(RegistryState {
@@ -523,7 +557,9 @@ impl EngineRegistry {
             }),
         };
         registry.publish();
-        registry.spawn(EngineKey::local(), Some(client), reconnect);
+        if let Some(local) = local {
+            registry.spawn(EngineKey::local(), Some(local.client), local.reconnect);
+        }
         let remotes: Vec<_> = lock(&registry.inner.state)
             .entries
             .keys()
@@ -559,7 +595,11 @@ impl EngineRegistry {
         let (cache_tx, _) = tokio::sync::mpsc::unbounded_channel::<CacheCommand>();
         Self {
             inner: Arc::new(Inner {
-                path: std::env::temp_dir().join("roboco-test-registry-unused.json"),
+                data_dir: std::env::temp_dir(),
+                sessions: Arc::new(FileSessionStore::new(
+                    std::env::temp_dir().join("roboco-test-registry-unused.json"),
+                )),
+                resolvers: Vec::new(),
                 configuration_error: None,
                 runtime: tokio::runtime::Handle::current(),
                 state: Mutex::new(RegistryState {
@@ -576,6 +616,9 @@ impl EngineRegistry {
     pub fn snapshot(&self) -> RegistrySnapshot {
         self.inner.updates.borrow().clone()
     }
+    /// The local engine's target. Desktop registries always carry one; a
+    /// registry opened without a local engine (a phone) has no local entry
+    /// and this panics — resolve an engine key with `target` instead.
     pub fn local(&self) -> EngineTarget {
         self.target(&EngineKey::local())
             .expect("local engine entry")
@@ -601,12 +644,26 @@ impl EngineRegistry {
             self.inner.configuration_error.is_none(),
             "Saved engine configuration needs repair before pairing"
         );
-        let tailcat_dir = self
+        let ResolvedPairing {
+            base,
+            code,
+            keepalive,
+        } = match self
             .inner
-            .path
-            .parent()
-            .map(|parent| parent.join("tailcat-forwarders"));
-        let (base, code, tailcat) = resolve_pairing_input(pairing_url, tailcat_dir.as_deref())?;
+            .resolvers
+            .iter()
+            .find_map(|resolver| resolver.resolve(pairing_url, &self.inner.data_dir))
+        {
+            Some(result) => result?,
+            None => {
+                let (base, code) = parse_pairing_url(pairing_url)?;
+                ResolvedPairing {
+                    base,
+                    code,
+                    keepalive: None,
+                }
+            }
+        };
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
@@ -646,9 +703,10 @@ impl EngineRegistry {
             credential: grant.credential,
             info: info.clone(),
         };
-        lock(&self.inner.state)
-            .entries
-            .insert(key.clone(), entry(key.clone(), info, Some(saved), tailcat));
+        lock(&self.inner.state).entries.insert(
+            key.clone(),
+            entry(key.clone(), info, Some(saved), keepalive),
+        );
         if let Err(err) = self.persist() {
             lock(&self.inner.state).entries.remove(&key);
             return Err(err);
@@ -713,25 +771,12 @@ impl EngineRegistry {
             self.inner.configuration_error.is_none(),
             "Saved engine configuration needs repair"
         );
-        let saved = SavedRegistry {
-            engines: lock(&self.inner.state)
-                .entries
-                .values()
-                .filter_map(|e| e.saved.clone())
-                .collect(),
-        };
-        let parent = self
-            .inner
-            .path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Invalid registry path"))?;
-        std::fs::create_dir_all(parent)?;
-        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-        use std::io::Write;
-        temp.write_all(&serde_json::to_vec(&saved)?)?;
-        temp.as_file().sync_all()?;
-        temp.persist(&self.inner.path).map_err(|e| e.error)?;
-        Ok(())
+        let saved: Vec<SavedEngine> = lock(&self.inner.state)
+            .entries
+            .values()
+            .filter_map(|e| e.saved.clone())
+            .collect();
+        self.inner.sessions.save(&saved)
     }
     fn publish(&self) {
         publish(&self.inner);
@@ -771,35 +816,6 @@ fn update(weak: &Weak<Inner>, key: &EngineKey, f: impl FnOnce(&mut Entry)) -> bo
     }
     publish(&inner);
     true
-}
-fn resolve_pairing_input(
-    input: &str,
-    tailcat_dir: Option<&std::path::Path>,
-) -> anyhow::Result<(String, String, Option<roboco_engine::tailcat::TailcatClient>)> {
-    if input.trim_start().starts_with(roboco_engine::tailcat::INVITE_PREFIX) {
-        let invite = roboco_engine::tailcat::TailcatInvite::decode(input)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis() as i64;
-        anyhow::ensure!(
-            !invite.expired(now),
-            "that tailcat invite has expired; mint a new one"
-        );
-        let data_dir = tailcat_dir
-            .map(|path| {
-                let session = path.join(uuid::Uuid::new_v4().to_string());
-                std::fs::create_dir_all(&session)?;
-                Ok::<_, anyhow::Error>(session)
-            })
-            .transpose()?
-            .unwrap_or_else(std::env::temp_dir);
-        let client =
-            roboco_engine::tailcat::TailcatClient::start(&data_dir, &invite.address, None)?;
-        let base = client.url().trim_end_matches('/').to_string();
-        return Ok((base, invite.token, Some(client)));
-    }
-    let (base, code) = parse_pairing_url(input)?;
-    Ok((base, code, None))
 }
 fn parse_pairing_url(input: &str) -> anyhow::Result<(String, String)> {
     let mut url =
@@ -997,28 +1013,25 @@ async fn cache_rows(weak: &Weak<Inner>, key: &EngineKey) {
         return;
     };
     let _change = inner.changes.lock().await;
-    let Some(rows) =
-        lock(&inner.state)
-            .entries
-            .get(key)
-            .map(|entry| crate::cache::CachedRows {
-                chats: entry.snapshot.chats.clone(),
-                spaces: entry.snapshot.spaces.clone(),
-                devices: entry.snapshot.devices.clone(),
-                sessions: entry.snapshot.sessions.clone(),
-            })
+    let Some(rows) = lock(&inner.state)
+        .entries
+        .get(key)
+        .map(|entry| crate::cache::CachedRows {
+            chats: entry.snapshot.chats.clone(),
+            spaces: entry.snapshot.spaces.clone(),
+            devices: entry.snapshot.devices.clone(),
+            sessions: entry.snapshot.sessions.clone(),
+        })
     else {
         return;
     };
     // The single writer applies saves in submission order, so the newest
     // frame always wins the rename onto rows.json; sending under the
     // `changes` lock keeps the queue ordered against forget/shutdown.
-    let _ = inner
-        .cache_tx
-        .send(CacheCommand::Save {
-            key: key.0.clone(),
-            rows,
-        });
+    let _ = inner.cache_tx.send(CacheCommand::Save {
+        key: key.0.clone(),
+        rows,
+    });
 }
 fn decode<T: DeserializeOwned>(value: Option<Value>) -> Result<T, RpcError> {
     serde_json::from_value(value.ok_or(RpcError::Closed)?)

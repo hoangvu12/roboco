@@ -87,6 +87,11 @@ jobs:
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
       - name: Engine, RPC, and harness unit tests
         run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
+      - name: Mobile core crates
+        # Timing-sensitive engine tests (reconnect backoff, loopback engines):
+        # retries come from the ci nextest profile. Tickets 02/03/05 append
+        # their crates to this step.
+        run: cargo nextest run --release --locked -p roboco-engine-client -P ci
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests

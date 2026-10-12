@@ -14,9 +14,6 @@ test-support = []
 roboco-proto.workspace = true
 roboco-doc.workspace = true
 roboco-rpc.workspace = true
-# TEMPORARY until seam 3 moves Tailcat pairing out of this crate:
-# `registry.rs` still calls `roboco_engine::tailcat` from `pair()`.
-roboco-engine.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,4 +26,7 @@ tempfile.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+# Tests drive real `EngineCore`s over loopback; the library itself must never
+# link it (cargo tree -e normal -i roboco-engine reports no match).
+roboco-engine.workspace = true
 async-trait.workspace = true

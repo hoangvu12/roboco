@@ -18,7 +18,8 @@
 //! unit tests; rendering reads them.
 
 use crate::engine_registry::{
-    EngineConnectionState, EngineRegistry, EngineTarget, RegistrySnapshot, ScopedId,
+    EngineConnectionState, EngineRegistry, EngineTarget, FileSessionStore, LocalEngine,
+    RegistryOptions, RegistrySnapshot, ScopedId,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -2890,9 +2891,7 @@ fn spawn_registry_watch(
     handle: EngineHandle,
     data_dir: Option<PathBuf>,
 ) -> Task<()> {
-    let path = data_dir
-        .unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"))
-        .join("paired-engines-v1.json");
+    let path = data_dir.unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"));
     let info = handle.engine_info().clone();
     let client = handle.inner.client();
     // Both modes reconnect: a remote engine redials its URL, an embedded one
@@ -2901,7 +2900,19 @@ fn spawn_registry_watch(
     // for the rest of the process's life.
     let reconnect = handle.reconnect();
     let open = Tokio::spawn(cx, async move {
-        EngineRegistry::open(path, info, client, reconnect).await
+        // Desktop keeps today's exact wiring: a JSON-file session store, the
+        // mandatory local engine, and Tailcat invites resolved in-process.
+        EngineRegistry::open_with(RegistryOptions {
+            sessions: Arc::new(FileSessionStore::new(path.join("paired-engines-v1.json"))),
+            local: Some(LocalEngine {
+                info,
+                client,
+                reconnect,
+            }),
+            data_dir: path,
+            resolvers: vec![Arc::new(crate::tailcat_pairing::TailcatResolver)],
+        })
+        .await
     });
     cx.spawn(async move |this, cx| {
         let registry = match open.await {

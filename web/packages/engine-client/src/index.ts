@@ -2,7 +2,7 @@
  * `@roboco/engine-client` — the framework-agnostic connection core a browser
  * uses to drive an engine. No React inside; connection rules (backoff,
  * park-on-revoked, identity re-verification) mirror the desktop's engine
- * registry (crates/ui/src/engine_registry.rs) with no code shared.
+ * registry (crates/engine-client/src/registry.rs) with no code shared.
  */
 
 export {

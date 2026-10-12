@@ -1,8 +1,8 @@
 import { RpcError } from "./rpc-error";
 
 /**
- * Cross-engine identity scoping — the port of `engine_registry.rs`'s
- * `ScopedId` (`crates/ui/src/engine_registry.rs:15-62`). A scoped id is a
+ * Cross-engine identity scoping — the port of `registry.rs`'s
+ * `ScopedId` (`crates/engine-client/src/registry.rs`). A scoped id is a
  * client-local wire wrapper tagging a raw engine id with the engine it
  * belongs to; it never reaches an engine's own storage and exists purely so
  * a merged, multi-engine view can dispatch "open this chat" back to the

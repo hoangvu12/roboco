@@ -1,5 +1,5 @@
 //! Disposable client-side history. Keys are engine-scoped; credentials never enter this store.
-//! Filesystem writes belong on a background task, not the GPUI event loop.
+//! Filesystem writes belong on a background task, not a UI thread.
 
 use std::{
     io,
