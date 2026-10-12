@@ -119,7 +119,7 @@ class Palette private constructor(
 
             return Palette(
                 isDark = isDark,
-                // Zeron Light / Zeron Dark (crates/theme builtins): cool neutrals,
+                // Roboco Light / Roboco Dark (crates/theme builtins): cool neutrals,
                 // violet accent. iOS draws the builtin shell, not `background`.
                 background = d(0xF3F3F5, 0x060606),
                 rowActive = if (isDark) rgba(0xFFFFFF, 0.06) else rgba(0xFFFFFF, 0.9), // dual(white 0.9, white 0.06)

@@ -182,6 +182,8 @@ private fun Palette.statusToneByName(name: String): Color = when (name) {
 @Composable
 fun ShapesGallerySection() {
     val palette = RobocoTheme.palette
+    // 0.6 alpha through rgba, per the palette rule (never Color.copy).
+    val dangerSoft = if (palette.isDark) rgba(0xF87171, 0.6) else rgba(0xDC2626, 0.6)
     Column {
         for (r in listOf(12, 16, 20, 26)) {
             Label("smooth $r dp + circular outline", palette.secondary)
@@ -190,7 +192,7 @@ fun ShapesGallerySection() {
                     .padding(bottom = 12.dp)
                     .size(160.dp, 64.dp)
                     .background(palette.chip, SmoothRoundedShape(r.dp))
-                    .hairlineBorder(palette.danger.copy(alpha = 0.6f), RoundedCornerShape(r.dp)),
+                    .hairlineBorder(dangerSoft, RoundedCornerShape(r.dp)),
             )
         }
         Label("capsule vs smooth 100 dp (identical)", palette.secondary)

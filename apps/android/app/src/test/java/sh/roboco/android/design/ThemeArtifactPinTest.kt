@@ -52,52 +52,54 @@ class ThemeArtifactPinTest {
         }
     }
 
-    private fun JSONObject.colors(): JSONObject = getJSONObject("colors")
+    /** `#RRGGBB(AA)` → RGB only, for the alpha-carrying palette roles. */
+    private fun rgbOf(hex: String): Int = argbOf(hex) and 0xFFFFFF
 
-    private fun JSONObject.accent(): JSONObject = getJSONObject("accent")
+    private fun assertEqualsArgb(message: String, expectedHex: String, actual: Int) =
+        assertEquals(message, argbOf(expectedHex), actual)
+
+    private fun assertEqualsRgb(message: String, expectedHex: String, actual: Int) =
+        assertEquals(message, rgbOf(expectedHex), actual and 0xFFFFFF)
+
+    /**
+     * The shared subset, parameterised by appearance. Light pins its
+     * background to the builtin `shell` (iOS's choice), dark to `background`;
+     * only dark's `text` matches a builtin.
+     */
+    private fun assertSharedSubset(variantId: String, palette: Palette, isDark: Boolean) {
+        val v = artifactVariant(variantId)
+        val colors = v.getJSONObject("colors")
+        val accent = v.getJSONObject("accent")
+        assertEqualsArgb(diverged("accent"), accent.getString("primary"), palette.accent.toArgb())
+        assertEqualsArgb(diverged("danger"), colors.getString("danger"), palette.danger.toArgb())
+        assertEqualsArgb(diverged("success"), colors.getString("success"), palette.success.toArgb())
+        assertEqualsArgb(diverged("warning"), colors.getString("warning"), palette.warning.toArgb())
+        assertEqualsRgb(diverged("secondary"), colors.getString("textMuted"), palette.secondary.toArgb())
+        assertEqualsRgb(diverged("subline"), colors.getString("textMuted"), palette.subline.toArgb())
+        assertEqualsRgb(diverged("status.time"), colors.getString("textMuted"), palette.status.time.toArgb())
+        assertEqualsRgb(diverged("accentSoft"), accent.getString("primary"), palette.accentSoft.toArgb())
+        assertEqualsRgb(diverged("status.working"), accent.getString("primary"), palette.status.working.toArgb())
+        assertEqualsRgb(diverged("status.input"), accent.getString("primary"), palette.status.input.toArgb())
+        assertEqualsRgb(diverged("status.failed"), colors.getString("danger"), palette.status.failed.toArgb())
+        assertEqualsRgb(diverged("status.done"), colors.getString("success"), palette.status.done.toArgb())
+        assertEqualsArgb(diverged("selectionBackground"), accent.getString("selection"), palette.selectionBackground.toArgb())
+        assertEqualsRgb(
+            diverged("background"),
+            colors.getString(if (isDark) "background" else "shell"),
+            palette.background.toArgb(),
+        )
+        if (isDark) {
+            assertEqualsRgb(diverged("text"), colors.getString("text"), palette.text.toArgb())
+        }
+    }
 
     @Test
     fun lightVariantMatchesTheSharedSubset() {
-        val v = artifactVariant("roboco-light")
-        assertEquals(diverged("accent"), argbOf(v.accent().getString("primary")), Palette.Light.accent.toArgb())
-        assertEquals(diverged("danger"), argbOf(v.colors().getString("danger")), Palette.Light.danger.toArgb())
-        assertEquals(diverged("success"), argbOf(v.colors().getString("success")), Palette.Light.success.toArgb())
-        assertEquals(diverged("warning"), argbOf(v.colors().getString("warning")), Palette.Light.warning.toArgb())
-        // RGB-only comparisons for colours the artifact stores opaque:
-        assertEquals(diverged("secondary"), v.colors().getString("textMuted").toIntRgb(), Palette.Light.secondary.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("subline"), v.colors().getString("textMuted").toIntRgb(), Palette.Light.subline.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.time"), v.colors().getString("textMuted").toIntRgb(), Palette.Light.status.time.toArgb() and 0xFFFFFF)
-        // iOS draws the builtin shell (#f3f3f5), not colors.background (#ffffff).
-        assertEquals(diverged("background"), v.colors().getString("shell").toIntRgb(), Palette.Light.background.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("accentSoft"), v.accent().getString("primary").toIntRgb(), Palette.Light.accentSoft.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.working"), v.accent().getString("primary").toIntRgb(), Palette.Light.status.working.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.input"), v.accent().getString("primary").toIntRgb(), Palette.Light.status.input.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.failed"), v.colors().getString("danger").toIntRgb(), Palette.Light.status.failed.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.done"), v.colors().getString("success").toIntRgb(), Palette.Light.status.done.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("selectionBackground"), argbOf(v.accent().getString("selection")), Palette.Light.selectionBackground.toArgb())
+        assertSharedSubset("roboco-light", Palette.Light, isDark = false)
     }
 
     @Test
     fun darkVariantMatchesTheSharedSubset() {
-        val v = artifactVariant("roboco-dark")
-        assertEquals(diverged("accent"), argbOf(v.accent().getString("primary")), Palette.Dark.accent.toArgb())
-        assertEquals(diverged("danger"), argbOf(v.colors().getString("danger")), Palette.Dark.danger.toArgb())
-        assertEquals(diverged("success"), argbOf(v.colors().getString("success")), Palette.Dark.success.toArgb())
-        assertEquals(diverged("warning"), argbOf(v.colors().getString("warning")), Palette.Dark.warning.toArgb())
-        assertEquals(diverged("secondary"), v.colors().getString("textMuted").toIntRgb(), Palette.Dark.secondary.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("subline"), v.colors().getString("textMuted").toIntRgb(), Palette.Dark.subline.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.time"), v.colors().getString("textMuted").toIntRgb(), Palette.Dark.status.time.toArgb() and 0xFFFFFF)
-        // Dark draws the builtin background (#060606).
-        assertEquals(diverged("background"), v.colors().getString("background").toIntRgb(), Palette.Dark.background.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("text"), v.colors().getString("text").toIntRgb(), Palette.Dark.text.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("accentSoft"), v.accent().getString("primary").toIntRgb(), Palette.Dark.accentSoft.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.working"), v.accent().getString("primary").toIntRgb(), Palette.Dark.status.working.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.input"), v.accent().getString("primary").toIntRgb(), Palette.Dark.status.input.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.failed"), v.colors().getString("danger").toIntRgb(), Palette.Dark.status.failed.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("status.done"), v.colors().getString("success").toIntRgb(), Palette.Dark.status.done.toArgb() and 0xFFFFFF)
-        assertEquals(diverged("selectionBackground"), argbOf(v.accent().getString("selection")), Palette.Dark.selectionBackground.toArgb())
+        assertSharedSubset("roboco-dark", Palette.Dark, isDark = true)
     }
-
-    /** `#RRGGBB(AA)` → RGB only, for the alpha-carrying palette roles. */
-    private fun String.toIntRgb(): Int = argbOf(this) and 0xFFFFFF
 }
