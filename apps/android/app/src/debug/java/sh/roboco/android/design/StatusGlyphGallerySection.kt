@@ -36,11 +36,12 @@ fun StatusGlyphGallerySection() {
     val typeScale = LocalTypeScale.current
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // 1. The five kinds at scale 1 in 12-dp boxes (None draws nothing,
-        //    so it has no cell here). The 4-dp cell padding keeps each
-        //    grid's unclipped overflow visible.
+        // 1. The five kinds at scale 1 in 12-dp boxes: None (an empty box —
+        //    it draws nothing), then the preview's five. The 4-dp cell
+        //    padding keeps each grid's unclipped overflow visible.
         RowLabel("kinds · scale 1 · 12 dp boxes")
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Bottom) {
+            GlyphSample("none") { StatusGlyph(StatusGlyphKind.None) }
             GlyphSample("spinner") { StatusGlyph(StatusGlyphKind.Spinner) }
             GlyphSample("trailer") { StatusGlyph(StatusGlyphKind.Trailer) }
             GlyphSample("dot input") { StatusGlyph(StatusGlyphKind.Dot(palette.status.input)) }

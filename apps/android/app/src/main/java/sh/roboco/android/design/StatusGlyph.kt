@@ -69,8 +69,12 @@ private val TRAILER_TINTS = listOf(Color(0xFFB6D3EF), Color(0xFFEDB185), Color(0
  */
 object StatusGlyphMath {
 
-    /** One full opacity lap: `a.duration = 0.75` (`StatusGlyph.swift:157`). */
-    const val PERIOD_NANOS = 750_000_000L
+    /**
+     * One full opacity lap: `a.duration = 0.75` (`StatusGlyph.swift:157`)
+     * — the same 750 ms [Motion.SpinnerCycleMs] owns; durations always come
+     * from the ticket-04 tokens, never a pasted literal.
+     */
+    const val PERIOD_NANOS: Long = Motion.SpinnerCycleMs * 1_000_000L
 
     /** The keyframes' dim floor: `values = [1, 0.1, 0.1, 1]` (`:154`). */
     const val DIM = 0.1f
