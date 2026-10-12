@@ -84,10 +84,11 @@ class TabChromeGeometryTest {
 
     @Test
     fun wideScreenCapsTheRowAt398AndCentresIt() {
-        // W = 600: rowW = 398 (capped), L = 101.
+        // W = 600: rowW = 398 (capped), L = 101, R = 499 — so the pill is
+        // 328 wide (398 − 70) and the search's right edge sits at R = 499.
         val rects = tabChromeGeometry(600f, 874f, 22f, hasAccessory = true, progress = 0f)
-        assertRect("pill", rects.pill, 101f, 790f, 361f, 852f)
-        assertRect("search", rects.search, 369f, 790f, 431f, 852f)
+        assertRect("pill", rects.pill, 101f, 790f, 429f, 852f)
+        assertRect("search", rects.search, 437f, 790f, 499f, 852f)
         assertRect("accessory", rects.accessory!!, 101f, 734f, 499f, 782f)
     }
 

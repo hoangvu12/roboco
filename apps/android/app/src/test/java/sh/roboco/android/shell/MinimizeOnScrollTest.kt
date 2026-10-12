@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.BasicText
@@ -12,7 +13,6 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -164,7 +164,14 @@ class MinimizeOnScrollTest {
                             },
                             search = { GlassSearchButton(selectedTab, onTabTap = { selectedTab = it }) },
                             accessory = {
-                                NewSessionAccessory(counts = LiveCounts(working = 2, awaiting = 1), onTap = {})
+                                // The shell's wiring (#28): inline is the target,
+                                // the label alpha follows 1 − p̂.
+                                NewSessionAccessory(
+                                    counts = LiveCounts(working = 2, awaiting = 1),
+                                    onTap = {},
+                                    inline = minimize.minimized,
+                                    labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
+                                )
                             },
                         )
                     } else {
