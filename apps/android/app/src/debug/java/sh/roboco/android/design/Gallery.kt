@@ -32,6 +32,7 @@ import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
+import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
@@ -127,6 +128,11 @@ object Gallery {
         // core (ticket 60's LocalGalleryCapture rule).
         GallerySection("Mentions", screenshotHeightDp = 420) {
             if (LocalGalleryCapture.current) MentionStyleDemo() else MentionsGallerySection()
+        },
+        // Ticket 34 (pairing root): Fill — the section scales the whole
+        // 393 × 852 phone frame into the body.
+        GallerySection("Pairing root", layout = GalleryLayout.Fill, screenshotHeightDp = 960) {
+            PairingRootGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
