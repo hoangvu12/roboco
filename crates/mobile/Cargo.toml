@@ -13,13 +13,31 @@ publish.workspace = true
 name = "roboco_mobile"
 crate-type = ["lib", "cdylib"]
 
+# `uniffi-bindgen` for library-mode Kotlin generation (android-app#10).
+# Built from this crate so generator and runtime share one UniFFI version.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+default = ["mobile-languages"]
+bindgen = ["uniffi/cli"]
+# Grammar subset forwarded to roboco-syntax: the Android core links the
+# measured "middle set" (~18.9 MB per ABI) unless `--languages all`.
+mobile-languages = ["roboco-syntax/mobile-languages"]
+all-languages = ["roboco-syntax/all-languages"]
+
 [dependencies]
 uniffi = "0.32"
 roboco-markdown.workspace = true
 roboco-text.workspace = true
 roboco-doc.workspace = true
 roboco-proto.workspace = true
-roboco-syntax.workspace = true
+# Path + `default-features = false`, NOT `workspace = true`: the workspace
+# entry does not set it, so `workspace = true` would silently link the full
+# grammar set and ignore this line's `default-features` (cargo warns).
+roboco-syntax = { path = "../syntax", default-features = false }
 roboco-mobile-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,3 +46,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Tests and benches exercise every fence language, not just the mobile set:
+# dev-dependency features unify with the (subset) dependency for test builds
+# only, so shipped cdylibs still link the subset while `cargo test` sees all
+# grammars — the desktop test expectations stay unchanged.
+roboco-syntax = { path = "../syntax", default-features = false, features = ["all-languages"] }
