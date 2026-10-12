@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.shell.NavGallerySection
 
 /**
@@ -82,16 +83,16 @@ object Gallery {
         GallerySection("Glass surface") { GlassGallerySection() },
         GallerySection("Edge fades", screenshotHeightDp = 1100) { EdgeFadeGallerySection() },
         GallerySection("Navigation", GalleryLayout.Scroll, screenshotHeightDp = 891) { NavGallerySection() },
+        GallerySection("Icons") { IconsGallerySection() },
+        GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 06 "Icons"              GallerySection("Icons") { IconsGallerySection() }
         // 08 "Glass buttons"      GallerySection("Glass buttons") { GlassButtonsGallerySection() }
         // 09 "Scroll edge effect" GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() }
         // 11 "Status glyph"       GallerySection("Status glyph") { StatusGlyphGallerySection() }
         // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
-        // 14 "Toast"              GallerySection("Toast", GalleryLayout.Fill) { ToastGallerySection() }  + ToastHost in GalleryProviders
         // 15 "GlassMenu"          GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() }
         // 16 "Context menu"       GallerySection("Context menu") { ContextMenuGallerySection() }
         // 17 "Glass sheet"        GallerySection("Glass sheet", GalleryLayout.Fill, screenshotHeightDp = 740) { GlassSheetGallerySection() }
@@ -132,9 +133,8 @@ fun GalleryProviders(appearance: Appearance, capture: Boolean = false, content: 
         ProvideReduceMotion {
             val inner: @Composable () -> Unit = {
                 CompositionLocalProvider(LocalGalleryCapture provides capture) {
-                    // Ticket 14 wraps `content()` in ToastHost { } here.
-                    // Ticket 18 wraps it in AlertHost { } here (18 step 7).
-                    content()
+                    // Ticket 18 wraps ToastHost in AlertHost { } here (18 step 7).
+                    ToastHost { content() }
                 }
             }
             if (capture) {
