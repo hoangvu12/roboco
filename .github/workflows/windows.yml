@@ -90,7 +90,7 @@ jobs:
       - name: Mobile core crates
         # Mobile Rust core for the Android app (android-app#02); tickets
         # android-app 03-05 append their `-p` flags here.
-        run: cargo nextest run --release --locked -p roboco-text -P ci
+        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -P ci
       - name: OpenCode wire integration tests
         run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
       - name: Native harness integration tests

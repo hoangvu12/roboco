@@ -7,7 +7,7 @@
 //! so wrap points shift and the paragraph's tail visibly reflows. Appending
 //! synthetic closers to the *display* parse keeps styling stable from the
 //! moment content follows an opener. Only the display tree sees mended text
-//! ([`super::parser::IncrementalParser::display_tree`]); the canonical tree is
+//! ([`crate::parser::IncrementalParser::display_tree`]); the canonical tree is
 //! untouched, so a marker that genuinely never closes settles honestly — one
 //! flip when the row completes — instead of jittering throughout.
 //!
@@ -176,7 +176,7 @@ pub fn close_hanging(text: &str) -> Option<String> {
     {
         pending.push((open, format!("]({PENDING_LINK_URL})")));
     }
-    pending.sort_by(|a, b| b.0.cmp(&a.0));
+    pending.sort_by_key(|b| std::cmp::Reverse(b.0));
     let closers: String = pending.into_iter().map(|(_, s)| s).collect();
 
     // A trailing line of only `-`/`--`/`=`/`==` under text is a setext

@@ -73,7 +73,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Mobile core tests
-        run: cargo test --locked -p roboco-text
+        run: cargo test --locked -p roboco-text -p roboco-markdown
       - name: Mobile core benches compile
         # Compile only, never run: keeps the criterion bench from rotting
         # without paying its runtime on every PR.
