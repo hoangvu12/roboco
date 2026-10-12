@@ -123,9 +123,9 @@ class ScrollEdgeEffectTest {
         compose.onNodeWithTag("band").captureToImage().toPixelMap()
 
     /** Composes the 120 × 60 dp red source with a scrim-only effect on top. */
-    private fun redSource(engaged: () -> Boolean) {
+    private fun redSource(engaged: () -> Boolean, appearance: Appearance = Appearance.Light) {
         compose.setContent {
-            RobocoTheme(Appearance.Light) {
+            RobocoTheme(appearance) {
                 Box(Modifier.testTag("band").size(120.dp, 60.dp).background(red)) {
                     ScrollEdgeEffect(height = 60.dp, engaged = engaged(), blur = false)
                 }
@@ -204,14 +204,7 @@ class ScrollEdgeEffectTest {
 
     @Test
     fun scrimFadesRedIntoTheDarkBackground() {
-        compose.setContent {
-            RobocoTheme(Appearance.Dark) {
-                Box(Modifier.testTag("band").size(120.dp, 60.dp).background(red)) {
-                    ScrollEdgeEffect(height = 60.dp, engaged = true, blur = false)
-                }
-            }
-        }
-        compose.waitForIdle()
+        redSource({ true }, Appearance.Dark)
         val px = bandPixels()
         assertBlend(px, 60, 0, ScrollEdgeEffectDefaults.TopScrimAlpha, darkBackground, "dark top row")
         assertBlend(px, 60, 30, ScrollEdgeEffectDefaults.TopScrimAlpha / 2f, darkBackground, "dark middle row")
