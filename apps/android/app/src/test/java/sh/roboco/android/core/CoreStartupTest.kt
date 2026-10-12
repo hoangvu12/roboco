@@ -8,14 +8,19 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.test.core.app.ApplicationProvider
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -40,6 +45,7 @@ import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.ParkReason
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The startup pipeline (ticket 71): load → configure → `CoreClient` →
@@ -51,6 +57,7 @@ import java.io.File
  * `http://127.0.0.1:9` so the socket fails instantly and the engine is
  * Connecting/Reconnecting, never Parked.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class CoreStartupTest {
@@ -68,6 +75,29 @@ class CoreStartupTest {
         val startup: CoreStartup,
         val readyClients: MutableList<CoreClient>,
     ) {
+        /**
+         * Starts the pipeline and suspends until it leaves `Loading`.
+         * The pipeline runs in `backgroundScope`, which
+         * `advanceUntilIdle()` does not drive; suspending the body does.
+         */
+        suspend fun startAndAwait(): CoreStartState {
+            startup.start()
+            return startup.state.first { it != CoreStartState.Loading }
+        }
+
+        /** Polls (real time) until [engineId] is persisted with [deviceId]. */
+        suspend fun awaitPinned(engineId: String, deviceId: String): List<PairedEngine> =
+            withContext(Dispatchers.Default) {
+                withTimeout(5_000) {
+                    var engines = store.load()
+                    while (engines.none { it.engineId == engineId && it.deviceId == deviceId }) {
+                        delay(10)
+                        engines = store.load()
+                    }
+                    engines
+                }
+            }
+
         /** Shuts the Rust client down and releases the fixture's DataStore. */
         fun close() {
             startup.clientOrNull()?.shutdown()
@@ -77,17 +107,18 @@ class CoreStartupTest {
 
     /**
      * One `StandardTestDispatcher` per scheduler role, all sharing the
-     * test's scheduler so `advanceUntilIdle()` drives every step. The
-     * DataStore gets its own cancellable scope (one instance per file).
+     * test's scheduler. Work launched in `backgroundScope` is awaited
+     * explicitly (see [Fixture.startAndAwait]). The DataStore gets its own
+     * cancellable scope (one instance per file).
      */
     private suspend fun TestScope.newFixture(
         storedEngines: List<PairedEngine> = emptyList(),
         newClient: (CoreConfig, List<PairedEngine>, ClientListener) -> CoreClient =
             { config, engines, listener -> CoreClient(config, engines, listener) },
     ): Fixture {
-        val io = StandardTestDispatcher(scheduler)
-        val compute = StandardTestDispatcher(scheduler)
-        val dataStoreScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+        val io = StandardTestDispatcher(testScheduler)
+        val compute = StandardTestDispatcher(testScheduler)
+        val dataStoreScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
             scope = dataStoreScope,
             produceFile = { File(tmpFolder.root, "core-startup.preferences_pb") },
@@ -121,7 +152,7 @@ class CoreStartupTest {
         assertNull(fixture.startup.engines.value)
         fixture.startup.start()
         assertEquals("load() has not run yet", CoreStartState.Loading, fixture.startup.state.value)
-        fixture.startup.start() // idempotent
+        fixture.startAndAwait() // start() again: idempotent
         advanceUntilIdle()
 
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
@@ -137,7 +168,7 @@ class CoreStartupTest {
             newClient = { _, _, _ -> throw CoreException.Network("no dial") },
         )
 
-        fixture.startup.start()
+        fixture.startAndAwait()
         advanceUntilIdle()
 
         val state = fixture.startup.state.value
@@ -154,7 +185,7 @@ class CoreStartupTest {
         val revoked = dialEngine("11111111-1111-4111-8111-111111111111", credential = "")
         val fixture = newFixture(storedEngines = listOf(revoked))
 
-        fixture.startup.start()
+        fixture.startAndAwait()
         advanceUntilIdle()
 
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
@@ -168,7 +199,7 @@ class CoreStartupTest {
     fun pinsArrivingOnBackgroundThreadsArePersisted() = runTest {
         val engine = dialEngine("11111111-1111-4111-8111-111111111111", "cred-A")
         val fixture = newFixture(storedEngines = listOf(engine))
-        fixture.startup.start()
+        fixture.startAndAwait()
         advanceUntilIdle()
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
 
@@ -177,9 +208,8 @@ class CoreStartupTest {
                 ClientEvent.EngineIdentityPinned(engine.engineId, "dev-1", "MacBook Pro"),
             )
         }.join()
-        advanceUntilIdle()
 
-        val reloaded = fixture.store.load()
+        val reloaded = fixture.awaitPinned(engine.engineId, "dev-1")
         assertEquals("dev-1", reloaded.single().deviceId)
         assertEquals("MacBook Pro", reloaded.single().name)
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
@@ -189,19 +219,34 @@ class CoreStartupTest {
     @Test
     fun enginesChangedRefreshesTheEngineViews() = runTest {
         val engine = dialEngine("11111111-1111-4111-8111-111111111111", "cred-A")
-        val fixture = newFixture(storedEngines = listOf(engine))
-        fixture.startup.start()
+        // Counts reads: an equal list is deduped by the StateFlow, so the
+        // published reference alone can't show that engines() re-ran.
+        val engineReads = AtomicInteger()
+        val fixture = newFixture(
+            storedEngines = listOf(engine),
+            newClient = { config, engines, listener ->
+                object : CoreClient(config, engines, listener) {
+                    override fun engines(): List<EngineView> =
+                        super.engines().also { engineReads.incrementAndGet() }
+                }
+            },
+        )
+        fixture.startAndAwait()
         advanceUntilIdle()
-        val before = fixture.startup.engines.value
-        assertEquals(1, before?.size)
+        assertEquals(1, fixture.startup.engines.value?.size)
+        val readsBefore = engineReads.get()
 
         thread(name = "rust-thread") {
             fixture.startup.listener.onEvent(ClientEvent.EnginesChanged)
         }.join()
-        advanceUntilIdle()
+        // The collector lives in backgroundScope, which advanceUntilIdle()
+        // does not drive; suspending the body lets it run.
+        withTimeout(5_000) {
+            while (engineReads.get() == readsBefore) delay(10)
+        }
 
         assertNotNull(fixture.startup.engines.value)
-        assertNotSame("EnginesChanged must re-read engines()", before, fixture.startup.engines.value)
+        assertEquals("EnginesChanged must re-read engines()", readsBefore + 1, engineReads.get())
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
         fixture.close()
     }
@@ -214,7 +259,7 @@ class CoreStartupTest {
         fixture.startup.addEventSink { receivedFirst.add(it) }
         fixture.startup.addEventSink { throw IllegalStateException("sink exploded") }
         fixture.startup.addEventSink { receivedLast.add(it) }
-        fixture.startup.start()
+        fixture.startAndAwait()
         advanceUntilIdle()
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
 
@@ -240,7 +285,7 @@ class CoreStartupTest {
         val fixture = newFixture(storedEngines = engines)
         ShadowLog.clear()
 
-        fixture.startup.start()
+        fixture.startAndAwait()
         advanceUntilIdle()
 
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)

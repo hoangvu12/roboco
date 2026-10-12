@@ -96,10 +96,10 @@ internal object EngineMetaJson {
 
     private fun readMeta(element: JSONObject): EngineMeta? = try {
         EngineMeta(
-            engineId = element.getString("engineId"),
-            baseUrl = element.getString("baseUrl"),
-            sessionId = element.getString("sessionId"),
-            label = element.getString("label"),
+            engineId = string(element, "engineId"),
+            baseUrl = string(element, "baseUrl"),
+            sessionId = string(element, "sessionId"),
+            label = string(element, "label"),
             pairedAtMs = element.getLong("pairedAtMs"),
             deviceId = optional(element, "deviceId"),
             name = optional(element, "name"),
@@ -108,6 +108,10 @@ internal object EngineMetaJson {
         null
     }
 
+    /** `getString` coerces any value (`{}` included); only a real string is accepted. */
+    private fun string(element: JSONObject, key: String): String =
+        element.get(key) as? String ?: throw JSONException("$key is not a string")
+
     private fun optional(element: JSONObject, key: String): String? =
-        if (element.has(key) && !element.isNull(key)) element.getString(key) else null
+        if (element.has(key) && !element.isNull(key)) string(element, key) else null
 }

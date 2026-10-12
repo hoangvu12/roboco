@@ -251,6 +251,9 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.reflect=ALL-UNNAMED",
         "--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED",
+        // UniFFI objects register with android.system.SystemCleaner, which
+        // Robolectric backs with jdk.internal.ref.CleanerFactory.
+        "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
     systemProperty("jna.library.path", debugHostDir.absolutePath)

@@ -47,7 +47,7 @@ class EngineMetaJsonTest {
 
         assertEquals(
             setOf("engineId", "baseUrl", "sessionId", "label", "pairedAtMs"),
-            objectA.keySet(),
+            objectA.keys().asSequence().toSet(),
         )
         assertEquals("http://10.0.2.2:27655", objectA.getString("baseUrl"))
         assertEquals(1_760_000_000_000, objectA.getLong("pairedAtMs"))

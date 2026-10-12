@@ -67,13 +67,13 @@ class PairedEngineStoreTest {
         cipher: FakeSecretCipher = FakeSecretCipher(),
         fileName: String = "t.preferences_pb",
     ): Fixture {
-        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val dataStore = PreferenceDataStoreFactory.create(
             scope = scope,
             produceFile = { File(tmpFolder.root, fileName) },
         )
         return Fixture(
-            PairedEngineStore(dataStore, cipher, StandardTestDispatcher(scheduler)),
+            PairedEngineStore(dataStore, cipher, StandardTestDispatcher(testScheduler)),
             dataStore,
             scope,
         )
