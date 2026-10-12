@@ -27,7 +27,6 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.Palette
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.BusySpinnerTag
 
@@ -50,8 +49,8 @@ import sh.roboco.android.design.glass.BusySpinnerTag
  *   tagline to two centred lines inside the 24 dp margins;
  * - semantics: `pair-engine` is a `Role.Button`, the mark is decorative,
  *   the status line is a polite live region; the status → copy/colour
- *   mapping is pinned through [pairingRootStatusLine] (the drawn pixels
- *   are the Roborazzi goldens' job).
+ *   mapping is pinned by the plain-JVM [PairingRootStatusLineTest]
+ *   (the drawn pixels are the Roborazzi goldens' job).
  *
  * Bounds are read as Dp (`getBoundsInRoot`), so the assertions are the
  * ticket's dp numbers directly. The busy state runs on a frozen clock —
@@ -264,25 +263,6 @@ class PairingRootTest {
         // The screen never clears an Error by itself; only the caller
         // replaces it. (Nothing to re-tap: the click must not mutate it.)
         compose.onNodeWithText("x").assertExists()
-    }
-
-    // ------------------------------------------------------------ mapping
-
-    @Test
-    fun statusLineMapsRedeemingToSecondaryAndErrorsToDanger() {
-        val redeeming = "Redeeming the pairing link…"
-        for (dark in listOf(false, true)) {
-            val palette = Palette.of(dark)
-            assertNull(pairingRootStatusLine(PairingRootStatus.None, redeeming, palette))
-            assertEquals(
-                redeeming to palette.secondary,
-                pairingRootStatusLine(PairingRootStatus.Redeeming, redeeming, palette),
-            )
-            assertEquals(
-                "x" to palette.danger,
-                pairingRootStatusLine(PairingRootStatus.Error("x"), redeeming, palette),
-            )
-        }
     }
 
     // ------------------------------------------------------------ semantics
