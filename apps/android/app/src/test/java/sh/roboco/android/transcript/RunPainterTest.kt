@@ -214,6 +214,30 @@ class RunPainterTest {
         assertTrue(canvas.ops.isEmpty())
     }
 
+    @Test
+    fun anEmptyDecoratedRunStillDrawsItsBar() {
+        // Rust never emits len == 0 (markdown.rs:485-487); if one appears,
+        // iOS draws an empty CTLine plus the bar — the glyphs skip, the
+        // bar does not.
+        val d = 3f
+        val f = fonts(d)
+        val canvas = RecordingCanvas()
+        TextRunPainter.draw(
+            canvas,
+            "abc",
+            run(1, 0, 10f, 20f, 50f, 0u, ColorRole.TEXT, Decoration.UNDERLINE),
+            f[0u]!!,
+            0xFF27272C.toInt(),
+            d,
+        )
+        assertEquals("no glyphs, one bar", 1, canvas.ops.size)
+        val bar = canvas.rects.single()
+        assertEquals(30f, bar.l, 0.001f)
+        assertEquals(66f, bar.t, 0.001f)
+        assertEquals(180f, bar.r, 0.001f)
+        assertEquals(69f, bar.b, 0.001f)
+    }
+
     // ------------------------------------------------- shimmer (text only)
 
     @Test
