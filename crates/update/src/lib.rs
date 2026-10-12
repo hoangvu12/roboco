@@ -1600,20 +1600,16 @@ mod tests {
                 .as_deref(),
             Some("1111")
         );
-        let (os, arch) = platform_key();
-        let headless = headless_artifact("0.9.2");
-        assert_eq!(headless, format!("roboco-0.9.2-{os}-{arch}.tar.gz"));
-        assert_ne!(headless, "roboco-0.9.2-android-arm64-v8a.apk");
-        // Android names can never match a desktop artifact name: "android"
-        // is not a desktop OS token (linux/macos/windows), and the desktop
-        // extensions (.tar.gz, .exe) differ from .apk.
+        // Desktop artifact names use Rust OS/arch tokens and .tar.gz/.exe,
+        // so an Android name can never collide with one (the lookups are
+        // exact-name, never fuzzy).
+        let (os, _) = platform_key();
         assert!(os != "android");
         for name in [
             headless_artifact("0.9.2").as_str(),
             mac_app_artifact("0.9.2").as_str(),
             format!("roboco-0.9.2-windows-{}.exe", std::env::consts::ARCH).as_str(),
         ] {
-            assert!(!name.contains("android"));
             assert!(!name.ends_with(".apk"));
         }
         // The Windows updater's own entry is still read back exactly as

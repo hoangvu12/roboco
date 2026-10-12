@@ -134,17 +134,15 @@ data class ReleaseKeystore(
     val keyPassword: String,
 )
 
-fun requiredKeystoreValue(name: String, value: String?): String =
+fun requiredKeystoreValue(name: String, source: String, value: String?): String =
     requireNotNull(value?.takeIf { it.isNotBlank() }) {
-        "$name must be set alongside ROBOCO_ANDROID_KEYSTORE"
+        "$name must be set ($source)"
     }
 
 fun keystorePropertiesFile(path: String): ReleaseKeystore {
     val props = Properties().apply { file(path).inputStream().use { load(it) } }
     fun required(key: String): String =
-        requireNotNull(props.getProperty(key)?.takeIf { it.isNotBlank() }) {
-            "-ProbocoKeystoreProperties ($path) is missing $key"
-        }
+        requiredKeystoreValue(key, "-ProbocoKeystoreProperties ($path)", props.getProperty(key))
     return ReleaseKeystore(
         storeFile = file(required("storeFile")),
         storePassword = required("storePassword"),
@@ -161,14 +159,17 @@ val releaseKeystore: ReleaseKeystore? =
                 storeFile = file(path),
                 storePassword = requiredKeystoreValue(
                     "ROBOCO_ANDROID_KEYSTORE_PASSWORD",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
                     providers.environmentVariable("ROBOCO_ANDROID_KEYSTORE_PASSWORD").orNull,
                 ),
                 keyAlias = requiredKeystoreValue(
                     "ROBOCO_ANDROID_KEY_ALIAS",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
                     providers.environmentVariable("ROBOCO_ANDROID_KEY_ALIAS").orNull,
                 ),
                 keyPassword = requiredKeystoreValue(
                     "ROBOCO_ANDROID_KEY_PASSWORD",
+                    "ROBOCO_ANDROID_KEYSTORE env vars",
                     providers.environmentVariable("ROBOCO_ANDROID_KEY_PASSWORD").orNull,
                 ),
             )
