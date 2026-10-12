@@ -73,11 +73,16 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Mobile core tests
-        run: cargo test --locked -p roboco-text -p roboco-markdown
+        run: cargo test --locked -p roboco-text -p roboco-markdown -p roboco-mobile
       - name: Mobile core benches compile
         # Compile only, never run: keeps the criterion bench from rotting
         # without paying its runtime on every PR.
         run: cargo bench --locked -p roboco-text --no-run
+      - name: Mobile layout bench (informational)
+        # android-app#05: the layout bench's numbers land in the logs for
+        # drift tracking; never gate the build on them.
+        continue-on-error: true
+        run: cargo test --locked --release -p roboco-mobile -- --ignored bench_layout_passes --nocapture
 
   tailcat-adapter:
     runs-on: ubuntu-24.04

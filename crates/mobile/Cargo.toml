@@ -1,0 +1,25 @@
+[package]
+name = "roboco-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The mobile core: one UniFFI library the Android (Kotlin) app links.
+# Platform code paints, scrolls and handles gestures; everything that
+# decides *what* to paint and *where* lives here. Roboco ships no iOS
+# (AGENTS.md), so no `staticlib`.
+[lib]
+name = "roboco_mobile"
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+uniffi = "0.32"
+roboco-markdown.workspace = true
+roboco-text.workspace = true
+roboco-doc.workspace = true
+roboco-proto.workspace = true
+roboco-syntax.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
