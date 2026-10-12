@@ -1,5 +1,7 @@
 package sh.roboco.android.design
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
@@ -152,8 +154,14 @@ class BrandMarkRenderTest {
     @Test
     @Config(sdk = [36], qualifiers = "w720dp-h240dp-mdpi")
     fun nullHarnessTakesItsBoxAndDrawsNothing() {
+        // captureToImage reads the window, so the host activity's opaque
+        // window background shows through; paint a known backdrop and assert
+        // the mark left every pixel of it untouched.
+        val backdrop = Color(0xFFFF00FF)
         compose.setContent {
-            HarnessMark(null, 20.dp, Color.Black, Modifier.testTag("null-mark"))
+            Box(Modifier.background(backdrop)) {
+                HarnessMark(null, 20.dp, Color.Black, Modifier.testTag("null-mark"))
+            }
         }
         compose.onNodeWithTag("null-mark")
             .assertWidthIsEqualTo(20.dp)
@@ -161,7 +169,7 @@ class BrandMarkRenderTest {
         val px = compose.onNodeWithTag("null-mark").captureToImage().toPixelMap()
         for (y in 0 until px.height) {
             for (x in 0 until px.width) {
-                assertTransparent(px, x, y)
+                assertEquals("pixel ($x,$y) expected the backdrop", backdrop.toArgb(), px[x, y].toArgb())
             }
         }
     }

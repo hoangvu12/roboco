@@ -65,9 +65,12 @@ object ReduceMotion {
     @MainThread
     fun install(context: Context) {
         val cr = context.applicationContext.contentResolver
-        resolver = cr
         systemReduced = readSystem(cr)
-        if (installed) return
+        if (installed && cr === resolver) return
+        // A different resolver means a new Application (Robolectric builds one
+        // per test): move the observer, or it keeps listening to a dead one.
+        observer?.let { obs -> resolver?.unregisterContentObserver(obs) }
+        resolver = cr
         installed = true
         val contentObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {

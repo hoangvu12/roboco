@@ -189,7 +189,13 @@ class CoreStartupTest {
         advanceUntilIdle()
 
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
-        val view = fixture.startup.engines.value!!.single()
+        // The core parks on its own thread, possibly after the Ready
+        // snapshot; the EnginesChanged refresh then republishes it.
+        val view = withContext(Dispatchers.Default) {
+            withTimeout(5_000) {
+                fixture.startup.engines.first { it?.singleOrNull()?.state is EngineState.Parked }!!.single()
+            }
+        }
         val parked = view.state as EngineState.Parked
         assertEquals(ParkReason.REVOKED, parked.reason)
         fixture.close()
