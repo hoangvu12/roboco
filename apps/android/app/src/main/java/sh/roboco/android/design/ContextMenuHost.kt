@@ -51,10 +51,8 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import dev.chrisbanes.haze.hazeSource
@@ -448,8 +446,8 @@ private fun ContextMenuOverlay(
                         scaleY = scale
                     }
                     .dropShadow(shape) {
-                        radius = ContextMenuTokens.ShadowRadius
-                        offset = DpOffset(0.dp, ContextMenuTokens.ShadowOffsetY)
+                        radius = ContextMenuTokens.ShadowRadius.toPx()
+                        offset = Offset(0f, ContextMenuTokens.ShadowOffsetY.toPx())
                         color = Color.Black
                         alpha = (ContextMenuTokens.ShadowAlpha * active.lift.value).coerceIn(0f, 1f)
                     }
@@ -492,7 +490,7 @@ private fun ContextMenuOverlay(
             val maxW = safe.width.toInt().coerceAtLeast(1)
             val gapPx = ContextMenuTokens.MenuGap.toPx()
             val fullPanel = child.measure(Constraints(maxWidth = maxW, maxHeight = Constraints.Infinity))
-            val placement = placeContextMenu(scaled, active.touchInHost, fullPanel.size, safe, gapPx)
+            val placement = placeContextMenu(scaled, active.touchInHost, IntSize(fullPanel.width, fullPanel.height), safe, gapPx)
             origin = placement.origin
             menuMaxHeight = placement.maxHeight.toDp()
             val placed = child.measure(Constraints(maxWidth = maxW, maxHeight = placement.maxHeight))

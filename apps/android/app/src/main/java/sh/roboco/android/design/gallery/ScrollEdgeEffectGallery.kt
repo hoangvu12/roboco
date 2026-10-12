@@ -138,7 +138,7 @@ internal fun ScrollEdgeEngagedMode.engaged(list: LazyListState): Boolean = when 
 }
 
 internal fun ScrollEdgeEngagedMode.next(): ScrollEdgeEngagedMode =
-    entries[(ordinal + 1) % entries.size]
+    ScrollEdgeEngagedMode.entries[(ordinal + 1) % ScrollEdgeEngagedMode.entries.size]
 
 /**
  * The ticket's screenshot/preview fixture: the pre-scrolled fixture list
@@ -219,7 +219,7 @@ private fun rememberPreScrolledListState(): LazyListState {
     return rememberLazyListState(
         initialFirstVisibleItemIndex = 0,
         initialFirstVisibleItemScrollOffset = with(density) {
-            (2 * ScrollEdgeEffectRowHeight).toPx().roundToInt()
+            (ScrollEdgeEffectRowHeight * 2).toPx().roundToInt()
         },
     )
 }

@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
@@ -362,7 +363,7 @@ fun GlassTabPill(
                 val centreX = lerp(startCentreX.toFloat(), endCentreX.toFloat(), p)
                 icon.placeRelative(
                     (centreX - iconBoxPx / 2).roundToInt(),
-                    (centreY - iconBoxPx / 2).roundToInt(),
+                    (centreY - iconBoxPx / 2f).roundToInt(),
                 )
             }
         }

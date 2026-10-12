@@ -566,7 +566,8 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let project = rig.client.workspace().project(&id).unwrap();
+        let workspace = rig.client.workspace();
+        let project = workspace.project(&id).unwrap();
         assert_eq!(project.path, folder.to_string_lossy().to_string());
         assert_eq!(project.device_id, device);
         // A trailing-separator variant of the same folder dedupes.

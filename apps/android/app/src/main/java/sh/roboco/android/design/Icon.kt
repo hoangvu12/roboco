@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.BuildConfig
 import sh.roboco.android.core.Face
+import sh.roboco.android.core.assetPath
 
 /**
  * One SF Symbol point → the layout box it reserves: `p × 1.2` dp. Fixed —
@@ -142,7 +143,7 @@ private fun VectorIconInBox(
     val description = contentDescription
     val semantics = if (description != null) {
         Modifier.semantics {
-            contentDescription = description
+            this.contentDescription = description
             role = Role.Image
         }
     } else {

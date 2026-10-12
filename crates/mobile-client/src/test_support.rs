@@ -285,7 +285,7 @@ impl Rig {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
             if let Some(row) = self.client.workspace().session(chat_id) {
-                return row;
+                return row.clone();
             }
             assert!(
                 std::time::Instant::now() < deadline,

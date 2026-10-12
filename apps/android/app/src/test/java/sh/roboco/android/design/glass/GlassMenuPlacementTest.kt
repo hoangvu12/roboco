@@ -1,7 +1,7 @@
 package sh.roboco.android.design.glass
 
-import androidx.compose.ui.geometry.IntRect
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

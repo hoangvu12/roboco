@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.graphics.shapes.CornerRounding
 import androidx.graphics.shapes.RoundedPolygon
+import androidx.graphics.shapes.rectangle
 import kotlin.math.min
 import sh.roboco.android.design.DEFAULT_SMOOTHING
 import sh.roboco.android.design.RobocoTheme
