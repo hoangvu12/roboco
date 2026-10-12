@@ -36,7 +36,10 @@ import sh.roboco.android.design.Palette
 import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.TypeScale
+import sh.roboco.android.design.gallery.ScrollEdgeEffectFixtureMeta
 import sh.roboco.android.design.gallery.ScrollEdgeEffectFixtureTitles
+import sh.roboco.android.design.gallery.ScrollEdgeEffectRowHeight
+import sh.roboco.android.design.gallery.ScrollEdgeEffectRowMargin
 import sh.roboco.android.design.glass.GlassCircleButton
 import sh.roboco.android.design.glass.GlassTextCapsule
 import sh.roboco.android.design.uiStyle
@@ -61,9 +64,6 @@ import sh.roboco.android.design.uiStyle
 /** The fixture's pinned-accessory placeholder height (the ticket's gallery toggle). */
 internal val LargeTitleFixtureAccessoryHeight = 40.dp
 
-/** The fixture's row meta line (ticket 09's fixture, `SessionCell.swift:115`). */
-private const val FixtureMeta = "zeron · main"
-
 /** The gallery's Trailing toggle states. */
 private enum class TrailingKind { None, Circle, EditCapsule }
 
@@ -87,8 +87,11 @@ internal fun rememberLargeTitleFixtureState(
 
 /**
  * The ticket's fixture: "Sessions" over the ten rows of `1-off.png`, a ⋯
- * trailing circle, at a fixed 24 dp status bar. [rows] may exceed the ten
- * titles (the titles repeat) for tests that need real scroll range.
+ * trailing circle, at a fixed 24 dp status bar. The ticket's ten titles
+ * repeat to [rows] = 20 — ten rows leave only 40 dp of scroll range on a
+ * 700 dp host, less than the 52 dp collapse, so the gallery's "scroll
+ * slowly / release half-way" manual check and the goldens need the headroom
+ * (the visible rows are the same either way).
  */
 @Composable
 internal fun LargeTitleFixtureScaffold(
@@ -97,7 +100,7 @@ internal fun LargeTitleFixtureScaffold(
     title: String = "Sessions",
     topInset: Dp = 24.dp,
     listState: LazyListState = rememberLargeTitleFixtureState(),
-    rows: Int = ScrollEdgeEffectFixtureTitles.size,
+    rows: Int = 2 * ScrollEdgeEffectFixtureTitles.size,
     onBack: () -> Unit = {},
     onRowTap: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -117,9 +120,9 @@ internal fun LargeTitleFixtureScaffold(
 }
 
 /**
- * The fixture rows (the goldens pin the order): 62 dp tall, 20 dp side
- * margin, title Geist Medium `fixed(16.5)` `Palette.text`, meta Geist
- * Regular `fixed(13.5)` `Palette.secondary` — ticket 09's fixture rows,
+ * The fixture rows (the goldens pin the order): ticket 09's fixture row —
+ * 62 dp tall, 20 dp side margin, title Geist Medium `fixed(16.5)`
+ * `Palette.text`, meta Geist Regular `fixed(13.5)` `Palette.secondary` —
  * with a tag and a tap hook for the behaviour tests. The real session row
  * is ticket 37; this is only content to collapse over.
  */
@@ -136,13 +139,13 @@ private fun LargeTitleFixtureRow(title: String, modifier: Modifier = Modifier, o
     Column(
         modifier
             .fillMaxWidth()
-            .height(62.dp)
+            .height(ScrollEdgeEffectRowHeight)
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = ScrollEdgeEffectRowMargin),
         verticalArrangement = Arrangement.Center,
     ) {
         BasicText(title, style = uiStyle(Face.SansMedium, typeScale.fixed(16.5f), palette.text))
-        BasicText(FixtureMeta, style = uiStyle(Face.Sans, typeScale.fixed(13.5f), palette.secondary))
+        BasicText(ScrollEdgeEffectFixtureMeta, style = uiStyle(Face.Sans, typeScale.fixed(13.5f), palette.secondary))
     }
 }
 
@@ -187,7 +190,7 @@ fun LargeTitleGallerySection() {
             pinnedAccessory = if (pinned) ({ LargeTitlePinnedPlaceholder() }) else null,
             pinnedAccessoryHeight = if (pinned) LargeTitleFixtureAccessoryHeight else 0.dp,
         ) {
-            largeTitleFixtureRows(ScrollEdgeEffectFixtureTitles.size)
+            largeTitleFixtureRows(2 * ScrollEdgeEffectFixtureTitles.size)
         }
         Column(
             Modifier

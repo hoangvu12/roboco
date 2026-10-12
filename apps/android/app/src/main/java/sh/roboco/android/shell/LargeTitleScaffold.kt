@@ -59,6 +59,7 @@ import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.LocalTypeScale
@@ -296,10 +297,15 @@ fun LargeTitleScaffold(
 
     // End-of-scroll snap (UIKit never rests half-collapsed): fires when a
     // scroll stops with 0 < c < L and animates to the 50 % threshold's side.
+    // The flow's initial value (the composition-time state) is dropped: it
+    // is not a scroll end, and without the drop a screen composed at a
+    // restored mid position (the mid golden, a reopened folder) would snap
+    // immediately on appearing.
     LaunchedEffect(listState, effectiveMode) {
         if (!hasLargeTitle) return@LaunchedEffect
         snapshotFlow { listState.isScrollInProgress }
             .distinctUntilChanged()
+            .drop(1)
             .filter { !it }
             .collect {
                 val c = collapseDp()

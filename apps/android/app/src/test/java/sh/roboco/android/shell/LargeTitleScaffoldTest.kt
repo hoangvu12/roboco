@@ -10,12 +10,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertDoesNotExist
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
@@ -31,6 +34,7 @@ import androidx.compose.ui.test.swipeWithVelocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -134,7 +138,7 @@ class LargeTitleScaffoldTest {
 
     @Test
     fun largeTitleGeometryAtRest() {
-        host(rows = 10)
+        host()
         // topInset = 24 → navBottom = 68; the text box (natural 39 dp line +
         // 8 dp bottom inset) starts at 68 + 5 = 73, leading edge 16.
         val node = compose.onNodeWithTag("nav-large-title").fetchSemanticsNode()
@@ -144,7 +148,9 @@ class LargeTitleScaffoldTest {
 
     @Test
     fun inlineTitleIsCentredOnTheFullWidthWhenCollapsed() {
-        host(listState = LazyListState(3, 0))
+        // 124 dp = the large title (52) + two rows (2 × 62) − 10, ticket 09's
+        // pre-scroll: c = 52 with row 2 just under the bar, as in 1-off.png.
+        host(listState = LazyListState(0, dp(124f).toInt()))
         val inline = compose.onNodeWithTag("nav-inline-title").fetchSemanticsNode()
         // Centre x = screen width / 2 (412 / 2), centre y = 24 + 22 = 46:
         // the 22.1 dp line box centred in the 44 dp nav row.
@@ -154,7 +160,7 @@ class LargeTitleScaffoldTest {
 
     @Test
     fun trailingCircleIsAFortyFourSquareAtTrailingSixteen() {
-        host(rows = 10)
+        host()
         val more = compose.onNodeWithContentDescription("More").fetchSemanticsNode()
         assertEquals(dp(44f), more.size.width.toFloat(), 1f)
         assertEquals(dp(44f), more.size.height.toFloat(), 1f)
@@ -165,7 +171,7 @@ class LargeTitleScaffoldTest {
     @Test
     fun backCircleGeometryAndTap() {
         var backTaps = 0
-        host(showBack = true, onBack = { backTaps++ }, rows = 10)
+        host(showBack = true, onBack = { backTaps++ })
         val back = compose.onNodeWithTag("nav-back").fetchSemanticsNode()
         assertEquals(dp(44f), back.size.width.toFloat(), 1f)
         assertEquals(dp(16f), back.positionInRoot.x, dp(1f))
@@ -186,7 +192,7 @@ class LargeTitleScaffoldTest {
                     showBack = true,
                     onBack = {},
                     trailing = { GlassTextCapsule("Edit", onClick = {}) },
-                ) { largeTitleFixtureRows(10) }
+                ) { largeTitleFixtureRows(20) }
             }
         }
         compose.waitForIdle()
@@ -219,11 +225,13 @@ class LargeTitleScaffoldTest {
 
         // c = 35: still below the 0.5 flip (alpha 0.49) — the large title.
         host(listState = LazyListState(0, dp(35f).toInt()))
+        assertTrue(isHidden("nav-inline-title"))
+        assertFalse(isHidden("nav-large-title"))
         assertEquals(1, visibleTitleHeadings("Sessions").size)
 
-        // c = 52: the inline title; the large-title item is still composed
-        // in the padding region, so it must be hidden.
-        host(listState = LazyListState(3, 0))
+        // c = 52 (the 124 dp pre-scroll): the inline title; the large-title
+        // item is still composed in the padding region, so it must be hidden.
+        host(listState = LazyListState(0, dp(124f).toInt()))
         assertFalse(isHidden("nav-inline-title"))
         assertTrue(isHidden("nav-large-title"))
         assertEquals(1, visibleTitleHeadings("Sessions").size)
@@ -237,9 +245,38 @@ class LargeTitleScaffoldTest {
         assertFalse(isHidden("nav-inline-title"))
     }
 
+    /**
+     * The visible half of the fade, as pixel probes of the centre column
+     * (clear of the ⋯ button): at rest the whole band above `navBottom` is
+     * pure page background — the inline title draws at alpha 0 and no rows
+     * run under the bar; collapsed (148 dp: row 2 spans 34 … 96) the band
+     * carries ink — the inline title at alpha 1 and the row softened under
+     * the bar. The scrim's blend and its 250 ms engage are ticket 09's own
+     * tests; the goldens pin the combined look.
+     */
+    @Test
+    fun bandIsEmptyAtRestAndCarriesInkWhenCollapsed() {
+        val bg = Color(0xFFF3F3F5)
+        val centerX = (dp(412f) / 2f).toInt()
+
+        fun Color.isBackground(): Boolean =
+            abs(red - bg.red) <= 2f / 255f && abs(green - bg.green) <= 2f / 255f && abs(blue - bg.blue) <= 2f / 255f
+
+        host()
+        val atRest = compose.onRoot().captureToImage().toPixelMap()
+        for (y in 2 until dp(68f).toInt() step 2) {
+            assertTrue("rest band pixel at y=$y is not background", atRest[centerX, y].isBackground())
+        }
+
+        host(listState = LazyListState(0, dp(148f).toInt()))
+        val collapsed = compose.onRoot().captureToImage().toPixelMap()
+        val ink = (dp(24f).toInt() until dp(68f).toInt()).count { !collapsed[centerX, it].isBackground() }
+        assertTrue("no ink under the nav row when collapsed", ink > 0)
+    }
+
     @Test
     fun navRowIsATraversalGroupReadBeforeTheContent() {
-        host(rows = 10)
+        host()
         val navRowGroups = compose.onAllNodes(
             SemanticsMatcher("nav row traversal group") {
                 it.config.contains(SemanticsProperties.IsTraversalGroup) &&
@@ -305,9 +342,11 @@ class LargeTitleScaffoldTest {
     @Test
     fun navRowBlocksTapsUnderItButTheExtensionPassesThrough() {
         var taps = 0
-        // Index 3: rows sit under the bar; row 3 fills 68 … 130 dp.
-        host(listState = LazyListState(3, 0), onRowTap = { taps++ })
-        compose.onRoot().performTouchInput { click(Offset(width / 2f, dp(34f))) }
+        // 148 dp = the large title + two rows + 34: row 2 spans 34 … 96, so
+        // both tap points sit on the same clickable row — one inside the nav
+        // row (blocked), one in the 16 dp extension below it (passed).
+        host(listState = LazyListState(0, dp(148f).toInt()), onRowTap = { taps++ })
+        compose.onRoot().performTouchInput { click(Offset(width / 2f, dp(40f))) }
         compose.runOnIdle { assertEquals("the nav row swallowed a tap into the bar", 0, taps) }
         compose.onRoot().performTouchInput { click(Offset(width / 2f, dp(76f))) }
         compose.runOnIdle { assertEquals("the edge extension blocked a tap", 1, taps) }
@@ -352,20 +391,20 @@ class LargeTitleScaffoldTest {
     @Test
     fun titleChangeUpdatesBothTitlesWithoutResettingScroll() {
         var title by mutableStateOf("Sessions")
-        val listState = LazyListState(3, 0)
+        val listState = LazyListState(0, dp(124f).toInt())
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                LargeTitleFixtureScaffold(title = title, listState = listState, rows = 10)
+                LargeTitleFixtureScaffold(title = title, listState = listState)
             }
         }
         compose.waitForIdle()
+        val before = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         compose.runOnIdle { title = "Renamed" }
         compose.waitForIdle()
         compose.onNodeWithTag("nav-inline-title").assert(hasText("Renamed"))
         compose.onNodeWithTag("nav-large-title").assert(hasText("Renamed"))
         compose.runOnIdle {
-            assertEquals("the scroll position was reset", 3, listState.firstVisibleItemIndex)
-            assertEquals(0, listState.firstVisibleItemScrollOffset)
+            assertEquals("the scroll position was reset", before, listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset)
         }
     }
 
@@ -420,7 +459,7 @@ class LargeTitleScaffoldTest {
                     onBack = {},
                     pinnedAccessory = { Box(Modifier.testTag("accessory").fillMaxSize()) },
                     pinnedAccessoryHeight = 40.dp,
-                ) { largeTitleFixtureRows(10) }
+                ) { largeTitleFixtureRows(20) }
             }
         }
         compose.waitForIdle()
@@ -428,7 +467,7 @@ class LargeTitleScaffoldTest {
         assertEquals(dp(120f), compose.onNodeWithTag("accessory").fetchSemanticsNode().positionInRoot.y, dp(1f))
         assertEquals(dp(160f), compose.onNodeWithTag("fixture-row-0").fetchSemanticsNode().positionInRoot.y, dp(1f))
 
-        // Scrolled 100 dp (52 + 48 → index 1, offset 48): pinned at navBottom.
+        // Scrolled 100 dp (52 + 48 → item 1, offset 48): pinned at navBottom.
         val listState = LazyListState(1, dp(48f).toInt())
         compose.setContent {
             RobocoTheme(Appearance.Light) {
@@ -440,7 +479,7 @@ class LargeTitleScaffoldTest {
                     onBack = {},
                     pinnedAccessory = { Box(Modifier.testTag("accessory").fillMaxSize()) },
                     pinnedAccessoryHeight = 40.dp,
-                ) { largeTitleFixtureRows(10) }
+                ) { largeTitleFixtureRows(20) }
             }
         }
         compose.waitForIdle()
@@ -460,7 +499,7 @@ class LargeTitleScaffoldTest {
                     showBack = false,
                     onBack = {},
                     contentPadding = callerPadding,
-                ) { largeTitleFixtureRows(30) }
+                ) { largeTitleFixtureRows(20) }
             }
         }
         compose.waitForIdle()

@@ -15,16 +15,19 @@ import sh.roboco.android.design.RobocoTheme
 
 /**
  * The large-title scaffold's goldens (android-ui-parity #25): the ticket's
- * fixture — "Sessions" over the ten rows of `1-off.png`, a ⋯ trailing
- * circle — at a **fixed 24 dp status bar** (Robolectric has no real insets),
- * captured at `w412dp-h700dp-xxhdpi`, in light and dark:
+ * fixture — "Sessions" over the fixture rows of `1-off.png` (ticket 09's
+ * ten titles, repeated once for scroll range), a ⋯ trailing circle — at a
+ * **fixed 24 dp status bar** (Robolectric has no real insets), captured at
+ * `w412dp-h700dp-xxhdpi`, in light and dark:
  *
  * - `LargeTitle_expanded` — at rest: the large title at `navBottom + 5`, the
  *   inline title invisible, the edge effect not engaged;
  * - `LargeTitle_mid` — `c = 35`: the large title clipped from its top, the
  *   inline title at ~50 % over the blurred extension;
- * - `LargeTitle_collapsed` — index 3 (`c = 52`): the inline title centred,
- *   rows dissolving under the bar, the side-by-side match of `1-off.png`;
+ * - `LargeTitle_collapsed` — the 124 dp pre-scroll (the large title + two
+ *   rows − 10, ticket 09's fixture position): `c = 52`, the inline title
+ *   centred, rows dissolving under the bar — the side-by-side match of
+ *   `1-off.png`;
  * - `LargeTitle_inlineOnly_back` — `InlineOnly` with the back circle.
  *
  * Static initial positions (no runtime scroll), so the snap never fires
@@ -89,7 +92,7 @@ class LargeTitleScaffoldScreenshotTest {
             LargeTitleFixtureScaffold(
                 showBack = false,
                 onBack = {},
-                listState = rememberLargeTitleFixtureState(firstIndex = 3),
+                listState = rememberLargeTitleFixtureState(offsetDp = 124f),
             )
         }
     }
@@ -100,7 +103,7 @@ class LargeTitleScaffoldScreenshotTest {
             LargeTitleFixtureScaffold(
                 showBack = false,
                 onBack = {},
-                listState = rememberLargeTitleFixtureState(firstIndex = 3),
+                listState = rememberLargeTitleFixtureState(offsetDp = 124f),
             )
         }
     }
