@@ -2,6 +2,7 @@ package sh.roboco.android.transcript
 
 import android.graphics.Canvas
 import android.util.Log
+import sh.roboco.android.core.FontChain
 import sh.roboco.android.design.color
 import uniffi.roboco_core.FadeEdge
 import uniffi.roboco_core.RowDisplay
@@ -13,7 +14,10 @@ import uniffi.roboco_core.RowDisplay
  * once per (row, version, width) — construction is pure Kotlin over the
  * record, safe on any thread (ticket 117 builds these on the prefetch
  * thread) — and it holds no colours, fonts or [android.graphics.Paint]s,
- * so theme and density changes only repaint.
+ * so theme and density changes only repaint. The one lazily filled cache
+ * is [widePlan]'s per-run double-width plan: a plain [IntArray] derived
+ * only from the text and the style's face, but filled on the drawing
+ * (main) thread only — ticket 117's prefetch must not touch it.
  *
  * Unlike iOS, Android pre-builds nothing per run at construction (no
  * CTLines): [draw] paints straight from [RowDisplay.text] through
@@ -60,8 +64,42 @@ class RowModel(val display: RowDisplay) {
 
     private val faded = BooleanArray(display.runs.size)
 
+    /** Ticket 63's per-run double-width plan cache; see [widePlan]. */
+    private val widePlans = arrayOfNulls<IntArray>(display.runs.size)
+
     /** iOS `fadedRun.contains(i)`: the run paints only through its fade. */
     fun isFaded(run: Int): Boolean = faded[run]
+
+    /**
+     * iOS `RowModel.swift:28` guard: the run's UTF-16 range inside the text
+     * and a known style — else the run is skipped entirely (a nil CTLine on
+     * iOS draws no text *and* no bar). Shared by this class's own draw loop
+     * and the [RunPainter] facade so both guards agree. The long addition
+     * avoids UInt overflow on a malformed `start`/`len` pair.
+     */
+    internal fun entryFor(i: Int, fonts: StyleFonts): StyleFonts.Entry? {
+        val r = display.runs[i]
+        if (r.start.toLong() + r.len.toLong() > display.text.length) return null
+        return fonts[r.style]
+    }
+
+    /**
+     * Double-width clusters of run i ([MonoWide.NONE] unless the style's
+     * face is Mono and the run has some), computed once and cached: the
+     * plan depends only on the text and the style's face, and a style id's
+     * face never changes within one view, so the cache survives
+     * [StyleFonts] rebuilds. Drawing (main) thread only — the cache array
+     * is unsynchronised.
+     */
+    internal fun widePlan(i: Int, font: StyleFonts.Entry): IntArray {
+        widePlans[i]?.let { return it }
+        val r = display.runs[i]
+        val s = r.start.toInt()
+        val p = if (!FontChain.isMono(font.face)) MonoWide.NONE
+            else MonoWide.plan(display.text, s, s + r.len.toInt())
+        widePlans[i] = p
+        return p
+    }
 
     init {
         // A scroller index >= display.scrollers.size is malformed (Rust
@@ -134,20 +172,19 @@ class RowModel(val display: RowDisplay) {
         if (layer !in 0 until layers) return
 
         /**
-         * Runs run [i] with its guards: skipped when the run's UTF-16 range
-         * exceeds [RowDisplay.text] (iOS `RowModel.swift:28`) or when
-         * [fonts] holds no style for it (logged inside [StyleFonts.get]).
-         * Local to [draw] — the only [StyleFonts] reference this class
-         * makes outside its parameter — and called directly for plain runs
-         * and through [FadePainter]'s lambda for faded runs. Both are on
+         * Runs run [i] with its guards: skipped (no text, no bar) when the
+         * run's UTF-16 range exceeds [RowDisplay.text] or when [fonts] holds
+         * no style for it (logged inside [StyleFonts.get]) — iOS
+         * `RowModel.swift:28`. Local to [draw] — the only [StyleFonts]
+         * reference this class makes outside its parameter — and called
+         * directly for plain runs and through [FadePainter]'s lambda for
+         * faded runs, so bars fade and clip with their text. Both are on
          * the drawing thread.
          */
         fun drawRun(i: Int) {
             val run = display.runs[i]
-            val start = run.start.toInt()
-            if (start + run.len.toInt() > display.text.length) return
-            val font = fonts[run.style] ?: return
-            TextRunPainter.draw(canvas, display.text, run, font, palette.color(run.color), density)
+            val font = entryFor(i, fonts) ?: return
+            TextRunPainter.draw(canvas, display.text, run, font, palette.color(run.color), density, widePlan(i, font))
         }
 
         // 1. Boxes (never in a Range pass: Range is text-only).
@@ -176,13 +213,14 @@ class RowModel(val display: RowDisplay) {
                     // Split a straddling run at the glyph edge, as iOS clips
                     // at CTLineGetOffsetForStringIndex; the span covers any
                     // row (a full-height clip, ±CLIP_EXTENT).
-                    val font = fonts[run.style] ?: continue
+                    val font = entryFor(i, fonts) ?: continue
+                    val plan = widePlan(i, font)
                     val x = run.x * density
                     val left =
-                        if (start < range.from) x + TextRunPainter.offset(display.text, run, font, range.from)
+                        if (start < range.from) x + TextRunPainter.offset(display.text, run, font, range.from, plan)
                         else -CLIP_EXTENT
                     val right =
-                        if (end > range.to) x + TextRunPainter.offset(display.text, run, font, range.to)
+                        if (end > range.to) x + TextRunPainter.offset(display.text, run, font, range.to, plan)
                         else CLIP_EXTENT
                     val save = canvas.save()
                     canvas.clipRect(left, -CLIP_EXTENT, right, CLIP_EXTENT)
