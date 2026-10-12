@@ -77,11 +77,31 @@ impl TranscriptConnection {
     /// params are routed (scoped id decoded to the engine's raw id,
     /// `targetDeviceId` stripped).
     pub async fn watch_doc_messages(&self, chat_id: &str) -> Result<RpcSubscription, ClientError> {
+        self.watch_doc_messages_with(chat_id, serde_json::Value::Null)
+            .await
+    }
+
+    /// [`Self::watch_doc_messages`] plus additive stream options, merged
+    /// into the params object: `openingTail` (the newest ≤128-part preview
+    /// while the full mirror loads), `digests` (ticket 12's entry digests),
+    /// and `resume` (a held-copy summary that takes precedence over
+    /// `openingTail`). Engines that predate them ignore them.
+    pub async fn watch_doc_messages_with(
+        &self,
+        chat_id: &str,
+        extra: Value,
+    ) -> Result<RpcSubscription, ClientError> {
         let key = EngineKey(self.engine_id.clone());
+        let mut params = serde_json::json!({"chatId": chat_id});
+        if let (Some(object), Some(extra)) = (params.as_object_mut(), extra.as_object()) {
+            for (field, value) in extra {
+                object.insert(field.clone(), value.clone());
+            }
+        }
         let params = wire_params(
             &key,
             methods::WATCH_DOC_MESSAGES,
-            serde_json::json!({"chatId": chat_id}),
+            params,
         )
         .map_err(rpc_error_to_client_error)?;
         self.client
@@ -145,6 +165,17 @@ impl EngineHandle {
 
     pub fn engine_id(&self) -> &str {
         &self.key.0
+    }
+
+    /// The engine's registry key (ticket 08's transcript scoping seam).
+    pub(crate) fn key(&self) -> &EngineKey {
+        &self.key
+    }
+
+    /// The next scheduled redial, while reconnecting (the view's
+    /// `retry_at_ms`).
+    pub(crate) fn retry_at_ms(&self) -> Option<i64> {
+        self.entry(|entry| entry.retry_at_ms).ok().flatten()
     }
 
     pub fn is_connected(&self) -> bool {

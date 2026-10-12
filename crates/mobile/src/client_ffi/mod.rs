@@ -11,9 +11,11 @@
 //! `workspace.rs` carries the workspace reads/mutations and the catalog
 //! label helpers (ticket 07).
 
+mod session;
 mod types;
 mod workspace;
 
+pub use session::*;
 pub use types::*;
 
 use std::sync::Arc;
@@ -38,7 +40,7 @@ impl mc::ClientListener for ListenerBridge {
     }
 }
 
-async fn on_runtime<T, F>(fut: F) -> CoreResult<T>
+pub(crate) async fn on_runtime<T, F>(fut: F) -> CoreResult<T>
 where
     F: std::future::Future<Output = Result<T, mc::ClientError>> + Send + 'static,
     T: Send + 'static,
@@ -59,6 +61,12 @@ impl CoreClient {
     /// The Rust client (crate-internal consumers).
     pub fn client(&self) -> &mc::Client {
         &self.client
+    }
+
+    /// The Rust session handle for `chat_id`, when one is open (the layout
+    /// engine's `attach` seam). Rust-only, not exported over FFI.
+    pub fn session_handle(&self, chat_id: &str) -> Option<mc::SessionHandle> {
+        self.client.session(chat_id)
     }
 }
 
@@ -209,6 +217,7 @@ mod tests {
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
+                show_mock_harness: true,
             },
             Vec::new(),
             recorder.clone(),

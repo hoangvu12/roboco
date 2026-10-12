@@ -213,6 +213,47 @@ impl WorkspaceStore {
         chat.config.as_ref().map(SessionConfig::of_chat)
     }
 
+    /// Ticket 08's optimistic config override (the `set_session_config`
+    /// write path): the row and the composer read it through
+    /// [`Self::session_config`] until the engine's own frame confirms it,
+    /// which [`Self::clear_config_overlay`] drops.
+    pub(crate) fn set_config_overlay(&self, chat_id: &str, config: SessionConfig) {
+        lock(&self.state)
+            .overlays
+            .configs
+            .insert(chat_id.to_owned(), config);
+        self.notify.notify_one();
+    }
+
+    /// Drop the override (engine echo confirmed, or the RPC failed and the
+    /// write reverts).
+    pub(crate) fn clear_config_overlay(&self, chat_id: &str) {
+        if lock(&self.state).overlays.configs.remove(chat_id).is_some() {
+            self.notify.notify_one();
+        }
+    }
+
+    /// Ticket 08's per-chat send state (the row's `send_state`). The
+    /// session refresh writes the headline state of its pending sends;
+    /// `None` clears it (nothing in flight). Recomputes on every change.
+    pub(crate) fn set_send_state(&self, chat_id: &str, state: Option<SendState>) {
+        let mut states = lock(&self.send_states);
+        match state {
+            Some(state) => {
+                if states.insert(chat_id.to_owned(), state) != Some(state) {
+                    drop(states);
+                    self.notify.notify_one();
+                }
+            }
+            None => {
+                if states.remove(chat_id).is_some() {
+                    drop(states);
+                    self.notify.notify_one();
+                }
+            }
+        }
+    }
+
     // ── chat mutations ────────────────────────────────────────────────────
 
     /// Archive or unarchive: `Mutate setChatArchived` on the owning

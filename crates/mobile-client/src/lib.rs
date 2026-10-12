@@ -17,15 +17,19 @@
 //! Pure Rust + tokio, UniFFI-free, so `cargo test` runs on any host.
 //! `roboco-mobile` wraps this crate in `crates/mobile/src/client_ffi`.
 
+pub mod attachments;
 pub mod cache;
 pub mod catalog;
+pub mod catalog_live;
 pub mod clock;
 pub mod compat;
 pub mod engines;
 pub mod events;
+pub mod files;
 pub mod lenient;
 pub mod pairing;
 pub mod runtime;
+pub mod session;
 pub mod timings;
 pub mod workspace;
 
@@ -49,6 +53,17 @@ pub use engines::{
 };
 pub use events::{ClientEvent, ClientListener};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
+pub use files::FileMatch;
+pub use session::{
+    BusyPolicy, ComposerState, HostCapabilities, HostInfo, InputRequest, LiveStatus,
+    OutgoingAttachment, PendingKind, PendingSend, QueueEditAction, QueueEditFinish, QueueEditLease,
+    QueueEditStart, QueueGate, QueueItem, RoomState, SendOutcome, SendRequest, SessionHandle,
+    SessionSnapshot, SnapshotWatch, UNDELIVERED_GRACE_MS,
+};
+// `SendState` binds once at the crate root, through workspace (07's
+// canonical re-export): session/pending re-exports the same type, so
+// `mc::session::SendState`, the workspace rows and the pending sends all
+// share one enum.
 pub use workspace::{
     DeviceView, FrontPage, ProjectRef, ProjectView, PullRequestGroups, SearchField, SearchHit,
     SectionView, SendState, SessionConfig, SessionGroup, SessionRow, WorkspaceSnapshot,
@@ -73,6 +88,9 @@ pub struct ClientConfig {
     pub platform: String,
     /// The app's display version.
     pub app_version: String,
+    /// Offer the mock harness in catalogs (debug builds and tests set it;
+    /// the mock is a test rig, never a production picker entry).
+    pub show_mock_harness: bool,
 }
 
 /// The client error surface. `HostUnavailable` = the engine is not
@@ -130,6 +148,13 @@ pub(crate) struct ClientInner {
     foreground: watch::Sender<bool>,
     cache_tx: mpsc::UnboundedSender<CacheCommand>,
     cache: EngineCache,
+    /// The warm-session registry and the config overrides (ticket 08).
+    sessions: session::SessionRegistry,
+    /// The live harness/model catalog state (ticket 08).
+    catalog: catalog_live::Catalog,
+    /// Decoded attachment bytes, byte-budgeted LRU (ticket 08). Shared so
+    /// session tasks can hold it across awaits.
+    attachments: Arc<attachments::AttachmentCache>,
 }
 
 /// The mobile client. Cheap to clone. Create once per app run with the
@@ -203,6 +228,11 @@ impl Client {
             foreground,
             cache_tx,
             cache,
+            sessions: session::SessionRegistry::new(),
+            catalog: catalog_live::Catalog::default(),
+            attachments: Arc::new(attachments::AttachmentCache::new(
+                attachments::ATTACHMENT_CACHE_BUDGET,
+            )),
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
         let _ = inner.workspace.set(workspace);
@@ -613,7 +643,8 @@ impl Client {
     }
 
     /// The app is backgrounding: flush every pending cache write (bounded
-    /// at 2 s), then close spares. Feed and calls connections stay.
+    /// at 2 s), then close spares. Feed and calls connections stay; the
+    /// subscriptions of detached, quiet sessions close (ticket 08).
     pub fn on_background(&self) {
         self.inner.foreground.send_replace(false);
         {
@@ -629,6 +660,8 @@ impl Client {
         for entry in &state.entries {
             let _ = entry.command_tx.send(EngineCommand::Background);
         }
+        drop(state);
+        self.inner.sessions.close_background();
     }
 
     /// Stop all tasks (sign-out / app teardown). Snapshots stay readable.
@@ -752,6 +785,11 @@ impl Client {
     /// A handle to one engine.
     pub fn engine_handle(&self, engine_id: &str) -> Result<EngineHandle, ClientError> {
         engine_handle_of(&self.inner, engine_id)
+    }
+
+    /// The inner client (crate-internal consumers: tickets 07–09).
+    pub(crate) fn inner_arc(&self) -> Arc<ClientInner> {
+        self.inner.clone()
     }
 
     /// Resolve a scoped id to its engine and the engine's raw id.
@@ -985,12 +1023,28 @@ fn engine_snapshot_of(entry: &EngineEntry) -> engines::EngineSnapshot {
 }
 
 fn connectivity_of(inner: &ClientInner, entries: &[EngineEntry]) -> Connectivity {
+    // Ticket 08: open sessions whose engine is not connected. The engine
+    // table is already locked here (publish holds it), so the states are
+    // read straight off `entries` — never through `engine_handle` (the
+    // engines lock is not reentrant).
+    let degraded_chats: Vec<String> = inner
+        .sessions
+        .ids_with_engines()
+        .into_iter()
+        .filter(|(_chat_id, engine_id)| {
+            entries
+                .iter()
+                .find(|entry| entry.paired.engine_id == engine_id.as_str())
+                .is_none_or(|entry| entry.state != EngineState::Connected)
+        })
+        .map(|(chat_id, _)| chat_id)
+        .collect();
     if entries.is_empty() {
         return Connectivity {
             state: ConnectivityState::Disabled,
             retry_at_ms: None,
             last_failure: None,
-            degraded_chats: Vec::new(),
+            degraded_chats,
         };
     }
     if !*inner.network.borrow() {
@@ -998,7 +1052,7 @@ fn connectivity_of(inner: &ClientInner, entries: &[EngineEntry]) -> Connectivity
             state: ConnectivityState::Offline,
             retry_at_ms: None,
             last_failure: None,
-            degraded_chats: Vec::new(),
+            degraded_chats,
         };
     }
     let non_parked: Vec<&EngineEntry> = entries
@@ -1021,14 +1075,14 @@ fn connectivity_of(inner: &ClientInner, entries: &[EngineEntry]) -> Connectivity
             state: ConnectivityState::Reconnecting,
             retry_at_ms,
             last_failure,
-            degraded_chats: Vec::new(),
+            degraded_chats,
         };
     }
     Connectivity {
         state: ConnectivityState::Connected,
         retry_at_ms: None,
         last_failure: None,
-        degraded_chats: Vec::new(),
+        degraded_chats,
     }
 }
 
@@ -1056,6 +1110,7 @@ mod tests {
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
+                show_mock_harness: true,
             },
             Vec::new(),
             Arc::new(Recorder(seen)),

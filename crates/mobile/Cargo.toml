@@ -46,6 +46,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+roboco-engine.workspace = true
+roboco-mobile-client.workspace = true
+tokio.workspace = true
 # Tests and benches exercise every fence language, not just the mobile set:
 # dev-dependency features unify with the (subset) dependency for test builds
 # only, so shipped cdylibs still link the subset while `cargo test` sees all

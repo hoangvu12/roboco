@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use roboco_doc::SessionMessageEntry;
-use roboco_engine_client::cache::{CachedRows, EngineCache};
+use roboco_engine_client::cache::{CachedRows, CachedTranscript, EngineCache};
 use roboco_proto::SidebarStateSnapshot;
 use tokio::sync::{mpsc, oneshot};
 
@@ -51,7 +51,8 @@ pub(crate) enum CacheCommand {
     SaveTranscript {
         engine: String,
         chat: String,
-        entries: Vec<SessionMessageEntry>,
+        /// Entries plus their ticket-12 digests (empty before the capability).
+        state: CachedTranscript,
     },
     /// Prove every write queued before this point hit disk.
     Flush(oneshot::Sender<()>),
@@ -112,12 +113,23 @@ impl EngineCacheHandle {
         });
     }
 
+    /// Load a cached transcript: entries plus digests (either file format).
+    pub fn load_transcript_state(&self, chat_id: &str) -> Option<CachedTranscript> {
+        self.cache.load_transcript_state(&self.engine_id, chat_id)
+    }
+
+    /// The engine's cache directory on disk (the catalog's cache files live
+    /// in `catalog/` under it — ticket 08).
+    pub fn engine_dir(&self) -> std::path::PathBuf {
+        self.cache.engine_directory(&self.engine_id)
+    }
+
     /// Transcripts are written on eviction/quiet, not debounced per burst.
-    pub fn save_transcript(&self, chat_id: &str, entries: Vec<SessionMessageEntry>) {
+    pub fn save_transcript_state(&self, chat_id: &str, state: CachedTranscript) {
         let _ = self.tx.send(CacheCommand::SaveTranscript {
             engine: self.engine_id.clone(),
             chat: chat_id.to_owned(),
-            entries,
+            state,
         });
     }
 
@@ -214,8 +226,8 @@ impl CacheWriter {
             CacheCommand::SaveTranscript {
                 engine,
                 chat,
-                entries,
-            } => cache.save_transcript(&engine, &chat, &entries),
+                state,
+            } => cache.save_transcript_state(&engine, &chat, &state),
             CacheCommand::Flush(_) => Ok(()),
         })
         .await;
@@ -308,7 +320,13 @@ mod tests {
             pins_by_profile: [("p".into(), vec!["s1".into()])].into_iter().collect(),
             ..Default::default()
         });
-        handle.save_transcript("chat", vec![]);
+        handle.save_transcript_state(
+            "chat",
+            CachedTranscript {
+                entries: Vec::new(),
+                digests: std::iter::once(("m0".to_owned(), "d0".to_owned())).collect(),
+            },
+        );
         handle.flush().await;
         assert!(
             handle
@@ -317,7 +335,12 @@ mod tests {
                 .pins_by_profile
                 .contains_key("p")
         );
-        assert!(handle.load_transcript("chat").unwrap().is_empty());
+        // The current format is entries + digests in one file; the legacy
+        // entries-only reader misses it by design (it reads bare arrays).
+        assert!(handle.load_transcript("chat").is_none());
+        let state = handle.load_transcript_state("chat").unwrap();
+        assert!(state.entries.is_empty());
+        assert_eq!(state.digests.get("m0").map(String::as_str), Some("d0"));
     }
 
     #[tokio::test]

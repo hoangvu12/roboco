@@ -1,0 +1,625 @@
+//! Send, interrupt and respond-input: the busy decision table and the
+//! upload-first flow.
+//!
+//! Every action is an engine RPC (there is no client outbox — ADR 0004 /
+//! remote-access story 24): an offline engine refuses the write, and the
+//! composer keeps the text.
+//!
+//! The decision table (`busy × policy × steering × attachments ×
+//! capabilities`) is a pure function so its every cell unit-tests; the
+//! `autoApprove: false` rule is pinned by a contract test at the engine
+//! boundary (PR #700: `true` restarts a parked host and kills its
+//! background subagents).
+
+use std::sync::Arc;
+
+use roboco_doc::SessionCommandPayload;
+use roboco_proto::{RunRequest, SandboxLevel, UserInputAnswer, WorktreeSpec};
+
+use crate::{ClientError, lock};
+
+use super::composer::HostCapabilities;
+use super::pending::{PendingKind, PendingSend, SendState};
+use super::SessionCore;
+
+/// What to do with a message typed while the agent is working.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BusyPolicy {
+    /// Park it on the shared queue until the turn ends (the default).
+    #[default]
+    Queue,
+    /// Deliver mid-turn: a steer command into the live turn when the
+    /// harness steers mid-turn; otherwise it queues.
+    Steer,
+    /// Roboco-specific: stop the turn and run this message as the next
+    /// turn (`QueueMessage` + `SendQueuedMessageNow` — the engine pauses
+    /// the queue on a bare interrupt, so iOS's interrupt-then-queue would
+    /// strand the row).
+    Interrupt,
+}
+
+/// Image bytes picked in the composer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingAttachment {
+    pub name: String,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SendRequest {
+    pub text: String,
+    pub attachments: Vec<OutgoingAttachment>,
+    /// Engine-side isolated worktree for this run (new-session "New
+    /// worktree"; ticket 09 uses it).
+    pub worktree: Option<WorktreeSpec>,
+    pub busy: BusyPolicy,
+}
+
+impl SendRequest {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// A new turn was requested; the echo's id is `message_id`.
+    Started { message_id: String },
+    /// Delivered into the live turn.
+    Steered { message_id: String },
+    /// Parked on the shared queue.
+    Queued { queue_id: String },
+}
+
+/// The send decision, computed from the composer snapshot. Pure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decision {
+    /// Park on the shared queue (`QueueMessage`).
+    Queue,
+    /// Roboco's "Stop and send": queue, then `SendQueuedMessageNow`.
+    Interrupt,
+    /// A steer command into the live turn.
+    Steer,
+    /// A fresh run command.
+    Run,
+}
+
+/// The busy decision table.
+///
+/// - `starting` = some pending send has kind `Run` and state `Sending`
+///   (a Run in flight but not yet adopted counts as busy, so two turns
+///   never start — upstream #777);
+/// - `busy = turn_running || starting`;
+/// - `steer = busy && policy == Steer && caps.mid_turn_steering == Some(true)
+///   && attachments.is_empty()`;
+/// - `queued = !steer && busy && policy != Interrupt && caps.message_queue &&
+///   (attachments.is_empty() || caps.queue_attachments)`;
+/// - otherwise `Run` (the steer flag returns `Steer` before the queue check).
+pub(crate) fn decide(
+    turn_running: bool,
+    starting: bool,
+    policy: BusyPolicy,
+    has_attachments: bool,
+    caps: &HostCapabilities,
+) -> Decision {
+    let busy = turn_running || starting;
+    let steer = busy
+        && policy == BusyPolicy::Steer
+        && caps.mid_turn_steering == Some(true)
+        && !has_attachments;
+    if steer {
+        return Decision::Steer;
+    }
+    if busy && policy == BusyPolicy::Interrupt {
+        return Decision::Interrupt;
+    }
+    if busy
+        && policy != BusyPolicy::Interrupt
+        && caps.message_queue
+        && (!has_attachments || caps.queue_attachments)
+    {
+        return Decision::Queue;
+    }
+    Decision::Run
+}
+
+impl SessionCore {
+    /// Send a message. The pending echo is created before the upload (the
+    /// faded user row appears immediately, rendering the local image bytes
+    /// from the read cache under `pending://` refs), replaced in place with
+    /// the real host paths once the upload commits, and adopted when the
+    /// engine's user entry lands with the same id.
+    pub(crate) async fn send(self: Arc<Self>, request: SendRequest) -> Result<SendOutcome, ClientError> {
+        let text = request.text.trim_end().to_owned();
+        if text.trim().is_empty() && request.attachments.is_empty() {
+            return Err(ClientError::InvalidArgument {
+                message: "empty message".into(),
+            });
+        }
+        for attachment in &request.attachments {
+            if attachment.data.len() > crate::attachments::MAX_ATTACHMENT_BYTES {
+                return Err(ClientError::InvalidArgument {
+                    message: format!("{} is larger than 24 MB", attachment.name),
+                });
+            }
+        }
+        // Rule 2: the engine refuses writes while offline — nothing is
+        // queued locally, the composer keeps the text, and no echo appears
+        // (EngineHandle::call fails within microseconds when disconnected;
+        // the pre-check keeps the "no echo" guarantee exact).
+        if !self.engine_handle()?.is_connected() {
+            return Err(ClientError::HostUnavailable {
+                message: "Engine is offline; reconnecting".into(),
+            });
+        }
+
+        let (decision, refs, message_id, config, cwd) = {
+            let composer = self.composer();
+            let starting = composer
+                .pending_sends
+                .iter()
+                .any(|p| p.kind == PendingKind::Run && p.state == SendState::Sending);
+            let decision = decide(
+                composer.live.turn_running,
+                starting,
+                request.busy,
+                !request.attachments.is_empty(),
+                &composer.host.capabilities,
+            );
+            let refs = request
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    let upload_id = uuid::Uuid::new_v4().to_string();
+                    crate::attachments::pending_ref(
+                        &upload_id,
+                        &crate::attachments::upload_file_name(&attachment.name),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                decision,
+                refs,
+                uuid::Uuid::new_v4().to_string(),
+                self.chat_config(),
+                self.chat_cwd(),
+            )
+        };
+
+        // The echo (Run/Steer only — a queue row represents a queued
+        // message) is created before the upload so the row paints at once,
+        // with `pending://` refs standing in for the host paths.
+        let build_command = |paths: &[String]| {
+            match decision {
+                Decision::Queue | Decision::Interrupt => None,
+                Decision::Steer => Some(SessionCommandPayload::Steer {
+                    prompt: crate::attachments::with_attachments(&text, paths),
+                    message_id: Some(message_id.clone()),
+                }),
+                Decision::Run => Some(SessionCommandPayload::Run {
+                    request: RunRequest {
+                        prompt: crate::attachments::with_attachments(&text, paths),
+                        harness: config.as_ref().map(|c| c.harness),
+                        model: config.as_ref().and_then(|c| c.model.clone()),
+                        reasoning: config.as_ref().and_then(|c| c.reasoning),
+                        model_options: config
+                            .as_ref()
+                            .map(|c| c.model_options.clone())
+                            .unwrap_or_default(),
+                        cwd: cwd.clone().unwrap_or_else(|| "~".to_owned()),
+                        sandbox: config
+                            .as_ref()
+                            .map(|c| c.sandbox)
+                            .unwrap_or(SandboxLevel::WorkspaceWrite),
+                        // Hard rule (PR #700): the desktop and web both send
+                        // false; `true` restarts a parked host and kills its
+                        // background subagents.
+                        auto_approve: false,
+                        resume: None,
+                        attachments: paths.to_vec(),
+                        worktree: request.worktree.clone(),
+                        mcp: None,
+                    },
+                    message_id: message_id.clone(),
+                }),
+            }
+        };
+        if let Some(command) = build_command(&refs) {
+            lock(&self.state).pending.push(PendingSend::new(
+                message_id.clone(),
+                crate::attachments::with_attachments(&text, &refs),
+                match decision {
+                    Decision::Steer => PendingKind::Steer,
+                    _ => PendingKind::Run,
+                },
+                crate::engines::now_ms(),
+                command,
+            ));
+            self.refresh();
+        }
+        // Uploads: report one overall progress, then replace the echo's
+        // `pending://` refs with the real host paths in place.
+        let mut paths = Vec::with_capacity(refs.len());
+        if !request.attachments.is_empty() {
+            let engine = self.engine_handle()?;
+            let Some(cache) = self.attachment_cache() else {
+                return Err(ClientError::Closed);
+            };
+            let total: u64 = request.attachments.iter().map(|a| a.data.len() as u64).sum();
+            let done_before = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            for (attachment, reference) in request.attachments.iter().zip(&refs) {
+                // Own bytes render from the cache before the upload.
+                let bytes = Arc::new(attachment.data.clone());
+                cache.put(&self.engine_id, reference, bytes.clone());
+                let progress = {
+                    let core = self.clone();
+                    let attachment_bytes = attachment.data.len() as u64;
+                    let done_before = done_before.clone();
+                    let total = total;
+                    move |fraction: f64| {
+                        let committed = done_before.load(std::sync::atomic::Ordering::Relaxed)
+                            + (fraction * attachment_bytes as f64) as u64;
+                        core.set_transfer_progress(Some(
+                            (committed as f64 / total.max(1) as f64).min(1.0),
+                        ));
+                    }
+                };
+                let uploaded = crate::attachments::upload_attachment(
+                    &engine,
+                    &attachment.name,
+                    attachment.data.clone(),
+                    Some(Arc::new(progress)),
+                )
+                .await;
+                match uploaded {
+                    Ok(path) => {
+                        done_before.fetch_add(
+                            attachment.data.len() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        cache.put(&self.engine_id, &path, bytes);
+                        paths.push(path);
+                    }
+                    Err(error) => {
+                        // Any error removes the echo and the progress.
+                        self.remove_echo(&message_id);
+                        self.set_transfer_progress(None);
+                        return Err(error);
+                    }
+                }
+            }
+            self.replace_echo_refs(&message_id, &paths);
+            // The issued command (and the echo's retry command) carry the
+            // real host paths, not the placeholder refs.
+            if let Some(command) = build_command(&paths) {
+                let mut state = lock(&self.state);
+                if let Some(pending) = state
+                    .pending
+                    .iter_mut()
+                    .find(|p| p.message_id == message_id)
+                {
+                    pending.command = command.clone();
+                }
+            }
+            self.set_transfer_progress(None);
+        }
+
+        let outcome = match decision {
+            Decision::Queue => {
+                let caps = { self.composer().host.capabilities.clone() };
+                let body = queued_body(&text, &refs, &paths, &caps);
+                let id = self.queue_message_row(&body, paths, request.busy == BusyPolicy::Queue).await?;
+                SendOutcome::Queued { queue_id: id }
+            }
+            Decision::Interrupt => {
+                // "Stop and send": park the row (hold_for_turn_end: false),
+                // then send it now — Send-now interrupts the active turn
+                // before dispatching, and the engine keeps the queue id as
+                // the dispatched user message id. The queued-body rule is
+                // the same as the Queue outcome's.
+                let body = queued_body(&text, &refs, &paths, &self.composer().host.capabilities);
+                let id = self.queue_message_row(&body, paths, false).await?;
+                let sent = self
+                    .engine_handle()?
+                    .call(
+                        roboco_rpc::methods::SEND_QUEUED_MESSAGE_NOW,
+                        serde_json::json!({ "chatId": self.chat_id, "id": id }),
+                    )
+                    .await?;
+                if sent.get("sent").and_then(|v| v.as_bool()) != Some(true) {
+                    return Err(ClientError::HostError {
+                        message:
+                            "The engine did not confirm the action. The message may have already left the queue."
+                                .into(),
+                    });
+                }
+                SendOutcome::Started { message_id: id }
+            }
+            Decision::Steer => {
+                let command = build_command(&paths).or_else(|| {
+                    lock(&self.state)
+                        .pending
+                        .iter()
+                        .find(|p| p.message_id == message_id)
+                        .map(|p| p.command.clone())
+                });
+                self.issue_command(command.expect("steer command")).await?;
+                SendOutcome::Steered {
+                    message_id: message_id.clone(),
+                }
+            }
+            Decision::Run => {
+                let command = build_command(&paths).or_else(|| {
+                    lock(&self.state)
+                        .pending
+                        .iter()
+                        .find(|p| p.message_id == message_id)
+                        .map(|p| p.command.clone())
+                });
+                self.issue_command(command.expect("run command")).await?;
+                SendOutcome::Started {
+                    message_id: message_id.clone(),
+                }
+            }
+        };
+        if matches!(
+            outcome,
+            SendOutcome::Started { .. } | SendOutcome::Steered { .. }
+        ) {
+            lock(&self.state).last_submitted = Some(message_id);
+        }
+        self.recompute_composer();
+        Ok(outcome)
+    }
+
+    /// `QueueMessage`, remembering the row as this client's.
+    async fn queue_message_row(
+        &self,
+        body: &str,
+        attachments: Vec<String>,
+        hold_for_turn_end: bool,
+    ) -> Result<String, ClientError> {
+        let id = self
+            .engine_handle()?
+            .call(
+                roboco_rpc::methods::QUEUE_MESSAGE,
+                serde_json::json!({
+                    "chatId": self.chat_id,
+                    "text": body,
+                    "attachments": attachments,
+                    "holdForTurnEnd": hold_for_turn_end,
+                }),
+            )
+            .await?
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| ClientError::HostError {
+                message: "QueueMessage returned no id".into(),
+            })?;
+        lock(&self.state).mine_queued.insert(id.clone());
+        self.recompute_composer();
+        Ok(id)
+    }
+
+    /// `QueueCommand {kind:"interrupt"}`: the engine cancels earlier pending
+    /// Run/Steer commands, pauses the queue and cancels sends held for the
+    /// turn end.
+    pub(crate) async fn interrupt(&self) -> Result<(), ClientError> {
+        self.issue_command(SessionCommandPayload::Interrupt {})
+            .await?;
+        self.recompute_composer();
+        Ok(())
+    }
+
+    /// `QueueCommand {kind:"respondInput"}`. Free text ("Other…") is sent
+    /// as a single label.
+    pub(crate) async fn respond_input(
+        &self,
+        request_id: &str,
+        answers: Vec<UserInputAnswer>,
+    ) -> Result<(), ClientError> {
+        self.issue_command(SessionCommandPayload::RespondInput {
+            request_id: request_id.to_owned(),
+            answers,
+        })
+        .await?;
+        self.recompute_composer();
+        Ok(())
+    }
+
+    /// Park a message on the shared queue directly. Returns the row id.
+    pub(crate) async fn enqueue(
+        &self,
+        text: &str,
+        attachments: Vec<String>,
+        hold_for_turn_end: bool,
+    ) -> Result<String, ClientError> {
+        if text.trim().is_empty() {
+            // The engine's own refusal (the wire table's message), failed
+            // fast client-side.
+            return Err(ClientError::InvalidArgument {
+                message: "queued message text required".into(),
+            });
+        }
+        self.queue_message_row(text, attachments, hold_for_turn_end).await
+    }
+
+    /// Issue one `QueueCommand` RPC and mark the matching pending send
+    /// acked (the engine holds it durably).
+    async fn issue_command(&self, command: SessionCommandPayload) -> Result<(), ClientError> {
+        let message_id = message_id_of(&command).map(str::to_owned);
+        let reply = self
+            .engine_handle()?
+            .call(
+                roboco_rpc::methods::QUEUE_COMMAND,
+                serde_json::json!({
+                    "chatId": self.chat_id,
+                    "command": command,
+                    "transfers": [],
+                }),
+            )
+            .await;
+        match reply {
+            Ok(_) => {
+                if let Some(message_id) = message_id {
+                    let mut state = lock(&self.state);
+                    if let Some(pending) = state
+                        .pending
+                        .iter_mut()
+                        .find(|p| p.message_id == message_id)
+                    {
+                        pending.acked_at_ms = crate::engines::now_ms();
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                // Any RPC error removes the echo; the composer keeps the
+                // text (the platform shows "Couldn't send: {error}").
+                if let Some(message_id) = message_id {
+                    self.remove_echo(&message_id);
+                }
+                self.set_transfer_progress(None);
+                Err(error)
+            }
+        }
+    }
+
+    /// "Not delivered — tap to retry": restart the grace clocks of the
+    /// failed sends, re-issue the commands that never got an ack (same
+    /// message id — the engine dedupes the user entry by it), and
+    /// `RetryDelivery` for the acked ones (the engine re-issues dead
+    /// Run/Steer attempts under a new command id with the same message id).
+    pub(crate) async fn retry_delivery(&self) -> Result<(), ClientError> {
+        let mut reissue: Vec<SessionCommandPayload> = Vec::new();
+        let mut engine_retry = false;
+        {
+            let mut state = lock(&self.state);
+            let now = crate::engines::now_ms();
+            for pending in state.pending.iter_mut() {
+                if pending.state != SendState::Failed {
+                    continue;
+                }
+                if pending.acked_at_ms != 0 {
+                    engine_retry = true;
+                    pending.acked_at_ms = now;
+                } else {
+                    reissue.push(pending.command.clone());
+                }
+            }
+        }
+        for command in reissue {
+            let _ = self.issue_command(command).await;
+        }
+        if engine_retry {
+            let _ = self
+                .engine_handle()?
+                .call(
+                    roboco_rpc::methods::RETRY_DELIVERY,
+                    serde_json::json!({ "chatId": self.chat_id }),
+                )
+                .await;
+        }
+        self.recompute_composer();
+        Ok(())
+    }
+}
+
+/// The queued row's text: the bare text (the placeholder when it is empty)
+/// when the trailer is not needed — no attachments, or
+/// `clean_attachment_text` — otherwise the trailer form.
+fn queued_body(
+    text: &str,
+    refs: &[String],
+    paths: &[String],
+    caps: &HostCapabilities,
+) -> String {
+    if refs.is_empty() || caps.clean_attachment_text {
+        if text.is_empty() {
+            crate::attachments::ATTACHMENT_ONLY_TEXT.to_owned()
+        } else {
+            text.to_owned()
+        }
+    } else {
+        crate::attachments::with_attachments(text, paths)
+    }
+}
+
+fn message_id_of(command: &SessionCommandPayload) -> Option<&str> {
+    match command {
+        SessionCommandPayload::Run { message_id, .. } => Some(message_id),
+        SessionCommandPayload::Steer {
+            message_id: Some(message_id),
+            ..
+        } => Some(message_id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn caps(
+        message_queue: bool,
+        queue_attachments: bool,
+        mid_turn_steering: Option<bool>,
+    ) -> HostCapabilities {
+        HostCapabilities {
+            message_queue,
+            queue_attachments,
+            mid_turn_steering,
+            ..Default::default()
+        }
+    }
+
+    /// The busy × policy × steering × attachments × capabilities table.
+    #[test]
+    fn decision_table() {
+        let full = caps(true, true, Some(true));
+        // Idle → always a fresh run, whatever the policy.
+        for policy in [BusyPolicy::Queue, BusyPolicy::Steer, BusyPolicy::Interrupt] {
+            assert_eq!(decide(false, false, policy, false, &full), Decision::Run);
+            assert_eq!(decide(false, false, policy, true, &full), Decision::Run);
+        }
+        // Busy + Queue policy (the default) → parked on the queue.
+        assert_eq!(decide(true, false, BusyPolicy::Queue, false, &full), Decision::Queue);
+        // Busy + Queue with attachments → queued only when the engine
+        // accepts queue attachments.
+        assert_eq!(decide(true, false, BusyPolicy::Queue, true, &full), Decision::Queue);
+        let no_attach = caps(true, false, Some(true));
+        assert_eq!(
+            decide(true, false, BusyPolicy::Queue, true, &no_attach),
+            Decision::Run,
+            "without queue-attachments the send becomes a fresh run"
+        );
+        // Busy + Steer + mid-turn steering + text → a steer command.
+        assert_eq!(decide(true, false, BusyPolicy::Steer, false, &full), Decision::Steer);
+        // Steer with attachments never steers: it queues (or runs).
+        assert_eq!(decide(true, false, BusyPolicy::Steer, true, &full), Decision::Queue);
+        // No mid-turn steering → Steer degrades to the queue.
+        let no_steer = caps(true, true, Some(false));
+        assert_eq!(decide(true, false, BusyPolicy::Steer, false, &no_steer), Decision::Queue);
+        assert_eq!(
+            decide(true, false, BusyPolicy::Steer, false, &caps(true, true, None)),
+            Decision::Queue
+        );
+        // Busy + Interrupt → the Roboco stop-and-send path, never a plain
+        // queue row (a bare interrupt pauses the queue; the row would wait
+        // for a prompt that never comes).
+        assert_eq!(decide(true, false, BusyPolicy::Interrupt, false, &full), Decision::Interrupt);
+        assert_eq!(decide(true, false, BusyPolicy::Interrupt, true, &full), Decision::Interrupt);
+        // A Run in flight but not adopted counts as busy (two turns never
+        // start, #777).
+        assert_eq!(decide(false, true, BusyPolicy::Queue, false, &full), Decision::Queue);
+        // Without the message-queue capability a busy send falls through to
+        // a fresh run command (the engine holds it until the turn ends).
+        let no_queue = caps(false, true, Some(true));
+        assert_eq!(decide(true, false, BusyPolicy::Queue, false, &no_queue), Decision::Run);
+    }
+}

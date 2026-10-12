@@ -1098,6 +1098,10 @@ fn maybe_refill_spare(ctx: &EngineCtx) {
 }
 
 fn command_tx_of(ctx: &EngineCtx) -> CommandSender {
+    // A shutdown (or `forget_engine`) racing an in-flight aux dial leaves
+    // no engine entry to route the reply to; a closed channel turns that
+    // into the no-op it already is on the receive side — panicking on a
+    // runtime thread instead would take the process down.
     weak_field(ctx, |inner| {
         lock(&inner.engines)
             .entries
@@ -1106,7 +1110,7 @@ fn command_tx_of(ctx: &EngineCtx) -> CommandSender {
             .map(|entry| entry.command_tx.clone())
     })
     .flatten()
-    .expect("engine command channel")
+    .unwrap_or_else(|| mpsc::unbounded_channel().0)
 }
 
 /// What an auxiliary dial needs — the engine's WebSocket endpoint and its
