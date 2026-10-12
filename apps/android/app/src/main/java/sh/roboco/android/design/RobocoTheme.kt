@@ -69,7 +69,9 @@ fun RobocoTheme(appearance: Appearance = Appearance.System, content: @Composable
         // Foundation's default indication is a grey press overlay; components
         // draw their own iOS pressed states (controlFill, glass press).
         LocalIndication provides NoIndication,
-        content = content,
+        // Ticket 04: LocalReduceMotion follows the system "remove animations"
+        // setting inside the theme (ticket 35's app root relies on this).
+        content = { ProvideReduceMotion(content) },
     )
 }
 
