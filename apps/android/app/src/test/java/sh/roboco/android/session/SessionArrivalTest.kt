@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -21,6 +22,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -63,6 +65,7 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.Glass
 import sh.roboco.android.transcript.FramePoster
 import sh.roboco.android.transcript.TranscriptState
+import sh.roboco.android.transcript.firstUserBubbleInRoot
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.NoHandle
 import uniffi.roboco_core.TextSystem
@@ -378,6 +381,8 @@ class SessionArrivalTest {
     @Test
     fun arrivalComposerBoundsReportsTheUnclippedRootRect() {
         val arrival = SessionArrival()
+        // One setContent per test: detaching flips this flag instead.
+        var anchored by mutableStateOf(true)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 Box(Modifier.fillMaxSize()) {
@@ -387,7 +392,18 @@ class SessionArrivalTest {
                             .size(60.dp, 60.dp)
                             .clipToBounds(),
                     ) {
-                        Box(Modifier.size(100.dp, 48.dp).arrivalComposerAnchor(arrival).testTag("composer"))
+                        if (anchored) {
+                            // Unbounded so the node really measures 100 dp
+                            // (size() alone is clamped to the 60 dp parent);
+                            // TopStart keeps it at the parent's corner.
+                            Box(
+                                Modifier
+                                    .wrapContentSize(Alignment.TopStart, unbounded = true)
+                                    .size(100.dp, 48.dp)
+                                    .arrivalComposerAnchor(arrival)
+                                    .testTag("composer"),
+                            )
+                        }
                     }
                 }
             }
@@ -403,9 +419,9 @@ class SessionArrivalTest {
         assertEquals("unclipped width survives the clipping parent", 100f * d, rect.width, 0.5f)
         assertEquals("unclipped height survives the clipping parent", 48f * d, rect.height, 0.5f)
 
-        compose.setContent { }
-        compose.waitForIdle()
+        writeState { anchored = false }
         compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
         assertNull("detached: null again", arrival.arrivalComposerBounds())
     }
 

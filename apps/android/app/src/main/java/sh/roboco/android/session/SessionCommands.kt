@@ -73,7 +73,7 @@ class CoreSessionCommands(
                         name = image.name,
                         // iOS `AppModel.swift:647`: staged images are JPEG.
                         mimeType = "image/jpeg",
-                        data = image.bytes.map { byte -> byte.toUByte() },
+                        data = image.bytes,
                     )
                 },
                 worktree = null,

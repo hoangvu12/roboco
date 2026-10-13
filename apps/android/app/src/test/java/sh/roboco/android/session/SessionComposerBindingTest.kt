@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -286,7 +287,7 @@ class SessionComposerBindingTest {
         val attachment = sent.attachments.single()
         assertEquals("i1.png", attachment.name)
         assertEquals("image/jpeg", attachment.mimeType)
-        assertEquals(byteArrayOf(1, 2, 3).map { byte -> byte.toUByte() }, attachment.data)
+        assertArrayEquals(byteArrayOf(1, 2, 3), attachment.data)
         assertEquals(0, handle.interrupts)
     }
 
@@ -625,9 +626,14 @@ class SessionComposerBindingTest {
         var controller: ComposerController? = null
         var bindingOut: SessionComposerBinding? = null
         var chrome by mutableStateOf(SessionChrome(placeholder = "Message Codex"))
+        // Stable fakes: the no-entry binding is keyed on them, so fresh
+        // ones per recomposition would drop the queueEdit set below.
+        val commands = FakeCommands()
+        val hooks = RecordingHooks()
+        val reporter = RecordingReporter()
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                val b = rememberSessionComposer("chat-a", chrome, FakeCommands(), RecordingHooks(), RecordingReporter())
+                val b = rememberSessionComposer("chat-a", chrome, commands, hooks, reporter)
                 bindingOut = b
                 controller = b.composer
             }
@@ -679,7 +685,6 @@ class SessionComposerBindingTest {
 
         // A question opens: the slot hides, the composer blurs, the text stays.
         writeOnUi { shown = false }
-        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         assertFalse(binding.morph.isFocused)
         assertEquals("draft", binding.composer.text)
@@ -701,7 +706,8 @@ class SessionComposerBindingTest {
     @Test
     fun theControllerSurvivesAHostDisposalAndDiesOnCommittedPop() {
         val stack = NavStack(RootRoute)
-        var hostOn = true
+        // Snapshot state, so flipping it really disposes and re-adds the host.
+        var hostOn by mutableStateOf(true)
         val commands = FakeCommands()
         compose.setContent {
             RobocoTheme(Appearance.Light) {
@@ -776,8 +782,10 @@ class SessionComposerBindingTest {
      * `Snapshot.sendApplyNotifications()` — the frozen clock never idles
      * the paused main Looper on its own.
      */
+    /** A UI-thread write plus the frame that applies it (the clock is frozen). */
     private fun writeOnUi(block: () -> Unit) {
         compose.runOnUiThread(block)
         Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
     }
 }

@@ -51,7 +51,6 @@ import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.SessionOpenGallerySection
-import sh.roboco.android.session.SessionComposerGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SearchGallerySection
