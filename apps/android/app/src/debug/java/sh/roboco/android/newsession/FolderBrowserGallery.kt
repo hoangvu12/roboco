@@ -240,7 +240,10 @@ private fun FixtureToggle(label: String, selected: Boolean, onSelect: () -> Unit
  * The sheet's content over a fixture: the hosts flow replays the fixture
  * engine list (so `rememberFolderBrowserController` performs the
  * first-call load right after the first frame), the fixture source
- * answers immediately, and the paths come from [FakeHostPaths].
+ * answers immediately, and the paths come from [FakeHostPaths]. 111 adds
+ * the write actions over [FakeProjectWriteApi] (New Folder… browses into
+ * the fake new folder; Use calls the fake create and dismisses the sheet
+ * — a fixture pick re-presents it settled).
  */
 @Composable
 internal fun PageSheetScope.FolderBrowserFixtureSheetPage(fixture: FolderBrowserFixtureId) {
@@ -248,7 +251,15 @@ internal fun PageSheetScope.FolderBrowserFixtureSheetPage(fixture: FolderBrowser
     val source = remember(fixture) { folderBrowserFixtureSource(fixture) }
     val flow = remember(fixture) { MutableStateFlow<List<HostOption>?>(hosts) }
     val controller = rememberFolderBrowserController(flow, source, paths = FakeHostPaths)
-    NewProjectScreen(sheet = this, onCreated = {}, controller = controller)
+    val writeApi = remember(fixture) { FakeProjectWriteApi() }
+    val actions = rememberFolderBrowserActions(
+        controller = controller,
+        paths = FakeHostPaths,
+        api = writeApi,
+        onCreated = {},
+        dismissSheet = { dismiss(animated = true) },
+    )
+    NewProjectScreen(sheet = this, controller = controller, actions = actions)
 }
 
 // ---------------------------------------------------------------------------

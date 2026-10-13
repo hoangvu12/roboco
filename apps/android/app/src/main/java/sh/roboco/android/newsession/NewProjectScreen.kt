@@ -13,11 +13,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -95,15 +97,16 @@ object FolderBrowserTokens {
 
 /**
  * The New Project page: the nav bar, then the folder list filling the rest
- * of the page down to the physical bottom (behind 111's bottom bar).
- * [onCreated] is 111's callback (create project → the sheet dismisses and
- * the new session selects it); this ticket only threads it through.
+ * of the page down to the physical bottom, with 111's bottom bar
+ * (status / New Folder… / Use) overlaid on it. The create callback and
+ * the dismissal live in [actions] (111's `onCreated` and `dismissSheet`);
+ * while a write runs, [sheet]'s `dismissBlocked` keeps it up.
  */
 @Composable
 fun NewProjectScreen(
     sheet: PageSheetScope,
-    onCreated: (spaceId: String) -> Unit,
     controller: FolderBrowserController,
+    actions: FolderBrowserActions,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -111,12 +114,33 @@ fun NewProjectScreen(
             .fillMaxSize()
             .semantics { paneTitle = FolderBrowserCopy.DefaultTitle },
     ) {
-        FolderBrowserNavBar(controller, onClose = { sheet.dismiss(animated = true) })
+        FolderBrowserNavBar(
+            controller,
+            enabled = !controller.submitting,
+            onClose = { sheet.dismiss(animated = true) },
+        )
         // 112 inserts the locations rail and the path field here.
         Box(Modifier.weight(1f).fillMaxWidth()) {
             FolderList(controller)
-            // 111 overlays the bottom bar here (Alignment.BottomCenter).
+            // 111's bottom stack, overlaid bottom-centre on the list (no
+            // background — rows scroll underneath; 110's 160 dp bottom
+            // content padding keeps the last row reachable).
+            FolderBrowserBottomBar(
+                status = controller.status,
+                useTitle = actions.useTitle,
+                useEnabled = actions.canAct || actions.creatingProject,
+                useBusy = actions.creatingProject,
+                newFolderEnabled = actions.canAct,
+                onUse = actions::createProject,
+                onNewFolder = { actions.promptForFolder() },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
+    }
+    // A write in flight locks the sheet: no drag, no back, no a11y
+    // dismiss — programmatic dismissal (the success path) still works.
+    LaunchedEffect(controller.submitting) {
+        sheet.dismissBlocked = controller.submitting
     }
 }
 
@@ -128,14 +152,15 @@ fun NewProjectScreen(
  * The 52 dp nav bar: a glass ✕ at the start, the folder name centred (see
  * [navTitleX]), a glass text capsule with the selected engine at the end
  * (`NewProjectViewController.swift:30-96`). Opaque — the list starts below
- * it (ticket 17's ADAPT). The capsule opens the engine menu on tap
- * (`rememberGlassMenuState().open(...)` — ticket 15's rule for elements
- * that already have their own `clickable`), building the menu at tap time
- * so it always sees the live engine list; with no engines the
- * [Menu.hasContent] guard opens nothing.
+ * it (ticket 17's ADAPT). While a write runs (111's `submitting`) both
+ * ends are disabled (`setSubmitting`, `pr685:…:230-237`). The capsule opens
+ * the engine menu on tap (`rememberGlassMenuState().open(...)` — ticket
+ * 15's rule for elements that already have their own `clickable`), building
+ * the menu at tap time so it always sees the live engine list; with no
+ * engines the [Menu.hasContent] guard opens nothing.
  */
 @Composable
-private fun FolderBrowserNavBar(controller: FolderBrowserController, onClose: () -> Unit) {
+private fun FolderBrowserNavBar(controller: FolderBrowserController, enabled: Boolean, onClose: () -> Unit) {
     val palette = RobocoTheme.palette
     val ts = LocalTypeScale.current
     Layout(
@@ -149,6 +174,7 @@ private fun FolderBrowserNavBar(controller: FolderBrowserController, onClose: ()
                 size = 44.dp,
                 iconPt = 17f,
                 weight = SymbolWeight.Medium,
+                enabled = enabled,
                 modifier = Modifier.testTag("sheet-close"),
             )
             BasicText(
@@ -168,6 +194,7 @@ private fun FolderBrowserNavBar(controller: FolderBrowserController, onClose: ()
                     val menu = engineMenu(controller)
                     if (menu.hasContent()) menuState.open(capsuleBounds, menu)
                 },
+                enabled = enabled,
                 modifier = Modifier
                     .onGloballyPositioned { capsuleBounds = it.boundsInWindow() }
                     .testTag("folder-engine"),
@@ -328,7 +355,8 @@ fun SheetHostState.presentNewProject(onCreated: (String) -> Unit): Boolean =
  * into the hosts flow (initial value = the current snapshot, never
  * `null`), the core source over `clientOrNull()`, and the screen over the
  * controller — the same feed and the same client provider 92's model
- * uses; never a second workspace listener.
+ * uses; never a second workspace listener. 111 adds the write seam
+ * ([CoreProjectWriteApi], the same provider) and the actions over it.
  */
 @Composable
 internal fun PageSheetScope.NewProjectSheetBody(onCreated: (String) -> Unit) {
@@ -346,5 +374,13 @@ internal fun PageSheetScope.NewProjectSheetBody(onCreated: (String) -> Unit) {
     }
     val source = remember { CoreFolderBrowserSource({ app.clientOrNull() }) }
     val controller = rememberFolderBrowserController(hosts, source)
-    NewProjectScreen(sheet = this, onCreated = onCreated, controller = controller)
+    val writeApi = remember { CoreProjectWriteApi({ app.clientOrNull() }) }
+    val actions = rememberFolderBrowserActions(
+        controller = controller,
+        paths = FfiHostPaths,
+        api = writeApi,
+        onCreated = onCreated,
+        dismissSheet = { dismiss(animated = true) },
+    )
+    NewProjectScreen(sheet = this, controller = controller, actions = actions)
 }
