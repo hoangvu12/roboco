@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -95,7 +96,7 @@ class MainTabShellTest {
 
     /** The large-title item is composed (the list is at — or near — its top). */
     private fun largeTitleOnScreen(): Boolean =
-        compose.onNodeWithTag("nav-large-title").fetchSemanticsNodes().isNotEmpty()
+        compose.onAllNodesWithTag("nav-large-title").fetchSemanticsNodes().isNotEmpty()
 
     /**
      * A slow, zero-velocity swipe up over the real Settings list (ticket
