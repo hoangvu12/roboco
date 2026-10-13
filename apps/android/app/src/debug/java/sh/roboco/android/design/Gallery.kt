@@ -44,6 +44,7 @@ import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
+import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
@@ -368,6 +369,14 @@ object Gallery {
         // readout. Fill: the screen owns its LazyColumn.
         GallerySection("Sessions screen", GalleryLayout.Fill, screenshotHeightDp = 874) {
             SessionsScreenGallerySection()
+        },
+        // Ticket 74 (bottom stack): the Session screen's floating bottom
+        // stack — slot order, width and IME placement, the structural
+        // reflow spring, the transcript inset, the bottom edge fade and the
+        // jump anchor, over the striped transcript stand-in with live
+        // toggles. Fill: the section owns its fixed-height session window.
+        GallerySection("Bottom stack", layout = GalleryLayout.Fill, screenshotHeightDp = 915) {
+            BottomStackGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
