@@ -56,8 +56,12 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
                 }
             },
         )
-        // ticket 127 (the mono tool-detail sheet)
-        is WidgetKind.Detail -> Unit
+        // ticket 127 (the mono tool-detail sheet): an invisible tap target;
+        // the actions are read at click time so a rebuilt TranscriptActions
+        // is honoured.
+        is WidgetKind.Detail -> DetailWidget(k.title, w.payload ?: "") { t, s ->
+            ctx.actions().showDetail(t, s)
+        }
         // ticket 124 (SF-symbol-like icons)
         is WidgetKind.Icon -> Unit
         // ticket 121 (the tool rail)

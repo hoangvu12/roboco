@@ -55,6 +55,7 @@ import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
+import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
@@ -295,6 +296,12 @@ object Gallery {
         // GlassMenuHost (15) the ⋯ menu needs.
         GallerySection("Folder screens", GalleryLayout.Fill, screenshotHeightDp = 852) {
             FolderScreensGallerySection()
+        },
+        // Ticket 127 (Select Text + tool detail sheets): the text sheets
+        // themselves and the invisible Detail widget tap target, through a
+        // TextSheetController + TextSheetOverlay.
+        GallerySection("Text sheets", GalleryLayout.Fill, screenshotHeightDp = 420) {
+            TextSheetsGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
