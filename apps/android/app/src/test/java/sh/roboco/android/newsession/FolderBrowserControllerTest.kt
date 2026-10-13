@@ -494,6 +494,14 @@ class FolderBrowserControllerTest {
             controller.rows,
         )
         assertEquals("alice", controller.title)
+
+        // A drive root: no parent row, the title is the path itself.
+        controller.load("C:\\")
+        runCurrent()
+        source.complete(3, FolderListing(path = "C:\\", entries = emptyList(), truncated = false))
+        runCurrent()
+        assertTrue(controller.rows.isEmpty())
+        assertEquals("C:\\", controller.title)
     }
 
     // --------------------------------------------------------- the hooks
