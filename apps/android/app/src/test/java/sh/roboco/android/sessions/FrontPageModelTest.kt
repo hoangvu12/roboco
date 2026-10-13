@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -120,7 +121,11 @@ class FrontPageModelTest {
         fixture.feed.start()
         advanceUntilIdle()
         val emissions = mutableListOf<FrontPageUi?>()
-        backgroundScope.launch { fixture.model.ui.toList(emissions) }
+        // Unconfined: `advanceUntilIdle` stops once no *foreground* task is
+        // left, so a backgroundScope collector on the standard dispatcher
+        // may never run (or run late and miss values). This one collects
+        // the current value now and every later value as it is set.
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { fixture.model.ui.toList(emissions) }
         advanceUntilIdle()
         val before = emissions.size
         assertEquals(1, before)
@@ -146,7 +151,7 @@ class FrontPageModelTest {
         fixture.feed.start()
         advanceUntilIdle()
         val emissions = mutableListOf<FrontPageUi?>()
-        backgroundScope.launch { fixture.model.ui.toList(emissions) }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { fixture.model.ui.toList(emissions) }
         advanceUntilIdle()
         val before = emissions.size
 
@@ -171,7 +176,7 @@ class FrontPageModelTest {
         fixture.feed.start()
         advanceUntilIdle()
         val emissions = mutableListOf<FrontPageUi?>()
-        backgroundScope.launch { fixture.model.ui.toList(emissions) }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { fixture.model.ui.toList(emissions) }
         advanceUntilIdle()
         val before = emissions.size
 
@@ -218,13 +223,15 @@ class FrontPageModelTest {
         assertEquals(listOf("A"), feed.engines.value.map { it.engineId })
 
         // A mid-read event costs exactly one extra read: the channel
-        // conflates whatever arrives while a read is in flight.
+        // conflates whatever arrives while a read is in flight. So this
+        // burst is the triggered read plus the one extra — two reads (the
+        // ticket's "at most twice"), on top of the first read above.
         core.duringWorkspace = { feed.onEvent(ClientEvent.WorkspaceChanged(revision = 2uL)) }
         core.ws = snapshot(2uL, oneOff())
         feed.onEvent(ClientEvent.WorkspaceChanged(revision = 2uL))
         advanceUntilIdle()
         core.duringWorkspace = null
-        assertEquals(2, core.workspaceCalls.get())
+        assertEquals(1 + 2, core.workspaceCalls.get())
         assertEquals(2uL, feed.snapshot.value?.revision)
     }
 
@@ -274,11 +281,17 @@ class FrontPageModelTest {
             assertEquals(listOf(Haptic.Select), feedback.haptics)
 
             // Collapse All from the main thread: the still-open pinned
-            // folds (a local write), the pending user section is skipped.
+            // folds (a local write) and the still-open "Mobile" (e1:s2) gets
+            // its engine write; the pending e1:s1 is skipped. One Select per
+            // toggled id.
             val collapseFeedback = RecordingFeedback()
             model.collapseAll(collapseFeedback)
-            assertEquals(listOf(Haptic.Select), collapseFeedback.haptics)
+            assertEquals(listOf(Haptic.Select, Haptic.Select), collapseFeedback.haptics)
             assertTrue(fold.isCollapsed(FrontPageSections.PINNED, null))
+            withTimeout(5_000) {
+                while (core.setCalls.size < 2) delay(10)
+            }
+            assertEquals(listOf("e1:s1" to true, "e1:s2" to true), core.setCalls.toList())
             assertTrue(core.callThreads.isNotEmpty())
             assertTrue(core.callThreads.none { it === main })
         }

@@ -34,11 +34,16 @@ class WallpaperHeroMathTest {
     @Test
     fun maskAlphasMatchTheSmoothstepTable() {
         val stops = wallpaperMaskStops()
-        assertEquals(1f, stops[0].second.alpha, 1e-6f)
-        assertEquals(0.84375f, stops[6].second.alpha, 1e-6f)
-        assertEquals(0.5f, stops[12].second.alpha, 1e-6f)
-        assertEquals(0.15625f, stops[18].second.alpha, 1e-6f)
-        assertEquals(0f, stops[24].second.alpha, 1e-6f)
+        // An sRGB Compose Color packs its alpha into 8 bits, so a stop's
+        // alpha reads back as round(a·255)/255 (0.84375 → 215/255 =
+        // 0.843137): the tolerance is half an 8-bit step, which still pins
+        // each value to its own quantum.
+        val q = 0.5f / 255f + 1e-6f
+        assertEquals(1f, stops[0].second.alpha, q)
+        assertEquals(0.84375f, stops[6].second.alpha, q)
+        assertEquals(0.5f, stops[12].second.alpha, q)
+        assertEquals(0.15625f, stops[18].second.alpha, q)
+        assertEquals(0f, stops[24].second.alpha, q)
     }
 
     @Test

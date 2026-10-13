@@ -196,7 +196,11 @@ class NewSessionAccessoryUiTest {
         var clock: GlyphClock? = null
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                ProvideGlyphClock {
+                // Frozen: the subscription count is the same on a frozen
+                // clock (StatusGlyph's DisposableEffect), but a live clock
+                // runs its withFrameNanos loop forever while the spinner is
+                // subscribed — by design — so waitForIdle never idles.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
                     clock = LocalGlyphClock.current
                     NewSessionAccessory(counts = counts, onTap = {})
                 }
@@ -225,14 +229,36 @@ class NewSessionAccessoryUiTest {
         // The label is hidden in the draw phase (graphicsLayer alpha); the
         // semantics label is the counts label either way, and the button
         // still taps.
+        // One setContent (a compose rule allows only one per test); the
+        // second configuration is switched in through state.
         var inlineTaps = 0
-        host(LiveCounts(awaiting = 1), onTap = { inlineTaps++ }, inline = true)
+        var inline by mutableStateOf(true)
+        var labelAlpha by mutableStateOf<(() -> Float)?>(null)
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    Box(Modifier.fillMaxSize()) {
+                        NewSessionAccessory(
+                            counts = LiveCounts(awaiting = 1),
+                            onTap = { inlineTaps++ },
+                            inline = inline,
+                            labelAlpha = labelAlpha,
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("New session, 1 needs you").assertExists()
         compose.onNodeWithTag(tag).performClick()
         compose.waitForIdle()
         assertEquals(1, inlineTaps)
 
-        host(LiveCounts(awaiting = 1), labelAlpha = { 0.5f })
+        compose.runOnUiThread {
+            inline = false
+            labelAlpha = { 0.5f }
+        }
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("New session, 1 needs you").assertExists()
     }
 }

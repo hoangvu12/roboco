@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -77,10 +78,13 @@ class Prefs(
 
     private val loaded = CompletableDeferred<Unit>()
 
+    /** Set by the first [setGroupByProject]: the user's choice beats a later-arriving first read. */
+    private val written = AtomicBoolean(false)
+
     init {
         scope.launch(io) {
             val preferences = store.data.catch { emit(emptyPreferences()) }.first()
-            _group.value = preferences[PrefKeys.GROUP_BY_PROJECT] ?: false
+            if (!written.get()) _group.value = preferences[PrefKeys.GROUP_BY_PROJECT] ?: false
             loaded.complete(Unit)
         }
     }
@@ -98,6 +102,7 @@ class Prefs(
      */
     fun setGroupByProject(on: Boolean) {
         if (on == _group.value) return
+        written.set(true)
         _group.value = on
         scope.launch(io) {
             store.edit { it[PrefKeys.GROUP_BY_PROJECT] = _group.value }

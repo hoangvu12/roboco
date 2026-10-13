@@ -379,7 +379,7 @@ class ComposerSurfaceTest {
                         progress = { p },
                         chipsInteractive = true,
                         modifier = Modifier.testTag("surface").fillMaxWidth(),
-                        text = { RecordingTextStandIn(46.dp, maxWidths) },
+                        text = { RecordingTextStandIn(46.dp, maxWidths) { p } },
                         attach = {},
                         chips = {},
                         action = { ActionStandIn() },
@@ -400,15 +400,22 @@ class ComposerSurfaceTest {
         compose.onNodeWithTag("text").assertPositionInRootIsEqualTo(16.dp, 0.dp)
     }
 
-    /** Logs every `maxWidth` the slot is measured at. */
+    /**
+     * Logs every `maxWidth` the slot is measured at. Compose skips a
+     * child's measure when its constraints are unchanged, so with a steady
+     * 334 the parent's re-measure alone would log once; reading [progress]
+     * in the layout block invalidates this node on every `p` step, so each
+     * frame really re-runs the measure and logs the width it got.
+     */
     @Composable
-    private fun RecordingTextStandIn(height: Dp, maxWidths: MutableList<Int>) {
+    private fun RecordingTextStandIn(height: Dp, maxWidths: MutableList<Int>, progress: () -> Float) {
         Box(
             Modifier
                 .testTag("text")
                 .fillMaxWidth()
                 .height(height)
                 .layout { measurable, constraints ->
+                    progress()
                     maxWidths += constraints.maxWidth
                     val placeable = measurable.measure(constraints)
                     layout(placeable.width, placeable.height) { placeable.place(0, 0) }

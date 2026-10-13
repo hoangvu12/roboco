@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -115,6 +116,30 @@ class NavStackHostTest {
         compose.waitForIdle()
     }
 
+    /**
+     * Runs [block] on the UI thread and publishes its snapshot writes. Under
+     * Robolectric `runOnUiThread` runs inline, and a write made outside
+     * composition reaches the Recomposer only through
+     * `Snapshot.sendApplyNotifications()`, which Compose otherwise posts to
+     * the paused main Looper; the frozen `mainClock` never idles that Looper,
+     * so without this the op is noticed a variable number of frames late.
+     */
+    private fun writeOnUi(block: () -> Unit) {
+        compose.runOnUiThread(block)
+        Snapshot.sendApplyNotifications()
+    }
+
+    /**
+     * Advances the frozen clock frame by frame until the driver's animation
+     * has produced its first non-zero value: the animation's second frame,
+     * play time = one frame (16 ms). The start-up frames before it (the
+     * recomposition that launches the driver, then the animation's
+     * play-time-0 frame) are Compose scheduling, not part of the curve.
+     */
+    private fun advanceToFirstAnimatedFrame(stack: NavStack) {
+        compose.mainClock.advanceTimeUntil { (stack.transition?.progress ?: 0f) > 0f }
+    }
+
     // ------------------------------------------------------- curve + timing
 
     @Test
@@ -123,12 +148,13 @@ class NavStackHostTest {
         compose.mainClock.autoAdvance = false
         setContent(stack)
         compose.mainClock.advanceTimeBy(100)
-        compose.runOnUiThread { stack.push(TestRoute("b")) }
-        compose.mainClock.advanceTimeBy(266) // ≈ 250 ms of spring
+        writeOnUi { stack.push(TestRoute("b")) }
+        advanceToFirstAnimatedFrame(stack) // play time 16 ms
+        compose.mainClock.advanceTimeBy(240) // play time 256 ms ≈ 250 ms of spring
         val progress = stack.transition?.progress
         assertNotNull("push must still be running after 250 ms", progress)
         assertEquals(0.94f, progress!!, 0.02f)
-        compose.mainClock.advanceTimeBy(334) // ≈ 600 ms in total
+        compose.mainClock.advanceTimeBy(344) // play time 600 ms
         assertNull("push must settle within 600 ms", stack.transition)
         assertEquals(2, stack.entries.size)
         assertTrue(stack.top.hasAppeared)
@@ -141,12 +167,13 @@ class NavStackHostTest {
         compose.mainClock.autoAdvance = false
         setContent(stack)
         compose.mainClock.advanceTimeBy(100)
-        compose.runOnUiThread { stack.push(TestRoute("b")) }
-        compose.mainClock.advanceTimeBy(75)
+        writeOnUi { stack.push(TestRoute("b")) }
+        advanceToFirstAnimatedFrame(stack) // play time 16 ms
+        compose.mainClock.advanceTimeBy(64) // play time 80 ms: the nearest frame to 75 ms
         val mid = stack.transition?.progress
         assertNotNull(mid)
         assertTrue("half-way cross-fade at 75 ms, was $mid", mid!! in 0.35f..0.6f)
-        compose.mainClock.advanceTimeBy(91) // 150 ms ± one frame
+        compose.mainClock.advanceTimeBy(80) // play time 160 ms: the first frame past 150 ms
         assertNull("reduced cross-fade must end at 150 ms (± a frame)", stack.transition)
         assertEquals(2, stack.entries.size)
     }
@@ -225,8 +252,11 @@ class NavStackHostTest {
                 "didDisappear-${c.id}",
                 "didAppear-$rootId",
                 // The intermediate b gets no appear/disappear callbacks, only close().
-                "dispose-${b.id}",
+                // b and c are finalized in the same sweep and leave composition in
+                // one frame; Compose runs onDispose of siblings removed together in
+                // reverse slot order (leaving = [b, c]), so c's disposal logs first.
                 "dispose-${c.id}",
+                "dispose-${b.id}",
             ),
             log,
         )
@@ -242,6 +272,7 @@ class NavStackHostTest {
         compose.waitForIdle()
         compose.runOnUiThread { stack.push(TestRoute("b")) }
         compose.waitForIdle()
+        val root = stack.entries[0]
         val old = stack.entries[1]
         log.clear()
 
@@ -254,12 +285,18 @@ class NavStackHostTest {
                 "willAppear-${new.id}",
                 "didDisappear-${old.id}",
                 "didAppear-${new.id}",
+                // [c] replaces both entries: the old top gets the full pair, the
+                // non-top root only close(). Both are finalized in one sweep and
+                // Compose disposes siblings in reverse slot order (leaving =
+                // [root, old]), so the old top's disposal logs first.
                 "dispose-${old.id}",
+                "dispose-${root.id}",
             ),
             log,
         )
         assertEquals(1, stack.entries.size)
         assertTrue(old.isClosed)
+        assertTrue(root.isClosed)
         assertEquals("c", new.route.paneTitle)
     }
 
@@ -430,12 +467,16 @@ class NavStackHostTest {
             stack.popToRoot(animated = false)
             stack.push(TestRoute("x"), animated = true)
         }
-        compose.waitForIdle()
+        // Checked synchronously, as popToRootThenPushInOneFrame does: with
+        // autoAdvance on, waitForIdle() runs the new push to completion and
+        // clears the transition.
         assertTrue(held.abandoned)
         assertEquals(true, held.cancelled)
         assertEquals(0f, held.progress, 1e-3f)
         assertEquals(2, stack.entries.size)
         assertEquals(NavKind.Push, stack.transition?.kind)
+        compose.waitForIdle()
+        assertEquals(2, stack.entries.size)
 
         // The gesture completes late: the abandoned transition ignores it and
         // no pop starts.
@@ -536,25 +577,30 @@ class NavStackHostTest {
         log.clear()
 
         compose.mainClock.autoAdvance = false
-        compose.runOnUiThread { stack.pop() }
+        writeOnUi { stack.pop() }
         compose.mainClock.advanceTimeBy(100) // the pop is mid-animation
         assertNotNull(stack.transition)
 
-        compose.runOnUiThread { showHost = false }
+        writeOnUi { showHost = false }
         compose.mainClock.advanceTimeBy(32) // the disposal runs
         assertNull(stack.transition)
         assertEquals(1, stack.entries.size)
         assertTrue(stack.leaving.isEmpty())
         assertTrue(b.isClosed)
         assertEquals(1, retainedCloses)
-        // No attach/detach callbacks of their own: only the pop's own events.
+        // No attach/detach callbacks of their own. Per ticket 24 ("Disposal
+        // order on host detach"), Compose forgets in reverse order, so both
+        // screens' NavEntryEffect listeners (b, then root) are removed before
+        // the host's onDispose runs onHostDetached(): the commit's did* pair
+        // reaches no listener, and close() is the guaranteed teardown path
+        // (asserted above). The whole host leaves, so the root screen
+        // disposes too.
         assertEquals(
             listOf(
                 "willDisappear-${b.id}",
                 "willAppear-${stack.entries[0].id}",
-                "didDisappear-${b.id}",
-                "didAppear-${stack.entries[0].id}",
                 "dispose-${b.id}",
+                "dispose-${stack.entries[0].id}",
             ),
             log,
         )
@@ -568,7 +614,7 @@ class NavStackHostTest {
         compose.mainClock.autoAdvance = false
         setContent(stack)
         compose.mainClock.advanceTimeBy(100)
-        compose.runOnUiThread { stack.push(TestRoute("b"), animated = false) }
+        writeOnUi { stack.push(TestRoute("b"), animated = false) }
         val t = stack.transition!!
         assertFalse(t.animated)
         // progress starts at 1: the very first frame shows `to` at tx 0, alpha 1,

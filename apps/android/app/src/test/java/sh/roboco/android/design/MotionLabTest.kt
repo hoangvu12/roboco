@@ -17,7 +17,9 @@ class MotionLabTest {
 
     @Test
     fun groupsHaveTheTicketSizesAndUniqueNames() {
-        assertEquals(9, MotionLab.springs().size)
+        // Ticket 22 listed 9; ui-parity#28 explicitly added TabBarMinimize to
+        // Motion.allSprings (which springs() mirrors, and MotionTest pins).
+        assertEquals(10, MotionLab.springs().size)
         assertEquals(21, MotionLab.tweens().size)
         assertEquals(2, MotionLab.repeats().size)
         assertEquals(5, MotionLab.handoff(false).size)

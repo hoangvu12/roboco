@@ -11,6 +11,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -58,7 +59,10 @@ class PrefsTest {
         val (prefs, _) = newPrefs("same")
         advanceUntilIdle()
         val emissions = mutableListOf<Boolean>()
-        backgroundScope.launch { prefs.groupByProject.toList(emissions) }
+        // advanceUntilIdle() never runs backgroundScope-only work, so a
+        // plain backgroundScope collector would never start: collect on an
+        // unconfined dispatcher (the kotlinx-coroutines-test flow pattern).
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { prefs.groupByProject.toList(emissions) }
         advanceUntilIdle()
         assertEquals(listOf(false), emissions)
 

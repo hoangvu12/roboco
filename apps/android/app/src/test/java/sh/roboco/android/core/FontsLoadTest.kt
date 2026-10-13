@@ -89,6 +89,9 @@ class FontsLoadTest {
     @Test
     fun cjkSourceComesFromTheHook() {
         assertEquals("fixture#2", Fonts.load(goodOpener(), stubTypefaces, { "fixture#2" }).cjkSource)
+        // Loads are memoised (see secondLoadReturnsTheSameInstanceWithoutReopening):
+        // reset so the second hook is actually consulted.
+        Fonts.resetForTest()
         assertEquals(null, Fonts.load(goodOpener(), stubTypefaces, { null }).cjkSource)
     }
 

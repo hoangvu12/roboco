@@ -115,8 +115,11 @@ class MentionSuggestionsLayerTest {
                 val s = rememberMentionSuggestionsState(c)
                 controller = c
                 state = s
-                MentionSuggestionsBinding(s, isFocused = { focus.value })
                 MentionSuggestionsHost(Modifier.fillMaxSize()) {
+                    // Inside the host: the binding registers the state
+                    // through the host's LocalMentionLayerSlot (outside it
+                    // the slot is null and the card never composes).
+                    MentionSuggestionsBinding(s, isFocused = { focus.value })
                     // z-below the layer: a stub under the card area.
                     Box(
                         Modifier
@@ -287,9 +290,14 @@ class MentionSuggestionsLayerTest {
         val before = compose.runOnUiThread { state!!.progress.value }
         assertTrue("mid-show: $before", before in 0.5f..0.75f)
         // Typing a space kills the query: the hide starts here.
-        compose.runOnUiThread { controller!!.value = TextFieldValue("Look at @lay ", TextRange(12)) }
+        compose.runOnUiThread { controller!!.value = TextFieldValue("Look at @lay ", TextRange(13)) }
         compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame() // the hide tween's first frame
+        // Frozen clock: frame 1 runs the edit observer's hide and recomposes
+        // the layer (the show still advances one frame), frame 2 is the
+        // hide tween's t = 0 (the current value, ≥ before), frames 3–4 are
+        // ~32 ms into the hide. Reading after a single frame would still
+        // see the show's last step, above `before`.
+        repeat(4) { compose.mainClock.advanceTimeByFrame() }
         val early = compose.runOnUiThread { state!!.progress.value }
         assertTrue("animates down from the current value (no snap to 0 or 1): $early", early in 0.1f..before)
         compose.mainClock.advanceTimeBy(400) // 220 ms more
@@ -380,7 +388,14 @@ class MentionSuggestionsLayerTest {
         showCard()
         compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("blur").performClick()
-        compose.waitForIdle() // the hide starts; no time passes yet
+        // Frozen clock: waitForIdle delivers the focus write to the blur
+        // observer, one frame runs it (onBlur → the hide write, made inside
+        // a coroutine), and the second waitForIdle sends that write's apply
+        // notification — no animation awaits frames here, so the frame
+        // clock alone would never deliver it and the card would never fade.
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle() // the hide starts on the next frames
         compose.mainClock.advanceTimeBy(110) // mid-fade
         val mid = compose.runOnUiThread { state!!.progress.value }
         assertTrue("fading over 220 ms, not gone at once: $mid", mid in 0.1f..0.9f)
@@ -389,7 +404,8 @@ class MentionSuggestionsLayerTest {
         assertTrue(compose.runOnUiThread { state!!.progress.value } < 1e-3f)
         assertTrue(compose.onAllNodesWithTag("mention-card").fetchSemanticsNodes().isEmpty())
         // Focus again and type one more character: it shows again after
-        // the 120 ms debounce.
+        // the 120 ms debounce (behaviour only: back on the auto clock).
+        compose.mainClock.autoAdvance = true
         compose.onNodeWithTag("field").performClick()
         compose.waitForIdle()
         compose.runOnUiThread { controller!!.value = TextFieldValue("Look at @layx", TextRange(12)) }

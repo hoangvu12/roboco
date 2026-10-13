@@ -466,21 +466,27 @@ private fun SheetScrim(entry: SheetEntry, scrimMax: Float) {
             .graphicsLayer { this.alpha = alpha * entry.progress }
             .background(Color.Black)
             .testTag("sheet-scrim")
-            .pointerInput(entry, entry.hiddenForHandoff) {
-                if (entry.hiddenForHandoff) return@pointerInput
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-                    var released = false
-                    while (!released) {
-                        val event = awaitPointerEvent()
-                        for (change in event.changes) if (!change.isConsumed) change.consume()
-                        released = event.changes.all { !it.pressed }
-                    }
-                }
-            },
+            // Hidden: no pointer-input node at all. A node whose block
+            // returns early is still a hit-test target, and a hit sibling
+            // stops the hit test before the presenting content below it.
+            .then(if (entry.hiddenForHandoff) Modifier else Modifier.scrimConsumesTouches(entry)),
     )
 }
+
+/** The visible scrim's pointer input: consumes every gesture, does nothing. */
+private fun Modifier.scrimConsumesTouches(entry: SheetEntry): Modifier =
+    pointerInput(entry) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            down.consume()
+            var released = false
+            while (!released) {
+                val event = awaitPointerEvent()
+                for (change in event.changes) if (!change.isConsumed) change.consume()
+                released = event.changes.all { !it.pressed }
+            }
+        }
+    }
 
 /**
  * The presenting content's recession progress: the first entry's, forced

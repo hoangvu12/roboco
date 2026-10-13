@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream
 import java.io.FileNotFoundException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -197,7 +198,13 @@ class TypeFamiliesTest {
         Fonts.resetForTest()
         try {
             FontGate.check({ ByteArrayInputStream(byteArrayOf(0, 1, 0, 0)) }, debug = false, log = {})
-            Fonts.load({ _ -> throw FileNotFoundException(path) }, { emptyMap() }, { null })
+            // Seeds Fonts' memo with the failure: load() rethrows it here
+            // (fail-loud) and every later Fonts.load(context) rethrows the
+            // same memoised exception without reading assets.
+            val seeded = assertThrows(FontLoadException::class.java) {
+                Fonts.load({ _ -> throw FileNotFoundException(path) }, { emptyMap() }, { null })
+            }
+            assertEquals(path, seeded.path)
 
             val releaseTypeface = loadChainTypeface(appContext(), Face.Sans, debug = false)
             assertSame(Typeface.DEFAULT, releaseTypeface)

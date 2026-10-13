@@ -10,8 +10,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -97,9 +100,11 @@ class SessionRowMetaScreenshotTest {
     @Test
     fun theRowIsOneNodeAndTheMetaLineAddsNoNodes() {
         hostSection(Appearance.Light)
-        compose.onNodeWithTag("session-c").assertExists()
-        compose.onNodeWithContentDescription("Tool group header colors, zeron, Done, Pull request 77, closed")
-            .assertExists()
+        // The section shows C twice (k = 1 at y 0 and again at k = 1.6), so
+        // both copies must be single labelled nodes.
+        compose.onAllNodesWithTag("session-c").assertCountEquals(2)
+        compose.onAllNodesWithContentDescription("Tool group header colors, zeron, Done, Pull request 77, closed")
+            .assertCountEquals(2)
         compose.onNodeWithTag("session-h").assertExists()
         compose.onNodeWithContentDescription("Clean up ~/Downloads, MacBook Pro").assertExists()
         // No separate node for the meta text, the branch or the badge.
@@ -153,10 +158,11 @@ class SessionRowMetaScreenshotTest {
         val px = pixels()
         val icon = inkBounds(px, p.background, 360, 108, 408, 158)!!
         // The SVG's ink starts 3.5/24 into its box (123.57 + 1.75 = 125.32
-        // dp); the (6.5, 5.5) circle's top ink is 2.875/24 in (39.41 +
-        // 1.44 = 40.85 dp).
+        // dp); the (6.5, 5.5) circle (r 2.25, stroke 1.5) has its outer
+        // stroke edge at 3.25 − 0.75 = 2.5/24 in (zi_git_branch.xml), so
+        // the top ink is 39.41 + 1.25 = 40.66 dp = 121.98 px.
         assertPxNear("branch icon ink left (125.3 dp)", icon.x0, 376)
-        assertPxNear("branch icon ink top", icon.y0, 123)
+        assertPxNear("branch icon ink top (40.66 dp)", icon.y0, 122)
         // Only the icon is tinted (the tile carries its own colours).
         assertColorNear(maxInk(px, p.background, 372, 115, 404, 155)!!, over(p.background, p.subline), "icon tint (subline)")
         // The branch text is subline too (#62626A @0.5).
@@ -190,10 +196,14 @@ class SessionRowMetaScreenshotTest {
         hostSection(Appearance.Light)
         val p = Palette.of(false)
         val px = pixels()
-        // The meta band y = row + 35…53 dp; the names end by ~140 dp.
-        assertTrue("row H has ink after the name", inkBounds(px, p.background, 450, 663, 1140, 717) == null)
-        assertTrue("row J has ink after the name", inkBounds(px, p.background, 300, 849, 1140, 903) == null)
-        assertTrue("row X2 has ink after the name", inkBounds(px, p.background, 300, 1221, 1140, 1275) == null)
+        // The meta band y = row + 35…53 dp. Each probe starts ~5 dp past
+        // its name's advance end (tile end 68 + Geist-14 advance of
+        // "  <name>"): H "MacBook Pro" 94.4 → 162.4 dp, J "blog" 35.4 →
+        // 103.4 dp, X2 "No project" 75.2 → 143.2 dp. A branch would put
+        // icon ink 13 + 1.75 dp past the name end, well inside each probe.
+        assertTrue("row H has ink after the name", inkBounds(px, p.background, 500, 663, 1140, 717) == null)
+        assertTrue("row J has ink after the name", inkBounds(px, p.background, 325, 849, 1140, 903) == null)
+        assertTrue("row X2 has ink after the name", inkBounds(px, p.background, 445, 1221, 1140, 1275) == null)
         // Sanity: the names themselves are drawn.
         assertTrue("row H name missing", inkBounds(px, p.background, 225, 663, 430, 717) != null)
         assertTrue("row J name missing", inkBounds(px, p.background, 225, 849, 320, 903) != null)

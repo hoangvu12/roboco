@@ -43,14 +43,24 @@ class GlassMenuModelTest {
 
     private fun pending() = MenuElement.Deferred(cached = false) { emptyList() }
 
-    private fun resolving(vararg children: MenuElement) =
-        MenuElement.Deferred(cached = false) { children.toList() }
+    /**
+     * Results of the deferreds built by [resolving], as the host would report
+     * them once loaded. [flattenLevel] never runs `load` itself (it is pure),
+     * so a "resolved" deferred has to be reported through `resolved`.
+     */
+    private val results = mutableMapOf<MenuElement.Deferred, List<MenuElement>>()
+
+    private fun resolving(vararg children: MenuElement): MenuElement.Deferred {
+        val deferred = MenuElement.Deferred(cached = false) { children.toList() }
+        results[deferred] = children.toList()
+        return deferred
+    }
 
     private fun root(vararg children: MenuElement, title: String? = null) =
-        flattenLevel(title, children.toList(), resolved = { null }, isRoot = true, backTitle = null)
+        flattenLevel(title, children.toList(), resolved = { results[it] }, isRoot = true, backTitle = null)
 
     private fun drilled(title: String, vararg children: MenuElement) =
-        flattenLevel(title, children.toList(), resolved = { null }, isRoot = false, backTitle = title)
+        flattenLevel(title, children.toList(), resolved = { results[it] }, isRoot = false, backTitle = title)
 
     private fun shape(lines: List<MenuLine>): List<String> = lines.map { line ->
         when (line) {
@@ -76,7 +86,7 @@ class GlassMenuModelTest {
     fun anInlineSectionIsItsOwnGroupWithASeparatorOnBothSides() {
         val lines = root(
             item("New Section…"),
-            inline("Projects", item("Bugs")),
+            inline(null, item("Bugs")),
             item("Archived"),
         )
         // Rule 3: the section is untitled → no header, but still a group.
@@ -228,7 +238,7 @@ class GlassMenuModelTest {
 
     @Test
     fun theRootTitleIsEmittedOnlyWhenNonBlank() {
-        assertEquals(listOf("Title(Menu)"), shape(root(item("a"), title = "Menu")))
+        assertEquals(listOf("Title(Menu)", "Row(a)"), shape(root(item("a"), title = "Menu")))
         assertEquals(listOf("Row(a)"), shape(root(item("a"), title = "  ")))
         assertEquals(listOf("Row(a)"), shape(root(item("a"), title = null)))
     }

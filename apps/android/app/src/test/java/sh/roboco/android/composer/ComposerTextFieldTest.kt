@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Rect
@@ -150,10 +153,76 @@ class ComposerTextFieldTest {
         focusEvents.clear()
         probeLayout = null
         probeFamily = null
-        compose.setContent {
-            RobocoTheme(Appearance.Light) { Harness(text, wire, onTextRect) }
+        // A compose rule accepts one setContent per test ("has already set
+        // content"): a later mount swaps the harness inside the first one,
+        // and key(generation) makes it a fresh first composition (a new
+        // controller, a new field, a new height animator).
+        val holder = mounted
+        if (holder == null) {
+            val h = mutableStateOf(Mounted(0, text, wire, onTextRect))
+            mounted = h
+            compose.setContent {
+                val m = h.value
+                key(m.generation) {
+                    RobocoTheme(Appearance.Light) { Harness(m.text, m.wire, m.onTextRect) }
+                }
+            }
+        } else {
+            compose.runOnUiThread {
+                holder.value = Mounted(holder.value.generation + 1, text, wire, onTextRect)
+            }
         }
         compose.waitForIdle()
+        if (!compose.mainClock.autoAdvance) {
+            // Frozen clock: the first layout's TextLayoutResult (the
+            // measured L and line count) reaches the height target only on
+            // a recomposition, and waitForIdle pumps no frame without
+            // autoAdvance — so the slot would still sit at its pre-layout
+            // fallback height. Frame 1 recomposes with the layout and the
+            // effect snaps (a reflow); frame 2 relays the slot out.
+            Snapshot.sendApplyNotifications()
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+    }
+
+    /** One mount's inputs; [generation] keys the harness so each mount composes fresh. */
+    private class Mounted(
+        val generation: Int,
+        val text: String,
+        val wire: (ComposerController.() -> Unit)?,
+        val onTextRect: ((Rect) -> Unit)?,
+    )
+
+    /** The single setContent's current mount, swapped by every later [mount]. */
+    private var mounted: MutableState<Mounted>? = null
+
+    /**
+     * A test-side snapshot write with the clock frozen. Robolectric runs
+     * the test on the main thread with the Looper paused, so nothing posts
+     * the apply notifications, and `advanceTimeBy*` only advances the
+     * coroutine scheduler: without [Snapshot.sendApplyNotifications] the
+     * Recomposer never sees the write.
+     */
+    private fun writeFrozen(write: () -> Unit) {
+        compose.runOnUiThread {
+            write()
+            Snapshot.sendApplyNotifications()
+        }
+    }
+
+    /**
+     * A text edit with the clock frozen, then the frames before the 180 ms
+     * tween's first frame: the edit recomposes the field (frame 1), whose
+     * new TextLayoutResult moves the height target on the next
+     * recomposition, where the effect launches `animateTo` (frame 2); the
+     * tween's own clock starts on frame 3. The target is derived from the
+     * *measured* layout, so this feedback frame is inherent.
+     */
+    private fun editFrozen(write: () -> Unit) {
+        writeFrozen(write)
+        repeat(3) { compose.mainClock.advanceTimeByFrame() }
     }
 
     @Composable
@@ -283,7 +352,7 @@ class ComposerTextFieldTest {
     fun theCapsuleHeightsFollowTheMeasuredLineHeightAndPreviewTwoLines() {
         mount(text = "", isCard = false, width = 268.dp)
         assertEquals(50f, fieldHeight(), 0.5f)
-        compose.onNodeWithTag("composer-input-preview").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).assertDoesNotExist()
 
         mount(text = "a\nb\nc\nd", isCard = false, width = 268.dp)
         val l = lineDp()
@@ -292,10 +361,10 @@ class ComposerTextFieldTest {
         // The preview node exists, is at most two lines tall (the bottom
         // of the second line), and the editable text is still the full
         // draft — the field is the preview's placeholder, not its twin.
-        val preview = compose.onNodeWithTag("composer-input-preview").pxBounds()
+        val preview = compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).pxBounds()
         assertEquals("the preview is exactly two lines", probe.getLineBottom(1), preview.height, 0.5f)
         assertEquals("a\nb\nc\nd", controller.value.text)
-        assertEquals("a\nb\nc\nd", input().fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        assertEquals("a\nb\nc\nd", input().fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
     }
 
     // ------------------------------------- the iOS UI test's port (#593)
@@ -327,8 +396,8 @@ class ComposerTextFieldTest {
         val resting = fieldHeight()
         assertTrue("rests under 90 dp (2 whole lines + insets): $resting", resting < 90f)
         assertEquals(ComposerUIDraft, controller.value.text)
-        assertEquals(ComposerUIDraft, input().fetchSemanticsNode().config[SemanticsProperties.EditableText])
-        compose.onNodeWithTag("composer-input-preview").assertExists()
+        assertEquals(ComposerUIDraft, input().fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
+        compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).assertExists()
 
         // Focus again: the full draft returns (4 lines at 338 dp).
         input().performClick()
@@ -337,8 +406,8 @@ class ComposerTextFieldTest {
         compose.waitForIdle()
         val full = fieldHeight()
         assertTrue("focusing restores the full draft (> 90 dp): $full", full > 90f)
-        compose.onNodeWithTag("composer-input-preview").assertDoesNotExist()
-        assertEquals(ComposerUIDraft, input().fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).assertDoesNotExist()
+        assertEquals(ComposerUIDraft, input().fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
     }
 
     /** The port harness: `isCard = focused`, the width follows the mode. */
@@ -403,8 +472,7 @@ class ComposerTextFieldTest {
         val to = 20f + 2 * l // 2 lines: 64 at mdpi
         assertEquals(from, slotHeight(), 0.5f)
 
-        compose.runOnUiThread { controller.text = "1\n2" }
-        compose.mainClock.advanceTimeByFrame() // the effect's launch alignment
+        editFrozen { controller.text = "1\n2" } // up to the tween's first frame
         compose.mainClock.advanceTimeBy(90)
         compose.waitForIdle()
         val mid = slotHeight()
@@ -429,7 +497,7 @@ class ComposerTextFieldTest {
         val cardH = 20f + 4 * l // the focused card: 108 at mdpi
         assertEquals(capsule, slotHeight(), 0.5f)
 
-        compose.runOnUiThread { card = true; slotWidth = 338.dp }
+        writeFrozen { card = true; slotWidth = 338.dp }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(100)
         compose.waitForIdle()
@@ -451,7 +519,7 @@ class ComposerTextFieldTest {
         assertEquals(28f + 2 * l, slotHeight(), 0.5f)
 
         // The morph-driven height change snaps in the same frame.
-        compose.runOnUiThread { card = true; slotWidth = 338.dp }
+        writeFrozen { card = true; slotWidth = 338.dp }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -461,8 +529,7 @@ class ComposerTextFieldTest {
         // gates textChanged; only the system animator scale would).
         val from = 20f + 4 * l
         val to = 20f + 5 * l
-        compose.runOnUiThread { controller.text = "1\n2\n3\n4\n5" }
-        compose.mainClock.advanceTimeByFrame()
+        editFrozen { controller.text = "1\n2\n3\n4\n5" }
         compose.mainClock.advanceTimeBy(90)
         compose.waitForIdle()
         val mid = slotHeight()
@@ -481,7 +548,7 @@ class ComposerTextFieldTest {
 
         // chipsAlwaysVisible's didSet passes animated: false — the height
         // snaps with the mode flip it caused.
-        compose.runOnUiThread { controller.alwaysCard = true; card = true; slotWidth = 338.dp }
+        writeFrozen { controller.alwaysCard = true; card = true; slotWidth = 338.dp }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -496,7 +563,7 @@ class ComposerTextFieldTest {
         mount(text = "Ship it", isCard = false, width = 268.dp)
         val l = lineDp()
         val slotTop = input().pxBounds().top
-        val previewTop = compose.onNodeWithTag("composer-input-preview").pxBounds().top
+        val previewTop = compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).pxBounds().top
         assertEquals("the first line sits 14 dp below the top", pxToDp(slotTop) + 14f, pxToDp(previewTop), 0.5f)
         // The first baseline: 14 + the font's ascent (hhea 1.005 × 16.5 ≈
         // 16.58 dp; ±1 for pixel rounding).
@@ -666,7 +733,7 @@ class ComposerTextFieldTest {
         assertEquals("no text ink", 0, countMarker(nodePixels(), Palette.Light.text))
         input().assertExists()
         assertEquals("Ship it", controller.value.text)
-        compose.onNodeWithTag("composer-input-preview").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input-preview", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test

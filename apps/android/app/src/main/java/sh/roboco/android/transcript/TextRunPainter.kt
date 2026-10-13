@@ -82,9 +82,9 @@ internal object TextRunPainter {
             val ce = plan[k + 1]
             if (cs > seg) {
                 canvas.drawText(text, seg, cs, x, y, paint)
-                x += paint.measureText(text, seg, cs)
+                x += FontChain.advance(paint, text, seg, cs)
             }
-            val adv = paint.measureText(text, cs, ce)
+            val adv = FontChain.advance(paint, text, cs, ce)
             canvas.drawText(text, cs, ce, x + (cell2 - adv) / 2f, y, paint)
             x += cell2
             seg = ce
@@ -100,7 +100,7 @@ internal object TextRunPainter {
      * or the clip and the glyphs drift apart.
      *
      * Empty plan: 62's `getRunAdvance` formula, unchanged. With a plan: a
-     * narrow stretch contributes `measureText(seg, at)`; a double-width
+     * narrow stretch contributes `FontChain.advance(seg, at)`; a double-width
      * cluster contributes its **leading** edge for every [at] at or inside
      * it (a partly fresh cluster goes wholly to the fresh side) and two
      * cells at its trailing edge.
@@ -118,12 +118,12 @@ internal object TextRunPainter {
         while (k < plan.size) {
             val cs = plan[k]
             val ce = plan[k + 1]
-            if (a <= cs) return x + paint.measureText(text, seg, a)
-            if (a < ce) return x + paint.measureText(text, seg, cs)
-            x += paint.measureText(text, seg, cs) + cell2
+            if (a <= cs) return x + FontChain.advance(paint, text, seg, a)
+            if (a < ce) return x + FontChain.advance(paint, text, seg, cs)
+            x += FontChain.advance(paint, text, seg, cs) + cell2
             seg = ce
             k += 2
         }
-        return x + paint.measureText(text, seg, a)
+        return x + FontChain.advance(paint, text, seg, a)
     }
 }

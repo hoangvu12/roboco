@@ -411,9 +411,10 @@ private fun GlassMenuOverlay(host: GlassMenuHostState, presentation: GlassMenuPr
                     }
                 },
         )
-        // The panel: measured unconstrained (its full height), placed by
-        // [placeGlassMenu], then re-measured within the room so content
-        // beyond it scrolls.
+        // The panel: its full size read through intrinsics (a scrollable
+        // panel may not be measured with an infinite height, and a child may
+        // be measured only once), placed by [placeGlassMenu], then measured
+        // within the room so content beyond it scrolls.
         Layout(
             content = {
                 GlassMenuContent(
@@ -434,9 +435,8 @@ private fun GlassMenuOverlay(host: GlassMenuHostState, presentation: GlassMenuPr
                 GlassMenuTokens.MaxWidth.roundToPx(),
                 (constraints.maxWidth - 2 * margin).coerceAtLeast(0),
             )
-            val full = child.measure(
-                Constraints(maxWidth = panelMaxWidth, maxHeight = Constraints.Infinity),
-            )
+            val fullWidth = child.maxIntrinsicWidth(Constraints.Infinity).coerceIn(0, panelMaxWidth)
+            val fullHeight = child.maxIntrinsicHeight(panelMaxWidth)
             val anchor = IntRect(
                 left = (presentation.anchor.left - hostOrigin.x).roundToInt(),
                 top = (presentation.anchor.top - hostOrigin.y).roundToInt(),
@@ -449,19 +449,23 @@ private fun GlassMenuOverlay(host: GlassMenuHostState, presentation: GlassMenuPr
                 right = constraints.maxWidth,
                 bottom = max(insetsTop, constraints.maxHeight - insetsBottom),
             )
-            val placement = placeGlassMenu(
+            fun place(width: Int) = placeGlassMenu(
                 anchor = anchor,
-                panel = IntSize(full.width, full.height),
+                panel = IntSize(width, fullHeight),
                 bounds = bounds,
                 margin = margin,
                 cover = presentation.cover,
                 forceBelow = forceBelow,
             )
-            if (forceBelow == null) forceBelow = placement.below
-            origin = placement.origin
+            val estimate = place(fullWidth)
+            if (forceBelow == null) forceBelow = estimate.below
             val placed = child.measure(
-                Constraints(maxWidth = panelMaxWidth, maxHeight = placement.maxHeight),
+                Constraints(maxWidth = panelMaxWidth, maxHeight = estimate.maxHeight),
             )
+            // The measured width (min-width clamps included) decides the
+            // horizontal edge; the direction and room stay the estimate's.
+            val placement = if (placed.width == fullWidth) estimate else place(placed.width)
+            origin = placement.origin
             layout(constraints.maxWidth, constraints.maxHeight) {
                 placed.place(placement.offset.x, placement.offset.y)
             }
@@ -745,6 +749,12 @@ fun GlassMenuContent(
         }
     }
 
+    // The root's loads start inside the first composition (UNDISPATCHED), so
+    // a load that never suspends has resolved before the panel below reads
+    // `resolved`: no frame ever holds its "Loading…" line (ticket #15). A
+    // LaunchedEffect alone runs only after that first frame was composed.
+    // Drilled levels load from the effect; the guards make repeats no-ops.
+    remember { stack.first().elements.also { loadAround(it) } }
     LaunchedEffect(stack.size) { loadAround(stack.last().elements) }
 
     // --------------------------------------------------------- animation

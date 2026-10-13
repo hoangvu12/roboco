@@ -7,15 +7,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathIterator
-import androidx.compose.ui.graphics.PathSegment
 import androidx.compose.ui.graphics.PixelMap
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.SemanticsMatcher
@@ -245,10 +246,14 @@ class GroupedListTest {
         GroupedCardShape(position).createOutline(Size(cardWidth.value, cardHeight.value), LayoutDirection.Ltr, shapeDensity)
 
     /**
-     * The outline's region for exact hit tests: the Compose path walked with
-     * [PathIterator] (conics as quadratics, so every segment replays into an
-     * `android.graphics.Path`) and rasterised into a [android.graphics.Region]
-     * clipped to the card rect. `Outline.Rectangle` is the whole rect.
+     * The outline's region for exact hit tests: the Compose path's backing
+     * `android.graphics.Path` ([asAndroidPath]) rasterised into a
+     * [android.graphics.Region] clipped to the card rect.
+     * `Outline.Rectangle` is the whole rect.
+     *
+     * Not `Path.iterator()`: Compose's `PathIterator` loads the
+     * `androidx.graphics.path` native library, which Robolectric cannot
+     * load (UnsatisfiedLinkError); `Region.setPath` runs on NATIVE graphics.
      */
     private fun region(position: GroupedPosition): android.graphics.Region {
         val w = cardWidth.value.toInt()
@@ -258,30 +263,10 @@ class GroupedListTest {
             is Outline.Rectangle -> android.graphics.Region(0, 0, w, h)
             is Outline.Rounded -> android.graphics.Region(0, 0, w, h) // never produced by this shape
             is Outline.Generic -> {
-                val path = out.path.toAndroidPath()
+                val path = out.path.asAndroidPath()
                 android.graphics.Region().apply { setPath(path, android.graphics.Region(0, 0, w, h)) }
             }
         }
-    }
-
-    /** Compose [Path] → `android.graphics.Path`, replaying every segment. */
-    private fun Path.toAndroidPath(): android.graphics.Path {
-        val out = android.graphics.Path()
-        val iterator = iterator(PathIterator.ConicEvaluation.AsQuadratics, 0.1f)
-        while (iterator.hasNext()) {
-            val segment = iterator.next()
-            val p = segment.points
-            when (segment.type) {
-                PathSegment.Type.Move -> out.moveTo(p[0], p[1])
-                PathSegment.Type.Line -> out.lineTo(p[2], p[3])
-                PathSegment.Type.Quadratic -> out.quadTo(p[2], p[3], p[4], p[5])
-                PathSegment.Type.Cubic -> out.cubicTo(p[2], p[3], p[4], p[5], p[6], p[7])
-                PathSegment.Type.Close -> out.close()
-                PathSegment.Type.Done -> return out
-                PathSegment.Type.Conic -> throw IllegalStateException("conic segment under AsQuadratics")
-            }
-        }
-        return out
     }
 
     @Test
@@ -369,10 +354,16 @@ class GroupedListTest {
             Column {
                 GroupedRow("Title", GroupedPosition.Single, testTag = "t0", onClick = null)
                 GroupedRow("Title", GroupedPosition.Single, subtitle = "One line", testTag = "t1", onClick = null)
+                // The ticket's "Group by Project" row carries its leading
+                // symbol: the text starts at 56 dp, leaving a ~272 dp
+                // column (with the disclosure) for the 305 dp Geist-13
+                // subtitle, so it wraps to two lines. Without the icon the
+                // column is ~312 dp and the subtitle fits on one line.
                 GroupedRow(
                     "Title",
                     GroupedPosition.Single,
                     subtitle = twoLineSubtitle,
+                    icon = RobocoIcons.SquareStack3dUp,
                     testTag = "t2",
                     onClick = null,
                 )
@@ -577,20 +568,29 @@ class GroupedListTest {
 
     @Test
     fun destructiveRowInksTitleAndIconInDanger() {
-        for (appearance in listOf(Appearance.Light, Appearance.Dark)) {
-            host(appearance) {
-                Column {
-                    GroupedRow(
-                        "Remove Wallpaper",
-                        GroupedPosition.Single,
-                        icon = RobocoIcons.Trash,
-                        destructive = true,
-                        accessories = emptyList(),
-                        testTag = "danger",
-                        onClick = null,
-                    )
+        // One setContent per test (a second one throws "has already set
+        // content"): the appearance flips through state instead.
+        var current by mutableStateOf(Appearance.Light)
+        compose.setContent {
+            RobocoTheme(current) {
+                Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                    Column {
+                        GroupedRow(
+                            "Remove Wallpaper",
+                            GroupedPosition.Single,
+                            icon = RobocoIcons.Trash,
+                            destructive = true,
+                            accessories = emptyList(),
+                            testTag = "danger",
+                            onClick = null,
+                        )
+                    }
                 }
             }
+        }
+        for (appearance in listOf(Appearance.Light, Appearance.Dark)) {
+            current = appearance
+            compose.waitForIdle()
             val px = rowImage("danger")
             // danger: #DC2626 light, #F87171 dark.
             val expected = if (appearance == Appearance.Dark) Triple(248, 113, 113) else Triple(220, 38, 38)

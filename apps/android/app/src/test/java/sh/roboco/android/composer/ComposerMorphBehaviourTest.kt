@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
@@ -184,6 +185,21 @@ class ComposerMorphBehaviourTest {
         compose.waitForIdle()
     }
 
+    /**
+     * A test-side snapshot write with the clock frozen. Robolectric runs the
+     * test body on the main thread with the Looper paused, so Compose's
+     * GlobalSnapshotManager never posts the apply notifications, and
+     * `MainTestClock.advanceTimeBy*` only advances the coroutine scheduler —
+     * without [Snapshot.sendApplyNotifications] neither the Recomposer nor
+     * a `snapshotFlow` ever sees the write.
+     */
+    private fun writeFrozen(write: () -> Unit) {
+        compose.runOnIdle {
+            write()
+            Snapshot.sendApplyNotifications()
+        }
+    }
+
     /** Steps the clock one frame (the animation's launch alignment), then [ms]. */
     private fun advancePastLaunch(ms: Long) {
         compose.mainClock.advanceTimeByFrame()
@@ -261,14 +277,17 @@ class ComposerMorphBehaviourTest {
     fun addingAnImageWhileUnfocusedAnimatesToTheCardAndClearingAnimatesBack() {
         mount(text = "")
         assertEquals(0f, morph.progress, 1e-4f)
-        compose.runOnIdle { imageCount = 1 }
+        // With the clock frozen, a write outside composition reaches the
+        // driver's snapshotFlow only through the apply notifications (the
+        // frame clock never sends them by itself — see [writeFrozen]).
+        writeFrozen { imageCount = 1 }
         advancePastLaunch(100)
         val p100 = morph.progress
         assertTrue("the image arrival animates (100 ms: $p100)", p100 in 0.3f..0.9f)
         compose.mainClock.advanceTimeBy(700)
         compose.waitForIdle()
         assertEquals(1f, morph.progress, 1e-4f)
-        compose.runOnIdle { imageCount = 0 }
+        writeFrozen { imageCount = 0 }
         compose.mainClock.advanceTimeBy(100)
         val back100 = morph.progress
         assertTrue("the clear animates back too (100 ms: $back100)", back100 in 0.1f..0.7f)
@@ -292,11 +311,11 @@ class ComposerMorphBehaviourTest {
     fun togglingAlwaysCardWhileSettledSnapsWithinOneFrame() {
         mount()
         assertEquals(0f, morph.progress, 1e-4f)
-        compose.runOnIdle { always = true }
+        writeFrozen { always = true }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         assertEquals("alwaysCard snaps to the card", 1f, morph.progress, 1e-4f)
-        compose.runOnIdle { always = false }
+        writeFrozen { always = false }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         assertEquals("alwaysCard snaps back", 0f, morph.progress, 1e-4f)

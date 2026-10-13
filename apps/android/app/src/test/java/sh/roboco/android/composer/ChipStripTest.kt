@@ -221,11 +221,16 @@ class ChipStripTest {
     fun thePrChipIs3025DpTall() {
         compose.setContent { Harness(chips = chipFixturePrStrips()[0]) }
         compose.waitForIdle()
+        // Tolerance 1 (not 0.5): at mdpi 1 dp = 1 px and Compose reports a
+        // text layout's height as ceil(px), so the 16.25 dp mono line lays
+        // out as 17 px and the chip as 31 px — the closest whole pixel
+        // above 30.25. (The sans chip's 17.55 line rounds to 18 → 32, which
+        // happens to land within 0.5 of 31.55.)
         assertEquals(
             "a pr chip is 30.25 dp tall (GeistMono 12.5 line + padding)",
             30.25f,
             node("composer-chip-pr").size.height.toFloat(),
-            0.5f,
+            1f,
         )
     }
 
@@ -656,24 +661,29 @@ class ChipStripTest {
      */
     @Test
     fun disabledChipsPaintTheirInkTertiary() {
-        compose.setContent { Harness(chips = chipFixtureSession(), canWrite = true) }
+        // One setContent per test (a second one throws "has already set
+        // content"): the four cases are state flips of a single harness.
+        var canWrite by mutableStateOf(true)
+        var appearance by mutableStateOf(Appearance.Light)
+        var backdrop by mutableStateOf(Color.White)
+        compose.mainClock.autoAdvance = true
+        compose.setContent {
+            Harness(chips = chipFixtureSession(), canWrite = canWrite, appearance = appearance, backdrop = backdrop)
+        }
         compose.waitForIdle()
         assertExtremePixel("composer-chip-effort", darkest = true, around = listOf(39f, 39f, 44f))
 
-        compose.setContent { Harness(chips = chipFixtureSession(), canWrite = false) }
+        canWrite = false
         compose.waitForIdle()
         assertExtremePixel("composer-chip-effort", darkest = true, around = listOf(151f, 151f, 159f))
 
-        val darkBackdrop = Palette.Dark.background
-        compose.setContent {
-            Harness(chips = chipFixtureSession(), canWrite = true, appearance = Appearance.Dark, backdrop = darkBackdrop)
-        }
+        canWrite = true
+        appearance = Appearance.Dark
+        backdrop = Palette.Dark.background
         compose.waitForIdle()
         assertExtremePixel("composer-chip-effort", darkest = false, around = listOf(232f, 232f, 234f))
 
-        compose.setContent {
-            Harness(chips = chipFixtureSession(), canWrite = false, appearance = Appearance.Dark, backdrop = darkBackdrop)
-        }
+        canWrite = false
         compose.waitForIdle()
         assertExtremePixel("composer-chip-effort", darkest = false, around = listOf(107f, 107f, 114f))
     }
@@ -685,14 +695,22 @@ class ChipStripTest {
      */
     @Test
     fun originalColourIconsKeepTheirColoursInBothStates() {
+        // One setContent per test (a second one throws "has already set
+        // content"): the fixtures and states are flips of a single harness.
+        var chips by mutableStateOf(chipFixtureSession())
+        var canWrite by mutableStateOf(true)
+        compose.mainClock.autoAdvance = true
+        compose.setContent { Harness(chips = chips, canWrite = canWrite) }
+        compose.waitForIdle()
         for (enabled in listOf(true, false)) {
+            canWrite = enabled
             // The Claude mark (fixture A, "model"): a #D97757 pixel survives.
-            compose.setContent { Harness(chips = chipFixtureSession(), canWrite = enabled) }
+            chips = chipFixtureSession()
             compose.waitForIdle()
             assertHasPixelNear("composer-chip-model", listOf(217f, 119f, 87f), 12f)
 
             // The codex mark (fixture B strip 1, "model"): takes the ink.
-            compose.setContent { Harness(chips = chipFixturePrStrips()[0], canWrite = enabled) }
+            chips = chipFixturePrStrips()[0]
             compose.waitForIdle()
             if (enabled) {
                 assertExtremePixel("composer-chip-model", darkest = true, around = listOf(39f, 39f, 44f))
@@ -703,7 +721,7 @@ class ChipStripTest {
             // The project tile (fixture D, "project"): a saturated violet
             // pixel (b > r > g) survives the disabled state — a tinted
             // template icon would have gone grey.
-            compose.setContent { Harness(chips = chipFixtureNewSession(), canWrite = enabled) }
+            chips = chipFixtureNewSession()
             compose.waitForIdle()
             assertHasVioletPixel("composer-chip-project")
         }

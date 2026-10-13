@@ -85,6 +85,8 @@ class TranscriptViewportTest {
         assertEquals(2300f, vp.maxOffset, 1e-4f)
         vp.setContentHeight(500f) // short content rests at the top
         assertEquals(-68f, vp.maxOffset, 1e-4f)
+        // Back to 3000 (maxOffset 2300): 2300 − 1234 = 1066 from the tail.
+        vp.setContentHeight(3000f)
         vp.setOffset(1234f)
         assertEquals(1302f, vp.scrollY, 1e-4f) // offset + topInset
         assertEquals(1066f, vp.distanceFromBottom, 1e-4f)

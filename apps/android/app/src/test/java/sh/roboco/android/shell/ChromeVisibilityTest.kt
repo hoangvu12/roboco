@@ -13,7 +13,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -52,6 +55,8 @@ import sh.roboco.android.design.BottomChromeTopState
 import sh.roboco.android.design.LocalBottomChrome
 import sh.roboco.android.design.LocalBottomChromeTop
 import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.Motion
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastHost
@@ -107,13 +112,18 @@ class ChromeVisibilityTest {
     private fun setShellContent(state: MainTabState, probe: Probe, chromeTop: BottomChromeTopState? = null) {
         compose.setContent {
             RobocoTheme {
-                val holder = chromeTop
-                if (holder != null) {
-                    CompositionLocalProvider(LocalBottomChromeTop provides holder) {
+                // A frozen glyph clock: the accessory's "2 working" spinner
+                // otherwise keeps a withFrameNanos loop running forever and
+                // Compose never idles (AppNotIdleException).
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    val holder = chromeTop
+                    if (holder != null) {
+                        CompositionLocalProvider(LocalBottomChromeTop provides holder) {
+                            ShellWithProbe(state, probe)
+                        }
+                    } else {
                         ShellWithProbe(state, probe)
                     }
-                } else {
-                    ShellWithProbe(state, probe)
                 }
             }
         }
@@ -139,13 +149,15 @@ class ChromeVisibilityTest {
     ) {
         compose.setContent {
             RobocoTheme {
-                val holder = chromeTop
-                if (holder != null) {
-                    CompositionLocalProvider(LocalBottomChromeTop provides holder) {
+                ProvideGlyphClock(frozenAtNanos = 0L) { // see setShellContent
+                    val holder = chromeTop
+                    if (holder != null) {
+                        CompositionLocalProvider(LocalBottomChromeTop provides holder) {
+                            ChromeFixture(tabs, probe, bottomInset)
+                        }
+                    } else {
                         ChromeFixture(tabs, probe, bottomInset)
                     }
-                } else {
-                    ChromeFixture(tabs, probe, bottomInset)
                 }
             }
         }
@@ -404,18 +416,22 @@ class ChromeVisibilityTest {
         // The tween's first frame is the next one: t = 0 from here.
         compose.mainClock.advanceTimeByFrame()
 
-        compose.mainClock.advanceTimeBy(100) // t = 100: inside the 120 ms delay
+        // advanceTimeBy rounds up to whole 16 ms frames: t = 112, inside the
+        // 120 ms delay.
+        compose.mainClock.advanceTimeBy(100)
         assertEquals(0f, alphaOf(probe), 1e-4f)
 
         // The accessory stays tappable during the fade (.allowUserInteraction).
+        // The click's down → move → up advances the clock one 16 ms event
+        // period (AndroidInputDispatcher.advanceClockTime): t = 128.
         compose.onNodeWithTag("new-session", useUnmergedTree = true).performClick()
         compose.waitForIdle()
         assertEquals(1, probe.accessoryTaps)
 
-        compose.mainClock.advanceTimeBy(145) // t = 245: EaseOut at x = 0.5
-        assertEquals(0.685f, alphaOf(probe), 0.05f)
+        compose.mainClock.advanceTimeBy(112) // t = 240: EaseOut at x = 0.48 (≈ 0.669)
+        assertEquals(Motion.EaseOut.transform(0.48f), alphaOf(probe), 0.02f)
 
-        compose.mainClock.advanceTimeBy(135) // t = 380: done
+        compose.mainClock.advanceTimeBy(135) // t = 384: done (≥ 370)
         assertEquals(1f, alphaOf(probe), 1e-4f)
     }
 
@@ -599,12 +615,25 @@ class ChromeVisibilityTest {
             s.freeze(0.5f)
         }
         val probe = Probe()
-        setFixtureContent(frozen, probe)
+        // One setContent per test (an Android compose rule refuses a
+        // second): the fixture swaps from the frozen to the idle shell in
+        // place, keyed so the second one starts from fresh state.
+        var fixture by mutableStateOf(frozen to probe)
+        compose.setContent {
+            RobocoTheme {
+                ProvideGlyphClock(frozenAtNanos = 0L) { // see setShellContent
+                    val (tabs, p) = fixture
+                    key(tabs) { ChromeFixture(tabs, p, 22.dp) }
+                }
+            }
+        }
+        compose.waitForIdle()
         assertEquals(0.5f, probe.sessionProgress?.presence ?: -1f, 1e-3f)
 
         val idle = MainTabState(TabId.Sessions).apply { stack(TabId.Sessions).push(TestSessionRoute()) }
         val idleProbe = Probe()
-        setFixtureContent(idle, idleProbe)
+        compose.runOnUiThread { fixture = idle to idleProbe }
+        compose.waitForIdle()
         assertEquals(1f, idleProbe.sessionProgress?.presence ?: -1f, 1e-3f)
         assertEquals(0f, idleProbe.sessionProgress?.chromeVisibility ?: 1f, 1e-3f)
         assertFalse(idleProbe.sessionProgress?.isInteractive ?: true)

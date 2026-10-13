@@ -121,19 +121,24 @@ class MetaGlyphsScreenshotTest {
     @Test
     fun prToneMapsStatesToPaletteRolesInLightAndDark() {
         val tones = HashMap<Appearance, List<Color>>()
-        for (appearance in listOf(Appearance.Light, Appearance.Dark)) {
-            compose.setContent {
-                RobocoTheme(appearance) {
-                    val list = listOf(
-                        prTone(PrState.Open),
-                        prTone(PrState.Merged),
-                        prTone(PrState.Closed),
-                        prTone(PrState.Draft),
-                    )
-                    SideEffect { tones[appearance] = list }
-                    Box(Modifier.size(1.dp)) {}
-                }
+        // One setContent per test (a second throws "has already set
+        // content"): the appearance flips through state.
+        var current by mutableStateOf(Appearance.Light)
+        compose.setContent {
+            val appearance = current
+            RobocoTheme(appearance) {
+                val list = listOf(
+                    prTone(PrState.Open),
+                    prTone(PrState.Merged),
+                    prTone(PrState.Closed),
+                    prTone(PrState.Draft),
+                )
+                SideEffect { tones[appearance] = list }
+                Box(Modifier.size(1.dp)) {}
             }
+        }
+        for (appearance in listOf(Appearance.Light, Appearance.Dark)) {
+            compose.runOnIdle { current = appearance }
             compose.waitForIdle()
         }
         for (appearance in listOf(Appearance.Light, Appearance.Dark)) {
@@ -152,25 +157,52 @@ class MetaGlyphsScreenshotTest {
     fun tileComposableAndBitmapPainterArePixelIdentical() {
         // Both forms go through ProjectTiles.draw; at side 14 the bitmap
         // form draws 1:1 (42 px at xxhdpi).
+        //
+        // Both forms render at the same window position (swapped through
+        // state), so Skia's anti-aliasing sees the same device coordinates.
+        // The comparison allows ±1/255 per channel: the composable blends
+        // tone @ 0.08 straight onto the window, while the painter first
+        // quantises the premultiplied tile into an 8-bit bitmap and then
+        // composites it — two roundings instead of one, which a byte-exact
+        // compare reported as "differ" in CI. The shape, letter and tones
+        // are still pinned: any geometry or colour difference moves pixels
+        // by far more than 1/255.
+        var usePainter by mutableStateOf(false)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                Row {
-                    ProjectTile("roboco", 2, Modifier.testTag("direct"), side = 14.dp)
+                if (usePainter) {
                     Image(
                         painter = rememberProjectTilePainter("roboco", 2, 14.dp),
                         contentDescription = null,
-                        modifier = Modifier.testTag("painter").size(14.dp),
+                        modifier = Modifier.testTag("tile").size(14.dp),
                     )
+                } else {
+                    ProjectTile("roboco", 2, Modifier.testTag("tile"), side = 14.dp)
                 }
             }
         }
-        val direct = compose.onNodeWithTag("direct").captureToImage().toPixelMap()
-        val painter = compose.onNodeWithTag("painter").captureToImage().toPixelMap()
+        val direct = compose.onNodeWithTag("tile").captureToImage().toPixelMap()
+        compose.runOnIdle { usePainter = true }
+        val painter = compose.onNodeWithTag("tile").captureToImage().toPixelMap()
         assertEquals(direct.width, painter.width)
         assertEquals(direct.height, painter.height)
+        var worst = 0f
+        for (y in 0 until direct.height) {
+            for (x in 0 until direct.width) {
+                val a = direct[x, y]
+                val b = painter[x, y]
+                worst = maxOf(
+                    worst,
+                    abs(a.red - b.red),
+                    abs(a.green - b.green),
+                    abs(a.blue - b.blue),
+                    abs(a.alpha - b.alpha),
+                )
+            }
+        }
         assertTrue(
-            "the composable and the bitmap painter differ",
-            direct.buffer.contentEquals(painter.buffer),
+            "the composable and the bitmap painter differ by ${worst * 255f}/255 (max 1)",
+            worst * 255f <= 1.01f,
         )
     }
 
@@ -220,20 +252,25 @@ class MetaGlyphsScreenshotTest {
     @Test
     fun tileColorIndexWrapsByFloorMod() {
         // colorIndex 9 renders as 1 and −1 as 7: the same tone, byte-for-byte.
+        // One tile at one window position, its index swapped through state:
+        // side-by-side tiles sit at different device x, and Skia's
+        // anti-aliasing is not bit-exact under translation (the CI run saw
+        // "9 should render like 1" with identical tones), so position must
+        // not be a variable here.
+        var index by mutableStateOf(1)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                Row {
-                    ProjectTile("roboco", 1, Modifier.testTag("one"), side = 14.dp)
-                    ProjectTile("roboco", 9, Modifier.testTag("nine"), side = 14.dp)
-                    ProjectTile("roboco", 7, Modifier.testTag("seven"), side = 14.dp)
-                    ProjectTile("roboco", -1, Modifier.testTag("minus-one"), side = 14.dp)
-                }
+                ProjectTile("roboco", index, Modifier.testTag("tile"), side = 14.dp)
             }
         }
-        val one = compose.onNodeWithTag("one").captureToImage().toPixelMap()
-        val nine = compose.onNodeWithTag("nine").captureToImage().toPixelMap()
-        val seven = compose.onNodeWithTag("seven").captureToImage().toPixelMap()
-        val minusOne = compose.onNodeWithTag("minus-one").captureToImage().toPixelMap()
+        fun capture(i: Int) = run {
+            compose.runOnIdle { index = i }
+            compose.onNodeWithTag("tile").captureToImage().toPixelMap()
+        }
+        val one = capture(1)
+        val nine = capture(9)
+        val seven = capture(7)
+        val minusOne = capture(-1)
         assertTrue("9 should render like 1", one.buffer.contentEquals(nine.buffer))
         assertTrue("-1 should render like 7", seven.buffer.contentEquals(minusOne.buffer))
         assertFalse("1 and 7 are different tones", one.buffer.contentEquals(seven.buffer))

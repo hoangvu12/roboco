@@ -30,8 +30,9 @@ class ActionSheetLayoutTest {
         // min(1280, 800) = 800 → capped at 440 − 16.
         assertEquals(424f, actionSheetWidth(1280f, 800f), 0.001f)
         assertEquals(424f, actionSheetWidth(440f, 900f), 0.001f)
-        // The cap wins even on a wide-short window.
-        assertEquals(424f, actionSheetWidth(900f, 400f), 0.001f)
+        // A wide-short window: the shorter side (400) is under the cap, so
+        // it rules — `min(min(900, 400), 440) − 16` = 384 (ticket #19 width row).
+        assertEquals(384f, actionSheetWidth(900f, 400f), 0.001f)
     }
 
     @Test
@@ -53,7 +54,8 @@ class ActionSheetLayoutTest {
     fun theBottomGapFollowsTheNavInsetAbove8() {
         assertEquals(24f, actionSheetBottomGap(24f), 0.001f)
         assertEquals(44f, actionSheetBottomGap(44f), 0.001f)
-        assertEquals(4f, actionSheetBottomGap(4f), 0.001f)
+        // Below the floor the 8 dp minimum wins: `max(4, 8)` = 8.
+        assertEquals(8f, actionSheetBottomGap(4f), 0.001f)
     }
 
     // ------------------------------------------------------ height cap

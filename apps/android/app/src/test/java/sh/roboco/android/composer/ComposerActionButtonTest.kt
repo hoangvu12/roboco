@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
@@ -155,7 +157,7 @@ class ComposerActionButtonTest {
         onSend: (DeliveryMode) -> Unit = {},
         stateVar: MutableState<ActionState>? = null,
     ) {
-        compose.setContent {
+        val body: @Composable () -> Unit = {
             RobocoTheme(appearance) {
                 CompositionLocalProvider(LocalFeedback provides feedback) {
                     GlassMenuHost(hazeState = rememberHazeState()) {
@@ -173,6 +175,42 @@ class ComposerActionButtonTest {
                 }
             }
         }
+        // A compose rule accepts one setContent per test ("has already set
+        // content"), so later place() calls swap the body inside the first
+        // one; key(generation) disposes the old subtree, so every place()
+        // is still a fresh first composition (no carried-over animation).
+        val holder = placed
+        if (holder == null) {
+            val h = mutableStateOf(0 to body)
+            placed = h
+            compose.setContent {
+                val (generation, content) = h.value
+                key(generation) { content() }
+            }
+        } else {
+            compose.runOnUiThread { holder.value = (holder.value.first + 1) to body }
+        }
+        compose.waitForIdle()
+    }
+
+    /** The single setContent's body, swapped by every later [place]. */
+    private var placed: MutableState<Pair<Int, @Composable () -> Unit>>? = null
+
+    /**
+     * Writes [value] with the clock frozen and lets it land. With
+     * `autoAdvance = false`, `waitForIdle` only sends the snapshot apply
+     * notifications (it pumps no frame — ComposeIdlingResource's
+     * shouldPumpTime requires autoAdvance), so the button recomposes on
+     * the next frame (frame 1: recomposition + the LaunchedEffect, whose
+     * snapTo/animateTo start), and the animations' first frame (their
+     * start values, the bounce's 0.85, re-read by the scale semantics)
+     * lands on frame 2.
+     */
+    private fun <T> MutableState<T>.setFrozen(value: T) {
+        compose.runOnUiThread { this.value = value }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
     }
 
@@ -340,8 +378,7 @@ class ComposerActionButtonTest {
         assertChannelNear("frame 0 fill", pixels()[3, 17], Palette.Light.accent)
 
         // Send → Stop: the spring and the bounce start at once.
-        compose.runOnUiThread { state.value = stop }
-        compose.waitForIdle()
+        state.setFrozen(stop)
         assertTrue("the bounce started (scale ${scaleKey()})", scaleKey() < 1f)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
@@ -349,7 +386,7 @@ class ComposerActionButtonTest {
         assertTrue("still bouncing after two frames (scale ${scaleKey()})", scaleKey() < 1f)
         val mid = pixels()[3, 17]
         assertTrue(
-            "the fill is strictly between accent and text 16 ms in (was $mid)",
+            "the fill is strictly between accent and text 32 ms in (was $mid)",
             isStrictlyBetween(mid, Palette.Light.accent, Palette.Light.text),
         )
         compose.mainClock.advanceTimeBy(2000)
@@ -358,8 +395,7 @@ class ComposerActionButtonTest {
         assertEquals("settled scale", 1f, scaleKey(), 1e-3f)
 
         // Stop → Queue: bounces again, springs text → accent.
-        compose.runOnUiThread { state.value = queue }
-        compose.waitForIdle()
+        state.setFrozen(queue)
         assertTrue("the second bounce started (scale ${scaleKey()})", scaleKey() < 1f)
         compose.mainClock.advanceTimeBy(2000)
         compose.waitForIdle()
@@ -367,8 +403,7 @@ class ComposerActionButtonTest {
         assertEquals("settled scale again", 1f, scaleKey(), 1e-3f)
 
         // Queue → Send: bounces again (the colours do not change).
-        compose.runOnUiThread { state.value = sendEnabled }
-        compose.waitForIdle()
+        state.setFrozen(sendEnabled)
         assertTrue("the third bounce started (scale ${scaleKey()})", scaleKey() < 1f)
         compose.mainClock.advanceTimeBy(2000)
         compose.waitForIdle()
@@ -380,8 +415,7 @@ class ComposerActionButtonTest {
         compose.mainClock.autoAdvance = false
         val state = mutableStateOf(sendEnabled)
         place(sendEnabled, stateVar = state)
-        compose.runOnUiThread { state.value = queue }
-        compose.waitForIdle()
+        state.setFrozen(queue)
         assertTrue("the glyph bounces (scale ${scaleKey()})", scaleKey() < 1f)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
@@ -397,8 +431,7 @@ class ComposerActionButtonTest {
         val state = mutableStateOf(sendEnabled)
         place(sendEnabled, stateVar = state)
         // Send → Stop, two frames in (about a quarter of the flight)…
-        compose.runOnUiThread { state.value = stop }
-        compose.waitForIdle()
+        state.setFrozen(stop)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -407,8 +440,7 @@ class ComposerActionButtonTest {
         // …then Stop → Queue without settling: the new spring continues
         // from the current fill (`beginFromCurrentState`), never resetting
         // to the old target first.
-        compose.runOnUiThread { state.value = queue }
-        compose.waitForIdle()
+        state.setFrozen(queue)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -427,8 +459,7 @@ class ComposerActionButtonTest {
 
         // Typing the first character: grey → accent snaps, no spring, no
         // bounce (the scale stays exactly 1).
-        compose.runOnUiThread { state.value = sendEnabled }
-        compose.waitForIdle()
+        state.setFrozen(sendEnabled)
         assertEquals("no bounce on an enabled-only change", 1f, scaleKey(), 0f)
         assertChannelNear("the accent fill snapped", pixels()[3, 17], Palette.Light.accent)
         compose.mainClock.advanceTimeByFrame()
@@ -438,11 +469,10 @@ class ComposerActionButtonTest {
         assertChannelNear("the accent fill stayed", pixels()[3, 17], Palette.Light.accent)
 
         // A steering change mid-queue: label only, the look is untouched.
-        compose.runOnUiThread { state.value = queue }
+        state.setFrozen(queue)
         compose.mainClock.advanceTimeBy(2000)
         compose.waitForIdle()
-        compose.runOnUiThread { state.value = queueSteering }
-        compose.waitForIdle()
+        state.setFrozen(queueSteering)
         assertEquals("no bounce on a steering change", 1f, scaleKey(), 0f)
         compose.onNodeWithContentDescription("Steer").assertExists()
     }

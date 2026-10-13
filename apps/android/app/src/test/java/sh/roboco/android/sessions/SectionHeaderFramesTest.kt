@@ -3,6 +3,7 @@ package sh.roboco.android.sessions
 import androidx.compose.ui.unit.Density
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import sh.roboco.android.design.LinearFontScaleDensity
 import sh.roboco.android.design.TypeScale
 import sh.roboco.android.design.iconBoxDp
 
@@ -88,7 +89,9 @@ class SectionHeaderFramesTest {
         assertEquals(38, fr.bandTop) // 64 − 20 − 6
         assertEquals(42, fr.glyphTop) // 38 + 4
         assertEquals(366, fr.chevronLeft)
-        val ts = TypeScale.from(Density(1f, 1.6f))
+        // Linear density (ticket 22): a plain Density(1f, 1.6f) goes through
+        // Android's non-linear font-scale table and lands on k ≈ 1.45.
+        val ts = TypeScale.from(LinearFontScaleDensity(1f, 1.6f))
         assertEquals(64f, ts.scaledDp(40f).value, 0f)
     }
 
@@ -120,9 +123,9 @@ class SectionHeaderFramesTest {
     fun theTitleAndCountSizeScaleToTheTypeScale() {
         // ts.scaled(13.5): 14 at k = 1, 11 at 0.85 (13.5 × 0.85 = 11.475,
         // rounded half away), 22 at 1.6 (21.6). The sp→dp roundtrip lands
-        // on the rendered dp size.
+        // on the rendered dp size. Linear density, so fontScale == k exactly.
         for ((fontScale, expected) in listOf(1f to 14f, 0.85f to 11f, 1.6f to 22f)) {
-            val d = Density(1f, fontScale)
+            val d = LinearFontScaleDensity(1f, fontScale)
             val ts = TypeScale.from(d)
             assertEquals("k = $fontScale title", expected, with(d) { ts.scaled(13.5f).toDp().value }, 1e-3f)
         }
@@ -133,7 +136,8 @@ class SectionHeaderFramesTest {
         // A SF SymbolConfiguration point size never follows Dynamic Type:
         // the 11 pt glyph reserves a fixed 11 × 1.2 = 13.2 dp box.
         for (fontScale in listOf(0.85f, 1f, 1.6f)) {
-            assertEquals("k = $fontScale chevron box", 13.2f, iconBoxDp(11f).value, 0f)
+            // 11f * 1.2f is 13.200001f in float arithmetic: compare with a delta.
+            assertEquals("k = $fontScale chevron box", 13.2f, iconBoxDp(11f).value, 1e-4f)
         }
     }
 }

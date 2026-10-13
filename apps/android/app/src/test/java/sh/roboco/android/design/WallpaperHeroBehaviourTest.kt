@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -99,6 +100,21 @@ class WallpaperHeroBehaviourTest {
         compose.waitForIdle()
     }
 
+    /**
+     * Lets an arrival land on the frozen clock: the gate's resumption runs
+     * on the main Looper (waitForIdle), the `render` / key writes are
+     * applied (`sendApplyNotifications`, normally posted to the paused
+     * Looper), and one frame recomposes — the node appears, a keyed effect
+     * relaunches, a fade's first frame records its start. Without the
+     * frame, a frozen clock never recomposes and the tag never exists.
+     */
+    private fun land() {
+        compose.waitForIdle()
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
     /** The hero's current `appear` value, read off the tagged node. */
     private fun appear(): Float = compose.onNodeWithTag("wallpaper").fetchSemanticsNode().config[WallpaperAppearKey]
 
@@ -141,7 +157,7 @@ class WallpaperHeroBehaviourTest {
         val fake = GatedLoad()
         mount(fake::load)
         fake.deliver(WallpaperRender(fixture, 1f))
-        compose.waitForIdle()
+        land()
         assertEquals("appear is 0 right after arrival", 0f, appear(), 1e-4f)
 
         // The launch costs one frame: step single frames until the fade's
@@ -166,7 +182,7 @@ class WallpaperHeroBehaviourTest {
         val fake = GatedLoad()
         mount(fake::load)
         fake.deliver(WallpaperRender(fixture, 1f))
-        compose.waitForIdle()
+        land()
         assertEquals("the first render appears at once under reduce motion", 1f, appear(), 1e-4f)
     }
 
@@ -180,9 +196,10 @@ class WallpaperHeroBehaviourTest {
 
         // The store changed: the old artwork stays until the new one lands.
         compose.runOnIdle { changeKey++ }
+        land() // the keyed effect relaunches and parks on the gate
         compose.onNodeWithTag("wallpaper").assertExists()
         fake.deliver(WallpaperRender(fixture, 0.8f))
-        compose.waitForIdle()
+        land()
         compose.onNodeWithTag("wallpaper").assertExists()
         assertEquals("a later render snaps in", 1f, appear(), 1e-4f)
         // A half-fade would have shown mid-values here.
@@ -199,10 +216,11 @@ class WallpaperHeroBehaviourTest {
         assertEquals(listOf(false), fake.darks)
 
         compose.runOnIdle { appearance = Appearance.Dark }
+        land() // recompose: the (changeKey, dark) effect relaunches with dark = true
         // The old render stays while the reload runs.
         compose.onNodeWithTag("wallpaper").assertExists()
         fake.deliver(WallpaperRender(fixture, 0.8f))
-        compose.waitForIdle()
+        land()
         assertEquals("the reload used the new appearance", listOf(false, true), fake.darks)
         assertEquals("a dark flip snaps, no cross-fade", 1f, appear(), 1e-4f)
     }
@@ -215,14 +233,16 @@ class WallpaperHeroBehaviourTest {
 
         // The wallpaper is removed: the hero disappears at once.
         compose.runOnIdle { changeKey++ }
+        land()
         fake.deliver(null)
-        compose.waitForIdle()
+        land()
         compose.onNodeWithTag("wallpaper").assertDoesNotExist()
 
         // The next non-null render counts as "first" again and fades in.
         compose.runOnIdle { changeKey++ }
+        land()
         fake.deliver(WallpaperRender(fixture, 1f))
-        compose.waitForIdle()
+        land()
         assertEquals("0 at arrival", 0f, appear(), 1e-4f)
         compose.mainClock.advanceTimeBy(60)
         compose.waitForIdle()

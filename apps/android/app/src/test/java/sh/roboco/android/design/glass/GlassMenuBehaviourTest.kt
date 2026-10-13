@@ -152,22 +152,46 @@ class GlassMenuBehaviourTest {
         return nodes.first().config[GlassMenuProgressKey]
     }
 
+    /*
+     * The frozen clock (autoAdvance = false) and state writes made outside a
+     * frame (open/close calls, taps, Back, a deferred load resuming after a
+     * delay): `waitForIdle` only sends the snapshot apply notifications
+     * (ComposeIdlingResource.isIdleNow pumps frames only under autoAdvance),
+     * and `advanceTimeBy` alone never delivers them, so such a write is
+     * recomposed by the first frame *after* a `waitForIdle`. The helpers
+     * below always pair the two.
+     */
+
+    /** Delivers pending writes and runs the frame that recomposes them. */
+    private fun frame() {
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
+    /**
+     * Delivers pending writes, advances [ms], then recomposes whatever was
+     * written off-frame during the advance (a load's result, `onClosed`).
+     */
+    private fun advance(ms: Long) {
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(ms)
+        frame()
+    }
+
+    /** Opens [menu]; one frame composes the overlay (frame 0 of the open). */
     private fun openMenu(state: GlassMenuState, menu: Menu): Boolean {
         val opened = state.open(anchor, menu)
-        compose.waitForIdle()
+        frame()
         return opened
     }
 
     private fun settleOpen() {
-        compose.mainClock.advanceTimeBy(600) // past the 0.35 s open spring
-        compose.waitForIdle()
+        advance(600) // past the 0.35 s open spring
     }
 
     private fun finishClose() {
-        compose.mainClock.advanceTimeBy(250) // past the 150 ms close fade
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame()
-        compose.waitForIdle()
+        advance(250) // past the 150 ms close fade, then the removal frame
     }
 
     private fun plainMenu(): Menu = Menu(
@@ -264,15 +288,12 @@ class GlassMenuBehaviourTest {
         settleOpen()
 
         compose.onNodeWithText("Move to Section").performClick()
-        compose.mainClock.advanceTimeBy(250) // past the drill cross-fade
-        compose.waitForIdle()
+        advance(250) // past the drill cross-fade
         compose.onNodeWithTag("glass-menu-back").assertExists()
         compose.onNodeWithText("Pin").assertDoesNotExist()
 
         Espresso.pressBack() // pops the drilled level
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(250)
-        compose.waitForIdle()
+        advance(250)
         compose.onNodeWithTag("glass-menu-back").assertDoesNotExist()
         compose.onNodeWithText("Pin").assertExists()
 
@@ -294,16 +315,14 @@ class GlassMenuBehaviourTest {
             })
 
         compose.onNodeWithText("Move to Section").performClick()
-        compose.mainClock.advanceTimeBy(250)
-        compose.waitForIdle()
+        advance(250)
         assertEquals("never a second panel", 1, compose.onAllNodesWithTag("glass-menu").fetchSemanticsNodes().size)
         compose.onNodeWithTag("glass-menu-back").assertExists()
         compose.onNodeWithText("Bugs").assertExists()
         compose.onNodeWithText("Pin").assertDoesNotExist()
 
         compose.onNodeWithTag("glass-menu-back").performClick()
-        compose.mainClock.advanceTimeBy(250)
-        compose.waitForIdle()
+        advance(250)
         compose.onNodeWithText("Pin").assertExists()
         compose.onNodeWithTag("glass-menu-back").assertDoesNotExist()
     }
@@ -322,6 +341,12 @@ class GlassMenuBehaviourTest {
         compose.onNodeWithText("Pick me").performClick()
         assertTrue("isClosing flips before the action runs", ref.state!!.isClosing)
         assertEquals("the action runs on the next frame, not synchronously", 0, actions)
+        // Deliver the close and run the pick's launched coroutine up to its
+        // withFrameNanos (advanceTimeBy(0) = runCurrent, no frame), so the
+        // next frame is the one that runs the action. Still no action.
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(0)
+        assertEquals("no frame yet, no action", 0, actions)
 
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -483,10 +508,13 @@ class GlassMenuBehaviourTest {
 
         // Frame 0: fully transparent (scale 0.9, alpha 0).
         assertEquals(0f, progress(), 1e-4f)
-        // ~half of the 0.35 s open flight: in flight.
-        compose.mainClock.advanceTimeBy(175)
+        // Early in the open flight: in flight. The open spring is
+        // settle-matched (IosSpring: within 0.1 % at T = 0.35 s, ζ 0.86), so
+        // at half of T it is already ≈0.94; 80 ms after frame 0 (≈64 ms of
+        // playtime) it is ≈0.47 — neither a snap nor a slow tween.
+        compose.mainClock.advanceTimeBy(80)
         compose.waitForIdle()
-        assertTrue("in flight at half the spring (was ${progress()})", progress() in 0.1f..0.9f)
+        assertTrue("in flight early in the spring (was ${progress()})", progress() in 0.1f..0.9f)
         compose.mainClock.advanceTimeBy(1000)
         compose.waitForIdle()
         assertEquals(1f, progress(), 1e-4f)
@@ -498,8 +526,8 @@ class GlassMenuBehaviourTest {
         compose.mainClock.advanceTimeBy(75)
         compose.waitForIdle()
         assertTrue("half-closed at 75 ms (was ${progress()})", progress() in 0.1f..0.9f)
-        compose.mainClock.advanceTimeBy(300)
-        compose.waitForIdle()
+        // The fade's end clears the presentation off-frame (onClosed).
+        advance(300)
         compose.onNodeWithTag("glass-menu").assertDoesNotExist()
     }
 
@@ -562,7 +590,9 @@ class GlassMenuBehaviourTest {
                 GlassMenuPopup(anchor, first, onDismissed = { firstDismissed++ })
             }
         }
-        compose.waitForIdle()
+        // The popup presents from its DisposableEffect, after the first
+        // composition: one more frame composes the overlay.
+        frame()
         compose.onNodeWithText("Pick me").assertExists()
         assertEquals(0, firstDismissed)
 
@@ -598,15 +628,12 @@ class GlassMenuBehaviourTest {
         }
         compose.waitForIdle()
         compose.onNodeWithTag("trigger").performClick()
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(600)
-        compose.waitForIdle()
+        advance(600)
         compose.onNodeWithTag("glass-menu").assertExists()
 
         showTrigger = false
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(300)
-        compose.waitForIdle()
+        frame() // the trigger leaves; its onDispose starts the close
+        advance(300)
         compose.onNodeWithTag("glass-menu").assertDoesNotExist()
     }
 
@@ -631,8 +658,7 @@ class GlassMenuBehaviourTest {
         compose.onNodeWithTag("glass-menu-loading").assertExists()
         compose.onNodeWithText("Loaded row").assertDoesNotExist()
 
-        compose.mainClock.advanceTimeBy(1600)
-        compose.waitForIdle()
+        advance(1600)
         compose.onNodeWithTag("glass-menu-loading").assertDoesNotExist()
         compose.onNodeWithText("Loaded row").assertExists()
     }
@@ -663,9 +689,15 @@ class GlassMenuBehaviourTest {
         compose.onNodeWithText("Branch").assertExists()
         compose.onNodeWithTag("glass-menu-loading").assertExists()
         compose.onNodeWithText("main").assertDoesNotExist()
+        // Measure at rest: settle the open spring's 0.9 scale first (the
+        // 800 ms load is still pending after it).
+        advance(400)
+        compose.onNodeWithTag("glass-menu-loading").assertExists()
         val panelBefore = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
 
-        compose.mainClock.advanceTimeBy(900)
+        advance(900)
+        // Let the panel's resize spring (the 0.35 s open spring) settle.
+        compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
         compose.onNodeWithText("Branch").assertExists()
         compose.onNodeWithText("main").assertExists()
@@ -771,8 +803,7 @@ class GlassMenuBehaviourTest {
 
         // The load throws synchronously: no rows, no "Branch" header, the
         // empty root closes the menu.
-        compose.mainClock.advanceTimeBy(400)
-        compose.waitForIdle()
+        advance(400)
         compose.onNodeWithText("Branch").assertDoesNotExist()
         compose.onNodeWithTag("glass-menu").assertDoesNotExist()
         assertFalse(ref.state!!.isOpen)

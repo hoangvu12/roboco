@@ -290,11 +290,14 @@ class RowActionsTest {
             h.fake.calls,
         )
         assertEquals(1, created.size) // the skipped create never reports an id
+        // A skip reports synchronously on the caller (the ticket's
+        // `if (t.isEmpty()) { onResult(Skipped); return }`), before any
+        // queued write comes back from the serial lane: the three skips
+        // land first, then the three Oks in call order.
         assertEquals(
             listOf(
-                ActionOutcome.Ok, ActionOutcome.Skipped,
-                ActionOutcome.Ok, ActionOutcome.Skipped,
-                ActionOutcome.Ok, ActionOutcome.Skipped,
+                ActionOutcome.Skipped, ActionOutcome.Skipped, ActionOutcome.Skipped,
+                ActionOutcome.Ok, ActionOutcome.Ok, ActionOutcome.Ok,
             ),
             outcomes,
         )
@@ -528,7 +531,10 @@ class RowActionsTest {
             h.toaster.texts,
         )
         assertTrue(h.fake.calls.isEmpty())
-        assertEquals(2, logged.size)
+        // HostUnavailable, Unsupported and NotFound are all logged (the
+        // failure table's Log column says "yes" for NotFound too — only
+        // the toast is suppressed); CancellationException returns silently.
+        assertEquals(3, logged.size)
         assertTrue(logged.all { it.startsWith("write failed: ") })
     }
 

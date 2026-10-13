@@ -69,7 +69,8 @@ class AndroidMeasurer(private val typefaces: Map<FaceRole, Typeface>) : Platform
         val width = if (FontChain.isMono(face) && FontChain.hasWide(text)) {
             measureRun(face, size, ligatures, text).sum()
         } else {
-            paint(face, size, ligatures).measureText(text)
+            // Never `measureText`: it rounds the advance up to a whole unit.
+            FontChain.advance(paint(face, size, ligatures), text, 0, text.length, firstStrongIsRtl(text))
         }
         Stats.calls.incrementAndGet()
         Stats.nanos.addAndGet(System.nanoTime() - t0)

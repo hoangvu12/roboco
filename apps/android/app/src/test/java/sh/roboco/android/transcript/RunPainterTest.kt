@@ -308,7 +308,7 @@ class RunPainterTest {
         val c = FontChain.cellWidth(paint)
         assertEquals("Geist Mono cell = 0.6 em", 0.6f * 13.5f * d, c, 0.01f)
         val cell2 = 2f * c
-        val head = paint.measureText(text, 0, 2) // "| "
+        val head = FontChain.advance(paint, text, 0, 2) // "| "
         val x0 = 10f * d
         val y = 20f * d
         val (narrow, ming, cheng, tail) = canvas.texts
@@ -320,11 +320,11 @@ class RunPainterTest {
         assertEquals(y, narrow.y, 0f)
         assertEquals(2, ming.start)
         assertEquals(3, ming.end)
-        assertEquals(x0 + head + (cell2 - paint.measureText(text, 2, 3)) / 2f, ming.x, 0.0001f)
+        assertEquals(x0 + head + (cell2 - FontChain.advance(paint, text, 2, 3)) / 2f, ming.x, 0.0001f)
         assertEquals(y, ming.y, 0f)
         assertEquals(3, cheng.start)
         assertEquals(4, cheng.end)
-        assertEquals(x0 + head + cell2 + (cell2 - paint.measureText(text, 3, 4)) / 2f, cheng.x, 0.0001f)
+        assertEquals(x0 + head + cell2 + (cell2 - FontChain.advance(paint, text, 3, 4)) / 2f, cheng.x, 0.0001f)
         assertEquals(4, tail.start)
         assertEquals(6, tail.end)
         assertEquals(x0 + head + 2f * cell2, tail.x, 0.0001f)
@@ -338,8 +338,8 @@ class RunPainterTest {
         // Rust position.
         val d = 3f
         val f = fonts(d)
-        val text = "〃〜.."
-        val model = RowModel(displayOf(text, listOf(run(0, 5, 10f, 20f, 40f, 1u, ColorRole.CODE_TEXT, Decoration.NONE))))
+        val text = "〃〜.." // 4 UTF-16 units (both marks are BMP)
+        val model = RowModel(displayOf(text, listOf(run(0, 4, 10f, 20f, 40f, 1u, ColorRole.CODE_TEXT, Decoration.NONE))))
         assertSame(MonoWide.NONE, model.widePlan(0, f[1u]!!))
 
         val canvas = RunRecordingCanvas()
@@ -347,7 +347,7 @@ class RunPainterTest {
         val t = canvas.texts.single()
         assertSame(text, t.text)
         assertEquals(0, t.start)
-        assertEquals(5, t.end)
+        assertEquals(4, t.end)
         assertEquals(10f * d, t.x, 0f)
     }
 
@@ -378,12 +378,12 @@ class RunPainterTest {
         val model = RowModel(displayOf(text, listOf(run(0, 6, 10f, 20f, 60f, 1u, ColorRole.CODE_TEXT, Decoration.NONE))))
         val painter = RunPainter()
         val paint = f[1u]!!.paint
-        val head = paint.measureText(text, 0, 2) // "| "
+        val head = FontChain.advance(paint, text, 0, 2) // "| "
         val c = FontChain.cellWidth(paint)
 
         assertEquals("名's leading edge", head, painter.advanceTo(model, 0, 2, f), 0.0001f)
         assertEquals("称's leading edge", head + 2f * c, painter.advanceTo(model, 0, 3, f), 0.0001f)
-        assertEquals("end", head + 4f * c + paint.measureText(text, 4, 6), painter.advanceTo(model, 0, 6, f), 0.0001f)
+        assertEquals("end", head + 4f * c + FontChain.advance(paint, text, 4, 6), painter.advanceTo(model, 0, 6, f), 0.0001f)
         assertEquals(0f, painter.advanceTo(model, 0, 0, f), 0f) // clamped below the run
         assertEquals( // clamped above the run
             painter.advanceTo(model, 0, 6, f),
@@ -440,8 +440,8 @@ class RunPainterTest {
         val paint = f[1u]!!.paint
         val cell2 = 2f * FontChain.cellWidth(paint)
         val x0 = 10f * d
-        assertEquals(x0 + paint.measureText(text, 0, 2), clip.left, 0.0001f)
-        assertEquals(x0 + paint.measureText(text, 0, 2) + 2f * cell2, clip.right, 0.0001f)
+        assertEquals(x0 + FontChain.advance(paint, text, 0, 2), clip.left, 0.0001f)
+        assertEquals(x0 + FontChain.advance(paint, text, 0, 2) + 2f * cell2, clip.right, 0.0001f)
 
         // The struck bar is inside the same clip, after the glyphs.
         assertEquals(4, canvas.texts.size)

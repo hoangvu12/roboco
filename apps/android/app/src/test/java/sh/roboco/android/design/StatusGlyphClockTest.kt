@@ -8,6 +8,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -63,6 +64,22 @@ class StatusGlyphClockTest {
         return requireNotNull(clock) { "the clock was never provided" }
     }
 
+    /**
+     * Lets a state write made outside composition land while the clock is
+     * frozen: under Robolectric `runOnUiThread` runs inline, the write
+     * only reaches the Recomposer after `Snapshot.sendApplyNotifications()`
+     * (normally posted to the paused main Looper), and the recomposition
+     * itself waits for a frame, which a frozen clock never sends on its own
+     * (`waitForIdle` treats a frozen clock as idle). One frame recomposes
+     * and runs the DisposableEffects that own the subscription count.
+     */
+    private fun settleFrozen() {
+        Snapshot.sendApplyNotifications()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
     // ------------------------------------------------------------ subscription
 
     @Test
@@ -105,7 +122,7 @@ class StatusGlyphClockTest {
         compose.mainClock.advanceTimeBy(100)
 
         compose.runOnUiThread { show = false }
-        compose.waitForIdle()
+        settleFrozen()
         assertEquals(0, clock.subscribers)
         compose.mainClock.advanceTimeBy(100) // let the cancellation settle
         val ticks = clock.framesTicked
@@ -154,7 +171,7 @@ class StatusGlyphClockTest {
         assertEquals("reduce motion: no frames tick", 0L, c.framesTicked)
 
         compose.runOnUiThread { reduce = false }
-        compose.waitForIdle()
+        settleFrozen()
         assertEquals("the live flip subscribes both glyphs", 2, c.subscribers)
         compose.mainClock.advanceTimeBy(100)
         assertTrue("the live flip restarts the loop", c.framesTicked > 0L)
@@ -256,11 +273,11 @@ class StatusGlyphClockTest {
         assertEquals(1, c.subscribers)
 
         compose.runOnUiThread { kind = StatusGlyphKind.Dot(Color(0xFF5B43E8)) }
-        compose.waitForIdle()
+        settleFrozen()
         assertEquals("a static kind must release its subscription", 0, c.subscribers)
 
         compose.runOnUiThread { kind = StatusGlyphKind.Spinner }
-        compose.waitForIdle()
+        settleFrozen()
         assertEquals(1, c.subscribers)
     }
 }

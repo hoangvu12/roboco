@@ -97,11 +97,16 @@ class SessionRowCornerTest {
 
     // --------------------------------------------------------- tone table
 
-    private fun tone(corner: RowCorner, light: Int, dark: Int, glyph: StatusGlyphKind) {
+    /**
+     * [glyph] builds the expected kind from a palette: the glyph tints with
+     * the same palette's tone (ticket #37 Step 4 — e.g. `SendFailed.glyph(
+     * Palette.Dark) == Dot(Color(0xFFF87171))`), so light and dark differ.
+     */
+    private fun tone(corner: RowCorner, light: Int, dark: Int, glyph: (Palette) -> StatusGlyphKind) {
         assertEquals("$corner light", light, corner.color(Palette.Light).toArgb())
         assertEquals("$corner dark", dark, corner.color(Palette.Dark).toArgb())
-        assertEquals("$corner glyph (light)", glyph, corner.glyph(Palette.Light))
-        assertEquals("$corner glyph (dark)", glyph, corner.glyph(Palette.Dark))
+        assertEquals("$corner glyph (light)", glyph(Palette.Light), corner.glyph(Palette.Light))
+        assertEquals("$corner glyph (dark)", glyph(Palette.Dark), corner.glyph(Palette.Dark))
     }
 
     @Test
@@ -110,30 +115,29 @@ class SessionRowCornerTest {
             RowCorner.SendFailed,
             0xFFDC2626.toInt(),
             0xFFF87171.toInt(),
-            StatusGlyphKind.Dot(Palette.Light.danger),
-        )
+        ) { StatusGlyphKind.Dot(it.danger) }
         // The literal forms from the acceptance table.
         assertEquals(StatusGlyphKind.Dot(Color(0xFFF87171.toInt())), RowCorner.SendFailed.glyph(Palette.Dark))
     }
 
     @Test
     fun workingIsTheStatusWorkingToneAndTheSpinner() {
-        tone(RowCorner.Working, 0x8C5B43E8.toInt(), 0x8C8B7CF6.toInt(), StatusGlyphKind.Spinner)
+        tone(RowCorner.Working, 0x8C5B43E8.toInt(), 0x8C8B7CF6.toInt()) { StatusGlyphKind.Spinner }
     }
 
     @Test
     fun inputIsTheStatusInputToneAndItsDot() {
-        tone(RowCorner.Input, 0x995B43E8.toInt(), 0x998B7CF6.toInt(), StatusGlyphKind.Dot(Palette.Light.status.input))
+        tone(RowCorner.Input, 0x995B43E8.toInt(), 0x998B7CF6.toInt()) { StatusGlyphKind.Dot(it.status.input) }
     }
 
     @Test
     fun failedIsTheStatusFailedToneAndItsDot() {
-        tone(RowCorner.Failed, 0xA6DC2626.toInt(), 0xA6F87171.toInt(), StatusGlyphKind.Dot(Palette.Light.status.failed))
+        tone(RowCorner.Failed, 0xA6DC2626.toInt(), 0xA6F87171.toInt()) { StatusGlyphKind.Dot(it.status.failed) }
     }
 
     @Test
     fun doneIsTheStatusDoneToneAndItsCheck() {
-        tone(RowCorner.Done, 0xE615803D.toInt(), 0xE634D399.toInt(), StatusGlyphKind.Check(Palette.Light.status.done))
+        tone(RowCorner.Done, 0xE615803D.toInt(), 0xE634D399.toInt()) { StatusGlyphKind.Check(it.status.done) }
         assertEquals(StatusGlyphKind.Check(Color(0xE615803D.toInt())), RowCorner.Done.glyph(Palette.Light))
     }
 }

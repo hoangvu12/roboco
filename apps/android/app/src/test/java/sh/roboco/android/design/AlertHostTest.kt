@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -182,6 +183,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(newFolderAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400) // present + settle (bounds are alpha-free)
 
         val card = bounds("alert")
@@ -224,6 +226,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(okAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400)
         assertEquals(px(308), bounds("alert").width, 1.5f)
     }
@@ -244,6 +247,7 @@ class AlertHostTest {
                 ),
             )
         }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400)
         // The Cancel button (index 1) carries the cancel tag and leads.
         val cancel = bounds("alert-cancel")
@@ -258,6 +262,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(threeButtonsAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400)
 
         val card = bounds("alert")
@@ -282,6 +287,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(twoDefaultsAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400)
         // "Keep Both Versions" and "Replace Existing" are wider than the 108 dp
         // half-capsule budget: stacked full width, 8 dp apart.
@@ -310,7 +316,8 @@ class AlertHostTest {
 
         field.performTextInput(" CI")
         compose.waitForIdle()
-        assertEquals("Fix flaky test CI", field.fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        // EditableText is an AnnotatedString: compare its text.
+        assertEquals("Fix flaky test CI", field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
     }
 
     @Test
@@ -456,6 +463,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(notNowAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400) // present + settle
 
         compose.onNodeWithTag("alert-cancel").performClick()
@@ -486,6 +494,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(okAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeByFrame() // the card composes, animation at frame 0
 
         assertEquals(0f, alertValue(AlertAlphaKey), 0.02f)
@@ -503,6 +512,7 @@ class AlertHostTest {
         val state = host()
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(okAlert) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeByFrame()
 
         assertEquals(0f, alertValue(AlertAlphaKey), 0.02f)
@@ -524,6 +534,7 @@ class AlertHostTest {
             state.show(RobocoAlert("First", buttons = listOf(AlertButton("Dismiss First") { handlers += "first" })))
             state.show(RobocoAlert("Second", buttons = listOf(AlertButton("Dismiss Second") { handlers += "second" })))
         }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(400)
 
         compose.onNodeWithText("First").assertExists()
@@ -571,7 +582,7 @@ class AlertHostTest {
             .onNodeWithText("Couldn't create the folder. Enter a folder name without path separators.")
             .assertExists()
         val field = compose.onNodeWithTag("alert-field")
-        assertEquals("the typed name survives the retry", "../outside", field.fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        assertEquals("the typed name survives the retry", "../outside", field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         assertEquals(TextRange(10), field.fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
     }
 

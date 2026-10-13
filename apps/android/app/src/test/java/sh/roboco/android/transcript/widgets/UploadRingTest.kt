@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -165,6 +167,22 @@ class UploadRingTest {
     private fun ringLabel(): String? =
         ringNodes().firstOrNull()?.config?.get(SemanticsProperties.StateDescription)
 
+    /**
+     * Writes [p] on the UI thread and sends the apply notification at
+     * once. Under Robolectric the test body is the main thread, so the
+     * write runs inline, and Compose's GlobalSnapshotManager would only
+     * forward it to the Recomposer from a main-looper post — which a
+     * frozen `mainClock.advanceTimeByFrame()` never idles. Without this
+     * the change lands one or more frames late (or not at all before the
+     * next semantics read idles the looper), skewing every timing below.
+     */
+    private fun setProgress(state: TranscriptState, p: Double?) {
+        compose.runOnUiThread {
+            state.uploadProgress = p
+            Snapshot.sendApplyNotifications()
+        }
+    }
+
     /** Advances frozen frames until [condition] holds (5 s of frames). */
     private fun driveFrames(condition: () -> Boolean) {
         repeat(300) {
@@ -197,7 +215,7 @@ class UploadRingTest {
         compose.mainClock.advanceTimeByFrame()
         assertTrue(ringNodes().isEmpty())
 
-        compose.runOnUiThread { state.uploadProgress = 0.1 }
+        setProgress(state, 0.1)
         val start = compose.mainClock.currentTime
         // One frame for the LaunchedEffect to start (alpha still 0) …
         compose.mainClock.advanceTimeByFrame()
@@ -221,10 +239,10 @@ class UploadRingTest {
         compose.mainClock.autoAdvance = false
         val state = newState()
         compose.setContent { Host { RingTile(state) } }
-        compose.runOnUiThread { state.uploadProgress = 0.1 }
+        setProgress(state, 0.1)
         driveFrames { ringAlpha() >= 0.999f }
 
-        compose.runOnUiThread { state.uploadProgress = null }
+        setProgress(state, null)
         val start = compose.mainClock.currentTime
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(125)
@@ -247,11 +265,11 @@ class UploadRingTest {
         compose.mainClock.autoAdvance = false
         val state = newState()
         compose.setContent { Host { RingTile(state) } }
-        compose.runOnUiThread { state.uploadProgress = 0.1 }
+        setProgress(state, 0.1)
         driveFrames { ringAlpha() >= 0.999f }
 
         // Fade out halfway …
-        compose.runOnUiThread { state.uploadProgress = null }
+        setProgress(state, null)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(125)
         val fading = ringAlpha()
@@ -259,7 +277,7 @@ class UploadRingTest {
 
         // … then progress returns: the alpha climbs back from its current
         // value and the label shows the new value.
-        compose.runOnUiThread { state.uploadProgress = 0.5 }
+        setProgress(state, 0.5)
         driveFrames { ringAlpha() >= 0.999f }
         assertEquals(1f, ringAlpha(), 0.001f)
         assertEquals("50%", ringLabel())
@@ -272,10 +290,10 @@ class UploadRingTest {
         compose.mainClock.autoAdvance = false
         val state = newState()
         compose.setContent { Host { RingTile(state) } }
-        compose.runOnUiThread { state.uploadProgress = 0.1 }
+        setProgress(state, 0.1)
         driveFrames { ringAlpha() >= 0.999f && ringSweep() >= 36f }
 
-        compose.runOnUiThread { state.uploadProgress = 0.6 }
+        setProgress(state, 0.6)
         // The label updates on the very next frame …
         compose.mainClock.advanceTimeByFrame()
         assertEquals("the label updates instantly", "60%", ringLabel())
@@ -325,7 +343,7 @@ class UploadRingTest {
             }
         }
         compose.mainClock.advanceTimeByFrame()
-        compose.runOnUiThread { state.uploadProgress = 0.1 }
+        setProgress(state, 0.1)
         driveFrames { ringAlpha() >= 0.999f }
         assertEquals("the fades are not gated by reduce motion (a ticket 04 keep)", 1f, ringAlpha(), 0.001f)
     }
@@ -343,10 +361,10 @@ class UploadRingTest {
         assertEquals("Uploading", node.config[SemanticsProperties.ContentDescription]?.firstOrNull())
         assertEquals("42%", node.config[SemanticsProperties.StateDescription])
         assertEquals("upload-progress", node.config[SemanticsProperties.TestTag])
-        assertNull("no click action on the ring", node.config[SemanticsActions.OnClick])
+        assertNull("no click action on the ring", node.config.getOrNull(SemanticsActions.OnClick))
         assertNull(
             "no progressBarRangeInfo: TalkBack would announce the percent twice",
-            node.config[SemanticsProperties.ProgressBarRangeInfo],
+            node.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo),
         )
     }
 

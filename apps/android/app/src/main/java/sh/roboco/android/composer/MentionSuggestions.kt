@@ -399,11 +399,13 @@ fun MentionSuggestionsGallerySection() {
         }
     }
     val mentionUi = rememberMentionSuggestionsState(controller)
-    MentionSuggestionsBinding(mentionUi, isFocused = { focused })
 
     Column {
         ProvideHazeState {
             MentionSuggestionsHost(Modifier.fillMaxWidth().height(560.dp)) {
+                // Inside the host: the binding registers through the host's
+                // LocalMentionLayerSlot, which is null outside it.
+                MentionSuggestionsBinding(mentionUi, isFocused = { focused })
                 // 24 striped rows: the busy backdrop the card blurs.
                 Column(Modifier.matchParentSize().hazeSource(LocalHazeState.current!!)) {
                     repeat(24) { i ->

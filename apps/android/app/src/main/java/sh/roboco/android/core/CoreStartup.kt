@@ -69,6 +69,13 @@ class CoreStartup(
     private val newClient: (CoreConfig, List<PairedEngine>, ClientListener) -> CoreClient =
         { config, engines, listener -> CoreClient(config, engines, listener) },
     private val onClientReady: (CoreClient) -> Unit = {},
+    /**
+     * The app-scoped session event hub (ticket 51): one line of wiring
+     * per event, fan-out on main inside the hub. Ticket 76's
+     * `SessionRouteFactory` passes this to `SessionController.create`.
+     * Tests inject a hub with their own poster to observe the one hop.
+     */
+    val sessionEvents: SessionEventHub = SessionEventHub(),
 ) {
 
     private val _state = MutableStateFlow<CoreStartState>(CoreStartState.Loading)
@@ -87,13 +94,6 @@ class CoreStartup(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
-
-    /**
-     * The app-scoped session event hub (ticket 51): one line of wiring
-     * per event, fan-out on main inside the hub. Ticket 76's
-     * `SessionRouteFactory` passes this to `SessionController.create`.
-     */
-    val sessionEvents: SessionEventHub = SessionEventHub()
 
     /** The listener handed to `CoreClient`; tests deliver events through it. */
     @VisibleForTesting

@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -37,6 +38,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import android.view.ViewConfiguration
+import androidx.test.core.app.ApplicationProvider
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -115,6 +118,19 @@ class RobocoSwitchTest {
                 }
             }
         }
+        compose.waitForIdle()
+    }
+
+    /**
+     * Applies a state write made outside composition while the clock is
+     * frozen: under Robolectric the apply notification is posted to the
+     * paused main Looper and the recomposition waits for a frame, neither
+     * of which `advanceTimeBy` provides on its own.
+     */
+    private fun settleFrozen() {
+        compose.waitForIdle()
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
     }
 
@@ -237,13 +253,17 @@ class RobocoSwitchTest {
 
     @Test
     fun onAndOffPixelsInDark() {
-        hostSwitch(appearance = Appearance.Dark, checked = stateOf(true), onCheckedChange = {})
+        // One setContent per test (a second throws "has already set
+        // content"): the OFF half flips the same host's state.
+        val checked = stateOf(true)
+        hostSwitch(appearance = Appearance.Dark, checked = checked, onCheckedChange = {})
         // Track: accent dark #8B7CF6.
         assertColour(hostPixel(8f, 14f), 139, 124, 246, 2, "dark ON track at (8, 14)")
         assertColour(hostPixel(42.5f, 14f), 255, 255, 255, 2, "dark ON thumb centre")
         // 2 dp below the track: elevated #111113, not a shadow.
         assertColour(hostPixel(20.5f, 30f), 17, 17, 19, 2, "below the dark ON track")
-        hostSwitch(appearance = Appearance.Dark, checked = stateOf(false), onCheckedChange = {})
+        compose.runOnIdle { checked.value = false }
+        compose.waitForIdle()
         // OFF track: #3C3C41 (the 0.42 grey over #111113).
         assertColour(hostPixel(55f, 14f), 60, 60, 65, 3, "dark OFF track at (55, 14)")
         assertColour(hostPixel(20.5f, 14f), 255, 255, 255, 2, "dark OFF thumb centre")
@@ -307,7 +327,12 @@ class RobocoSwitchTest {
             repeat(3) { moveBy(Offset(10.dp.toPx(), 0f)) }
             up()
         }
-        compose.waitForIdle()
+        // The release's `dragging = false` is a state write from a
+        // coroutine, outside composition: with the clock frozen it must be
+        // applied and recomposed (one frame) before the spring-back effect
+        // relaunches; otherwise the 500 ms below elapse with the thumb
+        // still parked at the drag's end fraction.
+        settleFrozen()
         compose.mainClock.advanceTimeBy(500)
         assertEquals(listOf(true, true), values)
         assertColour(hostPixel(20.5f, 14f), 255, 255, 255, 2, "thumb sprung back after the refused drag")
@@ -338,11 +363,16 @@ class RobocoSwitchTest {
         val on = stateOf(false)
         val values = mutableListOf<Boolean>()
         hostSwitch(checked = on, onCheckedChange = { on.value = it; values += it })
-        // +12 dp in 2 steps: past the 8 dp touch slop by 4 dp, fraction
-        // 4/22 ≈ 0.18 < 0.5 — released on the OFF side.
+        // Past the touch slop by 4 dp in 2 steps, fraction 4/22 ≈ 0.18 <
+        // 0.5 — released on the OFF side. The slop is read from the
+        // platform, not assumed: a device's is 8 dp, Robolectric's
+        // ShadowViewConfiguration reports 16 dp, and a fixed +12 dp never
+        // crossed it there (the gesture became a tap and reported `true`).
+        val slopPx = ViewConfiguration.get(ApplicationProvider.getApplicationContext()).scaledTouchSlop.toFloat()
         compose.onNodeWithTag("toggle-x").performTouchInput {
+            val step = (slopPx + 4.dp.toPx()) / 2f
             down(Offset(20.dp.toPx(), 14.dp.toPx()))
-            repeat(2) { moveBy(Offset(6.dp.toPx(), 0f)) }
+            repeat(2) { moveBy(Offset(step, 0f)) }
             up()
         }
         compose.waitForIdle()

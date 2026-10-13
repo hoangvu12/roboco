@@ -76,10 +76,15 @@ class MinimizeTrackerTest {
 
     @Test
     fun aSmallLeftoverBelowTheHalfPixelIsNotAtTheTop() {
-        // Sub-half-pixel leftovers come from float noise, not a real pull.
+        // Sub-half-pixel leftovers come from float noise, not a real pull:
+        // the accumulator is not reset, so 23.5 + 0.75 = 24.25 minimizes.
+        // (The old third step, down 20 more while expanded, crossed the
+        // 24 px threshold by itself — 44 > 24 — and correctly minimized.)
         assertNull(tracker.onScroll(consumedY = -23.5f, leftoverY = 0.4f, minimized = false))
-        assertNull(tracker.onScroll(consumedY = -0.5f, leftoverY = 0f, minimized = false))
-        // Downward leftover (scrolling past the bottom end) is not the top.
-        assertNull(tracker.onScroll(consumedY = -20f, leftoverY = -3f, minimized = false))
+        assertEquals(true, tracker.onScroll(consumedY = -0.75f, leftoverY = 0f, minimized = false))
+        // While minimized, neither a sub-half-pixel upward leftover nor a
+        // downward one (scrolling past the bottom end) is the top: no expand.
+        assertNull(tracker.onScroll(consumedY = 0f, leftoverY = 0.4f, minimized = true))
+        assertNull(tracker.onScroll(consumedY = -20f, leftoverY = -3f, minimized = true))
     }
 }

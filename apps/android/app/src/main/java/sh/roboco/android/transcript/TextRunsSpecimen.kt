@@ -40,7 +40,7 @@ import uniffi.roboco_core.TextRun
  *
  * The `x`/`width` values are fixture-made (Rust would send them): runs
  * are laid left to right from 16 dp per line with the same advance math
- * the painter uses — `measureText` for narrow stretches, two cells for
+ * the painter uses — `FontChain.advance` for narrow stretches, two cells for
  * double-width clusters — so bars sit on their glyphs and the mono
  * columns land where the painter draws them.
  */
@@ -167,7 +167,7 @@ private fun fixtureModel(fonts: StyleFonts, d: Float): RowModel {
 }
 
 /**
- * The painter's advance math, returned in pt: `measureText` for narrow
+ * The painter's advance math, returned in pt: `FontChain.advance` for narrow
  * stretches, two cells per double-width cluster. This is Rust's job in
  * the real transcript; the fixture only needs `x` and `width` to agree
  * with what the painter draws.
@@ -176,7 +176,7 @@ private fun spanWidth(fonts: StyleFonts, style: UShort, start: Int, end: Int, d:
     val entry = fonts[style]!!
     val paint = entry.paint
     val plan = if (FontChain.isMono(entry.face)) MonoWide.plan(SpecimenText, start, end) else MonoWide.NONE
-    if (plan.isEmpty()) return paint.measureText(SpecimenText, start, end) / d
+    if (plan.isEmpty()) return FontChain.advance(paint, SpecimenText, start, end) / d
     val cell2 = 2f * FontChain.cellWidth(paint)
     var px = 0f
     var seg = start
@@ -184,12 +184,12 @@ private fun spanWidth(fonts: StyleFonts, style: UShort, start: Int, end: Int, d:
     while (k < plan.size) {
         val cs = plan[k]
         val ce = plan[k + 1]
-        if (cs > seg) px += paint.measureText(SpecimenText, seg, cs)
+        if (cs > seg) px += FontChain.advance(paint, SpecimenText, seg, cs)
         px += cell2
         seg = ce
         k += 2
     }
-    if (seg < end) px += paint.measureText(SpecimenText, seg, end)
+    if (seg < end) px += FontChain.advance(paint, SpecimenText, seg, end)
     return px / d
 }
 

@@ -100,8 +100,8 @@ object Glass {
 
     /** Light appearance: measured from `1-off.png` (the "New session" accessory, tab pill, search circle). */
     val Light = GlassColors(
-        // Color.copy (float alpha), not the palette's byte-quantised rgba:
-        // the ticket's tint table is defined on float alphas (GlassTokensTest).
+        // Compose packs sRGB colours as ARGB8888, so these alphas are stored
+        // to the nearest 1/255 (0.72 -> 184/255) whichever helper builds them.
         fill = Color.White.copy(alpha = 0.72f),
         fallback = Color.White.copy(alpha = 0.94f), // = Palette.elevated light
         rimTop = Color.White.copy(alpha = 0.65f),

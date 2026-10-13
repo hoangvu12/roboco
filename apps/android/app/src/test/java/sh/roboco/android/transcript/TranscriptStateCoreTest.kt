@@ -17,6 +17,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.core.UniffiSandbox
 import uniffi.roboco_core.DebugEntry
 import uniffi.roboco_core.layoutFixtureMarkdown
 
@@ -34,6 +35,8 @@ class TranscriptStateCoreTest {
 
     @Before
     fun init() {
+        // The layout worker's frameReady must reach this sandbox's relay.
+        UniffiSandbox.claimCallbacks()
         TextEngine.init(ApplicationProvider.getApplicationContext<Context>())
         // Build the shared engine off the main looper first, as the app
         // does (`TextEngine.await()`), so the state constructor only reads it.
