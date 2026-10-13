@@ -158,7 +158,7 @@ class SearchModel(
      */
     private suspend fun derive(q: String, s: SearchSource?): SearchResults {
         if (s == null) return SearchResults.Loading
-        if (q.isEmpty()) return SearchResults(Mode.Recent, "", s.recent, emptySet())
+        if (q.isEmpty()) return SearchResults(SearchResults.Mode.Recent, "", s.recent, emptySet())
         val hits = try {
             search(q, SEARCH_LIMIT)
         } catch (e: CancellationException) {
@@ -173,7 +173,7 @@ class SearchModel(
         // after cancellation must not publish either.
         coroutineContext.ensureActive()
         return SearchResults(
-            mode = Mode.Hits,
+            mode = SearchResults.Mode.Hits,
             query = q,
             rows = hits.map { it.session },
             archivedIds = hits.filter { it.session.archived }.map { it.session.id }.toSet(),

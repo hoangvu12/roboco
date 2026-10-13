@@ -162,11 +162,11 @@ fun bannerTapAction(banner: SessionChrome.Banner, engineConnected: Boolean): Ban
         SessionChrome.Banner.Editing -> BannerTap.CancelEdit
         SessionChrome.Banner.NotDelivered -> if (engineConnected) BannerTap.RetryDelivery else BannerTap.None
         is SessionChrome.Banner.EngineParked -> BannerTap.Repair(banner.engineId)
-        SessionChrome.Banner.Failed,
+        is SessionChrome.Banner.Failed,
         SessionChrome.Banner.EngineOff,
         SessionChrome.Banner.Reconnecting,
         SessionChrome.Banner.Sending,
-        SessionChrome.Banner.Working,
+        is SessionChrome.Banner.Working,
         SessionChrome.Banner.None,
         -> BannerTap.None
     }

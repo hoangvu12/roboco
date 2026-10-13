@@ -304,7 +304,7 @@ private class SearchAreaPadding(
     override fun calculateBottomPadding(): Dp {
         // Snapshot read, taken during measure (29's rule: the insets object
         // is captured in composition, its values are read here).
-        val imeBottom = with(density) { ime.getBottom(density).toDp().value }
+        val imeBottom = with(density) { ime.getBottom(this).toDp().value }
         val lift = SearchMorphGeometry.rowBottom(barBottom.value, imeBottom, active = true) - barBottom.value
         return searchBottomPadding(contentPadding.value, barBottom.value, lift).dp
     }
