@@ -16,6 +16,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -265,6 +266,10 @@ class ContextMenuTest {
         compose.waitForIdle()
         compose.onNodeWithTag("ctx-row-1").performSemanticsAction(SemanticsActions.OnLongClick)
         compose.waitForIdle()
+        // The frozen clock: the open's state write composes the overlay on
+        // the next frame only (waitForIdle never pumps one here).
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
         assertEquals(listOf(Haptic.LongPress), feedback.haptics)
         compose.onNodeWithTag("context-menu-overlay").assertExists()
     }
@@ -392,10 +397,16 @@ class ContextMenuTest {
         compose.setContent { Harness() }
         compose.waitForIdle()
         compose.mainClock.autoAdvance = true
+        // A scroll starting: the finger travels 100 dp down, past touch slop
+        // and out of the 62 dp row. The detector only observes (ticket 16),
+        // so in the real list it is the scroll that claims the pointer; this
+        // harness has no scroller, and Compose's `clickable` (1.12
+        // ClickableNode) cancels a tap only when the pointer is consumed or
+        // leaves the bounds — an in-bounds drag would still click here.
         compose.onNodeWithTag("ctx-row-1").performTouchInput {
             down(center)
             advanceEventTime(100)
-            moveTo(center + Offset(300f, 0f))
+            moveTo(center + Offset(0f, 300f))
             up()
         }
         compose.waitForIdle()

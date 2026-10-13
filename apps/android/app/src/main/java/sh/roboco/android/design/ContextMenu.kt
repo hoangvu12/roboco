@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.onLongClick
@@ -281,6 +282,10 @@ private suspend fun PointerInputScope.detectContextPress(onLongPress: (Offset) -
                 val event = awaitPointerEvent(PointerEventPass.Final) // see what scroll/swipe did this frame
                 if (event.changes.size > 1) return@withTimeoutOrNull true // second finger
                 val change = event.changes.firstOrNull { it.id == down.id } ?: return@withTimeoutOrNull true
+                // The down's own Final pass: the row's `clickable` (inner, so
+                // it sees Main first) always consumes the down — that is a
+                // tap starting, not a gesture claiming the pointer.
+                if (change.changedToDownIgnoreConsumed()) continue
                 if (!change.pressed || change.isConsumed) return@withTimeoutOrNull true // released early, or a drag claimed it
                 if ((change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
                     return@withTimeoutOrNull true // moved past slop: a scroll is starting

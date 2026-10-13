@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -138,6 +139,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(model) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(500)
     }
 
@@ -266,7 +268,10 @@ class ActionSheetHostTest {
 
         // A pixel above the cards, over the white backdrop: 0.8 × 255 = 204.
         // Compose colours are float components; ±0.005 ≈ ±1 of 255.
-        val pixel = compose.onRoot().captureToImage().toPixelMap()[30, 30]
+        // (200, 200) dp: clear of DemoContent's "app" label at the top-left
+        // corner (10, 10 dp lands on its glyph) and well above the cards
+        // (their top sits near 455 dp).
+        val pixel = compose.onRoot().captureToImage().toPixelMap()[px(200).toInt(), px(200).toInt()]
         assertEquals(204f / 255f, pixel.red, 0.005f)
         assertEquals(204f / 255f, pixel.green, 0.005f)
         assertEquals(204f / 255f, pixel.blue, 0.005f)
@@ -289,6 +294,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(wallpaperSheet) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeByFrame() // frame 0: composed, progress 0
 
         assertEquals(0f, sheetValue(ActionSheetProgressKey), 0.001f)
@@ -424,6 +430,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(moveSheet) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(500)
 
         // The exit starts (Cancel); while the sheet is still on screen a raw
@@ -475,6 +482,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(first) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(500)
 
         // The row's callback re-shows; the host is already cleared when it
@@ -541,6 +549,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(sheet) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeBy(500)
 
         node("action-sheet-row-0").performClick()
@@ -575,6 +584,7 @@ class ActionSheetHostTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { state.show(wallpaperSheet) }
+        Snapshot.sendApplyNotifications() // frozen clock: hand the write to the Recomposer
         compose.mainClock.advanceTimeByFrame()
 
         assertEquals(0f, sheetValue(ActionSheetProgressKey), 0.001f)

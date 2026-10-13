@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -54,8 +55,16 @@ import java.util.concurrent.TimeUnit
  *
  * Geometry expectations (`chromeTop` = 734 dp unless a test says otherwise):
  * anchor 734, rest bottom 734 − 12 = 722 dp; height 12 + 19.5 + 12 =
- * 43.5 dp; "Archived · Undo" ≈ 155.4 dp wide (20 + 63.6 + 14 + 37.9 + 20);
- * "Couldn't open session. Try again." ≈ 271.7 dp.
+ * 43.5 dp; "Archived · Undo" ≈ 153.2 dp wide (20 + 61.7 + 14 + 37.5 + 20);
+ * "Couldn't open session. Try again." ≈ 268.8 dp. The ticket's 155.4 /
+ * 271.7 are raw advance sums "before kerning"; the text renderer applies
+ * Geist's GPOS `kern` pairs (Archived 63.55 → 61.71, Undo 37.86 → 37.52,
+ * the error label 231.69 → 228.84 at 15 — computed from the font files),
+ * and CI measured exactly those kerned widths (460 px, 807 px).
+ *
+ * The clock is frozen, so a `show` from the test thread only reaches the
+ * Recomposer through `Snapshot.sendApplyNotifications()` and composes on
+ * the next frame ([composeFrame]); `waitForIdle()` never pumps a frame here.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -156,6 +165,16 @@ class ToastHostTest {
     /** One whole 16 ms frame. */
     private fun frame() = compose.mainClock.advanceTimeByFrame()
 
+    /**
+     * Hands a test-thread state write (a `show`, a posted show) to the
+     * Recomposer and runs the one frame that composes it — frame 0 of the
+     * toast's animations (they start on the next frame).
+     */
+    private fun composeFrame() {
+        Snapshot.sendApplyNotifications()
+        frame()
+    }
+
     /** Advances single frames until [still] stops holding — the animation's first tick. */
     private fun advanceToFirstTick(still: (Float) -> Boolean, read: () -> Float, maxFrames: Int = 12) {
         var frames = 0
@@ -186,7 +205,7 @@ class ToastHostTest {
         assertEquals("centred on the window (left gap == right gap)", bounds.left, windowWidth - bounds.right, 1f)
         assertEquals("bottom edge 12 dp above the chrome top", dpPx(722f), bounds.bottom, 1f)
         assertEquals("capsule height 12 + 19.5 + 12", dpPx(43.5f), bounds.height, 1f)
-        assertEquals("'Archived · Undo' width", dpPx(155.4f), bounds.width, dpPx(2f))
+        assertEquals("'Archived · Undo' width (kerned)", dpPx(153.2f), bounds.width, dpPx(2f))
     }
 
     @Test
@@ -200,7 +219,7 @@ class ToastHostTest {
 
         val bounds = toastBounds()
         assertEquals("bottom edge 12 dp above the 852 dp safe-area bottom", dpPx(840f), bounds.bottom, 1f)
-        assertEquals("the error toast's width", dpPx(271.7f), bounds.width, dpPx(2f))
+        assertEquals("the error toast's width (kerned)", dpPx(268.8f), bounds.width, dpPx(2f))
     }
 
     @Test
@@ -222,7 +241,8 @@ class ToastHostTest {
         compose.setContent { Host(state, RecordingAnnouncer()) }
         compose.waitForIdle()
         show(state, "Archived", "Undo")
-        // No clock advance: the composed state before the first frame.
+        composeFrame()
+        // The composing frame only: the animations have not ticked yet.
         assertEquals("frame 0 translationY is 16 dp", 16f, slide(), 1e-4f)
         assertEquals("frame 0 glass progress is 0", 0f, glassProgress(), 1e-4f)
     }
@@ -233,6 +253,7 @@ class ToastHostTest {
         compose.setContent { Host(state, RecordingAnnouncer()) }
         compose.waitForIdle()
         show(state, "Archived")
+        composeFrame()
 
         // Calibrate the materialize's first tick (16 ms of playtime).
         advanceToFirstTick({ it <= 0.001f }, ::glassProgress)
@@ -254,6 +275,7 @@ class ToastHostTest {
         compose.setContent { Host(state, announcer) }
         compose.waitForIdle()
         show(state, "Archived", "Undo")
+        composeFrame() // the capsule's LaunchedEffect announces
         assertEquals("exactly the label text, once", listOf("Archived"), announcer.calls)
         compose.mainClock.advanceTimeBy(5000) // present, hold, dismiss
         compose.waitForIdle()
@@ -299,12 +321,29 @@ class ToastHostTest {
 
         compose.mainClock.advanceTimeBy(3000) // t = 4000: dismiss starts
         compose.waitForIdle()
-        // Calibrate the fall's first tick, then 7 frames = 128 ms of
-        // playtime ≈ half of the 250 ms fall (easeInOut).
-        advanceToFirstTick({ it <= 0.01f }, ::slide)
-        repeat(7) { frame() }
-        assertEquals("slide at half of a 250 ms fall (dp)", 6f, slide(), 1.5f)
-        assertEquals("glass at half of a 250 ms dematerialize", 0.5f, glassProgress(), 0.06f)
+        // Each animation gets its own frame origin (this file's method): the
+        // fall launches straight from dismiss(), the dematerialize only once
+        // the recomposition flips `visible` — a frame later. Sample both per
+        // frame; read each 7 frames past its own first tick = 128 ms of
+        // playtime ≈ half of the 250 ms easeInOut.
+        var frames = 0
+        var slideTick = -1
+        var glassTick = -1
+        var slideAtHalf = Float.NaN
+        var glassAtHalf = Float.NaN
+        while ((slideAtHalf.isNaN() || glassAtHalf.isNaN()) && frames < 24) {
+            val s = slide()
+            val g = glassProgress()
+            if (slideTick < 0 && s > 0.01f) slideTick = frames
+            if (glassTick < 0 && g < 0.999f) glassTick = frames
+            if (slideTick >= 0 && frames == slideTick + 7) slideAtHalf = s
+            if (glassTick >= 0 && frames == glassTick + 7) glassAtHalf = g
+            frame()
+            frames++
+        }
+        assertTrue("both animations ticked within 24 frames", !slideAtHalf.isNaN() && !glassAtHalf.isNaN())
+        assertEquals("slide at half of a 250 ms fall (dp)", 6f, slideAtHalf, 1.5f)
+        assertEquals("glass at half of a 250 ms dematerialize", 0.5f, glassAtHalf, 0.06f)
 
         compose.mainClock.advanceTimeBy(200)
         compose.waitForIdle()
@@ -338,6 +377,7 @@ class ToastHostTest {
 
         compose.onNodeWithTag("toast-action").performClick()
         compose.waitForIdle()
+        frame() // the recomposition that flips `visible` and drops the action
         assertEquals("the handler ran exactly once", 1, fired)
         // The dismiss has started (250 ms fade still running) — a second tap
         // during it does nothing: the action node is gone from the tree.
@@ -425,6 +465,7 @@ class ToastHostTest {
         show(state, "First", "Undo") { firstFired++ }
         compose.mainClock.advanceTimeBy(1000)
         show(state, "Second")
+        composeFrame()
 
         // The very next frame: exactly one toast, showing the second text.
         assertEquals(1, compose.onAllNodesWithTag("toast").fetchSemanticsNodes().size)
@@ -462,6 +503,7 @@ class ToastHostTest {
         // The posted runnable runs on the main looper.
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         compose.waitForIdle()
+        composeFrame()
         compose.onNodeWithText("Background toast").assertExists()
     }
 
@@ -474,6 +516,10 @@ class ToastHostTest {
         compose.setContent { Host(state, RecordingAnnouncer()) }
         compose.waitForIdle()
         show(state, "Archived")
+        composeFrame()
+        // One more frame: the snap lands in the LaunchedEffect after the
+        // composing frame, the progress key recomposes on the next one.
+        frame()
 
         // The glass + content snap in (no fade)…
         assertEquals(1f, glassProgress(), 1e-4f)
@@ -511,6 +557,10 @@ class ToastHostTest {
         // The accessory reappears under the toast: the chrome top moves.
         chromeState!!.top = 800.dp
         compose.waitForIdle()
+        // Calibrate the follow spring's first tick (the recomposition frame
+        // and the animation's start frame move nothing), then one more frame
+        // (32 ms of playtime) so the move clears the 2 dp floor.
+        advanceToFirstTick({ it <= bottomAt734 + 0.5f }, { toastBounds().bottom })
         frame()
         compose.waitForIdle()
         val inTransit = toastBounds().bottom
