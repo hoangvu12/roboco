@@ -134,15 +134,15 @@ class LicensesBehaviourTest {
                     Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
                         NavStackHost(stack = aboutStack, active = true) { entry ->
                             if (entry.route === AboutRoot) {
+                                // Remembered in composition, not in the LazyColumn DSL.
+                                val about = rememberAboutSectionState(
+                                    versionName = "0.9.2",
+                                    versionCode = 9002L,
+                                    core = core,
+                                    sdkInt = sdkInt,
+                                )
                                 LazyColumn(Modifier.fillMaxSize()) {
-                                    aboutSection(
-                                        rememberAboutSectionState(
-                                            versionName = "0.9.2",
-                                            versionCode = 9002L,
-                                            core = core,
-                                            sdkInt = sdkInt,
-                                        ),
-                                    )
+                                    aboutSection(about)
                                 }
                             }
                         }

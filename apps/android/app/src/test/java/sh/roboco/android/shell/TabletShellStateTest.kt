@@ -19,10 +19,10 @@ class TabletShellStateTest {
     }
 
     private fun roundTrip(state: TabletShellState): TabletShellState {
-        // Saver.save is a member-extension (SaverScope.save(value)), so the
-        // scope comes in as the receiver — exactly how rememberSaveable's
+        // Saver.save is a member-extension (SaverScope.save(value)): the Saver is
+        // the dispatch receiver and the scope the extension receiver — exactly how rememberSaveable's
         // holder calls it.
-        val saved = with(scope) { TabletShellState.Saver.save(state) }
+        val saved = with(TabletShellState.Saver) { with(scope) { save(state) } }
         return TabletShellState.Saver.restore(saved!!)!!
     }
 
@@ -69,7 +69,7 @@ class TabletShellStateTest {
     @Test
     fun hiddenSidebarRestoresHidden() {
         val restored = roundTrip(
-            TabletShellState(null, sidebarVisible = false, detailRoot = DetailRoot.Empty),
+            TabletShellState(null, initialSidebarVisible = false, initialDetailRoot = DetailRoot.Empty),
         )
         assertFalse(restored.sidebarVisible)
         // The animated fraction re-snaps from the target (SplitRoot's first
@@ -80,7 +80,7 @@ class TabletShellStateTest {
     @Test
     fun shownSidebarRestoresShown() {
         val restored = roundTrip(
-            TabletShellState(null, sidebarVisible = true, detailRoot = DetailRoot.Empty),
+            TabletShellState(null, initialSidebarVisible = true, initialDetailRoot = DetailRoot.Empty),
         )
         assertTrue(restored.sidebarVisible)
         assertEquals(1f, restored.sidebarFraction)

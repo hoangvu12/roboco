@@ -205,7 +205,7 @@ class DetailWidgetTest {
         assertEquals(listOf("Bash" to Payload), opened)
         // The clickable consumed the up: 65's observer sees no tap.
         assertEquals(0, taps)
-        assertEquals("the widget's up must be consumed", Boolean.TRUE, upConsumed)
+        assertEquals("the widget's up must be consumed", true, upConsumed)
     }
 
     @Test
