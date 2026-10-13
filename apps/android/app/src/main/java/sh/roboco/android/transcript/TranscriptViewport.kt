@@ -134,21 +134,26 @@ class TranscriptViewport(private val nanoTime: () -> Long = System::nanoTime) {
     }
 
     /** R12: a top-inset change > 0.5 snaps while following, after the geometry hook. */
+    @JvmName("applyTopInset")
     fun setTopInset(value: Float) = changeGeometry(value, topInset) { topInset = it }
 
     /** R11: a bottom-inset change > 0.5 snaps while following, after the geometry hook (SVC:373-378). */
+    @JvmName("applyBottomInset")
     fun setBottomInset(value: Float) = changeGeometry(value, bottomInset) { bottomInset = it }
 
     /** R12: like [setTopInset]; in Compose the box size can arrive after the first frame landed. */
+    @JvmName("applyViewportHeight")
     fun setViewportHeight(value: Float) = changeGeometry(value, viewportHeight) { viewportHeight = it }
 
     /** Plain height set, then [report] — ticket 69's runway refresh. */
+    @JvmName("applyContentHeight")
     fun setContentHeight(value: Float) {
         contentHeight = value
         report()
     }
 
     /** Programmatic offset set (130 anchor, 135 `-top`, 136 bench); never touches [following]. */
+    @JvmName("applyOffset")
     fun setOffset(value: Float) {
         offset = value
         report()
