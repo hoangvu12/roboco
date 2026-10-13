@@ -7,4 +7,12 @@
     <string name="pairing_root_tagline">This phone has no paired engine yet.</string>
     <string name="pairing_root_pair">Pair an engine</string>
     <string name="pairing_root_redeeming">Redeeming the pairing link…</string>
+
+    <!-- Hardware keyboard shortcuts (android-ui-parity #33), verbatim from
+         ios:Shell/SplitRootController.swift:53-67: the system shortcut
+         helper (Meta+/) group label and the three command titles. -->
+    <string name="shortcut_group" translatable="false">Roboco</string>
+    <string name="shortcut_new_session" translatable="false">New Session</string>
+    <string name="shortcut_search" translatable="false">Search</string>
+    <string name="shortcut_toggle_sidebar" translatable="false">Toggle Sidebar</string>
 </resources>

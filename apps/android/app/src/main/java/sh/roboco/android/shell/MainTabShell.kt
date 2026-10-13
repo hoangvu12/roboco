@@ -217,7 +217,24 @@ fun MainTabShell(
         enabled = !state.stack(state.selected).canPop && state.selected != TabId.Sessions,
     ) { state.backFromRoot() }
 
-    BoxWithConstraints(modifier.fillMaxSize().background(palette.background)) {
+    // #33: the phone router (#32) built before the root modifier — the
+    // hardware-shortcut modifier needs the real router, and reading
+    // LocalAppRouter here would still see Noop (32 provides it inside this
+    // composable, below the root). sheetHost is passed explicitly:
+    // LocalSheetHost is provided by the SheetHost mount further down, but
+    // it is that same instance, so the adapter sees an identical shell.
+    val shell = rememberPhoneShell(state, sheetHost)
+    val router = rememberPhoneAppRouter(shell, hooks, presence)
+
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(palette.background)
+            // #33: Ctrl+N / Ctrl+Shift+F from any focused view in the shell
+            // (iOS ⌘N / ⇧⌘F). shell = null — Ctrl+B is not consumed on the
+            // phone shell (no sidebar to toggle).
+            .then(rememberShellShortcuts(router, shell = null)),
+    ) {
         val density = LocalDensity.current
 
         // The chrome geometry inputs (26's own reads): the start/end insets
@@ -254,9 +271,8 @@ fun MainTabShell(
         SheetHost(sheetHost) {
             // #32: the phone router over this shell's real state,
             // provided to every screen below (the iOS window-root cast
-            // `view.window?.rootViewController as? AppRouter`).
-            val shell = rememberPhoneShell(state)
-            val router = rememberPhoneAppRouter(shell, hooks, presence)
+            // `view.window?.rootViewController as? AppRouter`); constructed
+            // above the root Box so #33's shortcut modifier can use it.
             val onRouterLatest = rememberUpdatedState(onRouter)
             LaunchedEffect(router) { onRouterLatest.value(router) }
 
