@@ -4,13 +4,23 @@ import android.app.Application
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import sh.roboco.android.core.CoreClientWorkspace
 import sh.roboco.android.core.CoreLoader
+import sh.roboco.android.core.CoreStartState
 import sh.roboco.android.core.CoreStartup
 import sh.roboco.android.core.CoreStatus
 import sh.roboco.android.core.FontGate
+import sh.roboco.android.core.Prefs
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.core.WorkspaceCore
+import sh.roboco.android.core.WorkspaceFeed
+import sh.roboco.android.core.robocoPrefsStore
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.sessions.FoldState
+import sh.roboco.android.sessions.FrontPageModel
 import sh.roboco.android.shell.SearchTabState
 import uniffi.roboco_core.CoreClient
 
@@ -22,16 +32,22 @@ import uniffi.roboco_core.CoreClient
  * list is known.
  *
  * Property names are reserved for the parity tickets (android-ui-parity):
- * `prefs`, `workspaceFeed`, `foldState`, `frontPage` (#40), `appEvents`
- * (#42), `drafts` (#84) — do not reuse them for something else.
+ * `prefs`, `workspaceFeed`, `foldState`, `frontPage` (#40, all landed
+ * now), `appEvents` (#42), `drafts` (#84) — do not reuse them for
+ * something else.
  */
 class RobocoApplication : Application() {
 
     lateinit var core: CoreStatus
         private set
 
-    /** Application-wide scope for state that outlives the activity. */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Application-wide scope for state that outlives the activity
+     * (ticket 40): Main.immediate, like the iOS main queue — the front
+     * page's mutators flip their StateFlows synchronously on the calling
+     * (main) thread and hop to serial IO lanes for the FFI and the disk.
+     */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
      * The Search tab's query holder (ui-parity #29): app-scoped so the
@@ -56,7 +72,55 @@ class RobocoApplication : Application() {
      * The startup pipeline. Ticket 35 replaces the `onClientReady`
      * default with `{ lifecycleHooks.clientReady() }`.
      */
-    val coreStartup by lazy { CoreStartup(this, engineStore, appScope) }
+    val coreStartup by lazy { CoreStartup(this, engineStore, applicationScope) }
+
+    /**
+     * The phone-local preference store (ticket 40): the Sessions tab's
+     * Group by Project flag, the phone-local section folds and the
+     * offline fold overrides — engine-local data (ADR 0004), never sent
+     * to an engine.
+     */
+    val prefs: Prefs by lazy { Prefs(robocoPrefsStore, applicationScope) }
+
+    /**
+     * The workspace FFI seam, resolved at call time: whatever client
+     * `CoreStartup` holds right now (null before `Ready`).
+     */
+    private val liveCore: WorkspaceCore by lazy {
+        CoreClientWorkspace(client = { coreStartup.clientOrNull() })
+    }
+
+    /**
+     * The single Kotlin `StateFlow<WorkspaceSnapshot?>` owner (ticket 40,
+     * the settled feed of this set — 27, 42, 49, 92 and 110 read it as
+     * `app.workspaceFeed.snapshot` / `.engines`). Its event sink is
+     * registered lazily, but `onCreate` forces this property above
+     * `coreStartup.start()` so no event is ever missed, and the first
+     * read waits for `CoreStartState.Ready` — before that there is no
+     * client to read through.
+     */
+    val workspaceFeed: WorkspaceFeed by lazy {
+        val feed = WorkspaceFeed(core = { liveCore }, scope = applicationScope)
+        coreStartup.addEventSink { event -> feed.onEvent(event) }
+        applicationScope.launch {
+            coreStartup.state.first { it !is CoreStartState.Loading }
+            feed.start()
+        }
+        feed
+    }
+
+    /**
+     * The fold state (ticket 40): phone-local folds for Pinned/Recent/
+     * groups, engine-synced folds for user sections, offline overrides
+     * pushed on reconnect. One instance per process — the tablet sidebar
+     * (105) shares it.
+     */
+    val foldState: FoldState by lazy { FoldState(robocoPrefsStore, liveCore, applicationScope) }
+
+    /** The Sessions tab's front page model (ticket 40); 46 hosts it. */
+    val frontPage: FrontPageModel by lazy {
+        FrontPageModel(workspaceFeed, prefs, foldState, applicationScope)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -73,7 +137,12 @@ class RobocoApplication : Application() {
         TextEngine.prewarm()
         core = CoreLoader.load()
         // Tickets 40/42/51 register their event sinks here, before start().
+        // #40: forcing `workspaceFeed`'s lazy init registers its sink; the
+        // start() call below only arms its drains (they skip until the
+        // client exists), and the feed's own collector re-triggers once
+        // CoreStartup leaves Loading.
         if (core is CoreStatus.Loaded) {
+            workspaceFeed.start()
             coreStartup.start()
         }
     }
