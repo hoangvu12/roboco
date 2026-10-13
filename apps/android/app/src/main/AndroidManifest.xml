@@ -4,6 +4,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Haptics (parity #05): required by Vibrator.vibrate. Normal permission, no prompt. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Notifications + the run-watching foreground service (android-app#28).
+         POST_NOTIFICATIONS is the API 33+ runtime permission (31–32 have none);
+         POST_PROMOTED_NOTIFICATIONS is the API 36 Live Update permission
+         (normal, no prompt). Exactly the ticket's list — no RECEIVE_BOOT_COMPLETED,
+         no FCM/GMS. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <application
         android:name=".RobocoApplication"
         android:allowBackup="false"
@@ -38,6 +47,14 @@
                 <data android:host="pair" />
             </intent-filter>
         </activity>
+        <!-- android-app#28: the run-watching foreground service (type
+             dataSync; type decision table in the ticket). Runs only while a
+             run is Working and notifications are on; never started from the
+             background, never at boot. -->
+        <service
+            android:name=".background.RunWatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- android-ui-parity #87: the attach menu's camera capture file. No
              uses-permission CAMERA and no uses-feature camera here: the
              permission is 138's to declare, and a required feature would

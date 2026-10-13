@@ -282,6 +282,25 @@ val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
     assetsDir.set(licensesDir)
 }
 
+// ---------------------------------------------------------------------------
+// The desktop's session chimes (android-app#28): byte-identical copies into
+// res/raw — the channels reference them as their sound. The "middle set"
+// name is the ticket's: `syncChimes`.
+// ---------------------------------------------------------------------------
+val chimesDir = layout.buildDirectory.dir("generated/roboco-chimes/res")
+
+val syncChimes = tasks.register<roboco.gradle.ChimesSync>("syncChimes") {
+    group = "roboco"
+    description =
+        "Copies the desktop's session chimes into res/raw (chime_done/request/attention.wav)."
+    chimeFiles.setFrom(
+        repoRootDir.resolve("crates/ui/assets/sounds/done.wav"),
+        repoRootDir.resolve("crates/ui/assets/sounds/request.wav"),
+        repoRootDir.resolve("crates/ui/assets/sounds/attention.wav"),
+    )
+    outputDir.set(chimesDir)
+}
+
 androidComponents {
     // Tests that reference src/debug classes (the design gallery suite of
     // android-ui-parity #22, 05's HapticsGalleryScreenshotTest, 11's gallery
@@ -302,6 +321,7 @@ androidComponents {
         variant.sources.jniLibs?.addGeneratedSourceDirectory(coreTask) { it.jniLibsDir }
 
         variant.sources.res?.addGeneratedSourceDirectory(generateAssets) { it.resDir }
+        variant.sources.res?.addGeneratedSourceDirectory(syncChimes) { it.outputDir }
         variant.sources.assets?.addGeneratedSourceDirectory(generateAssets) { it.assetsDir }
         variant.sources.assets?.addGeneratedSourceDirectory(syncFonts) { it.assetsDir }
         variant.sources.assets?.addGeneratedSourceDirectory(syncLicenses) { it.assetsDir }
@@ -439,6 +459,7 @@ tasks.withType<Test>().configureEach {
         generateAssets,
         syncFonts,
         syncLicenses,
+        syncChimes,
         tasks.named(rustLicensesTaskName("debug")),
     )
     javaLauncher.set(
@@ -476,6 +497,7 @@ tasks.withType<Test>().configureEach {
     systemProperty("roboco.generatedRes", iconsResDir.get().asFile.absolutePath)
     systemProperty("roboco.generatedFonts", fontsDir.get().asFile.absolutePath)
     systemProperty("roboco.generatedLicenses", licensesDir.get().asFile.absolutePath)
+    systemProperty("roboco.generatedChimes", chimesDir.get().asFile.absolutePath)
 }
 
 roborazzi {
@@ -538,4 +560,7 @@ dependencies {
     // ui-test-junit4 on the androidTest classpath as well.
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
+    // android-app#28's NotificationFlowTest: the system permission dialog,
+    // pressHome and the notification shade (UiDevice), CI-only.
+    androidTestImplementation(libs.androidx.test.uiautomator)
 }

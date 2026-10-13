@@ -14,6 +14,8 @@ import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import sh.roboco.android.core.WallpaperStore
 import sh.roboco.android.design.GalleryLaunch
+import sh.roboco.android.notify.NotificationPermission
+import sh.roboco.android.notify.NotificationPrefs
 import sh.roboco.android.shell.AppRootState
 import sh.roboco.android.shell.DeepLinks
 import sh.roboco.android.shell.LaunchOptions
@@ -114,6 +116,27 @@ class MainActivity : ComponentActivity() {
         // `--es route gallery` opens it on top of the app. Debuggable builds
         // only; the activity does not exist in release.
         if (savedInstanceState == null) GalleryLaunch.maybeStart(this, intent)
+    }
+
+    /**
+     * The first-session ask's result (android-app#28): record whether the
+     * denial was final (a second denial stops the system dialog from ever
+     * showing again) — #99's Settings path reuses the same forwarder.
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != NotificationPermission.REQUEST_CODE) return
+        val granted = grantResults.isNotEmpty() &&
+            grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED
+        NotificationPermission.recordRequestResult(
+            NotificationPrefs.get(this),
+            granted,
+            shouldShowRequestPermissionRationale(NotificationPermission.PERMISSION),
+        )
     }
 
     override fun onNewIntent(intent: Intent) {
