@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
+import sh.roboco.android.composer.ChipStripGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
@@ -155,6 +156,10 @@ object Gallery {
         // Ticket 37 (session row): the two-line session list row — harness
         // mark, fading title, corner status word/glyph, highlight fills.
         GallerySection("Session row", screenshotHeightDp = 1250) { SessionRowGallerySection() },
+        // Ticket 59 (context chips): the composer toolbar's chip strip —
+        // every variant row (session, PR states, context, new session,
+        // offline, overflow, rail sample, live menus).
+        GallerySection("Composer chips", screenshotHeightDp = 1400) { ChipStripGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
