@@ -30,6 +30,7 @@ import sh.roboco.android.composer.ComposerActionButtonGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
+import sh.roboco.android.composer.StagedThumbnailsGallerySection
 import sh.roboco.android.debug.TranscriptLabGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
@@ -483,6 +484,14 @@ object Gallery {
         // launchers (no engine runs under the capture).
         GallerySection("Transcript Lab", screenshotHeightDp = 320) {
             TranscriptLabGallerySection()
+        },
+        // Ticket 88 (staged thumbnails): the composer card's photo strip —
+        // 3 and 8 fixture images over 55's surface (at 8 only 5 tiles fit,
+        // so the trailing edge fade shows), plus a live stage where x
+        // removes with the 250 ms slide and collapse and Add image / Reset
+        // drive the 8-image cap. Static 3-image fixture under the capture.
+        GallerySection("Composer thumbnails", screenshotHeightDp = 760) {
+            StagedThumbnailsGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
