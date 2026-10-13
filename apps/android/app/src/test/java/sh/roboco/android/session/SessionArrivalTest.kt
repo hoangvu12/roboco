@@ -650,7 +650,15 @@ class SessionArrivalTest {
                         navBarBottom = 0.dp,
                         transcriptAlpha = { arrival.transcriptAlpha },
                     ) {
-                        Box(Modifier.arrivalHidden { arrival.transcriptAlpha }.fillMaxSize().testTag("transcript"))
+                        // Accent-filled so the golden and the pixel probe
+                        // would catch an alpha leak (a visible stand-in).
+                        Box(
+                            Modifier
+                                .arrivalHidden { arrival.transcriptAlpha }
+                                .fillMaxSize()
+                                .background(palette.accent)
+                                .testTag("transcript"),
+                        )
                     }
                 },
                 pill = { Box(Modifier.fillMaxWidth().height(30.dp).background(palette.accent).testTag("pill")) },

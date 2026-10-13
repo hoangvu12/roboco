@@ -71,8 +71,9 @@ class SessionScreenRoute internal constructor(
     /**
      * Ticket 61's transcript, held lazily by 75's [SessionScreenState]
      * (the factory stored `transcriptFactory = { TranscriptState(text) }`).
-     * MAIN THREAD ONLY: created on the first access — [Content] here, or
-     * ticket 77's `prepareArrival()` — never from the factory.
+     * MAIN THREAD ONLY: created on the first access — [Content] here
+     * (77's `prepareArrival()` deliberately does not touch it: the own
+     * turn is deferred to the screen's `bind`) — never from the factory.
      */
     val transcript: TranscriptState
         get() = state.transcript
