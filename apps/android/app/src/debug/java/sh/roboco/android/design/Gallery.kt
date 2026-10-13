@@ -27,6 +27,7 @@ import sh.roboco.android.composer.ChipStripGallerySection
 import sh.roboco.android.composer.ComposerTextFieldGallerySection
 import sh.roboco.android.composer.ComposerActionButtonGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
+import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
@@ -238,6 +239,12 @@ object Gallery {
         // the percent and geometry rows, the live demo cadence and the
         // non-pending control.
         GallerySection("Upload ring") { UploadRingGallerySection() },
+        // Ticket 86 (mention suggestions): the floating glass card above the
+        // composer — the 120 ms debounced search, the 220 ms rise, the pick
+        // token and the offline gate, over the striped backdrop.
+        GallerySection("Mention suggestions", GalleryLayout.Fill, screenshotHeightDp = 800) {
+            MentionSuggestionsGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
