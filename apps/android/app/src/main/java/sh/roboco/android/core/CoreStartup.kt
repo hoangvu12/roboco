@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import sh.roboco.android.BuildConfig
 import sh.roboco.android.pairing.DeviceLabel
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.session.SessionEventHub
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.ClientListener
 import uniffi.roboco_core.CoreClient
@@ -51,12 +52,13 @@ fun interface ClientEventSink {
  *
  * Also owns the app's single [ClientListener]: `EngineIdentityPinned`
  * events flow to `store.pin` through a channel, `EnginesChanged`
- * refreshes [engines] through a coalescing flow, and every event fans
- * out to the [ClientEventSink]s other tickets register (40/42/51) —
- * register them before [start] to see every event. `onEvent` itself only
- * does non-blocking `trySend`/`tryEmit` plus the fan-out, so it is safe
- * to call from the Rust callback thread while the client is still
- * constructing.
+ * refreshes [engines] through a coalescing flow, every event fans
+ * out to the [ClientEventSink]s other tickets register (40/42) —
+ * register them before [start] to see every event — and every event
+ * hops to the [sessionEvents] hub (51) for the session controllers.
+ * `onEvent` itself only does non-blocking `trySend`/`tryEmit` plus the
+ * fan-out, so it is safe to call from the Rust callback thread while
+ * the client is still constructing.
  */
 class CoreStartup(
     private val context: Context,
@@ -85,6 +87,13 @@ class CoreStartup(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
+
+    /**
+     * The app-scoped session event hub (ticket 51): one line of wiring
+     * per event, fan-out on main inside the hub. Ticket 76's
+     * `SessionRouteFactory` passes this to `SessionController.create`.
+     */
+    val sessionEvents: SessionEventHub = SessionEventHub()
 
     /** The listener handed to `CoreClient`; tests deliver events through it. */
     @VisibleForTesting
@@ -151,6 +160,10 @@ class CoreStartup(
     }
 
     private fun routeClientEvent(event: ClientEvent) {
+        // Ticket 51: one hop to main per event for the session
+        // controllers. Qualified on purpose — a bare `onEvent(event)`
+        // here would re-post every event forever (#621).
+        sessionEvents.onClientEvent(event)
         when (event) {
             is ClientEvent.EngineIdentityPinned -> pins.trySend(event)
             ClientEvent.EnginesChanged -> enginesDirty.tryEmit(Unit)
