@@ -29,6 +29,7 @@ use roboco_mobile_client::{
     SessionEvent,
 };
 use roboco_proto::view::NotifyKind;
+use support::{pairing_url, serve_on_port};
 
 /// Serializes every mock-engine test in this binary (env knobs are
 /// process-global).
@@ -429,7 +430,7 @@ async fn side_chats_never_emit() {
                 Some(&rig.core.device_id),
                 None,
                 None,
-                Some("same-chat"),
+                Some("same-chat".to_owned()),
             )
             .unwrap();
         let side = rig.client.scope(&rig.engine_id, "side-chat");

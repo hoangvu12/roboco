@@ -47,7 +47,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use roboco_proto::view::{Indicator, NotifyKind, SessionNotificationState};
@@ -315,6 +314,16 @@ impl DriverState {
         }
         working.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
         let activity = RunActivity { working, awaiting };
+        // Nothing live yet (every engine still on its offline cache): seed
+        // the gate silently, like the baselines — the cached boot never
+        // emits, and the first live pass only emits on a real change.
+        if self.last_activity.is_none()
+            && !engines.is_empty()
+            && engines.iter().all(|engine| engine.from_cache)
+        {
+            self.last_activity = Some(activity);
+            return out;
+        }
         if self.last_activity.as_ref() != Some(&activity) {
             self.last_activity = Some(activity.clone());
             out.push(Emission::Activity(activity));
@@ -412,7 +421,11 @@ fn apply_engine(
         let Some(prev) = prev else {
             continue;
         };
-        let title = chat.map(chat_title).unwrap_or_else(|| "New session".into());
+        // `chat` is `Option<&&Chat>` (the map holds `&Chat`): closures, not
+        // fn paths, so auto-deref applies.
+        let title = chat
+            .map(|c| chat_title(c))
+            .unwrap_or_else(|| "New session".into());
         let notify_kind = if top_level {
             baseline.sound_since(&prev, send_pending)
         } else {
@@ -437,7 +450,7 @@ fn apply_engine(
                 Indicator::Working | Indicator::AwaitingInput
             )
             && baseline.last_completed_turn != prev.last_completed_turn
-            && chat.is_some_and(Chat::unseen)
+            && chat.is_some_and(|c| c.unseen())
         {
             // Reconnect catch-up: the run finished while the phone could
             // not see it (socket dead in deep sleep). The 45 s freshness
@@ -578,6 +591,9 @@ impl NotifyHub {
     async fn drive(self: Arc<Self>, weak: Weak<ClientInner>) {
         let Some(inner) = weak.upgrade() else { return };
         let mut fleet = inner.fleet.subscribe();
+        // No strong ref across the loop (the hub lives inside ClientInner):
+        // each pass upgrades the weak one.
+        drop(inner);
         let mut tick = tokio::time::interval(self.timings.tick);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let wake = self.wake.clone();
@@ -645,6 +661,7 @@ impl NotifyHub {
 mod tests {
     use super::*;
     use roboco_proto::SessionStatus;
+    use std::time::Duration;
 
     fn timings() -> NotifyTimings {
         NotifyTimings {
@@ -786,7 +803,7 @@ mod tests {
             chat("chat-1", Some("   "), None),
             chat("chat-2", Some("Side chat"), Some("chat-1")),
         ];
-        driver.apply(&[engine(rows, chats)], base);
+        driver.apply(&[engine(rows, chats.clone())], base);
         let done = now_plus(base, 2000);
         let rows = vec![
             session(SessionStatus::Idle, done, Some("t1")),
@@ -908,8 +925,10 @@ mod tests {
         // The socket dies; the run finishes unseen; the phone sleeps 60 s.
         let after = now_plus(base, 60_000);
         let reconnected = || {
+            // The row last moved at `base`: 60 s old at `after`, past the
+            // freshness gate.
             let mut e = engine(
-                vec![session(SessionStatus::Idle, after, Some("turn-9"))],
+                vec![session(SessionStatus::Idle, base, Some("turn-9"))],
                 vec![chat("chat-1", Some("Slow run"), None)],
             );
             e.generation = 2;
@@ -979,8 +998,10 @@ mod tests {
         let after = now_plus(base, 60_000);
         let mut seen_chat = chat("chat-1", Some("Slow run"), None);
         seen_chat.last_seen_at = Some(after);
+        // A stale row (last moved at `base`): only the catch-up could emit,
+        // and the chat is seen.
         let mut reconnected = engine(
-            vec![session(SessionStatus::Idle, after, Some("turn-9"))],
+            vec![session(SessionStatus::Idle, base, Some("turn-9"))],
             vec![seen_chat],
         );
         reconnected.generation = 2;

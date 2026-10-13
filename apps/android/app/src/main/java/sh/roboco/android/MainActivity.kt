@@ -125,7 +125,10 @@ class MainActivity : ComponentActivity() {
      */
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<out String>,
+        // `Array<String>`, not `Array<out String>`: androidx.activity's
+        // ComponentActivity is Kotlin (invariant `Array<String>`), and
+        // `Array<String>` also matches a Java `String[]` declaration.
+        permissions: Array<String>,
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)

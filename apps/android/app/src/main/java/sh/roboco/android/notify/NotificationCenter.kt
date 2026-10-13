@@ -179,7 +179,8 @@ class NotificationCenter(
 
 /** The FFI kind → the delivery kind (the same three verdicts). */
 internal fun SessionEventKind.notificationKind(): NotificationKind = when (this) {
-    SessionEventKind.Done -> NotificationKind.Done
-    SessionEventKind.Input -> NotificationKind.Input
-    SessionEventKind.Failed -> NotificationKind.Failed
+    // UniFFI's Kotlin flat enums are SCREAMING_CASE (cf. `ParkReason.REVOKED`).
+    SessionEventKind.DONE -> NotificationKind.Done
+    SessionEventKind.INPUT -> NotificationKind.Input
+    SessionEventKind.FAILED -> NotificationKind.Failed
 }

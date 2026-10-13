@@ -41,7 +41,8 @@ class ChimeBytesTest {
             // 48 kHz 16-bit stereo ≈ 50–62 kB).
             assertTrue("$name is too short", bytes.size > 50_000)
             assertEquals("RIFF", String(bytes, 0, 4, Charsets.US_ASCII))
-            assertEquals("WAVE", String(bytes, 8, 12, Charsets.US_ASCII))
+            // String(bytes, offset, length): bytes 8..11.
+            assertEquals("WAVE", String(bytes, 8, 4, Charsets.US_ASCII))
         }
     }
 

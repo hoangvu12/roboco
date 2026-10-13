@@ -230,6 +230,8 @@ impl Client {
             }
             entries.push(pending_entry(paired, handle, rows, sidebar));
         }
+        // Built before the literal: `timings` moves into its field below.
+        let notify = notify::NotifyHub::new(timings.notify.clone());
         let inner = Arc::new(ClientInner {
             config,
             timings,
@@ -251,7 +253,7 @@ impl Client {
             attachments: Arc::new(attachments::AttachmentCache::new(
                 attachments::ATTACHMENT_CACHE_BUDGET,
             )),
-            notify: notify::NotifyHub::new(timings.notify.clone()),
+            notify,
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
         let _ = inner.workspace.set(workspace);

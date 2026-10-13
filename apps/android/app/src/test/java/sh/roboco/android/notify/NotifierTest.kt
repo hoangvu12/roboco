@@ -236,7 +236,8 @@ class NotifierTest {
         assertTrue(notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
         assertEquals(NotificationCompat.CATEGORY_PROGRESS, notification.category)
         assertEquals(now - 90_000, notification.`when`)
-        assertTrue(notification.usesChronometer())
+        // `Notification.usesChronometer()` is @hide (not in android.jar).
+        assertTrue(notification.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER))
         // The tap opens the chat's deep link.
         val intent = targetIntent(notification.contentIntent)
         assertEquals(Intent.ACTION_VIEW, intent.action)

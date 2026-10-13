@@ -74,9 +74,6 @@ class RunWatchController(
     },
 ) {
 
-    private val _state = MutableStateFlow(stateOf(active = false))
-    val state: StateFlow<RunWatchState> = _state.asStateFlow()
-
     /** How many `startForegroundService` calls went out (tests). */
     var starts: Int = 0
         private set
@@ -92,6 +89,12 @@ class RunWatchController(
 
     private var budgetExhausted: Boolean = false
     private var liveUpdateDismissed: Boolean = false
+
+    // Declared after the fields `stateOf` reads: property initializers run
+    // in order, and an earlier `_state` would hand RunWatchState a null
+    // `working` (an NPE in its non-null parameter check).
+    private val _state = MutableStateFlow(stateOf(active = false))
+    val state: StateFlow<RunWatchState> = _state.asStateFlow()
 
     /** The mirror of "the service is up" (the service reports both edges). */
     private var serviceRunning: Boolean = false
@@ -116,6 +119,7 @@ class RunWatchController(
         synchronized(gate) {
             val workingSetChanged = newWorking.map { "${it.chatId}:${it.title}:${it.fromThisDevice}" } !=
                 working.map { "${it.chatId}:${it.title}:${it.fromThisDevice}" }
+            val hadWorking = working.isNotEmpty()
             working = newWorking
             awaiting = newAwaiting
             if (working.isNotEmpty()) {
@@ -123,7 +127,10 @@ class RunWatchController(
                 // The WORKING SET changed (an awaiting-only change does
                 // not): a dismissed Live Update may be promoted again.
                 if (workingSetChanged) liveUpdateDismissed = false
-            } else if (emptySinceMs == null) {
+            } else if (hadWorking) {
+                // The grace opens only when the last run LEAVES Working:
+                // an activity that was never non-empty must not hold (or
+                // start) the service for 15 s.
                 emptySinceMs = clock()
             }
             update()
