@@ -124,8 +124,15 @@ class RootCrossfadeTest {
         compose.waitForIdle()
     }
 
-    /** Advances [ms] of animation time and settles the frame. */
+    /**
+     * Advances [ms] of animation time and settles the frame. A click's
+     * `counter.value++` is a global-snapshot write whose apply notification
+     * is only posted (the frozen clock does not drain it before the frame),
+     * so without the explicit send the last tap's recomposition would lag a
+     * frame behind (the r23 "expected 2 but was 1").
+     */
     private fun advance(ms: Long) {
+        compose.runOnUiThread { Snapshot.sendApplyNotifications() }
         compose.mainClock.advanceTimeBy(ms)
         compose.waitForIdle()
     }

@@ -67,6 +67,9 @@ class AppRootTest {
 
     @Test
     fun loadingDrawsNothingAndReadyDrawsTheFirstRootWithoutAnimation() {
+        // A phone-width frame: the class default (900 dp) is the split now
+        // that the 1280 dp window no longer clamps it to 320 dp.
+        width.value = 600.dp
         start()
         assertNull(state.kind)
         compose.onNodeWithTag("root-pairing").assertDoesNotExist()

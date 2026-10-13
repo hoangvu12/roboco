@@ -14,6 +14,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
@@ -74,13 +78,26 @@ class SplitRootTest {
     // Observables the fixtures write from composition / callbacks (the
     // composition runs on the test's main thread; assertions read after
     // waitForIdle on the same thread).
-    private var detailFieldText: String = ""
+    // Snapshot state: the detail field is a controlled BasicTextField, so
+    // its value must recompose with each edit — a plain var keeps feeding
+    // "" back and every key is applied to an empty field.
+    private var detailFieldText: String by mutableStateOf("")
     private var sidebarFieldFocused: Boolean = false
     private var detailLargeTitles: Boolean? = null
     private var sidebarListState: LazyListState? = null
 
+    /**
+     * A split that is up: `isCollapsed` defaults to `true` (the ticket's
+     * table — its one production writer is the root's `SideEffect`, which
+     * this fixture stands in for), and Ctrl+B is ignored while collapsed.
+     */
     private fun shell(visible: Boolean = true): TabletShellState =
-        TabletShellState(null, visible, DetailRoot.Draft(null, false))
+        TabletShellState(null, visible, DetailRoot.Draft(null, false)).apply { isCollapsed = false }
+
+    /** Hands a test-thread / key-dispatch snapshot write to the Recomposer (frozen clock). */
+    private fun sendApplyNotifications() {
+        compose.runOnUiThread { Snapshot.sendApplyNotifications() }
+    }
 
     /** The default sidebar fixture: a focusable field plus a labelled row. */
     @Composable
@@ -300,15 +317,23 @@ class SplitRootTest {
         compose.onNodeWithTag("split-detail-field").performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.B) }
         }
+        // The toggle is written during key dispatch: hand it over, or the
+        // frozen frames never see it.
+        sendApplyNotifications()
         compose.mainClock.advanceTimeBy(100)
         val p1 = compose.onNodeWithTag("split-sidebar").fetchSemanticsNode().positionInRoot.x
         assertTrue("p1 mid-flight: $p1", p1 > -720 && p1 < 0)
 
         // Reverse before it settles: no jump to an end value first — the
-        // next frame moves by a frame's step back toward 0.
+        // reverse moves by a frame's step back toward 0. Two frames: the
+        // reversed animateTo (relaunched by collectLatest) takes its start
+        // time on the first one (play time 0, value unchanged) and moves on
+        // the second.
         compose.onNodeWithTag("split-detail-field").performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.B) }
         }
+        sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         val p2 = compose.onNodeWithTag("split-sidebar").fetchSemanticsNode().positionInRoot.x
         assertTrue("p2 mid-flight: $p2", p2 > -720 && p2 < 0)

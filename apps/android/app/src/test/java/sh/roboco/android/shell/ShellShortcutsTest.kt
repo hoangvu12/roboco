@@ -44,7 +44,11 @@ class ShellShortcutsTest {
     @Test
     fun matchesTheThreeCommands() {
         assertSame(ShellShortcut.NewSession, ShellShortcuts.match(key(code = KeyEvent.KEYCODE_N)))
-        assertSame(ShellShortcut.Search, ShellShortcuts.match(key(code = KeyEvent.KEYCODE_F)))
+        // Search is Ctrl+Shift+F (⇧⌘F); plain Ctrl+F is not a command (see
+        // shiftMustMatchTheRowExactly).
+        val ctrlShift = KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON or
+            KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+        assertSame(ShellShortcut.Search, ShellShortcuts.match(key(code = KeyEvent.KEYCODE_F, meta = ctrlShift)))
         assertSame(ShellShortcut.ToggleSidebar, ShellShortcuts.match(key(code = KeyEvent.KEYCODE_B)))
     }
 
