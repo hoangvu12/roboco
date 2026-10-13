@@ -6,7 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.isImeVisible
@@ -219,96 +219,102 @@ fun SidebarSearchField(
                 },
             shape = CapsuleShape,
         ) {
-            Icon(
-                RobocoIcons.Magnifyingglass,
-                tint = palette.secondary,
-                sizePt = SidebarSearchMetrics.IconPt,
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = SidebarSearchMetrics.IconLeading),
-            )
-            // The text box ends 6 ★ before the clear glyph when it shows,
-            // else 12 ★ before the capsule's end (38.4 / 12).
-            val endPad = if (hasText) {
-                SidebarSearchMetrics.TrailingInset +
-                    SidebarSearchMetrics.IconBox +
-                    SidebarSearchMetrics.TextGap
-            } else {
-                SidebarSearchMetrics.TrailingInset
-            }
-            BasicTextField(
-                state = state.search,
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = SidebarSearchMetrics.TextStart, end = endPad)
-                    .fillMaxWidth()
-                    .focusRequester(focusRequester)
-                    .onFocusChanged { focused = it.isFocused }
-                    .semantics { contentDescription = "Search" }
-                    .testTag("sidebar-search"),
-                lineLimits = TextFieldLineLimits.SingleLine,
-                textStyle = uiStyle(Face.Sans, typeScale.fixed(17f), palette.text),
-                cursorBrush = SolidColor(palette.accent),
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrectEnabled = false,
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Search,
-                ),
-                onKeyboardAction = object : KeyboardActionHandler {
-                    override fun onKeyboardAction(performKeyboardAction: () -> Unit) {
-                        // The IME "Search" key: hide the IME, clear the
-                        // focus; the text and the results stay (the iOS UI
-                        // test's typeText("\n")).
-                        keyboard?.hide()
-                        focus.clearFocus(force = true)
-                    }
-                },
-                decorator = TextFieldDecorator { innerTextField ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (!hasText) {
-                            BasicText(
-                                "Search",
-                                style = uiStyle(Face.Sans, typeScale.fixed(17f), palette.tertiary),
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Clip,
+            // GlassSurface's content box wraps its content (07: "no layout
+            // of its own"), so the capsule's own frame is a filling box —
+            // the align() children below position against it, not against
+            // a wrapped content box.
+            Box(Modifier.fillMaxSize()) {
+                Icon(
+                    RobocoIcons.Magnifyingglass,
+                    tint = palette.secondary,
+                    sizePt = SidebarSearchMetrics.IconPt,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = SidebarSearchMetrics.IconLeading),
+                )
+                // The text box ends 6 ★ before the clear glyph when it
+                // shows, else 12 ★ before the capsule's end (38.4 / 12).
+                val endPad = if (hasText) {
+                    SidebarSearchMetrics.TrailingInset +
+                        SidebarSearchMetrics.IconBox +
+                        SidebarSearchMetrics.TextGap
+                } else {
+                    SidebarSearchMetrics.TrailingInset
+                }
+                BasicTextField(
+                    state = state.search,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = SidebarSearchMetrics.TextStart, end = endPad)
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { focused = it.isFocused }
+                        .semantics { contentDescription = "Search" }
+                        .testTag("sidebar-search"),
+                    lineLimits = TextFieldLineLimits.SingleLine,
+                    textStyle = uiStyle(Face.Sans, typeScale.fixed(17f), palette.text),
+                    cursorBrush = SolidColor(palette.accent),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Search,
+                    ),
+                    onKeyboardAction = object : KeyboardActionHandler {
+                        override fun onKeyboardAction(performKeyboardAction: () -> Unit) {
+                            // The IME "Search" key: hide the IME, clear the
+                            // focus; the text and the results stay (the iOS
+                            // UI test's typeText("\n")).
+                            keyboard?.hide()
+                            focus.clearFocus(force = true)
+                        }
+                    },
+                    decorator = TextFieldDecorator { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (!hasText) {
+                                BasicText(
+                                    "Search",
+                                    style = uiStyle(Face.Sans, typeScale.fixed(17f), palette.tertiary),
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+                // The clear button: only while non-empty, no animation (UIKit
+                // swaps it instantly). The 44-wide touch target is centred on
+                // the 20.4 dp glyph box, so the glyph ends exactly 12 dp from
+                // the capsule's end.
+                if (hasText) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(
+                                end = SidebarSearchMetrics.TrailingInset -
+                                    (SidebarSearchMetrics.ClearTarget.width - SidebarSearchMetrics.IconBox) / 2,
                             )
-                        }
-                        innerTextField()
-                    }
-                },
-            )
-            // The clear button: only while non-empty, no animation (UIKit
-            // swaps it instantly). The 44-wide touch target is centred on
-            // the 20.4 dp glyph box, so the glyph ends exactly 12 dp from
-            // the capsule's end.
-            if (hasText) {
-                Box(
-                    Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(
-                            end = SidebarSearchMetrics.TrailingInset -
-                                (SidebarSearchMetrics.ClearTarget.width - SidebarSearchMetrics.IconBox) / 2,
+                            .size(SidebarSearchMetrics.ClearTarget)
+                            .clickable(
+                                interactionSource = null,
+                                indication = null,
+                                role = Role.Button,
+                            ) {
+                                state.search.clearText()
+                                if (!focused) requestFocusAndShowIme()
+                            }
+                            .semantics { contentDescription = "Clear text" }
+                            .testTag("sidebar-search-clear"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            RobocoIcons.XmarkCircleFill,
+                            tint = palette.tertiary,
+                            sizePt = SidebarSearchMetrics.IconPt,
                         )
-                        .size(SidebarSearchMetrics.ClearTarget)
-                        .clickable(
-                            interactionSource = null,
-                            indication = null,
-                            role = Role.Button,
-                        ) {
-                            state.search.clearText()
-                            if (!focused) requestFocusAndShowIme()
-                        }
-                        .semantics { contentDescription = "Clear text" }
-                        .testTag("sidebar-search-clear"),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        RobocoIcons.XmarkCircleFill,
-                        tint = palette.tertiary,
-                        sizePt = SidebarSearchMetrics.IconPt,
-                    )
+                    }
                 }
             }
         }

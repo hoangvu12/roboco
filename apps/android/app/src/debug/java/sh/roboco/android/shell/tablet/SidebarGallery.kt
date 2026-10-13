@@ -88,7 +88,7 @@ fun SidebarGallerySection(currentInitially: String? = null) {
     var current by remember { mutableStateOf(currentInitially) }
     val log = remember { mutableStateListOf<String>() }
     val router = remember { GalleryRouter(log) }
-    val fixtures = remember { sidebarGalleryFixtures() }
+    val fixtures = remember { sidebarGalleryFixtures(gallerySearch) }
 
     GlassMenuHost {
         Column(Modifier.fillMaxWidth()) {
@@ -211,13 +211,15 @@ private class GalleryRouter(private val log: MutableList<String>) : AppRouter {
 // ---------------------------------------------------------------------------
 
 /**
- * The gallery's [SidebarFixtures]: the `1-off` sections for the root
+ * The sidebar fixture builder (105 §Fixture — public like 33's
+ * `SplitRootFixture` so the Robolectric / Roborazzi tests reuse it; the
+ * gallery passes its own [search]): the `1-off` sections for the root
  * screen, and a workspace whose `front.pinned` repeats the two fixture
- * pins (distinct ids) so a Pinned folder pushed inside the sidebar has the
- * scroll range the bottom-padding check needs; Recent feeds the
+ * pins (distinct ids) so a Pinned folder pushed inside the sidebar has
+ * the scroll range the bottom-padding check needs; Recent feeds the
  * `SearchSource` the model requires.
  */
-private fun sidebarGalleryFixtures(): SidebarFixtures {
+fun sidebarGalleryFixtures(search: SessionSearch): SidebarFixtures {
     val sections = SessionsScreenFixtures.sections()
     val pinned = sections.first { it.id == FrontPageSections.PINNED }.rows
     val userSections = sections
@@ -253,7 +255,7 @@ private fun sidebarGalleryFixtures(): SidebarFixtures {
     return SidebarFixtures(
         sections = sections,
         workspace = workspace,
-        search = gallerySearch,
+        search = search,
     )
 }
 
