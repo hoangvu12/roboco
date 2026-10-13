@@ -42,6 +42,7 @@ import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
+import sh.roboco.android.transcript.TranscriptHostGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -169,6 +170,11 @@ object Gallery {
         // capsule ⇄ card morph — the glass surface, the six-slot layout
         // and the attach button, over the striped backdrop.
         GallerySection("Composer surface", screenshotHeightDp = 1300) { ComposerSurfaceGallerySection() },
+        // Ticket 65 (virtualized transcript host): the realized band, keyed
+        // row hosts, layers and the new-row fade-in over the real core.
+        GallerySection("Transcript host", GalleryLayout.Fill, screenshotHeightDp = 891) {
+            TranscriptHostGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
