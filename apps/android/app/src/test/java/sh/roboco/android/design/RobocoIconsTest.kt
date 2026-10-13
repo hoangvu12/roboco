@@ -85,6 +85,7 @@ class RobocoIconsTest {
         "questionmark.bubble",
         "exclamationmark.triangle",
         "exclamationmark.circle",
+        "info.circle",
         "arrow.triangle.branch",
         "command",
     )
@@ -172,9 +173,9 @@ class RobocoIconsTest {
                 assertSame("bySfName[\"$name\"] must be ${entry.name}", entry.icon, RobocoIcons.bySfName[name])
             }
         }
-        // 66 SF constants + 1 alias (pin.slash.fill) + 7 Roboco extras.
-        assertEquals(67, RobocoIcons.bySfName.size)
-        assertEquals(73, RobocoIcons.entries.size)
+        // 67 SF constants + 1 alias (pin.slash.fill) + 7 Roboco extras.
+        assertEquals(68, RobocoIcons.bySfName.size)
+        assertEquals(74, RobocoIcons.entries.size)
         assertEquals(
             "constant names are unique",
             RobocoIcons.entries.size,
@@ -279,6 +280,7 @@ class RobocoIconsTest {
             RobocoIcons.QuestionmarkBubble to R.drawable.zi_chat_round_line,
             RobocoIcons.ExclamationmarkTriangle to R.drawable.zi_danger_triangle,
             RobocoIcons.ExclamationmarkCircle to R.drawable.zi_exclamation_circle,
+            RobocoIcons.InfoCircle to R.drawable.zi_info_circle,
             RobocoIcons.ArrowTriangleBranch to R.drawable.zi_git_branch,
             RobocoIcons.Command to R.drawable.zi_command,
             RobocoIcons.TabChat to R.drawable.zi_tab_chat,

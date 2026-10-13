@@ -4,7 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
@@ -447,6 +447,15 @@ fun GroupedFooter(
  *   "pressed" row and the screenshot fixtures. Never set it from behaviour.
  * @param onClick null = not clickable, no highlight (toggle rows, the
  *   static "account" row); otherwise `Role.Button` + the click action
+ * @param onLongClick a long-press action without a click action
+ *   (android-ui-parity #101: the About Version row's copy). A row with
+ *   only this stays plain-tappable — the highlight still flashes, and
+ *   `combinedClickable` still registers a (no-op) click action for
+ *   TalkBack, but gets **no** `Role.Button` — with **no** system haptic:
+ *   ticket 05 owns haptics through [Feedback], so the label must fire
+ *   [Haptic.LongPress] itself
+ * @param onLongClickLabel the long-press action's accessibility label
+ *   ("double-tap and hold to …"), verbatim from the ticket's copy table
  */
 @Composable
 fun GroupedRowContainer(
@@ -455,6 +464,8 @@ fun GroupedRowContainer(
     separatorStart: Dp = GroupedListTokens.TextStartWithIcon,
     testTag: String? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
     selected: Boolean = false,
     previewPressed: Boolean = false,
     content: @Composable RowScope.() -> Unit,
@@ -518,12 +529,17 @@ fun GroupedRowContainer(
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .semantics(mergeDescendants = true) { if (selected) this.selected = true }
             .then(
-                if (onClick != null) {
-                    Modifier.clickable(
+                if (onClick != null || onLongClick != null) {
+                    Modifier.combinedClickable(
                         interactionSource = source,
                         indication = null,
-                        role = Role.Button,
-                        onClick = onClick,
+                        role = if (onClick != null) Role.Button else null,
+                        onLongClickLabel = onLongClickLabel,
+                        onLongClick = onLongClick,
+                        // Ticket 05: haptics go through LocalFeedback, never
+                        // the system's own long-press haptic.
+                        hapticFeedbackEnabled = false,
+                        onClick = onClick ?: {},
                     )
                 } else {
                     Modifier
@@ -560,6 +576,10 @@ fun GroupedRowContainer(
  *   offline "Rename…" row); the caller keeps the `fixed(16)` size itself
  * @param testTag the row's tag — Settings callers pass [settingsTag]
  * @param previewPressed holds the pressed highlight at 1 (gallery only)
+ * @param onLongClick a long-press action without a click action
+ *   (android-ui-parity #101: the About Version row's copy); see
+ *   [GroupedRowContainer.onLongClick]
+ * @param onLongClickLabel the long-press action's accessibility label
  */
 @Composable
 fun GroupedRow(
@@ -574,6 +594,8 @@ fun GroupedRow(
     titleStyle: TextStyle? = null,
     testTag: String? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    onLongClickLabel: String? = null,
     previewPressed: Boolean = false,
 ) {
     // The Value accessory caps at 50 % of the card's inner width, which is
@@ -597,6 +619,8 @@ fun GroupedRow(
                 titleStyle = titleStyle,
                 testTag = testTag,
                 onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = onLongClickLabel,
                 previewPressed = previewPressed,
             )
         }
@@ -614,6 +638,8 @@ fun GroupedRow(
             titleStyle = titleStyle,
             testTag = testTag,
             onClick = onClick,
+            onLongClick = onLongClick,
+            onLongClickLabel = onLongClickLabel,
             previewPressed = previewPressed,
         )
     }
@@ -633,6 +659,8 @@ private fun GroupedRowBody(
     titleStyle: TextStyle?,
     testTag: String?,
     onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
+    onLongClickLabel: String?,
     previewPressed: Boolean,
 ) {
     val palette = RobocoTheme.palette
@@ -643,6 +671,8 @@ private fun GroupedRowBody(
         separatorStart = if (icon != null) GroupedListTokens.TextStartWithIcon else GroupedListTokens.ContentStart,
         testTag = testTag,
         onClick = onClick,
+        onLongClick = onLongClick,
+        onLongClickLabel = onLongClickLabel,
         selected = accessories.any { it is GroupedAccessory.Check && it.on },
         previewPressed = previewPressed,
     ) {

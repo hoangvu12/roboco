@@ -8,11 +8,12 @@ import org.junit.Test
 import java.io.File
 
 /**
- * The notices sync (android-app#31): the repository's `LICENSE` and
- * `THIRD_PARTY_NOTICES.md` are copied byte-identical into
+ * The notices sync (android-app#31 + ui-parity#101): the repository's
+ * `LICENSE` and `THIRD_PARTY_NOTICES.md` are copied byte-identical into
  * `assets/licenses/` — a sideloaded APK is the whole distribution, so its
  * licenses ship inside it. Settings → About (ticket 26) displays them from
- * there, beside the font licenses `syncRobocoFonts` stages.
+ * there, beside the font licenses `syncRobocoFonts` stages; #101 adds the
+ * committed SPDX fallback texts under `assets/licenses/spdx/`.
  */
 class LicensesSyncTest {
 
@@ -65,10 +66,81 @@ class LicensesSyncTest {
         }
     }
 
-    private fun taskIn(dir: File): LicensesSync {
+    @Test
+    fun spdxTextsLandUnderAssetsLicensesSpdx() {
+        val dir = createTempDir()
+        try {
+            val apache = dir.resolve("Apache-2.0.txt").apply { writeText("Apache License\nVersion 2.0\n") }
+            val lgpl = dir.resolve("LGPL-2.1-or-later.txt").apply { writeText("GNU LESSER GENERAL PUBLIC LICENSE\n") }
+
+            val task = taskIn(dir)
+            task.noticeFiles.from(dir.resolve("LICENSE").apply { writeText("MIT\n") })
+            task.spdxFiles.from(apache, lgpl)
+            task.assetsDir.set(dir.resolve("generated-assets"))
+
+            task.sync()
+
+            val spdx = dir.resolve("generated-assets/licenses/spdx")
+            assertEquals(
+                setOf("Apache-2.0.txt", "LGPL-2.1-or-later.txt"),
+                spdx.listFiles()!!.map { it.name }.toSet(),
+            )
+            assertArrayEquals(apache.readBytes(), spdx.resolve("Apache-2.0.txt").readBytes())
+            assertArrayEquals(lgpl.readBytes(), spdx.resolve("LGPL-2.1-or-later.txt").readBytes())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun noSpdxInputsLeavesNoSpdxDirectoryAndRemovedSpdxFilesDoNotLinger() {
+        val dir = createTempDir()
+        try {
+            val license = dir.resolve("LICENSE").apply { writeText("MIT\n") }
+            val out = dir.resolve("generated-assets")
+
+            // No spdxFiles: nothing but the notices, and no empty spdx dir
+            // (the merge would otherwise zip an empty folder).
+            taskIn(dir).apply {
+                noticeFiles.from(license)
+                assetsDir.set(out)
+            }.sync()
+            val licenses = out.resolve("licenses")
+            assertEquals(
+                setOf("LICENSE"),
+                licenses.listFiles()!!.map { it.name }.toSet(),
+            )
+
+            // Then stage one, sync, drop it from the inputs, sync again: the
+            // stale text must not linger (the spdx dir is reset, not merged).
+            val spdx = dir.resolve("Apache-2.0.txt").apply { writeText("Apache\n") }
+            taskIn(dir, "stageSpdx").apply {
+                noticeFiles.from(license)
+                spdxFiles.from(spdx)
+                assetsDir.set(out)
+            }.sync()
+            assertEquals(
+                setOf("Apache-2.0.txt"),
+                licenses.resolve("spdx").listFiles()!!.map { it.name }.toSet(),
+            )
+            taskIn(dir, "dropSpdx").apply {
+                noticeFiles.from(license)
+                assetsDir.set(out)
+            }.sync()
+            assertEquals(
+                "a removed SPDX text must not linger",
+                setOf("LICENSE"),
+                licenses.listFiles()!!.map { it.name }.toSet(),
+            )
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    private fun taskIn(dir: File, name: String = "syncNotices"): LicensesSync {
         val project =
-            ProjectBuilder.builder().withProjectDir(dir.resolve("project").apply { mkdirs() }).build()
-        return project.tasks.register("syncNotices", LicensesSync::class.java).get()
+            ProjectBuilder.builder().withProjectDir(dir.resolve("project-$name").apply { mkdirs() }).build()
+        return project.tasks.register(name, LicensesSync::class.java).get()
     }
 
     private fun createTempDir(): File {

@@ -25,6 +25,10 @@ roborazzi = "1.76.0"
 # Liquid-glass backdrop blur (ui-parity#07): android-app#14's recipe.
 # The blur module only — haze-blur-materials is not the iOS look.
 haze = "2.0.1"
+# AboutLibraries Gradle plugin (ui-parity#101): JSON only, no library
+# artifacts. The newest stable that supports AGP 9 (plugin README,
+# re-verified 2026-10-12).
+aboutlibraries = "15.2.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -58,3 +62,4 @@ roborazzi-junit-rule = { group = "io.github.takahirom.roborazzi", name = "robora
 android-application = { id = "com.android.application", version.ref = "agp" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
+aboutlibraries-android = { id = "com.mikepenz.aboutlibraries.plugin.android", version.ref = "aboutlibraries" }

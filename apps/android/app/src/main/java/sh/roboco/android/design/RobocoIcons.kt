@@ -297,6 +297,9 @@ object RobocoIcons {
     /** SF `exclamationmark.circle` — context-usage chip. */
     val ExclamationmarkCircle = RobocoIcon.Vector(R.drawable.zi_exclamation_circle)
 
+    /** SF `info.circle` — Settings About "Version" (101, android-app#26). */
+    val InfoCircle = RobocoIcon.Vector(R.drawable.zi_info_circle)
+
     /** SF `arrow.triangle.branch` — core slash-command/branch chip. */
     val ArrowTriangleBranch = RobocoIcon.Vector(R.drawable.zi_git_branch)
 
@@ -417,6 +420,7 @@ object RobocoIcons {
             ExclamationmarkTriangle,
         ),
         RegistryEntry("ExclamationmarkCircle", listOf("exclamationmark.circle"), ExclamationmarkCircle),
+        RegistryEntry("InfoCircle", listOf("info.circle"), InfoCircle),
         RegistryEntry("ArrowTriangleBranch", listOf("arrow.triangle.branch"), ArrowTriangleBranch),
         RegistryEntry("Command", listOf("command"), Command),
         // Roboco extras.
