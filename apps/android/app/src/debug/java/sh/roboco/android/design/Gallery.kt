@@ -41,6 +41,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
+import sh.roboco.android.sessions.SessionListGallerySection
 import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
@@ -249,6 +250,12 @@ object Gallery {
         // accent on-tint, 37 × 24 capsule thumb, tap/drag, press lift,
         // ToggleOn/Off haptics; 420 dp of fixture card + interactive rows.
         GallerySection("Switch", screenshotHeightDp = 420) { RobocoSwitchGallerySection() },
+        // Ticket 41 (shared session list): the front page's list host —
+        // keyed items, folds, fixed heights, the deselect fade, the
+        // empty/loading overlay; Fill — the list owns the LazyColumn.
+        GallerySection("Session list", layout = GalleryLayout.Fill, screenshotHeightDp = 852) {
+            SessionListGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
