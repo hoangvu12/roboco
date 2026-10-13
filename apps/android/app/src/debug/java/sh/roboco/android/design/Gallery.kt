@@ -37,6 +37,7 @@ import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
+import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
@@ -255,6 +256,12 @@ object Gallery {
         // (the live half is skipped under capture: it needs an activity's
         // result registry).
         GallerySection("Composer attach menu", screenshotHeightDp = 700) { AttachMenuGallerySection() },
+        // Ticket 110 (New Project folder browser): the nav bar, engine menu,
+        // folder rows and the load-guard states in a settled page sheet,
+        // over the fixture source and FakeHostPaths (no engine needed).
+        GallerySection("New Project browser", GalleryLayout.Fill, screenshotHeightDp = 874) {
+            FolderBrowserGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
