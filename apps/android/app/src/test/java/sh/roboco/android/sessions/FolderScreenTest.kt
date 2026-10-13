@@ -503,7 +503,7 @@ class FolderScreenTest {
 
         val byId = lastContexts()
         assertTrue("reorderable = true (47's drag handles)", byId.getValue("chat-hibernation").reorderable)
-        assertTrue("editing = false until 47 lands", !byId.getValue("chat-scroll-pinning").editing)
+        assertTrue("editing = false at rest (47's capsule toggles it)", !byId.getValue("chat-scroll-pinning").editing)
         assertTrue("archivedRows stays false", !byId.getValue("chat-hibernation").archived)
     }
 

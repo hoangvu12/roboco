@@ -65,6 +65,9 @@ internal object SessionRowFixtures {
         ),
         "no-mark" to row("Empty harness string draws no mark", "", SessionRowVM.Status.Idle, false, false, "2d"),
     )
+
+    /** One fixture by key (47's lifted-row preview and golden use `"done-unseen"`). */
+    fun sample(key: String): SessionRowVM = all.first { it.first == key }.second
 }
 
 /**
