@@ -123,6 +123,7 @@ class TabletShellState internal constructor(
      * Records what the detail column shows. Always bumps
      * [detailGeneration], even for an equal root.
      */
+    @JvmName("applyDetailRoot")
     fun setDetailRoot(root: DetailRoot) {
         detailRoot = root
         detailGeneration++
