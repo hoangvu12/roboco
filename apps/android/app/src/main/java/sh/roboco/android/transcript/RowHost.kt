@@ -16,7 +16,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import sh.roboco.android.design.LiftHighlight
 import sh.roboco.android.design.Motion
+import sh.roboco.android.design.contextMenu
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.RowKind
 import uniffi.roboco_core.RowPlacement
@@ -52,6 +54,11 @@ class RowContext(
  * to the whole row through [Modifier.graphicsLayer], and the row's
  * scrollers and row-level widgets as children in iOS z-order (scrollers in
  * index order, then widgets in display order).
+ *
+ * 128 adds the row's long-press menu: [Modifier.contextMenu] on the same
+ * root node (after the fade-in layer, before the layer-0 draw, so the
+ * recorded preview contains everything the row paints but not the
+ * fade-in alpha) and the [performer] shared by every row of one host.
  */
 @Composable
 internal fun RowHost(
@@ -59,6 +66,7 @@ internal fun RowHost(
     frame: LayoutFrame,
     p: RowPlacement,
     palette: IntArray,
+    performer: RowMenuPerformer,
     actionsProvider: () -> TranscriptActions,
 ) {
     val d = LocalDensity.current.density
@@ -89,10 +97,31 @@ internal fun RowHost(
     row.model = model
     row.appear = appear
 
+    // 128: the last touch-down in this row (row-local px, NaN when no
+    // finger is down) — the menu's "not on a control" rule reads it at
+    // long-press time. `remember(p.key)` keeps one array per row key.
+    val down = remember(p.key) { floatArrayOf(Float.NaN, Float.NaN) }
+
     Box(
         Modifier
             .testTag(rowTag(p.kind))
             .graphicsLayer { alpha = appear.value } // read in the layer phase
+            // 128: the row's context menu (16's gesture and lift, 15's
+            // panel). The items are built here, at long-press time, never
+            // cached in composition; a null menu (no model, a control
+            // under the finger, or nothing to show) leaves the gesture
+            // alone — no haptic, no lift, and the release is a normal tap.
+            .contextMenu(LiftHighlight.TranscriptRow) {
+                val m = row.model ?: return@contextMenu null
+                val x = down[0]
+                if (!x.isNaN() && isOverControl(m.display, x / d, down[1] / d, row::scrollerOffsetDp)) {
+                    return@contextMenu null
+                }
+                state.rowMenuActions(row.key).toMenu(performer::perform)
+            }
+            // On the same node as the context menu, so both see the same
+            // row-local pixels. Observes only, never consumes.
+            .trackRowDown(down)
             .drawBehind {
                 // No style sync here: 61's apply synced the table, 62's
                 // draw calls `fonts.useDensity` itself. Pass.All.

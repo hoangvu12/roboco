@@ -49,7 +49,8 @@ import kotlin.math.roundToInt
  * (follow the tail, insets, R14 clamp) fed by the same gesture pipeline.
  * The offset can be negative (`−topInset`); the realized band starts
  * below zero accordingly. Anchoring is 130, the model cache 117, the
- * veil 118, widgets 66+.
+ * veil 118, widgets 66+, and the row long-press menu (128) rides on every
+ * row through the one [rememberRowMenuPerformer] created here.
  */
 @Composable
 fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier: Modifier = Modifier) {
@@ -57,6 +58,9 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
     val d = density.density
     val palette = TranscriptPalette(LocalIsDark.current)
     val currentActions by rememberUpdatedState(actions)
+    // 128: one row-menu performer for the whole host, never per row —
+    // rows recompose per frame while streaming.
+    val menuPerformer = rememberRowMenuPerformer { currentActions }
 
     // 117: give the model cache back under memory pressure — iOS's
     // `didReceiveMemoryWarning` clears it (`TranscriptListView.swift:192-198`);
@@ -109,7 +113,7 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
 
         Layout(
             content = {
-                for (p in placements) key(p.key) { RowHost(state, frame, p, palette) { currentActions } }
+                for (p in placements) key(p.key) { RowHost(state, frame, p, palette, menuPerformer) { currentActions } }
             },
         ) { measurables, constraints ->
             Trace.beginSection("layout-rows") // iOS signpost name
