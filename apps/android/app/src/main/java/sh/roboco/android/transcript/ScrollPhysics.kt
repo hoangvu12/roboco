@@ -76,6 +76,9 @@ fun bounceStep(x: Float, v: Float, dt: Float): Pair<Float, Float> {
 // UIKit's indicator width, end padding, minimum length, colour, hold and
 // fade are private internals, so these are start values to tune side by
 // side with the iOS app (the ticket's Spec ▸ Vertical scroll indicator).
+// They are ticket-scoped, like PullToRefreshDefaults' non-spring values
+// (48): Motion tokens carry iOS call sites, and these have none — the
+// ticket's Comments own the tuned values.
 
 /** The thumb's width (dp). Start value; UIKit's is private. */
 const val INDICATOR_WIDTH = 3f

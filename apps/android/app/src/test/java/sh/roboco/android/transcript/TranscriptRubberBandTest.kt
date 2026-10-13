@@ -81,6 +81,28 @@ class TranscriptRubberBandTest {
     }
 
     @Test
+    fun shortContentBandsBothWays() {
+        // The ticket's interaction table: `maxOffset == minOffset` (the
+        // content fits) still rubber-bands both ways — iOS
+        // `alwaysBounceVertical`.
+        fun short(): TranscriptViewport {
+            val vp = newViewport()
+            vp.onFrameApplied(contentHeight = 500f, first = true)
+            assertEquals(-68f, vp.maxOffset, 1e-4f)
+            vp.onPointerDown()
+            return vp
+        }
+        // The finger moves down: a band above the top.
+        val down = short()
+        band(down).applyToScroll(Offset(0f, 100f), NestedScrollSource.UserInput, scroll(down))
+        assertEquals(-119.4620f, down.offset, 1e-3f)
+        // The finger moves up: a band past the tail.
+        val up = short()
+        band(up).applyToScroll(Offset(0f, -100f), NestedScrollSource.UserInput, scroll(up))
+        assertEquals(-16.5380f, up.offset, 1e-3f)
+    }
+
+    @Test
     fun theTailBandMatchesTheWorkedExample() {
         val vp = newViewport() // offset 2300 = maxOffset
         val b = band(vp)
@@ -142,7 +164,8 @@ class TranscriptRubberBandTest {
         runBlocking(clock) {
             b.applyToFling(Velocity(0f, 0f), neverFling())
         }
-        // The hook runs before each step, so offsets[n] is after step n−1.
+        // The hook runs before each step, so offsets[k] (0-based) is the
+        // offset after step k; offsets[0] is the pulled position itself.
         assertEquals(-117.1655f, offsets[1], 1e-3f)
         assertEquals(-112.0358f, offsets[2], 1e-3f)
         assertEquals(-105.8636f, offsets[3], 1e-3f)

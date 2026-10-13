@@ -43,7 +43,7 @@ import sh.roboco.android.design.RobocoTheme
  * optional parameter and creates its own when omitted.
  */
 @Stable
-internal class TranscriptScrollIndicatorState internal constructor() {
+internal class TranscriptScrollIndicatorState {
 
     /**
      * The thumb's alpha, 0 hidden … 1 fully visible. The test hook:

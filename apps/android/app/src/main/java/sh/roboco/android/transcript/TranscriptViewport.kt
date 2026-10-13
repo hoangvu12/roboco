@@ -77,12 +77,20 @@ class TranscriptViewport(private val nanoTime: () -> Long = System::nanoTime) {
     var tracking = false
         private set
 
-    /** A drag passed touch slop (`pan .began` … `.ended`). 133 reads it. */
-    var dragging = false
+    /**
+     * A drag passed touch slop (`pan .began` … `.ended`). 133 reads it,
+     * and 134's scroll indicator reads it in composition (snapshot state,
+     * so its `snapshotFlow` fade driver re-emits on the drag edges).
+     */
+    var dragging by mutableStateOf(false)
         private set
 
-    /** Momentum after lift (iOS `isDecelerating`). 134 reads it on fling start/end. */
-    var flinging = false
+    /**
+     * Momentum after lift (iOS `isDecelerating`): the fling wrapper and
+     * the rubber band's bounce set it, and 134's scroll indicator reads
+     * it in composition (snapshot state, as `dragging`).
+     */
+    var flinging by mutableStateOf(false)
         private set
 
     /** Ticket 69: `true` while the runway holds (glide step instead of settle). */

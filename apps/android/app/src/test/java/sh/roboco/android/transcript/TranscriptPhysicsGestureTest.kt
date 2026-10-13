@@ -2,6 +2,7 @@ package sh.roboco.android.transcript
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -75,7 +76,11 @@ class TranscriptPhysicsGestureTest {
 
     // ------------------------------------------------------------- helpers
 
-    /** A 300 dp pull toward the top, from the resting top, held down. */
+    /**
+     * A 300 dp pull toward the top, from the resting top, held down.
+     * Ends with the frozen-clock flush: the apply notification and one
+     * frame are what let the indicator's `snapshotFlow` see `dragging`.
+     */
     private fun pullAtTheTop() {
         compose.runOnIdle {
             viewport.releaseFollow()
@@ -86,6 +91,8 @@ class TranscriptPhysicsGestureTest {
             down(center)
             moveBy(Offset(0f, 300.dp.toPx())) // the finger moves down; no up
         }
+        compose.runOnIdle { Snapshot.sendApplyNotifications() }
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
     }
 
@@ -138,18 +145,25 @@ class TranscriptPhysicsGestureTest {
         // While the finger holds the 300 dp pull, the thumb is fully visible.
         assertEquals(1f, indicator!!.alpha.value, 1e-3f)
 
-        // The release bounces for ≈ 0.4 s (flinging), then the thumb holds
-        // 500 ms before a 250 ms fade: 400 ms after the bounce it is
-        // still up…
+        // The release bounces for ≈ 0.4 s (flinging) — drive the clock until
+        // the bounce ends, then measure from there.
         compose.onRoot().performTouchInput { up() }
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(600) // the bounce settles within this
-        compose.waitForIdle()
+        compose.waitForIdle() // the release starts the bounce
+        assertTrue("the release must start the bounce", viewport.flinging)
+        var guard = 0
+        while (viewport.flinging && guard++ < 120) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        assertFalse("the bounce must end within 2 s", viewport.flinging)
+
+        // The thumb holds 500 ms after scrolling stops: 400 ms after the
+        // bounce ends it is still up…
         compose.mainClock.advanceTimeBy(400)
         compose.waitForIdle()
         assertEquals("400 ms after the bounce ends the thumb is still visible", 1f, indicator!!.alpha.value, 1e-3f)
 
-        // …and 1 s after the bounce ends it has faded out.
+        // …and 1 s after it ends the hold (500 ms) + fade (250 ms) are done.
         compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
         assertEquals("1 s after the bounce ends the thumb is gone", 0f, indicator!!.alpha.value, 1e-3f)
@@ -158,12 +172,18 @@ class TranscriptPhysicsGestureTest {
     @Test
     fun theFollowSpringDoesNotShowTheIndicator() {
         compose.mainClock.advanceTimeBy(1500) // any initial fade settles
+        compose.runOnIdle { Snapshot.sendApplyNotifications() }
         compose.waitForIdle()
         assertEquals(0f, indicator!!.alpha.value, 1e-3f)
 
         // A programmatic move (the follow spring) is not user scrolling:
         // UIKit shows indicators only for user scrolling.
-        compose.runOnIdle { viewport.scrollToBottom(animated = true) }
+        compose.runOnIdle {
+            viewport.releaseFollow()
+            viewport.setOffset(1500f) // a real 800 dp spring travel
+            viewport.scrollToBottom(animated = true)
+            Snapshot.sendApplyNotifications() // the frozen clock flushes here
+        }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(1000) // the spring settles (68)
         compose.waitForIdle()
