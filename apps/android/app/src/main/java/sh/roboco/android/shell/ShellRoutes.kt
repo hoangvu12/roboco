@@ -11,6 +11,7 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.LicensesRoute
 import sh.roboco.android.settings.LicensesScreen
+import sh.roboco.android.session.SessionScreenRoute
 import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
 import sh.roboco.android.sessions.SearchScreen
@@ -64,6 +65,11 @@ fun ShellRouteContent(route: NavRoute) {
         // Archived). The tablet sidebar (105) renders pushed routes
         // through this same table, so one branch serves both hosts.
         is FolderRoute -> FolderRouteContent(route)
+        // Ticket 76: the Session screen — the route the factory built and
+        // 32/41/106 pushed (its own Content: the NavEntry close safety
+        // net + 75's SessionScreen). Ticket 106's detail column falls
+        // through to this same table.
+        is SessionScreenRoute -> route.Content()
         // Ticket 102 (Devices rows): the Engine detail push's placeholder
         // until 140 builds the page — just enough for the push to be
         // testable and the tab bar to stay visible.
