@@ -13,6 +13,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- ui-parity #126: Custom Tabs provider visibility (Android 11+
+         package visibility). Without this <queries> entry
+         CustomTabsClient.getPackageName returns null on API 30+ and every
+         web link in the transcript silently falls back to the external
+         browser. -->
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
     <application
         android:name=".RobocoApplication"
         android:allowBackup="false"
