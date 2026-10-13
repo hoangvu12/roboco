@@ -9,6 +9,42 @@
 
 use std::time::Duration;
 
+/// The notification driver's cadences (ticket 28). All the mobile-only
+/// thresholds in one place; tests shrink them so link-lost and
+/// pending-send behaviour runs in fractions of a second.
+#[derive(Debug, Clone)]
+pub struct NotifyTimings {
+    /// The engine link must be non-connected this long before `LinkLost`
+    /// fires (the desktop's graced-connectivity rule: the engine holds raw
+    /// transport degradation for four seconds before it counts).
+    pub link_grace: Duration,
+    /// `STARTUP_QUIET` (desktop `sound.rs`): no link alert inside this of
+    /// an engine's *first* connect in this process — a boot outage seeds
+    /// silently.
+    pub startup_quiet: Duration,
+    /// A pending send of this device counts against `send_pending` for at
+    /// most this long ("the call until the session is seen Working after
+    /// it, or 30 s pass").
+    pub send_window: Duration,
+    /// The driver's idle tick — it measures the 4 s link grace and the 30 s
+    /// send window without needing a fleet change. An in-process timer
+    /// only: no wake lock, a plain timer arm in the driver's select loop,
+    /// dwarfed by the core's 15 s ping (the ticket's "no timers" battery rule targets the
+    /// service's platform footprint, not in-process scheduling).
+    pub tick: Duration,
+}
+
+impl Default for NotifyTimings {
+    fn default() -> Self {
+        Self {
+            link_grace: Duration::from_secs(4),
+            startup_quiet: Duration::from_secs(5),
+            send_window: Duration::from_secs(30),
+            tick: Duration::from_secs(1),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Timings {
     /// Reconnect backoff: 500 ms initial, doubling, capped at 15 s, plus
@@ -43,6 +79,8 @@ pub struct Timings {
     /// The workspace store's re-derive tick: refreshes time labels and
     /// the 45 s staleness edge (ticket 07).
     pub workspace_tick: Duration,
+    /// The notification driver (ticket 28).
+    pub notify: NotifyTimings,
 }
 
 impl Default for Timings {
@@ -62,7 +100,7 @@ impl Default for Timings {
             refresh_cap: Duration::from_secs(3),
             undelivered_grace: Duration::from_secs(120),
             workspace_tick: Duration::from_secs(1),
-
+            notify: NotifyTimings::default(),
         }
     }
 }

@@ -106,6 +106,7 @@ class SessionController private constructor(
     private val hub: SessionEventHub,
     @PublishedApi internal val fillers: List<ChromeFiller>,
     private val io: CoroutineDispatcher,
+    private val onSeen: ((String) -> Unit)? = null,
 ) {
     private val job: CompletableJob = SupervisorJob()
     private val scope = CoroutineScope(job + io)
@@ -184,9 +185,18 @@ class SessionController private constructor(
         }
     }
 
-    /** `client.markSeen(chatId)` — through the client, not the handle (`AppModel.swift:519`). On the IO lane. */
+    /**
+     * `client.markSeen(chatId)` — through the client, not the handle
+     * (`AppModel.swift:519`). On the IO lane. The notification-cancel seam
+     * (android-app#28) rides along: opening a chat cancels its
+     * notification ("next to #51's markSeen on the session screen's first
+     * composition", per the ticket) — tickets 75/76 bind [onSeen] to the
+     * app's `NotificationCenter.cancelChatFor`; the default is a no-op so
+     * this controller's own tests are untouched.
+     */
     fun markSeen() {
         if (closed.get()) return
+        onSeen?.invoke(core.chatId)
         scope.launch {
             try {
                 core.markSeen()
@@ -257,6 +267,8 @@ class SessionController private constructor(
                 logFailure("close failed", t)
             }
         }
+        // The pop also counts as "seen": the notification goes too.
+        onSeen?.invoke(core.chatId)
         // Let the final calls run, then the scope ends: later launches
         // on this scope never execute.
         job.complete()
@@ -328,9 +340,10 @@ class SessionController private constructor(
             fillers: List<ChromeFiller> = emptyList(),
             io: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(1),
             isMainThread: () -> Boolean = ::defaultIsMainThread,
+            onSeen: ((String) -> Unit)? = null,
         ): SessionController {
             check(!isMainThread()) { "SessionController.create on main" }
-            val controller = SessionController(core, hub, fillers, io)
+            val controller = SessionController(core, hub, fillers, io, onSeen)
             controller.fillers.forEach { it.bind(controller::invalidate) }
             controller.unregister = hub.register(core.chatId) { controller.trigger.trySend(Unit) }
             controller.refreshNow()

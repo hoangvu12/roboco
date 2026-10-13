@@ -6,9 +6,11 @@ import { notificationsDisabled, type Sound } from "./sounds";
 
 /**
  * Session notification decision engine — the web port of the pure half of
- * `crates/ui/src/sound.rs` (the `SessionNotificationState` /
- * `ConnectivityNotificationState` / `AttentionSoundGate` machines) plus
- * `notify.rs`'s banner delivery through the Web `Notification` API. Ports
+ * the Rust machines (`SessionNotificationState` lives in
+ * `crates/proto/src/view.rs` since the mobile notifications ticket moved
+ * it there; `ConnectivityNotificationState` / `AttentionSoundGate` in
+ * `crates/ui/src/sound.rs`) plus `notify.rs`'s banner delivery through the
+ * Web `Notification` API. Ports
  * the Rust rule table and its unit tests 1:1, the `lib/view.ts` pattern:
  * the logic is pure and independently testable; the call site (the session
  * notification driver in `state/session-provider.tsx`, the peer of

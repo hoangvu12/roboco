@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use roboco_engine_client::registry::{EngineKey, ScopedId};
 
+use crate::timings::NotifyTimings;
 use crate::{Client, ClientConfig, EngineState, NullListener};
 
 /// Every rig uses the same fast timings (the workspace store's own test
@@ -34,6 +35,7 @@ pub(crate) fn test_timings() -> crate::timings::Timings {
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_millis(120_000),
         workspace_tick: Duration::from_millis(100),
+        notify: NotifyTimings::default(),
     }
 }
 

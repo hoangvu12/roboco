@@ -1,6 +1,8 @@
 package sh.roboco.android
 
 import android.app.Application
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import sh.roboco.android.background.RunWatchController
 import sh.roboco.android.core.AppLifecycleHooks
 import sh.roboco.android.core.AppearanceController
 import sh.roboco.android.core.CoreClientWorkspace
@@ -31,6 +34,11 @@ import sh.roboco.android.core.WorkspaceFeed
 import sh.roboco.android.core.robocoPrefsStore
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ToasterState
+import sh.roboco.android.notify.NotificationCenter
+import sh.roboco.android.notify.NotificationPermission
+import sh.roboco.android.notify.NotificationPolicy
+import sh.roboco.android.notify.NotificationPrefs
+import sh.roboco.android.notify.Notifier
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.sessions.CoreRowActions
@@ -151,7 +159,13 @@ class RobocoApplication : Application() {
             context = this,
             store = engineStore,
             scope = applicationScope,
-            onClientReady = { lifecycleHooks.clientReady() },
+            onClientReady = { client ->
+                lifecycleHooks.clientReady()
+                // android-app#28: the notification driver arms as soon as
+                // the client exists (this runs on the startup pipeline's IO
+                // lane — never the main thread).
+                notifications.attachTo(client)
+            },
         )
     }
 
@@ -267,6 +281,48 @@ class RobocoApplication : Application() {
         )
     }
 
+    /**
+     * The app's notification centre (android-app#28): the `NotificationSink`
+     * the core calls, the delivery gates, and the posting. Its scope hops
+     * the core-thread callbacks onto `Dispatchers.Default`
+     * (`NotificationManagerCompat.notify` is thread-safe; the main thread is
+     * never blocked). Forcing the lazy init runs `migrateChannels()` +
+     * `ensureChannels()` in `onCreate` — cheap and idempotent.
+     */
+    val notifications: NotificationCenter by lazy {
+        val center = NotificationCenter(
+            context = this,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            controller = runWatch,
+            prefs = notificationPrefs,
+            notifier = notifier,
+        )
+        center.setEngineCountSource { coreStartup.engines.value?.size ?: 0 }
+        center
+    }
+
+    /** The phone-local notification choices (android-app#28; #99's rows). */
+    val notificationPrefs: NotificationPrefs by lazy { NotificationPrefs.get(this) }
+
+    /** The notification poster (channels, migration, copy, cancels). */
+    val notifier: Notifier by lazy {
+        Notifier(this).also {
+            it.migrateChannels()
+            it.ensureChannels()
+        }
+    }
+
+    /**
+     * The run-watching foreground service's controller (android-app#28):
+     * starts `RunWatchService` while any run is Working and notifications
+     * are on, stops it 15 s after the last run leaves Working. Never owns
+     * sockets — the core client does; the service keeps the process out
+     * of the cached/frozen set.
+     */
+    val runWatch: RunWatchController by lazy {
+        RunWatchController(this, applicationScope, notifier = notifier)
+    }
+
     override fun onCreate() {
         super.onCreate()
         // #609's Fonts.init swallowed missing faces (review bug 8); a
@@ -324,11 +380,56 @@ class RobocoApplication : Application() {
         // the DataStore read, so the platform's own persisted mode already
         // covered the splash of this launch).
         appearanceController.start()
+        // android-app#28: the notification pipeline — channels migrated and
+        // created, the foreground gates fed from the process lifecycle (a
+        // process-wide observer, exactly once: never per activity — #609's
+        // leak), the run-watching service controller fed with the engine
+        // count and the notifications-on gate (master pref + permission;
+        // the permission can be revoked from system settings, so it is
+        // re-read on every change and foreground edge). Forcing
+        // `notifications` also installs the sink on the client the moment
+        // 71's pipeline reports it ready.
+        notifications.foreground = true
+        ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    notifications.foreground = true
+                    runWatch.onForeground(true)
+                    refreshNotificationsOn()
+                }
+
+                override fun onStop(owner: LifecycleOwner) {
+                    notifications.foreground = false
+                    runWatch.onForeground(false)
+                }
+            },
+        )
+        applicationScope.launch {
+            coreStartup.engines.collect { engines ->
+                runWatch.onEngineCount(engines?.size ?: 0)
+            }
+        }
+        applicationScope.launch {
+            notificationPrefs.state.collect { refreshNotificationsOn() }
+        }
         if (core is CoreStatus.Loaded) {
             workspaceFeed.start()
             rowActions.startNoticeToasts(appEvents.notices())
             coreStartup.start()
         }
+    }
+
+    /**
+     * Re-derive the run-watching service's `notificationsOn` gate (the
+     * master pref + the live permission status).
+     */
+    private fun refreshNotificationsOn() {
+        runWatch.onNotificationsOn(
+            NotificationPolicy.masterOn(
+                notificationPrefs.state.value,
+                NotificationPermission.status(this, notificationPrefs),
+            ),
+        )
     }
 
     /** The live client, or null before `CoreStartState.Ready`. */
