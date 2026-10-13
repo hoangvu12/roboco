@@ -3,6 +3,9 @@ package sh.roboco.android.design
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
@@ -74,9 +77,24 @@ class WallpaperHeroScreenshotTest {
 
     // ------------------------------------------------------------ helpers
 
+    private var appearance by mutableStateOf(Appearance.Light)
+    private var mounted = false
+
+    /**
+     * Mounts the section once per test and flips [appearance] through state
+     * afterwards: a second `setContent` on the rule throws "has already set
+     * content", which is what the light-then-dark loops below hit.
+     */
     private fun mount(appearance: Appearance) {
+        if (mounted) {
+            compose.runOnIdle { this.appearance = appearance }
+            compose.waitForIdle()
+            return
+        }
+        this.appearance = appearance
+        mounted = true
         compose.setContent {
-            RobocoTheme(appearance) {
+            RobocoTheme(this.appearance) {
                 Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
                     WallpaperHeroGallerySection(showLive = false)
                 }
@@ -202,12 +220,15 @@ class WallpaperHeroScreenshotTest {
 
             // The cutout centre (180, 206) sits on the orange/green band
             // edge, so the weight is unblended from the solid orange column
-            // at x = 150 instead. t = 206.5/300 = 0.688 → gradient alpha
+            // at x = 158 instead: its source x 271.3 sits midway between two
+            // white stripes on rows 206 and 242 (x = 150 lands 0.9 source px
+            // from a stripe's centre line on those rows, and the white it
+            // picks up read as a weight of 0.032). t = 206.5/300 = 0.688 → gradient alpha
             // 0.231; hero height 300 → feather 52 dp, σ = 26 dp; the outset
             // rect is 344 × 68 dp, so the blurred coverage at its centre is
             // G ≈ 2Φ(34/26) − 1 ≈ 0.81 and m = (1 − 0.25·G) × 0.5 ≈ 0.40 —
             // the fixture's weight is m × 0.233 ≈ 0.093 (frame 1: 0.233).
-            val weight = fixtureWeight(px[150, 206], orange, background)
+            val weight = fixtureWeight(px[158, 206], orange, background)
             assertTrue(
                 "light=$dark cutout centre: expected fixture weight ≈ 0.093, was $weight",
                 abs(weight - 0.093f) <= 0.02f,
@@ -216,8 +237,8 @@ class WallpaperHeroScreenshotTest {
             // The soft step at the outset edge: just outside the rect the
             // weight nearly doubles (0.875·a vs 0.4375·a) — sampled 4 px
             // either side of the 8 dp outset (y = 172…240).
-            val inside = fixtureWeight(px[150, 238], orange, background)
-            val outside = fixtureWeight(px[150, 242], orange, background)
+            val inside = fixtureWeight(px[158, 238], orange, background)
+            val outside = fixtureWeight(px[158, 242], orange, background)
             assertTrue(
                 "light=$dark the cutout's hard step: inside $inside, outside $outside",
                 outside > inside * 1.5f,

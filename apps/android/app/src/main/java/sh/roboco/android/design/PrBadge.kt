@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextMotion
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
@@ -157,7 +158,16 @@ fun PrBadge(number: ULong, state: PrState, modifier: Modifier = Modifier, size: 
     // s is a UIKit point, not an sp: fixed(size) renders exactly size dp
     // whatever the font scale, and already sets GeistMono Medium with
     // includeFontPadding = false and no lineHeight/letterSpacing.
+    //
+    // TextMotion.Animated (linear metrics + subpixel positioning): the
+    // default TextMotion.Static clears SUBPIXEL_TEXT_FLAG and hints, which
+    // rounds every glyph advance to whole px — at s = 14, xxhdpi, "102"
+    // measures 3 × 25 px = 25 dp instead of CoreText's 3 × 8.4 = 25.2 dp, so
+    // the ceiled label width (and the badge) came out 1 dp short of the
+    // ticket's 55 dp. Measuring and drawing with the same style keeps the
+    // glyphs inside the measured box.
     val style = uiStyle(Face.MonoMedium, LocalTypeScale.current.fixed(size), ink)
+        .copy(textMotion = TextMotion.Animated)
     val density = LocalDensity.current.density
     val layout = rememberTextMeasurer().measure(text, style, maxLines = 1, softWrap = false)
     // iOS ceils UILabel.sizeThatFits; Compose measures in px, so convert

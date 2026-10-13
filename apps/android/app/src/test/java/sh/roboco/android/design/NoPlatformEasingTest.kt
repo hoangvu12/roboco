@@ -19,7 +19,8 @@ import java.io.File
  *
  * The scan is a heuristic, not a Kotlin parser: it walks every `.kt` under
  * `src/main/java` (the module directory, which is the working directory for
- * Gradle unit tests), ignores `//` line comments for the call checks, and
+ * Gradle unit tests), ignores `//` and block/KDoc comments plus member calls
+ * and declarations (`X.spring()`, `fun spring()`) for the call checks, and
  * takes call arguments by paren counting so multi-line calls work. `Motion.kt`
  * itself is exempt from the name checks (it defines the tokens) but not from
  * the call checks — the token file must pass `easing`/`stiffness` explicitly
@@ -88,16 +89,58 @@ class NoPlatformEasingTest {
             "FastOutLinearInEasing",
         )
         private val EASE_IMPORT = Regex("""import\s+androidx\.compose\.animation\.core\.Ease\w*""")
-        private val BARE_EASE = Regex("""(?<![\w.])Ease(In|Out|InOut|OutQuart|OutQuint|OutExpo)\b""")
-    }
+        private val BARE_EASE = Regex("""(?<![\w.])Ease(In|Out|InOut|OutQuart|OutQuint|OutExpo)\b""")    }
 
-    /** Replaces each `//` line comment with spaces, so offsets and line breaks survive. */
-    private fun stripLineComments(text: String): String =
-        text.split('\n').joinToString("\n") { line ->
-            val comment = line.indexOf("//")
-            if (comment < 0) line
-            else line.substring(0, comment) + " ".repeat(line.length - comment)
+    /**
+     * Replaces each `/* … */` block comment (KDoc included) and each `//`
+     * line comment with spaces, keeping line breaks, so offsets survive.
+     * KDoc prose such as "the `Motion.ToastRise` spring (0.4 s / ζ 0.85)"
+     * or "not a Compose `spring()`" is not a call.
+     */
+    private fun stripLineComments(text: String): String {
+        // A small lexer, string-aware so "image/*" or "https://…" literals
+        // do not open comments; Kotlin block comments nest.
+        val out = StringBuilder(text.length)
+        var i = 0
+        fun blank(c: Char) { out.append(if (c == '\n') '\n' else ' ') }
+        while (i < text.length) {
+            val c = text[i]
+            val next = if (i + 1 < text.length) text[i + 1] else '\u0000'
+            when {
+                c == '/' && next == '/' -> {
+                    while (i < text.length && text[i] != '\n') { blank(text[i]); i++ }
+                }
+                c == '/' && next == '*' -> {
+                    var depth = 0
+                    while (i < text.length) {
+                        if (text.startsWith("/*", i)) {
+                            depth++; blank(text[i]); blank(text[i + 1]); i += 2
+                        } else if (text.startsWith("*/", i)) {
+                            depth--; blank(text[i]); blank(text[i + 1]); i += 2
+                            if (depth == 0) break
+                        } else {
+                            blank(text[i]); i++
+                        }
+                    }
+                }
+                text.startsWith("\"\"\"", i) -> {
+                    val end = text.indexOf("\"\"\"", i + 3).let { if (it < 0) text.length else it + 3 }
+                    out.append(text, i, end); i = end
+                }
+                c == '"' || c == '\'' -> {
+                    var j = i + 1
+                    while (j < text.length && text[j] != c && text[j] != '\n') {
+                        if (text[j] == '\\') j++
+                        j++
+                    }
+                    val end = minOf(j + 1, text.length)
+                    out.append(text, i, end); i = end
+                }
+                else -> { out.append(c); i++ }
+            }
         }
+        return out.toString()
+    }
 
     /**
      * Runs [action] for every `name(…)` call in [text], passing the argument
@@ -111,6 +154,14 @@ class NoPlatformEasingTest {
         while (searchFrom < text.length) {
             val match = pattern.find(text, searchFrom) ?: break
             val open = match.range.last
+            // `PageSheetDefaults.spring()` is a member call (our own token
+            // accessor, not Compose's top-level `spring`), and `fun spring()`
+            // declares one: neither is a defaulted Compose spec.
+            val before = text.substring(0, match.range.first).trimEnd()
+            if (before.endsWith('.') || before.endsWith("fun")) {
+                searchFrom = open + 1
+                continue
+            }
             var depth = 0
             var i = open
             while (i < text.length) {
