@@ -81,6 +81,11 @@ internal object BottomStackTags {
     /** The bottom edge fade (ticket 10's overlay, placed by this container). */
     const val Fade = "bottom-fade"
 
+    // Subcompose slot ids (internal plumbing, not test hooks).
+    const val Body = "bottom-stack-body"
+    const val Blocker = "bottom-stack-blocker"
+    const val Jump = "bottom-stack-jump"
+
     /** One slot's box. */
     fun forSlot(slot: BottomStackSlot): String = when (slot) {
         BottomStackSlot.Pill -> "bottom-stack-pill"
@@ -242,32 +247,24 @@ fun SessionBottomStack(
         val animateWindow = tracker.epoch != tracker.lastMeasuredEpoch
         tracker.lastMeasuredEpoch = tracker.epoch
 
-        val spacingPx = BottomStackMetrics.Spacing.toPx()
-        state.motions.getValue(BottomStackSlot.Pill).update(
-            BottomStackMetrics.slotTarget(BottomStackSlot.Pill, model.pillShown, pillHeight, spacingPx),
-            animateWindow, motionScope,
-        )
-        state.motions.getValue(BottomStackSlot.Queue).update(
-            BottomStackMetrics.slotTarget(BottomStackSlot.Queue, model.queueShown, queueHeight, spacingPx),
-            animateWindow, motionScope,
-        )
-        state.motions.getValue(BottomStackSlot.Questions).update(
-            BottomStackMetrics.slotTarget(BottomStackSlot.Questions, model.questionsShown, questionsHeight, spacingPx),
-            animateWindow, motionScope,
-        )
-        state.motions.getValue(BottomStackSlot.Composer).update(
-            BottomStackMetrics.slotTarget(BottomStackSlot.Composer, model.composerShown, composerHeight, spacingPx),
-            animateWindow, motionScope,
+        // The slots in stack order, top to bottom (SessionViewController.swift:122).
+        val slots = listOf(
+            SlotPlacement(BottomStackSlot.Pill, pillPlaceable, pillHeight, model.pillShown),
+            SlotPlacement(BottomStackSlot.Queue, queuePlaceable, queueHeight, model.queueShown),
+            SlotPlacement(BottomStackSlot.Questions, questionsPlaceable, questionsHeight, model.questionsShown),
+            SlotPlacement(BottomStackSlot.Composer, composerPlaceable, composerHeight, model.composerShown),
         )
 
-        val slotOrder = listOf(
-            BottomStackSlot.Pill,
-            BottomStackSlot.Queue,
-            BottomStackSlot.Questions,
-            BottomStackSlot.Composer,
-        )
+        val spacingPx = BottomStackMetrics.Spacing.toPx()
+        for (entry in slots) {
+            state.motions.getValue(entry.slot).update(
+                BottomStackMetrics.slotTarget(entry.slot, entry.shown, entry.height, spacingPx),
+                animateWindow,
+                motionScope,
+            )
+        }
         var stackHeight = 0f
-        for (slot in slotOrder) stackHeight += state.motions.getValue(slot).extent()
+        for (entry in slots) stackHeight += state.motions.getValue(entry.slot).extent()
         val stackTop = stackBottomPx - stackHeight
         val coveredPx = BottomStackMetrics.covered(windowHeight, stackTop, gap = BottomStackMetrics.InsetPad.toPx())
         val contentInsetPx = BottomStackMetrics.contentInset(coveredPx, navPx)
@@ -302,13 +299,6 @@ fun SessionBottomStack(
             jumpPlaceable.width.toFloat(), jumpPlaceable.height.toFloat(),
             trailing = BottomStackMetrics.JumpTrailing.toPx(),
             above = BottomStackMetrics.JumpAbove.toPx(),
-        )
-
-        val slots = listOf(
-            SlotPlacement(BottomStackSlot.Pill, pillPlaceable, pillHeight, model.pillShown),
-            SlotPlacement(BottomStackSlot.Queue, queuePlaceable, queueHeight, model.queueShown),
-            SlotPlacement(BottomStackSlot.Questions, questionsPlaceable, questionsHeight, model.questionsShown),
-            SlotPlacement(BottomStackSlot.Composer, composerPlaceable, composerHeight, model.composerShown),
         )
 
         layout(W, H) {
@@ -636,37 +626,58 @@ internal fun BottomStackStandIn(
     state.imeOverride = imeOverride
     ProvideHazeState {
         Box(Modifier.size(frameWidth, frameHeight)) {
-            SessionBottomStack(
-                state = state,
-                model = model,
-                transcript = { StripeTranscript() },
-                pill = {
-                    StatusPillRow(
-                        shownBanner(
-                            if (model.bannerShown) SessionChrome.Banner.Sending else SessionChrome.Banner.None,
-                            model.editing,
-                        ),
-                        onTap = {},
-                    )
-                },
-                queue = { QueuePanelStandIn(model.queueCount, glassVisible, animateGlass) },
-                questions = { QuestionsPanelStandIn(glassVisible, animateGlass) },
-                composer = { ComposerStandIn(composerTall) },
-                jump = {
-                    GlassCircleButton(
-                        icon = RobocoIcons.ArrowDown,
-                        contentDescription = "Jump to latest",
-                        onClick = {},
-                        size = 40.dp,
-                        iconPt = 15f,
-                        ink = RobocoTheme.palette.text,
-                    )
-                },
-                modifier = Modifier.fillMaxSize(),
-                stackAlpha = { stackAlpha },
-            )
+            StandInBottomStack(state, model, stackAlpha = { stackAlpha }, composerTall = composerTall)
         }
     }
+}
+
+/** The jump stand-in: ticket 08's 40 dp glass ↓ circle (131's stand-in). */
+@Composable
+private fun JumpStandIn() {
+    GlassCircleButton(
+        icon = RobocoIcons.ArrowDown,
+        contentDescription = "Jump to latest",
+        onClick = {},
+        size = 40.dp,
+        iconPt = 15f,
+        ink = RobocoTheme.palette.text,
+    )
+}
+
+/**
+ * The shared stand-in wiring: the container with glass stand-ins for the
+ * slots, over the striped transcript — the previews, the goldens and the
+ * gallery all drive this. The pill mirrors production
+ * (`shownBanner(chrome.banner, editing)`, banner on = Sending); the queue
+ * and the questions panels follow the slot scopes' glass flags.
+ */
+@Composable
+private fun StandInBottomStack(
+    state: BottomStackState,
+    model: BottomStackModel,
+    stackAlpha: () -> Float,
+    composerTall: Boolean,
+) {
+    SessionBottomStack(
+        state = state,
+        model = model,
+        transcript = { StripeTranscript() },
+        pill = {
+            StatusPillRow(
+                shownBanner(
+                    if (model.bannerShown) SessionChrome.Banner.Sending else SessionChrome.Banner.None,
+                    model.editing,
+                ),
+                onTap = {},
+            )
+        },
+        queue = { QueuePanelStandIn(model.queueCount, glassVisible, animateGlass) },
+        questions = { QuestionsPanelStandIn(glassVisible, animateGlass) },
+        composer = { ComposerStandIn(composerTall) },
+        jump = { JumpStandIn() },
+        modifier = Modifier.fillMaxSize(),
+        stackAlpha = stackAlpha,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -711,35 +722,14 @@ fun BottomStackGallerySection() {
 
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxWidth().height(560.dp)) {
-            SessionBottomStack(
-                state = state,
-                model = model,
-                transcript = { StripeTranscript() },
-                pill = {
-                    StatusPillRow(
-                        shownBanner(
-                            if (banner) SessionChrome.Banner.Sending else SessionChrome.Banner.None,
-                            editing,
-                        ),
-                        onTap = {},
-                    )
-                },
-                queue = { QueuePanelStandIn(queueCount, glassVisible, animateGlass) },
-                questions = { QuestionsPanelStandIn(glassVisible, animateGlass) },
-                composer = { ComposerStandIn(composerTall) },
-                jump = {
-                    GlassCircleButton(
-                        icon = RobocoIcons.ArrowDown,
-                        contentDescription = "Jump to latest",
-                        onClick = {},
-                        size = 40.dp,
-                        iconPt = 15f,
-                        ink = RobocoTheme.palette.text,
-                    )
-                },
-                modifier = Modifier.fillMaxSize(),
-                stackAlpha = { StackAlphaChoices[alphaStep] },
-            )
+            ProvideHazeState {
+                StandInBottomStack(
+                    state,
+                    model,
+                    stackAlpha = { StackAlphaChoices[alphaStep] },
+                    composerTall = composerTall,
+                )
+            }
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             StackToggleRow("Questions", stackOnOff(questions)) { questions = !questions }
