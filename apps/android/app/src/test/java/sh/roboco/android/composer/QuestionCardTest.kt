@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -134,7 +135,24 @@ class QuestionCardTest {
         onNext = { c.next++ },
     )
 
-    /** Renders one card over the page background, top-start, plus [extra]. */
+    /** One [place] call's inputs; [generation] keys a fresh card per call. */
+    private class Placement(
+        val model: QuestionPageModel,
+        val actions: QuestionPageActions,
+        val appearance: Appearance,
+        val glassVisible: Boolean,
+        val animateGlass: Boolean,
+        val extra: @Composable () -> Unit,
+        val generation: Int,
+    )
+
+    private var placement by mutableStateOf<Placement?>(null)
+
+    /**
+     * Renders one card over the page background, top-start, plus [extra].
+     * The rule allows one setContent per test, so the first call mounts and
+     * later calls swap the inputs (keyed: each call is a fresh card).
+     */
     private fun place(
         model: QuestionPageModel = QuestionCardFixtures.A,
         actions: QuestionPageActions = QuestionCardFixtures.NoActions,
@@ -143,12 +161,22 @@ class QuestionCardTest {
         animateGlass: Boolean = true,
         extra: @Composable () -> Unit = {},
     ) {
-        val background = if (appearance == Appearance.Dark) Palette.Dark.background else Palette.Light.background
-        compose.setContent {
-            RobocoTheme(appearance) {
-                Box(Modifier.fillMaxSize().background(background)) {
-                    QuestionCard(model, actions, Modifier, glassVisible, animateGlass)
-                    extra()
+        val mounted = placement != null
+        placement = Placement(
+            model, actions, appearance, glassVisible, animateGlass, extra,
+            generation = (placement?.generation ?: 0) + 1,
+        )
+        if (!mounted) {
+            compose.setContent {
+                val p = placement ?: return@setContent
+                val background = if (p.appearance == Appearance.Dark) Palette.Dark.background else Palette.Light.background
+                key(p.generation) {
+                    RobocoTheme(p.appearance) {
+                        Box(Modifier.fillMaxSize().background(background)) {
+                            QuestionCard(p.model, p.actions, Modifier, p.glassVisible, p.animateGlass)
+                            p.extra()
+                        }
+                    }
                 }
             }
         }
