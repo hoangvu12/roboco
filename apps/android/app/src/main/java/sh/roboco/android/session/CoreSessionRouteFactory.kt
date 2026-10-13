@@ -1,7 +1,11 @@
 package sh.roboco.android.session
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import sh.roboco.android.composer.CoreQueuePort
+import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SessionRoute
@@ -47,6 +51,14 @@ class CoreSessionRouteFactory(
      * pop) cancels its notification. Null = no cancel (tests).
      */
     private val onSeen: ((String) -> Unit)? = null,
+    /**
+     * Ticket 82: the application-lifetime scope each route's `QueueActions`
+     * runs on — the app passes its own `applicationScope`; a queued
+     * command must outlive the screen (iOS `Task {}`), so never the
+     * controller's scope. Unused when a test's fake core carries no
+     * handle.
+     */
+    private val queueScope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ) : SessionRouteFactory {
 
     override fun open(chatId: String): SessionRoute? {
@@ -78,11 +90,19 @@ class CoreSessionRouteFactory(
         // The transcript factory is only *stored* here — 61's production
         // constructor is main-thread only, so the first main-thread read
         // (Content, or 77's prepareArrival) creates it.
+        // Ticket 82: one QueueActions per open route, over the live
+        // handle (a sibling adapter cast — 78/83 read it off the route).
+        // Never the controller's scope: a queued command tapped just
+        // before a committed Back still reaches the engine.
+        val queueActions = (core as? CoreSessionCore)?.let { live ->
+            QueueActions(CoreQueuePort(live.handle), queueScope)
+        }
         return SessionScreenRoute(
             controller = controller,
             core = core,
             state = SessionScreenState(core.chatId, openedAt) { TranscriptState(ts) },
             text = ts,
+            queueActions = queueActions,
         )
     }
 }
@@ -99,11 +119,14 @@ fun installSessionRoutes(
     hub: SessionEventHub,
     fillers: ChromeFillerRegistry,
     onSeen: ((String) -> Unit)? = null,
+    /** Ticket 82: the app-lifetime scope for the routes' `QueueActions` (the app passes its own). */
+    queueScope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ) {
     hooks.sessionRoutes = CoreSessionRouteFactory(
         opener = opener,
         hub = hub,
         fillers = fillers,
         onSeen = onSeen,
+        queueScope = queueScope,
     )
 }

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import sh.roboco.android.background.RunWatchController
+import sh.roboco.android.composer.QueueChromeFiller
 import sh.roboco.android.core.AppLifecycleHooks
 import sh.roboco.android.core.AppearanceController
 import sh.roboco.android.core.CoreClientWorkspace
@@ -381,6 +382,13 @@ class RobocoApplication : Application() {
             }.distinctUntilChanged()
                 .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
         }
+        // Ticket 82 (queue panel): the queue mapping into
+        // `SessionChrome.queue` — gate labels, `visibleText`, order —
+        // registered in 76's QUEUE slot (50), so every opened route fills
+        // it after the banner and chips. The registry hands each open a
+        // fresh instance; the per-route `QueueActions` over the live
+        // handle is built by the factory below (never a shared filler).
+        chromeFillers.register(ChromeFillerRegistry.QUEUE) { _ -> QueueChromeFiller() }
         // Ticket 76: the real session route factory. Every open runs off
         // main through 32's `openSessionRoute`, over `coreStartup.sessionEvents`
         // (51's hub — the same instance the client's events already fan out
@@ -395,6 +403,7 @@ class RobocoApplication : Application() {
             coreStartup.sessionEvents,
             chromeFillers,
             onSeen = { chatId -> notifications.cancelChatFor(chatId) },
+            queueScope = applicationScope,
         )
         // Tickets 40/42/51 register their event sinks here, before start().
         // #40: forcing `workspaceFeed`'s lazy init registers its sink; the

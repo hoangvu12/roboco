@@ -2,6 +2,7 @@ package sh.roboco.android.session
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.SessionRoute
@@ -33,6 +34,17 @@ class SessionScreenRoute internal constructor(
      * the shared engine lives for the process.
      */
     private val text: TextSystem,
+    /**
+     * Ticket 82's per-route queue actions (send-now / move / remove)
+     * over [core]'s handle, built by [CoreSessionRouteFactory] on an
+     * application-lifetime scope — fire-and-forget like iOS's `Task {}`,
+     * so a Remove tapped just before a committed Back still reaches
+     * the engine (never cancelled on pop; the row's fate follows the
+     * engine's echo). Null only when this route's [core] is a test fake
+     * without a real handle. 78/83 wire the panel: its `onAction`
+     * routes Edit to 83's QueueEditController and everything else here.
+     */
+    val queueActions: QueueActions?,
 ) : SessionRoute, NavRoute {
 
     /** The session's scoped chat id (`SessionHandle.chatId()`, through the controller). */
