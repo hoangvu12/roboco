@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
@@ -80,6 +81,9 @@ class PullToRefreshScreenshotTest {
         }
         compose.waitForIdle()
         prepare(stateRef!!)
+        // A frozen-clock write from the test thread reaches the recomposer only
+        // through the apply notification (advanceTimeBy never sends it).
+        Snapshot.sendApplyNotifications()
         // One frame's worth of virtual time: the recomposition that composes
         // the indicator (and the 60 → 60 settle) lands; the never-returning
         // fake keeps the phase at Refreshing.

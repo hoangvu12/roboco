@@ -529,12 +529,13 @@ class SessionsSettingsSectionTest {
     fun draggingTheThumbRightCommitsOnRelease() {
         val calls = mutableListOf<Boolean>()
         mount(on = false, onGroupByProjectChange = { calls += it })
-        // 24 dp of travel against the 22 dp slide (the finger stays well
-        // inside the 63 dp track): the release fraction passes the halfway
-        // point and commits ON.
+        // 30 dp of travel: Robolectric's 16 dp touch slop is consumed by the
+        // slop detector, leaving 14 dp against the 22 dp slide (fraction
+        // ~0.64), so the release passes the halfway point and commits ON
+        // (RobocoSwitchTest's precedent).
         switchNode().performTouchInput {
             down(center)
-            repeat(3) { moveBy(Offset(8.dp.toPx(), 0f)) }
+            repeat(3) { moveBy(Offset(10.dp.toPx(), 0f)) }
             up()
         }
         compose.waitForIdle()
