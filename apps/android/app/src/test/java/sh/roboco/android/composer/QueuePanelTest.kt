@@ -15,6 +15,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -200,9 +201,9 @@ class QueuePanelTest {
 
     private fun boundsOf(tag: String): DpRect = compose.onNodeWithTag(tag).getBoundsInRoot()
 
-    private fun DpRect.heightQ(): Float = bottom.value - top.value
+    private fun DpRect.heightDp(): Float = bottom.value - top.value
 
-    private fun DpRect.widthQ(): Float = right.value - left.value
+    private fun DpRect.widthDp(): Float = right.value - left.value
 
     private fun hasGlassProgress(): SemanticsMatcher =
         SemanticsMatcher("has GlassProgress") { it.config.contains(GlassProgressKey) }
@@ -265,24 +266,24 @@ class QueuePanelTest {
         assertEquals(10f, card.left.value, px)
         assertEquals(368f, card.right.value, px)
         assertEquals(0f, card.top.value, px)
-        assertEquals("one row: 4 + 40 + 4 = 48", 48f, card.heightQ(), px)
+        assertEquals("one row: 4 + 40 + 4 = 48", 48f, card.heightDp(), px)
 
         val row0 = boundsOf("queue-row-0")
-        assertEquals(40f, row0.heightQ(), px)
+        assertEquals(40f, row0.heightDp(), px)
         assertEquals("the row starts after the 4 dp column padding", 4f, row0.top.value - card.top.value, px)
 
         place(items = QueuePanelFixtures.F2L)
-        assertEquals("two rows: 88", 88f, boundsOf("queue-panel").heightQ(), px)
+        assertEquals("two rows: 88", 88f, boundsOf("queue-panel").heightDp(), px)
         assertEquals(44f, boundsOf("queue-row-1").top.value - card.top.value, px)
 
         place(items = QueuePanelFixtures.F3)
-        assertEquals("three rows: 128", 128f, boundsOf("queue-panel").heightQ(), px)
+        assertEquals("three rows: 128", 128f, boundsOf("queue-panel").heightDp(), px)
 
         place(items = QueuePanelFixtures.F5)
         val f5 = boundsOf("queue-panel")
-        assertEquals("three rows + footer: 152", 152f, f5.heightQ(), px)
+        assertEquals("three rows + footer: 152", 152f, f5.heightDp(), px)
         val footer = boundsOf("queue-more-count")
-        assertEquals(24f, footer.heightQ(), px)
+        assertEquals(24f, footer.heightDp(), px)
         assertEquals("the footer starts after the third row", 128f, footer.top.value - f5.top.value, px)
         val footerText = compose.onNodeWithText("+2 more queued", useUnmergedTree = true).getBoundsInRoot()
         val leftGap = footerText.left.value - footer.left.value
@@ -290,7 +291,7 @@ class QueuePanelTest {
         assertTrue("the footer text is centred (was $leftGap vs $rightGap)", abs(leftGap - rightGap) <= px)
 
         place(items = QueuePanelFixtures.FG)
-        assertEquals("gates do not change the height", 152f, boundsOf("queue-panel").heightQ(), px)
+        assertEquals("gates do not change the height", 152f, boundsOf("queue-panel").heightDp(), px)
         val gateRow = compose.onNodeWithTag("queue-row-text-0").fetchSemanticsNode()
         assertEquals("Editing · Then add a TL;DR.", gateRow.config[SemanticsProperties.Text].first().text)
     }
@@ -304,10 +305,10 @@ class QueuePanelTest {
         val more = boundsOf("queue-more-1")
 
         assertEquals("the label starts at 14 + 13 + 8 = 35 dp", 35f, label.left.value - card.left.value, px)
-        assertEquals(227f, label.widthQ(), px)
-        assertEquals(48f, send.widthQ(), px)
+        assertEquals(227f, label.widthDp(), px)
+        assertEquals(48f, send.widthDp(), px)
         assertEquals("Send ends at card right − 44", card.right.value - 44f, send.right.value, px)
-        assertEquals(40f, more.widthQ(), px)
+        assertEquals(40f, more.widthDp(), px)
         assertEquals("More ends at card right − 4", card.right.value - 4f, more.right.value, px)
         assertEquals("Send and More touch (no gap)", send.right.value, more.left.value, px)
         assertTrue(
@@ -317,12 +318,12 @@ class QueuePanelTest {
     }
 
     @Test
-    fun theClockGlyphIsCentredInTheSlotAt205Dp() {
+    fun theClockGlyphIsCentredAt20Point5Dp() {
         place(items = QueuePanelFixtures.F2L)
         val rowPx = pixels("queue-row-0")
         val ink = inkBounds(rowPx, Palette.Light.tertiary)
             ?: error("no tertiary ink in row 0 (the clock glyph)")
-        val centreDp = ink.centerX / density
+        val centreDp = ink.center.x / density
         assertEquals("the clock ink centres at x = 20.5 dp", 20.5f, centreDp, 0.5f)
     }
 
@@ -444,8 +445,8 @@ class QueuePanelTest {
         )
         val row0 = boundsOf("queue-row-0")
         val row1 = boundsOf("queue-row-1")
-        assertEquals(40f, row0.heightQ(), px)
-        assertEquals(40f, row1.heightQ(), px)
+        assertEquals(40f, row0.heightDp(), px)
+        assertEquals(40f, row1.heightDp(), px)
         assertEquals("the row pitch is untouched", 40f, row1.top.value - row0.top.value, px)
         compose.onNodeWithText("Then add a TL;DR.", useUnmergedTree = true).assertExists()
     }
@@ -510,9 +511,9 @@ class QueuePanelTest {
         // frame after the list changes.
         compose.mainClock.autoAdvance = false
         place(items = QueuePanelFixtures.F1)
-        assertEquals(48f, boundsOf("queue-panel").heightQ(), px)
+        assertEquals(48f, boundsOf("queue-panel").heightDp(), px)
 
         place(items = QueuePanelFixtures.F2L)
-        assertEquals("88 dp on the very next frame", 88f, boundsOf("queue-panel").heightQ(), px)
+        assertEquals("88 dp on the very next frame", 88f, boundsOf("queue-panel").heightDp(), px)
     }
 }

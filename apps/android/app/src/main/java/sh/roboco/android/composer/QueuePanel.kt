@@ -132,16 +132,18 @@ object QueuePanelTokens {
  * `animateGlass` flags straight as parameters — it does **not** derive
  * glass visibility itself, and never passes `materializeOnEnter` (a
  * reopened session with a queue shows the card at once, and an empty
- * queue that grows in animates). The screen wiring, once 74/75/76 exist:
+ * queue that grows in animates). 74's stack is in-tree; its gallery
+ * section still draws its own `QueuePanelStandIn` until the session
+ * screen (75/76) composes this panel for real. The wiring once it does:
  *
  * ```kotlin
- * // ticket 74's SessionBottomStack(..., queue = { /* BottomStackSlotScope */
+ * // ticket 74's SessionBottomStack(…, queue = { the BottomStackSlotScope →
  * QueuePanel(chrome.queue, glassVisible = glassVisible, animateGlass = animateGlass,
  *     writable = chrome.canWrite, onAction = { id, a ->
  *         if (a == QueueAction.Edit) edit.beginEdit(id)      // ticket 83
  *         else queueActions.perform(id, a)                   // application scope
  *     })
- * // }, ...)
+ * // }, …)
  * ```
  *
  * `chrome.error` is not shown anywhere (decision COMPOSER-D2, strict iOS
