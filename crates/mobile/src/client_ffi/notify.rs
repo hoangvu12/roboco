@@ -132,7 +132,7 @@ pub trait NotificationSink: Send + Sync {
 /// Bridges the foreign sink onto the client crate's listener. No Rust lock
 /// is held here: a foreign callback that re-enters Rust synchronously must
 /// not deadlock.
-pub(crate) struct SinkBridge(Arc<dyn NotificationSink>);
+pub(crate) struct SinkBridge(pub(crate) Arc<dyn NotificationSink>);
 
 impl mc::NotifyListener for SinkBridge {
     fn session_event(&self, event: mc::SessionEvent) {
