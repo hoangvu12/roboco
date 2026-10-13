@@ -143,7 +143,8 @@ private fun StaticRow(row: CoreSessionRow, offset: Dp?, cmd: SwipeGalleryCommand
     val palette = RobocoTheme.palette
     val height = LocalTypeScale.current.scaledDp(62f)
     val vm = remember(row) { SessionRowVM.from(row, homeColorIndex = 6) }
-    val strings = LocalContext.current.resources::getString
+    val res = LocalContext.current.resources
+    val strings: (Int) -> String = { id -> res.getString(id) }
     val (lead, trail) = remember(archived, vm.pinned, palette) {
         sessionSwipeActions({ row }, { vm }, archived, cmd, palette.accent, palette.secondary, strings)
     }

@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.Velocity
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import sh.roboco.android.design.Feedback
@@ -188,9 +189,12 @@ class SwipeRowState internal constructor(
      * The arming progress to lay out from. Static previews arm by rule
      * (`|preview| ≥ 0.6 × width`), so a 70 % preview shows Archive
      * covering the gap while a 50 % one keeps the equal split.
+     * [rowWidthPx] is the width measured in the caller's measure block
+     * ([widthPx] is 0 until the first `onGloballyPositioned` and is not
+     * snapshot state, so it cannot drive the first layout).
      */
-    internal val currentArm: Float
-        get() = staticOffsetPx?.let { if (abs(it) >= SwipeTokens.FullSwipeFraction * widthPx()) 1f else 0f }
+    internal fun currentArm(rowWidthPx: Float): Float =
+        staticOffsetPx?.let { if (abs(it) >= SwipeTokens.FullSwipeFraction * rowWidthPx) 1f else 0f }
             ?: arm.value
 
     val isOpen: Boolean get() = dragging || offset.value != 0f
@@ -317,9 +321,9 @@ fun SwipeRow(
 ) {
     val scope = rememberCoroutineScope()
     val state = remember(id) { SwipeRowState(id, scope) }
-    val leadNow by rememberUpdatedState(leading)
-    val trailNow by rememberUpdatedState(trailing)
-    val enabledNow by rememberUpdatedState(enabled)
+    val leadNow = rememberUpdatedState(leading)
+    val trailNow = rememberUpdatedState(trailing)
+    val enabledNow = rememberUpdatedState(enabled)
     val feedback = LocalFeedback.current
     val reduce = LocalReduceMotion.current
     val static = previewOffset != null
@@ -351,7 +355,9 @@ fun SwipeRow(
     }
 
     // Logical → physical: in RTL the leading side is the right edge, so a
-    // positive logical offset slides the content physically left.
+    // positive logical offset slides the content physically left. The
+    // gesture maps raw (physical) pointer deltas through it; layout does
+    // not — `Modifier.offset { }` already mirrors x in RTL.
     val dirSign = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
     val showPanes = static || state.open
 
@@ -361,7 +367,7 @@ fun SwipeRow(
             .fillMaxHeight()
             .clipToBounds()
             .semantics {
-                if (enabledNow && !static) {
+                if (enabledNow.value && !static) {
                     customActions = buildList {
                         leadNow.value?.let { action ->
                             add(CustomAccessibilityAction(action.title) {
@@ -387,7 +393,7 @@ fun SwipeRow(
                 if (static) {
                     Modifier
                 } else {
-                    Modifier.pointerInput(id, enabled) {
+                    Modifier.pointerInput(id, enabled, dirSign) {
                         detectRowSwipe(
                             state = state,
                             leading = leadNow,
@@ -395,6 +401,7 @@ fun SwipeRow(
                             enabled = enabledNow,
                             coordinator = coordinator,
                             feedback = feedback,
+                            dirSign = dirSign,
                         )
                     }
                 },
@@ -416,7 +423,7 @@ fun SwipeRow(
         Box(
             Modifier
                 .matchParentSize()
-                .offset { IntOffset((state.currentOffsetPx * dirSign).roundToInt(), 0) },
+                .offset { IntOffset(state.currentOffsetPx.roundToInt(), 0) },
         ) {
             content(static || state.open)
         }
@@ -428,7 +435,7 @@ fun SwipeRow(
             Box(
                 Modifier
                     .matchParentSize()
-                    .offset { IntOffset((state.currentOffsetPx * dirSign).roundToInt(), 0) }
+                    .offset { IntOffset(state.currentOffsetPx.roundToInt(), 0) }
                     .clickable(
                         interactionSource = interaction,
                         indication = null,
@@ -472,7 +479,7 @@ private fun SwipePanes(
         val w = constraints.maxWidth
         val h = constraints.maxHeight
         val rtl = layoutDirection == LayoutDirection.Rtl
-        val spans = paneSpans(abs(state.currentOffsetPx), actions.size, buttonPx, state.currentArm)
+        val spans = paneSpans(abs(state.currentOffsetPx), actions.size, buttonPx, state.currentArm(w.toFloat()))
         layout(w, h) {
             measurables.forEachIndexed { i, measurable ->
                 val span = spans.getOrNull(i) ?: return@forEachIndexed
@@ -519,10 +526,10 @@ private fun SwipePane(
             )
             .semantics { contentDescription = action.title }
             .testTag(action.testTag),
-    ) { measurable, constraints ->
+    ) { measurables, constraints ->
         val w = constraints.maxWidth
         val h = constraints.maxHeight
-        val icon = measurable.measure(Constraints())
+        val icon = measurables.first().measure(Constraints())
         val slot = minOf(w.toFloat(), buttonPx)
         val centreX = if (innerIsEnd) w - slot / 2f else slot / 2f
         val x = (centreX - icon.width / 2f).roundToInt()
@@ -551,31 +558,41 @@ private suspend fun PointerInputScope.detectRowSwipe(
     enabled: State<Boolean>,
     coordinator: SwipeCoordinator,
     feedback: Feedback,
+    dirSign: Float,
 ) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         if (!enabled.value || coordinator.listScrolling()) return@awaitEachGesture
 
-        val dirSign = if (layoutDirection == LayoutDirection.Rtl) -1f else 1f
         val slopPx = SwipeTokens.LockSlop.toPx()
         val buttonPx = SwipeTokens.ButtonWidth.toPx()
         val flingPx = SwipeTokens.FlingVelocity.toPx()
 
         /** Physical sign → "that side can move" (direction mapped through RTL). */
         fun canGo(dxSign: Int): Boolean {
-            val towardLeading = (dxSign > 0) == (layoutDirection != LayoutDirection.Rtl)
+            val towardLeading = (dxSign > 0) == (dirSign > 0f)
             return state.offset.value != 0f ||
                 (towardLeading && leading.value != null) ||
                 (!towardLeading && trailing.value.isNotEmpty())
         }
 
-        /** Clamp to the sides that exist, then follow the finger 1:1. */
-        suspend fun dragTo(x: Float) {
+        // The latest dragged-to offset: the snap below is launched, so
+        // `state.offset.value` may lag it by a frame at release.
+        var lastX = state.offset.value
+
+        /**
+         * Clamp to the sides that exist, then follow the finger 1:1. Not
+         * `suspend`: this block's scope is `@RestrictsSuspension`, so the
+         * snap runs in the row's scope, undispatched (applied immediately
+         * when the offset's mutex is free).
+         */
+        fun dragTo(x: Float) {
             val width = state.widthPx()
             val min = if (trailing.value.isEmpty()) 0f else -width
             val max = if (leading.value == null) 0f else width
             val clamped = x.coerceIn(min, max)
-            state.offset.snapTo(clamped)
+            lastX = clamped
+            state.scope.launch(start = CoroutineStart.UNDISPATCHED) { state.offset.snapTo(clamped) }
             val nowArmed = abs(clamped) >= SwipeTokens.FullSwipeFraction * width &&
                 (if (clamped > 0f) leading.value != null else trailing.value.isNotEmpty())
             if (nowArmed != state.armed) {
@@ -593,7 +610,7 @@ private suspend fun PointerInputScope.detectRowSwipe(
 
         fun release(v: Float) {
             val action = swipeRelease(
-                x = state.offset.value,
+                x = lastX,
                 v = v,
                 widthPx = state.widthPx(),
                 buttonPx = buttonPx,
@@ -672,7 +689,7 @@ fun Modifier.swipeDismissOnTouch(
     swallowTopPx: () -> Float = { 0f },
 ): Modifier = composed {
     var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    val swallow by rememberUpdatedState(swallowTopPx)
+    val swallow = rememberUpdatedState(swallowTopPx)
     this
         .onGloballyPositioned { coords = it }
         .pointerInput(coordinator) {

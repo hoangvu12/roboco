@@ -22,6 +22,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onParent
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -239,13 +240,14 @@ class SwipeRowTest {
     fun swipingLeftRevealsArchiveThenMoveAndSettlesAt148dp() {
         host()
         swipeRight(compose.onNodeWithTag("session-chat-i18n"), dpToTheRight = -80f)
-        // From the edge inward: Archive (outermost) then Move (inner).
+        // From the right edge inward: Archive (outermost, 393 − 74) then
+        // Move (inner, 393 − 148).
         compose.onNodeWithTag("swipe-action-archive").assertExists()
         compose.onNodeWithTag("swipe-action-archive").assertWidthIsEqualTo(74.dp)
-        compose.onNodeWithTag("swipe-action-archive").assertLeftPositionInRootIsEqualTo(0.dp)
+        compose.onNodeWithTag("swipe-action-archive").assertLeftPositionInRootIsEqualTo(319.dp)
         compose.onNodeWithTag("swipe-action-move").assertExists()
         compose.onNodeWithTag("swipe-action-move").assertWidthIsEqualTo(74.dp)
-        compose.onNodeWithTag("swipe-action-move").assertLeftPositionInRootIsEqualTo(74.dp)
+        compose.onNodeWithTag("swipe-action-move").assertLeftPositionInRootIsEqualTo(245.dp)
         assertTrue(cmd.calls.isEmpty())
     }
 
@@ -440,7 +442,9 @@ class SwipeRowTest {
         // deploy runs on engine B: only B's sections are listed, in order,
         // with "No Section" and "New Section…" after them.
         host(rows = SessionListFixtures.recentRows.map { if (it.id == "chat-deploy") it.copy(engineId = "eng-B") else it })
-        compose.onNodeWithTag("session-chat-deploy")
+        // The long-click action lives on the contextMenu wrapper, the row
+        // node's semantics parent.
+        compose.onNodeWithTag("session-chat-deploy").onParent()
             .performSemanticsAction(SemanticsActions.OnLongClick)
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(1000) // past 16's lift and 15's open
@@ -466,7 +470,7 @@ class SwipeRowTest {
     @Test
     fun theArchivedLongPressMenuIsUnarchiveAndRenameOnly() {
         host(archivedRow = { it == "chat-deploy" })
-        compose.onNodeWithTag("session-chat-deploy")
+        compose.onNodeWithTag("session-chat-deploy").onParent()
             .performSemanticsAction(SemanticsActions.OnLongClick)
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(1000)
