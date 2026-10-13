@@ -185,8 +185,10 @@ fun parseRustCrates(json: String): List<LicenceEntry> {
         val name = crate.optString("name", "")
         val version = crate.optString("version", "")
         if (name.isBlank() && version.isBlank()) continue
-        val licence = crate.optString("license", "").ifBlank { null }
-        val repository = crate.optString("repository", "").ifBlank { null }
+        // JSON `null` must read as absent: `optString` turns JSONObject.NULL
+        // into the literal string "null".
+        val licence = crate.optStringOrNull("license")
+        val repository = crate.optStringOrNull("repository")
         val indices = crate.optJSONArray("texts") ?: JSONArray()
         val crateTexts = ArrayList<String>(indices.length())
         for (textIndex in 0 until indices.length()) {
@@ -223,6 +225,10 @@ fun parseRustCrates(json: String): List<LicenceEntry> {
     parsed.sortWith(compareBy({ it.second.title.lowercase() }, { it.first }))
     return parsed.map { it.second }
 }
+
+/** The non-blank string at [key], or null when absent, JSON `null` or blank. */
+private fun JSONObject.optStringOrNull(key: String): String? =
+    if (isNull(key)) null else optString(key, "").ifBlank { null }
 
 // ---------------------------------------------------------------------------
 // The repository

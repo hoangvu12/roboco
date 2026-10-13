@@ -232,9 +232,11 @@ class LicensesBehaviourTest {
         fun gray(x: Int, expected: Int, what: String) {
             val c = px[x, y]
             val e = expected / 255f
+            // The separator's blue is 200 (198, 198, 200); the white card's is 255.
+            val eBlue = if (expected == 255) 1f else 200 / 255f
             assertTrue(
                 "$what at ($x, $y): rgb(${c.red}, ${c.green}, ${c.blue}) expected $expected",
-                abs(c.red - e) <= 12f / 255f && abs(c.green - e) <= 12f / 255f && abs(c.blue - (200 / 255f)) <= 12f / 255f,
+                abs(c.red - e) <= 12f / 255f && abs(c.green - e) <= 12f / 255f && abs(c.blue - eBlue) <= 12f / 255f,
             )
         }
         gray(168, 198, "separator start (56 dp inside the card)")
@@ -371,6 +373,11 @@ class LicensesBehaviourTest {
 
     // -------------------------------------------------- the licences list
 
+    // A taller window than the class's 891 dp: the fixture list (four
+    // sections, the JNA subtitle wrapping) runs past 891 dp, and the lazy
+    // list never composes the Rust rows below the fold that this test
+    // asserts on. The width (and so every row's layout) is unchanged.
+    @Config(sdk = [36], qualifiers = "w402dp-h1600dp-xxhdpi")
     @Test
     fun theLicensesListShowsTheFourSectionsInOrder() {
         hostLicenses()
@@ -465,6 +472,11 @@ class LicensesBehaviourTest {
                 }
             }
         }
+        // On the frozen clock the present() write is only seen by the
+        // recomposer once waitForIdle sends the snapshot apply
+        // notifications; advancing first would run the frames without it
+        // (SheetHostTest's present() helper does the same).
+        compose.waitForIdle()
         settle()
         compose.onNodeWithTag("licenses-geist").performClick()
         settle()
@@ -485,7 +497,27 @@ class LicensesBehaviourTest {
         // every licence source is "missing", and load() still returns.
         val system = android.content.res.Resources.getSystem()
         val repository = LicensesRepository(system.assets, system)
-        assertEquals(emptyList<LicenceSection>(), repository.load())
+        // Every asset-backed entry and section drops. Solar Icons is not
+        // asset-backed (§B: the in-code `SolarNotice`, since the notices
+        // file does not list Solar), so "Fonts and assets" keeps exactly it.
+        assertEquals(
+            listOf(
+                LicenceSection(
+                    key = "assets",
+                    title = "Fonts and assets",
+                    entries = listOf(
+                        LicenceEntry(
+                            id = "solar",
+                            title = "Solar Icons",
+                            subtitle = "CC BY 4.0",
+                            header = null,
+                            texts = listOf(SolarNotice),
+                        ),
+                    ),
+                ),
+            ),
+            repository.load(),
+        )
     }
 
     @Test

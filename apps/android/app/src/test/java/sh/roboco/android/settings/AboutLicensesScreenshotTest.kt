@@ -87,7 +87,7 @@ class AboutLicensesScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h891dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h891dp-night-xxhdpi")
     fun aboutRowsDark() {
         shot(Appearance.Dark, "settings/about_rows_dark.png") { AboutGalleryCard() }
     }
@@ -98,7 +98,7 @@ class AboutLicensesScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w412dp-h900dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w412dp-h900dp-night-xxhdpi")
     fun licensesListDark() {
         shot(Appearance.Dark, "settings/licenses_list_dark.png") { LicensesListGoldenHost() }
     }
@@ -109,7 +109,7 @@ class AboutLicensesScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w412dp-h900dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w412dp-h900dp-night-xxhdpi")
     fun licenceSheetDark() {
         licenceSheetShot(Appearance.Dark, "settings/licence_sheet_dark.png")
     }
