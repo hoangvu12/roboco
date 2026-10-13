@@ -15,9 +15,11 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -25,6 +27,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ApplicationProvider
@@ -304,6 +307,21 @@ class SettingsScreenTest {
         compose.onNodeWithTag(tag).fetchSemanticsNode().config
             .contains(SemanticsProperties.HideFromAccessibility)
 
+    /**
+     * Scrolls the screen's list until [id]'s row is in view. The
+     * LazyColumn is untagged (25 owns it), so the scrollable is found by
+     * its scroll semantics — the only node with `ScrollBy` before any
+     * push (the pushed screens own their own lists).
+     */
+    private fun scrollToRow(id: String) {
+        compose.onNode(scrollableMatcher).performScrollToNode(hasTestTag(settingsTag(id)))
+        compose.waitForIdle()
+    }
+
+    private val scrollableMatcher = SemanticsMatcher("has a scroll action") { node ->
+        node.config.contains(SemanticsActions.ScrollBy)
+    }
+
     // ------------------------------------------------- order and headers
 
     @Test
@@ -342,9 +360,9 @@ class SettingsScreenTest {
         val expected = listOf("Devices", "Notifications", "Appearance", "Wallpaper", "Sessions", "About")
         var searchFrom = 0
         for (header in expected) {
-            val i = headings.indexOf(header, searchFrom)
-            assertTrue("header '$header' not found in $headings", i >= 0)
-            searchFrom = i + 1
+            val local = headings.subList(searchFrom, headings.size).indexOf(header)
+            assertTrue("header '$header' not found in $headings", local >= 0)
+            searchFrom += local + 1
         }
     }
 
@@ -386,6 +404,7 @@ class SettingsScreenTest {
         // effect and remove rows exist.
         wallpaperFlow.value = wallpaperFlow.value.copy(set = true, name = "IMG_0412")
         mount()
+        scrollToRow(WallpaperRowIds.Remove)
         row(WallpaperRowIds.Remove).performClick()
         compose.waitForIdle()
         assertEquals(1, removeCalls)
@@ -394,6 +413,7 @@ class SettingsScreenTest {
     @Test
     fun tappingArchivedPushesTheArchivedFolder() {
         mount()
+        scrollToRow(SessionsSettingsRow.Archived.id)
         row(SessionsSettingsRow.Archived.id).performClick()
         compose.waitUntil(5_000) { stack.top.route == FolderRoute.archived() }
         assertEquals(2, stack.entries.size)
@@ -404,6 +424,7 @@ class SettingsScreenTest {
     @Test
     fun tappingLicensesPushesTheLicensesScreen() {
         mount()
+        scrollToRow(AboutRowIds.Licenses)
         row(AboutRowIds.Licenses).performClick()
         compose.waitUntil(5_000) { stack.top.route === LicensesRoute }
         // 101's hand-off: ShellRouteContent(LicensesRoute) renders the

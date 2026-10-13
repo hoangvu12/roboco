@@ -92,6 +92,10 @@ class MainTabShellTest {
     private fun textExists(text: String): Boolean =
         compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
 
+    /** The large-title item is composed (the list is at — or near — its top). */
+    private fun largeTitleOnScreen(): Boolean =
+        compose.onNodeWithTag("nav-large-title").fetchSemanticsNodes().isNotEmpty()
+
     /**
      * A slow, zero-velocity swipe up over the real Settings list (ticket
      * 103 replaced the placeholder rows): the finger starts down the
@@ -160,16 +164,18 @@ class MainTabShellTest {
         compose.waitUntil(5_000) { state.stack(TabId.Settings).entries.size == 1 }
         assertEquals(before, feedback.calls.size)
         compose.onNodeWithText("Settings row 5").assertDoesNotExist()
-        // The real root: the Settings large title.
-        compose.onNodeWithText("Settings").assertExists()
+        // The real root: the large title (the inline title is hidden at
+        // rest — 25's one-visible-title rule).
+        compose.onNodeWithTag("nav-large-title").assertExists()
 
         // Re-select at the root: the list scrolls back to the top (the
-        // large title is composed away while scrolled down).
+        // large-title item is composed away while scrolled down; the
+        // inline title stays, so the tag is the top probe).
         scrollSettingsDownList()
         compose.waitForIdle()
-        compose.onNodeWithText("Settings").assertDoesNotExist()
+        compose.onNodeWithTag("nav-large-title").assertDoesNotExist()
         compose.onNodeWithTag("tab-more").performClick()
-        compose.waitUntil(5_000) { textExists("Settings") }
+        compose.waitUntil(5_000) { largeTitleOnScreen() }
 
         // A second re-select at the top: nothing happens (no haptic, no
         // pop, no scroll).
@@ -178,7 +184,7 @@ class MainTabShellTest {
         compose.waitForIdle()
         assertEquals(after, feedback.calls.size)
         assertEquals(1, state.stack(TabId.Settings).entries.size)
-        compose.onNodeWithText("Settings").assertExists()
+        compose.onNodeWithTag("nav-large-title").assertExists()
     }
 
     // ---------------------------------------------------------- retention
@@ -214,8 +220,8 @@ class MainTabShellTest {
         compose.onNodeWithText("Settings row 25").assertDoesNotExist()
         compose.onNodeWithTag("tab-root-more").assertExists()
         // The list is still near its end: the last section's rows are on
-        // screen, the top is not.
-        compose.onNodeWithText("Settings").assertDoesNotExist()
+        // screen, the large-title item is not (the inline title shows).
+        compose.onNodeWithTag("nav-large-title").assertDoesNotExist()
         compose.onNodeWithTag("settings-archived").assertExists()
     }
 
