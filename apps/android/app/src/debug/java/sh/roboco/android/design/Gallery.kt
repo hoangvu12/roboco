@@ -32,6 +32,7 @@ import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
+import sh.roboco.android.design.gallery.QuestionCardGallerySection
 import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
@@ -303,6 +304,10 @@ object Gallery {
         GallerySection("Text sheets", GalleryLayout.Fill, screenshotHeightDp = 420) {
             TextSheetsGallerySection()
         },
+        // Ticket 90 (question panel card): the Session screen's question
+        // card — header, question, option rows, the Other field/editor and
+        // Back + Next, one page per question, plus the interactive toy.
+        GallerySection("Question card", screenshotHeightDp = 4200) { QuestionCardGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
