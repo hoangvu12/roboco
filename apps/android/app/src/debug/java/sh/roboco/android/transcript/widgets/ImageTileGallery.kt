@@ -124,16 +124,16 @@ fun ImageTileGallerySection() {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         ScaledStage { ImageTileStage(chipColor(), actions, rowReference, stageKey = reloadKey) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TileChip("Reload") {
+            TileControl("Reload") {
                 loader.evictAll()
                 reloadKey++
             }
-            TileChip("Fail one", active = failFirst) {
+            TileControl("Fail one", active = failFirst) {
                 failFirst = !failFirst
                 loader.evictAll()
                 reloadKey++
             }
-            TileChip("Swap references", active = swapped) { swapped = !swapped }
+            TileControl("Swap references", active = swapped) { swapped = !swapped }
         }
         BasicText(
             "openImage: $lastOpen",
@@ -275,7 +275,7 @@ private fun ScaledStage(content: @Composable () -> Unit) {
 
 /** One gallery control: a `BasicText` label in a clickable capsule (ticket 22's style). */
 @Composable
-private fun TileChip(label: String, active: Boolean = false, onClick: () -> Unit) {
+private fun TileControl(label: String, active: Boolean = false, onClick: () -> Unit) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
     Box(
