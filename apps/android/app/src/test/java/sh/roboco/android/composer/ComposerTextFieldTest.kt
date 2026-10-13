@@ -706,7 +706,11 @@ class ComposerTextFieldTest {
         assertTrue(countMarker(nodePixels(), Palette.Light.text) >= 3)
 
         // The caret: Palette.accent (tintColor), on the frozen clock's
-        // first frame after focus.
+        // first frame after focus. Mounted as the card — what a focused
+        // composer is in the app: a resting capsule with text shows the
+        // #593 preview over the field's text layer at alpha 0, and the
+        // caret is drawn inside that layer, so a capsule never shows it.
+        mount(text = "Ship it", isCard = true, width = 338.dp)
         compose.mainClock.autoAdvance = false
         input().performClick()
         compose.waitForIdle()

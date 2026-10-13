@@ -1,7 +1,6 @@
 package sh.roboco.android.core
 
 import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import java.io.File
@@ -46,10 +45,8 @@ class PrefsAppearanceTest {
 
     private fun TestScope.newPrefs(fileName: String): Live {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val store = PreferenceDataStoreFactory.create(
-            scope = scope,
-            produceFile = { File(tmpFolder.root, "$fileName.preferences_pb") },
-        )
+        // OkioStorage-backed: the File storage cannot overwrite on Windows (see testPrefsStore).
+        val store = testPrefsStore(scope, File(tmpFolder.root, "$fileName.preferences_pb"))
         return Live(Prefs(store, scope, io = StandardTestDispatcher(testScheduler)), store, scope)
     }
 

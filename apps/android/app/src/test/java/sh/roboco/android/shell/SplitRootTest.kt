@@ -324,21 +324,40 @@ class SplitRootTest {
         val p1 = compose.onNodeWithTag("split-sidebar").fetchSemanticsNode().positionInRoot.x
         assertTrue("p1 mid-flight: $p1", p1 > -720 && p1 < 0)
 
-        // Reverse before it settles: no jump to an end value first — the
-        // reverse moves by a frame's step back toward 0. Two frames: the
-        // reversed animateTo (relaunched by collectLatest) takes its start
-        // time on the first one (play time 0, value unchanged) and moves on
-        // the second.
+        // Reverse before it settles: no jump to an end value — the sidebar
+        // turns around from where it is and slides back toward 0.
+        //
+        // The turnaround is not on the very next frame, and the old
+        // `p2 > p1` after two frames could not hold (CI r30: p1=-154,
+        // p2=-198). The hide keeps going for a frame after the key (the
+        // collector picks up the new target after that frame is queued), the
+        // relaunched animateTo takes its start time on the next one without
+        // moving, and a 300 ms ease-in-out tween starting at rest moves only
+        // ~4 px on its first step — it cannot climb back past p1 in one
+        // frame. So: sample frame by frame and check the shape of the motion
+        // instead of comparing against p1.
         compose.onNodeWithTag("split-detail-field").performKeyInput {
             withKeyDown(Key.CtrlLeft) { pressKey(Key.B) }
         }
         sendApplyNotifications()
-        compose.mainClock.advanceTimeByFrame()
-        compose.mainClock.advanceTimeByFrame()
-        val p2 = compose.onNodeWithTag("split-sidebar").fetchSemanticsNode().positionInRoot.x
-        assertTrue("p2 mid-flight: $p2", p2 > -720 && p2 < 0)
-        assertTrue("the reverse must move back up, not jump: p1=$p1 p2=$p2", p2 > p1)
-        assertTrue("a frame's step, not a jump: |p2-p1|=${p2 - p1}", p2 - p1 < 60)
+        val samples = mutableListOf(p1)
+        repeat(8) {
+            compose.mainClock.advanceTimeByFrame()
+            samples += compose.onNodeWithTag("split-sidebar").fetchSemanticsNode().positionInRoot.x
+        }
+        for (p in samples) assertTrue("mid-flight: $samples", p > -720 && p < 0)
+        // A frame's step, never a jump: a jump to either end from here is
+        // >= 150 px (to 0) or >= 500 px (to -720); the steepest frame step of
+        // this tween over 720 px is ~65 px.
+        samples.zipWithNext().forEach { (a, b) ->
+            assertTrue("a frame's step, not a jump: $samples", kotlin.math.abs(b - a) < 100f)
+        }
+        // It turns around early — at most a few frames of hide after the key
+        // — and is moving back up by the end.
+        val turn = samples.indexOf(samples.min())
+        assertTrue("the reverse must start within 3 frames: $samples", turn <= 3)
+        assertTrue("the reverse must move back up: $samples", samples.last() > samples.min() + 20f)
+        assertTrue("and keep moving up: $samples", samples.last() > samples[samples.size - 2])
     }
 
     @Test

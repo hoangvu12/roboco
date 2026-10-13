@@ -179,6 +179,10 @@ internal fun SessionsScreenContent(
                     Modifier.contextMenu(
                         highlight = LiftHighlight.SectionHeader,
                         liftState = lift,
+                        // Recent / project groups have no menu: their long
+                        // press does nothing (no fold on release), only a
+                        // tap folds (ticket 46).
+                        swallowWithoutMenu = true,
                         menu = { sessionHeaderMenu(state.id, latestActions) },
                     )
                 )

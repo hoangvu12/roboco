@@ -243,6 +243,19 @@ class SwipeRowState internal constructor(
             // Launched first: a refusal reported synchronously still lands
             // after the slide-out job and therefore cancels it.
             scope.launch { animateOffset(target) }
+            // A pane tap (or a11y action) arrives unarmed: arm the layout
+            // so the destructive pane — always the side's first, outermost
+            // action — grows over the row exactly as after a released full
+            // swipe ("tapping Archive behaves like the full swipe"), instead
+            // of the unarmed equal split leaving Move half the row. A
+            // released full swipe is already armed: a no-op. A refusal's
+            // settle(0) snaps the arm back in resetClosed().
+            if (!armed) {
+                armed = true
+                scope.launch {
+                    if (reduceMotion()) arm.snapTo(1f) else arm.animateTo(1f, SwipeTokens.Settle.spec())
+                }
+            }
             action.perform { ok -> if (!ok) settle(0f) }
         } else {
             action.perform { }

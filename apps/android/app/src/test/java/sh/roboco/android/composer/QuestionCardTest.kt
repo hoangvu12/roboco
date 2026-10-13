@@ -35,6 +35,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -393,19 +394,25 @@ class QuestionCardTest {
             canContinue = false,
         )
         place(manyOptions)
+        // 51 rows (~2500 dp) overflow even the 1100 dp window: rows 49/50
+        // lie below the root, where getBoundsInRoot clips both the row and
+        // its title to the same empty rect (left 0 - 0 = 0). Unclipped
+        // bounds measure the real layout positions.
+        fun row(tag: String) = compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
+        fun title(text: String) = compose.onNodeWithText(text, useUnmergedTree = true).getUnclippedBoundsInRoot()
         // SF Symbols has "\(n).circle" only for 0…50: the 51st row (index
         // 50) shows no icon, so no gap either — the title is 12 dp in.
         assertEquals(
             "the 51st title starts at the plain padding",
             12f,
-            unmergedTextBounds("Option 51").left.value - bounds("question-option-50").left.value,
+            title("Option 51").left.value - row("question-option-50").left.value,
             0.5f,
         )
         // The 50th still has its ring: 42.4 dp in.
         assertEquals(
             "the 50th title keeps the icon and the 10 dp gap",
             42.4f,
-            unmergedTextBounds("Option 50").left.value - bounds("question-option-49").left.value,
+            title("Option 50").left.value - row("question-option-49").left.value,
             0.5f,
         )
     }

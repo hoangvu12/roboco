@@ -291,7 +291,9 @@ class StatusPillScreenshotTest {
     fun theTickerStopsWhenThePillLeavesComposition() {
         var fakeNow = 0L
         var reads = 0
-        var shown = true
+        // Snapshot state: a plain `var` would never invalidate the host, so
+        // the pill (and its 1 s ticker) would simply stay composed.
+        var shown by mutableStateOf(true)
         host {
             if (shown) {
                 StatusPillRow(

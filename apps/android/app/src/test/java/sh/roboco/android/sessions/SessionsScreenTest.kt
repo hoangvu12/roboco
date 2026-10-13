@@ -5,10 +5,12 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
@@ -25,11 +27,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import dev.chrisbanes.haze.rememberHazeState
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -183,6 +185,8 @@ class SessionsScreenTest {
      * test). [hero] null → the production [sh.roboco.android.design.WallpaperHero]
      * (no wallpaper is set under Robolectric, so no node is emitted).
      */
+    private var uiScope: CoroutineScope? = null
+
     private fun mount(
         sections: List<ListSection> = SessionsScreenFixtures.sections(),
         actions: SessionsScreenActions = recorder,
@@ -197,6 +201,9 @@ class SessionsScreenTest {
         val resolvedHero: @Composable (Modifier, () -> Float) -> Unit =
             hero ?: { m, f -> WallpaperHero(modifier = m, scrollFade = f) }
         compose.setContent {
+            // A composition scope: it carries the frame clock that
+            // animateScrollToItem needs (a bare CoroutineScope has none).
+            uiScope = rememberCoroutineScope()
             RobocoTheme(Appearance.Light) {
                 ProvideGlyphClock(frozenAtNanos = 0L) {
                     CompositionLocalProvider(LocalFeedback provides feedback) {
@@ -609,8 +616,7 @@ class SessionsScreenTest {
         assertEquals(0.5f, fade(), 0.005f)
 
         // The tab bar's re-tap runs the handler (animated to item 0).
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        compose.runOnUiThread { scope.launch { handler!!.scrollToTop() } }
+        compose.runOnUiThread { uiScope!!.launch { handler!!.scrollToTop() } }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(1000)
         compose.waitForIdle()

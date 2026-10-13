@@ -26,7 +26,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -184,6 +186,18 @@ class SelectTextSheetTest {
         compose.waitForIdle()
     }
 
+    /**
+     * The activity window's compose root. With a selection showing, the
+     * text field's handles add popup roots, so `onRoot()` is ambiguous; the
+     * window root is the one spanning the whole 360 dp width.
+     */
+    private fun windowRoot(): SemanticsNodeInteraction {
+        val roots = compose.onAllNodes(isRoot())
+        val index = roots.fetchSemanticsNodes().indexOfFirst { it.size.width >= 360 }
+        check(index >= 0) { "no window-sized compose root" }
+        return roots[index]
+    }
+
     private fun fieldText(): String = compose.onNodeWithTag("select-text-field")
         .fetchSemanticsNode().config[SemanticsProperties.EditableText].text
 
@@ -290,7 +304,11 @@ class SelectTextSheetTest {
         compose.mainClock.autoAdvance = true
         var last = Float.MIN_VALUE
         repeat(8) {
-            compose.onRoot().performTouchInput {
+            // Not onRoot(): the sheet opened with the whole text selected, so
+            // the field shows its selection handles, and each handle is a
+            // Popup — a second compose root (CI r30: a 40 × 40 px root beside
+            // the 360 × 640 window). The swipe goes to the window's root.
+            windowRoot().performTouchInput {
                 swipe(Offset(180f, 500f), Offset(180f, 120f), durationMillis = 400)
             }
             compose.waitForIdle()

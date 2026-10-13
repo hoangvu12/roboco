@@ -74,9 +74,14 @@ class PullToRefreshGestureTest {
     }
 
     /** Composes the host and waits for the first frame. */
-    private fun host(rows: Int, withBackdrop: Boolean = false, reduceMotion: Boolean = false) {
+    private fun host(
+        rows: Int,
+        withBackdrop: Boolean = false,
+        reduceMotion: Boolean = false,
+        refreshMs: Long = 1500,
+    ) {
         compose.setContent {
-            PullHost(rows, withBackdrop, reduceMotion)
+            PullHost(rows, withBackdrop, reduceMotion, refreshMs)
         }
         compose.waitForIdle()
     }
@@ -84,10 +89,11 @@ class PullToRefreshGestureTest {
     /**
      * The test host: the scaffold with [rows] plain 64-dp rows, optionally
      * a tagged backdrop (the wallpaper-hero stand-in) and Reduce Motion.
-     * The fake refresher counts calls and delays 1500 virtual ms.
+     * The fake refresher counts calls and delays [refreshMs] virtual ms
+     * (1500 by default).
      */
     @Composable
-    private fun PullHost(rows: Int, withBackdrop: Boolean, reduceMotion: Boolean) {
+    private fun PullHost(rows: Int, withBackdrop: Boolean, reduceMotion: Boolean, refreshMs: Long) {
         RobocoTheme(Appearance.Light) {
             CompositionLocalProvider(
                 LocalFeedback provides feedback,
@@ -101,7 +107,7 @@ class PullToRefreshGestureTest {
                     onBack = {},
                     pullToRefresh = rememberPullToRefreshState(onRefresh = {
                         refreshCalls++
-                        delay(1500)
+                        delay(refreshMs)
                     }),
                     // A tagged stand-in for the nav row's ⋯ slot: the test
                     // asserts the bar (this and the inline title) never moves
@@ -227,7 +233,13 @@ class PullToRefreshGestureTest {
 
     @Test
     fun secondSwipeGrowsTheHeldGapWithoutRetriggering() {
-        host(rows = 30)
+        // A 2500-ms fake refresh (still under the 3 s cap): the swipes advance
+        // the pinned clock by their durations, so the final hold check lands
+        // ~1716 ms after the trigger (800 + 300 + one frame + 600). With the
+        // default 1500 ms the spinner had already ended and the gap was
+        // springing shut (row 0 at ~124.7), which is not what this test is
+        // about — the hold surviving a second swipe.
+        host(rows = 30, refreshMs = 2500)
         compose.onRoot().performTouchInput {
             swipeDown(startY = 150.dp.toPx(), endY = 550.dp.toPx(), durationMillis = 600)
         }

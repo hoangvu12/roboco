@@ -2,7 +2,10 @@ package sh.roboco.android.sessions
 
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -72,9 +75,21 @@ class SearchModelTest {
     )
 
     /**
-     * Builds the model over mutable state flows in [TestScope.backgroundScope]
-     * (auto-cancelled at the test's end) and holds one collector for the
-     * whole test, so `WhileSubscribed` keeps the sharing up.
+     * Builds the model over mutable state flows and holds one collector
+     * for the whole test, so `WhileSubscribed` keeps the sharing up.
+     *
+     * The model's sharing scope is a **foreground** scope on the test's
+     * dispatcher with its own, unparented [Job] (cancelled when
+     * [TestScope.backgroundScope] is, at the test's end). It must not be
+     * `backgroundScope` itself: every task dispatched from a background
+     * coroutine — the `stateIn` sharing, `mapLatest`'s derivation, the
+     * `withContext(work)` hop and the fake's `delay` — inherits the
+     * background marker, and `advanceUntilIdle()` returns as soon as no
+     * *foreground* task is queued (`TestCoroutineScheduler.advanceUntilIdle`
+     * = `advanceUntilIdleOr { events.none(isForeground) }`), so the
+     * derivation never ran and the state stayed `Loading`. It must not be a
+     * child of the test's own job either — the never-completing sharing
+     * coroutine would keep `runTest` from finishing.
      */
     private fun TestScope.harness(
         fake: FakeSearch,
@@ -83,11 +98,14 @@ class SearchModelTest {
     ): Harness {
         val query = MutableStateFlow("")
         val sourceFlow = MutableStateFlow(source)
+        val modelJob = Job()
+        backgroundScope.coroutineContext.job.invokeOnCompletion { modelJob.cancel() }
+        val modelScope = CoroutineScope(this.coroutineContext + modelJob)
         val model = SearchModel(
             query = query,
             source = sourceFlow,
             search = fake.asSearch,
-            scope = backgroundScope,
+            scope = modelScope,
             work = StandardTestDispatcher(testScheduler),
             onError = onError,
         )

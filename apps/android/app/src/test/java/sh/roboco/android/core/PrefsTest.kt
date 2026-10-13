@@ -17,7 +17,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import sh.roboco.android.sessions.testPrefsStore
 
 /**
  * `Prefs.groupByProject` (android-ui-parity #40) — the port of
@@ -27,7 +26,7 @@ import sh.roboco.android.sessions.testPrefsStore
  * `guard`).
  *
  * Plain JUnit 4: DataStore runs over a temp file on the test scheduler,
- * through the okio-backed [testPrefsStore] — the File-backed factory
+ * through the OkioStorage-backed [testPrefsStore] — the File-backed factory
  * commits with `File.renameTo` when SDK_INT reads the stub's 0, and on
  * Windows `renameTo` cannot replace the file, so every second write failed.
  */

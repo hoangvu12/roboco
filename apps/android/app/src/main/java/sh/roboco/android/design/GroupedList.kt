@@ -413,13 +413,18 @@ fun GroupedFooter(
 ) {
     val horizontal = GroupedListTokens.HeaderHorizontal + GroupedListTokens.CardInset
     val ts = LocalTypeScale.current
-    BasicText(
-        text,
+    // The block (and the caller's modifier — the Pair page's test tags) is
+    // a Box, the text its own node inside the padding, like GroupedHeader:
+    // a semantics node's bounds come from its outermost semantics
+    // modifier, so a tag on the BasicText itself would report the text at
+    // x 0 instead of its real start, 32 dp from the screen edge.
+    Box(
         modifier
             .fillMaxWidth()
             .padding(start = horizontal, end = horizontal, top = GroupedListTokens.FooterTop),
-        style = uiStyle(Face.Sans, ts.fixed(13f), color),
-    )
+    ) {
+        BasicText(text, style = uiStyle(Face.Sans, ts.fixed(13f), color))
+    }
 }
 
 // ---------------------------------------------------------------------------
