@@ -6,7 +6,7 @@ import androidx.compose.ui.geometry.Rect
 
 /**
  * The transcript host's callbacks to its screen (ticket 65). Defaults are
- * no-ops so additions stay non-breaking (128 may add `selectText` the same
+ * no-ops so additions stay non-breaking (128 added `selectText` the same
  * way) and so the gallery and tests can construct one directly. The screen
  * that builds these is not this ticket: 75/78/81/125/126/127 wire them.
  *
@@ -45,6 +45,8 @@ class TranscriptActions(
     val cachedImage: (reference: String, sidePx: Int) -> ImageBitmap? = { _, _ -> null },
     /** The mono tool-detail sheet for a Detail widget (127). */
     val showDetail: (title: String, text: String) -> Unit = { _, _ -> },
+    /** Row menu "Select Text" (128) → this ticket's Select Text sheet. */
+    val selectText: (text: String) -> Unit = { _ -> },
     /**
      * Any tap no widget or scroll consumed (Final pass). A generic hook
      * (e.g. the lab); ticket 81 does **not** use it — the session screen
