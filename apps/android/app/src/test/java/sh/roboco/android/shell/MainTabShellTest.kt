@@ -264,7 +264,13 @@ class MainTabShellTest {
     @Test
     fun backWithAPushedPagePopsItAndDoesNotSwitchTabs() {
         setContent()
-        compose.onNodeWithText("Placeholder row 4").performClick()
+        // Ticket 46: the Sessions root is the real screen, with no
+        // placeholder rows to tap (CI r33: "Placeholder row 4" not found) —
+        // push the detail page programmatically, as
+        // eachTabsBackStackIsIndependent does.
+        compose.runOnUiThread {
+            state.stack(TabId.Sessions).push(PlaceholderDetailRoute(TabId.Sessions, 4), animated = false)
+        }
         compose.waitUntil(5_000) { textExists("Sessions row 4") }
         back()
         compose.waitUntil(5_000) { state.stack(TabId.Sessions).entries.size == 1 }

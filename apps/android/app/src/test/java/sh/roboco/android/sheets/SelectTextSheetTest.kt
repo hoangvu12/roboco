@@ -301,9 +301,22 @@ class SelectTextSheetTest {
 
         // Scroll to the end: the last line sits 32 dp + bottomInset above the
         // sheet bottom, which at Large is the window bottom (640).
+        //
+        // The field's bottom is read *unclipped* (position + size):
+        // getBoundsInRoot is clipped to the scroll viewport, so it reads 640
+        // at every offset short of the end and cannot tell "still
+        // scrolling" from "at the end". And the swipes repeat until that
+        // bottom stops moving rather than a fixed 8 times: 120 wrapped lines
+        // are ~5000 px of text, and a 380 px / 400 ms swipe (+ its ~180 px
+        // fling at mdpi) moves ~540 px, so 8 swipes stopped short of the end
+        // (CI r33: 640, not 608).
         compose.mainClock.autoAdvance = true
-        var last = Float.MIN_VALUE
-        repeat(8) {
+        fun fieldBottom(): Float {
+            val node = compose.onNodeWithTag("select-text-field").fetchSemanticsNode()
+            return node.positionInRoot.y + node.size.height
+        }
+        var last = fieldBottom()
+        for (attempt in 0 until 40) {
             // Not onRoot(): the sheet opened with the whole text selected, so
             // the field shows its selection handles, and each handle is a
             // Popup — a second compose root (CI r30: a 40 × 40 px root beside
@@ -312,11 +325,17 @@ class SelectTextSheetTest {
                 swipe(Offset(180f, 500f), Offset(180f, 120f), durationMillis = 400)
             }
             compose.waitForIdle()
-            val bottom = compose.onNodeWithTag("select-text-field").getBoundsInRoot().bottom.value
-            if (bottom == last) return@repeat
+            val bottom = fieldBottom()
+            if (bottom == last) break // the scroll is at its end
             last = bottom
         }
         assertEquals(640f - SelectTextDefaults.PaddingBottom.value - navBottomDp, last, 1f)
+        // And the clipped bounds agree: the field's last line is on screen.
+        assertEquals(
+            last,
+            compose.onNodeWithTag("select-text-field").getBoundsInRoot().bottom.value,
+            1f,
+        )
     }
 
     // ------------------------------------------------------- the font sizes
