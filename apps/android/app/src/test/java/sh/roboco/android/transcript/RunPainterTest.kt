@@ -103,7 +103,7 @@ class RunPainterTest {
             val f = fonts(d)
             val text = "Plain text and a link"
             val model = RowModel(displayOf(text, listOf(run(0, 16, 10f, 20f, 40f, 0u, ColorRole.TEXT, Decoration.NONE))))
-            val canvas = RecordingCanvas()
+            val canvas = RunRecordingCanvas()
             RunPainter().drawRun(canvas, model, 0, d, f, TranscriptPalette(dark))
 
             assertEquals("one drawText, no bar (dark=$dark)", 1, canvas.ops.size)
@@ -127,7 +127,7 @@ class RunPainterTest {
         val model = RowModel(displayOf(text, listOf(run(0, text.length, 16f, 20f, 100f, 0u, ColorRole.TEXT_FAINT, Decoration.NONE))))
         assertSame(MonoWide.NONE, model.widePlan(0, f[0u]!!))
 
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         RunPainter().drawRun(canvas, model, 0, d, f, TranscriptPalette(false))
         assertEquals(1, canvas.ops.size)
         val t = canvas.texts.single()
@@ -143,12 +143,12 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "the docs"
         val r = run(0, 8, 10f, 20f, 50f, 0u, ColorRole.TEXT_FAINT, Decoration.UNDERLINE)
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         TextRunPainter.draw(canvas, text, r, f[0u]!!, 0xFF797981.toInt(), d)
 
         assertEquals("glyphs then one bar", 2, canvas.ops.size)
-        assertTrue("glyphs first", canvas.ops[0] is RecordingCanvas.TextOp)
-        val bar = canvas.ops[1] as RecordingCanvas.RectOp
+        assertTrue("glyphs first", canvas.ops[0] is RunRecordingCanvas.TextOp)
+        val bar = canvas.ops[1] as RunRecordingCanvas.RectOp
         assertEquals(30f, bar.l, 0.001f)
         assertEquals(66f, bar.t, 0.001f)
         assertEquals(180f, bar.r, 0.001f)
@@ -162,7 +162,7 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "old ideas"
         val r = run(0, 9, 10f, 20f, 50f, 0u, ColorRole.TEXT, Decoration.STRIKETHROUGH)
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         TextRunPainter.draw(canvas, text, r, f[0u]!!, 0xFF27272C.toInt(), d)
 
         val bar = canvas.rects.single()
@@ -181,7 +181,7 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "the docs"
         val r = run(0, 8, 10f, 20f, 50f, 0u, ColorRole.TEXT_FAINT, Decoration.UNDERLINE)
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         TextRunPainter.draw(canvas, text, r, f[0u]!!, 0xFF797981.toInt(), d)
 
         val bar = canvas.rects.single()
@@ -197,7 +197,7 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "Soft file name.rs"
         val model = RowModel(displayOf(text, listOf(run(0, text.length, 16f, 20f, 80f, 2u, ColorRole.TEXT_SOFT, Decoration.UNDERLINE))))
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         RunPainter().drawRun(canvas, model, 0, d, f, TranscriptPalette(false))
 
         assertEquals(0xD9303035.toInt(), canvas.texts.single().color)
@@ -209,7 +209,7 @@ class RunPainterTest {
         val d = 3f
         val f = fonts(d)
         val text = "abc"
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         TextRunPainter.drawGlyphs(canvas, text, run(1, 0, 10f, 20f, 12f, 0u, ColorRole.TEXT, Decoration.NONE), f[0u]!!, 0xFF27272C.toInt(), d)
         assertTrue(canvas.ops.isEmpty())
     }
@@ -221,7 +221,7 @@ class RunPainterTest {
         // bar does not.
         val d = 3f
         val f = fonts(d)
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         TextRunPainter.draw(
             canvas,
             "abc",
@@ -249,12 +249,12 @@ class RunPainterTest {
         val model = RowModel(displayOf(text, listOf(r)))
         val explicit = 0xFF008000.toInt()
 
-        val viaFacade = RecordingCanvas()
+        val viaFacade = RunRecordingCanvas()
         RunPainter().drawRunText(viaFacade, model, 0, d, f, explicit)
         assertEquals(1, viaFacade.ops.size)
         assertEquals(explicit, viaFacade.texts.single().color)
 
-        val direct = RecordingCanvas()
+        val direct = RunRecordingCanvas()
         TextRunPainter.drawGlyphs(direct, text, r, f[2u]!!, explicit, d)
         assertEquals(1, direct.ops.size)
         assertEquals(explicit, direct.texts.single().color)
@@ -280,13 +280,13 @@ class RunPainterTest {
         val f = fonts(3f)
         val painter = RunPainter()
         for (i in intArrayOf(0, 1)) {
-            val canvas = RecordingCanvas()
+            val canvas = RunRecordingCanvas()
             painter.drawRun(canvas, model, i, 3f, f, TranscriptPalette(false))
             assertEquals("run $i: nil line on iOS — no text, no bar", 0, canvas.ops.size)
         }
 
         // And through the model's own draw loop: only the valid run paints.
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         model.draw(0, canvas, 3f, TranscriptPalette(false), f, RowModel.Pass.All)
         assertEquals(1, canvas.ops.size)
         assertEquals(60f * 3f, canvas.texts.single().y, 0f)
@@ -300,7 +300,7 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "| 名称 |" // |, space, 名, 称, space, | — UTF-16 units 0..5
         val model = RowModel(displayOf(text, listOf(run(0, 6, 10f, 20f, 60f, 1u, ColorRole.CODE_TEXT, Decoration.NONE))))
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         RunPainter().drawRun(canvas, model, 0, d, f, TranscriptPalette(false))
         assertEquals(4, canvas.ops.size)
 
@@ -342,7 +342,7 @@ class RunPainterTest {
         val model = RowModel(displayOf(text, listOf(run(0, 5, 10f, 20f, 40f, 1u, ColorRole.CODE_TEXT, Decoration.NONE))))
         assertSame(MonoWide.NONE, model.widePlan(0, f[1u]!!))
 
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         RunPainter().drawRun(canvas, model, 0, d, f, TranscriptPalette(false))
         val t = canvas.texts.single()
         assertSame(text, t.text)
@@ -363,8 +363,8 @@ class RunPainterTest {
         assertSame(plan, model.widePlan(0, font))
 
         val painter = RunPainter()
-        painter.drawRun(RecordingCanvas(), model, 0, 3f, f, TranscriptPalette(false))
-        painter.drawRun(RecordingCanvas(), model, 0, 3f, f, TranscriptPalette(false))
+        painter.drawRun(RunRecordingCanvas(), model, 0, 3f, f, TranscriptPalette(false))
+        painter.drawRun(RunRecordingCanvas(), model, 0, 3f, f, TranscriptPalette(false))
         assertSame("drawing twice reuses the identical plan array", plan, model.widePlan(0, font))
     }
 
@@ -430,7 +430,7 @@ class RunPainterTest {
         val f = fonts(d)
         val text = "| 名称 |"
         val model = RowModel(displayOf(text, listOf(run(0, 6, 10f, 20f, 60f, 1u, ColorRole.CODE_TEXT, Decoration.STRIKETHROUGH))))
-        val canvas = RecordingCanvas()
+        val canvas = RunRecordingCanvas()
         model.draw(0, canvas, d, TranscriptPalette(false), f, RowModel.Pass.Range(2, 4))
 
         // One clip around the whole run: left = 名's leading edge,
@@ -457,7 +457,7 @@ class RunPainterTest {
  * order and geometry contract is asserted from this list, never from
  * pixels; the bitmap only satisfies the constructor.
  */
-private class RecordingCanvas : Canvas(Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)) {
+private class RunRecordingCanvas : Canvas(Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)) {
 
     class TextOp(val text: String, val start: Int, val end: Int, val x: Float, val y: Float, val color: Int)
 

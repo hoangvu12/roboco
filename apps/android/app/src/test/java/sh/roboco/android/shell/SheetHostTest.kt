@@ -1,6 +1,7 @@
 package sh.roboco.android.shell
 
 import androidx.activity.BackEventCompat
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -21,12 +22,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.test.assertDoesNotExist
-import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -34,6 +35,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.width
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,7 +79,7 @@ import sh.roboco.android.design.uiStyle
 class SheetHostTest {
 
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val state = SheetHostState()
     private val dismissed = mutableListOf<String>()
@@ -216,9 +218,9 @@ class SheetHostTest {
         settle()
         assertEquals(0f, entry().offset.value, 1f)
         val bounds = compose.onNodeWithTag("page-sheet").getBoundsInRoot()
-        assertEquals(sheetTop(), bounds.top, 1f)
-        assertEquals(411f, bounds.width, 1f)
-        assertEquals(891f, bounds.bottom, 1f)
+        assertEquals(sheetTop(), bounds.top.value, 1f)
+        assertEquals(411f, bounds.width.value, 1f)
+        assertEquals(891f, bounds.bottom.value, 1f)
         compose.onNodeWithTag("sheet-scrim").assertExists()
         compose.onNodeWithTag("page-sheet:new-session").assertExists()
         // While the sheet is up, the presenting content has no semantics.
@@ -231,7 +233,7 @@ class SheetHostTest {
         present()
         settle()
         val actions = compose.onNodeWithTag("page-sheet").fetchSemanticsNode()
-            .config.getOrNull(SemanticsProperties.CustomActions)
+            .config.getOrNull(SemanticsActions.CustomActions)
         assertEquals(listOf("Dismiss"), actions?.map { it.label })
     }
 
@@ -286,7 +288,7 @@ class SheetHostTest {
         assertEquals(1f, entry().progress, 0.001f)
         assertTrue(state.isPresenting)
         assertTrue(state.isPresented)
-        assertEquals(sheetTop(), compose.onNodeWithTag("page-sheet").getBoundsInRoot().top, 1f)
+        assertEquals(sheetTop(), compose.onNodeWithTag("page-sheet").getBoundsInRoot().top.value, 1f)
     }
 
     // ----------------------------------------------------- drag dismissal
@@ -639,10 +641,10 @@ class SheetHostTest {
         present()
         settle()
         val bounds = compose.onNodeWithTag("page-sheet").getBoundsInRoot()
-        assertEquals(704f, bounds.width, 1f)
-        assertEquals((1280f - 704f) / 2f, bounds.left, 1f)
-        assertEquals(sheetTop(), bounds.top, 1f)
-        assertEquals(800f, bounds.bottom, 1f)
+        assertEquals(704f, bounds.width.value, 1f)
+        assertEquals((1280f - 704f) / 2f, bounds.left.value, 1f)
+        assertEquals(sheetTop(), bounds.top.value, 1f)
+        assertEquals(800f, bounds.bottom.value, 1f)
         // Regular-width sheets dim without the card stack: the scrim
         // stays, the recession does not (the golden pins the visuals).
         compose.onNodeWithTag("sheet-scrim").assertExists()

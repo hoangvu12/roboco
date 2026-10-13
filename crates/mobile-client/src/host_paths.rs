@@ -193,7 +193,8 @@ mod tests {
         assert_eq!(parent("C:"), None);
         assert_eq!(parent("/home"), Some("/".into()));
         assert_eq!(parent("/home/vu"), Some("/home".into()));
-        assert_eq!(parent("/home/"), Some("/home".into()));
+        // Trailing separators are trimmed first: `/home/` is `/home`.
+        assert_eq!(parent("/home/"), Some("/".into()));
         assert_eq!(parent("/"), None);
         assert_eq!(parent("\\\\srv\\share\\x"), Some("\\\\srv\\share".into()));
         assert_eq!(parent("\\\\srv\\share"), None);
