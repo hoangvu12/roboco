@@ -9,10 +9,10 @@ import org.junit.Test
 
 /**
  * The packaged chimes (android-app#28): the three raw resources the
- * `syncChimes` Gradle task stages are byte-identical to the desktop's
- * `crates/ui/assets/sounds/*.wav` — the channels play exactly the bytes
- * the desktop plays. Plain JVM over the `roboco.*` system properties the
- * build sets (the `GeneratedAssetsTest` pattern).
+ * syncChimes Gradle task stages are byte-identical to the desktop chimes
+ * under crates/ui/assets/sounds (done, request, attention) — the channels
+ * play exactly the bytes the desktop plays. Plain JVM over the roboco.*
+ * system properties the build sets (the GeneratedAssetsTest pattern).
  */
 class ChimeBytesTest {
 

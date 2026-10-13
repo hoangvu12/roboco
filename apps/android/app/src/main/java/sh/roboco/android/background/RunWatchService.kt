@@ -15,7 +15,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import sh.roboco.android.RobocoApplication
-import sh.roboco.android.notify.Notifier
 import sh.roboco.android.notify.OngoingInput
 import sh.roboco.android.notify.ongoingContent
 

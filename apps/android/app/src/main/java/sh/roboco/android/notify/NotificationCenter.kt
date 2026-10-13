@@ -6,7 +6,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import sh.roboco.android.background.RunWatchController
-import sh.roboco.android.notify.WorkingRun
 import uniffi.roboco_core.NotificationSink
 import uniffi.roboco_core.RunActivity
 import uniffi.roboco_core.SessionEvent

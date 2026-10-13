@@ -68,6 +68,7 @@ class RunWatchController(
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
     private val serviceClass: Class<*> = RunWatchService::class.java,
+    private val notifier: Notifier = Notifier(context),
     private val startService: (Intent) -> Unit = { intent ->
         ContextCompat.startForegroundService(context, intent)
     },
@@ -95,80 +96,105 @@ class RunWatchController(
     /** The mirror of "the service is up" (the service reports both edges). */
     private var serviceRunning: Boolean = false
 
-    /** A start went out and  has not acknowledged it yet. */
+    /** A start went out and `onStartCommand` has not acknowledged it yet. */
     private var startInFlight: Boolean = false
 
     /** The delayed stop-grace check. */
     private var stopCheck: Job? = null
 
+    /**
+     * The inputs arrive from two threads (the sink's Default lane and the
+     * app's main lane); every transition and the snapshot run under this
+     * lock so the state is never torn.
+     */
+    private val gate = Any()
+
     // ── inputs ───────────────────────────────────────────────────────────
 
     /** The core's aggregate activity (arrives off the main thread). */
     fun onRunActivity(newWorking: List<WorkingRun>, newAwaiting: Int) {
-        working = newWorking
-        awaiting = newAwaiting
-        if (working.isNotEmpty()) {
-            emptySinceMs = null
-            // The working set changed: a dismissed Live Update may be
-            // promoted again.
-            liveUpdateDismissed = false
-        } else if (emptySinceMs == null) {
-            emptySinceMs = clock()
+        synchronized(gate) {
+            val workingSetChanged = newWorking.map { "${it.chatId}:${it.title}:${it.fromThisDevice}" } !=
+                working.map { "${it.chatId}:${it.title}:${it.fromThisDevice}" }
+            working = newWorking
+            awaiting = newAwaiting
+            if (working.isNotEmpty()) {
+                emptySinceMs = null
+                // The WORKING SET changed (an awaiting-only change does
+                // not): a dismissed Live Update may be promoted again.
+                if (workingSetChanged) liveUpdateDismissed = false
+            } else if (emptySinceMs == null) {
+                emptySinceMs = clock()
+            }
+            update()
         }
-        update()
     }
 
     /** The process lifecycle (≥ STARTED = foreground). */
     fun onForeground(isForeground: Boolean) {
-        val was = foreground
-        foreground = isForeground
-        if (isForeground && !was && budgetExhausted) {
-            // The dataSync budget resets when the user brings the app to
-            // the foreground.
-            budgetExhausted = false
-            Notifier(context).cancelBudgetExhausted()
+        synchronized(gate) {
+            val was = foreground
+            foreground = isForeground
+            if (isForeground && !was && budgetExhausted) {
+                // The dataSync budget resets when the user brings the app
+                // to the foreground.
+                budgetExhausted = false
+                notifier.cancelBudgetExhausted()
+            }
+            update()
         }
-        update()
     }
 
     /** The notifications-on gate (the master pref + the permission). */
     fun onNotificationsOn(on: Boolean) {
-        notificationsOn = on
-        update()
+        synchronized(gate) {
+            notificationsOn = on
+            update()
+        }
     }
 
     /** The paired-engine count (parked engines count as paired). */
     fun onEngineCount(count: Int) {
-        engineCount = count
-        update()
+        synchronized(gate) {
+            engineCount = count
+            update()
+        }
     }
 
     // ── the service's reports ────────────────────────────────────────────
 
     /** The service's `onTimeout(startId, fgsType)` (API 35+). */
     fun onServiceTimeout(notifier: Notifier) {
-        budgetExhausted = true
-        notifier.postBudgetExhausted()
-        update()
+        synchronized(gate) {
+            budgetExhausted = true
+            notifier.postBudgetExhausted()
+            update()
+        }
     }
 
     /** The ongoing notification's deleteIntent: the Live Update was dismissed. */
     fun onLiveUpdateDismissed() {
-        if (liveUpdateDismissed) return
-        liveUpdateDismissed = true
-        update()
+        synchronized(gate) {
+            if (liveUpdateDismissed) return
+            liveUpdateDismissed = true
+            update()
+        }
     }
 
     /** The service's `onStartCommand` acknowledges it is up. */
     fun onServiceStarted() {
-        serviceRunning = true
-        startInFlight = false
+        synchronized(gate) {
+            serviceRunning = true
+            startInFlight = false
+        }
     }
 
     /** The service went down (its stop path or `onDestroy`). */
     fun onServiceStopped() {
-        serviceRunning = false
-        startInFlight = false
+        synchronized(gate) {
+            serviceRunning = false
+            startInFlight = false
+        }
     }
 
     // ── the decision ─────────────────────────────────────────────────────

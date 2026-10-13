@@ -319,7 +319,9 @@ class RobocoApplication : Application() {
      * sockets — the core client does; the service keeps the process out
      * of the cached/frozen set.
      */
-    val runWatch: RunWatchController by lazy { RunWatchController(this, applicationScope) }
+    val runWatch: RunWatchController by lazy {
+        RunWatchController(this, applicationScope, notifier = notifier)
+    }
 
     override fun onCreate() {
         super.onCreate()

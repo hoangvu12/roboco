@@ -27,7 +27,10 @@ pub struct NotifyTimings {
     /// it, or 30 s pass").
     pub send_window: Duration,
     /// The driver's idle tick — it measures the 4 s link grace and the 30 s
-    /// send window without needing a fleet change.
+    /// send window without needing a fleet change. An in-process timer
+    /// only: no wake lock, a plain timer arm in the driver's select loop,
+    /// dwarfed by the core's 15 s ping (the ticket's "no timers" battery rule targets the
+    /// service's platform footprint, not in-process scheduling).
     pub tick: Duration,
 }
 

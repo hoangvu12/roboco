@@ -17,14 +17,14 @@ import sh.roboco.android.MainActivity
 import sh.roboco.android.R
 
 /**
- * The notification copy (android-app#28, verbatim from
- * `ios:App/PushNotifications.swift:18-20`, web `notifications.ts:206-220`;
- * the new, source-less copy is flagged in the ticket's Comments).
+ * The notification copy that has no per-kind owner (android-app#28,
+ * verbatim from web `notifications.ts:215-220`; the "Background updates
+ * paused" pair is new copy, flagged in the ticket's Comments). The
+ * session texts live on [NotificationKind.title] — iOS's `Kind.title`
+ * (`PushNotifications.swift:18-20`) is both the row title and the banner
+ * body.
  */
 object NotifyCopy {
-    const val Done = "Run finished"
-    const val Input = "Waiting on your input"
-    const val Failed = "Run failed"
     const val LinkLostTitle = "Connection unavailable"
     const val LinkLostReconnecting = "Roboco is trying to reconnect"
     const val LinkLostOffline = "Your device is offline"
@@ -126,11 +126,7 @@ class Notifier(private val context: Context) {
         subText: String?,
         nowMs: Long,
     ) {
-        val text = when (kind) {
-            NotificationKind.Done -> NotifyCopy.Done
-            NotificationKind.Input -> NotifyCopy.Input
-            NotificationKind.Failed -> NotifyCopy.Failed
-        }
+        val text = kind.title
         val tag = chatTag(engineId, chatId)
         val notification = NotificationCompat.Builder(context, channelId(kind))
             .setSmallIcon(SMALL_ICON)
