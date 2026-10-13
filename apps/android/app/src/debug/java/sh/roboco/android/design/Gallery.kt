@@ -47,6 +47,7 @@ import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
+import sh.roboco.android.session.SessionOpenGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SearchGallerySection
@@ -395,6 +396,14 @@ object Gallery {
         // rows running under the background-less stack, plus the New
         // Folder alert in its retry-error state.
         GallerySection("Folder bottom bar", screenshotHeightDp = 600) { FolderBottomBarGallerySection() },
+        // Ticket 75 (session open): the Session screen's open choreography —
+        // the hold with the ×1.75 spinner, the 180 ms ease-out reveal, the
+        // 8 s give-up and the OPEN probe — over the fixture scaffold with
+        // the Push / Rows-arrive / Replay controls. Fill: the section owns
+        // its fixed-height session window.
+        GallerySection("Session open", GalleryLayout.Fill, screenshotHeightDp = 900) {
+            SessionOpenGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
