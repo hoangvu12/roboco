@@ -50,8 +50,8 @@ internal class PhoneShellAdapter(
     private val view: View,
 ) : PhoneShell {
 
-    /** 31's contract: the `SheetHandoff` from [hideSheetForHandoff], completed by [dismissSheet]. */
-    private var pending: SheetHandoff? = null
+    /** 31's contract: the [SheetHandoff] from [hideSheetForHandoff], completed by [dismissSheet] once the motion ends. */
+    private var pendingHandoff: SheetHandoff? = null
 
     override fun selectTab(tab: TabId) {
         // Programmatic selection: no haptic, no re-select pop-to-root
@@ -77,14 +77,14 @@ internal class PhoneShellAdapter(
     }
 
     override fun dismissSheet(animated: Boolean) {
-        val handoff = pending
+        val handoff = pendingHandoff
         if (handoff != null) {
             // The hidden sheet: removal without animation, whatever
             // `animated` says — it is invisible anyway. 31 requires
             // `complete()` on the handle (the caller must call it); going
             // through `dismiss(false)` instead would tear it down the
             // wrong way.
-            pending = null
+            pendingHandoff = null
             handoff.complete()
             return
         }
@@ -99,7 +99,7 @@ internal class PhoneShellAdapter(
         // stale one would hijack a later dismissSheet (its complete() is
         // a no-op on the empty hidden set).
         if (sheetHost == null || !sheetHost.isPresenting) return
-        pending = sheetHost.hideForHandoff()
+        pendingHandoff = sheetHost.hideForHandoff()
     }
 
     override fun dismissAlerts() {
