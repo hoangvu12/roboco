@@ -11,6 +11,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsEnabled
@@ -45,9 +46,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import org.robolectric.shadows.ShadowPackageManager
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.Cue
 import sh.roboco.android.design.Feedback
@@ -111,7 +112,7 @@ class PairPageTest {
     @Before
     fun setUp() {
         // Deterministic both ways: the scan row tests toggle it per test.
-        ShadowPackageManager.setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, true)
+        shadowOf(ApplicationProvider.getApplicationContext<Context>().packageManager).setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, true)
     }
 
     @After
@@ -333,7 +334,7 @@ class PairPageTest {
 
     @Test
     fun theScanRowIsHiddenWithoutTheCameraFeature() {
-        ShadowPackageManager.setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, false)
+        shadowOf(ApplicationProvider.getApplicationContext<Context>().packageManager).setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, false)
         hostPage()
         compose.onNodeWithTag("settings-pair-scan").assertDoesNotExist()
     }
