@@ -39,6 +39,7 @@ import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
+import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
@@ -196,6 +197,10 @@ object Gallery {
         // both modes, the #593 two-line resting preview, the 180 ms height
         // tween and Ctrl+Enter, in the 268/338 dp slots of a 370 dp composer.
         GallerySection("Composer text field", screenshotHeightDp = 1100) { ComposerTextFieldGallerySection() },
+        // Ticket 39 (foldable section header): the sessions front page's
+        // group header — title, count, live glyph, spring chevron, and
+        // the pressed controlFill. Tap a row to fold it.
+        GallerySection("Section header", screenshotHeightDp = 480) { SectionHeaderGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
