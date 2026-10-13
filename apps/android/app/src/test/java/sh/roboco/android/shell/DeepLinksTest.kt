@@ -186,9 +186,10 @@ class DeepLinksTest {
 
     @Test
     fun rawIdDecodesEscapes() {
-        // JSON escapes: `["k\"1","r\u00e6\\x"]` → raw id `r\u00e9\\x` in
-        // Kotlin literals (r, é, backslash, x).
-        assertEquals("r\u00e9\\x", ScopedIds.rawId(scopedOf("""["k\"1","r\u00e6\\x"]""")))
+        // JSON escapes: `["k\"1","r\u00e9\\x"]` decodes to raw id `r\u00e9\\x`
+        // in Kotlin literals (r, é, backslash, x) — the ticket's expected
+        // value `"ré\\x"`; its input column's `e6` is the typo (æ ≠ é).
+        assertEquals("r\u00e9\\x", ScopedIds.rawId(scopedOf("""["k\"1","r\u00e9\\x"]""")))
     }
 
     @Test
