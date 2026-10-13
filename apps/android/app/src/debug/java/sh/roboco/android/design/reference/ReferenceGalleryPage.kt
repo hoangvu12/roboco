@@ -67,12 +67,12 @@ fun ReferenceGalleryPage() {
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),
-                measurePolicy = { measurable, _ ->
+                measurePolicy = { measurables, _ ->
                     // The child is measured at its fixed 402 × 874 dp frame;
                     // the reported size (and the scroll extent) is the
                     // scaled one, and graphicsLayer draws it scaled about
                     // its top-left.
-                    val child = measurable.measure(
+                    val child = measurables.first().measure(
                         Constraints.fixed(
                             ReferenceGeometry.Width.roundToPx(),
                             ReferenceGeometry.Height.roundToPx(),
