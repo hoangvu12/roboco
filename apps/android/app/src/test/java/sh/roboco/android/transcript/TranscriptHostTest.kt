@@ -34,6 +34,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowChoreographer
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
@@ -87,13 +88,23 @@ class TranscriptHostTest {
      * Sets up a fed state (viewport first, then entries — a width-0 frame
      * never builds), waits for the frame, and resets the perf counters so
      * the test counts only what its own composition does.
+     *
+     * The frame reaches `state.frame` only through the relay's
+     * Choreographer callback, which Robolectric's paused looper schedules
+     * one frame delay (15 ms) ahead of its own clock. `compose.waitUntil`
+     * only advances the compose test clock (a coroutine scheduler) and
+     * sleeps — it never runs or advances the main looper — so it timed out
+     * every time. Step the looper's clock instead, as
+     * `TranscriptStateCoreTest` does.
      */
     private fun fedState(entries: List<DebugEntry>, expectedRows: UInt): TranscriptState {
         val state = TranscriptState()
         state.setViewport(411f, 1f)
         state.engine.setDebugEntries(entries, working = false)
-        compose.waitUntil(5_000) {
-            state.frame?.let { it.width() == 411f && it.rowCount() == expectedRows } == true
+        val end = System.nanoTime() + 5_000_000_000L
+        while (state.frame?.let { it.width() == 411f && it.rowCount() == expectedRows } != true) {
+            check(System.nanoTime() < end) { "no $expectedRows-row frame at width 411 within 5 s" }
+            shadowOf(Looper.getMainLooper()).idleFor(ShadowChoreographer.getFrameDelay())
         }
         TranscriptPerf.reset()
         return state
@@ -112,9 +123,11 @@ class TranscriptHostTest {
 
     /**
      * Advances the frozen main clock one frame at a time until [condition]
-     * holds (5 s wall). Each step first idles the paused main looper — the
-     * relay's Choreographer hop (posted from the layout thread) only runs
-     * there, `advanceTimeByFrame()` never idles it — then sends the apply
+     * holds (5 s wall). Each step first runs the paused main looper one
+     * Choreographer frame delay ahead — the relay's Choreographer hop
+     * (posted from the layout thread) is scheduled that far ahead of the
+     * looper's clock, so a bare `idle()` never reaches it, and
+     * `advanceTimeByFrame()` never touches the looper — then sends the apply
      * notification for the `frame` write that hop made (Compose's
      * GlobalSnapshotManager would otherwise forward it from yet another
      * main-looper post), so the next frame recomposes the realized band.
@@ -123,7 +136,7 @@ class TranscriptHostTest {
         val end = System.nanoTime() + 5_000_000_000L
         while (!condition()) {
             check(System.nanoTime() < end) { "condition not met within 5 s" }
-            shadowOf(Looper.getMainLooper()).idle()
+            shadowOf(Looper.getMainLooper()).idleFor(ShadowChoreographer.getFrameDelay())
             Snapshot.sendApplyNotifications()
             compose.mainClock.advanceTimeByFrame()
         }

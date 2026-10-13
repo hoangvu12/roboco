@@ -61,7 +61,7 @@ private val GRAY = 0xFF8A8A8E.toInt()
 
 /**
  * `WallpaperStore` behaviour (ticket 20): the import pipeline
- * (`ImageDecoder` decode-time downsample + EXIF + JPEG 90 + `AtomicFile`),
+ * (in-memory `ImageDecoder` decode-time downsample + EXIF + JPEG 90 + `AtomicFile`),
  * the prefs and the change signal, the render pipeline's scale maths and
  * byte order, the contrast-guard call shape, the per-appearance cache and
  * its generation guard, ordering on the serial io dispatcher,
@@ -737,8 +737,8 @@ class WallpaperStoreTest {
 /**
  * Serves [fixture] under [AUTHORITY] for the `set(uri)` tests: a
  * `DISPLAY_NAME` query (or no row), `image/jpeg` for `getType`, and the
- * file for `openFile` — the two calls `ImageDecoder.createSource(resolver,
- * uri)` makes through `openTypedAssetFileDescriptor`.
+ * file for `openFile` — what `ContentResolver.openInputStream(uri)` reads
+ * the picked image's bytes through.
  */
 class FakeImageProvider : ContentProvider() {
 

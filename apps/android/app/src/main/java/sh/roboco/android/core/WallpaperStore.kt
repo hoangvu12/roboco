@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import java.io.File
+import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import kotlin.math.max
 import kotlin.math.min
@@ -144,14 +145,16 @@ class WallpaperStore internal constructor(
      */
     fun set(uri: Uri): Deferred<Boolean> =
         scope.async(io) {
-            // The file, not a decoded bitmap: it's downsampled as it's read.
-            importFrom(ImageDecoder.createSource(context.contentResolver, uri), displayName(uri))
+            importFrom(displayName(uri)) {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw FileNotFoundException("no stream for $uri")
+            }
         }
 
     /** Import a file (debug launch extra `wallpaper`). Name = file name with extension. */
     fun set(path: File): Deferred<Boolean> =
         scope.async(io) {
-            importFrom(ImageDecoder.createSource(path), path.name)
+            importFrom(path.name) { path.readBytes() }
         }
 
     /**
@@ -203,7 +206,7 @@ class WallpaperStore internal constructor(
             synchronized(lock) { cache[key] }?.let { return@withContext it }
             runCatching {
                 val bitmap = toArgb8888(
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
+                    ImageDecoder.decodeBitmap(bytesSource(file.readBytes())) { decoder, info, _ ->
                         val w = info.size.width
                         val h = info.size.height
                         val scale = min(1.0, MAX_RENDER_SIDE.toDouble() / max(w, h))
@@ -294,11 +297,12 @@ class WallpaperStore internal constructor(
      * like Swift `.rounded()`), EXIF orientation applied by `ImageDecoder`,
      * JPEG 90, atomic write, then the name pref and the change signal.
      * A failed import returns `false` with no pref change and no signal.
+     * [read] (the encoded bytes) runs inside the failure handling.
      */
-    private fun importFrom(source: ImageDecoder.Source, name: String): Boolean =
+    private fun importFrom(name: String, read: () -> ByteArray): Boolean =
         runCatching {
             val bitmap = toArgb8888(
-                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                ImageDecoder.decodeBitmap(bytesSource(read())) { decoder, info, _ ->
                     val w = info.size.width
                     val h = info.size.height
                     val scale = min(1.0, MAX_STORED_SIDE.toDouble() / max(w, h))
@@ -349,6 +353,18 @@ class WallpaperStore internal constructor(
         val dot = name.lastIndexOf('.')
         return if (dot > 0) name.substring(0, dot) else name
     }
+
+    /**
+     * Decodes from the encoded bytes in memory, never from a file
+     * descriptor: `ImageDecoder`'s File/Uri sources hand the native decoder
+     * a raw fd, which host Skia builds without POSIX descriptors (Robolectric
+     * native graphics on Windows) cannot read, so every import and render
+     * failed there. Downsampling and EXIF orientation are unchanged — both
+     * are decode-time options of the same `ImageDecoder`; the cost is one
+     * copy of the compressed file (a few MB) for the decode's duration.
+     */
+    private fun bytesSource(bytes: ByteArray): ImageDecoder.Source =
+        ImageDecoder.createSource(ByteBuffer.wrap(bytes))
 
     /** Scales `v` by [scale], clamped to ≥ 1 and rounded (Swift `.rounded()`). */
     private fun target(v: Int, scale: Double): Int = max(1, (v * scale).roundToInt())

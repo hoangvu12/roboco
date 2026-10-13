@@ -1,5 +1,6 @@
 package sh.roboco.android.core
 
+import android.app.Application
 import android.content.Context
 import android.os.Looper
 import androidx.datastore.core.DataStore
@@ -57,10 +58,16 @@ import java.util.concurrent.atomic.AtomicInteger
  * setup as `CoreLoadTest`). A non-empty credential dials
  * `http://127.0.0.1:9` so the socket fails instantly and the engine is
  * Connecting/Reconnecting, never Parked.
+ *
+ * A plain [Application]: `RobocoApplication.onCreate` starts the app's own
+ * pipeline (its own `CoreClient`, `Main.immediate` collectors and the
+ * default main-posting session hub), which posts to the main looper on its
+ * own schedule and made the "event path must not touch the main looper"
+ * assertions fail regardless of what the event path did.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [36], application = Application::class)
 class CoreStartupTest {
 
     @get:Rule
@@ -217,6 +224,9 @@ class CoreStartupTest {
         advanceUntilIdle()
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
 
+        // Flush whatever framework startup left on main, so the idle
+        // check below sees only what the event path posts.
+        shadowOf(Looper.getMainLooper()).idle()
         thread(name = "rust-thread") {
             fixture.startup.listener.onEvent(
                 ClientEvent.EngineIdentityPinned(engine.engineId, "dev-1", "MacBook Pro"),
@@ -251,6 +261,9 @@ class CoreStartupTest {
         assertEquals(1, fixture.startup.engines.value?.size)
         val readsBefore = engineReads.get()
 
+        // Flush whatever framework startup left on main, so the idle
+        // check below sees only what the event path posts.
+        shadowOf(Looper.getMainLooper()).idle()
         thread(name = "rust-thread") {
             fixture.startup.listener.onEvent(ClientEvent.EnginesChanged)
         }.join()
@@ -279,6 +292,9 @@ class CoreStartupTest {
         advanceUntilIdle()
         assertEquals(CoreStartState.Ready, fixture.startup.state.value)
 
+        // Flush whatever framework startup left on main, so the idle
+        // check below sees only what the event path posts.
+        shadowOf(Looper.getMainLooper()).idle()
         thread(name = "rust-thread") {
             fixture.startup.listener.onEvent(ClientEvent.EnginesChanged)
         }.join()
