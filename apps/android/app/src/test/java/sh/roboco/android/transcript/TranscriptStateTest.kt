@@ -31,11 +31,14 @@ import uniffi.roboco_core.TranscriptView
 /**
  * A frame with a fixed revision and style list. Counts [styles] calls so
  * the style-table sync can prove it only copies the table when the count
- * moved.
+ * moved. `rows`/`height` back 68's apply calls (`rowCount`, `totalHeight`)
+ * — `NoHandle` fakes must override them or the FFI layer throws.
  */
 private class FakeFrame(
     private val rev: ULong,
     private val styleList: List<StyleDesc>,
+    private val rows: UInt = 0u,
+    private val height: Float = 0f,
 ) : LayoutFrame(NoHandle) {
     var styleCalls = 0
         private set
@@ -48,6 +51,10 @@ private class FakeFrame(
         styleCalls++
         return styleList
     }
+
+    override fun rowCount() = rows
+
+    override fun totalHeight() = height
 }
 
 /** Records the engine calls [TranscriptState] makes; `frame()` serves [next]. */

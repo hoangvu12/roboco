@@ -174,7 +174,7 @@ class TranscriptHostTest {
         try {
             assertTrue("tall enough to scroll", state.frame!!.totalHeight() > 4600f)
             host(state)
-            state.offset = 3000f
+            state.viewport.setOffset(3000f)
             compose.waitForIdle()
 
             val start = bandStart(3000f)
@@ -201,14 +201,14 @@ class TranscriptHostTest {
         val state = fedState(LongFixture, expectedRows = 120u)
         try {
             host(state)
-            state.offset = 3100f
+            state.viewport.setOffset(3100f)
             compose.waitForIdle()
 
             val compositions = state.hostCompositions
             val top = compose.onAllNodesWithTag("row-user").fetchSemanticsNodes()
                 .sortedBy { it.boundsInRoot.top }.first().boundsInRoot.top
 
-            state.offset = 3200f // the same 256 dp step (bandStart = 2304 for both)
+            state.viewport.setOffset(3200f) // the same 256 dp step (bandStart = 2304 for both)
             compose.waitForIdle()
             assertEquals(bandStart(3100f), bandStart(3200f), 0f)
             assertEquals("scrolling within a step recomposed the host", compositions, state.hostCompositions)
@@ -320,6 +320,9 @@ class TranscriptHostTest {
             assertEquals(1, taps.get())
 
             // A swipe the scrollable consumed: no tap, and the offset grows.
+            // The first frame now lands at the tail (68 R2), so move to the
+            // top first — the swipe scrolls toward the tail from there.
+            compose.runOnIdle { state.viewport.setOffset(0f) }
             val before = state.offset
             compose.onNodeWithTag("transcript").performTouchInput { swipeUp() }
             compose.waitForIdle()
