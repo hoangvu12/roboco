@@ -38,6 +38,7 @@ import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
+import sh.roboco.android.sessions.FolderScreensGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
@@ -287,6 +288,14 @@ object Gallery {
         // Version/Licenses rows and the long-press copy — plus the Licenses
         // list and the licence-text page sheet in a fixed-height host.
         GallerySection("About & Licenses", screenshotHeightDp = 1200) { AboutGallerySection() },
+        // Ticket 45 (folder screens): the section page with ⋯ Rename/Delete,
+        // Archived and Pinned — pushed inside a NavStackHost over the
+        // fixture workspaces, with the kind picker and the "Fail writes"
+        // toggle. Fill: the section owns the ActionSheetHost (19) and the
+        // GlassMenuHost (15) the ⋯ menu needs.
+        GallerySection("Folder screens", GalleryLayout.Fill, screenshotHeightDp = 852) {
+            FolderScreensGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
