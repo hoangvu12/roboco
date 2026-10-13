@@ -253,8 +253,15 @@ class SelectTextSheetTest {
         // The gesture is driven in window coordinates (onRoot) because the
         // field's own node is taller than the window and would start the
         // swipe outside it.
+        //
+        // The distance must cross 17's settle rule: a slow release crosses
+        // from Medium (320) to Large (10) only past 50 % of that 310 px span.
+        // The old 130 px swipe moved the sheet 114 px (130 − the 16 px touch
+        // slop the scroll consumes) — 37 % — so it correctly sprang back to
+        // Medium (CI r23). 240 px moves it 224 px (72 %), still a slow drag
+        // (600 dp/s, under the 1200 dp/s fling line), starting on the text.
         compose.onRoot().performTouchInput {
-            swipe(Offset(180f, 550f), Offset(180f, 420f), durationMillis = 400)
+            swipe(Offset(180f, 600f), Offset(180f, 360f), durationMillis = 400)
         }
         compose.mainClock.advanceTimeBy(1100)
         compose.waitForIdle()

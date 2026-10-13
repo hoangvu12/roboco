@@ -181,8 +181,17 @@ internal object GlassMenuTokens {
     /** Title → subtitle gap. */
     val SubtitleGap = 2.dp
 
-    /** Row content padding, top and bottom (wraps grow past [RowHeight]). */
-    val RowPadV = 11.dp
+    /**
+     * Row content padding, top and bottom (wraps grow past [RowHeight]).
+     * The ticket's nominal 11 assumed a 20 dp line; Geist's natural line box
+     * is 1.3 × 16 = 20.8 dp, so 11 + 20.8 + 11 made every single-line row
+     * 42.8 dp (CI r23: a 128 px pitch at xxhdpi, not the AC's 42 dp ± 0.5).
+     * 10.4 ((42 − 20.8) / 2 = 10.6, rounded down so the per-edge px
+     * rounding never pushes one line past 42 at any density) keeps one line
+     * inside the 42 dp minimum; larger text and wraps still grow the row
+     * through it.
+     */
+    val RowPadV = 10.4.dp
 
     /** Menu title line padding (tuning values). */
     val TitlePadTop = 6.dp
@@ -1233,7 +1242,7 @@ private fun MenuLoadingLine(slotReserved: Boolean) {
 
 /**
  * The shared row anatomy: the 20×20 leading slot centred at 36 dp, the
- * text block centred in the 42 dp min height (growing through the 11 dp
+ * text block centred in the 42 dp min height (growing through the 10.4 dp
  * padding once it wraps), and the trailing `chevron.right` on submenu
  * rows. The press highlight is a `controlFill` rounded rect drawn while a
  * finger is down — no ripple, `indication = null`.

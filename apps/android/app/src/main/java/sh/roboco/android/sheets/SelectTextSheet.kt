@@ -1,7 +1,10 @@
 package sh.roboco.android.sheets
 
 import android.content.res.Configuration
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import kotlin.math.abs
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalTypeScale
@@ -75,6 +79,7 @@ import sh.roboco.android.design.uiStyle
  * a font-scale change while the sheet is open does not restyle it — while
  * the colour is recomposed, like an iOS dynamic colour.
  */
+@OptIn(ExperimentalFoundationApi::class) // LocalBringIntoViewSpec
 @Composable
 fun SelectTextSheet(
     text: String,
@@ -126,35 +131,51 @@ fun SelectTextSheet(
                 backgroundColor = palette.accent.copy(alpha = SelectTextDefaults.HighlightAlpha),
             )
         }
-        CompositionLocalProvider(LocalTextSelectionColors provides selection) {
+        // The scroll container's bring-into-view rule (read by verticalScroll
+        // through LocalBringIntoViewSpec). The default scrolls a focused
+        // field that is taller than the viewport until its top edge meets
+        // the viewport top — the select-all focus request on open scrolled
+        // the 16 dp textContainerInset.top away (CI r23: first line at
+        // header + 0, not header + 16). UITextView's selectAll does not
+        // scroll, so a request whose rect is taller than the viewport and
+        // already starts inside it scrolls nothing; small rects (the cursor,
+        // the selection handles) keep the default behaviour. The field's own
+        // subtree gets the outer spec back.
+        val outerBringIntoView = LocalBringIntoViewSpec.current
+        CompositionLocalProvider(
+            LocalTextSelectionColors provides selection,
+            LocalBringIntoViewSpec provides KeepVisibleTopSpec,
+        ) {
             // tv.frame = view.bounds + widthTracksTextView: the scroll
             // container fills the content slot, word-wrapped in both
             // variants (no horizontal scrolling).
             Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                BasicTextField(
-                    state = field,
-                    readOnly = true,
-                    textStyle = style,
-                    // isEditable = false: no caret is ever drawn.
-                    cursorBrush = SolidColor(Color.Transparent),
-                    lineLimits = TextFieldLineLimits.MultiLine(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // textContainerInset (16/14/32/14) + the 5 dp
-                        // NSTextContainer.lineFragmentPadding UIKit default,
-                        // all inside the scroll so it scrolls away with the
-                        // text; the bottom also clears 17's nav-bar inset so
-                        // the last line scrolls above the home indicator.
-                        .padding(
-                            start = SelectTextDefaults.PaddingHorizontal,
-                            end = SelectTextDefaults.PaddingHorizontal,
-                            top = SelectTextDefaults.PaddingTop,
-                            bottom = SelectTextDefaults.PaddingBottom + bottomInset,
-                        )
-                        .focusRequester(focus)
-                        .semantics { this[SelectTextFontDpKey] = fontDp }
-                        .testTag("select-text-field"),
-                )
+                CompositionLocalProvider(LocalBringIntoViewSpec provides outerBringIntoView) {
+                    BasicTextField(
+                        state = field,
+                        readOnly = true,
+                        textStyle = style,
+                        // isEditable = false: no caret is ever drawn.
+                        cursorBrush = SolidColor(Color.Transparent),
+                        lineLimits = TextFieldLineLimits.MultiLine(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // textContainerInset (16/14/32/14) + the 5 dp
+                            // NSTextContainer.lineFragmentPadding UIKit default,
+                            // all inside the scroll so it scrolls away with the
+                            // text; the bottom also clears 17's nav-bar inset so
+                            // the last line scrolls above the home indicator.
+                            .padding(
+                                start = SelectTextDefaults.PaddingHorizontal,
+                                end = SelectTextDefaults.PaddingHorizontal,
+                                top = SelectTextDefaults.PaddingTop,
+                                bottom = SelectTextDefaults.PaddingBottom + bottomInset,
+                            )
+                            .focusRequester(focus)
+                            .semantics { this[SelectTextFontDpKey] = fontDp }
+                            .testTag("select-text-field"),
+                    )
+                }
             }
         }
     }
@@ -170,6 +191,28 @@ fun SelectTextSheet(
             withFrameNanos { }
             focus.requestFocus()
             keyboard?.hide()
+        }
+    }
+}
+
+/**
+ * The text scroll's bring-into-view rule: foundation's default
+ * (`BringIntoViewSpec.defaultCalculateScrollDistance`), except that a rect
+ * taller than the viewport whose leading edge is already inside it scrolls
+ * nothing. The default would align that edge with the viewport top — the
+ * whole-field request a focus gain sends (`FocusableNode`) — and scroll the
+ * 16 dp top inset away when select-all focuses the field on open.
+ */
+private object KeepVisibleTopSpec : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        val leadingEdge = offset
+        val trailingEdge = offset + size
+        return when {
+            leadingEdge >= 0f && trailingEdge <= containerSize -> 0f
+            leadingEdge < 0f && trailingEdge > containerSize -> 0f
+            size > containerSize && leadingEdge >= 0f && leadingEdge < containerSize -> 0f
+            abs(leadingEdge) < abs(trailingEdge - containerSize) -> leadingEdge
+            else -> trailingEdge - containerSize
         }
     }
 }
