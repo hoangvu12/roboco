@@ -148,11 +148,13 @@ object Gallery {
         // Ticket 31 (PageSheet + SheetHost): the large-detent page sheet
         // with the card-stack recession, stacking and the handoff hide.
         GallerySection("Page sheet", GalleryLayout.Fill, screenshotHeightDp = 891) { PageSheetGallerySection() },
+        // Ticket 12 (meta glyphs): the row meta line's static glyphs —
+        // PrBadge, PrIcon, ProjectTile, BranchIcon.
+        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 12 "Meta glyphs"        GallerySection("Meta glyphs") { MetaGlyphsGallerySection() }
         // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
         // Ticket 20 (WallpaperStore) is non-visual and has no gallery entry.
