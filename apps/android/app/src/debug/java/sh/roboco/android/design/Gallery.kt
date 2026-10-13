@@ -45,6 +45,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
+import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SessionListGallerySection
 import sh.roboco.android.sessions.SessionPromptsGallerySection
@@ -336,6 +337,12 @@ object Gallery {
         // real page presented in a gallery-local sheet host with the
         // fake backend. Fill: the section owns its SheetHost.
         GallerySection("Pair page", GalleryLayout.Fill) { PairPageGallerySection() },
+        // Ticket 73 (status pill): the Session screen's glass capsule —
+        // the fixture column of every banner plus the live ticking Working
+        // pill (frozen under capture so the golden stays byte-stable).
+        GallerySection("Status pill", screenshotHeightDp = 760) {
+            StatusPillGallerySection(liveTicker = !LocalGalleryCapture.current)
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
