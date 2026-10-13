@@ -482,7 +482,14 @@ fn apply_engine(
     // Baselines of chats whose session row vanished (deleted) do not
     // linger: a re-appearing row is a first appearance again.
     state.baseline.retain(|id, _| seen.iter().any(|s| s == id));
-    state.sends.retain(|id, _| seen.iter().any(|s| s == id));
+    // A send outlives a missing row for its window: a chat's FIRST run has
+    // no session row until the engine starts it (createChat writes only
+    // the chat), and the note_send wake runs a pass before that row
+    // exists. Dropping the track there let the first run of a new chat
+    // chime Done for the phone's own send.
+    state
+        .sends
+        .retain(|id, t| seen.iter().any(|s| s == id) || now_ms - t.sent_at_ms < window_ms);
 
     // ── resolved: a notified state ends ─────────────────────────────────
     let finished: Vec<String> = state
@@ -872,6 +879,35 @@ mod tests {
             out.first(),
             Some(Emission::Session(SessionEvent { kind: NotifyKind::Done, .. }))
         ));
+    }
+
+    #[test]
+    fn a_send_before_the_chats_first_session_row_still_consumes_its_completion() {
+        let base = Utc::now();
+        let mut driver = DriverState::new(timings());
+        // A fresh chat: the chat row exists, no session row yet.
+        driver.apply(&[engine(vec![], vec![chat("chat-1", None, None)])], base);
+        driver.note_send("e1", "chat-1", base.timestamp_millis());
+        // The note_send wake: a pass before the engine has started the run.
+        driver.apply(&[engine(vec![], vec![chat("chat-1", None, None)])], now_plus(base, 10));
+        // The run's row appears Working (first appearance, seeds silently)…
+        let working = now_plus(base, 100);
+        driver.apply(
+            &[engine(vec![session(SessionStatus::Working, working, None)], vec![chat("chat-1", None, None)])],
+            working,
+        );
+        // …and completes after the window: still this phone's own send.
+        let done = now_plus(base, 1000);
+        let out = notify_only(
+            &driver.apply(
+                &[engine(
+                    vec![session(SessionStatus::Idle, done, Some("mine"))],
+                    vec![chat("chat-1", None, None)],
+                )],
+                done,
+            ),
+        );
+        assert!(out.is_empty(), "the phone's own first send consumes its completion: {out:?}");
     }
 
     #[test]
