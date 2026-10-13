@@ -8,6 +8,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,6 +42,10 @@ fun interface QrScanRequest {
  * one current [PairPageModel] — a redeem that outlives its sheet keeps
  * running in the launcher's [scope] and is shown again on reopen — and
  * the presentation through ticket 31's sheet host.
+ *
+ * [io] is handed to every model it creates ([PairPageModel]'s FFI lane,
+ * `Dispatchers.IO` in production); tests pass their scheduler's
+ * dispatcher so a launcher-built redeem is driven by `advanceUntilIdle`.
  */
 @Stable
 class PairPageLauncher internal constructor(
@@ -50,6 +55,7 @@ class PairPageLauncher internal constructor(
     private val scope: CoroutineScope,
     internal val qrScan: QrScanRequest?,
     internal val clipboard: PairClipboard,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
     /**
@@ -99,6 +105,7 @@ class PairPageLauncher internal constructor(
                 backend = backend,
                 store = store,
                 scope = scope,
+                io = io,
             ).also { current = it }
         }
         // 31 composes sheet entries outside the root content, so

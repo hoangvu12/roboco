@@ -445,8 +445,9 @@ class PairPageTest {
         assertEquals(361f, widthDp("pair-link-row"), 0.5f)
         // The field's text starts 16 inside the card (x 32).
         assertEquals(32f, bounds("pair-url").left.value, 0.5f)
-        // The footer text: x 32 … 361 (the tag sits outside 70's padding,
-        // so the measured node is the text itself).
+        // The footer text: x 32 … 361 (the tag sits on 70's padded Box,
+        // the text is its own node inside it, so the measured node is the
+        // text itself).
         val hint = compose.onNodeWithText("Paste a pairing link from any engine", substring = true)
             .getBoundsInRoot()
         assertEquals(32f, hint.left.value, 0.5f)

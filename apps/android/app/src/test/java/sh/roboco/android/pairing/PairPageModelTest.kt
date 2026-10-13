@@ -351,7 +351,7 @@ class PairPageModelTest {
         val gate = CompletableDeferred<PairedEngine>()
         backend.pairImpl = { _, _ -> gate.await() }
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
         val paired = mutableListOf<Unit>()
 
         launcher.openPairPage()
@@ -381,7 +381,7 @@ class PairPageModelTest {
         val gate = CompletableDeferred<PairedEngine>()
         backend.pairImpl = { _, _ -> gate.await() }
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
 
         launcher.openPairPage(prefill = "http://10.0.2.2:27655/pair#token=abc")
         val model = launcher.current!!
@@ -410,7 +410,7 @@ class PairPageModelTest {
     fun openPairPagePresentsAGrabberPageSheetAndDoesNotPair() = runTest {
         val harness = harness()
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
 
         launcher.openPairPage(prefill = "https://h/pair#token=x")
 
@@ -429,7 +429,7 @@ class PairPageModelTest {
     fun aSecondOpenWhileIdleRefillsTheModel() = runTest {
         val harness = harness()
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
         launcher.openPairPage(prefill = "https://a/pair#token=1")
         val model = launcher.current!!
 
@@ -448,7 +448,7 @@ class PairPageModelTest {
         val gate = CompletableDeferred<PairedEngine>()
         backend.pairImpl = { _, _ -> gate.await() }
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
         launcher.openPairPage(prefill = "https://a/pair#token=1")
         val model = launcher.current!!
         model.submit()
@@ -468,7 +468,7 @@ class PairPageModelTest {
     fun anIdleDismissalClearsTheModelAndAReopenIsFresh() = runTest {
         val harness = harness()
         val host = SheetHostState()
-        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard())
+        val launcher = PairPageLauncher(host, backend, harness.sink, harness.scope, qrScan = null, clipboard = FakeClipboard(), io = harness.io)
         launcher.openPairPage(prefill = "https://a/pair#token=1")
         val first = launcher.current!!
 

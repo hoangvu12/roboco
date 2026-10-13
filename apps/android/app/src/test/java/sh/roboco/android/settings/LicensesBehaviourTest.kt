@@ -241,7 +241,9 @@ class LicensesBehaviourTest {
         }
         gray(168, 198, "separator start (56 dp inside the card)")
         gray(150, 255, "left of the separator start")
-        gray(1062, 198, "separator end (16 dp before the card edge)")
+        // The hairline covers [168, 1062) px (butt caps): 1062 px = 354 dp is
+        // its exclusive end, so the last lit pixel is 1061.
+        gray(1061, 198, "separator end (16 dp before the card edge)")
         gray(1080, 255, "right of the separator end")
     }
 

@@ -231,7 +231,10 @@ class AppearanceSectionTest {
             val px = rowImage(settingsTag("appearance:$tag"))
             assertTrue("row $tag separator start (56 dp into the card)", matches(px[168, 155], 198, 198, 200, 12))
             assertTrue("row $tag left of the separator start", matches(px[160, 155], 255, 255, 255, 2))
-            assertTrue("row $tag separator end (16 dp before the card edge)", matches(px[1062, 155], 198, 198, 200, 12))
+            // The hairline is drawn over [168, 1062) px with butt caps:
+            // x = 1062 px (354 dp) is its exclusive end, so the last lit
+            // pixel is 1061.
+            assertTrue("row $tag separator end (16 dp before the card edge)", matches(px[1061, 155], 198, 198, 200, 12))
             assertTrue("row $tag right of the separator end", matches(px[1068, 155], 255, 255, 255, 2))
         }
         val row2 = rowImage(settingsTag("appearance:2"))

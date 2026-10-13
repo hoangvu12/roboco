@@ -416,13 +416,18 @@ class SessionsSettingsSectionTest {
     fun aSeparatorRunsUnderRowOneOnly() {
         mount()
         // UIKit separator over white ≈ (198, 198, 200), on row 1's last
-        // pixel row (y = 251 of 252), 56 dp into the card to 16 dp before
-        // its edge — the separator follows the text column, x 72…370.
+        // pixel row, 56 dp into the card to 16 dp before its edge — the
+        // separator follows the text column, x 72…370. The last pixel row
+        // is read from the capture, not hard-coded as 251: the row is
+        // 84 dp only within theSectionGeometryMatchesTheTicket's ±1 dp —
+        // 15 + 20.8 + 2 × 16.9 + 15 = 84.6 dp ≈ 254 px — so y = 251 is a
+        // white pixel row above the hairline.
         val row1 = rowImage(settingsTag("groupByProject"))
-        assertGray(row1, 170, 251, 198, 12, "separator start (56 dp into the card)")
-        assertGray(row1, 160, 251, 255, 2, "left of the separator start")
-        assertGray(row1, 1060, 251, 198, 12, "separator end (16 dp before the card edge)")
-        assertGray(row1, 1070, 251, 255, 2, "right of the separator end")
+        val y1 = row1.height - 1
+        assertGray(row1, 170, y1, 198, 12, "separator start (56 dp into the card)")
+        assertGray(row1, 160, y1, 255, 2, "left of the separator start")
+        assertGray(row1, 1060, y1, 198, 12, "separator end (16 dp before the card edge)")
+        assertGray(row1, 1070, y1, 255, 2, "right of the separator end")
         // No separator under the last row.
         val row2 = rowImage(settingsTag("archived"))
         assertGray(row2, 300, 155, 255, 2, "no separator under the last row")
