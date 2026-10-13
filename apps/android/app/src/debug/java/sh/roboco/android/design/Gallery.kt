@@ -37,6 +37,7 @@ import sh.roboco.android.design.gallery.ScrollEdgeEffectGallerySection
 import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
+import sh.roboco.android.design.reference.ReferenceGalleryPage
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
@@ -434,11 +435,17 @@ object Gallery {
         GallerySection("Notification rows", GalleryLayout.Fill, screenshotHeightDp = 760) {
             NotificationRowsGallerySection()
         },
+        // Ticket 23 (iOS reference board): the static Sessions-tab mock of
+        // 1-off.png built from the foundation parts — glass chrome, flat
+        // rows, accessory, tab pill, search circle — on the fixed iOS
+        // canvas, scaled to fit. Fill: the page owns its scrolling.
+        GallerySection("Reference", GalleryLayout.Fill, screenshotHeightDp = 1000) {
+            ReferenceGalleryPage()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
         // Ticket 20 (WallpaperStore) is non-visual and has no gallery entry.
     )
 
