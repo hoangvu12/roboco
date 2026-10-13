@@ -6,6 +6,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -98,7 +99,7 @@ class SessionListOpenerTest {
         override fun open(chatId: String): FakeRoute? {
             calls += chatId
             offMain += Looper.myLooper() != Looper.getMainLooper()
-            if (chatId == "a") firstGate.await()
+            if (chatId == "a") runBlocking { firstGate.await() } // open() is blocking, off main
             if (chatId == "null") return null
             return FakeRoute(chatId).also { routes += it }
         }

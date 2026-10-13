@@ -38,6 +38,7 @@ import sh.roboco.android.design.ActionSheetHostState
 import sh.roboco.android.design.AlertHost
 import sh.roboco.android.design.AlertHostState
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastAnnouncer
 import sh.roboco.android.design.ToastHost
@@ -165,6 +166,8 @@ class FolderScreenTest {
         stack.push(FolderFixtures.sectionRoute, animated = false)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
+                // Frozen: the loading test's live spinner would otherwise keep the clock busy.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
                 AlertHost(state = alerts) {
                     ToastHost(state = toaster, announcer = ToastAnnouncer { }) {
                         ActionSheetHost(state = sheets) {
@@ -189,6 +192,7 @@ class FolderScreenTest {
                             }
                         }
                     }
+                }
                 }
             }
         }

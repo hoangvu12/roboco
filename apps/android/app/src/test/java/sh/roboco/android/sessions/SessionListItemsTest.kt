@@ -232,7 +232,7 @@ class SessionListItemsTest {
         val folder = FolderRowVM("f1", "Folder", 3, "folder")
         val sections = listOf(
             ListSection("s", "S", folders = listOf(folder), rows = listOf(row("a"))),
-            ListSection(id = "s2", header = null, folders = listOf(folder)),
+            ListSection(id = "s2", header = null, folders = listOf(folder), rows = emptyList()),
         )
         val built = items(sections)
         assertEquals(

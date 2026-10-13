@@ -52,6 +52,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LinearFontScaleDensity
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 
@@ -107,8 +108,10 @@ class SessionListBehaviourTest {
     ) {
         val density = LinearFontScaleDensity(3f, fontScale)
         compose.setContent {
+            // Frozen glyph clock: a live spinner (the loading overlay, working
+            // rows) runs a withFrameNanos loop that never lets Compose idle.
             CompositionLocalProvider(LocalDensity provides density) {
-                RobocoTheme(Appearance.Light) {
+                RobocoTheme(Appearance.Light) { ProvideGlyphClock(frozenAtNanos = 0L) {
                     val model = rememberSessionListModel(
                         sections = sections(),
                         collapsible = collapsible(),
@@ -130,7 +133,7 @@ class SessionListBehaviourTest {
                         rowWrapper = rowWrapper,
                         leadingItems = leadingItems,
                     )
-                }
+                } }
             }
         }
         compose.waitForIdle()

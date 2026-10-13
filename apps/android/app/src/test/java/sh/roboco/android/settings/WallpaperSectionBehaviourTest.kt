@@ -2,10 +2,10 @@ package sh.roboco.android.settings
 
 import android.net.Uri
 import androidx.activity.compose.LocalActivityResultRegistryOwner
-import androidx.activity.result.ActivityResultContract
 import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize

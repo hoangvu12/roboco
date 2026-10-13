@@ -15,7 +15,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -28,8 +31,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -85,6 +88,10 @@ class DetailWidgetTest {
 
     /** The scrollable parent's state, captured at composition. */
     private var scrollState: ScrollState? = null
+
+    /** [stripedPixels]' widget toggle (one setContent per test). */
+    private var stripeWidget by mutableStateOf(false)
+    private var stripeMounted = false
 
     // ----------------------------------------------------------- mounting
 
@@ -182,7 +189,7 @@ class DetailWidgetTest {
         )
         assertEquals(Role.Button, node.config[SemanticsProperties.Role])
         // The iOS view is a bare UIControl with no visuals: no text, no image.
-        assertNull(node.config[SemanticsProperties.Text])
+        assertNull(node.config.getOrNull(SemanticsProperties.Text))
         compose.onNodeWithContentDescription("Bash details").assertExists()
     }
 
@@ -198,7 +205,7 @@ class DetailWidgetTest {
         assertEquals(listOf("Bash" to Payload), opened)
         // The clickable consumed the up: 65's observer sees no tap.
         assertEquals(0, taps)
-        assertEquals("the widget's up must be consumed", Boolean.TRUE, upConsumed)
+        assertEquals("the widget's up must be consumed", true, upConsumed)
     }
 
     @Test
@@ -217,8 +224,9 @@ class DetailWidgetTest {
         mountWidget(Payload)
         // A 240 px drag starting inside the widget's rect (16..216, 12..32):
         // the down stays unconsumed, the scrollable takes it after the slop.
+        // Upward: at offset 0 only a finger moving up can scroll the content.
         compose.onNodeWithTag("stage").performTouchInput {
-            swipe(Offset(100f, 20f), Offset(100f, 260f), durationMillis = 500)
+            swipe(Offset(100f, 20f), Offset(100f, -220f), durationMillis = 500)
         }
         compose.waitForIdle()
         assertTrue("the drag must scroll the parent", scrollOffset() > 0)
@@ -248,6 +256,15 @@ class DetailWidgetTest {
 
     /** A 360 × 100 dp striped stage, with or without the widget on top. */
     private fun stripedPixels(withWidget: Boolean): PixelMap {
+        // setContent may run only once per test with an Android compose rule:
+        // the second capture toggles the widget through state.
+        if (stripeMounted) {
+            compose.runOnIdle { stripeWidget = withWidget }
+            compose.waitForIdle()
+            return compose.onNodeWithTag("stripe").captureToImage().toPixelMap()
+        }
+        stripeMounted = true
+        stripeWidget = withWidget
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 val palette = RobocoTheme.palette
@@ -272,7 +289,7 @@ class DetailWidgetTest {
                             }
                             .testTag("stripe"),
                     ) {
-                        if (withWidget) {
+                        if (stripeWidget) {
                             Box(Modifier.absoluteOffset(16.dp, 12.dp).size(200.dp, 20.dp)) {
                                 DetailWidget("Bash", Payload) { _, _ -> }
                             }

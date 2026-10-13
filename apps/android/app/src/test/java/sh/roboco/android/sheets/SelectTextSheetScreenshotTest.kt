@@ -139,7 +139,7 @@ class SelectTextSheetScreenshotTest {
     fun selectTextFont13Light() {
         shot(
             Appearance.Light, "sheets/select_text_font_1_3_light.png", mono = false,
-            density = LinearDensity(density = 3f, fontScale = 1.3f),
+            density = ShotLinearDensity(density = 3f, fontScale = 1.3f),
         )
     }
 
@@ -147,7 +147,7 @@ class SelectTextSheetScreenshotTest {
     fun selectTextFont13Dark() {
         shot(
             Appearance.Dark, "sheets/select_text_font_1_3_dark.png", mono = false,
-            density = LinearDensity(density = 3f, fontScale = 1.3f),
+            density = ShotLinearDensity(density = 3f, fontScale = 1.3f),
         )
     }
 
@@ -172,7 +172,7 @@ class SelectTextSheetScreenshotTest {
  * debug source set). Density 3 matches the xxhdpi window, so only the font
  * scale differs from the default shot.
  */
-private class LinearDensity(
+private class ShotLinearDensity(
     override val density: Float,
     override val fontScale: Float,
 ) : Density {

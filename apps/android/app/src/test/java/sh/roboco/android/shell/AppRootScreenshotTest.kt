@@ -3,6 +3,7 @@ package sh.roboco.android.shell
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.captureToImage
@@ -115,7 +116,15 @@ class AppRootScreenshotTest {
 
         // Pairing → Phone: the frame the swap starts, then 175 ms — the
         // 50 % blend point of the 350 ms easeInOut.
-        compose.runOnUiThread { input.value = RootInput.Ready(hasEngines = true) }
+        // The frozen clock: the test-side write needs explicit apply
+        // notifications, then one frame for the composition that sees it
+        // (the swap effect starts the fade there); the fade's first frame
+        // is the next one.
+        compose.runOnUiThread {
+            input.value = RootInput.Ready(hasEngines = true)
+            Snapshot.sendApplyNotifications()
+        }
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(175)

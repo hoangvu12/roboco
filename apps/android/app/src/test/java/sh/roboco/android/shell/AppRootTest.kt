@@ -31,7 +31,9 @@ import sh.roboco.android.design.RobocoTheme
  * while active.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+// A window wider than every frame below: Modifier.width is clamped to the
+// incoming constraints (Robolectric's default window is 320 dp wide).
+@Config(sdk = [36], qualifiers = "w1280dp-h900dp")
 class AppRootTest {
 
     @get:Rule
