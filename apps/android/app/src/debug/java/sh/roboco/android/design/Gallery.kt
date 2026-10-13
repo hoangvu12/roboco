@@ -56,6 +56,7 @@ import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.settings.DevicesRowsGallerySection
+import sh.roboco.android.settings.AppearanceGallerySection
 import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
@@ -350,6 +351,10 @@ object Gallery {
         // reconnecting, revoked, the wrapped incompatible sentence, plus
         // the pressed and no-engines blocks.
         GallerySection("Devices rows", screenshotHeightDp = 900) { DevicesRowsGallerySection() },
+        // Ticket 96 (Settings · Appearance): the System/Light/Dark rows —
+        // the checkmark moves locally only; the gallery's own appearance
+        // segment (its top bar) drives the theme, never the app preference.
+        GallerySection("Settings · Appearance", screenshotHeightDp = 400) { AppearanceGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
