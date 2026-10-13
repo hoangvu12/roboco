@@ -51,17 +51,17 @@ class ChipColorsTest {
     private fun assertRow(
         tint: ChipTint?,
         enabled: Boolean,
-        lightFill: Int,
-        lightInk: Int,
-        darkFill: Int,
-        darkInk: Int,
+        lightFill: Long,
+        lightInk: Long,
+        darkFill: Long,
+        darkInk: Long,
     ) {
         val light = colors(Palette.Light, tint, enabled)
-        assertEquals("light fill", lightFill, light.fill.toArgb())
-        assertEquals("light ink", lightInk, light.ink.toArgb())
+        assertEquals("light fill", lightFill.toInt(), light.fill.toArgb())
+        assertEquals("light ink", lightInk.toInt(), light.ink.toArgb())
         val dark = colors(Palette.Dark, tint, enabled)
-        assertEquals("dark fill", darkFill, dark.fill.toArgb())
-        assertEquals("dark ink", darkInk, dark.ink.toArgb())
+        assertEquals("dark fill", darkFill.toInt(), dark.fill.toArgb())
+        assertEquals("dark ink", darkInk.toInt(), dark.ink.toArgb())
     }
 
     @Test
