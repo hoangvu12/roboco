@@ -5,12 +5,15 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.InfiniteRepeatableSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.TweenSpec
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Immutable
+import androidx.compose.ui.unit.IntOffset
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.ln
@@ -455,4 +458,27 @@ object Motion {
         val frames = min(MaxGlideFrames, dt / (1.0 / 60.0))
         return (delta * (1.0 - GlideRetain.pow(frames))).toFloat()
     }
+
+    // ------------------------------------------------------- session list (41)
+    // The shared session list's two Roboco-chosen timings. iOS has no
+    // source numbers for either (UIKit's diffable animation is
+    // unmeasured and `deselectItem(at:animated: true)`'s fade is
+    // unstated), so both are approximations to tune side by side with an
+    // iOS 26 simulator; ui-parity#41 is the consumer.
+
+    /** The rows' deselect fade, with [EaseInOut]. ui-parity#41 (chosen, not measured). */
+    const val RowHighlightFadeOutMs = 300
+
+    /**
+     * The `LazyColumn` items' placement spring — Compose's **own**
+     * `animateItem` default (critically damped, stiffness 400, 1-px
+     * threshold), which stands in for UIKit's diffable insert/move
+     * animation. The one Motion token whose value is Compose's, not an
+     * iOS one. ui-parity#41 (chosen per the ticket).
+     */
+    val ListItemPlacement: SpringSpec<IntOffset> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMediumLow,
+        visibilityThreshold = IntOffset.VisibilityThreshold,
+    )
 }
