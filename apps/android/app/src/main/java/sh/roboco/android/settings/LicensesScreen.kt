@@ -47,11 +47,11 @@ import sh.roboco.android.shell.LargeTitleScaffold
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalPageSheetScope
 import sh.roboco.android.shell.LocalSheetHost
-import sh.roboco.android.shell.largeTitleDefaultTopInset
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.PageSheetScope
 import sh.roboco.android.shell.SheetStyle
 import sh.roboco.android.shell.TitleMode
+import sh.roboco.android.shell.largeTitleDefaultTopInset
 
 /**
  * The Licenses screen (android-ui-parity #101): a large-title,
