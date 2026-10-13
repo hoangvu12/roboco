@@ -1,6 +1,7 @@
 package sh.roboco.android.sessions
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -461,6 +462,12 @@ class SessionsScreenTest {
         compose.onNodeWithTag("glass-menu").assertDoesNotExist()
         assertTrue("no haptic without a menu", feedback.haptics.isEmpty())
         assertTrue(recorder.calls.isEmpty())
+
+        // A tap on it still folds (the iOS rule: no menu, but a normal
+        // header).
+        compose.onNodeWithTag("section-recent").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("toggleSection(recent)"), recorder.calls)
     }
 
     @Test

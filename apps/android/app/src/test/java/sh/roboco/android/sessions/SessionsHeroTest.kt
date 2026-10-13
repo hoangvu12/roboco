@@ -70,7 +70,7 @@ class SessionsHeroTest {
 
     // ---------------------------------------------------------- ScrollTravel
 
-    /** index / key / offset / size — the four abstract members. */
+    /** index / key / offset / size — the four members of the interface. */
     private data class FakeItem(
         override val index: Int,
         override val key: Any,

@@ -37,6 +37,7 @@ internal object SessionsScreenFixtures {
     private val veil = row(
         id = "chat-veil",
         title = "Streaming veil on transcript rows",
+        indicator = ChatIndicator.COMPLETED,
         project = "zeron",
         branch = "main",
         pinned = true,
@@ -166,9 +167,9 @@ internal object SessionsScreenFixtures {
      * fade tests and the `wallpaper_half` golden, whose 377.57 dp of
      * travel exceed the reference set's two dp.
      */
-    fun longSections(repeat: Int = 4): List<ListSection> {
+    fun longSections(times: Int = 4): List<ListSection> {
         val recent = buildList {
-            repeat(repeat) { n ->
+            repeat(times) { n ->
                 recentRows.forEach { row -> add(row.copy(id = "${row.id}-$n")) }
             }
         }

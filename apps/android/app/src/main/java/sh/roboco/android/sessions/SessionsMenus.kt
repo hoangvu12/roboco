@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import sh.roboco.android.RobocoApplication
-import sh.roboco.android.design.Feedback
 import sh.roboco.android.design.LocalFeedback
 import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.glass.Menu

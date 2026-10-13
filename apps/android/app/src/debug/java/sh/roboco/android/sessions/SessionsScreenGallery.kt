@@ -145,11 +145,6 @@ fun SessionsScreenGallerySection() {
                     selected = grouped,
                     style = labelStyle,
                 ) { grouped = !grouped }
-                BasicText(
-                    "Last result: $result",
-                    style = uiStyle(Face.Sans, typeScale.fixed(13f), palette.secondary),
-                    modifier = Modifier.padding(top = 4.dp),
-                )
                 // The live fade readout (debug only): derived from the
                 // hero's scrollFade captures, with the travel back-solved
                 // over the frame's own hero height.
@@ -210,6 +205,13 @@ fun SessionsScreenGallerySection() {
                     }
                 }
             }
+            // The recorder's line (e.g. `deleteSection(sec-p0)`), under the
+            // frame as the ticket's step 9 asks.
+            BasicText(
+                "Last result: $result",
+                style = uiStyle(Face.Sans, typeScale.fixed(13f), palette.secondary),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
         }
     }
 }
