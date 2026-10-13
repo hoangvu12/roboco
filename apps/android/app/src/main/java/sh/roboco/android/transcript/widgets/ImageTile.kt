@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.toSize
 import kotlin.math.ceil
 import sh.roboco.android.design.Motion
 import sh.roboco.android.design.rememberSmoothRoundedShape
+import sh.roboco.android.image.imageViewerSource
 import sh.roboco.android.transcript.TranscriptActions
 
 /**
@@ -86,6 +87,11 @@ private class ImageTileState {
  * [overlay] is ticket 67's upload ring slot, drawn inside the clip. No
  * haptic; the transcript's own dismiss-tap observer (81) still sees the
  * tap because `UIImageView` is not a `UIControl` on iOS either.
+ *
+ * The root modifier also carries `.imageViewerSource(reference)`
+ * (ticket 125): the same node whose `positionInWindow()` the tap above
+ * reports, so the viewer can zoom out of this tile and hide it while
+ * it shows. No other tile change.
  */
 @Composable
 fun ImageTile(
@@ -157,7 +163,10 @@ fun ImageTile(
                 } else {
                     Modifier
                 },
-            ),
+            )
+            // 125: the zoom-source registration on the same node whose
+            // rect the tap reports.
+            .imageViewerSource(reference),
     ) {
         if (bmp != null) {
             Image(

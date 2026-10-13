@@ -13,7 +13,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import sh.roboco.android.image.ImageViewerRequest
+import sh.roboco.android.image.LocalImageViewer
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
@@ -25,6 +29,7 @@ import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
 import sh.roboco.android.transcript.transcriptBottomInset
+import sh.roboco.android.transcript.widgets.imageTileRadius
 
 /**
  * The Session screen (android-ui-parity #75) — the composition that stacks
@@ -142,14 +147,42 @@ fun SessionScreen(
     val edgeEngaged by remember(transcript) { derivedStateOf { transcript.viewport.scrollY > 0.5f } }
 
     // 8. The transcript's actions (65): the defaults are no-ops; 66's
-    //    binding fills the image pair when the route passed a reader.
-    //    81, 125, 126 and 127 replace their own defaults here later.
-    val actions = remember(controller, attachments) {
+    //    binding fills the image pair when the route passed a reader, and
+    //    125 fills `openImage` through the root overlay's viewer state —
+    //    the tile's downsampled bitmap is the start frame, `loadFull` the
+    //    binding's full-size read, and the source rect the unclipped
+    //    window rect the tile reports with its tap. 81, 126 and 127
+    //    replace their own defaults here later.
+    val viewer = LocalImageViewer.current
+    val density = LocalDensity.current
+    val actions = remember(controller, attachments, viewer) {
         val binding = attachments?.let {
             TranscriptImageBinding(TranscriptImageLoader.get(context), { controller.hostDeviceId }, it)
         }
+        val openImage: (String, Rect, ImageBitmap?) -> Unit = { reference, source, bitmap ->
+            viewer?.show(
+                ImageViewerRequest(
+                    reference = reference,
+                    preview = bitmap,
+                    sourceBounds = source,
+                    sourceCornerRadius = with(density) {
+                        imageTileRadius(source.width.toDp().value, source.height.toDp().value)
+                    },
+                    label = null, // 137 fills this with the alt text
+                    loadFull = if (binding != null) {
+                        { binding.loadFull(reference) }
+                    } else {
+                        null
+                    },
+                ),
+            )
+        }
         if (binding != null) {
-            TranscriptActions(loadImage = binding::load, cachedImage = binding::cached)
+            TranscriptActions(
+                openImage = openImage,
+                loadImage = binding::load,
+                cachedImage = binding::cached,
+            )
         } else {
             TranscriptActions()
         }
