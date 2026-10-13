@@ -71,6 +71,7 @@ import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.shell.tablet.SidebarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
+import sh.roboco.android.image.ImageViewerGallerySection
 import sh.roboco.android.transcript.KeyboardInsetGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.ScrollerFixturePage
@@ -434,6 +435,13 @@ object Gallery {
         GallerySection("Notification rows", GalleryLayout.Fill, screenshotHeightDp = 760) {
             NotificationRowsGallerySection()
         },
+        // Ticket 125 (full-screen image viewer): the three fixture tiles —
+        // landscape, square, portrait — opening the real viewer over its
+        // own host: the zoom-out open, the 0.6 s full-resolution swap, the
+        // pinch/double-tap/pan/drag-dismiss, predictive back, Close and
+        // Share, with the off-screen-source toggle. Fill: the section owns
+        // its full-window ImageViewerHost.
+        GallerySection("Image viewer", GalleryLayout.Fill) { ImageViewerGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

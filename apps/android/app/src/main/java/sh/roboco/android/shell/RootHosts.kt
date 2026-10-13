@@ -14,6 +14,8 @@ import sh.roboco.android.design.LocalContextMenuHost
 import sh.roboco.android.design.ToasterState
 import sh.roboco.android.design.ToastHost
 import sh.roboco.android.design.glass.GlassMenuHost
+import sh.roboco.android.image.ImageViewerHost
+import sh.roboco.android.image.rememberImageViewerState
 
 /**
  * The foundation overlay host stack (android-ui-parity #35), mounted once
@@ -21,7 +23,7 @@ import sh.roboco.android.design.glass.GlassMenuHost
  * outermost first:
  *
  * `ContextMenuHost(16) { AlertHost(18) { ToastHost(14) { ActionSheetHost(19)
- * { GlassMenuHost(15) { SheetHost(31) { content } } } } } }`
+ * { GlassMenuHost(15) { ImageViewerHost(125) { SheetHost(31) { content } } } } } } }`
  *
  * - an alert raised over a page sheet draws above it;
  * - a toast draws above sheets, action sheets and menus;
@@ -33,6 +35,10 @@ import sh.roboco.android.design.glass.GlassMenuHost
  *   the whole root, as iOS's window root view recedes. Ticket 95 later
  *   wraps the `SheetHost` line in its `HandoffOverlayHost`; ticket 72
  *   wraps the root content in `ProvidePairPage` inside it.
+ * - ticket 125's `ImageViewerHost` wraps `SheetHost` (inside
+ *   `GlassMenuHost`, outside the sheet): the full-screen image viewer
+ *   covers the session screen, the tab chrome and any sheet, while
+ *   alerts, action sheets and toasts stay above it.
  *
  * Every host that owns a root presentation registers its instant-dismiss
  * call with [presentations], so one `dismissAllInstantly()` — same frame,
@@ -65,8 +71,15 @@ fun RootHosts(
                 ToastHost(state = toaster) { // 14: outside ActionSheetHost
                     ActionSheetHost(actionSheets) { // 19
                         GlassMenuHost(menuHaze) { // 15
-                            SheetHost(sheets) { // 31: recession scales the roots
-                                content()
+                            // 125: inside the menu host, outside the sheet —
+                            // covers the session screen, tab chrome and
+                            // sheets; alerts, action sheets and toasts stay
+                            // above it (they are outside GlassMenuHost here).
+                            val viewer = rememberImageViewerState()
+                            ImageViewerHost(viewer) {
+                                SheetHost(sheets) { // 31: recession scales the roots
+                                    content()
+                                }
                             }
                         }
                     }
