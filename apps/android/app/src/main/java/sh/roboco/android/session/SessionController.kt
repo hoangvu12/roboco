@@ -136,10 +136,11 @@ class SessionController private constructor(
 
     private val closed = AtomicBoolean(false)
 
-    /** The view [attach] bound; a second attach of the same instance is a no-op. */
+    /** The view [attach] bound; a second attach of the same instance is a no-op. Cleared again when the attach FFI failed, so a retry is possible. */
     private val attachedView = AtomicReference<TranscriptView?>(null)
 
-    /** The hub unregister action, installed by [create]. */
+    /** The hub unregister action, installed by [create] (factory thread) and invoked by [close]/[dispose] (main). */
+    @Volatile
     private var unregister: (() -> Unit)? = null
 
     /** The session's scoped chat id (plain string; compare like-for-like with events). */
@@ -175,6 +176,9 @@ class SessionController private constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
+                // The bind failed: forget the view, so a later attach of
+                // the same instance retries instead of no-op'ing.
+                attachedView.compareAndSet(view, null)
                 logFailure("attach failed", t)
             }
         }

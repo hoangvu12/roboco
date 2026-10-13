@@ -156,6 +156,8 @@ internal class FakeSessionCore(
     var engineResult: EngineView? = null
     var attachTranscriptResult: Boolean = true
     var composerFailures: Int = 0
+    /** When > 0, the next that many attachTranscript() calls throw. */
+    var attachTranscriptFailures: Int = 0
 
     val callLog = mutableListOf<String>()
 
@@ -184,6 +186,10 @@ internal class FakeSessionCore(
 
     override fun attachTranscript(view: TranscriptView): Boolean {
         callLog += "attachTranscript"
+        if (attachTranscriptFailures > 0) {
+            attachTranscriptFailures--
+            throw RuntimeException("attach boom")
+        }
         return attachTranscriptResult
     }
 

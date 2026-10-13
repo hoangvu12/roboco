@@ -306,6 +306,28 @@ class SessionControllerTest {
     }
 
     @Test
+    fun aFailedAttachForgetsTheViewSoTheSameViewCanRetry() = runTest {
+        val core = FakeSessionCore()
+        core.attachTranscriptFailures = 1
+        val controller = newController(core)
+        val view = fakeTranscriptView()
+
+        controller.attach(view)
+        advanceUntilIdle()
+        assertEquals(listOf("attachTranscript"), core.callLog.drop(3))
+        assertEquals("attach failed", loggedFailures.single().first)
+
+        // The bind failed: the same view instance is not masked out —
+        // the second attach retries the FFI instead of no-op'ing.
+        controller.attach(view)
+        advanceUntilIdle()
+        assertEquals(
+            listOf("attachTranscript", "attachTranscript", "setViewAttached(true)"),
+            core.callLog.drop(3),
+        )
+    }
+
+    @Test
     fun closeDetachesMarksSeenAndStopsEverything() = runTest {
         val core = FakeSessionCore()
         val hub = syncHub()
