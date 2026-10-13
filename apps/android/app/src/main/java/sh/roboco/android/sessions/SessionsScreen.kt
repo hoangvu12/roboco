@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
@@ -30,6 +31,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import sh.roboco.android.RobocoApplication
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ContextMenuHost
@@ -72,6 +77,19 @@ import sh.roboco.android.shell.TitleMode
  *   `rowWrapper`, and the write/alert/toast flows of 42/43 behind
  *   [SessionsScreenActions].
  *
+ * The sidebar parameters (android-ui-parity #105) are the phone path's
+ * defaults: [query] is the sidebar's raw field text (`""` on the phone),
+ * and [pinnedAccessory]/[pinnedAccessoryHeight] carry 105's stacked
+ * search field into 25's scaffold. With a pinned accessory the screen
+ * also builds and **retains per nav entry** 49's [SearchModel] over the
+ * app's workspace feed and core client, and derives [content] through
+ * [sidebarListContent]: a non-empty trimmed query swaps the sections for
+ * one header-less `"results"` section of hits. Collecting only while the
+ * trimmed query is non-empty, an idle sidebar never re-maps Recent rows
+ * on every workspace revision (49's `WhileSubscribed` stops upstream 5 s
+ * later), and while a new search is in flight the previous value stays
+ * on screen — no blank frame.
+ *
  * [SessionsScreenContent] is the injectable half (sections, actions, hero
  * and bottom padding as parameters); this wrapper reads the app's
  * singletons (40's `FrontPageModel`, the single [sh.roboco.android.core.WorkspaceFeed])
@@ -84,6 +102,10 @@ fun SessionsScreen(
     showsNavOptions: Boolean = true,
     currentChatId: String? = null,
     listState: LazyListState = rememberLazyListState(),
+    query: String = "",
+    topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    pinnedAccessory: (@Composable () -> Unit)? = null,
+    pinnedAccessoryHeight: Dp = 0.dp,
 ) {
     val app = LocalContext.current.applicationContext as RobocoApplication
     // 43: the prompts' engine list comes from the live client; provided
@@ -99,22 +121,57 @@ fun SessionsScreen(
         val ui by app.frontPage.ui.collectAsState()
         val engines by app.workspaceFeed.engines.collectAsState()
         val density = LocalDensity.current
-        val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         val swallowTopPx = remember(density, topInset) {
             { with(density) { (topInset + LargeTitleDefaults.NavRowHeight).toPx() } }
         }
+
+        // 105: the sidebar's query filter. The model is retained per nav
+        // entry (the query, the results and the scroll survive tab
+        // switches and the sidebar being hidden), and reads the raw text
+        // through rememberUpdatedState — 49's `mapLatest` makes the latest
+        // query win and keeps the previous value on screen while a newer
+        // search runs. The FFI never runs in composition: the search runs
+        // on Dispatchers.Default inside the model.
+        val fixture = LocalSidebarFixtures.current
+        val queryState = rememberUpdatedState(query)
+        val searching = query.searchTrim().isNotEmpty()
+        val results: SearchResults? = if (pinnedAccessory != null) {
+            val entry = LocalNavEntry.current
+            val model = entry.retain("sidebar-search-model") {
+                val source: Flow<SearchSource?> = if (fixture != null) {
+                    flowOf(fixture.workspace.toSearchSource())
+                } else {
+                    app.workspaceFeed.snapshot.map { it?.toSearchSource() }
+                }
+                SearchModel(
+                    query = snapshotFlow { queryState.value },
+                    source = source,
+                    search = if (fixture != null) fixture.search else coreSessionSearch(app::clientOrNull),
+                    scope = entry.scope,
+                )
+            }
+            if (searching) model.results.collectAsStateWithLifecycle().value else null
+        } else {
+            null
+        }
+        val content = sidebarListContent(query, results)
+
         SessionsScreenContent(
-            sections = ui?.sections.orEmpty(),
-            collapsedIds = ui?.collapsedIds.orEmpty(),
-            loading = ui == null || sessionsLoading(engines),
+            sections = if (fixture != null) fixture.sections else ui?.sections.orEmpty(),
+            collapsedIds = if (fixture != null) fixture.collapsedIds else ui?.collapsedIds.orEmpty(),
+            loading = fixture == null && (ui == null || sessionsLoading(engines)),
             actions = actions,
             showsNavOptions = showsNavOptions,
             currentChatId = currentChatId,
             listState = listState,
             bottomPadding = LocalBottomChrome.current.contentPadding,
-            liveOverrides = ui?.liveOverrides.orEmpty(),
+            liveOverrides = if (fixture != null) emptyMap() else ui?.liveOverrides.orEmpty(),
             modifier = modifier.sessionRowActions(hookup, swallowTopPx = swallowTopPx),
             rowWrapper = hookup.rowWrapper,
+            content = content,
+            topInset = topInset,
+            pinnedAccessory = pinnedAccessory,
+            pinnedAccessoryHeight = pinnedAccessoryHeight,
         )
     }
 }
@@ -130,6 +187,14 @@ fun SessionsScreen(
  * `graphicsLayer` block), so scrolling never recomposes this screen; the
  * header menus are built only when a long press fires, so the
  * Group-by-Project check and the raw section names are never stale.
+ *
+ * The sidebar parameters (105): [content] picks the front page (46's
+ * sections) or the query results — one header-less `"results"` section
+ * with the same 41/44 row machinery, per-row archived actions and the
+ * current-row fill — inside the **same** `LazyColumn`, so 41's item
+ * animations swap the two by key. [pinnedAccessory]/[pinnedAccessoryHeight]
+ * are 25's stacked-accessory slots (the sidebar search field), and
+ * [topInset] replaces 46's local read so tests can fix 24 dp.
  */
 @Composable
 internal fun SessionsScreenContent(
@@ -145,6 +210,10 @@ internal fun SessionsScreenContent(
     hero: @Composable (Modifier, () -> Float) -> Unit = { m, f -> WallpaperHero(modifier = m, scrollFade = f) },
     rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
     liveOverrides: Map<String, SectionLive> = emptyMap(),
+    content: SidebarListContent = SidebarListContent.FrontPage,
+    topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    pinnedAccessory: (@Composable () -> Unit)? = null,
+    pinnedAccessoryHeight: Dp = 0.dp,
 ) {
     val density = LocalDensity.current
     val travel = remember { ScrollTravel() }
@@ -158,10 +227,24 @@ internal fun SessionsScreenContent(
         empty = SessionListEmpty.Sessions,
         onScreen = rememberNavEntryOnScreen(),
     )
+    // 105: the query results model — remembered unconditionally (with an
+    // empty section list in FrontPage mode) so the composition structure
+    // never changes on a swap; only the emitted items do, by key (41).
+    val resultsContent = content as? SidebarListContent.Results
+    val resultsModel = rememberSessionListModel(
+        sections = if (resultsContent != null) {
+            listOf(ListSection(id = "results", header = null, rows = resultsContent.results.rows))
+        } else {
+            emptyList()
+        },
+        collapsible = true,
+        loading = false,
+        empty = SessionListEmpty.None,
+        onScreen = rememberNavEntryOnScreen(),
+    )
     // The opener is @Composable and the LazyListScope content is not, so
     // it is built here and read at tap time.
     val openSession = rememberSessionListOpener()
-    val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
     // One wrapper instance for every header: remembered once, reading the
     // actions through [latestActions], so a recomposition of this screen
@@ -189,13 +272,21 @@ internal fun SessionsScreenContent(
     // 26: re-tap the tab → item 0 (the fade returns to 1).
     RegisterScrollToTop(listState)
 
+    // 105: the free area below the expanded large title and the pinned
+    // accessory (the results-mode overlays' safe padding).
+    val freeAreaTop = topInset + LargeTitleDefaults.NavRowHeight +
+        LargeTitleDefaults.LargeRowHeight + pinnedAccessoryHeight
+
     LargeTitleScaffold(
         title = "Sessions",
         mode = TitleMode.Always,
         listState = listState,
+        topInset = topInset,
         contentPadding = PaddingValues(bottom = bottomPadding),
         modifier = modifier.testTag("tab-root-sessions"),
         trailing = { if (showsNavOptions) SessionsOptionsButton(actions) },
+        pinnedAccessory = pinnedAccessory,
+        pinnedAccessoryHeight = pinnedAccessoryHeight,
         backdrop = {
             // The hero frame: fixed behind the list, inside the haze
             // source, above the page background and below every cell —
@@ -219,24 +310,44 @@ internal fun SessionsScreenContent(
             }
             // 41 step 7: the empty / loading overlay behind the clear
             // list, above the hero — the expanded bar's bottom is its top
-            // safe padding.
+            // safe padding. 105: the emitted model's status (results mode
+            // is never Loading / EmptySessions), below the accessory.
             SessionListStatusOverlay(
-                status = model.status,
-                safePadding = PaddingValues(
-                    top = topInset + LargeTitleDefaults.NavRowHeight + LargeTitleDefaults.LargeRowHeight,
-                    bottom = bottomPadding,
-                ),
+                status = if (resultsContent != null) resultsModel.status else model.status,
+                safePadding = PaddingValues(top = freeAreaTop, bottom = bottomPadding),
             )
+            // 105: the query's no-results view (49's, above the hero);
+            // a whitespace-only query never reaches here — it is the
+            // front page.
+            if (resultsContent != null && resultsContent.results.showsNoResults) {
+                SearchNoResults(Modifier.fillMaxSize().padding(top = freeAreaTop, bottom = bottomPadding))
+            }
         },
     ) {
-        sessionListItems(
-            model = model,
-            onOpenSession = openSession,
-            onToggleSection = { id -> latestActions.toggleSection(id) },
-            currentChatId = currentChatId,
-            rowWrapper = rowWrapper,
-            headerWrapper = headerWrapper,
-        )
+        if (resultsContent != null) {
+            // 105: one header-less "results" section — the hits in core
+            // order, the per-row archived actions (49 step 4), the
+            // current-row fill and 44's row wrapper (a hit may be
+            // archived or off the front page). No header, so no header
+            // menus are reachable.
+            val results = resultsContent.results
+            sessionListItems(
+                model = resultsModel,
+                onOpenSession = openSession,
+                archivedRow = { it in results.archivedIds },
+                currentChatId = currentChatId,
+                rowWrapper = rowWrapper,
+            )
+        } else {
+            sessionListItems(
+                model = model,
+                onOpenSession = openSession,
+                onToggleSection = { id -> latestActions.toggleSection(id) },
+                currentChatId = currentChatId,
+                rowWrapper = rowWrapper,
+                headerWrapper = headerWrapper,
+            )
+        }
     }
 }
 
