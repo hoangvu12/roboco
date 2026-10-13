@@ -25,8 +25,11 @@ class SessionsMenusTest {
      * mutable map so the tests can flip what the workspace reports.
      */
     private class RecordingActions(
-        override var groupByProject: Boolean = false,
+        // Not an overriding `var`: its setter would clash with
+        // setGroupByProject(Boolean) on the JVM.
+        var grouped: Boolean = false,
     ) : SessionsScreenActions {
+        override val groupByProject: Boolean get() = grouped
         val calls = mutableListOf<String>()
         val sectionNames = mutableMapOf(
             "sec-p0" to "P0",
@@ -107,18 +110,18 @@ class SessionsMenusTest {
 
     @Test
     fun theCheckMatchesThePrefAtBuildTimeAndIsASnapshot() {
-        val menu = sessionsOptionsMenu(RecordingActions(groupByProject = true))
+        val menu = sessionsOptionsMenu(RecordingActions(grouped = true))
         assertTrue(rows(menu)[2].checked)
 
-        val off = sessionsOptionsMenu(RecordingActions(groupByProject = false))
+        val off = sessionsOptionsMenu(RecordingActions(grouped = false))
         assertFalse(rows(off)[2].checked)
 
         // A recorder flip after the build does not change the built menu —
         // iOS's uncached deferred element re-reads only on the NEXT open.
-        val recorder = RecordingActions(groupByProject = true)
+        val recorder = RecordingActions(grouped = true)
         val built = sessionsOptionsMenu(recorder)
         assertTrue(rows(built)[2].checked)
-        recorder.groupByProject = false
+        recorder.grouped = false
         assertTrue("the menu is a snapshot", rows(built)[2].checked)
         // …and the next build reads the new value.
         assertFalse(rows(sessionsOptionsMenu(recorder))[2].checked)
@@ -140,13 +143,13 @@ class SessionsMenusTest {
     fun theToggleReadsTheLiveValueAtPickTime() {
         // iOS `app.groupByProject.toggle()` flips the live value, not the
         // value the menu showed when it opened.
-        val recorder = RecordingActions(groupByProject = true)
+        val recorder = RecordingActions(grouped = true)
         val built = rows(sessionsOptionsMenu(recorder))
         assertTrue(built[2].checked)
         built[2].action()
         assertEquals(listOf("setGroupByProject(false)"), recorder.calls)
         // And the other way: built while off…
-        val offRecorder = RecordingActions(groupByProject = false)
+        val offRecorder = RecordingActions(grouped = false)
         rows(sessionsOptionsMenu(offRecorder))[2].action()
         assertEquals(listOf("setGroupByProject(true)"), offRecorder.calls)
     }
