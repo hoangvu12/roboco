@@ -24,6 +24,7 @@ import sh.roboco.android.transcript.TranscriptHost
 import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
+import sh.roboco.android.transcript.transcriptBottomInset
 
 /**
  * The Session screen (android-ui-parity #75) — the composition that stacks
@@ -158,11 +159,13 @@ fun SessionScreen(
 
     // 10. The layer stack: the scaffold (background, haze, header) around
     //     74's container, with the open-reveal layers in its transcript
-    //     slot. The bottom inset write is the pre-133 stop-gap: 133's
-    //     `Modifier.transcriptBottomInset` becomes the only writer and
-    //     deletes this SideEffect. `covered` (not `contentInset`) is the
-    //     effective viewport bottom inset — iOS's
-    //     `adjustedContentInset.bottom`.
+    //     slot. 133's `Modifier.transcriptBottomInset` is the viewport's
+    //     bottom inset's only writer: it delivers `covered` in the same
+    //     measure pass that moved the stack (never one frame late, the
+    //     pr621 trap), so 68 pins the tail under the composer on every
+    //     IME animation frame and the runway re-sizes in the same pass
+    //     (69). `covered` (not `contentInset`) is the effective viewport
+    //     bottom inset — iOS's `adjustedContentInset.bottom`.
     SessionScaffold(
         reveal = state.reveal,
         header = {
@@ -180,11 +183,15 @@ fun SessionScreen(
             state = bottomState,
             model = model,
             transcript = { insets ->
-                // TODO(133): delete this SideEffect; 133's Modifier.transcriptBottomInset
-                // is the only writer.
-                SideEffect { transcript.bottomInset = insets.covered.value }
                 OpenRevealLayers(state.reveal, statusBarTop = statusBarTop) {
-                    TranscriptHost(transcript, actions, Modifier.fillMaxSize())
+                    TranscriptHost(
+                        transcript, actions,
+                        // 133, outermost of the host's chain, so the inset
+                        // node measures before the host measures and places
+                        // its rows; the host itself adds the IME-drag
+                        // observer (interactiveImeDismiss) and 68's scroll.
+                        Modifier.fillMaxSize().transcriptBottomInset(transcript.viewport, insets.covered),
+                    )
                 }
             },
             pill = {}, // 73

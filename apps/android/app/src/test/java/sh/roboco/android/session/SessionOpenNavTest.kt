@@ -384,7 +384,9 @@ class SessionOpenNavTest {
      * 52's `contentTopInset` (44 dp under Robolectric's zero status bar),
      * the bottom inset is 74's `covered` — `H − stackTop + 8` = 16 dp with
      * the empty-slot stack at 412 × 900 and no nav bar — not some other
-     * derivation.
+     * derivation. Since 133, that write is 133's measure-time
+     * `transcriptBottomInset` on the host (the same pass 74 measured the
+     * stack in), not a post-layout `SideEffect`.
      */
     @Test
     fun theTranscriptInsetsFollowTheHeaderAndTheCoveredStack() {
