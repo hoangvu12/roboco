@@ -187,6 +187,7 @@ fun Modifier.contextMenu(
     highlight: LiftHighlight,
     enabled: Boolean = true,
     liftState: ContextMenuLiftState? = null,
+    swallowWithoutMenu: Boolean = false,
     menu: () -> Menu?,
 ): Modifier = composed {
     val host = LocalContextMenuHost.current
@@ -252,8 +253,8 @@ fun Modifier.contextMenu(
                 }
             }
         }
-        .pointerInput(enabled, host) {
-            if (enabled) detectContextPress { position -> open(position) }
+        .pointerInput(enabled, host, swallowWithoutMenu) {
+            if (enabled) detectContextPress(swallowWithoutMenu) { position -> open(position) }
         }
 }
 
@@ -272,9 +273,14 @@ fun Modifier.contextMenu(
  * When [onLongPress] returns true, the **rest of this touch is swallowed**
  * on the Initial pass, so the row's tap, the list's scroll and any swipe
  * never see it. When it returns false (no menu), the release flows on
- * untouched and the row's own tap still fires.
+ * untouched and the row's own tap still fires — unless [swallowWithoutMenu]
+ * (ticket 46's menu-less section headers: the long press does nothing, only
+ * a tap folds), which swallows the rest of the touch either way.
  */
-private suspend fun PointerInputScope.detectContextPress(onLongPress: (Offset) -> Boolean) {
+private suspend fun PointerInputScope.detectContextPress(
+    swallowWithoutMenu: Boolean,
+    onLongPress: (Offset) -> Boolean,
+) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
         val cancelled = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
@@ -295,7 +301,7 @@ private suspend fun PointerInputScope.detectContextPress(onLongPress: (Offset) -
             true
         }
         if (cancelled != null) return@awaitEachGesture // null = the timeout elapsed = long press
-        if (!onLongPress(down.position)) return@awaitEachGesture
+        if (!onLongPress(down.position) && !swallowWithoutMenu) return@awaitEachGesture
         // Swallow the rest of this touch: no row tap, no list scroll, no swipe.
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
