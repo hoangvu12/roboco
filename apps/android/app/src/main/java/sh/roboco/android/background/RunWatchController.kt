@@ -247,7 +247,9 @@ class RunWatchController(
             if (stopCheck?.isActive != true) {
                 stopCheck = scope.launch {
                     delay(STOP_GRACE_MS + 50)
-                    if (working.isEmpty()) update()
+                    synchronized(gate) {
+                        if (working.isEmpty()) update()
+                    }
                 }
             }
         } else {
