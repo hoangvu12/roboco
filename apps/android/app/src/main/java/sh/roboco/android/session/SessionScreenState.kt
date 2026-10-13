@@ -1,9 +1,6 @@
 package sh.roboco.android.session
 
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import sh.roboco.android.transcript.TranscriptState
 
 /**
@@ -47,11 +44,22 @@ class SessionScreenState(
     val reveal = OpenReveal()
 
     /**
-     * Ticket 77's `prepareArrival()` sets this before the handoff's
-     * unanimated push (iOS `list.alpha > 0` inverted): an arrival that
-     * already prepared its own reveal skips the loader.
+     * Ticket 77's arrival hooks (the new-session handoff): the two
+     * alpha channels, the `prepared` flag the hold decision reads, and
+     * the own turn deferred to [SessionArrival.bind] when the router
+     * prepared the arrival before the push. Held here so the route (76)
+     * reaches it before composition and the screen (75) binds it at
+     * first composition.
      */
-    var arrivalPrepared by mutableStateOf(false)
+    val arrival = SessionArrival()
+
+    /**
+     * True once the arrival was prepared (77): a handoff skips 75's
+     * open loader, hold and reveal — the explicit port of iOS's
+     * `list.alpha > 0` guard (`SessionViewController.swift:245`).
+     * Mirrors [SessionArrival.prepared] for `OpenReveal.shouldHold`.
+     */
+    val arrivalPrepared: Boolean get() = arrival.prepared
 
     /** attach + markSeen + the frame listener were done (once per screen). */
     internal var started = false

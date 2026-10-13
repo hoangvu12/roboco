@@ -78,6 +78,16 @@ class SessionScreenRoute internal constructor(
         get() = state.transcript
 
     /**
+     * Ticket 77's arrival hooks (the new-session handoff): the screen
+     * state's [SessionArrival], reachable **before** the push (the
+     * routers, 32/106, call [prepareArrival] before `pushSession`) and
+     * before the screen is composed. Ticket 95's `arrivalTargetOf`
+     * reads exactly this.
+     */
+    val arrival: SessionArrival
+        get() = state.arrival
+
+    /**
      * Teardown of a screen that **was** on screen (a committed pop, a
      * `popToRoot`, a `setRoutes` removal — through the NavEntry close
      * safety net in [Content]): `controller.close()`
@@ -113,11 +123,17 @@ class SessionScreenRoute internal constructor(
         SessionScreen(controller, state)
     }
 
-    /** Ticket 77 fills these; 32's default `HandoffAnimator.Instant` calls `finishArrival()`, so empty bodies are safe until then. */
-    override fun prepareArrival() { /* ticket 77 */ }
+    /**
+     * The handoff's hidden-arrival state (iOS `prepareArrival`,
+     * `SessionViewController.swift:321-326`), forwarded to the state's
+     * [SessionArrival] — valid before the push, before composition. 32's
+     * default `HandoffAnimator.Instant` never calls it; 95's animator
+     * does, through the router.
+     */
+    override fun prepareArrival() = arrival.prepareArrival()
 
-    /** See [prepareArrival]. */
-    override fun finishArrival() { /* ticket 77 */ }
+    /** Show everything (iOS `finishArrival`, `:343-344`). */
+    override fun finishArrival() = arrival.finishArrival()
 
     /**
      * A route that was **never** pushed (superseded, or the caller was
