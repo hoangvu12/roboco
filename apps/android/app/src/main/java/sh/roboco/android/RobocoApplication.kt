@@ -41,6 +41,9 @@ import sh.roboco.android.notify.NotificationPrefs
 import sh.roboco.android.notify.Notifier
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.session.ChromeFillerRegistry
+import sh.roboco.android.session.CoreSessionOpener
+import sh.roboco.android.session.installSessionRoutes
 import sh.roboco.android.sessions.CoreRowActions
 import sh.roboco.android.sessions.FoldState
 import sh.roboco.android.sessions.FrontPageModel
@@ -97,6 +100,14 @@ class RobocoApplication : Application() {
      * open coroutines.
      */
     val routerHooks = RouterHooks()
+
+    /**
+     * The ordered ChromeFiller factories (ticket 76 + 73/78/79/82/89/91):
+     * the filler tickets register into this in `onCreate`, before the
+     * first possible open. Empty until they land — 51's base chrome
+     * fills the screen alone.
+     */
+    val chromeFillers = ChromeFillerRegistry()
 
     /**
      * The process-wide deep-link hub (ticket 36): holds `roboco://` links
@@ -370,6 +381,21 @@ class RobocoApplication : Application() {
             }.distinctUntilChanged()
                 .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
         }
+        // Ticket 76: the real session route factory. Every open runs off
+        // main through 32's `openSessionRoute`, over `coreStartup.sessionEvents`
+        // (51's hub — the same instance the client's events already fan out
+        // into) and the filler registry above. A refused id returns null and
+        // the shell shows the open-error toast: no screen, no placeholder.
+        // android-app#28's cancel-on-open seam rides along: opening a chat
+        // (the session screen's first composition) or closing it (a committed
+        // pop) cancels its notification through `onSeen`.
+        installSessionRoutes(
+            routerHooks,
+            CoreSessionOpener(::clientOrNull),
+            coreStartup.sessionEvents,
+            chromeFillers,
+            onSeen = { chatId -> notifications.cancelChatFor(chatId) },
+        )
         // Tickets 40/42/51 register their event sinks here, before start().
         // #40: forcing `workspaceFeed`'s lazy init registers its sink; the
         // start() call below only arms its drains (they skip until the
