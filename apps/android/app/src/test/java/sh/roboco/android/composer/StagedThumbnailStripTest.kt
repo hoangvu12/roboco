@@ -431,6 +431,35 @@ class StagedThumbnailStripTest {
         assertTrue("the strip stays 68: $heights", heights.all { it == 68f })
     }
 
+    @Test
+    fun aSecondRemoveDuringTheSlideContinuesFromTheCurrentOffset() {
+        images = threeRed()
+        mountState()
+        tapRemove(1) // [a, b, c] -> [a, c]: c slides 128 -> 64
+
+        // Let the slide run a few frames, then remove a mid-flight: c's
+        // index drops again (1 -> 0) and the interrupted animation must
+        // continue from its current offset and velocity, not restart.
+        repeat(5) { stepFrame() }
+        val before = tileLeft(1)
+        assertTrue("mid-slide when interrupted: $before", before in 90f..127f)
+        tapRemove(0) // [a, c] -> [c]: c's target becomes 0
+
+        val cTrace = mutableListOf<Float>()
+        repeat(24) {
+            stepFrame()
+            cTrace += tileLeft(0)
+        }
+        // Continuity: no frame-to-frame jump beyond the ease's steepest
+        // rate (~0.44 px/ms -> ~7.4 px/frame), so the animation continued
+        // from the interrupted value instead of snapping.
+        val maxJump = cTrace.zipWithNext { a, b -> abs(b - a) }.max()
+        assertTrue("continues from the current offset (max jump $maxJump)", maxJump <= 12f)
+        assertTrue("the first post-interruption frame continues from $before: ${cTrace.first()}",
+            cTrace.first() in (before - 2f)..(before + 10f))
+        assertEquals("settled at its final slot 0", 0f, cTrace.last(), 0.5f)
+    }
+
     // ------------------------------------------------------ the collapse
 
     @Test
