@@ -5,7 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
@@ -75,11 +75,12 @@ class NotificationFlowTest {
         device.pressHome()
         // The slow run finishes; the notification appears.
         device.openNotification()
-        val notification = device.wait(
+        // `wait(hasObject)` yields false (not null) on timeout.
+        val appeared = device.wait(
             Until.hasObject(By.text("Run finished")),
             60_000,
         )
-        assertNotNull("the Done notification never appeared", notification)
+        assertTrue("the Done notification never appeared", appeared == true)
         // Tap it: the chat opens (cold or warm — the hub holds the link).
         device.findObject(By.text("Run finished")).click()
         // The session screen (ticket 75/76's root). Until those land, the

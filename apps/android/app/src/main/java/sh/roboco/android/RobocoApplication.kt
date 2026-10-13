@@ -292,7 +292,10 @@ class RobocoApplication : Application() {
     val notifications: NotificationCenter by lazy {
         val center = NotificationCenter(
             context = this,
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            // One lane: the core delivers callbacks in order (an older
+            // RunActivity must never land after a newer one, a Resolved
+            // never before its event); parallel Default hops could reorder.
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default.limitedParallelism(1)),
             controller = runWatch,
             prefs = notificationPrefs,
             notifier = notifier,

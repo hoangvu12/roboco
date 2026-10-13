@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
@@ -15,10 +16,12 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertTopPositionInRootIsEqualTo
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -291,12 +294,36 @@ class SessionsScreenTest {
         compose.waitForIdle()
     }
 
-    /** Dismisses an open context menu (the scrim tap). */
+    /**
+     * Dismisses an open context menu (the scrim tap). Not `performClick()`:
+     * that taps the backdrop's centre (437 dp), and a header's menu opens
+     * below the header — for P0 the "Delete" row sits there, so the "dismiss"
+     * picked Delete (CI r33). The tap goes to bare backdrop near the
+     * bottom-start corner instead (ContextMenuTest's convention).
+     */
     private fun dismissMenu() {
-        compose.onNodeWithTag("context-menu-backdrop").performClick()
+        compose.onNodeWithTag("context-menu-backdrop").performTouchInput {
+            click(Offset(dp(24f), height - dp(24f)))
+        }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
+    }
+
+    /**
+     * Asserts the one *displayed* large title reads [title]. After a push
+     * the root page stays composed under the pushed one (UIKit keeps the
+     * below view controller); NavStackHost only stops placing it, and an
+     * unplaced node keeps its semantics in the test tree on this Compose
+     * version, so `onNodeWithTag("nav-large-title")` sees both titles (CI
+     * r33). `isDisplayed()` rejects a node with an unplaced ancestor.
+     */
+    private fun assertDisplayedLargeTitle(title: String) {
+        val titles = compose.onAllNodesWithTag("nav-large-title")
+        val count = titles.fetchSemanticsNodes().size
+        val shown = (0 until count).map { titles[it] }.filter { it.isDisplayed() }
+        assertEquals("exactly one large title is displayed", 1, shown.size)
+        shown.single().assert(hasText(title))
     }
 
     private val hasShowMenuAction = SemanticsMatcher("'Show menu' long-click action") {
@@ -376,6 +403,9 @@ class SessionsScreenTest {
         mount()
         openOptionsMenu()
         pick("sessions-options-new-section")
+        // A pick closes the menu (15's row tap: close fade, then the
+        // action): the second row needs the menu opened again.
+        openOptionsMenu()
         pick("sessions-options-collapse-all")
         assertEquals(listOf("newSection()", "collapseAll()"), recorder.calls)
     }
@@ -388,7 +418,7 @@ class SessionsScreenTest {
         assertEquals(listOf("openArchived()"), recorder.calls)
         val top = stack.top.route
         assertTrue("the top route is the Archived folder page, was $top", top is FolderRoute && top.folderId == "archived")
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Archived"))
+        assertDisplayedLargeTitle("Archived")
     }
 
     // -------------------------------------------------- header long-press
@@ -416,7 +446,7 @@ class SessionsScreenTest {
         assertEquals(listOf("openPinned()"), recorder.calls)
         val top = stack.top.route
         assertTrue("the top route is the Pinned folder page, was $top", top is FolderRoute && top.folderId == "pinned")
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Pinned"))
+        assertDisplayedLargeTitle("Pinned")
     }
 
     @Test
@@ -612,6 +642,13 @@ class SessionsScreenTest {
         val handler = registry.handlers[TabId.Sessions]
         assertNotNull("RegisterScrollToTop registered the root's list", handler)
 
+        // Sample the fade at rest first. On device the hero reads the fade
+        // in its layer every frame, so ScrollTravel tracks the scroll by a
+        // common key; the probe hero never reads it, so without this sample
+        // the first read after the 188.78 dp jump has no previous layout
+        // and falls back to the mean-size estimate (CI r33: 0.436, not
+        // 0.5). theFadeFollowsTheScrollTable samples at rest the same way.
+        assertEquals("rest", 1f, fade(), 1e-3f)
         scrollBy(listState, 188.784f)
         assertEquals(0.5f, fade(), 0.005f)
 

@@ -39,7 +39,8 @@ abstract class ChimesSync : DefaultTask() {
         // Reset first (unconditionally) so a renamed or removed chime never
         // lingers as a stale resource.
         raw.deleteRecursively()
-        raw.mkdirs()
+        // No inputs → no `raw/` at all (ChimesSyncTest's empty case).
+        if (!chimeFiles.isEmpty) raw.mkdirs()
         for (file in chimeFiles) {
             val target = "chime_${file.nameWithoutExtension}.wav"
             file.copyTo(raw.resolve(target), overwrite = true)

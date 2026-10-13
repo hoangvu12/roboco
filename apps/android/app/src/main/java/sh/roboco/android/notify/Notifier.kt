@@ -88,7 +88,7 @@ class Notifier(private val context: Context) {
             )
             channel.description = kind.channelDescription()
             channel.setSound(
-                Uri.parse("android.resource://${context.packageName}/raw/chime_${kind.raw}"),
+                Uri.parse("android.resource://${context.packageName}/raw/${kind.chimeResource()}"),
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -130,7 +130,9 @@ class Notifier(private val context: Context) {
         val tag = chatTag(engineId, chatId)
         val notification = NotificationCompat.Builder(context, channelId(kind))
             .setSmallIcon(SMALL_ICON)
-            .setContentTitle(chatTitle)
+            // The core applies the fallback already; a blank title from any
+            // other caller still reads "New session" (NotifierTest).
+            .setContentTitle(chatTitle.ifBlank { "New session" })
             .setContentText(text)
             .setCategory(
                 if (kind == NotificationKind.Failed) {
@@ -338,6 +340,18 @@ class Notifier(private val context: Context) {
         const val BUDGET_TAG = "budget"
         val SMALL_ICON = R.drawable.zi_roboco_glyph
     }
+}
+
+/**
+ * The raw chime a kind's channel plays: ChimesSync names them after the
+ * desktop files (`done` / `request` / `attention`), not after [NotificationKind.raw]
+ * (`input` / `failed`). Kept from resource shrinking by `res/raw/keep_chimes.xml`
+ * (referenced by URI string only).
+ */
+private fun NotificationKind.chimeResource(): String = when (this) {
+    NotificationKind.Done -> "chime_done"
+    NotificationKind.Input -> "chime_request"
+    NotificationKind.Failed -> "chime_attention"
 }
 
 /** The system-settings channel name of a kind (Roboco web's labels). */

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Resource-shrinking keep rule for the session chimes (android-app#28).
+    The notification channels reference raw/chime_* only through an
+    android.resource:// URI string, so the release shrinker sees no
+    reference and would strip them (channels would fall silent).
+-->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@raw/chime_*" />
