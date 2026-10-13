@@ -11,6 +11,7 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.LicensesRoute
 import sh.roboco.android.settings.LicensesScreen
+import sh.roboco.android.settings.SettingsScreen
 import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
 import sh.roboco.android.sessions.SearchScreen
@@ -19,8 +20,9 @@ import sh.roboco.android.sessions.SessionsScreen
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
  * tab's [NavStack], what `popToRoot` returns to and what the placeholder
- * roots render until the real screens land. Ticket 49 (Search) has
- * replaced its branch; 46 (Sessions) and 103 (Settings) replace theirs.
+ * roots render until the real screens land. Ticket 49 (Search) and 46
+ * (Sessions) have replaced their branches; 103 (Settings) replaces the
+ * last placeholder.
  */
 data class TabRootRoute(val tab: TabId) : NavRoute
 
@@ -43,8 +45,7 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
 fun ShellRouteContent(route: NavRoute) {
     when (route) {
         is TabRootRoute -> when (route.tab) {
-            // Ticket 46: the Sessions tab's real root (the placeholder
-            // keeps the Settings tab until 103).
+            // Ticket 46: the Sessions tab's real root.
             TabId.Sessions -> SessionsScreen()
             // Ticket 49: the Search tab's root — the model + list state
             // live on the entry, so the query, results and scroll survive
@@ -56,7 +57,15 @@ fun ShellRouteContent(route: NavRoute) {
             TabId.Search -> Box(Modifier.fillMaxSize().testTag("tab-root-search")) {
                 SearchScreen()
             }
-            else -> PlaceholderTabRoot(route.tab)
+            // Ticket 103: the Settings tab's real root — the Compose
+            // port of MoreViewController (the six grouped sections under
+            // the large title). SettingsScreen tags its own node
+            // `settings-screen`, so the shell's `tab-root-<id>` tag (26's
+            // placeholder contract, kept by 46's and 49's roots) goes on a
+            // wrapper Box: two testTags on one node would leave only one.
+            TabId.Settings -> Box(Modifier.fillMaxSize().testTag("tab-root-more")) {
+                SettingsScreen()
+            }
         }
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
         is LicensesRoute -> LicensesScreen()

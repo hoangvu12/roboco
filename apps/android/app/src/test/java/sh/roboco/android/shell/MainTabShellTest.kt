@@ -2,12 +2,15 @@ package sh.roboco.android.shell
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeWithVelocity
+import androidx.compose.ui.unit.dp
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -89,6 +92,25 @@ class MainTabShellTest {
     private fun textExists(text: String): Boolean =
         compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
 
+    /**
+     * A slow, zero-velocity swipe up over the real Settings list (ticket
+     * 103 replaced the placeholder rows): the finger starts down the
+     * middle of the screen — clear of the trailing switches — so the list
+     * scrolls without toggling anything. The scrollable consumes the
+     * touch slop before it scrolls, so the finger travels 500 dp + slop
+     * for a 500 dp scroll.
+     */
+    private fun scrollSettingsDownList() {
+        compose.onRoot().performTouchInput {
+            val distance = 500.dp.toPx()
+            swipeWithVelocity(
+                start = Offset(width / 2f, height * 0.6f),
+                end = Offset(width / 2f, height * 0.6f - distance - viewConfiguration.touchSlop),
+                endVelocity = 0f,
+            )
+        }
+    }
+
     // ------------------------------------------------------------- haptics
 
     @Test
@@ -120,13 +142,15 @@ class MainTabShellTest {
     @Test
     fun reselectPopsToRootThenScrollsToTopAndASecondReselectDoesNothing() {
         setContent()
-        // Ticket 46: the Sessions root is the real screen — its rows come
-        // from the workspace, empty under Robolectric. The Settings tab
-        // keeps 26's placeholder root, so the content-driven parts run
-        // there (the shell behaviour under test is tab-agnostic).
+        // Ticket 103: the Settings root is the real screen (no placeholder
+        // rows) — the pushed page goes on programmatically (the row tap
+        // the placeholder used to stand in for), like 46 does for the
+        // real Sessions root.
         compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Placeholder row 5").performClick()
+        compose.runOnUiThread {
+            state.stack(TabId.Settings).push(PlaceholderDetailRoute(TabId.Settings, 5), animated = false)
+        }
         compose.waitUntil(5_000) { textExists("Settings row 5") }
         assertEquals(2, state.stack(TabId.Settings).entries.size)
 
@@ -136,14 +160,16 @@ class MainTabShellTest {
         compose.waitUntil(5_000) { state.stack(TabId.Settings).entries.size == 1 }
         assertEquals(before, feedback.calls.size)
         compose.onNodeWithText("Settings row 5").assertDoesNotExist()
-        compose.onNodeWithText("Placeholder row 1").assertExists()
+        // The real root: the Settings large title.
+        compose.onNodeWithText("Settings").assertExists()
 
-        // Re-select at the root: the list scrolls back to the top.
-        compose.onNodeWithTag("tab-root-more").performScrollToIndex(20)
+        // Re-select at the root: the list scrolls back to the top (the
+        // large title is composed away while scrolled down).
+        scrollSettingsDownList()
         compose.waitForIdle()
-        compose.onNodeWithText("Placeholder row 1").assertDoesNotExist()
+        compose.onNodeWithText("Settings").assertDoesNotExist()
         compose.onNodeWithTag("tab-more").performClick()
-        compose.waitUntil(5_000) { textExists("Placeholder row 1") }
+        compose.waitUntil(5_000) { textExists("Settings") }
 
         // A second re-select at the top: nothing happens (no haptic, no
         // pop, no scroll).
@@ -152,7 +178,7 @@ class MainTabShellTest {
         compose.waitForIdle()
         assertEquals(after, feedback.calls.size)
         assertEquals(1, state.stack(TabId.Settings).entries.size)
-        compose.onNodeWithText("Placeholder row 1").assertExists()
+        compose.onNodeWithText("Settings").assertExists()
     }
 
     // ---------------------------------------------------------- retention
@@ -160,13 +186,16 @@ class MainTabShellTest {
     @Test
     fun scrollAndStackAreKeptAcrossTabSwitches() {
         setContent()
-        // Ticket 46: the scrollable root is the Settings placeholder (the
-        // real Sessions root is empty under Robolectric).
+        // Ticket 103: the scrollable root is the real Settings screen —
+        // its bottom rows stand in for the placeholder's row 25, and the
+        // pushed page goes on programmatically.
         compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("tab-root-more").performScrollToIndex(20)
+        scrollSettingsDownList()
         compose.waitForIdle()
-        compose.onNodeWithText("Placeholder row 25").performClick()
+        compose.runOnUiThread {
+            state.stack(TabId.Settings).push(PlaceholderDetailRoute(TabId.Settings, 25), animated = false)
+        }
         compose.waitUntil(5_000) { textExists("Settings row 25") }
 
         // Away and back: the pushed page is still the top of the stack.
@@ -178,10 +207,16 @@ class MainTabShellTest {
         compose.waitForIdle()
         compose.onNodeWithText("Settings row 25").assertExists()
 
-        // Pop to root (re-select): the list kept its scroll position.
-        compose.onNodeWithTag("tab-more").performClick()
+        // System back pops the pushed page; the root list kept its scroll
+        // position across the round trip (26's saveable state).
+        back()
         compose.waitUntil(5_000) { state.stack(TabId.Settings).entries.size == 1 }
-        compose.onNodeWithText("Placeholder row 21").assertExists()
+        compose.onNodeWithText("Settings row 25").assertDoesNotExist()
+        compose.onNodeWithTag("tab-root-more").assertExists()
+        // The list is still near its end: the last section's rows are on
+        // screen, the top is not.
+        compose.onNodeWithText("Settings").assertDoesNotExist()
+        compose.onNodeWithTag("settings-archived").assertExists()
     }
 
     @Test
@@ -189,14 +224,16 @@ class MainTabShellTest {
         setContent()
         // Ticket 46: the Sessions root has no placeholder rows to tap —
         // push its detail page programmatically (the row tap it used to
-        // stand in for).
+        // stand in for). Ticket 103: the same for the real Settings root.
         compose.runOnUiThread {
             state.stack(TabId.Sessions).push(PlaceholderDetailRoute(TabId.Sessions, 3), animated = false)
         }
         compose.waitUntil(5_000) { textExists("Sessions row 3") }
         compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Placeholder row 7").performClick()
+        compose.runOnUiThread {
+            state.stack(TabId.Settings).push(PlaceholderDetailRoute(TabId.Settings, 7), animated = false)
+        }
         compose.waitUntil(5_000) { textExists("Settings row 7") }
         assertEquals(2, state.stack(TabId.Settings).entries.size)
         assertEquals(2, state.stack(TabId.Sessions).entries.size)
