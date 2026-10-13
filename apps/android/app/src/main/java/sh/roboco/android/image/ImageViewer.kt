@@ -229,7 +229,7 @@ val ImageViewerBackgroundAlphaKey = SemanticsPropertyKey<Float>("ImageViewerBack
 class ImageViewerState {
 
     /** The current lifecycle phase. */
-    var phase: ViewerPhase = ViewerPhase.Hidden
+    var phase: ViewerPhase by mutableStateOf(ViewerPhase.Hidden)
         private set
 
     /** `phase != Hidden` — also true while a null-preview load is awaited. */
@@ -310,23 +310,23 @@ class ImageViewerState {
     // ------------------------------------------------------------ transition
 
     /** The mode of the current open/close. */
-    internal var transition = ViewerTransition.Fade
+    internal var transition: ViewerTransition by mutableStateOf(ViewerTransition.Fade)
         private set
 
     /** `E` — the rect the presence value runs between. */
-    internal var endRect = Rect.Zero
+    internal var endRect: Rect by mutableStateOf(Rect.Zero)
         private set
 
     /** `Eα` — the background alpha the presence value runs between. */
-    internal var endAlpha = 1f
+    internal var endAlpha: Float by mutableStateOf(1f)
         private set
 
     /** The close's target rect (the tile re-read at close time), overlay px. */
-    internal var closeTarget: Rect? = null
+    internal var closeTarget: Rect? by mutableStateOf<Rect?>(null)
         private set
 
     /** The zoom-source entry of the current request (hides the tile). */
-    internal var sourceEntry: ViewerSourceEntry? = null
+    internal var sourceEntry: ViewerSourceEntry? by mutableStateOf<ViewerSourceEntry?>(null)
         private set
 
     /** True until the page's first layout starts the open animation. */
@@ -870,7 +870,7 @@ class ImageViewerState {
 
     /** One dismiss-drag step at zoom 1: the picture follows the finger. */
     internal suspend fun drag(delta: Offset) {
-        if (phase != ViewerPhase.Dragging && phase != ViewerPhase.Shown) return
+        if (phase != ViewerPhase.Dragging) return
         dragOffset.snapTo(dragOffset.value + delta)
     }
 
