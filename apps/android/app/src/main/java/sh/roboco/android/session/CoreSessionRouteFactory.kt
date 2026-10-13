@@ -8,7 +8,6 @@ import sh.roboco.android.composer.CoreQueuePort
 import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.shell.RouterHooks
-import sh.roboco.android.shell.SessionRoute
 import sh.roboco.android.shell.SessionRouteFactory
 import sh.roboco.android.transcript.TranscriptState
 import uniffi.roboco_core.TextSystem
@@ -61,7 +60,9 @@ class CoreSessionRouteFactory(
     private val queueScope: CoroutineScope = CoroutineScope(SupervisorJob()),
 ) : SessionRouteFactory {
 
-    override fun open(chatId: String): SessionRoute? {
+    // Covariant return: tests (and sibling adapters) read the route's
+    // controller/state/queueActions without a cast.
+    override fun open(chatId: String): SessionScreenRoute? {
         // First statement, so a main-thread call never reaches the open.
         check(!isMainThread()) { "SessionRouteFactory.open on main" }
         val openedAt = now() // iOS openedAt: before the synchronous core open

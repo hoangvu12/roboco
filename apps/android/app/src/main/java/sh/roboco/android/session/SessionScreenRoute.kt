@@ -6,6 +6,7 @@ import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.SessionRoute
+import sh.roboco.android.transcript.AttachmentReader
 import sh.roboco.android.transcript.TranscriptState
 import uniffi.roboco_core.TextSystem
 
@@ -46,6 +47,19 @@ class SessionScreenRoute internal constructor(
      */
     val queueActions: QueueActions?,
 ) : SessionRoute, NavRoute {
+
+    /**
+     * Ticket 66's attachment reader over the live client (the ticket's
+     * "once 66 lands" line): one stable instance per route, so
+     * SessionScreen's `remember(controller, attachments)` never re-keys.
+     * Null for a test fake core without a client.
+     */
+    private val attachments: AttachmentReader? = (core as? CoreSessionCore)?.let { live ->
+        object : AttachmentReader {
+            override suspend fun read(engineDeviceId: String, reference: String): ByteArray =
+                live.client.readAttachment(engineDeviceId, reference)
+        }
+    }
 
     /** The session's scoped chat id (`SessionHandle.chatId()`, through the controller). */
     override val chatId: String
@@ -110,7 +124,7 @@ class SessionScreenRoute internal constructor(
         }
         // Ticket 75's screen (the scaffold, the first-composition wiring,
         // the layer stack). 80 adds `onMore`; 66 the attachment reader.
-        SessionScreen(controller, state)
+        SessionScreen(controller, state, attachments = attachments)
     }
 
     /** Ticket 77 fills these; 32's default `HandoffAnimator.Instant` calls `finishArrival()`, so empty bodies are safe until then. */

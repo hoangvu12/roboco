@@ -202,8 +202,12 @@ class SessionFlowTest {
         return "engine:v1:$encoded"
     }
 
-    /** See the class docs; picks the id form from the test method's name. */
-    private inner class RouteLaunchRule : TestRule {
+    /**
+     * See the class docs; picks the id form from the test method's name.
+     * Public (not private): the public `@get:Rule` property's type
+     * argument names it, and a private type there is an exposure error.
+     */
+    inner class RouteLaunchRule : TestRule {
 
         lateinit var scenario: ActivityScenario<MainActivity>
             private set
