@@ -28,10 +28,12 @@ import uniffi.roboco_core.Decoration
 import uniffi.roboco_core.Fade
 import uniffi.roboco_core.FadeEdge
 import uniffi.roboco_core.FaceRole
+import uniffi.roboco_core.LinkHit
 import uniffi.roboco_core.RowDisplay
 import uniffi.roboco_core.Scroller
 import uniffi.roboco_core.StyleDesc
 import uniffi.roboco_core.TextRun
+import uniffi.roboco_core.Widget
 
 /**
  * The transcript-chrome specimen (debug gallery, ticket 64): the two
@@ -114,12 +116,12 @@ private fun paintFixtureRow(
 private class ChromeRow(val model: RowModel, val heightDp: Int)
 
 /**
- * The style table shared by the six rows: one id per distinct (face, size),
+ * The style table shared by fixture rows: one id per distinct (face, size),
  * interned in first-use order — the way the core's style table grows. All
  * fixture styles are `ligatures = false` (only code wants them and the
- * mono runs are plain ASCII).
+ * mono runs are plain ASCII). Ticket 116's scroller fixture shares it.
  */
-private class StyleBook {
+internal class StyleBook {
     private val ids = HashMap<Pair<FaceRole, Float>, UShort>()
     val descs = ArrayList<StyleDesc>()
 
@@ -253,11 +255,14 @@ private fun buildChromeRows(fonts: StyleFonts, d: Float): List<ChromeRow> {
 
 /**
  * One fixture row under construction: accumulates the text, runs, boxes,
- * scrollers, fades and styles and produces the [RowDisplay]. Heights are
- * the fixture's own (the core decides them in production); the run data is
- * derived from [fonts] through the core's baseline formula.
+ * links, scrollers, fades, widgets and styles and produces the
+ * [RowDisplay]. Heights are the fixture's own (the core decides them in
+ * production); the run data is derived from [fonts] through the core's
+ * baseline formula. Ticket 116's `ScrollerFixturePage` reuses this
+ * builder, so it carries `links` and `widgets` lists (empty by default)
+ * and boxes may live inside a scroller.
  */
-private class FixtureRow(
+internal class FixtureRow(
     private val fonts: StyleFonts,
     private val d: Float,
     private val styles: StyleBook,
@@ -269,6 +274,8 @@ private class FixtureRow(
     private val boxes = ArrayList<BoxPrim>()
     private val scrollers = ArrayList<Scroller>()
     private val fades = ArrayList<Fade>()
+    private val links = ArrayList<LinkHit>()
+    private val widgets = ArrayList<Widget>()
     private var at = 0
 
     /** Interns a style in the shared table and returns its id. */
@@ -319,9 +326,23 @@ private class FixtureRow(
         return cx - x
     }
 
-    /** Appends one chrome box (no boxes inside scrollers in this fixture). */
-    fun box(x: Float, y: Float, w: Float, h: Float, radius: Float, style: BoxStyle, color: ColorRole) {
-        boxes.add(BoxPrim(x, y, w, h, radius, style, color, null))
+    /** Appends one chrome box, optionally inside a scroller (wide-table fills and rules). */
+    fun box(
+        x: Float,
+        y: Float,
+        w: Float,
+        h: Float,
+        radius: Float,
+        style: BoxStyle,
+        color: ColorRole,
+        scroller: UInt? = null,
+    ) {
+        boxes.add(BoxPrim(x, y, w, h, radius, style, color, scroller))
+    }
+
+    /** Appends one link hit, optionally inside a scroller (markdown table cells). */
+    fun link(x: Float, y: Float, w: Float, h: Float, url: String, scroller: UInt? = null) {
+        links.add(LinkHit(x, y, w, h, url, scroller))
     }
 
     /** Appends a scroller viewport; returns its index. */
@@ -346,9 +367,9 @@ private class FixtureRow(
             text = text,
             runs = runs.toList(),
             boxes = boxes.toList(),
-            links = emptyList(),
+            links = links.toList(),
             scrollers = scrollers.toList(),
-            widgets = emptyList(),
+            widgets = widgets.toList(),
             fades = fades.toList(),
             copyText = text,
         )
