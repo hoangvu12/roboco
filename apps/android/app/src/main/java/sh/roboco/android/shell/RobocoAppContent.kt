@@ -10,6 +10,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -76,27 +77,34 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                             val coreState by app.coreStartup.state.collectAsState()
                             val client =
                                 if (coreState is CoreStartState.Ready) app.clientOrNull() else null
-                            if (client == null) {
-                                AppRootWithPairing(
-                                    app = app,
-                                    rootState = rootState,
-                                    presentations = presentations,
-                                    pairingStatus = pairingStatus,
-                                    pairPage = null,
-                                )
-                            } else {
-                                ProvidePairPage(
-                                    backend = CoreClientPairingBackend(client),
-                                    store = StorePairedEngineSink(app.engineStore, app.coreStartup),
-                                    qrScan = null, // 138 lands the scanner
-                                ) {
+                            // One movable root for both branches: `Ready`
+                            // moves it under the launcher instead of
+                            // discarding everything remembered below it.
+                            val root = remember(app, rootState, presentations, pairingStatus) {
+                                movableContentOf { pairPage: PairPageLauncher? ->
                                     AppRootWithPairing(
                                         app = app,
                                         rootState = rootState,
                                         presentations = presentations,
                                         pairingStatus = pairingStatus,
-                                        pairPage = LocalPairPage.current,
+                                        pairPage = pairPage,
                                     )
+                                }
+                            }
+                            if (client == null) {
+                                root(null)
+                            } else {
+                                // Stable across recompositions, so
+                                // ProvidePairPage keeps its launcher (it must
+                                // not be rebuilt mid-redeem).
+                                val backend = remember(client) { CoreClientPairingBackend(client) }
+                                val store = remember(app) { StorePairedEngineSink(app.engineStore, app.coreStartup) }
+                                ProvidePairPage(
+                                    backend = backend,
+                                    store = store,
+                                    qrScan = null, // 138 lands the scanner
+                                ) {
+                                    root(LocalPairPage.current)
                                 }
                             }
                         }
