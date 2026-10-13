@@ -129,13 +129,14 @@ class SessionsSettingsSectionTest {
         compose.setContent {
             RobocoTheme(appearance) {
                 CompositionLocalProvider(LocalFeedback provides feedback) {
+                    val strings = sessionsSettingsStrings()
                     LazyColumn(
                         Modifier
                             .fillMaxSize()
                             .background(RobocoTheme.palette.background),
                     ) {
                         sessionsSettingsSection(
-                            strings = sessionsSettingsStrings(),
+                            strings = strings,
                             groupByProject = { on },
                             onGroupByProjectChange = onGroupByProjectChange,
                             onOpenArchived = onOpenArchived,
@@ -666,13 +667,14 @@ class SessionsSettingsSectionTest {
             RobocoTheme(Appearance.Light) {
                 CompositionLocalProvider(LocalFeedback provides feedback) {
                     val group by prefs.groupByProject.collectAsState()
+                    val strings = sessionsSettingsStrings()
                     LazyColumn(
                         Modifier
                             .fillMaxSize()
                             .background(RobocoTheme.palette.background),
                     ) {
                         sessionsSettingsSection(
-                            strings = sessionsSettingsStrings(),
+                            strings = strings,
                             groupByProject = { group },
                             onGroupByProjectChange = prefs::setGroupByProject,
                             onOpenArchived = { },

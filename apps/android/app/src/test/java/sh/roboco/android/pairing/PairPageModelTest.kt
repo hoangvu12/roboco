@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -78,7 +79,7 @@ class PairPageModelTest {
      */
     private class PairingHarness(
         val scope: CoroutineScope,
-        val io: StandardTestDispatcher,
+        val io: TestDispatcher,
         val sink: FakeSink,
     )
 

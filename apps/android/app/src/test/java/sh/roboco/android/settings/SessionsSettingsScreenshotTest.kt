@@ -64,6 +64,7 @@ class SessionsSettingsScreenshotTest {
     private fun shotSection(appearance: Appearance, on: Boolean, file: String) {
         compose.setContent {
             RobocoTheme(appearance) {
+                val strings = sessionsSettingsStrings()
                 LazyColumn(
                     Modifier
                         .width(402.dp)
@@ -71,7 +72,7 @@ class SessionsSettingsScreenshotTest {
                         .background(RobocoTheme.palette.background),
                 ) {
                     sessionsSettingsSection(
-                        strings = sessionsSettingsStrings(),
+                        strings = strings,
                         groupByProject = { on },
                         onGroupByProjectChange = { },
                         onOpenArchived = { },
