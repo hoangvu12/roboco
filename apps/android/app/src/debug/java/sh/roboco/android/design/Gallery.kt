@@ -41,6 +41,7 @@ import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
+import sh.roboco.android.sessions.PinnedReorderGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
@@ -406,6 +407,15 @@ object Gallery {
         // and the invisible disclosure / tool-toggle tap targets — the
         // static fixture rows plus the live expand / collapse demo.
         GallerySection("Transcript disclosure") { DisclosureGallerySection() },
+        // Ticket 47 (Pinned reorder): the Pinned folder's Edit mode — the
+        // Edit/Done capsule, the drag handles, the engine-block clamp and
+        // the lift look over 41's standalone SessionList with a fake
+        // two-engine fixture; the readout line shows the last PinMove and
+        // "Fail next drop" shows the snap-back. Fill: the list owns the
+        // LazyColumn.
+        GallerySection("Pinned reorder", layout = GalleryLayout.Fill, screenshotHeightDp = 852) {
+            PinnedReorderGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

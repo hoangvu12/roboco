@@ -231,7 +231,12 @@ class PinReorderState(initial: List<PinKey>) {
      * never (a failed write snaps back to it).
      */
     fun adopt(rows: List<PinKey>) {
-        if (ids(rows) == ids(order)) return
+        if (ids(rows) == ids(order)) {
+            // Equal: no order change — but still the latest rows seen, so a
+            // later failed write snaps back to them, not to an older frame.
+            lastRows = rows
+            return
+        }
         lastRows = rows
         if (draggedId != null || committing) {
             stash = rows
