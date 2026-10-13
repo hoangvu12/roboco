@@ -1,3 +1,4 @@
 <resources>
     <color name="launch_background">#EDEDED</color>
+    <color name="accent">#5B43E8</color>
 </resources>
