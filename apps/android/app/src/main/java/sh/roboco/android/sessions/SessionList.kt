@@ -340,6 +340,10 @@ fun LazyListScope.sessionListItems(
                         isCurrent = vm.id == currentChatId,
                     )
                     rowWrapper(ctx) { m ->
+                        // 44: the pressed fill reads 0 while the context menu
+                        // lifts this row (LocalRowLiftState, provided by
+                        // 44's wrapper around this lambda).
+                        val lift = LocalRowLiftState.current
                         SessionRow(
                             vm = vm,
                             modifier = m
@@ -350,8 +354,7 @@ fun LazyListScope.sessionListItems(
                                     enabled = !editing,
                                 ) { onOpenSession(vm.id) },
                             isCurrent = ctx.isCurrent,
-                            // 44 edits this one lambda to read 0 while lifted.
-                            highlight = { h.value },
+                            highlight = { if (lift?.isLifted == true) 0f else h.value },
                             // meta: the slot's default — 38's SessionRowMetaLine.
                         )
                     }

@@ -49,6 +49,7 @@ import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
+import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.shell.NavGallerySection
@@ -311,6 +312,14 @@ object Gallery {
         // over the three fake refresh durations — the rubber-band pull, the
         // 60-dp hold and the 0.6 s / 3 s window.
         GallerySection("Pull to refresh", GalleryLayout.Fill, 891) { PullToRefreshGallerySection() },
+        // Ticket 44 (row swipe actions + the row's long-press menu): the
+        // swipe panes (Pin/Unpin, Archive + Move, Unarchive), the settle,
+        // the armed full swipe, the refusal spring-back and the context
+        // menu wiring, live over fakes plus the static golden block. The
+        // ActionSheetHost gives 43's sheets a host, like "Wallpaper rows".
+        GallerySection("Swipe rows", GalleryLayout.Scroll, screenshotHeightDp = 891) {
+            ActionSheetHost { SwipeRowGallerySection() }
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

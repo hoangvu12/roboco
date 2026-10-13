@@ -15,4 +15,17 @@
     <string name="shortcut_new_session" translatable="false">New Session</string>
     <string name="shortcut_search" translatable="false">Search</string>
     <string name="shortcut_toggle_sidebar" translatable="false">Toggle Sidebar</string>
+
+    <!-- Row swipe actions and the row's context menu (android-ui-parity #44),
+         verbatim from ios:Threads/SessionListController.swift:228-296 — the
+         swipe a11y labels double as the menu titles. U+2026 in the … entries. -->
+    <string name="swipe_pin" translatable="false">Pin</string>
+    <string name="swipe_unpin" translatable="false">Unpin</string>
+    <string name="swipe_archive" translatable="false">Archive</string>
+    <string name="swipe_move" translatable="false">Move</string>
+    <string name="swipe_unarchive" translatable="false">Unarchive</string>
+    <string name="menu_move_to_section" translatable="false">Move to Section</string>
+    <string name="menu_no_section" translatable="false">No Section</string>
+    <string name="menu_new_section" translatable="false">New Section…</string>
+    <string name="menu_rename" translatable="false">Rename…</string>
 </resources>
