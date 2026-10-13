@@ -489,11 +489,19 @@ private fun ContextMenuOverlay(
             val child = measurables.first()
             val maxW = safe.width.toInt().coerceAtLeast(1)
             val gapPx = ContextMenuTokens.MenuGap.toPx()
-            val fullPanel = child.measure(Constraints(maxWidth = maxW, maxHeight = Constraints.Infinity))
-            val placement = placeContextMenu(scaled, active.touchInHost, IntSize(fullPanel.width, fullPanel.height), safe, gapPx)
+            // The full panel size through intrinsics: a scrollable panel may
+            // not be measured with an infinite height, and only once.
+            val fullWidth = child.maxIntrinsicWidth(Constraints.Infinity).coerceIn(0, maxW)
+            val fullHeight = child.maxIntrinsicHeight(maxW)
+            val estimate = placeContextMenu(scaled, active.touchInHost, IntSize(fullWidth, fullHeight), safe, gapPx)
+            menuMaxHeight = estimate.maxHeight.toDp()
+            val placed = child.measure(Constraints(maxWidth = maxW, maxHeight = estimate.maxHeight))
+            val placement = if (placed.width == fullWidth) {
+                estimate
+            } else {
+                placeContextMenu(scaled, active.touchInHost, IntSize(placed.width, fullHeight), safe, gapPx)
+            }
             origin = placement.origin
-            menuMaxHeight = placement.maxHeight.toDp()
-            val placed = child.measure(Constraints(maxWidth = maxW, maxHeight = placement.maxHeight))
             layout(constraints.maxWidth, constraints.maxHeight) {
                 placed.place(placement.offset.x, placement.offset.y)
             }
