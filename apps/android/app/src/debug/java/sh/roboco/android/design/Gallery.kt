@@ -45,6 +45,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
+import sh.roboco.android.sessions.SearchGallerySection
 import sh.roboco.android.sessions.SessionListGallerySection
 import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
@@ -330,6 +331,10 @@ object Gallery {
         // card — header, question, option rows, the Other field/editor and
         // Back + Next, one page per question, plus the interactive toy.
         GallerySection("Question card", screenshotHeightDp = 4200) { QuestionCardGallerySection() },
+        // Ticket 49 (Search screen): the Search tab's root — the large
+        // title, the Recent / hits / no-results / loading states over the
+        // fixture, in the goldens' 412 × 700 dp frame.
+        GallerySection("Search screen", GalleryLayout.Fill, 700) { SearchGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
