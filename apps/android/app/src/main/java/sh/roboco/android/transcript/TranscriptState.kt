@@ -8,7 +8,6 @@ import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -37,9 +36,9 @@ fun interface FrameListener {
  * thread through [FrameRelay] (one coalesced apply per vsync), forwards the
  * viewport only when it changes, and keeps the applied frame, the
  * [uploadProgress] and the [fonts] style table as Compose-observable
- * state. It draws nothing; scrolling, anchoring, row motion and painting
- * belong to later tickets (62–69, 117, 130, 132), which read [frame] and
- * register [FrameListener]s.
+ * state. It draws nothing; the scroll model (68, [viewport]), anchoring
+ * (130), row motion and painting (62–67, 117, 132) belong to their
+ * tickets, which read [frame] and register [FrameListener]s.
  *
  * Construct on the main thread (the production constructor checks it
  * before creating the Rust engine, which spawns the `roboco-layout`
@@ -83,36 +82,50 @@ class TranscriptState internal constructor(
     val fonts = StyleFonts()
 
     // ------------------------------------------------------------------
-    // Ticket 65: the host's scroll model and realized-registry support.
+    // Ticket 68: the scroll model. The viewport is the single source of
+    // truth for the offset, insets, content height and follow; the
+    // properties below forward 65/75's call sites onto it.
     // ------------------------------------------------------------------
+
+    /**
+     * The transcript's scroll model (68): offset, insets, follow and the
+     * tail spring. Everything runs on the main thread — written from
+     * [apply], the scroll modifier and the inset writers (74/75/133).
+     */
+    val viewport = TranscriptViewport()
 
     /**
      * The content y (dp) at the host's top edge — the shared scroll
      * coordinate contract (see the ticket). A row's top on screen is
-     * `round(p.y·d) − round(offset·d)`; 68 owns follow and insets, 134 the
-     * physics. Written on main by the host's scrollable.
+     * `round(p.y·d) − round(offset·d)`; 68 owns follow and insets, 134
+     * the physics. Written on main by the viewport.
      */
-    var offset by mutableFloatStateOf(0f)
+    val offset: Float get() = viewport.offset
 
-    /** The host's viewport height (dp), written from a host `SideEffect` (never measure). */
-    var viewportHeight by mutableFloatStateOf(0f)
+    /** The host's viewport height (dp), written only by the scroll modifier's `onSizeChanged` (68). */
+    val viewportHeight: Float get() = viewport.viewportHeight
 
-    /** The legal scroll range; ticket 68 widens it (top inset, bottom runway). */
-    val maxOffset: Float get() = max(0f, (frame?.totalHeight() ?: 0f) - viewportHeight)
+    /** The legal scroll range: `max(−topInset, contentHeight + bottomInset − viewportHeight)` (68). */
+    val maxOffset: Float get() = viewport.maxOffset
 
     /**
-     * Scrolls by [delta] dp, clamped to `[0, maxOffset]`; returns the
-     * consumed dp (0 when the range end is reached). 68 adds the follow
-     * and re-latch logic, 134 the physics, on top of this primitive.
+     * Status bar + header height (dp) — 52's `contentTopInset`, written
+     * by 75. A change of more than 0.5 snaps the offset to `maxOffset`
+     * while following (68 R12).
      */
-    fun scrollByDp(delta: Float): Float {
-        val target = (offset + delta).coerceIn(0f, maxOffset)
-        val consumed = target - offset
-        offset = target
-        return consumed
-    }
+    var topInset: Float
+        get() = viewport.topInset
+        set(v) { viewport.setTopInset(v) }
 
-    /** The host's drag interactions; 68 collects drag start/stop for follow. */
+    /**
+     * The full covered height at the bottom (dp) — 74's `covered`, written
+     * by 133/135. A change of more than 0.5 snaps while following (68 R11).
+     */
+    var bottomInset: Float
+        get() = viewport.bottomInset
+        set(v) { viewport.setBottomInset(v) }
+
+    /** The host's drag interactions; passed to the scrollable (68) — never used for follow logic. */
     val scrollInteractions = MutableInteractionSource()
 
     /** Row hosts composed so far — the no-per-pixel-recomposition test's counter. */
@@ -237,10 +250,14 @@ class TranscriptState internal constructor(
      * 3. skip a duplicate revision (a hop can pull a frame the previous
      *    hop already applied — revisions increase monotonically per view);
      * 4. sync [fonts] when the style count moved;
-     * 5. swap [frame];
-     * 6. notify the listeners over a copy, so one can remove itself.
-     * (Step 2 — the pull — lives in [applyLatest].) Later tickets insert
-     * their work between steps 3 and 5.
+     * 5. compute `first` (68: the previous frame was missing or had zero
+     *    rows — always **before** the swap, so the local `old` is the
+     *    previous frame; ticket 130 anchors here) and swap [frame];
+     * 6. hand the new geometry to [viewport] (68: first frame lands at
+     *    the tail, later frames spring while following);
+     * 7. notify the listeners over a copy, so one can remove itself.
+     * (Step 2 — the pull — lives in [applyLatest].) Ticket 130 will insert
+     * its anchor work between steps 5 and 7.
      */
     @VisibleForTesting
     internal fun apply(new: LayoutFrame) {
@@ -248,9 +265,26 @@ class TranscriptState internal constructor(
         val old = frame
         if (old != null && new.revision() == old.revision()) return
         if (new.styleCount().toInt() != fonts.count) fonts.update(new.styles())
+        // 68: `first` is computed before the swap — `frame` is a delegated
+        // snapshot property, so take a local (never `frame!!`); the
+        // previous frame was missing or had zero rows. Ticket 130
+        // captures its anchor at this point.
+        val first = old == null || old.rowCount() == 0u
         frame = new
+        // 68: the scroll model reacts to the new geometry — the first
+        // frame with rows lands at the tail (R2), later frames spring
+        // while following (R3). Ticket 130 consumes `needsAnchor` (R4);
+        // nothing anchors in this ticket.
+        val needsAnchor = viewport.onFrameApplied(contentHeightFor(new), first)
         listeners.toList().forEach { it.onFrame(old, new) }
     }
+
+    /**
+     * The frame's total height (dp) — the Rust core's `totalHeight()`
+     * already ends 16 dp under the last row (68). Ticket 69 replaces the
+     * body with the runway logic.
+     */
+    private fun contentHeightFor(f: LayoutFrame): Float = f.totalHeight()
 
     /**
      * Idempotent teardown: cancel a pending relay hop, stop the worker

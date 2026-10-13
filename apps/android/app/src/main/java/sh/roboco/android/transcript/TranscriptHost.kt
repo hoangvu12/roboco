@@ -1,11 +1,8 @@
 package sh.roboco.android.transcript
 
 import android.os.Trace
-import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.rememberScrollableState
-import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.Composable
@@ -44,9 +41,11 @@ import kotlin.math.roundToInt
  * visible). The host itself does not consume taps — [Modifier.transcriptTaps]
  * observes them on the Final pass.
  *
- * Scrolling here is the raw offset model only (clamped to
- * `[0, maxOffset]`); follow-the-tail, insets, anchoring and fling physics
- * are 68/130/134, the model cache is 117, the veil 118, widgets 66+.
+ * Scrolling is ticket 68's [rememberTranscriptScroll]: the viewport model
+ * (follow the tail, insets, R14 clamp) fed by the same gesture pipeline.
+ * The offset can be negative (`−topInset`); the realized band starts
+ * below zero accordingly. Anchoring is 130, the model cache 117, the
+ * veil 118, widgets 66+.
  */
 @Composable
 fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier: Modifier = Modifier) {
@@ -55,29 +54,29 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
     val palette = TranscriptPalette(LocalIsDark.current)
     val currentActions by rememberUpdatedState(actions)
 
-    // Compose's scrollable hands the raw drag delta (px, positive = finger
-    // down); offset grows toward the tail, so the double negation maps a
-    // swipe-up onto a forward scroll and returns what it consumed.
-    val scrollable = rememberScrollableState { px -> -state.scrollByDp(-px / d) * d }
-
     BoxWithConstraints(
         modifier
             .testTag("transcript")
             .clipToBounds()
             .onPlaced { state.hostCoordinates = it }
-            .scrollable(
-                scrollable,
-                Orientation.Vertical,
-                overscrollEffect = null,
-                interactionSource = state.scrollInteractions,
+            // 68: the scroll model — size reporting, the Initial-pass
+            // pointer observer, the follow-aware fling and the scrollable
+            // itself, in one chain. The box is NOT padded by the insets:
+            // content draws under the header and under the bottom stack.
+            .then(
+                rememberTranscriptScroll(
+                    viewport = state.viewport,
+                    interactionSource = state.scrollInteractions,
+                ),
             )
             .transcriptTaps(state) { currentActions },
     ) {
         val widthDp = maxWidth.value
         val heightDp = maxHeight.value
         SideEffect {
-            state.viewportHeight = heightDp
-            // This ticket owns the call site of 61's viewport sync.
+            // This ticket owns the call site of 61's viewport sync; the
+            // box height flows in through the scroll modifier's
+            // `onSizeChanged` (68), never from here.
             state.setViewport(widthDp, TranscriptState.bodyTextScale(density))
         }
 
