@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
@@ -48,6 +47,7 @@ import sh.roboco.android.shell.LargeTitleScaffold
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalPageSheetScope
 import sh.roboco.android.shell.LocalSheetHost
+import sh.roboco.android.shell.largeTitleDefaultTopInset
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.PageSheetScope
 import sh.roboco.android.shell.SheetStyle
@@ -118,14 +118,17 @@ fun LicensesScreen() {
  * list is the sections' own.
  *
  * Previews, the gallery and the goldens pass [topInset] (Robolectric has
- * no real insets); production reads the status bar.
+ * no real insets); production reads the status bar — 0 inside 104's
+ * Settings card, through [largeTitleDefaultTopInset].
  */
 @Composable
 fun LicensesList(
     sections: List<LicenceSection>?,
     onOpen: (LicenceEntry) -> Unit,
     modifier: Modifier = Modifier,
-    topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    // 104: defaults to 25's resolved default, so the screen insets nothing
+    // when hosted inside the tablet Settings card.
+    topInset: Dp = largeTitleDefaultTopInset(),
 ) {
     LargeTitleScaffold(
         title = "Licenses",

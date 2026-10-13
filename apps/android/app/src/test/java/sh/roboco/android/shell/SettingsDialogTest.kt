@@ -196,6 +196,7 @@ class SettingsDialogTest {
     }
 
     @Test
+    @Config(sdk = [36], qualifiers = "w560dp-h600dp-xhdpi")
     fun aNarrowWindowClampsTheCard() {
         present()
         settle()

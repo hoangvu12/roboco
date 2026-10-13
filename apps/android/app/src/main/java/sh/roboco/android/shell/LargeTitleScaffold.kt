@@ -160,6 +160,20 @@ val LocalPrefersLargeTitles = staticCompositionLocalOf { true }
  */
 val LocalLargeTitleHostInsets = staticCompositionLocalOf<WindowInsets?> { null }
 
+/**
+ * The default `topInset` of every 25-convention screen: the host's own
+ * insets when [LocalLargeTitleHostInsets] is provided (104's card — its
+ * screens inset nothing), the live status bar otherwise. Screens that
+ * forward a `topInset` to [LargeTitleScaffold] should default to this
+ * and never re-read the status bar themselves, so being hosted in the
+ * dialog (or any future inset-safe host) costs them no plumbing.
+ */
+@Composable
+fun largeTitleDefaultTopInset(): Dp =
+    LocalLargeTitleHostInsets.current
+        ?.let { host -> with(LocalDensity.current) { host.getTop(this).toDp() } }
+        ?: WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
 /** The `__large_title` item key — screen keys never start with `__`. */
 private const val LargeTitleItemKey = "__large_title"
 
@@ -252,12 +266,10 @@ fun LargeTitleScaffold(
     modifier: Modifier = Modifier,
     mode: TitleMode = TitleMode.Always,
     listState: LazyListState = rememberLazyListState(),
-    topInset: Dp = LocalLargeTitleHostInsets.current
-        // 104: a host already inside the safe area resolves the default to
-        // its own insets (the card passes WindowInsets(0, 0, 0, 0)); the
-        // status-bar default is otherwise 25's own, unchanged.
-        ?.let { host -> with(LocalDensity.current) { host.getTop(this).toDp() } }
-        ?: WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    // 104: a host already inside the safe area resolves the default to
+    // its own insets (the card passes WindowInsets(0, 0, 0, 0)); the
+    // status-bar default is otherwise 25's own, unchanged.
+    topInset: Dp = largeTitleDefaultTopInset(),
     contentPadding: PaddingValues = PaddingValues(),
     showBack: Boolean = LocalNavStack.current.entries.firstOrNull()?.id != LocalNavEntry.current.id,
     onBack: () -> Unit = LocalNavStack.current.let { stack -> { stack.pop() } },
