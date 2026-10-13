@@ -629,7 +629,10 @@ class ImageViewerTest {
         assertEquals(ViewerTransition.Fade, state.transition)
 
         compose.mainClock.advanceTimeBy(100)
-        assertEquals(0.5f, viewerValue(ImageViewerBackgroundAlphaKey), 0.05f)
+        // ≈ Half-way through the 200 ms easeInOut cross-fade (the frame
+        // the tween starts on shifts the play time by up to 16 ms).
+        val midway = viewerValue(ImageViewerBackgroundAlphaKey)
+        assertTrue("the cross-fade is near its midpoint at 100 ms ($midway)", midway in 0.25f..0.6f)
         compose.mainClock.advanceTimeBy(200)
         assertEquals(ViewerPhase.Shown, state.phase)
         assertEquals(1f, viewerValue(ImageViewerBackgroundAlphaKey), 0.01f)
