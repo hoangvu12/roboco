@@ -139,7 +139,7 @@ class DevicesRowsTest {
             EngineState.Parked(ParkReason.INCOMPATIBLE),
         )
         for (state in states) {
-            val row = devicesRows(listOf(engineView(id = "e", name = "Vu-PC", state = state)))[0]
+            val row = devicesRows(listOf(engineView(id = "e", name = "Vu-PC", state = state)))[0] as DevicesRowSpec.Engine
             assertEquals("connected only for Connected: $state", state is EngineState.Connected, row.connected)
         }
     }

@@ -572,9 +572,9 @@ class StatusBannerTest {
             engine = engineView().copy(state = state),
         )
 
-    private fun engineLinkOf(state: EngineView?): EngineLink =
+    private fun engineLinkOf(state: EngineState?): EngineLink =
         bannerInputs(
-            ChromeInput(chatId = "chat-a", composer = composerState(), row = sessionRow(), engine = state),
+            ChromeInput(chatId = "chat-a", composer = composerState(), row = sessionRow(), engine = state?.let { engineView().copy(state = it) }),
             sendFailure = null,
             settingFailure = null,
         ).link
@@ -596,7 +596,7 @@ class StatusBannerTest {
         text = "t",
         visibleText = "t",
         images = emptyList(),
-        kind = PendingKind.Run,
+        kind = PendingKind.RUN,
         sentAtMs = sentAtMs,
         state = state,
     )

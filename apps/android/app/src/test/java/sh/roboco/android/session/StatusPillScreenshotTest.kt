@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
@@ -31,6 +32,8 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import com.github.takahirom.roborazzi.captureRoboImage
 import kotlin.math.abs
 import kotlin.math.max
@@ -224,7 +227,7 @@ class StatusPillScreenshotTest {
     /** iOS `case .none: break`: the previous label keeps drawing, taps do nothing. */
     @Test
     fun noneKeepsThePreviousLabelAndSwallowsTaps() {
-        var banner by mutableStateOf(SessionChrome.Banner.Sending)
+        var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.Sending)
         var taps = 0
         host { StatusPillRow(banner, onTap = { taps++ }, nowMs = fixedNow) }
         compose.onNodeWithText("Sending…", useUnmergedTree = true).assertExists()
@@ -241,7 +244,7 @@ class StatusPillScreenshotTest {
     /** The content swaps in the same frame — no crossfade, never both texts. */
     @Test
     fun sendingToNotDeliveredSwapsInTheSameFrame() {
-        var banner by mutableStateOf(SessionChrome.Banner.Sending)
+        var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.Sending)
         host { StatusPillRow(banner, onTap = {}, nowMs = fixedNow) }
         compose.onNodeWithText("Sending…", useUnmergedTree = true).assertExists()
 
@@ -257,7 +260,7 @@ class StatusPillScreenshotTest {
     @Test
     fun theWorkingLabelTicksEverySecondAndStopsWhenTheBannerChanges() {
         var fakeNow = 0L
-        var banner by mutableStateOf(SessionChrome.Banner.Working(0L, "Working"))
+        var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.Working(0L, "Working"))
         host { StatusPillRow(banner, onTap = {}, nowMs = { fakeNow }) }
         compose.onNodeWithText("Working…", useUnmergedTree = true).assertExists()
 
@@ -372,7 +375,7 @@ class StatusPillScreenshotTest {
     fun talkBackMergesTheLabelAndExposesClickOnlyForActionableBanners() {
         val actionability = { banner: SessionChrome.Banner -> bannerTapAction(banner, true) != BannerTap.None }
         var taps = 0
-        var banner by mutableStateOf(SessionChrome.Banner.NotDelivered)
+        var banner by mutableStateOf<SessionChrome.Banner>(SessionChrome.Banner.NotDelivered)
         host { StatusPillRow(banner, onTap = { taps++ }, tapEnabled = actionability, nowMs = fixedNow) }
 
         val node = compose.onNodeWithTag("status-pill")
