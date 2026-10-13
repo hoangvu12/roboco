@@ -66,6 +66,7 @@ import sh.roboco.android.shell.AppRootGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
+import sh.roboco.android.shell.tablet.SidebarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
@@ -377,6 +378,15 @@ object Gallery {
         // toggles. Fill: the section owns its fixed-height session window.
         GallerySection("Bottom stack", layout = GalleryLayout.Fill, screenshotHeightDp = 915) {
             BottomStackGallerySection()
+        },
+        // Ticket 105 (tablet sidebar): the sidebar pane's content — the
+        // front page in its own nav stack with the stacked glass search
+        // field, the query filter over the fixture search, the current
+        // row, focusSearch()/showSessions() and 107's toolbar slot.
+        // Scroll like the split gallery: the sidebar's LazyColumn is
+        // bounded by its fixed 360 × 800 dp frame.
+        GallerySection("Tablet sidebar", GalleryLayout.Scroll, screenshotHeightDp = 1000) {
+            SidebarGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

@@ -239,17 +239,22 @@ private fun sectionMenu(onRename: () -> Unit, onDelete: () -> Unit): Menu = Menu
  * (`workspace == null || sessionsLoading(engines)`).
  *
  * The tablet sidebar (105) renders pushed routes through the same
- * `ShellRouteContent`, so this one branch serves both hosts.
+ * `ShellRouteContent`, so this one branch serves both hosts — and reads
+ * [LocalSidebarFixtures] first: the gallery and the Robolectric tests
+ * provide a fixture workspace so a folder page pushed inside the sidebar
+ * shows rows (and its bottom padding can be measured) without a core.
+ * Production never provides it.
  */
 @Composable
 fun FolderRouteContent(route: FolderRoute) {
     val app = LocalContext.current.applicationContext as RobocoApplication
-    val workspace by app.workspaceFeed.snapshot.collectAsState()
-    val engines by app.workspaceFeed.engines.collectAsState()
+    val fixture = LocalSidebarFixtures.current
+    val liveWorkspace by app.workspaceFeed.snapshot.collectAsState()
+    val liveEngines by app.workspaceFeed.engines.collectAsState()
     FolderScreen(
         route = route,
-        workspace = workspace,
-        loading = workspace == null || sessionsLoading(engines),
+        workspace = if (fixture != null) fixture.workspace else liveWorkspace,
+        loading = fixture == null && (liveWorkspace == null || sessionsLoading(liveEngines)),
     )
 }
 
