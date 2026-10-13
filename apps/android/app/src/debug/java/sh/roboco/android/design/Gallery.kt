@@ -43,6 +43,7 @@ import sh.roboco.android.sessions.FolderScreensGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
+import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SessionListGallerySection
@@ -330,6 +331,11 @@ object Gallery {
         // card — header, question, option rows, the Other field/editor and
         // Back + Next, one page per question, plus the interactive toy.
         GallerySection("Question card", screenshotHeightDp = 4200) { QuestionCardGallerySection() },
+        // Ticket 72 (Pair page): the link field, Paste, Scan QR row,
+        // footers, error line and capsule in a 393 × 852 frame, plus the
+        // real page presented in a gallery-local sheet host with the
+        // fake backend. Fill: the section owns its SheetHost.
+        GallerySection("Pair page", GalleryLayout.Fill) { PairPageGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
