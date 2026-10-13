@@ -5,6 +5,7 @@ import sh.roboco.android.settings.LicensesRoute
 import sh.roboco.android.settings.LicensesScreen
 import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
+import sh.roboco.android.sessions.SessionsScreen
 
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
@@ -31,7 +32,12 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
 @Composable
 fun ShellRouteContent(route: NavRoute) {
     when (route) {
-        is TabRootRoute -> PlaceholderTabRoot(route.tab)
+        is TabRootRoute -> when (route.tab) {
+            // Ticket 46: the Sessions tab's real root (the placeholder
+            // keeps the Settings and Search tabs until 103/49).
+            TabId.Sessions -> SessionsScreen()
+            else -> PlaceholderTabRoot(route.tab)
+        }
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
         is LicensesRoute -> LicensesScreen()
         // Ticket 45: one folder's sessions (Pinned, a user section,

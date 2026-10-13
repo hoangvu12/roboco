@@ -284,9 +284,14 @@ fun LazyListScope.sessionListItems(
                     val src = remember { MutableInteractionSource() }
                     val h = rememberRowHighlight(src, fadeOnRelease = false)
                     headerWrapper(state) { m ->
+                        // 46: the header's own pressed fill snaps to 0 while
+                        // the context menu lifts it (LocalRowLiftState,
+                        // provided around this lambda by 46's header
+                        // wrapper) — the "double pressed fill" rule.
+                        val lift = LocalRowLiftState.current
                         SectionHeaderRow(
                             state,
-                            highlight = { h.value },
+                            highlight = { if (lift?.isLifted == true) 0f else h.value },
                             modifier = m
                                 .fillMaxSize()
                                 .clickable(
