@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -349,14 +350,14 @@ class ImageTileTest {
         assertEquals("transcript-image", empty[SemanticsProperties.TestTag])
         assertEquals("a.png", empty[ImageTileReferenceKey])
         assertEquals(false, empty[ImageTileLoadedKey])
-        assertNull("no click action while empty", empty[SemanticsActions.OnClick])
+        assertNull("no click action while empty", empty.getOrNull(SemanticsActions.OnClick))
 
         reader.releaseAll()
         compose.waitForIdle()
 
         val loadedConfig = node().config
         assertEquals(true, loadedConfig[ImageTileLoadedKey])
-        assertNotNull("click action once loaded", loadedConfig[SemanticsActions.OnClick])
+        assertNotNull("click action once loaded", loadedConfig.getOrNull(SemanticsActions.OnClick))
     }
 
     // ------------------------------------------------------------ failures

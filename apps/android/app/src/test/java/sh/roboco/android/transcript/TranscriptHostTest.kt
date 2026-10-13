@@ -1,12 +1,14 @@
 package sh.roboco.android.transcript
 
 import android.content.Context
+import android.os.Looper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -29,9 +31,11 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
@@ -65,6 +69,8 @@ class TranscriptHostTest {
 
     @Before
     fun init() {
+        // The layout worker's frameReady must reach this sandbox's relay.
+        UniffiSandbox.claimCallbacks()
         TextEngine.init(context)
         // Build the shared engine off the main looper first, as the app
         // does (`TextEngine.await()`).
@@ -104,11 +110,21 @@ class TranscriptHostTest {
         compose.waitForIdle()
     }
 
-    /** Advances the frozen main clock one frame at a time until [condition] holds (5 s wall). */
+    /**
+     * Advances the frozen main clock one frame at a time until [condition]
+     * holds (5 s wall). Each step first idles the paused main looper — the
+     * relay's Choreographer hop (posted from the layout thread) only runs
+     * there, `advanceTimeByFrame()` never idles it — then sends the apply
+     * notification for the `frame` write that hop made (Compose's
+     * GlobalSnapshotManager would otherwise forward it from yet another
+     * main-looper post), so the next frame recomposes the realized band.
+     */
     private fun driveClock(condition: () -> Boolean) {
         val end = System.nanoTime() + 5_000_000_000L
         while (!condition()) {
             check(System.nanoTime() < end) { "condition not met within 5 s" }
+            shadowOf(Looper.getMainLooper()).idle()
+            Snapshot.sendApplyNotifications()
             compose.mainClock.advanceTimeByFrame()
         }
     }

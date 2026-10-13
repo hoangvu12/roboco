@@ -18,6 +18,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.RobocoTheme
 
@@ -47,6 +48,8 @@ class TranscriptHostScreenshotTest {
 
     @Before
     fun init() {
+        // The layout worker's frameReady must reach this sandbox's relay.
+        UniffiSandbox.claimCallbacks()
         TextEngine.init(ApplicationProvider.getApplicationContext<Context>())
         runBlocking { TextEngine.await() }
     }

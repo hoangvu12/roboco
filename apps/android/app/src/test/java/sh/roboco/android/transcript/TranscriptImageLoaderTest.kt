@@ -279,7 +279,9 @@ class TranscriptImageLoaderTest {
     @Test
     fun aLoadSurvivesItsAwaiterAndStillFillsTheCache() = runTest {
         val reader = GatedReader()
-        val loader = newLoader(ScriptedDecode(listOf(bmp(100, 100))))
+        // A 300 px short side: the hit rule serves it for sidePx 300 (a
+        // 100×100 downsample would be a legitimate miss at 300).
+        val loader = newLoader(ScriptedDecode(listOf(bmp(450, 300))))
         val k = ImageKey("e1", "a.png")
 
         // The awaiter is cancelled while the gated read is in flight (iOS's
@@ -369,11 +371,11 @@ class TranscriptImageLoaderTest {
 
     @Test
     fun trimHalvesAtUiHiddenEvictsAtBackgroundAndIgnoresForegroundLevels() = runTest {
-        // Each entry is 100×100×4 = 400 bytes; the budget holds exactly two.
+        // Each entry is 100×100×4 = 40 000 bytes; the budget holds exactly two.
         val reader = FakeReader()
         val loader = newLoader(
             ScriptedDecode(listOf(bmp(100, 100), bmp(100, 100), bmp(100, 100))),
-            maxBytes = 800,
+            maxBytes = 80_000,
         )
         val k1 = ImageKey("e1", "one.png")
         val k2 = ImageKey("e1", "two.png")

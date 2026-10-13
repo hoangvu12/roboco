@@ -35,6 +35,7 @@ import org.robolectric.shadows.ShadowLog
 import sh.roboco.android.pairing.FakeSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.pairing.newEngine
+import sh.roboco.android.session.SessionEventHub
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.ClientListener
 import uniffi.roboco_core.CoreClient
@@ -74,6 +75,8 @@ class CoreStartupTest {
         val scope: CoroutineScope,
         val startup: CoreStartup,
         val readyClients: MutableList<CoreClient>,
+        /** Ticket 51's one main hop per event, captured instead of posted to main. */
+        val hubHops: AtomicInteger,
     ) {
         /**
          * Starts the pipeline and suspends until it leaves `Loading`.
@@ -129,6 +132,10 @@ class CoreStartupTest {
             store.upsert(engine)
         }
         val readyClients = mutableListOf<CoreClient>()
+        // The session hub's main hop (ticket 51) is the one intended main
+        // post per event; count it here so the looper assertions below
+        // check that pins, the engines refresh and the sinks never need main.
+        val hubHops = AtomicInteger()
         val startup = CoreStartup(
             context = context,
             store = store,
@@ -137,8 +144,9 @@ class CoreStartupTest {
             compute = compute,
             newClient = newClient,
             onClientReady = { readyClients.add(it) },
+            sessionEvents = SessionEventHub { hubHops.incrementAndGet() },
         )
-        return Fixture(store, cipher, dataStoreScope, startup, readyClients)
+        return Fixture(store, cipher, dataStoreScope, startup, readyClients, hubHops)
     }
 
     private fun dialEngine(engineId: String, credential: String): PairedEngine =
@@ -219,6 +227,7 @@ class CoreStartupTest {
         assertEquals("dev-1", reloaded.single().deviceId)
         assertEquals("MacBook Pro", reloaded.single().name)
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
+        assertTrue("the event still hops to main through the session hub", fixture.hubHops.get() >= 1)
         fixture.close()
     }
 
@@ -254,6 +263,7 @@ class CoreStartupTest {
         assertNotNull(fixture.startup.engines.value)
         assertEquals("EnginesChanged must re-read engines()", readsBefore + 1, engineReads.get())
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
+        assertTrue("the event still hops to main through the session hub", fixture.hubHops.get() >= 1)
         fixture.close()
     }
 
@@ -276,6 +286,7 @@ class CoreStartupTest {
         assertEquals(1, receivedFirst.size)
         assertEquals(1, receivedLast.size)
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
+        assertTrue("the event still hops to main through the session hub", fixture.hubHops.get() >= 1)
         fixture.close()
     }
 

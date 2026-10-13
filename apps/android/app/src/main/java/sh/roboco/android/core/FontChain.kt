@@ -222,7 +222,17 @@ object FontChain {
     fun isDoubleWidth(cp: Int): Boolean = isWide(cp) && cp != 0x3003 && cp != 0x301C
 
     /** One monospace cell at the paint's current size (GeistMono's `0` advance = 0.6 × size). */
-    fun cellWidth(paint: Paint): Float = paint.measureText("0")
+    fun cellWidth(paint: Paint): Float = advance(paint, "0", 0, 1)
+
+    /**
+     * The exact (fractional) advance of `text[start, end)` — what
+     * Rust and CoreText measure. Never `Paint.measureText`: it returns
+     * `Math.ceil` of the advance (AOSP `Paint.measureText`), so a 13.5 pt
+     * Geist Mono cell would read 9 instead of 8.1 and every
+     * measured/painted stretch would drift off its Rust position.
+     */
+    fun advance(paint: Paint, text: CharSequence, start: Int, end: Int, rtl: Boolean = false): Float =
+        if (start >= end) 0f else paint.getRunAdvance(text, start, end, start, end, rtl, end)
 
     /**
      * `null` for ligatures on (platform defaults: liga/clig/calt/kern on),

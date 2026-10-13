@@ -222,11 +222,12 @@ class WallpaperStore internal constructor(
                 val width = bitmap.width
                 val height = bitmap.height
                 // Android ARGB_8888 is RGBA in memory: R, G, B, A per pixel,
-                // row-major, top row first.
+                // row-major, top row first. A host Skia (Robolectric) may
+                // use BGRA for the same config: [toRgba] normalises.
                 val buffer = ByteBuffer.allocate(width * height * 4)
                 bitmap.copyPixelsToBuffer(buffer)
                 bitmap.recycle()
-                val rgba = buffer.array()
+                val rgba = toRgba(buffer.array())
                 val out = core.render(rgba, width, height, s.effect, light = !dark)
                 // Text sits over the top of the artwork: primary text keeps
                 // 4.5:1, secondary 3:1 against the artwork's worst pixels there.
@@ -237,7 +238,7 @@ class WallpaperStore internal constructor(
                     out, width, height, secondary, background, CONTRAST_REGION, SECONDARY_MIN_CONTRAST, 1f,
                 )
                 val rendered = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                rendered.copyPixelsFromBuffer(ByteBuffer.wrap(out))
+                rendered.copyPixelsFromBuffer(ByteBuffer.wrap(toRgba(out.copyOf())))
                 rendered.prepareToDraw()
                 Render(rendered.asImageBitmap(), min(primary, muted))
             }.onFailure { error ->
@@ -353,6 +354,24 @@ class WallpaperStore internal constructor(
     private fun target(v: Int, scale: Double): Int = max(1, (v * scale).roundToInt())
 
     /**
+     * Swaps R and B in place when this platform's ARGB_8888 memory order is
+     * BGRA (host Skia builds, e.g. Robolectric's native graphics); a no-op
+     * on devices, where it is RGBA. The swap is its own inverse, so the
+     * same call converts the core's RGBA output back to native order.
+     */
+    private fun toRgba(pixels: ByteArray): ByteArray {
+        if (!nativeIsBgra) return pixels
+        var i = 0
+        while (i + 3 < pixels.size) {
+            val r = pixels[i]
+            pixels[i] = pixels[i + 2]
+            pixels[i + 2] = r
+            i += 4
+        }
+        return pixels
+    }
+
+    /**
      * Wide-gamut or HDR sources can decode to `RGBA_F16`; the core and
      * `copyPixelsToBuffer` expect 8-bit RGBA, so convert once.
      */
@@ -367,6 +386,16 @@ class WallpaperStore internal constructor(
 
     companion object {
         private const val TAG = "Wallpaper"
+
+        /** Probes one opaque red pixel: is ARGB_8888 laid out B, G, R, A here? */
+        private val nativeIsBgra: Boolean by lazy {
+            val probe = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            probe.eraseColor(0xFFFF0000.toInt())
+            val bytes = ByteBuffer.allocate(4)
+            probe.copyPixelsToBuffer(bytes)
+            probe.recycle()
+            (bytes.get(0).toInt() and 0xFF) == 0 && (bytes.get(2).toInt() and 0xFF) == 0xFF
+        }
         private const val PREFS_FILE = "wallpaper"
         private const val PREF_NAME = "wallpaperName"
         private const val PREF_EFFECT = "wallpaperEffect"
