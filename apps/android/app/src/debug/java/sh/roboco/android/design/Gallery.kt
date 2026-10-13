@@ -169,6 +169,11 @@ object Gallery {
         // capsule ⇄ card morph — the glass surface, the six-slot layout
         // and the attach button, over the striped backdrop.
         GallerySection("Composer surface", screenshotHeightDp = 1300) { ComposerSurfaceGallerySection() },
+        // Ticket 56 (composer morph): the live state machine — the wantsCard
+        // rule, the 0.42 s spring, tap-to-focus and the blur sequence, over
+        // 55's ComposerSurface (Focus/Blur/Add image/Always card chips and
+        // a per-frame isCard/focused/progress readout).
+        GallerySection("Composer morph", screenshotHeightDp = 420) { ComposerMorphGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
