@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.tooling.preview.Preview
@@ -117,13 +118,15 @@ fun newFolderRetryAlert(): RobocoAlert = RobocoAlert(
 /**
  * One fixture page: plain folder rows tall enough to run under the bar
  * (the stack has no background — that underlap is the point), with the
- * bottom bar pinned to the page's bottom edge. The caller owns the page
- * height: the gallery fixes it, the screenshot test fills the frame so
- * the 12 dp bottom inset is measured against the screen.
+ * bottom bar pinned to the page's bottom edge. The page is clipped, so
+ * the rows that overshoot a short page (the gallery's cards) stop at
+ * its edge instead of drawing over the next card; the caller owns the
+ * page height — the gallery fixes it, the screenshot test fills the
+ * frame so the 12 dp bottom inset is measured against the screen.
  */
 @Composable
 internal fun FolderBottomBarStage(spec: FolderBottomBarSpec, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth()) {
+    Box(modifier.fillMaxWidth().clipToBounds()) {
         FolderFixtureRows(Modifier.fillMaxSize())
         FolderBrowserBottomBar(
             status = spec.status,
@@ -138,16 +141,21 @@ internal fun FolderBottomBarStage(spec: FolderBottomBarSpec, modifier: Modifier 
     }
 }
 
-/** Five 52 dp folder rows — more than the page holds, so they pass under the bar. */
+/**
+ * Plain 52 dp folder rows — enough to fill the tallest page (the test
+ * frame is 874 dp), so rows run under the background-less bar in every
+ * fixture page, like the list in the iOS reference captures.
+ */
 @Composable
 private fun FolderFixtureRows(modifier: Modifier = Modifier) {
     val palette = RobocoTheme.palette
     val ts = LocalTypeScale.current
+    val names = listOf("Desktop", "Documents", "Downloads", "Projects", "roboco", "zeron")
     Column(modifier.background(palette.background)) {
-        for (name in listOf("Desktop", "Documents", "Downloads", "Projects", "roboco")) {
+        repeat(17) { index ->
             Box(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 16.dp)) {
                 BasicText(
-                    name,
+                    if (index < names.size) names[index] else "${names[index % names.size]} ${index + 1}",
                     style = uiStyle(Face.Sans, ts.fixed(16f), palette.text),
                     modifier = Modifier.align(Alignment.CenterStart),
                 )
