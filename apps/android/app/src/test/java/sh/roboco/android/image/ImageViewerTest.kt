@@ -36,6 +36,8 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -53,7 +55,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -257,7 +258,7 @@ class ImageViewerTest {
         assertEquals(ViewerPhase.Shown, state.phase)
 
         compose.runOnUiThread { state.close() }
-        val target = state.closeTarget ?: fail("the close target is the tile")
+        val target = state.closeTarget ?: throw AssertionError("the close target is the tile")
         assertEquals(tile.left, target.left, 1f)
         assertEquals(tile.top, target.top, 1f)
         assertEquals(tile.right, target.right, 1f)
@@ -642,7 +643,10 @@ class ImageViewerTest {
     @Test
     fun anAnimatorScaleOfZeroSnapsTheCrossFadeOpen() {
         // RobocoTheme installs ReduceMotion, which reads the animator scale:
-        // 0 counts as reduced, and MotionDurationScale snaps the tween.
+        // 0 counts as reduced, so the open is the cross-fade. On a device the
+        // window recomposer's MotionDurationScale (0) then snaps the tween;
+        // the compose-test recomposer installs no MotionDurationScale (scale
+        // 1), so here the 200 ms fade runs and the test waits it out.
         Settings.Global.putFloat(
             compose.activity.contentResolver,
             Settings.Global.ANIMATOR_DURATION_SCALE,
@@ -651,14 +655,12 @@ class ImageViewerTest {
         host()
         openFrozen()
         assertEquals(ViewerTransition.Fade, state.transition)
-        compose.mainClock.advanceTimeByFrame()
-        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(ViewerFadeMs + 32L)
         assertEquals(ViewerPhase.Shown, state.phase)
         assertEquals(1f, viewerValue(ImageViewerBackgroundAlphaKey), 0.01f)
         compose.runOnUiThread { state.close() }
         Snapshot.sendApplyNotifications()
-        compose.mainClock.advanceTimeByFrame()
-        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(ViewerFadeMs + 32L)
         assertEquals(ViewerPhase.Hidden, state.phase)
     }
 
@@ -669,16 +671,16 @@ class ImageViewerTest {
         host()
         openAndSettle(label = "Calculation result: 8")
 
-        val picture = compose.onNodeWithTag("image-preview").fetchSemanticsNodes()
+        val picture = compose.onAllNodesWithTag("image-preview").fetchSemanticsNodes()
         assertEquals(1, picture.size)
         assertEquals(Role.Image, picture[0].config[SemanticsProperties.Role])
         assertEquals(listOf("Calculation result: 8"), picture[0].config[SemanticsProperties.ContentDescription])
 
-        val close = compose.onNodeWithContentDescription(CloseImagePreviewLabel).fetchSemanticsNodes()
+        val close = compose.onAllNodesWithContentDescription(CloseImagePreviewLabel).fetchSemanticsNodes()
         assertEquals(1, close.size)
         assertEquals(Role.Button, close[0].config[SemanticsProperties.Role])
 
-        val share = compose.onNodeWithContentDescription(ShareImageLabel).fetchSemanticsNodes()
+        val share = compose.onAllNodesWithContentDescription(ShareImageLabel).fetchSemanticsNodes()
         assertEquals(1, share.size)
         assertEquals(Role.Button, share[0].config[SemanticsProperties.Role])
 
@@ -690,7 +692,7 @@ class ImageViewerTest {
     fun thePictureFallsBackToTheImageLabel() {
         host()
         openAndSettle(label = null)
-        val picture = compose.onNodeWithTag("image-preview").fetchSemanticsNodes()
+        val picture = compose.onAllNodesWithTag("image-preview").fetchSemanticsNodes()
         assertEquals(listOf(ImageFallbackLabel), picture[0].config[SemanticsProperties.ContentDescription])
     }
 

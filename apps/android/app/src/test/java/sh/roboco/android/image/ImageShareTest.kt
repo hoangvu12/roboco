@@ -19,7 +19,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -63,10 +62,10 @@ class ImageShareTest {
         ImageShare.share(activity, bitmap)
 
         val chooser = shadowOf(activity).nextStartedActivity
-            ?: fail("the chooser must have been started")
+            ?: throw AssertionError("the chooser must have been started")
         assertEquals(Intent.ACTION_CHOOSER, chooser.action)
         val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-            ?: fail("the chooser's EXTRA_INTENT must be the ACTION_SEND")
+            ?: throw AssertionError("the chooser's EXTRA_INTENT must be the ACTION_SEND")
         assertEquals(Intent.ACTION_SEND, send.action)
         assertEquals("image/png", send.type)
         assertTrue(
@@ -75,15 +74,15 @@ class ImageShareTest {
         )
         assertTrue("the chooser preview needs the ClipData", send.clipData != null)
         val uri = send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            ?: fail("EXTRA_STREAM must carry the PNG")
+            ?: throw AssertionError("EXTRA_STREAM must carry the PNG")
         assertEquals("${activity.packageName}.fileprovider", uri.authority)
 
         // The file exists and decodes back to the bitmap's size.
         val shared = File(activity.cacheDir, ImageShare.SharedDir)
-        val files = shared.listFiles() ?: fail("cacheDir/shared must exist")
+        val files = shared.listFiles() ?: throw AssertionError("cacheDir/shared must exist")
         assertEquals("exactly one file per share", 1, files.size)
         val decoded = BitmapFactory.decodeStream(activity.contentResolver.openInputStream(uri))
-            ?: fail("the shared PNG must decode")
+            ?: throw AssertionError("the shared PNG must decode")
         assertEquals(64, decoded.width)
         assertEquals(32, decoded.height)
     }

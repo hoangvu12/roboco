@@ -264,6 +264,9 @@ class ImageViewerState {
     /** The predictive-back cancel snap-back job. */
     private var backJob: Job? = null
 
+    /** The last gesture step's snap (pinch/pan/drag), chained in order. */
+    private var stepJob: Job? = null
+
     /** The share job (one at a time; a second tap is ignored while it runs). */
     private var shareJob: Job? = null
 
@@ -762,8 +765,8 @@ class ImageViewerState {
      * `+ pan`; `T` stays raw (unclamped) during the pinch. [centroid]
      * also becomes the settle anchor.
      */
-    internal suspend fun pinch(zFactor: Float, centroid: Offset, pan: Offset) {
-        if (phase != ViewerPhase.Shown) return
+    internal fun pinch(zFactor: Float, centroid: Offset, pan: Offset) = step {
+        if (phase != ViewerPhase.Shown) return@step
         pinching = true
         lastCentroid = centroid
         zRaw *= zFactor
@@ -807,8 +810,8 @@ class ImageViewerState {
     }
 
     /** One one-finger pan step at zoom > 1: `T += delta`, unclamped. */
-    internal suspend fun pan(delta: Offset) {
-        if (phase != ViewerPhase.Shown) return
+    internal fun pan(delta: Offset) = step {
+        if (phase != ViewerPhase.Shown) return@step
         tx.snapTo(tx.value + delta.x)
         ty.snapTo(ty.value + delta.y)
     }
@@ -869,9 +872,27 @@ class ImageViewerState {
     }
 
     /** One dismiss-drag step at zoom 1: the picture follows the finger. */
-    internal suspend fun drag(delta: Offset) {
-        if (phase != ViewerPhase.Dragging) return
+    internal fun drag(delta: Offset) = step {
+        if (phase != ViewerPhase.Dragging) return@step
         dragOffset.snapTo(dragOffset.value + delta)
+    }
+
+    /**
+     * Runs one gesture step's snaps on the host scope. The gesture loop's
+     * `AwaitPointerEventScope` is `@RestrictsSuspension`, so it can't call
+     * `Animatable.snapTo` itself. UNDISPATCHED runs the step synchronously
+     * whenever the animatables are free (always, at rest). A step that
+     * has to wait (a just-cancelled settle still holds the mutator) is
+     * joined by the next one, so steps apply in order. A later snap never
+     * cancels an earlier pending one, so no delta is lost.
+     */
+    private fun step(block: suspend () -> Unit) {
+        val sc = scope ?: return
+        val previous = stepJob
+        stepJob = sc.launch(start = CoroutineStart.UNDISPATCHED) {
+            previous?.join()
+            block()
+        }
     }
 
     /**
@@ -1183,10 +1204,11 @@ private fun ViewerPage(state: ImageViewerState) {
                                     ViewerGesture.Ignore, ViewerGesture.Undecided -> Unit
                                 }
                             }
+                            val v = tracker.calculateVelocity()
                             when (mode) {
                                 ViewerGesture.Pinch -> state.settlePinch()
-                                ViewerGesture.Pan -> state.endPan(tracker.calculateVelocity())
-                                ViewerGesture.Dismiss -> state.endDrag(tracker.calculateVelocity())
+                                ViewerGesture.Pan -> state.endPan(Offset(v.x, v.y))
+                                ViewerGesture.Dismiss -> state.endDrag(Offset(v.x, v.y))
                                 else -> Unit
                             }
                         }

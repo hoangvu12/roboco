@@ -227,8 +227,8 @@ class SettingsScreenTest {
         val s = stack
         val notifFactory: @Composable () -> NotificationSectionState =
             notifications ?: { injectedNotifications }
-        val openEngine: ((String) -> Unit)? = if (defaultDeviceRouting) null else { engineOpens += it }
-        val pair: (() -> Unit)? = if (defaultDeviceRouting) null else { pairCalls++ }
+        val openEngine: ((String) -> Unit)? = if (defaultDeviceRouting) null else ({ engineOpens += it })
+        val pair: (() -> Unit)? = if (defaultDeviceRouting) null else ({ pairCalls++ })
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
@@ -480,6 +480,10 @@ class SettingsScreenTest {
     // ---------------------------------------------------------- the reload
 
     @Test
+    // Tall window: the flips add the wallpaper Effect/Remove rows and a second
+    // engine row above Group by Project, which would push it (and the
+    // notification kind rows) past the 874 dp fold, out of the LazyColumn.
+    @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
     fun sourceFlipsLandOnTheNextFrameWithNoAnimationAndFlipBack() {
         mount(
             notifications = {
