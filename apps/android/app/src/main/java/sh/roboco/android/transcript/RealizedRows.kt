@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
@@ -39,8 +40,18 @@ class RealizedRow internal constructor(
     /** The placement this row is currently composed at (written in composition). */
     var placement: RowPlacement by mutableStateOf(initial)
 
-    /** The row's display model, `null` until [TranscriptState.modelFor] ran. */
+    /** The row's display model, `null` until [TranscriptState.resolveModel] ran. */
     var model: RowModel? = null
+
+    /**
+     * Ticket 117: bumped on the main thread right after an async upgrade
+     * replaced [model]. Only this row's [RowHost] reads it (before it
+     * resolves the model), so an applied upgrade recomposes this row,
+     * and only it — 118's veil diffs the old and new model there. A
+     * plain write to [model] alone would leave the host painting the
+     * old model.
+     */
+    internal var upgradeTick by mutableIntStateOf(0)
 
     /** The fade-in animation, `null` for rows already at alpha 1. */
     internal var appear: Animatable<Float, AnimationVector1D>? = null

@@ -72,9 +72,15 @@ internal fun RowHost(
     val appear = remember(p.key) { Animatable(if (state.knownRows.claim(p.key)) 0f else 1f) }
     LaunchedEffect(p.key) { if (appear.value < 1f) appear.animateTo(1f, Motion.rowFadeIn()) }
 
-    // `display()` must be called on the frame the placement came from
-    // (indices are per frame); a width or version change rebuilds.
-    val model = remember(p.key, p.version, frame.width()) { state.modelFor(frame, p) }
+    // 117: the model is resolved from the row's painted state and the
+    // state's cache on every recomposition — a few comparisons, never
+    // `remember(p.version)`, which would rebuild on every streaming
+    // token and kill the upgrade path. The `upgradeTick` read first is
+    // the subscription: an applied async upgrade recomposes this row,
+    // and only it, and the row keeps painting its old model at the new
+    // placement until the build lands.
+    row.upgradeTick
+    val model = state.resolveModel(row, frame, p)
 
     // Published in composition; equal writes do not invalidate.
     row.placement = p

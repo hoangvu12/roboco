@@ -3,38 +3,34 @@ package sh.roboco.android.transcript
 import java.util.Locale
 
 /**
- * The transcript's cheap perf counters, the Compose analogue of iOS
- * `TranscriptPerf` (`ios:Debug/Signposts.swift:10-26`). Written on the main
- * thread only (layout, apply, builds); the transcript lab and bench read
- * them (tickets 135/136). The Rust section names are the iOS signposts:
- * `layout-rows` (host measure+place), `build-model-sync` (a synchronous
- * display build) — this object keeps the numbers that a signpost cannot
- * carry across the JNA boundary.
- *
- * Spec of android-ui-parity #117 (this file is created by #65 exactly as
- * #117 defines it — #117 then writes `maxApplyMs` and `asyncBuilds`).
+ * Main-thread cost counters for the transcript (read by the lab bench,
+ * ticket 136). Main thread only — layout, apply and builds all happen
+ * there; the numbers a signpost cannot carry across the JNA boundary.
+ * The Rust section names are the iOS signposts: `layout-rows` (host
+ * measure+place, #65), `build-model-sync` (a synchronous display build,
+ * #65/#117) and `apply-frame` (#117).
  */
 object TranscriptPerf {
 
     /** Longest host measure+place block (ms). Written by #65. */
-    @Volatile var maxLayoutMs = 0.0
+    var maxLayoutMs = 0.0
 
     /** Longest frame apply (`TranscriptState.apply`, ms). Written by #117. */
-    @Volatile var maxApplyMs = 0.0
+    var maxApplyMs = 0.0
 
     /** Longest synchronous `display()` + `RowModel` build (ms). Written by #65/#117. */
-    @Volatile var maxSyncBuildMs = 0.0
+    var maxSyncBuildMs = 0.0
 
     /** Count of synchronous builds (`modelFor`'s fallback). */
-    @Volatile var syncBuilds = 0
+    var syncBuilds = 0
 
-    /** Count of prefetch-thread builds. Written by #117. */
-    @Volatile var asyncBuilds = 0
+    /** Count of completed async upgrade builds. Written by #117. */
+    var asyncBuilds = 0
 
     /** Count of row hosts first composed for a key (the `RowView` analogue). */
-    @Volatile var viewsCreated = 0
+    var viewsCreated = 0
 
-    /** Zeroes every counter (before a measured run; the host test uses this). */
+    /** Zeroes every counter (before a measured run; the bench uses this). */
     fun reset() {
         maxLayoutMs = 0.0
         maxApplyMs = 0.0
@@ -45,9 +41,10 @@ object TranscriptPerf {
     }
 
     /**
-     * The iOS JSON shape, key order and `Locale.US` formatting
-     * (`Signposts.swift:23-26`): the lab prints this into its diagnostics
-     * pane, so the keys must stay stable.
+     * The iOS JSON shape, key order and `%.2f` / `%d` format
+     * (`ios:Debug/Signposts.swift:23-26`): the lab prints this into its
+     * diagnostics pane, so the keys must stay stable. `Locale.US`, so a
+     * German-locale device does not write `0,00`.
      */
     val json: String
         get() = String.format(
