@@ -462,4 +462,9 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    // Instrumented compose tests (ui-parity #97's WallpaperSettingsFlowTest,
+    // CI-only): the compose test rule and its matchers need the BOM and
+    // ui-test-junit4 on the androidTest classpath as well.
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
 }

@@ -47,6 +47,7 @@ import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
+import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
@@ -265,6 +266,14 @@ object Gallery {
         // empty/loading overlay; Fill — the list owns the LazyColumn.
         GallerySection("Session list", layout = GalleryLayout.Fill, screenshotHeightDp = 852) {
             SessionListGallerySection()
+        },
+        // Ticket 97 (wallpaper rows): the Settings "Wallpaper" section —
+        // the three row fixtures plus the live fake-store block (the real
+        // photo picker and the real "Wallpaper Effect" sheet). Fill, and the
+        // registration owns the ActionSheetHost, for the same reason as 19
+        // and 43: a sheet host needs the body's bounded height.
+        GallerySection("Wallpaper rows", GalleryLayout.Fill, screenshotHeightDp = 1100) {
+            ActionSheetHost { WallpaperRowsGallerySection() }
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

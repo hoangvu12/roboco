@@ -1,0 +1,119 @@
+package sh.roboco.android.settings
+
+import android.content.Intent
+import android.graphics.Bitmap
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.test.ext.junit.rules.ActivityScenarioRule
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import sh.roboco.android.MainActivity
+import sh.roboco.android.core.WallpaperStore
+
+/**
+ * The instrumented port of `testWallpaperSettings`
+ * (`iosui:SessionFlowTests.swift:591-609`, android-ui-parity #97): launch
+ * with the `wallpaper` / `wallpaper-effect` / `route` extras, wait for the
+ * Settings screen, check the Effect row and its Halftone subtitle, remove
+ * the wallpaper, and check the section collapsed back to "Choose
+ * Wallpaper…".
+ *
+ * Needs tickets 20 (WallpaperStore), 35 (app root), 36 (the launch
+ * extras: `wallpaper` → `WallpaperStore.set(File)`, `wallpaper-effect`
+ * → `setEffect("halftone")`, `route = more` → the Settings tab) and 103
+ * (`settings-screen`) merged, and a debuggable build (the extras are
+ * debug-only, ticket 36). Until 36/103 land this test times out at the
+ * first wait — that is the tracked state, not a regression. CI-only: no
+ * emulator runs in the worker slots or locally.
+ *
+ * The compose rule wraps an [ActivityScenarioRule] built with the launch
+ * intent (the public, deprecated-but-supported [AndroidComposeTestRule]
+ * constructor — the only way to hand the rule a pre-built intent); only
+ * the compose rule is a JUnit rule, so the scenario is applied exactly
+ * once.
+ */
+@RunWith(AndroidJUnit4::class)
+class WallpaperSettingsFlowTest {
+
+    /** A 64 × 48 solid green PNG, like the iOS test's /tmp/wall-test.png. */
+    private val wallpaperFile: File by lazy {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val bitmap = Bitmap.createBitmap(64, 48, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(0xFF30A46C.toInt())
+        val file = File(context.filesDir, "wall-test.png")
+        file.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+        bitmap.recycle()
+        file
+    }
+
+    /** Launched at rule application, after the field initializers ran (so the PNG exists). */
+    private val scenario = ActivityScenarioRule<MainActivity>(
+        Intent(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            MainActivity::class.java,
+        )
+            .putExtra("wallpaper", wallpaperFile.absolutePath)
+            .putExtra("wallpaper-effect", "halftone")
+            .putExtra("route", "more"),
+    )
+
+    @Suppress("DEPRECATION")
+    @get:Rule
+    val compose: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity> =
+        AndroidComposeTestRule(scenario) { rule ->
+            var activity: MainActivity? = null
+            rule.scenario.onActivity { activity = it }
+            checkNotNull(activity) { "Activity was not set in the ActivityScenarioRule" }
+        }
+
+    init {
+        // A store left over from an earlier instrumented test in the same
+        // process must not win over the launch extra (applied after this).
+        WallpaperStore.resetForTest()
+    }
+
+    @Test
+    fun wallpaperSettingsFlow() {
+        // iOS waits 10 s for the "Settings" nav bar; we wait for ticket
+        // 103's root tag.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(hasTestTag("settings-screen")).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Ticket 36 applies the `wallpaper` extra through
+        // WallpaperStore.set(File), which is asynchronous — the rows may
+        // still read "Choose Wallpaper…" right now. Scroll the settings
+        // list until the Effect row shows up (5 s, like iOS).
+        val settingsList = compose.onNode(hasScrollAction() and hasAnyAncestor(hasTestTag("settings-screen")))
+        compose.waitUntil(timeoutMillis = 5_000) {
+            settingsList.performScrollToNode(hasTestTag("settings-wallpaper:effect"))
+            compose.onAllNodesWithText("Effect").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText("Effect").assertIsDisplayed()
+        compose.onNodeWithText("Halftone", substring = true).assertExists() // iOS: label BEGINSWITH "Halftone"
+
+        // iOS scrolls the row above 70 % of the window, clear of the
+        // bottom chrome, then taps it.
+        settingsList.performScrollToNode(hasTestTag("settings-wallpaper:remove"))
+        compose.onNodeWithText("Remove Wallpaper").performClick()
+
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("Choose Wallpaper\u2026").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTrue(
+            "Effect is gone after the removal",
+            compose.onAllNodesWithText("Effect").fetchSemanticsNodes().isEmpty(),
+        )
+    }
+}
