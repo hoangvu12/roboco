@@ -67,7 +67,7 @@ class PinReorderStateTest {
     }
 
     @Test
-    fun `move inside another engine's block is refused`() {
+    fun `move inside another engine block is refused`() {
         val state = PinReorderState(twoEngines)
         state.start("a3")
         // a3 is already the last row of A's block: every target clamps to

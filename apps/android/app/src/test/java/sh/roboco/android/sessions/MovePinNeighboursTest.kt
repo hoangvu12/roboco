@@ -75,7 +75,7 @@ class MovePinNeighboursTest {
     // ------------------------------------------------------------- clamp
 
     @Test
-    fun `clampTarget stays inside the dragged row's engine block`() {
+    fun `clampTarget stays inside the dragged row engine block`() {
         val order = listOf(k("a1", "A"), k("a2", "A"), k("a3", "A"), k("b1", "B"), k("b2", "B"))
         assertEquals(2, MovePinNeighbours.clampTarget(order, from = 2, to = 4))
         assertEquals(3, MovePinNeighbours.clampTarget(order, from = 3, to = 0))
