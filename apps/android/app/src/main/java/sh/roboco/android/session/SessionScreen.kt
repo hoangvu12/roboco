@@ -282,7 +282,10 @@ fun SessionScreen(
                 // the questions panel replaces the composer
                 // (`composer.isHidden = asking`, :495) and the hidden
                 // composer blurs inside SessionComposerSlot.
-                if (composerBinding != null) SessionComposerSlot(composerBinding, shown)
+                if (composerBinding != null) {
+                    // 77: the arrival handoff measures the composer here.
+                    SessionComposerSlot(composerBinding, shown, Modifier.arrivalComposerAnchor(state.arrival))
+                }
             },
             jump = {}, // 131
             // 77: the arrival channel (85 multiplies its push-pop factor
