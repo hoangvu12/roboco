@@ -73,6 +73,7 @@ import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
+import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 
 /**
@@ -401,6 +402,10 @@ object Gallery {
         // table (header and rules scroll with it) and a fitting block.
         // Every item stays interactive for manual axis-lock checks.
         GallerySection("Transcript scrollers", screenshotHeightDp = 760) { ScrollerFixturePage() },
+        // Ticket 120 (transcript disclosure): the tool-group chevron flip
+        // and the invisible disclosure / tool-toggle tap targets — the
+        // static fixture rows plus the live expand / collapse demo.
+        GallerySection("Transcript disclosure") { DisclosureGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
