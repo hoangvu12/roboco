@@ -4,6 +4,7 @@ import uniffi.roboco_core.ChatIndicator
 import uniffi.roboco_core.ComposerState
 import uniffi.roboco_core.Connectivity
 import uniffi.roboco_core.ConnectivityState
+import uniffi.roboco_core.ContextUsage
 import uniffi.roboco_core.EngineDiagnostics
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
@@ -11,6 +12,8 @@ import uniffi.roboco_core.HostCapabilities
 import uniffi.roboco_core.HostInfo
 import uniffi.roboco_core.LiveStatus
 import uniffi.roboco_core.ProjectRef
+import uniffi.roboco_core.PullRequest
+import uniffi.roboco_core.PullRequestState
 import uniffi.roboco_core.RoomState
 import uniffi.roboco_core.SessionRow
 import uniffi.roboco_core.TranscriptView
@@ -34,6 +37,7 @@ internal fun composerState(
     transferProgress: Double? = null,
     queueError: String? = null,
     chatId: String = "chat-a",
+    contextUsage: ContextUsage? = null,
 ): ComposerState = ComposerState(
     chatId = chatId,
     revision = 1uL,
@@ -68,15 +72,20 @@ internal fun composerState(
     openInput = null,
     queueError = queueError,
     lastSubmittedMessageId = null,
-    contextUsage = null,
+    contextUsage = contextUsage,
 )
 
-/** A session row with only the fields [baseChrome] reads set apart. */
+/** A session row with only the fields [baseChrome] and the chips read set apart. */
 internal fun sessionRow(
     projectName: String? = null,
     harnessLabel: String? = null,
     id: String = "chat-a",
     pinned: Boolean = false,
+    harness: String? = null,
+    modelLabel: String? = null,
+    reasoning: String? = null,
+    branch: String? = null,
+    pullRequest: PullRequest? = null,
 ): SessionRow = SessionRow(
     id = id,
     engineId = "engine:v1:alpha",
@@ -89,12 +98,12 @@ internal fun sessionRow(
     deviceName = null,
     deviceOnline = true,
     engineOnline = true,
-    harness = null,
+    harness = harness,
     harnessLabel = harnessLabel,
     model = null,
-    modelLabel = null,
-    reasoning = null,
-    branch = null,
+    modelLabel = modelLabel,
+    reasoning = reasoning,
+    branch = branch,
     cwd = null,
     indicator = ChatIndicator.IDLE,
     hostIndicator = ChatIndicator.IDLE,
@@ -106,9 +115,23 @@ internal fun sessionRow(
     archived = false,
     pinned = pinned,
     sectionId = null,
-    pullRequest = null,
+    pullRequest = pullRequest,
     sendState = null,
     parentChatId = null,
+)
+
+/** A PR fixture for the chip tests (78). */
+internal fun pullRequest(
+    number: Long,
+    state: PullRequestState,
+): PullRequest = PullRequest(
+    provider = "github",
+    number = number.toULong(),
+    title = "Fixture PR",
+    url = "https://github.com/roboco/roboco/pull/$number",
+    state = state,
+    baseRef = "main",
+    headRef = "feature",
 )
 
 /** A connected engine view (73/79 read its state and device id). */

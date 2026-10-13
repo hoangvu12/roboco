@@ -223,7 +223,8 @@ fun errorText(t: Throwable): String = when (t) {
  *   (ticket 72's `PairPageLauncher`; capture the launcher in composition) once when the
  *   screen is composed.
  * - **78 (send):** after `handle.send(...)` returns → `noteSendSucceeded()`; when it throws
- *   (not `CancellationException`) → `noteSendFailed(t)`.
+ *   (not `CancellationException`) → `noteSendFailed(t)` — through the [SendReporter]
+ *   interface the binding holds.
  * - **89 (chip menus):** `noteSettingSucceeded()` / `noteSettingFailed(t)` around
  *   `setSessionConfig` (89's `onSettingResult`).
  * - **83 (queue edit):** `banner.onEditingTap = { queueEdit.cancelEdit() }` (iOS
@@ -236,7 +237,7 @@ class StatusBanner(
     private val logW: (String, Throwable) -> Unit = { message, error ->
         android.util.Log.w("RobocoSession", message, error)
     },
-) : ChromeFiller {
+) : ChromeFiller, SendReporter {
     /** Ticket 83: cancels the queued-message edit. Main thread. */
     @Volatile
     var onEditingTap: (() -> Unit)? = null
@@ -269,7 +270,7 @@ class StatusBanner(
     private val scope = CoroutineScope(SupervisorJob() + io)
 
     /** Ticket 78: a send returned normally — clears the sticky send failure. */
-    fun noteSendSucceeded() {
+    override fun noteSendSucceeded() {
         if (sendFailure != null) {
             sendFailure = null
             invalidate()
@@ -277,7 +278,7 @@ class StatusBanner(
     }
 
     /** Ticket 78: `handle.send` threw — holds `Couldn't send: <errorText>` until the next success. */
-    fun noteSendFailed(error: Throwable) {
+    override fun noteSendFailed(error: Throwable) {
         replaceSendFailure("Couldn't send: " + errorText(error))
     }
 

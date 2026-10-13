@@ -32,6 +32,25 @@ fun interface FrameListener {
 }
 
 /**
+ * The transcript seam the session composer binding needs
+ * (android-ui-parity #78): the upload-progress pin (67's ring, fed from
+ * the session chrome) and the two runway calls (69, made just before a
+ * send). [TranscriptState] is the only production implementation; 78's
+ * tests and the gallery provide fakes, which is why the binding types
+ * its parameter as this interface and not the (final) class.
+ */
+interface RunwayHooks {
+    /** Attachment upload progress (0..1), null when nothing is in flight. */
+    var uploadProgress: Double?
+
+    /** An immediate send (new turn, steer, stop-and-send) — see [TranscriptState.beginOwnTurn]. */
+    fun beginOwnTurn()
+
+    /** A message queued behind a running turn — see [TranscriptState.expectQueuedTurn]. */
+    fun expectQueuedTurn()
+}
+
+/**
  * The data half of the transcript host (ticket 61): it owns one
  * [TranscriptView], relays layout-thread frame notifications to the main
  * thread through [FrameRelay] (one coalesced apply per vsync), forwards the
@@ -65,7 +84,7 @@ class TranscriptState internal constructor(
     makeModels: (onUpgradeBuilt: (RowPlacement, RowModel) -> Unit) -> ModelPipeline =
         { ModelPipeline(onUpgradeBuilt = it) },
     makeEngine: (TextSystem, LayoutListener) -> TranscriptView,
-) {
+) : RunwayHooks {
     /**
      * Production constructor: main thread only. The check runs inside
      * `mainChoreographer()`, while the delegation arguments are evaluated —
@@ -98,8 +117,7 @@ class TranscriptState internal constructor(
      * flight: drawn as rings on pending thumbnails (ticket 67), fed by the
      * session chrome (ticket 78). Equal writes do not invalidate.
      */
-    var uploadProgress by mutableStateOf<Double?>(null)
-
+    override var uploadProgress by mutableStateOf<Double?>(null)
     /** The style table for this transcript, synced in [apply] step 4 (data half; ticket 62 adds the paints). */
     val fonts = StyleFonts()
 
@@ -180,7 +198,7 @@ class TranscriptState internal constructor(
      * send, so the state may wait on an unresolved key if the send later
      * fails — the next call replaces it.
      */
-    fun beginOwnTurn() = runway.beginOwnTurn()
+    override fun beginOwnTurn() = runway.beginOwnTurn()
 
     /**
      * Ticket 78 (a message queued behind a running turn): records the
@@ -189,7 +207,7 @@ class TranscriptState internal constructor(
      * promotion flips `following` on (iOS `expectQueuedTurn`, TLV:83-85,
      * 96-107). Until then, nothing changes.
      */
-    fun expectQueuedTurn() = runway.expectQueuedTurn()
+    override fun expectQueuedTurn() = runway.expectQueuedTurn()
 
     /** `true` while the runway holds reserved space below the prompt (glide step in 68's spring). */
     val runwayHolding: Boolean get() = runway.holding
