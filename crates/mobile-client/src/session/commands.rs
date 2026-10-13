@@ -241,6 +241,12 @@ impl SessionCore {
             ));
             self.refresh();
         }
+        // Ticket 28: the notification driver's pending-send window opens
+        // here (this device issued a Run/Steer `QueueCommand`); it closes
+        // when the session is seen Working after it or after 30 s.
+        if let Some(inner) = self.client.upgrade() {
+            inner.notify.note_send(&self.engine_id, &self.raw_chat_id);
+        }
         // Uploads: report one overall progress, then replace the echo's
         // `pending://` refs with the real host paths in place.
         let mut paths = Vec::with_capacity(refs.len());
@@ -496,6 +502,11 @@ impl SessionCore {
     /// `RetryDelivery` for the acked ones (the engine re-issues dead
     /// Run/Steer attempts under a new command id with the same message id).
     pub(crate) async fn retry_delivery(&self) -> Result<(), ClientError> {
+        // A re-issued command re-arms the notification driver's
+        // pending-send window (ticket 28), like the original send.
+        if let Some(inner) = self.client.upgrade() {
+            inner.notify.note_send(&self.engine_id, &self.raw_chat_id);
+        }
         let mut reissue: Vec<SessionCommandPayload> = Vec::new();
         let mut engine_retry = false;
         {

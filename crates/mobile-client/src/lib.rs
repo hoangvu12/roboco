@@ -32,6 +32,7 @@ pub mod files;
 pub mod host_paths;
 pub mod lenient;
 pub mod new_session;
+pub mod notify;
 pub mod pairing;
 pub mod projects;
 pub mod runtime;
@@ -61,6 +62,7 @@ pub use engines::{
     EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason, TranscriptConnection,
 };
 pub use events::{ClientEvent, ClientListener};
+pub use notify::{NotifyListener, RunActivity, RunRef, SessionEvent};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
 pub use files::FileMatch;
 pub use new_session::{
@@ -168,6 +170,9 @@ pub(crate) struct ClientInner {
     /// Decoded attachment bytes, byte-budgeted LRU (ticket 08). Shared so
     /// session tasks can hold it across awaits.
     attachments: Arc<attachments::AttachmentCache>,
+    /// The notification driver (ticket 28): baselines, link watches and
+    /// the send ledger; silent until a listener is installed.
+    pub(crate) notify: Arc<notify::NotifyHub>,
 }
 
 /// The mobile client. Cheap to clone. Create once per app run with the
@@ -246,6 +251,7 @@ impl Client {
             attachments: Arc::new(attachments::AttachmentCache::new(
                 attachments::ATTACHMENT_CACHE_BUDGET,
             )),
+            notify: notify::NotifyHub::new(timings.notify.clone()),
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
         let _ = inner.workspace.set(workspace);
@@ -367,6 +373,10 @@ impl Client {
                         });
                     });
                 }
+                // Re-pairing drops the notification driver's state for this
+                // engine (baselines, sends, notified states): a re-paired
+                // engine re-seeds silently (ticket 28).
+                self.inner.notify.reset_engine(&engine_id);
                 // Restart supervision: the old task's channel and token die
                 // with it.
                 let (old_task, old_cancel) = {
@@ -460,6 +470,10 @@ impl Client {
         // joining the drained writes keeps an in-flight save from
         // recreating the directory being removed.
         removed.cache.flush().await;
+        // A forgotten engine's notification state (baselines, notified
+        // chats, its link watch) goes with it; the platform cancels its
+        // notifications.
+        self.inner.notify.reset_engine(engine_id);
         let cache = removed.cache.clone();
         let _ = tokio::task::spawn_blocking(move || cache.forget())
             .await
@@ -680,6 +694,7 @@ impl Client {
     /// Stop all tasks (sign-out / app teardown). Snapshots stay readable.
     pub fn shutdown(&self) {
         self.inner.client_cancel.cancel();
+        self.inner.notify.shutdown();
         if let Some(workspace) = self.inner.workspace.get() {
             workspace.shutdown();
         }
@@ -688,6 +703,17 @@ impl Client {
             entry.cancel.cancel();
             entry.task.abort();
         }
+    }
+
+    // ── notifications (ticket 28) ───────────────────────────────────────
+
+    /// Install the notification driver's delivery surface (the FFI layer
+    /// bridges the platform sink here). Idempotent-ish: a later call
+    /// replaces the listener; the drive task runs until `shutdown`.
+    pub fn set_notify_listener(&self, listener: Arc<dyn NotifyListener>) {
+        self.inner
+            .notify
+            .set_listener(listener, Arc::downgrade(&self.inner));
     }
 
     // ── workspace (ticket 07) ─────────────────────────────────────────

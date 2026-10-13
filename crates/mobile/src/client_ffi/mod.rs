@@ -12,11 +12,13 @@
 //! label helpers (ticket 07).
 
 mod new_session;
+mod notify;
 mod session;
 mod types;
 mod workspace;
 
 pub use new_session::*;
+pub use notify::*;
 pub use session::*;
 pub use types::*;
 
@@ -92,6 +94,16 @@ impl CoreClient {
     /// Stop all tasks (app teardown). Snapshots stay readable.
     pub fn shutdown(&self) {
         self.client.shutdown();
+    }
+
+    // ── notifications (ticket 28) ───────────────────────────────────────
+
+    /// Install the notification driver's delivery surface and start it.
+    /// Call once after `new` (a later call replaces the sink). Callbacks
+    /// arrive on a client runtime thread: hop to a coroutine, never block.
+    pub fn set_notification_sink(&self, sink: Arc<dyn NotificationSink>) {
+        self.client
+            .set_notify_listener(Arc::new(SinkBridge(sink)));
     }
 
     // ── engines ────────────────────────────────────────────────────────

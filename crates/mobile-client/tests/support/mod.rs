@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use roboco_engine::pairing::PairingStore;
 use roboco_engine::{EngineCore, EngineListener, EngineProfile, HarnessId};
-use roboco_mobile_client::timings::Timings;
+use roboco_mobile_client::timings::{NotifyTimings, Timings};
 pub mod stall_proxy;
 
 use roboco_mobile_client::{Client, ClientConfig, ClientEvent, ClientListener, FleetSnapshot};
@@ -182,7 +182,7 @@ pub fn test_timings() -> Timings {
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_secs(2),
         workspace_tick: Duration::from_millis(100),
-
+        notify: NotifyTimings::default(),
     }
 }
 
