@@ -71,11 +71,11 @@ class PageSheetScreenshotTest {
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-session", SheetStyle.Page(grabber = true)) {
-                NewSessionSheetPlaceholder(it)
+                NewSessionSheetPlaceholder(this)
             }
             if (stack) {
                 state.presentSettledForPreview("new-project", SheetStyle.Page(grabber = false)) {
-                    NewProjectShotPage(it)
+                    NewProjectShotPage(this)
                 }
             }
         }
@@ -131,7 +131,7 @@ class PageSheetTabletScreenshotTest {
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-session", SheetStyle.Page(grabber = true)) {
-                NewSessionSheetPlaceholder(it)
+                NewSessionSheetPlaceholder(this)
             }
         }
         compose.setContent {
