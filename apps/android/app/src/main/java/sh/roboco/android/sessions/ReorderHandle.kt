@@ -28,7 +28,9 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -228,11 +230,14 @@ private class LiftedInsetShape(
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val l = with(density) { horizontal.toPx() }
         val t = with(density) { vertical.toPx() }
-        return base.createOutline(
+        val inner = base.createOutline(
             Size(size.width - 2f * l, size.height - 2f * t),
             layoutDirection,
             density,
         )
+        // The base outline sits at the origin; move it by the insets so the
+        // shadow lines up with the fill (which `liftedRow` translates too).
+        return Outline.Generic(Path().apply { addOutline(inner); translate(Offset(l, t)) })
     }
 }
 
