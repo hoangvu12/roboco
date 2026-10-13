@@ -317,7 +317,7 @@ private fun PreviewLabel(text: String, x: Dp) {
     Box(Modifier.absoluteOffset(x, 0.dp).fillMaxHeight().width(240.dp)) {
         BasicText(
             text,
-            Modifier.align(Alignment.CenterVertically),
+            Modifier.align(Alignment.CenterStart),
             style = uiStyle(Face.Sans, LocalTypeScale.current.fixed(13.5f), RobocoTheme.palette.secondary),
         )
     }
