@@ -19,6 +19,7 @@ import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.PairingTarget
 
 /**
  * The QR scanner seam (ticket 138's screen, `fun interface`): opens the
