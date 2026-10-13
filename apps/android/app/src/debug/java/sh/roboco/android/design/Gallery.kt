@@ -30,6 +30,7 @@ import sh.roboco.android.composer.ComposerActionButtonGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
+import sh.roboco.android.debug.TranscriptLabGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
 import sh.roboco.android.design.gallery.QuestionCardGallerySection
@@ -441,6 +442,12 @@ object Gallery {
         // canvas, scaled to fit. Fill: the page owns its scrolling.
         GallerySection("Reference", GalleryLayout.Fill, screenshotHeightDp = 1000) {
             ReferenceGalleryPage()
+        },
+        // Ticket 135 (Transcript Lab): the -lab launch buttons — the lab
+        // itself is a separate debug activity, so the section is just the
+        // launchers (no engine runs under the capture).
+        GallerySection("Transcript Lab", screenshotHeightDp = 320) {
+            TranscriptLabGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
