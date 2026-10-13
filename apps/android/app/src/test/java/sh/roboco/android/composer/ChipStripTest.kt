@@ -531,6 +531,44 @@ class ChipStripTest {
         assertEquals("chip taps never focus the composer", 0, focusCount)
     }
 
+    @Test
+    fun anEmptyStripIsA34DpBoxWithNoFadeThatDoesNotConsumeTaps() {
+        focusCount = 0
+        val state = ScrollState(0)
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                GlassMenuHost(hazeState = rememberHazeState()) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color.White)
+                            .pointerInput(Unit) { detectTapGestures { focusCount++ } },
+                    ) {
+                        ChipStrip(
+                            chips = emptyList(),
+                            chipMenus = emptyMap(),
+                            canWrite = true,
+                            onChipTap = {},
+                            modifier = Modifier.width(300.dp),
+                            state = state,
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = true
+
+        assertEquals("the empty strip keeps its 34 dp height", 34f, node("composer-chip-strip").size.height.toFloat(), 0.5f)
+        assertEquals("no content, no overflow, no fade", 0, state.maxValue)
+
+        // Taps on the empty strip are not consumed by it: they reach the
+        // parent's focus recogniser, exactly like the space between chips.
+        compose.onNodeWithTag("composer-chip-strip").performTouchInput { click(Offset(150f, 17f)) }
+        compose.waitForIdle()
+        assertEquals("an empty strip's tap focuses the composer", 1, focusCount)
+    }
+
     // ------------------------------------------------------- chipModifier
 
     @Test

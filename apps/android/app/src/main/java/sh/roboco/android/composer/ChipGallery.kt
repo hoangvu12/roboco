@@ -144,9 +144,8 @@ fun ChipStripGallerySection() {
                     }
 
                     val prStrips = chipFixturePrStrips()
-                    val prNames = listOf("open", "merged", "closed", "draft")
                     prStrips.forEachIndexed { index, chips ->
-                        ChipCard("B — PR ${prNames[index]}") {
+                        ChipCard("B — PR ${PR_STATE_NAMES[index]}") {
                             ChipStrip(chips, emptyMap(), canWrite = true, onChipTap = {})
                         }
                     }
@@ -217,6 +216,9 @@ fun ChipStripGallerySection() {
         }
     }
 }
+
+/** The PR-state captions, shared by the section and the preview. */
+private val PR_STATE_NAMES = listOf("open", "merged", "closed", "draft")
 
 /** Fixture F's fixed-width strip: the row overflows 240 dp and scrolls. */
 @Composable
@@ -295,7 +297,7 @@ private fun ChipStripPreview(appearance: Appearance) {
             ) {
                 Caption("A — session", uiStyle(Face.Sans, typeScale.fixed(12f), palette.secondary))
                 ChipStrip(chipFixtureSession(), emptyMap(), canWrite = true, onChipTap = {})
-                val prNames = listOf("open", "merged", "closed", "draft")
+                val prNames = PR_STATE_NAMES
                 chipFixturePrStrips().forEachIndexed { index, chips ->
                     Caption("B — PR ${prNames[index]}", uiStyle(Face.Sans, typeScale.fixed(12f), palette.secondary))
                     ChipStrip(chips, emptyMap(), canWrite = true, onChipTap = {})
