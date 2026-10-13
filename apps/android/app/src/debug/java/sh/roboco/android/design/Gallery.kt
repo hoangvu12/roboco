@@ -61,6 +61,7 @@ import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.settings.DevicesRowsGallerySection
 import sh.roboco.android.settings.AppearanceGallerySection
+import sh.roboco.android.settings.NotificationRowsGallerySection
 import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
@@ -401,6 +402,15 @@ object Gallery {
         // table (header and rules scroll with it) and a fitting block.
         // Every item stays interactive for manual axis-lock checks.
         GallerySection("Transcript scrollers", screenshotHeightDp = 760) { ScrollerFixturePage() },
+        // Ticket 99 (notification rows): the Settings "Notifications"
+        // section — the master switch and the three kind rows over the
+        // three fixtures (fresh install, granted, denied-with-alert).
+        // Fill: the section is one LazyColumn of three keyed
+        // sub-sections; the denied fixture's alert goes through the
+        // AlertHost GalleryProviders already mounts.
+        GallerySection("Notification rows", GalleryLayout.Fill, screenshotHeightDp = 760) {
+            NotificationRowsGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

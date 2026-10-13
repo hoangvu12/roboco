@@ -10,10 +10,18 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.VisibleForTesting
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.activity.ComponentActivity
 
 /**
  * The permission status machine (android-ui-parity#99's shape, created by
@@ -153,4 +161,68 @@ internal fun Context.findActivity(): Activity? {
         context = context.baseContext
     }
     return null
+}
+
+// ---------------------------------------------------------------------------
+// The composable request seam (android-ui-parity #99)
+// ---------------------------------------------------------------------------
+
+/**
+ * One call into the system `POST_NOTIFICATIONS` request. A class, not a
+ * bare lambda, so [rememberNotificationSectionState] can hand it to the
+ * non-composable [NotificationSectionState][sh.roboco.android.settings.NotificationSectionState]
+ * and android-app#28's first-session ask can reuse the same launcher.
+ */
+class NotificationPermissionRequester internal constructor(private val launch: () -> Unit) {
+
+    /** Launches the request; the result lands in the `onResult` callback. */
+    fun request() = launch()
+}
+
+/**
+ * Wraps `rememberLauncherForActivityResult(RequestPermission())`
+ * (android-ui-parity #99's step 3). The result callback records the
+ * outcome first — [NotificationPermission.recordRequestResult] decides
+ * whether the denial was final — then reports to [onResult], which the
+ * Settings section wires to its state machine and android-app#28's
+ * first-session ask to its own gate.
+ *
+ * With no Activity in the context chain (`findActivity() == null`), the
+ * rationale defaults to `true` ("not blocked", the safe answer) — the
+ * callback can run after the composition left the activity.
+ *
+ * API < 33 never launches: `POST_NOTIFICATIONS` is not a runtime
+ * permission there, and a launch would return `false` while wrongly
+ * marking the permission as requested. The Settings state machine
+ * cannot reach the request on those APIs (the status is `Granted` or
+ * `Denied`), so the fallback only reports the current status —
+ * defensive, never reached from Settings.
+ */
+@Composable
+fun rememberNotificationPermissionRequester(
+    prefs: NotificationPrefs,
+    onResult: (granted: Boolean) -> Unit,
+): NotificationPermissionRequester {
+    val context = LocalContext.current
+    val latest by rememberUpdatedState(onResult)
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val activity = context.findActivity()
+        val rationale = activity?.let {
+            ActivityCompat.shouldShowRequestPermissionRationale(it, NotificationPermission.PERMISSION)
+        } ?: true
+        NotificationPermission.recordRequestResult(prefs, granted, rationale)
+        latest(granted)
+    }
+    return remember(launcher) {
+        NotificationPermissionRequester {
+            if (Build.VERSION.SDK_INT >= 33) {
+                launcher.launch(NotificationPermission.PERMISSION)
+            } else {
+                // Defensive: the state machine never requests below API 33.
+                latest(NotificationPermission.status(context, prefs) == NotificationStatus.Granted)
+            }
+        }
+    }
 }
