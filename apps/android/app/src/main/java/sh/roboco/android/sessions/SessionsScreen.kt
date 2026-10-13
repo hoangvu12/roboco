@@ -54,6 +54,7 @@ import sh.roboco.android.design.rememberContextMenuLiftState
 import sh.roboco.android.design.wallpaperFixture
 import sh.roboco.android.shell.LargeTitleDefaults
 import sh.roboco.android.shell.LargeTitleScaffold
+import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavStack
 import sh.roboco.android.shell.NavStackHost

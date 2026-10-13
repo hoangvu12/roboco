@@ -197,6 +197,13 @@ fun SessionBottomStack(
     val jumpContent: @Composable () -> Unit = remember { { currentJump() } }
     val blockerContent: @Composable () -> Unit = remember { { StackBlocker() } }
 
+    // The inset objects come from @Composable getters, so they are obtained
+    // here in composition; their values are snapshot reads taken in the
+    // measure block below (an IME frame re-measures, never recomposes).
+    val imeInsets = WindowInsets.ime
+    val navInsets = WindowInsets.navigationBars
+    val safeInsets = WindowInsets.safeDrawing
+
     SubcomposeLayout(modifier.testTag(BottomStackTags.Stack)) { constraints ->
         check(constraints.hasBoundedWidth && constraints.hasBoundedHeight) {
             "SessionBottomStack needs a bounded window (the caller passes Modifier.fillMaxSize())"
@@ -208,10 +215,10 @@ fun SessionBottomStack(
 
         // The insets are read in the measure block: every IME animation
         // frame re-measures this layout only, with no recomposition.
-        val imePx = state.imeOverride?.toPx() ?: WindowInsets.ime.getBottom(this).toFloat()
-        val navPx = WindowInsets.navigationBars.getBottom(this).toFloat()
-        val safeL = WindowInsets.safeDrawing.getLeft(this, layoutDir).toFloat()
-        val safeR = WindowInsets.safeDrawing.getRight(this, layoutDir).toFloat()
+        val imePx = state.imeOverride?.toPx() ?: imeInsets.getBottom(this).toFloat()
+        val navPx = navInsets.getBottom(this).toFloat()
+        val safeL = safeInsets.getLeft(this, layoutDir).toFloat()
+        val safeR = safeInsets.getRight(this, layoutDir).toFloat()
 
         val stackWidthPx = BottomStackMetrics.stackWidth(
             windowWidth, safeL, safeR,
