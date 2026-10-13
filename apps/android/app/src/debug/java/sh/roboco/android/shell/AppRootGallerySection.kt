@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,14 +77,19 @@ fun AppRootGallerySection() {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val scale = minOf(1f, maxWidth / frameWidth, maxHeight / 560.dp)
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                FramedAppRoot(
-                    frameWidth = frameWidth,
-                    scale = scale,
-                    paired = paired,
-                    sheetUp = sheetUp,
-                    presentations = presentations,
-                    onSheetDismiss = { sheetUp = false },
-                )
+                // The same registry the cross-fade dismisses: the fake
+                // sheet registers through LocalRootPresentations, and
+                // AppRoot's beforeSwap tears it down in the swap frame.
+                CompositionLocalProvider(LocalRootPresentations provides presentations) {
+                    FramedAppRoot(
+                        frameWidth = frameWidth,
+                        scale = scale,
+                        paired = paired,
+                        sheetUp = sheetUp,
+                        presentations = presentations,
+                        onSheetDismiss = { sheetUp = false },
+                    )
+                }
             }
         }
     }

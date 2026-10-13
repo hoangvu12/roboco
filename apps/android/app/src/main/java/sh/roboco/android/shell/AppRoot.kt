@@ -156,7 +156,9 @@ fun AppRoot(
 @Composable
 fun CoreUnavailableScreen(reason: String, modifier: Modifier = Modifier) {
     val typeScale = LocalTypeScale.current
-    val ink = if (RobocoTheme.isDark) Color(0xFF000000) else Color(0xFFFFFFFF)
+    // #000000 on the light launch background, #FFFFFF on the dark one
+    // (the placeholder's inks, kept verbatim).
+    val ink = if (RobocoTheme.isDark) Color(0xFFFFFFFF) else Color(0xFF000000)
     Box(
         modifier
             .fillMaxSize()
