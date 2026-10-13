@@ -450,7 +450,7 @@ class SettingsScreenTest {
     @Test
     fun flippingGroupByProjectCallsTheWriterAndTheSwitchFollowsTheFlow() {
         mount()
-        compose.onNodeWithTag(toggleTag("groupByProject")).performClick()
+        switchNode("groupByProject").performClick()
         compose.waitForIdle()
         assertEquals(listOf(true), groupChanges)
 
