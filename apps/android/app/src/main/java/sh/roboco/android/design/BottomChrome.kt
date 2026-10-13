@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -13,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import kotlin.math.max
 
 /**
@@ -41,6 +43,32 @@ class BottomChromeTopState {
 
 /** The shell's [BottomChromeTopState]; outside [ToastHost] a throwaway default. */
 val LocalBottomChromeTop = staticCompositionLocalOf { BottomChromeTopState() }
+
+/**
+ * The bottom chrome's content insets (android-ui-parity #30): what the
+ * screens under the chrome pad their lists with. [barBottom] is 26's
+ * `tabBarBottomGap` (the pill's bottom gap), the one value both the chrome
+ * layout and the padding derive from; [contentPadding] is
+ * `barBottom + pill + gap + accessory + 8` computed from the **expanded**
+ * geometry (`bottomChromeContentPadding`, in the shell package — it uses
+ * 28's `TabChromeMetrics`), so lists never jump as the bar morphs.
+ *
+ * It deliberately does **not** include the IME or 29's IME lift: screens
+ * with a focused field add their own (49's
+ * `searchBottomPadding(contentPadding, barBottom, lift)`).
+ *
+ * `BottomChromeInsets.None` is the default outside a phone shell (tablet
+ * sidebar, gallery, previews); tablet screens (105/107) provide their own.
+ */
+@Immutable
+data class BottomChromeInsets(val barBottom: Dp, val contentPadding: Dp) {
+    companion object {
+        val None = BottomChromeInsets(0.dp, 0.dp)
+    }
+}
+
+/** The shell's [BottomChromeInsets]; `BottomChromeInsets.None` outside [MainTabShell][sh.roboco.android.shell.MainTabShell]. */
+val LocalBottomChrome = staticCompositionLocalOf { BottomChromeInsets.None }
 
 /**
  * The bottom edge the toast must keep clear of: the window height minus

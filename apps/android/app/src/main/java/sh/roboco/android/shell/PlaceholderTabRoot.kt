@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,10 +17,10 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.core.Face
+import sh.roboco.android.design.LocalBottomChrome
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
@@ -42,19 +41,17 @@ private const val PLACEHOLDER_ROWS = 40
  *
  * The list registers itself as the tab's scroll-to-top handler, so a
  * re-select at the root scrolls it to item 0 (animated, also under Reduce
- * Motion). Content padding is interim: the status bar on top and the bar
- * (62 + 21 + 8 dp) plus the navigation-bar bottom below — ticket 30
- * provides the real bottom inset.
+ * Motion). The bottom content padding is #30's
+ * [LocalBottomChrome.current] content padding (the chrome group + 8 dp,
+ * from the same `barBottom` the bar layout uses); the status bar tops it.
  */
 @Composable
 fun PlaceholderTabRoot(tab: TabId) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
-    val density = LocalDensity.current
     val listState = rememberLazyListState()
     RegisterScrollToTop(listState)
     val stack = LocalNavStack.current
-    val navBottom = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
 
     LazyColumn(
         modifier = Modifier
@@ -63,7 +60,7 @@ fun PlaceholderTabRoot(tab: TabId) {
         state = listState,
         contentPadding = PaddingValues(
             top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
-            bottom = GlassTabBarDefaults.PillHeight + GlassTabBarDefaults.MinBottomGap + 8.dp + navBottom,
+            bottom = LocalBottomChrome.current.contentPadding,
         ),
     ) {
         item(key = "title") {

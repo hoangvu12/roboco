@@ -34,6 +34,7 @@ import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
+import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
@@ -206,6 +207,11 @@ object Gallery {
         // switch for the scripted failures, the write buttons and the
         // notice toast, through the fake SessionWrites.
         GallerySection("Row actions") { RowActionsGallerySection() },
+        // Ticket 30 (chrome visibility): hidden over a Session, the
+        // after-Search fade, the pop reveal, the bottom insets.
+        GallerySection("Chrome visibility", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
+            ChromeVisibilityGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
