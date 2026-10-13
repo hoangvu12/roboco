@@ -9,6 +9,11 @@ import androidx.compose.ui.Modifier
  * [ComposerSurface] with every slot wired to its owner ticket's part
  * around ticket 54's [ComposerController]:
  *
+ * - **thumbnails** — 88's [StagedThumbnailStrip]: the staged-photo strip
+ *   (68 dp when images are staged, 0 otherwise, removed with a 250 ms
+ *   slide/collapse), hidden while `attachEnabled` is false (a queued
+ *   edit), each x carrying [Modifier.composerControl] so it never
+ *   focuses the field;
  * - **text** — 57's [ComposerTextField]: one `BasicTextField` for both the
  *   capsule and the card, carrying 56's focus requester through
  *   [Modifier.composerInput];
@@ -30,10 +35,6 @@ import androidx.compose.ui.Modifier
  * session), so a retained controller survives re-composition. The
  * surface's width comes from the caller (74's stack slot, 93's canvas);
  * the placeholder is 57's (it draws `controller.placeholder`).
- *
- * Ticket 88 (thumbnails) has not landed: the `thumbnails` slot stays at
- * its empty default and this line is where 88 swaps
- * [StagedThumbnailStrip] in.
  */
 @Composable
 fun ComposerBar(
@@ -51,6 +52,14 @@ fun ComposerBar(
     ComposerSurface(
         progress = { morph.progress },
         modifier = modifier.composerMorphHost(morph).mentionAnchor(mentionUi),
+        thumbnails = {
+            StagedThumbnailStrip(
+                images = controller.images,
+                onRemove = { controller.removeImage(it) },
+                visible = controller.attachEnabled,
+                controlModifier = Modifier.composerControl(morph),
+            )
+        },
         text = {
             ComposerTextField(
                 controller = controller,
