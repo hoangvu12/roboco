@@ -1,13 +1,13 @@
 package sh.roboco.android.transcript
 
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.Constraints
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateMeasurement
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 
 /**
