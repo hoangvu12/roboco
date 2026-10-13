@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -108,6 +109,21 @@ class RootCrossfadeTest {
         compose.waitForIdle()
     }
 
+    /**
+     * A frozen-clock target write: the test thread's write needs explicit
+     * apply notifications, then one frame — the composition that sees the
+     * new target, after which the swap effect runs `beforeSwap` and starts
+     * the fade (the fade's first frame is the next one).
+     */
+    private fun swapTo(k: String) {
+        compose.runOnUiThread {
+            target = k
+            Snapshot.sendApplyNotifications()
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
     /** Advances [ms] of animation time and settles the frame. */
     private fun advance(ms: Long) {
         compose.mainClock.advanceTimeBy(ms)
@@ -149,14 +165,15 @@ class RootCrossfadeTest {
         advance(16)
         assertEquals(0, beforeSwaps)
 
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
 
         assertEquals("beforeSwap runs exactly once", 1, beforeSwaps)
         // The effect runs after the composition that saw the new target —
         // that composition still shows the old root, so "b" has never
         // composed when beforeSwap fires.
         assertEquals(false, bComposedWhenBeforeSwapRan)
+        // The effect's layer writes reach the composition on the next frame.
+        advance(16)
         compose.onNodeWithTag("b").assertExists()
     }
 
@@ -166,8 +183,7 @@ class RootCrossfadeTest {
     fun theOutgoingAlphaIsHalfAt175Ms() {
         start()
         advance(16)
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
 
         compose.mainClock.advanceTimeByFrame() // the swap frame: old on top at alpha 1
         compose.mainClock.advanceTimeBy(175)
@@ -182,8 +198,7 @@ class RootCrossfadeTest {
     fun theOutgoingLayerLeavesAfter350Ms() {
         start()
         advance(16)
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
 
         advance(16)
         advance(400)
@@ -201,16 +216,17 @@ class RootCrossfadeTest {
         advance(16)
         compose.onNodeWithTag("a").performClick()
         compose.onNodeWithTag("a").performClick()
+        advance(16) // the frozen clock: a frame recomposes the counter
         assertEquals(2, observed["a"])
 
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
         advance(16)
         advance(100)
 
         // Mid-fade: the blocker (zIndex above both layers, Initial pass)
         // consumes everything — neither root sees the tap.
         compose.onNodeWithTag("b").performClick()
+        advance(16) // a delivered tap would show up after this frame
         assertEquals(2, observed["a"])
         assertEquals(0, observed["b"])
     }
@@ -221,13 +237,11 @@ class RootCrossfadeTest {
     fun anInterruptedSwapEndsWithASingleLayer() {
         start()
         advance(16)
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
         advance(16)
         advance(100) // mid-fade, b is taking over
 
-        compose.runOnUiThread { target = "a" }
-        compose.waitForIdle()
+        swapTo("a")
         advance(16)
         advance(400)
 
@@ -243,11 +257,11 @@ class RootCrossfadeTest {
         start()
         advance(16)
         repeat(3) { compose.onNodeWithTag("a").performClick() }
+        advance(16) // the frozen clock: a frame recomposes the counter
         assertEquals(3, observed["a"])
         assertEquals(1, compositions.count { it == "a" })
 
-        compose.runOnUiThread { target = "b" }
-        compose.waitForIdle()
+        swapTo("b")
         advance(16)
         advance(100)
 

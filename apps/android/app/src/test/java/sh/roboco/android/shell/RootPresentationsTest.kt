@@ -42,7 +42,16 @@ class RootPresentationsTest {
     fun dismissingTwiceIsSafe() {
         val registry = RootPresentations()
         var dismissed = 0
-        registry.register { dismissed++ }
+        // Entries stay registered (RootHosts registers its hosts once for
+        // the root's lifetime), so a second call runs the handler again; a
+        // real presenter's instant dismiss is idempotent, like this one.
+        var showing = true
+        registry.register {
+            if (showing) {
+                showing = false
+                dismissed++
+            }
+        }
 
         registry.dismissAllInstantly()
         registry.dismissAllInstantly()
