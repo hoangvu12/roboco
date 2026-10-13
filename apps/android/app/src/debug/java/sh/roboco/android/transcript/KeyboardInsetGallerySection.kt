@@ -139,7 +139,11 @@ fun KeyboardInsetGallerySection() {
 private fun FakeTranscript(viewport: TranscriptViewport, covered: Dp, runway: Boolean) {
     val palette = RobocoTheme.palette
     val density = LocalDensity.current.density
-    var hostCoords: LayoutCoordinates? = null
+    // A remembered holder (like 65's state.hostCoordinates): both the
+    // onPlaced write and the observer's read go through the SAME object,
+    // so a recomposition's fresher lambdas never leave the still-running
+    // pointerInput closure reading a stale local.
+    val hostCoords = remember { HostCoords() }
 
     Box(
         Modifier
@@ -147,8 +151,8 @@ private fun FakeTranscript(viewport: TranscriptViewport, covered: Dp, runway: Bo
             .background(palette.background)
             .transcriptBottomInset(viewport, covered) // 133, outermost
             .clipToBounds()
-            .onPlaced { hostCoords = it }
-            .interactiveImeDismiss(viewport) { hostCoords }
+            .onPlaced { hostCoords.value = it }
+            .interactiveImeDismiss(viewport) { hostCoords.value }
             .then(rememberTranscriptScroll(viewport)),
     ) {
         // 65's equivalent of the size/inset SideEffect: the box height
@@ -248,14 +252,9 @@ private fun ComposerStandIn() {
 private fun setRunway(viewport: TranscriptViewport, was: Boolean, on: Boolean): Boolean {
     if (was == on) return on
     if (on) {
-        viewport.onGeometryChanged = {
-            viewport.setContentHeight(
-                max(RUNWAY_NATURAL, PROMPT_Y - viewport.topInset + viewport.viewportHeight - viewport.bottomInset),
-            )
-        }
-        viewport.setContentHeight(
-            max(RUNWAY_NATURAL, PROMPT_Y - viewport.topInset + viewport.viewportHeight - viewport.bottomInset),
-        )
+        // 69's minimum: hold + viewportHeight − bottomInset, hold = p.y − topInset.
+        viewport.onGeometryChanged = { viewport.setContentHeight(runwayHeight(viewport)) }
+        viewport.setContentHeight(runwayHeight(viewport))
         viewport.scrollToBottom(false)
     } else {
         viewport.onGeometryChanged = null
@@ -264,6 +263,12 @@ private fun setRunway(viewport: TranscriptViewport, was: Boolean, on: Boolean): 
     }
     return on
 }
+
+/** The runway height for the current geometry: `max(natural, minimum)`. */
+private fun runwayHeight(viewport: TranscriptViewport): Float = max(
+    RUNWAY_NATURAL,
+    PROMPT_Y - viewport.topInset + viewport.viewportHeight - viewport.bottomInset,
+)
 
 /**
  * The per-frame mono readout: `ime`, `stackTop`, `covered`, `end`,
@@ -341,6 +346,11 @@ private fun KeyboardToggleRow(label: String, value: String, onClick: () -> Unit)
 
 /** One decimal, ROOT locale, for the readout. */
 private fun fmt1(v: Float): String = String.format(Locale.ROOT, "%.1f", v)
+
+/** The fake host's coordinates holder (65 uses TranscriptState's field). */
+private class HostCoords {
+    var value: LayoutCoordinates? = null
+}
 
 /** The session window's height (the phone gallery frame is 74's 560). */
 private val SESSION_WINDOW = 560.dp
