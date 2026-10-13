@@ -67,6 +67,7 @@ import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
+import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
@@ -369,6 +370,11 @@ object Gallery {
         GallerySection("Sessions screen", GalleryLayout.Fill, screenshotHeightDp = 874) {
             SessionsScreenGallerySection()
         },
+        // Ticket 116 (transcript scrollers): the real horizontal scrollers —
+        // the code-block body at rest, 12 dp in and at the end, a wide
+        // table (header and rules scroll with it) and a fitting block.
+        // Every item stays interactive for manual axis-lock checks.
+        GallerySection("Transcript scrollers", screenshotHeightDp = 760) { ScrollerFixturePage() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

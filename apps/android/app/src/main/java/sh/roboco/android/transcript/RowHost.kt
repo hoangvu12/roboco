@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -103,7 +104,10 @@ internal fun RowHost(
                 actions = actionsProvider,
                 live = model.display.widgets.any { it.kind is WidgetKind.Shimmer },
             )
-            model.display.scrollers.forEachIndexed { i, s -> RowScroller(ctx, i, s) }
+            // Ticket 116: key(i) keeps scroller i's ScrollState across a
+            // change in the scroller count, so a streamed second code block
+            // cannot shift the first one's identity (and offset).
+            model.display.scrollers.forEachIndexed { i, s -> key(i) { RowScroller(ctx, i, s) } }
             val n = model.display.scrollers.size
             for (w in model.display.widgets) {
                 // A bad scroller index falls back to the row (iOS's rule;

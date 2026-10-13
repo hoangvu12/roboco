@@ -48,6 +48,12 @@ class RealizedRow internal constructor(
     /** The row's current fade alpha (1 for known rows). Tests read this. */
     val appearAlpha: Float get() = appear?.value ?: 1f
 
+    /**
+     * The row's live scroller offsets (ticket 116): one entry per composed
+     * scroller, fed by [RowScroller]. Snapshot-observable, main thread only.
+     */
+    val scrollers = ScrollerRegistry()
+
     /** The current density (px per dp), kept by the row host. */
     internal var density: Float = 1f
 
@@ -68,11 +74,12 @@ class RealizedRow internal constructor(
     }
 
     /**
-     * The horizontal scroller [index]'s content offset (dp). Ticket 116
-     * fills this in as it owns scroller behaviour; the static viewport
-     * this ticket ships is iOS's state right after configure (offset 0).
+     * The horizontal scroller [index]'s live content offset (dp),
+     * `ScrollState.value / density` (ticket 116); 0 while that scroller
+     * is not composed. Snapshot-observable: reading it inside a snapshot
+     * observer (semantics, draw, `snapshotFlow`) re-runs on scroll.
      */
-    fun scrollerOffsetDp(index: Int): Float = 0f
+    fun scrollerOffsetDp(index: Int): Float = scrollers.offsetDp(index)
 
     override fun onRemembered() {
         state.realized[key] = this
