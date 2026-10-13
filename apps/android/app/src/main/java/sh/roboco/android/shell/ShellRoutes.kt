@@ -1,6 +1,8 @@
 package sh.roboco.android.shell
 
 import androidx.compose.runtime.Composable
+import sh.roboco.android.sessions.FolderRoute
+import sh.roboco.android.sessions.FolderRouteContent
 
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
@@ -20,13 +22,18 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
 /**
  * The shell's route table: `when (route)` over every route a tab's stack
  * can hold. Tickets 46/103/49 add their branches (replacing the
- * `TabRootRoute` branch per tab); 76 registers the Session route.
+ * `TabRootRoute` branch per tab); 45 registers the folder route; 76
+ * registers the Session route.
  */
 @Composable
 fun ShellRouteContent(route: NavRoute) {
     when (route) {
         is TabRootRoute -> PlaceholderTabRoot(route.tab)
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
+        // Ticket 45: one folder's sessions (Pinned, a user section,
+        // Archived). The tablet sidebar (105) renders pushed routes
+        // through this same table, so one branch serves both hosts.
+        is FolderRoute -> FolderRouteContent(route)
         else -> Unit
     }
 }
