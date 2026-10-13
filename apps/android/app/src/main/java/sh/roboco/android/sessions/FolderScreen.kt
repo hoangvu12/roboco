@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import sh.roboco.android.RobocoApplication
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalBottomChrome
@@ -32,6 +34,7 @@ import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.GlassCircleButton
 import sh.roboco.android.design.glass.GlassMenuHost
+import sh.roboco.android.design.glass.GlassTextCapsule
 import sh.roboco.android.design.glass.Menu
 import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
@@ -59,11 +62,14 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * large title, one header-less `ListSection(id = "sessions")` of the rows
  * [folderRows] derives from the live [workspace], and per kind:
  *
- * - **Pinned** — no trailing item from this ticket (47 adds the Edit/Done
- *   capsule) and the list gets `reorderable = true, editing = false`;
+ * - **Pinned** — the nav-bar trailing **Edit ↔ Done** glass text capsule
+ *   (ticket 47, tag `pinned-edit`, an instant label swap) and with it
+ *   Edit mode: the list gets `reorderable = true, editing = editing` and
+ *   ticket 47's reorder hookup — drag handles, the in-engine clamp and
+ *   one `movePin(id, after, before)` per drop;
  * - **Section** — a 44 dp ⋯ [GlassCircleButton] ("More") that opens
  *   ticket 15's glass menu with "Rename Section…" and "Delete Section",
- *   wired to ticket 43's `SessionPrompts` launchers;
+ *   wired to ticket 43's [SessionPrompts] launchers;
  * - **Archived** — no trailing item, the rows use the archived variants
  *   (`archivedRows = true`), and an empty archive shows 41's
  *   "No archived sessions" (a Roboco addition; iOS shows a blank list).
@@ -75,14 +81,17 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * name** from the latest workspace (iOS captures it at push — an upstream
  * bug), and do nothing when the section is no longer there.
  *
- * Ticket 47 later edits this file to add the Pinned Edit/Done capsule and
- * the `editing` state; ticket 48 adds pull-to-refresh to the scaffold call.
+ * Ticket 48 later adds pull-to-refresh to the scaffold call.
  *
  * @param workspace null = not loaded yet (41's spinner through `loading`);
  *   the rows follow it live while the screen is open
  * @param loading `workspace == null || sessionsLoading(engines)` — 41's rule
  * @param topInset 25's convention; passed explicitly (24 dp) by the goldens
  *   and previews because Robolectric reports no insets
+ * @param initialEditing previews and the Edit-mode goldens only: the Pinned
+ *   Edit mode starts on, so they capture the settled Edit state without
+ *   driving the capsule's 300 ms toggle; `false` in production (the capsule
+ *   owns the state)
  * @param prompts ticket 43's launchers; tests pass a recording fake
  * @param navStack read in composition (never inside a callback — that does
  *   not compile); the delete's `onDeleted` pops it animated
@@ -97,6 +106,7 @@ fun FolderScreen(
     loading: Boolean,
     modifier: Modifier = Modifier,
     topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    initialEditing: Boolean = false,
     prompts: SessionPrompts = rememberSessionPrompts(),
     navStack: NavStack = LocalNavStack.current,
     rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
@@ -119,6 +129,41 @@ fun FolderScreen(
     // The tap opener is remembered in composition and read by the list
     // items' click lambdas at tap time.
     val opener = rememberSessionListOpener()
+
+    // Ticket 47, Pinned only: the Edit/Done state (saveable — it survives a
+    // configuration change) and the reorder hookup. Section and Archived
+    // have neither. The keys and the id → engine map come from the same
+    // live rows (ws.front.pinned, already in merged engine-block order);
+    // the state's `order` then leads the list while a drag or its commit
+    // is in flight, and every snapshot is adopted through it.
+    var editing by rememberSaveable(route.folderId) { mutableStateOf(initialEditing) }
+    val reorder: SessionListReorder? = if (kind == FolderKind.Pinned) {
+        val engineById = remember(rows) { rows.associate { r -> r.id to r.engineId } }
+        val keys = remember(rows) { rows.map { r -> PinKey(r.id, r.engineId) } }
+        val state = remember { PinReorderState(keys) }
+        LaunchedEffect(keys) { state.adopt(keys) }
+        // The auto-scroll starts at the visible edges, not under the glass
+        // bars: the same top/bottom padding the scaffold gives the list
+        // (status-bar inset + 44 nav row + 52 large-title row, 25; the
+        // bottom chrome, 30).
+        val lazyState = rememberReorderableLazyListState(
+            lazyListState = listState,
+            scrollThresholdPadding = PaddingValues(
+                top = topInset + LargeTitleDefaults.NavRowHeight + LargeTitleDefaults.LargeRowHeight,
+                bottom = bottom,
+            ),
+        ) { from, to -> state.move(from.key, to.key) }
+        val actions = LocalRowActions.current
+        SessionListReorder(
+            lazyState = lazyState,
+            state = state,
+            engineOf = { id -> engineById.getValue(id) },
+            dispatch = { mv, onResult -> actions.movePin(mv.id, mv.after, mv.before, onResult) },
+        )
+    } else {
+        null
+    }
+
     // The live raw name for the Rename prefill and the Delete prompt title:
     // read at menu-action time from the latest workspace, never the
     // push-time route.title (which may carry 40's " · <engine>" suffix).
@@ -144,7 +189,7 @@ fun FolderScreen(
         topInset = topInset,
         contentPadding = PaddingValues(bottom = bottom),
         modifier = modifier.testTag("folder-screen"),
-        trailing = { FolderTrailing(kind, ::rename, ::confirmDelete) },
+        trailing = { FolderTrailing(kind, editing, { editing = !editing }, ::rename, ::confirmDelete) },
         backdrop = {
             SessionListStatusOverlay(
                 status = model.status,
@@ -160,8 +205,9 @@ fun FolderScreen(
             onOpenSession = opener,
             archivedRows = kind == FolderKind.Archived,
             reorderable = kind == FolderKind.Pinned,
-            editing = false, // ticket 47 replaces this with its own state
+            editing = editing,
             rowWrapper = rowWrapper,
+            reorder = reorder,
         )
     }
 }
@@ -169,9 +215,11 @@ fun FolderScreen(
 /**
  * The nav row's trailing slot: the ⋯ glass circle for a user section (the
  * port of the `UIBarButtonItem(image: "ellipsis", menu:)` of
- * `SessionListController.swift:460-466`), nothing for Pinned (47 adds the
- * Edit/Done capsule) and nothing for Archived (iOS `:460`: no
- * rightBarButtonItem at all).
+ * `SessionListController.swift:460-466`), the **Edit ↔ Done** glass text
+ * capsule for Pinned (ticket 47 — UIKit's `editButtonItem`,
+ * `SessionListController.swift:455`: "Edit" Medium 17, "Done" SemiBold
+ * 17 (the `.done` style), an instant label swap), nothing for Archived
+ * (iOS `:460`: no rightBarButtonItem at all).
  *
  * The menu opens on **tap** from the button's own `onClick` through
  * [rememberGlassMenuState] — never `Modifier.glassMenu`, which would give
@@ -181,11 +229,18 @@ fun FolderScreen(
 @Composable
 private fun RowScope.FolderTrailing(
     kind: FolderKind,
+    editing: Boolean,
+    onToggleEditing: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
     when (kind) {
-        FolderKind.Pinned -> Unit // 47's GlassTextCapsule "Edit" ↔ "Done" (testTag pinned-edit).
+        FolderKind.Pinned -> GlassTextCapsule(
+            text = if (editing) "Done" else "Edit",
+            emphasized = editing,
+            onClick = onToggleEditing,
+            modifier = Modifier.testTag("pinned-edit"),
+        )
         FolderKind.Archived -> Unit
         FolderKind.Section -> {
             val menuState = rememberGlassMenuState()
@@ -387,7 +442,12 @@ private object FolderPreviewFixtures {
 }
 
 @Composable
-private fun FolderScreenPreview(appearance: Appearance, route: FolderRoute, workspace: WorkspaceSnapshot?) {
+private fun FolderScreenPreview(
+    appearance: Appearance,
+    route: FolderRoute,
+    workspace: WorkspaceSnapshot?,
+    initialEditing: Boolean = false,
+) {
     RobocoTheme(appearance) {
         CompositionLocalProvider(LocalRowActions provides PreviewRowActions) {
             GlassMenuHost {
@@ -397,7 +457,13 @@ private fun FolderScreenPreview(appearance: Appearance, route: FolderRoute, work
                 NavStackHost(stack = stack, active = true) { entry ->
                     val r = entry.route
                     if (r is FolderRoute) {
-                        FolderScreen(route = r, workspace = workspace, loading = false, topInset = 24.dp)
+                        FolderScreen(
+                            route = r,
+                            workspace = workspace,
+                            loading = false,
+                            topInset = 24.dp,
+                            initialEditing = initialEditing,
+                        )
                     }
                 }
             }
@@ -427,6 +493,30 @@ private fun FolderPinnedLightPreview() {
 @Composable
 private fun FolderPinnedDarkPreview() {
     FolderScreenPreview(Appearance.Dark, FolderPreviewFixtures.pinnedRoute, FolderPreviewFixtures.pinnedWorkspace)
+}
+
+/** Preview (a): the Pinned screen in Edit mode (ticket 47) — handles, no tap. */
+@Preview(name = "pinned edit light")
+@Composable
+private fun FolderPinnedEditLightPreview() {
+    FolderScreenPreview(
+        Appearance.Light,
+        FolderPreviewFixtures.pinnedRoute,
+        FolderPreviewFixtures.pinnedWorkspace,
+        initialEditing = true,
+    )
+}
+
+/** Preview (a), dark. */
+@Preview(name = "pinned edit dark", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun FolderPinnedEditDarkPreview() {
+    FolderScreenPreview(
+        Appearance.Dark,
+        FolderPreviewFixtures.pinnedRoute,
+        FolderPreviewFixtures.pinnedWorkspace,
+        initialEditing = true,
+    )
 }
 
 @Preview(name = "archived light")

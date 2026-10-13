@@ -3,6 +3,8 @@ package sh.roboco.android.sessions
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.TweenSpec
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,7 +13,9 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,9 +45,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTag
@@ -55,6 +61,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.ReorderableLazyListState
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.Icon
 import sh.roboco.android.design.LocalReduceMotion
@@ -224,6 +232,30 @@ val PassThroughHeaderWrapper: SectionHeaderWrapper = { _, header -> header(Modif
 // ---------------------------------------------------------------------------
 
 /**
+ * Everything `sessionListItems` needs for the Pinned Edit-mode reorder
+ * (android-ui-parity #47): the library's state (built by the host over
+ * the list's own `LazyListState`, so the drag and the scroll share one
+ * state), the local order state machine, the id → engine map and ticket
+ * 42's dispatch. Pass it only from the Pinned folder screen (and its
+ * gallery / tests) — every other list keeps `null` and today's item
+ * structure.
+ */
+@Stable
+class SessionListReorder(
+    /** `rememberReorderableLazyListState(<the list's LazyListState>, …)`. */
+    val lazyState: ReorderableLazyListState,
+
+    /** The drag/commit state machine; its `order` sorts the session items. */
+    val state: PinReorderState,
+
+    /** id → engineId, built from the same snapshot rows the keys come from. */
+    val engineOf: (String) -> String,
+
+    /** Ticket 42: `{ mv, done -> rowActions.movePin(mv.id, mv.after, mv.before, done) }`. */
+    val dispatch: (PinMove, onResult: (ActionOutcome) -> Unit) -> Unit,
+)
+
+/**
  * Emits the list's items into any `LazyColumn`: one `item(key, contentType)`
  * per [SessionListItem] — key `"s:<id>"`/`"h:<id>"`/`"f:<id>"`,
  * contentType `"session"`/`"sectionHeader"`/`"plainHeader"`/`"folder"` —
@@ -261,6 +293,11 @@ val PassThroughHeaderWrapper: SectionHeaderWrapper = { _, header -> header(Modif
  *   [editing] (iOS: no selection while editing).
  * @param archivedRow per-row archived flag for 49/105 (Search hits);
  *   defaults to [archivedRows] for the whole list.
+ * @param reorder ticket 47's hookup; non-null only for the Pinned folder
+ *   screen — see [SessionListReorder]. The session items are then sorted
+ *   by `reorder.state.order` and their outer box becomes the library's
+ *   `ReorderableItem` (the item-root rule), with the Edit-mode drag
+ *   handle, the lift look and the Move Up / Move Down actions inside.
  */
 fun LazyListScope.sessionListItems(
     model: SessionListModel,
@@ -274,8 +311,15 @@ fun LazyListScope.sessionListItems(
     currentChatId: String? = null,
     rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
     headerWrapper: SectionHeaderWrapper = PassThroughHeaderWrapper,
+    reorder: SessionListReorder? = null,
 ) {
-    for (entry in model.items) {
+    // 47: while a drag (or its commit) is in flight the local order — not
+    // the model — positions the session items; the read is in the content
+    // lambda's scope, so every move re-registers the items in the new
+    // order and 41's `animateItem` placement moves the neighbours.
+    val entries =
+        if (reorder != null) sessionItemsInOrder(model.items, reorder.state.order) else model.items
+    for (entry in entries) {
         when (entry) {
             is SessionListItem.Header -> item(key = entry.key, contentType = entry.contentType) {
                 val ts = LocalTypeScale.current
@@ -329,38 +373,34 @@ fun LazyListScope.sessionListItems(
                 }
             }
 
-            is SessionListItem.Session -> item(key = entry.key, contentType = entry.contentType) {
-                val ts = LocalTypeScale.current
-                Box(itemAnimation(model.animate).fillMaxWidth().height(ts.scaledDp(SessionHeightPt))) {
-                    val vm = entry.vm
-                    val src = remember { MutableInteractionSource() }
-                    val h = rememberRowHighlight(src, fadeOnRelease = true)
-                    val ctx = SessionRowContext(
-                        row = entry.row,
-                        vm = vm,
-                        sectionId = entry.sectionId,
-                        archived = archivedRow(vm.id),
-                        reorderable = reorderable,
-                        editing = editing,
-                        isCurrent = vm.id == currentChatId,
-                    )
-                    rowWrapper(ctx) { m ->
-                        // 44: the pressed fill reads 0 while the context menu
-                        // lifts this row (LocalRowLiftState, provided by
-                        // 44's wrapper around this lambda).
-                        val lift = LocalRowLiftState.current
-                        SessionRow(
-                            vm = vm,
-                            modifier = m
-                                .fillMaxSize()
-                                .clickable(
-                                    interactionSource = src,
-                                    indication = null,
-                                    enabled = !editing,
-                                ) { onOpenSession(vm.id) },
-                            isCurrent = ctx.isCurrent,
-                            highlight = { if (lift?.isLifted == true) 0f else h.value },
-                            // meta: the slot's default — 38's SessionRowMetaLine.
+            is SessionListItem.Session -> {
+                if (reorder == null) {
+                    item(key = entry.key, contentType = entry.contentType) {
+                        val ts = LocalTypeScale.current
+                        Box(itemAnimation(model.animate).fillMaxWidth().height(ts.scaledDp(SessionHeightPt))) {
+                            SessionItemBody(
+                                entry = entry,
+                                onOpenSession = onOpenSession,
+                                archivedRow = archivedRow,
+                                reorderable = reorderable,
+                                editing = editing,
+                                currentChatId = currentChatId,
+                                rowWrapper = rowWrapper,
+                            )
+                        }
+                    }
+                } else {
+                    item(key = entry.key, contentType = entry.contentType) {
+                        ReorderableSessionItem(
+                            entry = entry,
+                            model = model,
+                            onOpenSession = onOpenSession,
+                            archivedRow = archivedRow,
+                            reorderable = reorderable,
+                            editing = editing,
+                            currentChatId = currentChatId,
+                            rowWrapper = rowWrapper,
+                            reorder = reorder,
                         )
                     }
                 }
@@ -371,6 +411,221 @@ fun LazyListScope.sessionListItems(
 
 /** `(62 * TypeScale.factor).rounded()` (`SessionCell.swift:49`). */
 private const val SessionHeightPt = 62f
+
+// ---------------------------------------------------------------------------
+// The session item's shared body and its reorderable variant (47)
+// ---------------------------------------------------------------------------
+
+/**
+ * The session item's inner body (41): one highlight source, the
+ * [SessionRowContext] and the row wrapper over 37's [SessionRow]. Shared
+ * verbatim by the plain item (41's outer `Box` + `animateItem`) and the
+ * reorderable item (47's `ReorderableItem` + `Row`), so the wrapper chain
+ * — 44's `SwipeRow` and context menu — is the same in both.
+ */
+@Composable
+private fun LazyItemScope.SessionItemBody(
+    entry: SessionListItem.Session,
+    onOpenSession: (String) -> Unit,
+    archivedRow: (chatId: String) -> Boolean,
+    reorderable: Boolean,
+    editing: Boolean,
+    currentChatId: String?,
+    rowWrapper: SessionRowWrapper,
+) {
+    val vm = entry.vm
+    val src = remember { MutableInteractionSource() }
+    val h = rememberRowHighlight(src, fadeOnRelease = true)
+    val ctx = SessionRowContext(
+        row = entry.row,
+        vm = vm,
+        sectionId = entry.sectionId,
+        archived = archivedRow(vm.id),
+        reorderable = reorderable,
+        editing = editing,
+        isCurrent = vm.id == currentChatId,
+    )
+    rowWrapper(ctx) { m ->
+        // 44: the pressed fill reads 0 while the context menu
+        // lifts this row (LocalRowLiftState, provided by
+        // 44's wrapper around this lambda).
+        val lift = LocalRowLiftState.current
+        SessionRow(
+            vm = vm,
+            modifier = m
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = src,
+                    indication = null,
+                    enabled = !editing,
+                ) { onOpenSession(vm.id) },
+            isCurrent = ctx.isCurrent,
+            highlight = { if (lift?.isLifted == true) 0f else h.value },
+            // meta: the slot's default — 38's SessionRowMetaLine.
+        )
+    }
+}
+
+/**
+ * The reorderable session item (47) — the **item root** the library
+ * requires: `ReorderableItem` replaces 41's outer `Box` (a nested
+ * `ReorderableItem` would draw the dragged row *under* later rows —
+ * `zIndex` only orders siblings — and 41's outer `animateItem` would
+ * fight the library's `translationY`), and 41's own `animateItem`
+ * modifier is handed over as `animateItemModifier`, so it is still
+ * applied exactly once and dropped for the dragged row. `ReorderableItem`
+ * adds the dragged row's `zIndex(1f)` and `translationY` itself.
+ *
+ * `enabled` clamps the drop targets to the dragged row's engine block
+ * (the library removes disabled keys from its `reorderableKeys`); inside,
+ * the content `Row` carries the lift look, the narrowed content and the
+ * drag handle slot. Taps, swipes and the long-press menu need nothing
+ * here: 41's `clickable(enabled = !editing)` and 44's wrapper already
+ * switch them off while editing.
+ */
+@Composable
+private fun LazyItemScope.ReorderableSessionItem(
+    entry: SessionListItem.Session,
+    model: SessionListModel,
+    onOpenSession: (String) -> Unit,
+    archivedRow: (chatId: String) -> Boolean,
+    reorderable: Boolean,
+    editing: Boolean,
+    currentChatId: String?,
+    rowWrapper: SessionRowWrapper,
+    reorder: SessionListReorder,
+) {
+    val ts = LocalTypeScale.current
+    val vm = entry.vm
+    val reduce = LocalReduceMotion.current
+    val anim = itemAnimation(model.animate)
+    ReorderableItem(
+        state = reorder.lazyState,
+        key = entry.key,
+        modifier = Modifier.fillMaxWidth().height(ts.scaledDp(SessionHeightPt)),
+        enabled = editing &&
+            (reorder.state.dragEngine == null || reorder.engineOf(vm.id) == reorder.state.dragEngine),
+        animateItemModifier = anim,
+    ) { isDragging ->
+        // The handle slot needs the library's item scope for
+        // `Modifier.draggableHandle` (its member, the library's own
+        // documented pattern for passing it to a child composable).
+        val itemScope = this
+        val progress by animateFloatAsState(
+            targetValue = if (isDragging) 1f else 0f,
+            animationSpec = when {
+                reduce -> snap() // Reduce motion: the lift snaps 0 / 1.
+                isDragging -> tween(EditMetrics.LiftInMs, easing = Motion.EaseOut)
+                else -> tween(EditMetrics.LiftOutMs, easing = Motion.EaseInOut)
+            },
+            label = "pinned-row-lift",
+        )
+        val stepActions = reorderStepActions(reorder, vm.id, editing)
+        Row(
+            Modifier
+                .fillMaxSize()
+                .liftedRow(progress = { progress })
+                .semantics { if (stepActions.isNotEmpty()) customActions = stepActions },
+        ) {
+            // The content narrows by the handle slot's animated width; the
+            // row wrapper (44's swipe + menu) and 37's row stay untouched.
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                SessionItemBody(
+                    entry = entry,
+                    onOpenSession = onOpenSession,
+                    archivedRow = archivedRow,
+                    reorderable = reorderable,
+                    editing = editing,
+                    currentChatId = currentChatId,
+                    rowWrapper = rowWrapper,
+                )
+            }
+            ReorderHandleSlot(
+                itemScope = itemScope,
+                id = vm.id,
+                visible = editing,
+                enabled = editing && !reorder.state.committing,
+                onDragStarted = { reorder.state.start(vm.id) },
+                onDragStopped = {
+                    reorder.state.end()?.let { mv ->
+                        reorder.dispatch(mv) { outcome ->
+                            reorder.state.committed(outcome == ActionOutcome.Ok)
+                        }
+                    }
+                },
+            )
+        }
+    }
+}
+
+/**
+ * The Edit-mode accessibility actions (47): "Move Up" / "Move Down" —
+ * the Android replacement for VoiceOver's built-in reorder support
+ * (TalkBack cannot drag). Each is present only when the row has a
+ * same-engine neighbour in that direction; invoking it swaps the pair,
+ * applies the step locally and dispatches the same `PinMove` rule a drag
+ * would have. While idle there are none (the row's click is 41's, the
+ * swipe actions are 44's, which drops them while editing).
+ */
+@Composable
+private fun reorderStepActions(
+    reorder: SessionListReorder,
+    id: String,
+    editing: Boolean,
+): List<CustomAccessibilityAction> {
+    if (!editing || reorder.state.committing) return emptyList()
+    val order = reorder.state.order
+    val index = order.indexOfFirst { it.id == id }
+    if (index < 0) return emptyList()
+    return buildList {
+        for (direction in intArrayOf(-1, 1)) {
+            val step = MovePinNeighbours.step(order, index, direction) ?: continue
+            val (newOrder, move) = step
+            val label = if (direction < 0) "Move Up" else "Move Down"
+            add(
+                CustomAccessibilityAction(label) {
+                    reorder.state.applyStep(newOrder)
+                    reorder.dispatch(move) { outcome ->
+                        reorder.state.committed(outcome == ActionOutcome.Ok)
+                    }
+                    true
+                },
+            )
+        }
+    }
+}
+
+/**
+ * Reorders [items] by the local drag [order] (47): the session entries
+ * re-sorted by the order's ids (a model row missing from [order] keeps
+ * its model position, at the end of the session run), while every
+ * non-session item keeps its position and the session slots — however
+ * interleaved — take the sorted sessions in turn. With [order] equal to
+ * the model order the result is the input, structurally.
+ */
+private fun sessionItemsInOrder(
+    items: List<SessionListItem>,
+    order: List<PinKey>,
+): List<SessionListItem> {
+    val sessions = LinkedHashMap<String, SessionListItem.Session>()
+    for (item in items) {
+        if (item is SessionListItem.Session) sessions.putIfAbsent(item.vm.id, item)
+    }
+    val ordered = ArrayList<SessionListItem.Session>(sessions.size)
+    val seen = HashSet<String>()
+    for (key in order) {
+        if (seen.add(key.id)) {
+            sessions[key.id]?.let { ordered.add(it) }
+        }
+    }
+    for (item in items) {
+        if (item is SessionListItem.Session && item.vm.id !in seen) ordered.add(item)
+    }
+    val queue = ArrayDeque<SessionListItem.Session>(ordered)
+    return items.map { item ->
+        if (item is SessionListItem.Session) queue.removeFirst() else item
+    }
+}
 
 /** `(40 * TypeScale.factor).rounded()` (`SessionCell.swift:243`). */
 private const val HeaderHeightPt = 40f
@@ -636,6 +891,8 @@ fun rememberRowHighlight(src: MutableInteractionSource, fadeOnRelease: Boolean =
  *   empty/status derivation.
  * @param refreshWrapper ticket 48's pull-to-refresh container slot.
  * @param backdrop ticket 46's wallpaper, behind the clear list.
+ * @param reorder ticket 47's Pinned reorder hookup (the gallery and the
+ *   ticket's hosts); `null` for every other list.
  */
 @Composable
 fun SessionList(
@@ -653,6 +910,7 @@ fun SessionList(
     currentChatId: String? = null,
     rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
     headerWrapper: SectionHeaderWrapper = PassThroughHeaderWrapper,
+    reorder: SessionListReorder? = null,
     leadingItems: LazyListScope.() -> Unit = {},
     refreshWrapper: @Composable (list: @Composable () -> Unit) -> Unit = { it() },
     backdrop: @Composable BoxScope.() -> Unit = {},
@@ -688,6 +946,7 @@ fun SessionList(
                     currentChatId = currentChatId,
                     rowWrapper = rowWrapper,
                     headerWrapper = headerWrapper,
+                    reorder = reorder,
                 )
             }
         }
