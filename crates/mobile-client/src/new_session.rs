@@ -618,33 +618,38 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn create_session_refuses_a_phone_device() {
         let rig = Rig::start().await;
-        let engine_id = rig.engine_id.clone();
-        // A phone device row recorded by the engine itself. (Patching the
-        // client's cached row raced: the next WatchDevices frame restored the
-        // real platform between the patch and the call, and the create
-        // succeeded - a flake on CI.) The engine's own row is the source of
-        // truth, so every later frame keeps it a phone.
-        rig.core.workspace.upsert_device_row(&roboco_proto::Device {
-            id: "phone-device".into(),
-            name: "Pixel 9".into(),
-            platform: "android".into(),
-            last_seen_at: None,
-            created_at: None,
-            version: None,
-            cursor_sdk_version: None,
-            capabilities: Vec::new(),
-        });
+        // The engine's own device row, rewritten as a phone on the engine.
+        // (Patching the client's cached row raced: the next WatchDevices
+        // frame restored the real platform between the patch and the call -
+        // a flake on CI. A foreign "phone-device" row never reaches the
+        // client at all: engine-local data, ADR 0004, publishes only the
+        // engine's own device.) The engine writes its own row only at boot,
+        // so every later frame keeps it a phone.
+        // Both ids before the flip: execution_devices() hides a phone.
+        let device_id = rig.device_id();
+        let raw_device = rig.raw_device_id();
+        let mut own = rig
+            .core
+            .workspace
+            .read_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == raw_device)
+            .expect("the engine's own device row");
+        own.platform = "android".into();
+        rig.core.workspace.upsert_device_row(&own);
         let inner = rig.client.inner_arc();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while !crate::lock(&inner.engines)
-            .entries
-            .iter()
-            .any(|entry| entry.rows.devices.iter().any(|d| d.id == "phone-device"))
-        {
-            assert!(std::time::Instant::now() < deadline, "the phone row never arrived");
+        while !crate::lock(&inner.engines).entries.iter().any(|entry| {
+            entry
+                .rows
+                .devices
+                .iter()
+                .any(|d| d.id == raw_device && d.platform == "android")
+        }) {
+            assert!(std::time::Instant::now() < deadline, "the phone platform never arrived");
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let device_id = rig.client.scope(&engine_id, "phone-device");
         let error = rig
             .client
             .create_session(NewSession {
