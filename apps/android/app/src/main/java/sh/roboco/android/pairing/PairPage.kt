@@ -106,7 +106,7 @@ import uniffi.roboco_core.PairingTarget
 interface PairClipboard {
 
     /**
-     * `hasPrimaryClip() && primaryClipDescription?.hasMimeType("text/hasMimeType("text/*")#42;") == true`
+     * `hasPrimaryClip() && primaryClipDescription?.hasMimeType("text/any") == true`
      * — a description-only read, safe while unfocused and toast-free.
      */
     fun hasText(): Boolean
