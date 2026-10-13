@@ -13,6 +13,7 @@ import sh.roboco.android.settings.LicensesScreen
 import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
 import sh.roboco.android.sessions.SearchScreen
+import sh.roboco.android.sessions.SessionsScreen
 
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
@@ -41,6 +42,9 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
 fun ShellRouteContent(route: NavRoute) {
     when (route) {
         is TabRootRoute -> when (route.tab) {
+            // Ticket 46: the Sessions tab's real root (the placeholder
+            // keeps the Settings tab until 103).
+            TabId.Sessions -> SessionsScreen()
             // Ticket 49: the Search tab's root — the model + list state
             // live on the entry, so the query, results and scroll survive
             // tab switches (29 refocuses the field on re-entry).

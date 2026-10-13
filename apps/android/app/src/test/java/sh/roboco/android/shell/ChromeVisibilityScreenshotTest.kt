@@ -12,6 +12,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.GlassMenuHost
 
 /**
  * Ticket 30's goldens: the whole [MainTabShell] chrome group — pill,
@@ -55,13 +56,18 @@ class ChromeVisibilityScreenshotTest {
         compose.mainClock.autoAdvance = false
         compose.setContent {
             RobocoTheme {
-                MainTabShell(
-                    state = state,
-                    counts = LiveCounts(working = 0, awaiting = 1),
-                    routeContent = { entry ->
-                        if (entry.route is TabRootRoute) ShellRouteContent(entry.route) else NavDemoScreen(entry)
-                    },
-                )
+                // Ticket 46: the Sessions root is the real screen now — its
+                // ⋯ needs a GlassMenuHost (the golden's background rows
+                // change accordingly; re-record with recordRoborazziDebug).
+                GlassMenuHost {
+                    MainTabShell(
+                        state = state,
+                        counts = LiveCounts(working = 0, awaiting = 1),
+                        routeContent = { entry ->
+                            if (entry.route is TabRootRoute) ShellRouteContent(entry.route) else NavDemoScreen(entry)
+                        },
+                    )
+                }
             }
         }
         compose.waitForIdle()

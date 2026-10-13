@@ -24,8 +24,10 @@ import sh.roboco.android.design.Feedback
 import sh.roboco.android.design.Haptic
 import sh.roboco.android.design.LocalFeedback
 import sh.roboco.android.design.LocalReduceMotion
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ReduceMotion
+import sh.roboco.android.design.glass.GlassMenuHost
 
 /**
  * Ticket 26's shell behaviour (Robolectric, 402 × 874 dp at xxhdpi): the
@@ -65,7 +67,12 @@ class MainTabShellTest {
                     LocalFeedback provides feedback,
                     LocalReduceMotion provides true,
                 ) {
-                    MainTabShell(state = state)
+                    // Ticket 46: the Sessions root is the real screen now —
+                    // its ⋯ needs a GlassMenuHost (15 throws without one)
+                    // and its loading state's spinner a frozen glyph clock.
+                    ProvideGlyphClock(frozenAtNanos = 0L) {
+                        GlassMenuHost { MainTabShell(state = state) }
+                    }
                 }
             }
         }
@@ -113,32 +120,38 @@ class MainTabShellTest {
     @Test
     fun reselectPopsToRootThenScrollsToTopAndASecondReselectDoesNothing() {
         setContent()
+        // Ticket 46: the Sessions root is the real screen — its rows come
+        // from the workspace, empty under Robolectric. The Settings tab
+        // keeps 26's placeholder root, so the content-driven parts run
+        // there (the shell behaviour under test is tab-agnostic).
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("Placeholder row 5").performClick()
-        compose.waitUntil(5_000) { textExists("Sessions row 5") }
-        assertEquals(2, state.stack(TabId.Sessions).entries.size)
+        compose.waitUntil(5_000) { textExists("Settings row 5") }
+        assertEquals(2, state.stack(TabId.Settings).entries.size)
 
         // Re-select with a pushed page: pop to root, no haptic.
         val before = feedback.calls.size
-        compose.onNodeWithTag("tab-sessions").performClick()
-        compose.waitUntil(5_000) { state.stack(TabId.Sessions).entries.size == 1 }
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitUntil(5_000) { state.stack(TabId.Settings).entries.size == 1 }
         assertEquals(before, feedback.calls.size)
-        compose.onNodeWithText("Sessions row 5").assertDoesNotExist()
+        compose.onNodeWithText("Settings row 5").assertDoesNotExist()
         compose.onNodeWithText("Placeholder row 1").assertExists()
 
         // Re-select at the root: the list scrolls back to the top.
-        compose.onNodeWithTag("tab-root-sessions").performScrollToIndex(20)
+        compose.onNodeWithTag("tab-root-more").performScrollToIndex(20)
         compose.waitForIdle()
         compose.onNodeWithText("Placeholder row 1").assertDoesNotExist()
-        compose.onNodeWithTag("tab-sessions").performClick()
+        compose.onNodeWithTag("tab-more").performClick()
         compose.waitUntil(5_000) { textExists("Placeholder row 1") }
 
         // A second re-select at the top: nothing happens (no haptic, no
         // pop, no scroll).
         val after = feedback.calls.size
-        compose.onNodeWithTag("tab-sessions").performClick()
+        compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
         assertEquals(after, feedback.calls.size)
-        assertEquals(1, state.stack(TabId.Sessions).entries.size)
+        assertEquals(1, state.stack(TabId.Settings).entries.size)
         compose.onNodeWithText("Placeholder row 1").assertExists()
     }
 
@@ -147,30 +160,39 @@ class MainTabShellTest {
     @Test
     fun scrollAndStackAreKeptAcrossTabSwitches() {
         setContent()
-        compose.onNodeWithTag("tab-root-sessions").performScrollToIndex(20)
-        compose.waitForIdle()
-        compose.onNodeWithText("Placeholder row 25").performClick()
-        compose.waitUntil(5_000) { textExists("Sessions row 25") }
-
-        // Away and back: the pushed page is still the top of the stack.
+        // Ticket 46: the scrollable root is the Settings placeholder (the
+        // real Sessions root is empty under Robolectric).
         compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("tab-root-more").assertExists()
-        compose.onNodeWithText("Sessions row 25").assertDoesNotExist()
+        compose.onNodeWithTag("tab-root-more").performScrollToIndex(20)
+        compose.waitForIdle()
+        compose.onNodeWithText("Placeholder row 25").performClick()
+        compose.waitUntil(5_000) { textExists("Settings row 25") }
+
+        // Away and back: the pushed page is still the top of the stack.
         compose.onNodeWithTag("tab-sessions").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Sessions row 25").assertExists()
+        compose.onNodeWithTag("tab-root-sessions").assertExists()
+        compose.onNodeWithText("Settings row 25").assertDoesNotExist()
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Settings row 25").assertExists()
 
         // Pop to root (re-select): the list kept its scroll position.
-        compose.onNodeWithTag("tab-sessions").performClick()
-        compose.waitUntil(5_000) { state.stack(TabId.Sessions).entries.size == 1 }
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitUntil(5_000) { state.stack(TabId.Settings).entries.size == 1 }
         compose.onNodeWithText("Placeholder row 21").assertExists()
     }
 
     @Test
     fun eachTabsBackStackIsIndependent() {
         setContent()
-        compose.onNodeWithText("Placeholder row 3").performClick()
+        // Ticket 46: the Sessions root has no placeholder rows to tap —
+        // push its detail page programmatically (the row tap it used to
+        // stand in for).
+        compose.runOnUiThread {
+            state.stack(TabId.Sessions).push(PlaceholderDetailRoute(TabId.Sessions, 3), animated = false)
+        }
         compose.waitUntil(5_000) { textExists("Sessions row 3") }
         compose.onNodeWithTag("tab-more").performClick()
         compose.waitForIdle()
