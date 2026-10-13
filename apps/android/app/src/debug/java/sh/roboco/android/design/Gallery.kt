@@ -34,6 +34,7 @@ import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
+import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
@@ -151,6 +152,9 @@ object Gallery {
         // Ticket 12 (meta glyphs): the row meta line's static glyphs —
         // PrBadge, PrIcon, ProjectTile, BranchIcon.
         GallerySection("Meta glyphs") { MetaGlyphsGallerySection() },
+        // Ticket 37 (session row): the two-line session list row — harness
+        // mark, fading title, corner status word/glyph, highlight fills.
+        GallerySection("Session row", screenshotHeightDp = 1250) { SessionRowGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
