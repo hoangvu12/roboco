@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.composer.ChipStripGallerySection
+import sh.roboco.android.composer.ComposerActionButtonGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
@@ -178,6 +179,10 @@ object Gallery {
         // Ticket 52 (session header): the Session screen's bar — glass back
         // circle, two-line fading title view, ⋯ circle over the soft edge.
         GallerySection("Session header", GalleryLayout.Fill, screenshotHeightDp = 420) { SessionHeaderGallerySection() },
+        // Ticket 58 (composer action button): the trailing send/queue/stop
+        // control — the state morph, the glyph bounce and the long-press
+        // delivery menu over the busy backdrop.
+        GallerySection("Composer action button", screenshotHeightDp = 420) { ComposerActionButtonGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
