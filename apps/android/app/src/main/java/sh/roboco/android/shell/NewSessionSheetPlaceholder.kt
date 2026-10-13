@@ -46,7 +46,7 @@ private fun NewSessionSheetPlaceholderStage(appearance: Appearance) {
     RobocoTheme(appearance) {
         val state = rememberSheetHostState()
         state.presentSettledForPreview("new-session", SheetStyle.Page(grabber = true)) {
-            NewSessionSheetPlaceholder(it)
+            NewSessionSheetPlaceholder(this)
         }
         SheetHost(state) {
             Box(Modifier.fillMaxSize()) {
