@@ -12,9 +12,11 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
@@ -110,7 +112,41 @@ class SelectTextSheetTest {
         dismissals = 0
         sheetState = null
         navBottomDp = 0f
+        val next = SheetConfig(sheetConfig?.let { it.generation + 1 } ?: 0, text, title, mono, density, onDismiss)
+        if (sheetConfig != null) {
+            // setContent may run only once per test with an Android compose
+            // rule: later calls swap the fixture through state; key() below
+            // gives each one a fresh sheet (the size is remembered once).
+            compose.runOnIdle { sheetConfig = next }
+            return
+        }
+        sheetConfig = next
         compose.setContent {
+            val config = sheetConfig ?: return@setContent
+            key(config.generation) { SheetHost(config) }
+        }
+    }
+
+    /** One [composeSheet] call's fixture. */
+    private class SheetConfig(
+        val generation: Int,
+        val text: String,
+        val title: String,
+        val mono: Boolean,
+        val density: Density?,
+        val onDismiss: () -> Unit,
+    )
+
+    private var sheetConfig by mutableStateOf<SheetConfig?>(null)
+
+    @Composable
+    private fun SheetHost(config: SheetConfig) {
+        val text = config.text
+        val title = config.title
+        val mono = config.mono
+        val density = config.density
+        val onDismiss = config.onDismiss
+        run {
             val content: @Composable () -> Unit = {
                 RobocoTheme(Appearance.Light) {
                     Box(Modifier.fillMaxSize()) {
@@ -313,6 +349,7 @@ class SelectTextSheetTest {
         assertTrue("the composer must be focused first", composerFocused)
 
         controllerRef!!.showDetail("Bash", "payload text")
+        Snapshot.sendApplyNotifications() // a test-thread write: advanceTimeBy never sends them
         compose.mainClock.advanceTimeBy(1100)
         compose.waitForIdle()
         assertFalse("opening the sheet must clear the composer's focus", composerFocused)
@@ -338,6 +375,7 @@ class SelectTextSheetTest {
         val controller = controllerRef!!
 
         assertTrue(controller.showDetail("Bash", "first payload"))
+        Snapshot.sendApplyNotifications() // a test-thread write: advanceTimeBy never sends them
         compose.mainClock.advanceTimeBy(1100)
         compose.waitForIdle()
         assertEquals("first payload", fieldText())
@@ -352,6 +390,7 @@ class SelectTextSheetTest {
         compose.waitForIdle()
         assertNull(controller.current)
         assertTrue(controller.selectText("second"))
+        Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(1100)
         compose.waitForIdle()
         assertEquals("second", fieldText())

@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.roboco_core.SessionRow
+import uniffi.roboco_core.WorkspaceSnapshot
 
 /**
  * `FolderRoute` / [folderKind] / [folderRows] (android-ui-parity #45), the
