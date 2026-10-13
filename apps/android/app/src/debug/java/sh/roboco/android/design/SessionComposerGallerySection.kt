@@ -96,7 +96,7 @@ fun SessionComposerGallerySection() {
     var failSends by remember { mutableStateOf(false) }
     var logLine by remember { mutableStateOf("no command yet") }
 
-    val reporter = remember { GallerySendReporter() }
+    val reporter = remember { GallerySendReporter(log = { message -> logLine = message }) }
     val hooks = remember { GalleryRunwayHooks { message -> logLine = message } }
     val commands = remember(failSends) { GalleryCommands(failSends = { failSends }, log = { message -> logLine = message }) }
 
@@ -241,8 +241,8 @@ private class GalleryCommands(
     )
 }
 
-/** The fake [SendReporter]: keeps the last failure for the pill above. */
-private class GallerySendReporter : SendReporter {
+/** The fake [SendReporter]: keeps the last failure for the pill above and logs the outcome. */
+private class GallerySendReporter(private val log: (String) -> Unit) : SendReporter {
     var lastFailure: String? by mutableStateOf(null)
 
     fun banner(): SessionChrome.Banner =
@@ -251,10 +251,12 @@ private class GallerySendReporter : SendReporter {
 
     override fun noteSendSucceeded() {
         lastFailure = null
+        log("outcome: succeeded")
     }
 
     override fun noteSendFailed(error: Throwable) {
         lastFailure = error.message
+        log("outcome: failed: ${error.message}")
     }
 }
 

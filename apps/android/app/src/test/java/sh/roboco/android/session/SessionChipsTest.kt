@@ -158,6 +158,15 @@ class SessionChipsTest {
     }
 
     @Test
+    fun aNullHarnessWithNoModelLabelStillShowsTheDefaultMark() {
+        // The ticket's row: harness=null, modelLabel=null,
+        // harnessLabel="Codex" → model "Codex" over Brand("claude-code").
+        val out = chips(labRow.copy(harness = null, modelLabel = null))
+        assertEquals("Codex", out[0].title)
+        assertEquals(ChipIcon.Brand("claude-code"), out[0].icon)
+    }
+
+    @Test
     fun anEmptyHarnessHasNoIcon() {
         val out = chips(labRow.copy(harness = ""))
         assertEquals("model title falls back to harnessLabel", "Opus 4.5", out[0].title)

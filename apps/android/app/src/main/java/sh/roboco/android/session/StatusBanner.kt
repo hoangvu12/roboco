@@ -270,7 +270,7 @@ class StatusBanner(
     private val scope = CoroutineScope(SupervisorJob() + io)
 
     /** Ticket 78: a send returned normally — clears the sticky send failure. */
-    fun noteSendSucceeded() {
+    override fun noteSendSucceeded() {
         if (sendFailure != null) {
             sendFailure = null
             invalidate()
@@ -278,7 +278,7 @@ class StatusBanner(
     }
 
     /** Ticket 78: `handle.send` threw — holds `Couldn't send: <errorText>` until the next success. */
-    fun noteSendFailed(error: Throwable) {
+    override fun noteSendFailed(error: Throwable) {
         replaceSendFailure("Couldn't send: " + errorText(error))
     }
 
