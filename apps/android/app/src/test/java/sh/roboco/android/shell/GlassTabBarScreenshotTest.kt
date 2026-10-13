@@ -112,7 +112,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h140dp-night-xxhdpi")
     fun tabbarSessionsDark() {
         shot("tabbar_sessions_dark.png", TabId.Sessions)
     }
@@ -125,7 +125,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h140dp-night-xxhdpi")
     fun tabbarSettingsDark() {
         shot("tabbar_settings_dark.png", TabId.Settings)
     }
@@ -142,7 +142,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h140dp-night-xxhdpi")
     fun tabbarSearchDark() {
         shot("tabbar_search_dark.png", TabId.Search)
     }
@@ -155,7 +155,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h140dp-night-xxhdpi")
     fun tabbarPressedDark() {
         shot("tabbar_pressed_dark.png", TabId.Sessions, press = true)
     }
@@ -169,7 +169,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w360dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w360dp-h140dp-night-xxhdpi")
     fun tabbar360Dark() {
         shot("tabbar_360_dark.png", TabId.Sessions)
     }
@@ -181,7 +181,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w800dp-h140dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w800dp-h140dp-night-xxhdpi")
     fun tabbar800Dark() {
         shot("tabbar_800_dark.png", TabId.Sessions)
     }
@@ -195,7 +195,7 @@ class GlassTabBarScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun shellPlaceholderDark() {
         shellShot("shell_placeholder_402x874_dark.png")
     }

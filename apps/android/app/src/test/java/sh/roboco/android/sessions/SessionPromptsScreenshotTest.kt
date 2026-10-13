@@ -158,7 +158,7 @@ class SessionPromptsScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun promptRenameSessionDark() {
         setAlert(Appearance.Dark, renameSessionAlert("Fix flaky test") {})
         compose.onRoot().captureRoboImage("sessions/prompt_rename_session_dark.png")
@@ -217,7 +217,7 @@ class SessionPromptsScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun promptMoveToSectionDark() {
         setSheet(Appearance.Dark, moveSheetModel)
         compose.onRoot().captureRoboImage("sessions/prompt_move_to_section_dark.png")
@@ -238,7 +238,7 @@ class SessionPromptsScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun promptDeleteSectionDark() {
         setSheet(Appearance.Dark, deleteSheetModel)
         compose.onRoot().captureRoboImage("sessions/prompt_delete_section_dark.png")

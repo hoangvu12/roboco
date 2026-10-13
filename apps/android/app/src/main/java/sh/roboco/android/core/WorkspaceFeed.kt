@@ -99,14 +99,17 @@ class WorkspaceFeed(
         scope.launch(serial) {
             for (trigger in workspaceDirty) {
                 val c = core() ?: continue // no client yet: start() re-triggers when Ready
-                val ws = c.workspace()
+                // Before Ready (or after a failed start) the live seam refuses
+                // with HostUnavailable; the next trigger retries, so the lane
+                // must outlive the refusal instead of failing the app scope.
+                val ws = try { c.workspace() } catch (e: CoreException) { continue }
                 if (ws.revision != _snapshot.value?.revision) _snapshot.value = ws
             }
         }
         scope.launch(serial) {
             for (trigger in enginesDirty) {
                 val c = core() ?: continue
-                val engineViews = c.engines()
+                val engineViews = try { c.engines() } catch (e: CoreException) { continue }
                 if (engineViews != _engines.value) _engines.value = engineViews
             }
         }

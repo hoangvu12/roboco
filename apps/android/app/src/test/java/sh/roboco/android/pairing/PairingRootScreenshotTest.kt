@@ -65,7 +65,7 @@ class PairingRootScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun noneDark() {
         shot("pairing_root_none_dark.png", PairingRootStatus.None, Appearance.Dark)
     }
@@ -78,7 +78,7 @@ class PairingRootScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun redeemingDark() {
         shot("pairing_root_redeeming_dark.png", PairingRootStatus.Redeeming, Appearance.Dark)
     }
@@ -95,7 +95,7 @@ class PairingRootScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun errorDark() {
         shot(
             "pairing_root_error_dark.png",

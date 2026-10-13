@@ -101,7 +101,7 @@ class ChromeVisibilityScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun chromeIdleDark() {
         shellShot("chrome_idle_dark.png", idleState())
     }
@@ -114,7 +114,7 @@ class ChromeVisibilityScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun chromePush050Dark() {
         shellShot("chrome_push_050_dark.png", frozenPush(0.5f))
     }
@@ -127,7 +127,7 @@ class ChromeVisibilityScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun chromePop025Dark() {
         shellShot("chrome_pop_025_dark.png", frozenPop(0.25f))
     }

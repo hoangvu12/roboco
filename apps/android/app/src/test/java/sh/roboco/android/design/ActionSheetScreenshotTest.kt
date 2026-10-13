@@ -116,7 +116,7 @@ class ActionSheetScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun actionSheetWallpaperDark() {
         shot(Appearance.Dark, "action_sheet_wallpaper_dark.png", wallpaperSheet)
     }
@@ -127,7 +127,7 @@ class ActionSheetScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun actionSheetDeleteDark() {
         shot(Appearance.Dark, "action_sheet_delete_dark.png", deleteSheet)
     }

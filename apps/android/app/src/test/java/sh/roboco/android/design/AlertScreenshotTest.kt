@@ -156,7 +156,7 @@ class AlertScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun alertOkDark() {
         shot(Appearance.Dark, "alert_ok_dark.png", okAlert)
     }
@@ -167,7 +167,7 @@ class AlertScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun alertTwoButtonsDark() {
         shot(Appearance.Dark, "alert_two_buttons_dark.png", twoButtonsAlert)
     }
@@ -178,7 +178,7 @@ class AlertScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun alertFieldDark() {
         shot(Appearance.Dark, "alert_field_dark.png", fieldAlert)
     }
@@ -195,7 +195,7 @@ class AlertScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w393dp-h852dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w393dp-h852dp-night-xxhdpi")
     fun alertDestructiveDark() {
         shot(Appearance.Dark, "alert_destructive_dark.png", destructiveAlert)
     }

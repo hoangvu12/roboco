@@ -110,7 +110,7 @@ class TabBarMinimizeScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun p0Dark() {
         shot("tab_bar_minimize_p0_dark.png", 0f)
     }
@@ -123,7 +123,7 @@ class TabBarMinimizeScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun p50Dark() {
         shot("tab_bar_minimize_p50_dark.png", 0.5f)
     }
@@ -136,7 +136,7 @@ class TabBarMinimizeScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h874dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h874dp-night-xxhdpi")
     fun p100Dark() {
         shot("tab_bar_minimize_p100_dark.png", 1f)
     }

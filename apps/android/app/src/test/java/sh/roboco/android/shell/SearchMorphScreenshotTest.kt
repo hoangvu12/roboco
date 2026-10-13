@@ -86,7 +86,7 @@ class SearchMorphScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h420dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h420dp-night-xxhdpi")
     fun p0Dark() {
         shot("search_morph_p0_dark.png", 0f)
     }
@@ -99,7 +99,7 @@ class SearchMorphScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h420dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h420dp-night-xxhdpi")
     fun p50Dark() {
         shot("search_morph_p50_dark.png", 0.5f)
     }
@@ -112,7 +112,7 @@ class SearchMorphScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h420dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h420dp-night-xxhdpi")
     fun p1EmptyDark() {
         shot("search_morph_p1_empty_dark.png", 1f)
     }
@@ -125,7 +125,7 @@ class SearchMorphScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h420dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h420dp-night-xxhdpi")
     fun p1ZeronDark() {
         shot("search_morph_p1_zeron_dark.png", 1f, text = "zeron")
     }
@@ -138,7 +138,7 @@ class SearchMorphScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w402dp-h420dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w402dp-h420dp-night-xxhdpi")
     fun p1ImeLiftDark() {
         shot("search_morph_p1_ime_dark.png", 1f, text = "zeron", imeLift = 28f)
     }

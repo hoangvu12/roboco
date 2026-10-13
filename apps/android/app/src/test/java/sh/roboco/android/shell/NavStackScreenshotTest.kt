@@ -82,7 +82,7 @@ class NavStackScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w360dp-h640dp-xxhdpi-night")
+    @Config(sdk = [36], qualifiers = "w360dp-h640dp-night-xxhdpi")
     fun navPush050Dark() {
         capture(frozenPush(0.5f), "nav_push_050_dark.png")
     }
