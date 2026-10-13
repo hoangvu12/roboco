@@ -231,7 +231,7 @@ fun ComposerSurface(
                     clip = true
                     // The toolbar band, in the chips' local coordinates:
                     // clips the strip (and its hit area) to the opening band.
-                    shape = BandClip(top = f.toolbar.top - f.chips.top, bottom = f.toolbar.bottom - f.chips.top)
+                    this.shape = BandClip(top = f.toolbar.top - f.chips.top, bottom = f.toolbar.bottom - f.chips.top)
                 }
                 thumbsPlaceable?.placeRelative(f.thumbs.left.roundToInt(), f.thumbs.top.roundToInt())
                 attachPlaceable?.placeRelative(f.attach.left.roundToInt(), f.attach.top.roundToInt())
@@ -240,7 +240,7 @@ fun ComposerSurface(
                     // The lerped frame's width, on the leading side: a
                     // card-width text growing out of a capsule frame is cut
                     // at the frame's trailing edge.
-                    shape = TextSlotClip(width = textWpx.roundToInt(), leading = leading)
+                    this.shape = TextSlotClip(width = textWpx.roundToInt(), leading = leading)
                 }
                 placeholderPlaceable?.placeRelative(
                     f.placeholderOrigin.x.roundToInt(),
