@@ -389,10 +389,15 @@ fn apply_engine(
         // decision reads the track BEFORE the lifecycle update below (a
         // run that ends on this pass still suppresses its own completion;
         // the track dies with it so a LATER run chimes again).
+        // A send observed Working stays pending until its run ends (the
+        // track lifecycle below drops it then); only a send never seen
+        // Working is bounded by the window. Gating a seen-Working send on
+        // the window too let any run longer than the window chime Done for
+        // the phone's own send.
         let send_pending = state
             .sends
             .get(raw)
-            .is_some_and(|t| now_ms - t.sent_at_ms < window_ms);
+            .is_some_and(|t| t.seen_working || now_ms - t.sent_at_ms < window_ms);
         // Send tracking runs even while seeding, so a send that races the
         // first live frame is attributed correctly.
         let mut drop_track = false;
