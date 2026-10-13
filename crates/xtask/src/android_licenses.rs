@@ -106,7 +106,7 @@ pub(crate) fn run(argv: &[String]) -> anyhow::Result<()> {
             "--manifest-path".to_owned(),
             "crates/mobile/Cargo.toml".to_owned(),
             "--filter-platform".to_owned(),
-            target.to_owned(),
+            target.to_string(),
         ];
         match parsed.languages.as_str() {
             "all" => {
