@@ -208,7 +208,9 @@ class MainTabShellTest {
         back()
         assertEquals(TabId.Sessions, state.selected)
         compose.onNodeWithTag("tab-root-sessions").assertExists()
-        assertTrue(feedback.calls.isEmpty())
+        // The one Select is the user's tap on Settings (ticket 26: a user
+        // tab change plays Haptic.Select); system back adds none.
+        assertEquals(listOf(Haptic.Select), feedback.calls)
     }
 
     @Test

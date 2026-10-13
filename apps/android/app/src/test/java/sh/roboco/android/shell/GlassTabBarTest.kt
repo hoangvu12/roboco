@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -19,6 +20,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsNotSelected
@@ -34,6 +36,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -175,12 +178,17 @@ class GlassTabBarTest {
             .assertPositionInRootIsEqualTo(25.dp, 791.dp)
             .assertWidthIsEqualTo(141.dp)
             .assertHeightIsEqualTo(62.dp)
-        // The label starts 36 dp below the pill top (12 spacer + 24 icon
-        // box), so paddingFromBaseline(13) puts its baseline at 49.
+        // The label's layout starts 36 dp below the pill top (12 spacer + 24
+        // icon box), so paddingFromBaseline(13) puts its baseline at 49. The
+        // text node's bounds sit inside that padding (13 − first baseline
+        // below 36), so the baseline itself is what is checked.
         val pill = compose.onNodeWithTag("tab-pill").fetchSemanticsNode()
         val label = compose.onNodeWithText("Sessions", useUnmergedTree = true).fetchSemanticsNode()
+        val layouts = mutableListOf<TextLayoutResult>()
+        label.config[SemanticsActions.GetTextLayoutResult].action!!.invoke(layouts)
+        val baseline = label.positionInRoot.y + layouts.single().firstBaseline
         val density = pill.size.height / 62f
-        assertEquals(pill.positionInRoot.y + 36f * density, label.positionInRoot.y, 0.75f)
+        assertEquals(pill.positionInRoot.y + 49f * density, baseline, 0.75f)
     }
 
     @Test
@@ -331,11 +339,15 @@ class GlassTabBarTest {
     fun platterSlidesUnderFullMotion() {
         stage(freezeClock = true)
         selected = TabId.Settings
+        Snapshot.sendApplyNotifications()
         compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame()
+        // Frame 1 recomposes and launches the effect, frame 2 is the spring's
+        // start frame (play time 0), only frame 3 moves it; one more frame of
+        // margin. Four frames of a 0.32 s spring cover ≈ 20–40 dp of 141.
+        repeat(4) { compose.mainClock.advanceTimeByFrame() }
         compose.waitForIdle()
-        // One frame into the spring: the platter has left the Sessions cell
-        // but is nowhere near the Settings cell yet.
+        // A few frames into the spring: the platter has left the Sessions
+        // cell but is nowhere near the Settings cell yet.
         val platter = compose.onNodeWithTag("tab-platter").fetchSemanticsNode()
         val pill = compose.onNodeWithTag("tab-pill").fetchSemanticsNode()
         val density = pill.size.height / 62f

@@ -127,6 +127,18 @@ class SheetHostTest {
         compose.waitForIdle()
     }
 
+    /**
+     * One frame on the frozen clock. With `autoAdvance = false`,
+     * `waitForIdle` sends the snapshot apply notifications but never pumps
+     * a frame (ComposeIdlingResource only advances the clock when
+     * auto-advancing), so a state write made outside composition is not
+     * recomposed until the clock moves.
+     */
+    private fun frame() {
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
     /** Runs the clock past every spring (0.5 s) and settles the frame. */
     private fun settle() {
         compose.mainClock.advanceTimeBy(1100)
@@ -284,6 +296,7 @@ class SheetHostTest {
             assertTrue(state.presentSettledForPreview("preview") { PlainSheetContent() })
         }
         compose.waitForIdle()
+        frame() // compose + lay out the inserted entry (writes heightPx)
         assertEquals(0f, entry().offset.value, 0.01f)
         assertEquals(1f, entry().progress, 0.001f)
         assertTrue(state.isPresenting)
@@ -539,6 +552,7 @@ class SheetHostTest {
         compose.onNodeWithTag("behind").assertDoesNotExist()
         compose.runOnUiThread { state.dismiss(animated = false) }
         compose.waitForIdle()
+        frame() // recompose: the presenting content's semantics come back
         assertTrue(state.entries.isEmpty())
         assertFalse(state.isPresenting)
         compose.onNodeWithTag("behind").assertExists()
@@ -556,6 +570,7 @@ class SheetHostTest {
         var handoff: SheetHandoff? = null
         compose.runOnUiThread { handoff = state.hideForHandoff() }
         compose.waitForIdle()
+        frame() // recompose/relayout for the hidden flag
         val e = entry()
         assertTrue(e.hiddenForHandoff)
         assertEquals(0f, e.progress, 0.001f)

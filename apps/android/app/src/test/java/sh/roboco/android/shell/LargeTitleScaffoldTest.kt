@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -101,6 +102,33 @@ class LargeTitleScaffoldTest {
         compose.waitForIdle()
     }
 
+    /**
+     * The list position composed by [hostSwitchable]. A compose rule allows
+     * one `setContent` per test, so tests that look at several static
+     * positions swap this state instead; `key` gives every position a fresh
+     * scaffold, exactly as a new composition would.
+     */
+    private var hostedListState by mutableStateOf(LazyListState())
+
+    /** Composes the default fixture (as [host]) at [first]; see [showScroll]. */
+    private fun hostSwitchable(first: LazyListState) {
+        hostedListState = first
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                key(hostedListState) {
+                    LargeTitleFixtureScaffold(listState = hostedListState, rows = 30)
+                }
+            }
+        }
+        compose.waitForIdle()
+    }
+
+    /** Re-composes [hostSwitchable]'s fixture at [state] and settles. */
+    private fun showScroll(state: LazyListState) {
+        compose.runOnIdle { hostedListState = state }
+        compose.waitForIdle()
+    }
+
     /** The live collapse distance `c` of [listState], in dp. */
     private fun collapseOf(listState: LazyListState): Float = with(compose.density) {
         LargeTitleMetrics.collapse(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset.toDp().value)
@@ -121,13 +149,16 @@ class LargeTitleScaffoldTest {
     /**
      * A slow, zero-velocity swipe of [distanceDp] upward (content scrolls
      * up, `c` grows), starting well below the nav row: no fling, so the
-     * release state is exactly the drag state.
+     * release state is exactly the drag state. The scrollable consumes the
+     * touch slop before it scrolls (Robolectric's is 16 dp, 48 px here), so
+     * the finger travels [distanceDp] + slop for the list to scroll exactly
+     * [distanceDp].
      */
     private fun dragUp(distanceDp: Float, startYFraction: Float = 0.6f) {
         compose.onRoot().performTouchInput {
             swipeWithVelocity(
                 start = Offset(width / 2f, height * startYFraction),
-                end = Offset(width / 2f, height * startYFraction - dp(distanceDp)),
+                end = Offset(width / 2f, height * startYFraction - dp(distanceDp) - viewConfiguration.touchSlop),
                 endVelocity = 0f,
             )
         }
@@ -208,8 +239,21 @@ class LargeTitleScaffoldTest {
             "inline title overlaps the trailing item",
             inline.positionInRoot.x + inline.size.width <= edit.positionInRoot.x,
         )
-        // And bounded by the formula: width − 2·(max extent + 8) ≤ 240.
-        assertTrue("inline title wider than its max", inline.size.width <= dp(240f))
+        // And bounded by the formula: width − 2·(max extent + 8), the larger
+        // extent being 16 + the Edit capsule's measured width (≈ 58 dp:
+        // "Edit" + 2 × 14 padding; a fixed 240 assumed ≥ 62 dp).
+        val maxWidth = LargeTitleMetrics.inlineMaxWidth(
+            width = dp(412f),
+            leadingExtent = dp(16f) + back.size.width,
+            trailingExtent = dp(16f) + edit.size.width,
+            gap = dp(8f),
+        )
+        assertTrue(
+            "inline title (${inline.size.width} px) wider than its max ($maxWidth px)",
+            inline.size.width <= maxWidth + 1f,
+        )
+        // The title really is long enough to have been narrowed.
+        assertTrue("inline title was not narrowed", inline.size.width >= maxWidth - dp(1f))
     }
 
     // ------------------------------------------- the collapse and its a11y
@@ -217,20 +261,23 @@ class LargeTitleScaffoldTest {
     @Test
     fun exactlyOneTitleIsExposedAtRestMidAndCollapsed() {
         // c = 0: the large title only.
-        host(listState = LazyListState())
+        hostSwitchable(LazyListState())
         assertTrue(isHidden("nav-inline-title"))
         assertFalse(isHidden("nav-large-title"))
         assertEquals(1, visibleTitleHeadings("Sessions").size)
 
         // c = 35: still below the 0.5 flip (alpha 0.49) — the large title.
-        host(listState = LazyListState(0, dp(35f).toInt()))
+        showScroll(LazyListState(0, dp(35f).toInt()))
         assertTrue(isHidden("nav-inline-title"))
         assertFalse(isHidden("nav-large-title"))
         assertEquals(1, visibleTitleHeadings("Sessions").size)
 
-        // c = 52 (the 124 dp pre-scroll): the inline title; the large-title
-        // item is still composed in the padding region, so it must be hidden.
-        host(listState = LazyListState(0, dp(124f).toInt()))
+        // c = 52 (scrolled exactly the 52 dp row): the inline title; the
+        // large-title item now spans −52 … 0, inside the 68 dp top padding,
+        // so it is still composed and must be hidden. (At the 124 dp
+        // pre-scroll it spans −124 … −72, above the padding, and is not
+        // composed at all.)
+        showScroll(LazyListState(0, dp(52f).toInt()))
         assertFalse(isHidden("nav-inline-title"))
         assertTrue(isHidden("nav-large-title"))
         assertEquals(1, visibleTitleHeadings("Sessions").size)
@@ -238,9 +285,9 @@ class LargeTitleScaffoldTest {
 
     @Test
     fun inlineTitleHiddenAtRestExposedWhenCollapsed() {
-        host(listState = LazyListState())
+        hostSwitchable(LazyListState())
         assertTrue(isHidden("nav-inline-title"))
-        host(listState = LazyListState(0, dp(60f).toInt()))
+        showScroll(LazyListState(0, dp(60f).toInt()))
         assertFalse(isHidden("nav-inline-title"))
     }
 
@@ -261,13 +308,13 @@ class LargeTitleScaffoldTest {
         fun Color.isBackground(): Boolean =
             abs(red - bg.red) <= 2f / 255f && abs(green - bg.green) <= 2f / 255f && abs(blue - bg.blue) <= 2f / 255f
 
-        host()
+        hostSwitchable(LazyListState())
         val atRest = compose.onRoot().captureToImage().toPixelMap()
         for (y in 2 until dp(68f).toInt() step 2) {
             assertTrue("rest band pixel at y=$y is not background", atRest[centerX, y].isBackground())
         }
 
-        host(listState = LazyListState(0, dp(148f).toInt()))
+        showScroll(LazyListState(0, dp(148f).toInt()))
         val collapsed = compose.onRoot().captureToImage().toPixelMap()
         val ink = (dp(24f).toInt() until dp(68f).toInt()).count { !collapsed[centerX, it].isBackground() }
         assertTrue("no ink under the nav row when collapsed", ink > 0)
@@ -390,7 +437,9 @@ class LargeTitleScaffoldTest {
     @Test
     fun titleChangeUpdatesBothTitlesWithoutResettingScroll() {
         var title by mutableStateOf("Sessions")
-        val listState = LazyListState(0, dp(124f).toInt())
+        // c = 52 with the large-title item still composed in the top padding
+        // (−52 … 0), so both titles exist; at 124 dp the item is not composed.
+        val listState = LazyListState(0, dp(52f).toInt())
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 LargeTitleFixtureScaffold(title = title, listState = listState)
@@ -449,16 +498,22 @@ class LargeTitleScaffoldTest {
 
     @Test
     fun pinnedAccessoryRidesUpAndPinsUnderTheNavRow() {
+        // One setContent per test: the list position is state, keyed so each
+        // position composes a fresh scaffold.
+        var listState by mutableStateOf(LazyListState())
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                LargeTitleScaffold(
-                    title = "Sessions",
-                    topInset = 24.dp,
-                    showBack = false,
-                    onBack = {},
-                    pinnedAccessory = { Box(Modifier.testTag("accessory").fillMaxSize()) },
-                    pinnedAccessoryHeight = 40.dp,
-                ) { largeTitleFixtureRows(20) }
+                key(listState) {
+                    LargeTitleScaffold(
+                        title = "Sessions",
+                        listState = listState,
+                        topInset = 24.dp,
+                        showBack = false,
+                        onBack = {},
+                        pinnedAccessory = { Box(Modifier.testTag("accessory").fillMaxSize()) },
+                        pinnedAccessoryHeight = 40.dp,
+                    ) { largeTitleFixtureRows(20) }
+                }
             }
         }
         compose.waitForIdle()
@@ -467,20 +522,7 @@ class LargeTitleScaffoldTest {
         assertEquals(dp(160f), compose.onNodeWithTag("fixture-row-0").fetchSemanticsNode().positionInRoot.y, dp(1f))
 
         // Scrolled 100 dp (52 + 48 → item 1, offset 48): pinned at navBottom.
-        val listState = LazyListState(1, dp(48f).toInt())
-        compose.setContent {
-            RobocoTheme(Appearance.Light) {
-                LargeTitleScaffold(
-                    title = "Sessions",
-                    listState = listState,
-                    topInset = 24.dp,
-                    showBack = false,
-                    onBack = {},
-                    pinnedAccessory = { Box(Modifier.testTag("accessory").fillMaxSize()) },
-                    pinnedAccessoryHeight = 40.dp,
-                ) { largeTitleFixtureRows(20) }
-            }
-        }
+        compose.runOnIdle { listState = LazyListState(1, dp(48f).toInt()) }
         compose.waitForIdle()
         assertEquals(dp(68f), compose.onNodeWithTag("accessory").fetchSemanticsNode().positionInRoot.y, dp(1f))
     }
@@ -503,8 +545,10 @@ class LargeTitleScaffoldTest {
         }
         compose.waitForIdle()
         assertTrue("the caller's bottom padding was never consulted", callerPadding.bottomReads > 0)
-        // The scaffold's own top padding is added on top of the delegation.
-        assertEquals(dp(68f), compose.onNodeWithTag("fixture-row-0").fetchSemanticsNode().positionInRoot.y, dp(1f))
+        // The scaffold's own top padding (navBottom 68) is added on top of
+        // the delegation; in Always mode the 52 dp large-title item comes
+        // first, so row 0 starts at 68 + 52 (as in the accessory test).
+        assertEquals(dp(120f), compose.onNodeWithTag("fixture-row-0").fetchSemanticsNode().positionInRoot.y, dp(1f))
     }
 
     /** A caller's [PaddingValues] that counts its bottom reads (measure-time delegation). */

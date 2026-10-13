@@ -14,6 +14,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -41,6 +42,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.LocalTypeScale
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
@@ -95,6 +97,15 @@ class MinimizeOnScrollTest {
     /** The detector's gate, flipped from the test thread. */
     private var enabled by mutableStateOf(true)
 
+    /**
+     * Whether the list sits under the detector, and the list's state: both
+     * snapshot state so [theDetectorNeverConsumesScroll] can swap to a bare,
+     * fresh list in place (an Android compose rule allows one `setContent`
+     * per test).
+     */
+    private var detectorInstalled by mutableStateOf(true)
+    private var listState by mutableStateOf(LazyListState())
+
     /** The selected tab in the real-slot harness. */
     private var selectedTab by mutableStateOf(TabId.Sessions)
 
@@ -109,93 +120,100 @@ class MinimizeOnScrollTest {
      * never-consumes comparison.
      */
     private fun placeChrome(real: Boolean = false, installDetector: Boolean = true) {
-        val lazyListState = LazyListState()
-        list = lazyListState
+        detectorInstalled = installDetector
+        listState = LazyListState()
+        list = listState
         compose.setContent {
             RobocoTheme {
-                val palette = RobocoTheme.palette
-                val typeScale = LocalTypeScale.current
-                val minimize = rememberTabBarMinimizeState()
-                state = minimize
-                val content: @Composable BoxScope.() -> Unit = {
-                    LazyColumn(
-                        Modifier.fillMaxSize().testTag("the-list"),
-                        state = lazyListState,
-                    ) {
-                        items(100) { index ->
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(56.dp)
-                                    .testTag("row-$index"),
-                                contentAlignment = Alignment.CenterStart,
-                            ) {
-                                BasicText(
-                                    text = "Row ${index + 1}",
-                                    style = uiStyle(Face.Sans, typeScale.scaled(17f), palette.text),
-                                )
+                // A frozen glyph clock: the real accessory's "2 working"
+                // spinner otherwise runs a withFrameNanos loop forever and
+                // Compose never idles (AppNotIdleException).
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    val palette = RobocoTheme.palette
+                    val typeScale = LocalTypeScale.current
+                    val minimize = rememberTabBarMinimizeState()
+                    state = minimize
+                    val lazyListState = listState
+                    val content: @Composable BoxScope.() -> Unit = {
+                        LazyColumn(
+                            Modifier.fillMaxSize().testTag("the-list"),
+                            state = lazyListState,
+                        ) {
+                            items(100) { index ->
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(56.dp)
+                                        .testTag("row-$index"),
+                                    contentAlignment = Alignment.CenterStart,
+                                ) {
+                                    BasicText(
+                                        text = "Row ${index + 1}",
+                                        style = uiStyle(Face.Sans, typeScale.scaled(17f), palette.text),
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                Box(Modifier.fillMaxSize()) {
-                    if (installDetector) {
-                        Box(Modifier.fillMaxSize().minimizeOnScroll(minimize) { enabled }, content = content)
-                    } else {
-                        Box(Modifier.fillMaxSize(), content = content)
-                    }
-                    if (real) {
-                        TabChromeLayout(
-                            progress = { minimize.progress.value },
-                            bottomInset = 21.dp,
-                            hasAccessory = true,
-                            modifier = Modifier.fillMaxSize().selectableGroup(),
-                            pill = {
-                                GlassTabPill(
-                                    selected = selectedTab,
-                                    onTabTap = { selectedTab = it },
-                                    minimizeProgress = { minimize.progress.value },
-                                    minimized = minimize.minimized,
-                                    onRestore = { minimize.expand() },
-                                    expandedWidth = tabPillExpandedWidth(402f).dp,
-                                )
-                            },
-                            search = { GlassSearchButton(selectedTab, onTabTap = { selectedTab = it }) },
-                            accessory = {
-                                // The shell's wiring (#28): inline is the target,
-                                // the label alpha follows 1 − p̂.
-                                NewSessionAccessory(
-                                    counts = LiveCounts(working = 2, awaiting = 1),
-                                    onTap = {},
-                                    inline = minimize.minimized,
-                                    labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
-                                )
-                            },
-                        )
-                    } else {
-                        TabChromeLayout(
-                            progress = { minimize.progress.value },
-                            bottomInset = 21.dp,
-                            hasAccessory = true,
-                            modifier = Modifier.fillMaxSize().testTag("tab-chrome"),
-                            pill = { Box(Modifier.fillMaxSize().testTag("slot-pill")) },
-                            search = { Box(Modifier.fillMaxSize().testTag("slot-search")) },
-                            accessory = {
-                                // Records the two inputs this ticket passes to
-                                // 27's composable: inline (the target, first
-                                // frame) and the label alpha (per frame).
-                                val inlineNow = minimize.minimized
-                                SideEffect { inlineRecorded = inlineNow }
-                                Box(
-                                    Modifier
-                                        .fillMaxSize()
-                                        .testTag("slot-accessory")
-                                        .graphicsLayer {
-                                            labelAlphaRecorded = 1f - minimize.progress.value.coerceIn(0f, 1f)
-                                        },
-                                )
-                            },
-                        )
+                    Box(Modifier.fillMaxSize()) {
+                        if (detectorInstalled) {
+                            Box(Modifier.fillMaxSize().minimizeOnScroll(minimize) { enabled }, content = content)
+                        } else {
+                            Box(Modifier.fillMaxSize(), content = content)
+                        }
+                        if (real) {
+                            TabChromeLayout(
+                                progress = { minimize.progress.value },
+                                bottomInset = 21.dp,
+                                hasAccessory = true,
+                                modifier = Modifier.fillMaxSize().selectableGroup(),
+                                pill = {
+                                    GlassTabPill(
+                                        selected = selectedTab,
+                                        onTabTap = { selectedTab = it },
+                                        minimizeProgress = { minimize.progress.value },
+                                        minimized = minimize.minimized,
+                                        onRestore = { minimize.expand() },
+                                        expandedWidth = tabPillExpandedWidth(402f).dp,
+                                    )
+                                },
+                                search = { GlassSearchButton(selectedTab, onTabTap = { selectedTab = it }) },
+                                accessory = {
+                                    // The shell's wiring (#28): inline is the target,
+                                    // the label alpha follows 1 − p̂.
+                                    NewSessionAccessory(
+                                        counts = LiveCounts(working = 2, awaiting = 1),
+                                        onTap = {},
+                                        inline = minimize.minimized,
+                                        labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
+                                    )
+                                },
+                            )
+                        } else {
+                            TabChromeLayout(
+                                progress = { minimize.progress.value },
+                                bottomInset = 21.dp,
+                                hasAccessory = true,
+                                modifier = Modifier.fillMaxSize().testTag("tab-chrome"),
+                                pill = { Box(Modifier.fillMaxSize().testTag("slot-pill")) },
+                                search = { Box(Modifier.fillMaxSize().testTag("slot-search")) },
+                                accessory = {
+                                    // Records the two inputs this ticket passes to
+                                    // 27's composable: inline (the target, first
+                                    // frame) and the label alpha (per frame).
+                                    val inlineNow = minimize.minimized
+                                    SideEffect { inlineRecorded = inlineNow }
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .testTag("slot-accessory")
+                                            .graphicsLayer {
+                                                labelAlphaRecorded = 1f - minimize.progress.value.coerceIn(0f, 1f)
+                                            },
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -381,7 +399,13 @@ class MinimizeOnScrollTest {
         placeChrome()
         swipeTheListUp()
         val withDetector = scrollPositionPx()
-        placeChrome(installDetector = false)
+        // The identical list, fresh and bare, swapped in place.
+        compose.runOnUiThread {
+            listState = LazyListState()
+            list = listState
+            detectorInstalled = false
+        }
+        compose.waitForIdle()
         swipeTheListUp()
         val withoutDetector = scrollPositionPx()
         assertTrue(
@@ -435,7 +459,11 @@ class MinimizeOnScrollTest {
         compose.waitUntil(5_000) { shellState.stack(TabId.Sessions).top.route.hidesBottomChrome }
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertDoesNotExist()
-        compose.onNodeWithTag("tab-pill").assertWidthIsEqualTo(290.dp)
+        // Ticket 30 leaves the whole chrome group unplaced over a hiding
+        // route (no placed bounds, so assertWidthIsEqualTo reads
+        // Dp.Unspecified), but it is always measured (#577): the pill's
+        // measured size is the expanded 290.
+        assertEquals(290f, widthDp("tab-pill"), 0.5f)
         // Scrolling the hiding route's blank screen cannot minimize.
         compose.onRoot().performTouchInput { swipeUp() }
         compose.waitForIdle()
@@ -459,6 +487,9 @@ class MinimizeOnScrollTest {
         compose.mainClock.autoAdvance = false
         // showSettings() while minimized: the expand animates.
         compose.runOnUiThread { shellState.select(TabId.Settings) }
+        // The write was made outside composition on the (paused) main
+        // looper: hand it to the Recomposer before advancing the frozen clock.
+        Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(150)
         val width = widthDp("tab-pill")
         assertTrue("mid-expand pill width: $width", width > 48.5f && width < 289.5f)

@@ -104,11 +104,16 @@ class NavEntry internal constructor(val id: Long, val route: NavRoute) {
 
     /**
      * Lives until the entry is removed after a committed pop; cancelled in
-     * [close]. `Dispatchers.Main.immediate + SupervisorJob()`.
+     * [close]. `Dispatchers.Main.immediate + SupervisorJob()`. Created
+     * lazily; first read after [close] returns an already-cancelled scope, so
+     * a closed entry never hands out a live one.
      */
     val scope: CoroutineScope
         get() = scopeImpl ?: CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-            .also { scopeImpl = it }
+            .also {
+                scopeImpl = it
+                if (isClosed) it.cancel()
+            }
 
     /** Set after the first [NavEntryListener.onDidAppear]; snapshot state. */
     var hasAppeared: Boolean
