@@ -46,6 +46,7 @@ import sh.roboco.android.session.ChromeFillerRegistry
 import sh.roboco.android.session.CoreSessionOpener
 import sh.roboco.android.session.installSessionRoutes
 import sh.roboco.android.sessions.CoreRowActions
+import sh.roboco.android.sessions.EngineHealthModel
 import sh.roboco.android.sessions.FoldState
 import sh.roboco.android.sessions.FrontPageModel
 import sh.roboco.android.sessions.asSessionWrites
@@ -246,9 +247,18 @@ class RobocoApplication : Application() {
      */
     val foldState: FoldState by lazy { FoldState(robocoPrefsStore, liveCore, applicationScope) }
 
-    /** The Sessions tab's front page model (ticket 40); 46 hosts it. */
+    /**
+     * The multi-engine health model (ticket 50): the 4 s show-slow /
+     * hide-fast grace over the feed's engines and connectivity, feeding
+     * both the Sessions connection line and the offline `home:*` header
+     * glyphs (through [frontPage]'s `liveOverrides`). One instance per
+     * process; the debug gallery builds its own over MutableStateFlows.
+     */
+    val engineHealth: EngineHealthModel by lazy { EngineHealthModel(workspaceFeed, applicationScope) }
+
+    /** The Sessions tab's front page model (tickets 40 and 50); 46 hosts it. */
     val frontPage: FrontPageModel by lazy {
-        FrontPageModel(workspaceFeed, prefs, foldState, applicationScope)
+        FrontPageModel(workspaceFeed, prefs, foldState, engineHealth, applicationScope)
     }
 
     /**

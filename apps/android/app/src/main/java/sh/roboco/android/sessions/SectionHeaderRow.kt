@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.FadingText
 import sh.roboco.android.design.Icon
+import sh.roboco.android.design.IconInBox
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.Motion
 import sh.roboco.android.design.RobocoIcons
@@ -231,7 +232,8 @@ fun SectionHeaderRow(
             .fillMaxWidth()
             .height(ts.scaledDp(SectionHeaderTokens.RowHeightPt))
             .clearAndSetSemantics {
-                contentDescription = "${state.title}, ${state.count}"
+                contentDescription = "${state.title}, ${state.count}" +
+                    if (state.live == SectionLive.Offline) ", Offline" else ""
                 stateDescription = if (state.collapsed) "Collapsed" else "Expanded"
                 testTag = "section-${state.id}"
             }
@@ -313,6 +315,13 @@ private fun SectionLiveGlyph(live: SectionLive, modifier: Modifier = Modifier) {
         when (live) {
             SectionLive.Spinner -> StatusGlyph(StatusGlyphKind.Spinner)
             SectionLive.Input -> StatusGlyph(StatusGlyphKind.Dot(palette.status.input))
+            // Ticket 50: the wifi-off line glyph in `tertiary` (web rule:
+            // a glyph, never words — `space-filter.tsx:83-85`), so the
+            // header reads as one grey family with its count and chevron.
+            // `WifiOff` has the default opticalScale 1.0, SymbolWeight
+            // Regular: ≈10.75 dp wide ink, stroke 0.75 dp — the same as
+            // the web's 12 px icon.
+            SectionLive.Offline -> IconInBox(RobocoIcons.WifiOff, palette.tertiary, box = 12.dp)
         }
     }
 }

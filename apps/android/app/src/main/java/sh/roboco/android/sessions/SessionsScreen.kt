@@ -54,6 +54,7 @@ import sh.roboco.android.design.rememberContextMenuLiftState
 import sh.roboco.android.design.wallpaperFixture
 import sh.roboco.android.shell.LargeTitleDefaults
 import sh.roboco.android.shell.LargeTitleScaffold
+import sh.roboco.android.shell.LocalAppRouter
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavStack
@@ -122,6 +123,10 @@ fun SessionsScreen(
         val hookup = rememberSessionRowActions(listState)
         val ui by app.frontPage.ui.collectAsState()
         val engines by app.workspaceFeed.engines.collectAsState()
+        // 50: the connection line under the large title — the graced
+        // multi-engine posture, tapped to Settings (32).
+        val health by app.engineHealth.ui.collectAsStateWithLifecycle()
+        val router = LocalAppRouter.current
         val density = LocalDensity.current
         val swallowTopPx = remember(density, topInset) {
             { with(density) { (topInset + LargeTitleDefaults.NavRowHeight).toPx() } }
@@ -168,6 +173,8 @@ fun SessionsScreen(
             listState = listState,
             bottomPadding = LocalBottomChrome.current.contentPadding,
             liveOverrides = if (fixture != null) emptyMap() else ui?.liveOverrides.orEmpty(),
+            connectionLine = if (fixture == null) health.line else null,
+            onConnectionLineTap = router::showSettings,
             modifier = modifier.sessionRowActions(hookup, swallowTopPx = swallowTopPx),
             rowWrapper = hookup.rowWrapper,
             content = content,
@@ -212,6 +219,8 @@ internal fun SessionsScreenContent(
     hero: @Composable (Modifier, () -> Float) -> Unit = { m, f -> WallpaperHero(modifier = m, scrollFade = f) },
     rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
     liveOverrides: Map<String, SectionLive> = emptyMap(),
+    connectionLine: ConnectionLineUi? = null,
+    onConnectionLineTap: () -> Unit = {},
     content: SidebarListContent = SidebarListContent.FrontPage,
     topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
     pinnedAccessory: (@Composable () -> Unit)? = null,
@@ -345,6 +354,11 @@ internal fun SessionsScreenContent(
                 rowWrapper = rowWrapper,
             )
         } else {
+            // 50: the multi-engine connection line — the FIRST item under
+            // the large title (the scaffold emits the title itself, and
+            // the pinned search spacer, before this content), before 41's
+            // section items. Front page only: never on the results page.
+            connectionLineItem(connectionLine, onTap = onConnectionLineTap)
             sessionListItems(
                 model = model,
                 onOpenSession = openSession,
