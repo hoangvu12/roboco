@@ -40,6 +40,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
+import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
@@ -220,6 +221,13 @@ object Gallery {
         // Ticket 21 (wallpaper hero): the page-top backdrop — plain,
         // opacity×scrollFade and cutout fixtures, plus the live store item.
         GallerySection("Wallpaper hero", screenshotHeightDp = 1400) { WallpaperHeroGallerySection() },
+        // Ticket 43 (session prompts): the five session/section prompts —
+        // rename session, new section (with the "Create on" engine
+        // chooser), rename section, move to section and the delete
+        // confirm — over fakes. Fill because the section owns an
+        // ActionSheetHost, which needs the body's bounded height; the
+        // gallery's own AlertHost/ToastHost (GalleryProviders) wrap it.
+        GallerySection("Session Prompts", GalleryLayout.Fill) { SessionPromptsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
