@@ -9,7 +9,6 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.height
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Assert.assertEquals
@@ -99,8 +98,15 @@ class ComposerTextFieldScreenshotTest {
         // (e): the 12-line card capped at 20 + 8L ≈ 192.
         val capped = heightDp(fields, 4)
         assertTrue("the card caps at eight lines: $capped", capped in 189f..194f)
-        // The (c) preview node is at most two lines tall.
-        val previewNodeHeight = compose.onNodeWithTag("composer-input-preview").getBoundsInRoot().height.value
-        assertTrue("the preview node is ≤ 2 lines: $previewNodeHeight", previewNodeHeight <= 43.5f)
+        // The preview nodes — (b) and (c), the two capsules with text — are
+        // at most two lines tall. They live inside the field's decoration
+        // box, so the field's merged node absorbs them: read the unmerged
+        // tree.
+        val previews = compose.onAllNodesWithTag("composer-input-preview", useUnmergedTree = true)
+        previews.assertCountEquals(2)
+        for (i in 0 until 2) {
+            val previewNodeHeight = previews[i].getBoundsInRoot().height.value
+            assertTrue("preview $i is ≤ 2 lines: $previewNodeHeight", previewNodeHeight <= 43.5f)
+        }
     }
 }

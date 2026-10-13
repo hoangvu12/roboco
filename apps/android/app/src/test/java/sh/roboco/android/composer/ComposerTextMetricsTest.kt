@@ -90,12 +90,16 @@ class ComposerTextMetricsTest {
     fun theFontScale2ColumnMatchesTheReferenceTable() {
         // bodyScaled(16.5) = 33 → L = 42.9: the same arithmetic, scaled.
         val big = 42.9f
+        // The card's cap is `L × 8 + insets`, so the scaled column must pass
+        // the scaled L (the [card] helper is pinned to the 21.45 table).
+        fun bigCard(content: Float): Float =
+            ComposerTextMetrics.targetHeight(isCard = true, compactHeight = false, lineHeight = big, contentHeight = content)
         assertEquals(70.9f, capsule(big), 0.01f) // max(50, 28 + 42.9)
         assertEquals(113.8f, capsule(big * 2), 0.01f) // 28 + 85.8
-        assertEquals(62.9f, card(big), 0.01f) // max(46, 20 + 42.9)
-        assertEquals(363.2f, card(big * 8), 0.01f) // exactly 20 + 8 × 42.9
+        assertEquals(62.9f, bigCard(big), 0.01f) // max(46, 20 + 42.9)
+        assertEquals(363.2f, bigCard(big * 8), 0.01f) // exactly 20 + 8 × 42.9
         // ...and at 9 lines it caps and scrolls.
-        assertEquals(363.2f, card(big * 9), 0.01f)
+        assertEquals(363.2f, bigCard(big * 9), 0.01f)
         assertTrue(ComposerTextMetrics.scrolls(isCard = true, compactHeight = false, lineHeight = big, contentHeight = big * 9))
     }
 

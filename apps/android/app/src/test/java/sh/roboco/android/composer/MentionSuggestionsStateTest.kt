@@ -113,7 +113,8 @@ class MentionSuggestionsStateTest {
 
     @Test
     fun applyMentionPickRejectsARangeThatNoLongerFits() {
-        val q = MentionQuery(8, 11, "lay")
+        // "Look at @lay" is 12 chars: the query spans [8, 12) (ticket 53's table).
+        val q = MentionQuery(8, 12, "lay")
         assertNull("end past the text", applyMentionPick("short", q, "@x"))
         assertNull("start no longer at an @", applyMentionPick("Look at Xlay", q, "@x"))
         assertNull("empty text", applyMentionPick("", MentionQuery(0, 1, ""), "@x"))
@@ -358,7 +359,7 @@ class MentionSuggestionsStateTest {
     @Test
     fun pickMatchesEveryRowOfTheWorkedExamplesTable() = runTest {
         val rows = listOf(
-            PickExample("Look at @lay", 11, FileMatch("crates/ui/src/layout/mod.rs", false), "Look at @mod.rs ", 16),
+            PickExample("Look at @lay", 12, FileMatch("crates/ui/src/layout/mod.rs", false), "Look at @mod.rs ", 16),
             PickExample("@", 1, FileMatch("README.md", false), "@README.md ", 11),
             PickExample("fix @foo bar", 6, FileMatch("src/food.rs", false), "fix @food.rs oo bar", 13),
             PickExample("a\n@co", 5, FileMatch("src/components", true), "a\n@components ", 14),
