@@ -24,6 +24,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import sh.roboco.android.core.testPrefsStore
 import sh.roboco.android.design.Haptic
 import sh.roboco.android.design.NoFeedback
 import uniffi.roboco_core.CoreException
@@ -73,7 +74,7 @@ class FoldStateTest {
         fileName: String = "fold",
     ): FoldState {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        // Okio-backed: the File storage cannot overwrite on Windows (see testPrefsStore).
+        // OkioStorage-backed: the File storage cannot overwrite on Windows (see testPrefsStore).
         val store = testPrefsStore(scope, File(tmpFolder.root, "$fileName.preferences_pb"))
         val fold = FoldState(store, core, scope, io = StandardTestDispatcher(testScheduler))
         fixture = Fixture(fold, store, scope)

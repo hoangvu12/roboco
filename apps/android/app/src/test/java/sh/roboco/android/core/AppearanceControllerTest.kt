@@ -1,7 +1,6 @@
 package sh.roboco.android.core
 
 import android.app.UiModeManager
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -100,7 +99,8 @@ class AppearanceControllerTest {
     private suspend fun TestScope.prefsHolding(fileName: String, appearance: Appearance): Pair<Prefs, CoroutineScope> {
         val seeder = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val file = File(tmpFolder.root, "$fileName.preferences_pb")
-        val seedStore = PreferenceDataStoreFactory.create(scope = seeder, produceFile = { file })
+        // OkioStorage-backed: the File storage cannot overwrite on Windows (see testPrefsStore).
+        val seedStore = testPrefsStore(seeder, file)
         val seederPrefs = Prefs(seedStore, seeder, io = StandardTestDispatcher(testScheduler))
         seederPrefs.setAppearance(appearance)
         advanceUntilIdle()
@@ -108,7 +108,7 @@ class AppearanceControllerTest {
         seeder.coroutineContext.job.join()
 
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val store = testPrefsStore(scope, file)
         return Prefs(store, scope, io = StandardTestDispatcher(testScheduler)) to scope
     }
 }

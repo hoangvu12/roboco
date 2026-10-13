@@ -263,10 +263,20 @@ class AttachFixtureProvider : ContentProvider() {
      * (`nCreate(InputStream, …)`), read through Java. `openInputStream`
      * still goes through [openFile], so [opens] counts each pick once. On
      * Linux the production fd path is exercised unchanged.
+     *
+     * Only ImageDecoder's own typed request (the `image` wildcard filter) is
+     * refused: the fallback's `ContentResolver.openInputStream` is itself
+     * `openAssetFileDescriptor(uri, "r")`, which for a content URI calls
+     * `openTypedAssetFileDescriptor` with the any-type filter [AnyType]
+     * (android-all 16 bytecode) — refusing that too failed the stream path
+     * as well, so every stage returned null on Windows. That AFD is
+     * whole-file (length -1), so `createInputStream` is a plain
+     * `ParcelFileDescriptor.AutoCloseInputStream` (a `FileInputStream`,
+     * which reads a Windows handle fine).
      */
     @Throws(FileNotFoundException::class)
     override fun openTypedAssetFile(uri: Uri, mimeTypeFilter: String, opts: Bundle?): AssetFileDescriptor? {
-        if (File.separatorChar == '\\') {
+        if (File.separatorChar == '\\' && mimeTypeFilter != AnyType) {
             throw FileNotFoundException("typed AFDs are not decodable on a Windows JVM: $uri")
         }
         return super.openTypedAssetFile(uri, mimeTypeFilter, opts)
@@ -292,6 +302,9 @@ class AttachFixtureProvider : ContentProvider() {
     ): Int = 0
 
     companion object {
+        /** The filter `openAssetFileDescriptor(uri, "r")` passes for a content URI. */
+        const val AnyType = "*/*"
+
         val fixtures = mutableMapOf<Uri, File>()
         val opens = mutableListOf<Uri>()
     }

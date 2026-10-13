@@ -29,6 +29,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import sh.roboco.android.core.Prefs
 import sh.roboco.android.core.WorkspaceFeed
+import sh.roboco.android.core.testPrefsStore
 import sh.roboco.android.design.Haptic
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.FrontPage
