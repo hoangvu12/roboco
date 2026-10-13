@@ -12,12 +12,13 @@ import sh.roboco.android.settings.LicensesRoute
 import sh.roboco.android.settings.LicensesScreen
 import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
+import sh.roboco.android.sessions.SearchScreen
 
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
  * tab's [NavStack], what `popToRoot` returns to and what the placeholder
- * roots render until the real screens land. Tickets 46 (Sessions), 103
- * (Settings) and 49 (Search) replace the content behind it.
+ * roots render until the real screens land. Ticket 49 (Search) has
+ * replaced its branch; 46 (Sessions) and 103 (Settings) replace theirs.
  */
 data class TabRootRoute(val tab: TabId) : NavRoute
 
@@ -39,7 +40,13 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
 @Composable
 fun ShellRouteContent(route: NavRoute) {
     when (route) {
-        is TabRootRoute -> PlaceholderTabRoot(route.tab)
+        is TabRootRoute -> when (route.tab) {
+            // Ticket 49: the Search tab's root — the model + list state
+            // live on the entry, so the query, results and scroll survive
+            // tab switches (29 refocuses the field on re-entry).
+            TabId.Search -> SearchScreen()
+            else -> PlaceholderTabRoot(route.tab)
+        }
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
         is LicensesRoute -> LicensesScreen()
         // Ticket 45: one folder's sessions (Pinned, a user section,

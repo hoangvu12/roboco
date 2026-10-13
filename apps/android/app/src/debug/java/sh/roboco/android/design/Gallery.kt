@@ -47,6 +47,7 @@ import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
+import sh.roboco.android.sessions.SearchGallerySection
 import sh.roboco.android.sessions.SessionListGallerySection
 import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
@@ -355,6 +356,10 @@ object Gallery {
         // the checkmark moves locally only; the gallery's own appearance
         // segment (its top bar) drives the theme, never the app preference.
         GallerySection("Settings · Appearance", screenshotHeightDp = 400) { AppearanceGallerySection() },
+        // Ticket 49 (Search screen): the Search tab's root — the large
+        // title, the Recent / hits / no-results / loading states over the
+        // fixture, in the goldens' 412 × 700 dp frame.
+        GallerySection("Search screen", GalleryLayout.Fill, 700) { SearchGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
