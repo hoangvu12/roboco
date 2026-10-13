@@ -19,10 +19,11 @@ import sh.roboco.android.design.SmoothRoundedShape
  * light-mode iOS look (`1-off.png`) and android-app#14's dark values — never
  * recomputed through the implementation's own helpers.
  *
- * Colour alphas are compared as floats: the tokens are deliberately built
- * with `Color.copy(alpha = …)`, not the palette's byte-quantised [rgba]
- * helper, because the ticket's tint table is defined on float alphas
- * (0.72 as a half-float is 0.71997, not 183/255).
+ * Colour alphas are compared within one 8-bit level (1/255): Compose packs
+ * every sRGB [Color] as ARGB8888, so even `Color.White.copy(alpha = 0.72f)`
+ * is stored as 184/255 = 0.72157 (CI r17), and [glassFill]'s source-over
+ * result is re-quantised the same way. Float alphas are not representable for
+ * sRGB colours, whichever helper builds them.
  */
 class GlassTokensTest {
 
@@ -68,7 +69,7 @@ class GlassTokensTest {
     }
 
     private fun assertColor(name: String, color: Color, r: Int, g: Int, b: Int, alpha: Float) {
-        assertEquals("$name alpha", alpha, color.alpha, 1e-3f)
+        assertChannel("$name alpha", alpha, color.alpha)
         assertChannel("$name red", r / 255f, color.red)
         assertChannel("$name green", g / 255f, color.green)
         assertChannel("$name blue", b / 255f, color.blue)
@@ -106,7 +107,7 @@ class GlassTokensTest {
 
     /** The ticket's tint table: (alpha, R, G, B) in sRGB levels. */
     private fun assertTint(result: Color, alpha: Double, r: Double, g: Double, b: Double) {
-        assertEquals("tint alpha", alpha, result.alpha.toDouble(), 1e-3)
+        assertChannel("tint alpha", alpha.toFloat(), result.alpha)
         assertChannel("tint red", (r / 255.0).toFloat(), result.red)
         assertChannel("tint green", (g / 255.0).toFloat(), result.green)
         assertChannel("tint blue", (b / 255.0).toFloat(), result.blue)
@@ -139,9 +140,10 @@ class GlassTokensTest {
     @Test
     fun glassFillWithoutTintReturnsTheBase() {
         // No iOS call site passes a tint today; the parameter exists for API
-        // completeness, and null must be a no-op.
-        assertSame(Glass.Light.fill, glassFill(Glass.Light.fill, null))
-        assertSame(Glass.Dark.fallback, glassFill(Glass.Dark.fallback, null))
+        // completeness, and null must be a no-op. Color is a value class, so
+        // assertSame compared two separate boxes; equality is the contract.
+        assertEquals(Glass.Light.fill, glassFill(Glass.Light.fill, null))
+        assertEquals(Glass.Dark.fallback, glassFill(Glass.Dark.fallback, null))
     }
 
     @Test

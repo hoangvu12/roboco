@@ -749,6 +749,12 @@ fun GlassMenuContent(
         }
     }
 
+    // The root's loads start inside the first composition (UNDISPATCHED), so
+    // a load that never suspends has resolved before the panel below reads
+    // `resolved`: no frame ever holds its "Loading…" line (ticket #15). A
+    // LaunchedEffect alone runs only after that first frame was composed.
+    // Drilled levels load from the effect; the guards make repeats no-ops.
+    remember { stack.first().elements.also { loadAround(it) } }
     LaunchedEffect(stack.size) { loadAround(stack.last().elements) }
 
     // --------------------------------------------------------- animation

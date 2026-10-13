@@ -216,9 +216,14 @@ class ScrollEdgeEffectTest {
         compose.mainClock.autoAdvance = false
         redSource { engaged }
         compose.runOnIdle { engaged = false }
+        // With the clock frozen, waitForIdle is what delivers the write to
+        // the Recomposer (it sends the snapshot apply notifications); a bare
+        // advanceTimeBy never recomposes it (CI r17: still fully engaged).
+        compose.waitForIdle()
         // Let the 250 ms fade-out finish (the None branch of the layer
-        // table), then every pixel must be the untouched source.
-        compose.mainClock.advanceTimeBy(300)
+        // table) — plus the recompose frame and the animation's start frame
+        // — then every pixel must be the untouched source.
+        compose.mainClock.advanceTimeBy(400)
         compose.waitForIdle()
         val px = bandPixels()
         for (x in intArrayOf(0, 30, 60, 90, 119)) {
@@ -293,7 +298,8 @@ class ScrollEdgeEffectTest {
 
         // And the None branch (disengaged, settled): the empty spacer adds none.
         compose.runOnIdle { engaged = false }
-        compose.mainClock.advanceTimeBy(300)
+        compose.waitForIdle() // delivers the write to the frozen-clock Recomposer
+        compose.mainClock.advanceTimeBy(400)
         compose.waitForIdle()
         assertEquals(
             "the None branch added semantics nodes",
@@ -315,11 +321,18 @@ class ScrollEdgeEffectTest {
 
         engaged = true
         compose.waitForIdle()
-        // 8 frames = 128 ms on the 16 ms grid — the frame nearest the 125 ms
-        // midpoint. Whatever the fade's exact first-frame reference, its
-        // playtime here is 112–128 ms, and the UIKit easeInOut curve lands
-        // in 0.41–0.52: dead centre of the acceptance's 0.4–0.6, and far
-        // from both a snap (1) and a long tween.
+        // Two frames of latency before the tween's playtime 0: the first
+        // recomposes `engaged = true` (animateFloatAsState hands the target
+        // to its effect after that frame), the second is the animation's
+        // start frame (CI r17 read 0.30 at 128 ms after the write, i.e.
+        // 96 ms of playtime). The same two frames precede the fade on a
+        // device; the 250 ms is measured from the start frame.
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+        // 8 frames = 128 ms of playtime on the 16 ms grid — the frame nearest
+        // the 125 ms midpoint — where the UIKit easeInOut curve is ≈0.52:
+        // dead centre of the acceptance's 0.4–0.6, and far from both a snap
+        // (1) and a long tween.
         compose.mainClock.advanceTimeBy(128)
         val midway = engagedAlphaAtTop(lightBackground)
         assertTrue("alpha at ~125 ms should be 0.4–0.6, was $midway", midway in 0.4f..0.6f)

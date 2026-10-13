@@ -148,7 +148,8 @@ class GlassButtonsTest {
         assertEquals(Role.Button, circle.config[SemanticsProperties.Role])
         val capsule = compose.onNodeWithText("Edit").fetchSemanticsNode()
         assertEquals(Role.Button, capsule.config[SemanticsProperties.Role])
-        assertEquals("Edit", capsule.config[SemanticsProperties.Text].first())
+        // SemanticsProperties.Text holds AnnotatedStrings: compare the text.
+        assertEquals("Edit", capsule.config[SemanticsProperties.Text].first().text)
         val prominent = compose.onNodeWithText("Next").fetchSemanticsNode()
         assertEquals(Role.Button, prominent.config[SemanticsProperties.Role])
     }
@@ -201,7 +202,9 @@ class GlassButtonsTest {
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithTag(BusySpinnerTag).assertExists()
+        // The spinner's tag merges into the clickable button node, so it is
+        // only addressable in the unmerged tree.
+        compose.onNodeWithTag(BusySpinnerTag, useUnmergedTree = true).assertExists()
         compose.onNodeWithText("Use “roboco”").assertIsNotEnabled()
         assertEquals(
             "In progress",

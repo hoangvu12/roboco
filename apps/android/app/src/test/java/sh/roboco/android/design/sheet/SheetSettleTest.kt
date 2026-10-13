@@ -59,8 +59,9 @@ class SheetSettleTest {
 
     @Test
     fun missingAnchorsReportNanAndTheClosestAnchorIsNearest() {
+        // A large-only sheet has no Medium anchor (the default set does).
+        assertTrue(anchors(detents = listOf(SheetDetent.Large)).positionOf(SheetDetent.Medium).isNaN())
         val anchors = anchors()
-        assertTrue(anchors.positionOf(SheetDetent.Medium).isNaN())
         // The drag machinery asks for the closest anchor on settle.
         assertEquals(SheetDetent.Medium, anchors.closestAnchor(410f))
         assertEquals(SheetDetent.Large, anchors.closestAnchor(34f))

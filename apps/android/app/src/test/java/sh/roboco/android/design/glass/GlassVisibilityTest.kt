@@ -99,6 +99,17 @@ class GlassVisibilityTest {
         assertTrue("the animation never ticked within $maxFrames frames", frames < maxFrames)
     }
 
+    /**
+     * Delivers a state write to the frozen clock and runs the frame that
+     * recomposes it. With `autoAdvance = false`, `waitForIdle` only sends the
+     * snapshot apply notifications (ComposeIdlingResource.isIdleNow) — the
+     * recomposition itself waits for the next frame of the test clock.
+     */
+    private fun recomposeFrame() {
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+    }
+
     /** Advances [frames] whole 16 ms frames. */
     private fun advanceFrames(frames: Int) {
         repeat(frames) { compose.mainClock.advanceTimeByFrame() }
@@ -201,11 +212,15 @@ class GlassVisibilityTest {
         assertTrue("p at the flip is mid-flight (0..1)", atFlip > 0f && atFlip < 1f)
 
         // Reverse mid-flight: `.beginFromCurrentState` — no snap to 0 or 1.
+        // The frame that recomposes `visible = false` still ticks the
+        // in-flight materialize once before its effect is cancelled, so the
+        // reversal starts from the value after that frame.
         visible = false
-        compose.waitForIdle()
+        recomposeFrame()
+        val atReverse = progress()
         advanceFrames(2)
         val afterFlip = progress()
-        assertTrue("p decreases from the value it had (no jump up)", afterFlip < atFlip)
+        assertTrue("p decreases from the value it had (no jump up)", afterFlip < atReverse)
         assertTrue("p does not jump to 0", afterFlip > 0f)
         assertTrue("p does not jump to 1", afterFlip < 1f)
 
@@ -223,14 +238,16 @@ class GlassVisibilityTest {
         compose.waitForIdle()
         assertEquals(0f, progress(), 1e-4f)
 
+        // One frame recomposes the new `visible` and launches the effect,
+        // whose snapTo lands outside that frame; the next frame shows it.
         visible = true
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame()
+        recomposeFrame()
+        recomposeFrame()
         assertEquals(1f, progress(), 1e-4f)
 
         visible = false
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame()
+        recomposeFrame()
+        recomposeFrame()
         assertEquals(0f, progress(), 1e-4f)
     }
 
@@ -242,9 +259,11 @@ class GlassVisibilityTest {
         compose.waitForIdle()
         assertEquals(0f, progress(), 1e-4f)
 
+        // As in reduceMotionSnapsToTheTargetOnTheNextFrame: the recompose
+        // frame launches the snap, the next frame shows it.
         visible = true
-        compose.waitForIdle()
-        compose.mainClock.advanceTimeByFrame()
+        recomposeFrame()
+        recomposeFrame()
         assertEquals(1f, progress(), 1e-4f)
     }
 
@@ -271,13 +290,15 @@ class GlassVisibilityTest {
 
         // The content leaves the tree the moment setVisible(false) runs —
         // the UIKit model-value rule — not when the fade finishes.
+        // One frame (16 ms) is the recomposition that applies the write — far
+        // inside the 250 ms fade.
         visible = false
-        compose.waitForIdle()
+        recomposeFrame()
         compose.onNodeWithTag("content").assertDoesNotExist()
 
         // And returns the moment setVisible(true) runs.
         visible = true
-        compose.waitForIdle()
+        recomposeFrame()
         compose.onNodeWithTag("content").assertExists()
     }
 

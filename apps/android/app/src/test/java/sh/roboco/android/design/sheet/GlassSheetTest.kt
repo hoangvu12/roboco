@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
@@ -70,12 +74,28 @@ class GlassSheetTest {
     private var dismissals = 0
     private var behindClicks = 0
 
+    /** One composed sheet configuration; a new instance re-keys the sheet. */
+    private class SheetConfig(
+        val detents: List<SheetDetent>,
+        val grabber: Boolean,
+        val header: (@Composable GlassSheetScope.() -> Unit)?,
+        val content: @Composable GlassSheetScope.(Dp) -> Unit,
+        val onDismiss: () -> Unit,
+    )
+
+    private var config by mutableStateOf<SheetConfig?>(null)
+    private var contentSet = false
+
     // ------------------------------------------------------------- helpers
 
     /**
      * Composes the sheet over a clickable "presenting" layer. A fresh
      * state each call: the sheet presents from `Hidden` to the smallest
      * detent; callers then wait for the settle or drive it themselves.
+     *
+     * The activity's content is set once per test (a second `setContent`
+     * throws "has already set content"); a later call swaps [config], and
+     * `key(config)` composes a brand-new sheet and state for it.
      */
     private fun composeSheet(
         detents: List<SheetDetent>,
@@ -89,6 +109,13 @@ class GlassSheetTest {
         dismissals = 0
         behindClicks = 0
         state = null
+        val next = SheetConfig(detents, grabber, header, content, onDismiss)
+        if (contentSet) {
+            compose.runOnUiThread { config = next }
+            return
+        }
+        config = next
+        contentSet = true
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 Box(Modifier.fillMaxSize()) {
@@ -100,16 +127,21 @@ class GlassSheetTest {
                             .testTag("behind")
                             .clickable { behindClicks++ },
                     )
-                    val sheetState = rememberGlassSheetState(detents)
-                    state = sheetState
-                    GlassSheet(
-                        onDismiss = onDismiss,
-                        state = sheetState,
-                        grabber = grabber,
-                        title = "Bash",
-                        header = header,
-                        content = content,
-                    )
+                    val c = config
+                    if (c != null) {
+                        key(c) {
+                            val sheetState = rememberGlassSheetState(c.detents)
+                            state = sheetState
+                            GlassSheet(
+                                onDismiss = c.onDismiss,
+                                state = sheetState,
+                                grabber = c.grabber,
+                                title = "Bash",
+                                header = c.header,
+                                content = c.content,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -150,12 +182,19 @@ class GlassSheetTest {
 
     private fun anchor(detent: SheetDetent): Float = state!!.anchors.positionOf(detent)
 
-    /** A slow vertical drag on the sheet's header band, [distance] px down. */
+    /**
+     * A slow vertical drag on the sheet's header band that moves the sheet
+     * [distance] px down. `anchoredDraggable` drops the touch slop before
+     * the drag starts (only the over-slop delta moves the sheet), so the
+     * finger travels `distance + touchSlop` — without it a "26 %" drag
+     * moved the sheet only ≈23 % (CI r17 settled back at Medium).
+     */
     private fun dragHeader(distance: Float) {
         compose.onNodeWithTag("glass-sheet").performTouchInput {
+            val travel = distance + viewConfiguration.touchSlop
             swipe(
                 start = Offset(centerX, 26f),
-                end = Offset(centerX, 26f + distance),
+                end = Offset(centerX, 26f + travel),
                 durationMillis = 500,
             )
         }
