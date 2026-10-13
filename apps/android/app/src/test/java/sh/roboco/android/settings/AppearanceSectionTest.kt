@@ -100,7 +100,7 @@ class AppearanceSectionTest {
 
     private fun assertDp(actual: Dp, expected: Dp, what: String, tolerance: Float = 1f) {
         assertTrue(
-            "$what: $actual dp, expected $expected ±$tolerance dp",
+            "$what: $actual, expected $expected ±$tolerance dp",
             abs(actual.value - expected.value) <= tolerance,
         )
     }
@@ -296,7 +296,7 @@ class AppearanceSectionTest {
     }
 
     @Test
-    fun theCheckmarkInkCentresAt3415InRowCoordinates() {
+    fun theCheckmarkInkCentreIsAt341Point5DpInRowCoordinates() {
         mount(current = Appearance.System)
         // The ink centre is 28.5 dp from the card's trailing edge: 386 −
         // 28.5 = 357.5 dp screen = 341.5 dp in the row's own coordinates
