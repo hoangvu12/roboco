@@ -32,6 +32,7 @@ import sh.roboco.android.design.gallery.SearchTabMorphGallerySection
 import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
+import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.shell.NavGallerySection
@@ -139,6 +140,11 @@ object Gallery {
         // ride and the accessory fade.
         GallerySection("Search tab morph", GalleryLayout.Scroll, screenshotHeightDp = 1240) {
             SearchTabMorphGallerySection()
+        },
+        // Ticket 30 (chrome visibility): hidden over a Session, the
+        // after-Search fade, the pop reveal, the bottom insets.
+        GallerySection("Chrome visibility", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
+            ChromeVisibilityGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

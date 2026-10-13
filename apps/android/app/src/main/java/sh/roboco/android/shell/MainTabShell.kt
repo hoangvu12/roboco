@@ -9,11 +9,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.displayCutout
-import androidx.compose.foundation.layout.tappableElement
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
@@ -22,17 +22,24 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import sh.roboco.android.design.LocalBottomChrome
+import sh.roboco.android.design.LocalBottomChromeTop
 import sh.roboco.android.design.LocalFeedback
+import sh.roboco.android.design.LocalReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.LocalHazeState
 
@@ -94,10 +101,22 @@ import sh.roboco.android.design.glass.LocalHazeState
  * death), provided as [LocalSearchTabState] for ticket 49's screen, and
  * [MainTabState.select] bumps its activation token through `onSelected`.
  *
- * Not this ticket's: the bottom content insets / hiding the bar over a
- * Session (30), the accessory's content fade-in after leaving Search
- * (30), the live counts feed (40) and the app root that shows this shell
- * (35).
+ * **Chrome visibility (#30):** the whole bottom group — pill, search
+ * field, accessory — is hidden while the selected stack's top route
+ * `hidesBottomChrome` (a Session), rides and is covered like the UIKit
+ * tab bar during push/pop, and the accessory content fades back in after
+ * leaving Search. All of it is derived per frame by
+ * [ChromeVisibilityController] and applied by [Modifier.chromeVisibility]
+ * — the group is **never removed from composition** (upstream #577), so
+ * its measured size, minimize state and press state survive every hide.
+ * The shell also provides [LocalBottomChrome] (the list bottom insets,
+ * from [rememberBottomChromeInsets]) and
+ * [sh.roboco.android.design.LocalBottomChromeTop]'s live chrome top for
+ * ticket 14's toast anchor, and wraps each entry with
+ * [ProvideTransitionProgress] for ticket 85.
+ *
+ * Not this ticket's: the live counts feed (40) and the app root that shows
+ * this shell (35).
  *
  * @param state the tab state; defaults to [rememberMainTabState].
  * @param counts the accessory's live summary (ticket 40 wires the real
@@ -105,6 +124,12 @@ import sh.roboco.android.design.glass.LocalHazeState
  * @param searchState the Search tab's query holder; defaults to
  *   [rememberSearchTabState] (the app-scoped instance).
  * @param onNewSession the accessory's tap (ticket 32 presents the sheet).
+ * @param onChrome invoked once with the shell's
+ *   [ChromeVisibilityController] (the gallery readout and the tests use
+ *   it to observe the live frame / content alpha).
+ * @param routeContent renders one stack entry; `null` (production) uses
+ *   [ShellRouteContent]. The gallery and the goldens pass a demo screen
+ *   for routes [ShellRouteContent] does not know yet.
  */
 @Composable
 fun MainTabShell(
@@ -113,6 +138,8 @@ fun MainTabShell(
     counts: LiveCounts = LiveCounts(),
     searchState: SearchTabState = rememberSearchTabState(),
     onNewSession: () -> Unit = {},
+    onChrome: (ChromeVisibilityController) -> Unit = {},
+    routeContent: (@Composable (NavEntry) -> Unit)? = null,
 ) {
     val palette = RobocoTheme.palette
     val feedback = LocalFeedback.current
@@ -120,6 +147,38 @@ fun MainTabShell(
     val holder = rememberSaveableStateHolder()
     val barHaze = rememberHazeState()
     val minimize = rememberTabBarMinimizeState()
+
+    // #30: the chrome group's visibility, the list insets and the toast
+    // anchor — all derived, never flipped, so a cancelled predictive back
+    // re-derives from the real top screen.
+    val chrome = rememberChromeVisibilityController(state, minimize)
+    val insets = rememberBottomChromeInsets()
+    val chromeTopState = LocalBottomChromeTop.current
+    val reduceMotion = LocalReduceMotion.current
+    val layoutDirection = LocalLayoutDirection.current
+    // 29's IME lift, read only inside publishedChromeTop() (a snapshotFlow).
+    chrome.searchImeLift = remember(state, searchState) {
+        { if (state.selected == TabId.Search) searchState.searchImeLift() else 0f }
+    }
+    val onChromeLatest = rememberUpdatedState(onChrome)
+    LaunchedEffect(chrome) { onChromeLatest.value(chrome) }
+    SideEffect {
+        chrome.reduceMotion = reduceMotion
+        chrome.rtl = layoutDirection == LayoutDirection.Rtl
+    }
+
+    // #30: publish the chrome top for ticket 14's toast anchor — every
+    // frame (the minimize spring, the IME ride, a reveal), written from a
+    // collector, never from placement. NaN becomes Dp.Unspecified ("no
+    // chrome on screen"), the reader's safe-area fallback.
+    LaunchedEffect(chrome, chromeTopState) {
+        snapshotFlow {
+            chrome.publishedChromeTop().let { if (it.isNaN()) Dp.Unspecified else it.dp }
+        }.collect { chromeTopState.top = it }
+    }
+    DisposableEffect(chromeTopState) {
+        onDispose { chromeTopState.top = Dp.Unspecified }
+    }
 
     // Composed BEFORE the tab content, so NavStackHost's own back handler
     // (enabled while canPop, predictive back) wins over this one; this one
@@ -130,13 +189,13 @@ fun MainTabShell(
 
     BoxWithConstraints(modifier.fillMaxSize().background(palette.background)) {
         val density = LocalDensity.current
-        val layoutDirection = LocalLayoutDirection.current
 
-        // The chrome geometry inputs (26's own reads): the bottom gap, and
-        // the start/end insets that center the row. TabChromeLayout re-reads
-        // the horizontal insets in its measure block; the pill's expanded
-        // content width and the search slot's row geometry are the same pure
-        // geometry's p = 0 rects.
+        // The chrome geometry inputs (26's own reads): the start/end insets
+        // that center the row. TabChromeLayout re-reads the horizontal
+        // insets in its measure block; the pill's expanded content width and
+        // the search slot's row geometry are the same pure geometry's p = 0
+        // rects. The bottom gap is #30's [BottomChromeInsets.barBottom] —
+        // the one value the bar layout and the list padding derive from.
         val horizontalInsets = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
         val insetLeftPx = horizontalInsets.getLeft(density, layoutDirection)
         val insetRightPx = horizontalInsets.getRight(density, layoutDirection)
@@ -146,9 +205,7 @@ fun MainTabShell(
         val insetEnd = with(density) {
             (if (layoutDirection == LayoutDirection.Rtl) insetLeftPx else insetRightPx).toDp()
         }
-        val navBottom = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
-        val tappableBottom = with(density) { WindowInsets.tappableElement.getBottom(density).toDp() }
-        val bottomGap = tabBarBottomGap(navBottom, tappableBottom)
+        val barBottom = insets.barBottom
         val expandedPill = tabPillExpandedWidth(maxWidth.value, insetStart.value, insetEnd.value).dp
         val rowW = tabBarRowWidth(maxWidth - insetStart - insetEnd).value
 
@@ -159,9 +216,13 @@ fun MainTabShell(
             state.onSelected = searchState::onTabSelected
         }
 
+        // #29 + #30: the query holder, the minimize state and the list
+        // bottom insets flow to the tab content (the placeholder roots and
+        // the real screens read LocalBottomChrome.contentPadding).
         CompositionLocalProvider(
             LocalSearchTabState provides searchState,
             LocalTabBarMinimize provides minimize,
+            LocalBottomChrome provides insets,
         ) {
             // The scrolling tab content: the only haze source the chrome
             // samples, wrapped in the minimize detector (#28).
@@ -188,7 +249,14 @@ fun MainTabShell(
                                         state.selected != TabId.Search &&
                                             !state.stack(state.selected).top.route.hidesBottomChrome
                                     },
-                            ) { entry -> ShellRouteContent(entry.route) }
+                            ) { entry ->
+                                // #30: every entry gets its live transition
+                                // progress (85's composer cross-fade).
+                                ProvideTransitionProgress(state.stack(tab), entry) {
+                                    val rc = routeContent
+                                    if (rc != null) rc(entry) else ShellRouteContent(entry.route)
+                                }
+                            }
                         }
                     }
                 }
@@ -227,15 +295,24 @@ fun MainTabShell(
             // The chrome above the content, sampling it: pill + search +
             // accessory, placed by the geometry at the morphs' positions.
             // While Search is selected, ticket 29's slots replace 26's.
+            // #30: the whole group is placed / covered / dimmed by
+            // [Modifier.chromeVisibility] — never removed from composition.
             CompositionLocalProvider(LocalHazeState provides barHaze) {
                 TabChromeLayout(
                     progress = { minimize.progress.value },
                     searchProgress = { morph.value },
                     searchActive = searchSelected,
-                    bottomInset = bottomGap,
+                    bottomInset = barBottom,
                     hasAccessory = true,
-                    modifier = Modifier.fillMaxSize().selectableGroup(),
-                    onRects = { rects -> searchState.publishImeLift(rects.imeLift) },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .selectableGroup()
+                        .onPlaced { chrome.layoutTopInRoot = it.positionInRoot().y }
+                        .chromeVisibility(chrome),
+                    onRects = { rects ->
+                        searchState.publishImeLift(rects.imeLift)
+                        chrome.updateChromeTop(rects.chromeTop, density)
+                    },
                     pill = {
                         // The composition gate flips once per morph, not per
                         // frame (a derived read over the spring's state).
@@ -282,12 +359,16 @@ fun MainTabShell(
                         // While the row rides on the IME it fades with the
                         // lift — the same `rowBottom` computation the layout
                         // made, re-read here in the draw phase and (for the
-                        // hit-test gate) in a derived flip.
+                        // hit-test gate) in a derived flip. #30: the content
+                        // also carries the after-Search / pop-reveal fade
+                        // (chrome::accessoryContentAlpha); the two never
+                        // multiply — 29's IME fade sits on the wrapping Box,
+                        // 30's on the content row itself.
                         val ime = WindowInsets.ime
-                        val b = bottomGap.value
+                        val b = barBottom.value
                         val shellState = state
                         val morphNow = morph
-                        val hittable by remember(density, bottomGap) {
+                        val hittable by remember(density, barBottom) {
                             derivedStateOf {
                                 val imeBottom = with(density) {
                                     ime.getBottom(density).toDp().value
@@ -318,12 +399,19 @@ fun MainTabShell(
                                 onTap = onNewSession,
                                 inline = minimize.minimized,
                                 labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
+                                contentAlpha = chrome::accessoryContentAlpha,
                                 enabled = hittable,
                             )
                         }
                     },
                 )
             }
+
+            // #30: all pointer input over the shell is consumed while the
+            // selected stack transitions (UIKit disables interaction during
+            // transitions); back gestures are not pointer events, so a
+            // predictive back drives the reveal underneath it.
+            ChromeTransitionBlocker(chrome, Modifier.matchParentSize())
         }
     }
 }

@@ -152,6 +152,15 @@ internal fun NavFakeChrome() {
  * gallery activity, and the readout under the frame shows the live transition
  * state and chrome visibility. The gallery's "Force reduce motion" toggle
  * (ticket 22) reaches the host through `LocalReduceMotion`.
+ *
+ * This demo uses the host's `bottomChrome` slot, which places the chrome
+ * by z-order for free — but the phone shell deliberately does **not**
+ * (ticket 30): 26 re-keys the host per tab (leaving the slot would break
+ * upstream #577's never-leave-composition rule) and the host sits inside
+ * the shell's `hazeSource`, which ticket 07's glass rule forbids. The
+ * shell keeps the chrome as a sibling overlay and reproduces this z-order
+ * with a clip at the incoming screen's leading edge plus a `SrcAtop` dim
+ * (`Modifier.chromeVisibility`).
  */
 @Composable
 internal fun NavGallerySection() {
