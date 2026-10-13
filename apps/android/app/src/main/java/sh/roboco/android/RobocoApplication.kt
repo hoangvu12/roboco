@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import sh.roboco.android.core.AppLifecycleHooks
+import sh.roboco.android.core.AppearanceController
 import sh.roboco.android.core.CoreClientWorkspace
 import sh.roboco.android.core.CoreLoader
 import sh.roboco.android.core.CoreLifecycleSink
@@ -24,6 +25,7 @@ import sh.roboco.android.core.CoreStatus
 import sh.roboco.android.core.FontGate
 import sh.roboco.android.core.Prefs
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.core.UiModeNightModeSink
 import sh.roboco.android.core.WorkspaceCore
 import sh.roboco.android.core.WorkspaceFeed
 import sh.roboco.android.core.robocoPrefsStore
@@ -86,12 +88,28 @@ class RobocoApplication : Application() {
     val routerHooks = RouterHooks()
 
     /**
-     * The appearance preference (ticket 96's flow; `System` until 96
-     * wires the store): ticket 35 reads it into `RobocoTheme(appearance)`
-     * — the port of `window.overrideUserInterfaceStyle`
-     * (`SceneDelegate.swift:14`).
+     * The appearance preference (ticket 96): the DataStore-backed
+     * [Prefs.appearance] StateFlow — `System` until the first disk read —
+     * fed into the one root `RobocoTheme(appearance)`, the port of
+     * `window.overrideUserInterfaceStyle` (`SceneDelegate.swift:14`).
      */
-    val appearance = MutableStateFlow(Appearance.System)
+    val appearance: StateFlow<Appearance>
+        get() = prefs.appearance
+
+    /** Writes the appearance preference (ticket 96) — see [Prefs.setAppearance]. */
+    fun setAppearance(a: Appearance) = prefs.setAppearance(a)
+
+    /**
+     * Ticket 96: pushes the stored appearance to the platform's per-app
+     * night mode after the first disk read and on every change — the
+     * splash of the next cold start, the bar-icon defaults and the
+     * `values-night` resources follow it. Forced in `onCreate` (before
+     * `coreStartup.start()`, order irrelevant: it waits on the DataStore
+     * read, never on the client).
+     */
+    private val appearanceController: AppearanceController by lazy {
+        AppearanceController(prefs, UiModeNightModeSink(this), applicationScope)
+    }
 
     /**
      * Exactly one DataStore per process for the paired-engines file (a
@@ -282,6 +300,11 @@ class RobocoApplication : Application() {
         // #42: forcing `rowActions`'s lazy init registers the appEvents
         // sink, and startNoticeToasts arms the app-wide Notice collector
         // before the first event can flow.
+        // #96: arming the appearance controller pushes the stored choice
+        // to the platform's per-app night mode (async: it first waits for
+        // the DataStore read, so the platform's own persisted mode already
+        // covered the splash of this launch).
+        appearanceController.start()
         if (core is CoreStatus.Loaded) {
             workspaceFeed.start()
             rowActions.startNoticeToasts(appEvents.notices())

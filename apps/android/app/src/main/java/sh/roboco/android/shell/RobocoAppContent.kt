@@ -30,7 +30,9 @@ import sh.roboco.android.sessions.LocalRowActions
  * that touches the neighbour tickets' composables:
  *
  * `RobocoTheme(appearance)` (01 — the appearance value is ticket 96's
- * flow, `System` until then) → [SystemBarsEffect] → `ProvideFeedback`
+ * `Prefs.appearance` flow) → [SystemBarsEffect] →
+ * [AppearanceWindowEffect] (96: the window background follows the launch
+ * colour of the effective appearance) → `ProvideFeedback`
  * (05, once, at the root) → `FontGateHost` (03, the flow — a late
  * `FontGate.fail` recomposes to the fatal screen) → the root presentation
  * registry + `RouterHooks` provider (32; 76/95 assign the
@@ -42,10 +44,16 @@ import sh.roboco.android.sessions.LocalRowActions
  */
 @Composable
 fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
-    // 96's preference flow; `Appearance.System` until 96 wires the store.
+    // 96's preference flow: the DataStore-backed appearance, `System` until
+    // the first disk read (the platform's own persisted per-app mode has
+    // already covered the splash), then the stored choice.
     val appearance by app.appearance.collectAsState()
     RobocoTheme(appearance) { // 01 (ProvideReduceMotion 04, ProvideGlass 07 inside)
         SystemBarsEffect(RobocoTheme.isDark)
+        // 96: the DecorView background keeps the effective launch colour,
+        // so an in-place switch never shows the stale window background
+        // through a whole-tree redraw.
+        AppearanceWindowEffect(RobocoTheme.isDark)
         ProvideFeedback { // 05: once, at the root
             // The flow, not the snapshot: a late FontGate.fail (ticket
             // 60's loaders) recomposes this to the fatal screen.

@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import sh.roboco.android.design.Appearance
 
 /**
  * The keys of the phone-local `roboco_prefs` store (ticket 40). The names
@@ -32,6 +34,12 @@ import kotlinx.coroutines.launch
  * rather than adding a second file.
  */
 object PrefKeys {
+    /**
+     * `UserDefaults` "appearance" — 0 = System, 1 = Light, 2 = Dark
+     * (`SceneDelegate.swift:12-16`). Phone-local, never sent to an engine.
+     */
+    val APPEARANCE = intPreferencesKey("appearance")
+
     /** `AppModel.groupByProject` — phone-local, never sent to an engine. */
     val GROUP_BY_PROJECT = booleanPreferencesKey("groupByProject")
 
@@ -66,6 +74,12 @@ val Context.robocoPrefsStore: DataStore<Preferences> by preferencesDataStore(
  *    the list never waits on the disk;
  *  - DataStore reads asynchronously, so the first read is awaited via
  *    [awaitLoaded] instead of iOS's synchronous lookup.
+ *
+ * Ticket 96 adds the appearance preference — the `UserDefaults` integer
+ * `"appearance"` of `SceneDelegate.swift:12-16` — on the same store: the
+ * absent key reads `Appearance.System` (iOS `integer(forKey:)` returns 0),
+ * an unknown stored value normalises to `System` (`?? .unspecified`), and
+ * [setAppearance] mirrors `setGroupByProject`'s no-op/flip/persist shape.
  */
 class Prefs(
     private val store: DataStore<Preferences>,
@@ -76,15 +90,29 @@ class Prefs(
     private val _group = MutableStateFlow(false)
     val groupByProject: StateFlow<Boolean> = _group.asStateFlow()
 
+    private val _appearance = MutableStateFlow(Appearance.System)
+
+    /** The user's appearance choice — `System` until the disk read lands. */
+    val appearance: StateFlow<Appearance> = _appearance.asStateFlow()
+
     private val loaded = CompletableDeferred<Unit>()
 
     /** Set by the first [setGroupByProject]: the user's choice beats a later-arriving first read. */
     private val written = AtomicBoolean(false)
 
+    /** Same rule for [setAppearance] (ticket 96): a tap before the load wins. */
+    @Volatile
+    private var appearanceTouched = false
+
     init {
         scope.launch(io) {
             val preferences = store.data.catch { emit(emptyPreferences()) }.first()
             if (!written.get()) _group.value = preferences[PrefKeys.GROUP_BY_PROJECT] ?: false
+            // Only when untouched: a setAppearance before the read finishes
+            // wins over whatever the disk holds.
+            if (!appearanceTouched) {
+                _appearance.value = Appearance.fromStored(preferences[PrefKeys.APPEARANCE] ?: 0)
+            }
             loaded.complete(Unit)
         }
     }
@@ -110,4 +138,21 @@ class Prefs(
     }
 
     fun toggleGroupByProject() = setGroupByProject(!_group.value)
+
+    /**
+     * Pick the appearance (ticket 96): no-op when unchanged (iOS rewrites
+     * the same `UserDefaults` value, which also changes nothing); otherwise
+     * the StateFlow is set immediately — the whole app re-themes on the
+     * next frame — and the write lands in the background. As in
+     * [setGroupByProject], the edit writes the **current**
+     * `_appearance.value`, so out-of-order writes are harmless.
+     */
+    fun setAppearance(a: Appearance) {
+        if (a == _appearance.value) return
+        appearanceTouched = true
+        _appearance.value = a
+        scope.launch(io) {
+            store.edit { it[PrefKeys.APPEARANCE] = _appearance.value.storedValue }
+        }
+    }
 }
