@@ -148,6 +148,32 @@ object LargeTitleDefaults {
  */
 val LocalPrefersLargeTitles = staticCompositionLocalOf { true }
 
+/**
+ * The insets this scaffold's host already guarantees (android-ui-parity
+ * #104): `null` (the default) = the scaffold is the window's own child and
+ * reads the live status bar / display cutout; non-null = the host sits
+ * inside the safe area already (the tablet Settings form-sheet card, whose
+ * 25-derived chrome must not add a status-bar gap) and the scaffold uses
+ * those insets instead — pushed screens (140's engine detail, 101's
+ * Licenses, 45's folder) then need no `topInset` plumbing. Hosts provide
+ * `WindowInsets(0, 0, 0, 0)` for "already inside".
+ */
+val LocalLargeTitleHostInsets = staticCompositionLocalOf<WindowInsets?> { null }
+
+/**
+ * The default `topInset` of every 25-convention screen: the host's own
+ * insets when [LocalLargeTitleHostInsets] is provided (104's card — its
+ * screens inset nothing), the live status bar otherwise. Screens that
+ * forward a `topInset` to [LargeTitleScaffold] should default to this
+ * and never re-read the status bar themselves, so being hosted in the
+ * dialog (or any future inset-safe host) costs them no plumbing.
+ */
+@Composable
+fun largeTitleDefaultTopInset(): Dp =
+    LocalLargeTitleHostInsets.current
+        ?.let { host -> with(LocalDensity.current) { host.getTop(this).toDp() } }
+        ?: WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
 /** The `__large_title` item key — screen keys never start with `__`. */
 private const val LargeTitleItemKey = "__large_title"
 
@@ -240,7 +266,10 @@ fun LargeTitleScaffold(
     modifier: Modifier = Modifier,
     mode: TitleMode = TitleMode.Always,
     listState: LazyListState = rememberLazyListState(),
-    topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    // 104: a host already inside the safe area resolves the default to
+    // its own insets (the card passes WindowInsets(0, 0, 0, 0)); the
+    // status-bar default is otherwise 25's own, unchanged.
+    topInset: Dp = largeTitleDefaultTopInset(),
     contentPadding: PaddingValues = PaddingValues(),
     showBack: Boolean = LocalNavStack.current.entries.firstOrNull()?.id != LocalNavEntry.current.id,
     onBack: () -> Unit = LocalNavStack.current.let { stack -> { stack.pop() } },
@@ -268,8 +297,9 @@ fun LargeTitleScaffold(
     // Horizontal safe area: UIKit's layout margins include the cutout
     // (landscape notch). The inset getters are physical left/right
     // (direction-agnostic, like GlassTabBar), so start/end are mirrored by
-    // hand.
-    val cutout = WindowInsets.displayCutout
+    // hand. 104: a non-null LocalLargeTitleHostInsets replaces the live
+    // cutout (the card's host insets), so its screens inset nothing.
+    val cutout = LocalLargeTitleHostInsets.current ?: WindowInsets.displayCutout
     val cutoutStartPx =
         if (layoutDirection == LayoutDirection.Ltr) cutout.getLeft(density, layoutDirection)
         else cutout.getRight(density, layoutDirection)

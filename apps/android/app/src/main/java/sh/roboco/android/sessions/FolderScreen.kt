@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -47,6 +47,7 @@ import sh.roboco.android.shell.NavStackHost
 import sh.roboco.android.shell.TabId
 import sh.roboco.android.shell.TabRootRoute
 import sh.roboco.android.shell.TitleMode
+import sh.roboco.android.shell.largeTitleDefaultTopInset
 import uniffi.roboco_core.ChatIndicator
 import uniffi.roboco_core.FrontPage
 import uniffi.roboco_core.ProjectRef
@@ -86,7 +87,8 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * @param workspace null = not loaded yet (41's spinner through `loading`);
  *   the rows follow it live while the screen is open
  * @param loading `workspace == null || sessionsLoading(engines)` — 41's rule
- * @param topInset 25's convention; passed explicitly (24 dp) by the goldens
+ * @param topInset 25's convention ([largeTitleDefaultTopInset] — 0 inside
+ *   104's Settings card); passed explicitly (24 dp) by the goldens
  *   and previews because Robolectric reports no insets
  * @param initialEditing previews and the Edit-mode goldens only: the Pinned
  *   Edit mode starts on, so they capture the settled Edit state without
@@ -105,7 +107,9 @@ fun FolderScreen(
     workspace: WorkspaceSnapshot?,
     loading: Boolean,
     modifier: Modifier = Modifier,
-    topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
+    // 104: defaults to 25's resolved default, so the screen insets nothing
+    // when hosted inside the tablet Settings card.
+    topInset: Dp = largeTitleDefaultTopInset(),
     initialEditing: Boolean = false,
     prompts: SessionPrompts = rememberSessionPrompts(),
     navStack: NavStack = LocalNavStack.current,

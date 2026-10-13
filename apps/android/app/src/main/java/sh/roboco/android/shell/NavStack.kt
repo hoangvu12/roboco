@@ -570,6 +570,18 @@ class NavStack(root: NavRoute) {
     }
 
     /**
+     * Closes every entry — [entries] and `leaving`, top first — with no
+     * appear/disappear callbacks: the whole stack is going away (104's
+     * Settings card teardown — iOS deallocates the nav controller and every
+     * screen in it). Cancels each [NavEntry.scope] and closes its retained
+     * `AutoCloseable`s, exactly as [NavEntry.close] does; idempotent.
+     */
+    @MainThread
+    internal fun closeAll() {
+        (entries + leaving).asReversed().forEach { it.close() }
+    }
+
+    /**
      * Test/preview only: while no host is attached, ops do NOT complete
      * synchronously; their transition waits for a host. Needed so
      * `push(...)` + [freeze] work before any host exists.
