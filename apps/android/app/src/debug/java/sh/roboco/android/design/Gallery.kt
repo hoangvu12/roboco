@@ -48,6 +48,7 @@ import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
+import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
@@ -281,6 +282,14 @@ object Gallery {
         // over the fixture source and FakeHostPaths (no engine needed).
         GallerySection("New Project browser", GalleryLayout.Fill, screenshotHeightDp = 874) {
             FolderBrowserGallerySection()
+        },
+        // Ticket 44 (row swipe actions + the row's long-press menu): the
+        // swipe panes (Pin/Unpin, Archive + Move, Unarchive), the settle,
+        // the armed full swipe, the refusal spring-back and the context
+        // menu wiring, live over fakes plus the static golden block. The
+        // ActionSheetHost gives 43's sheets a host, like "Wallpaper rows".
+        GallerySection("Swipe rows", GalleryLayout.Scroll, screenshotHeightDp = 891) {
+            ActionSheetHost { SwipeRowGallerySection() }
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
