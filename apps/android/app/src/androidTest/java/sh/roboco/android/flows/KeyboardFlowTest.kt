@@ -11,7 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -91,7 +91,7 @@ class KeyboardFlowTest {
 
         // 2. A drag ending a quarter of the IME above the bottom: past
         // half, so the release closes it.
-        device.swipe(x, (windowH * 0.4f).toInt(), windowH - imeBottom / 4, 40)
+        device.swipe(x, (windowH * 0.4f).toInt(), x, windowH - imeBottom / 4, 40)
         compose.waitUntil(timeoutMillis = 1_000) { !imeVisible() }
         compose.onNodeWithTag("composer-chip-model").assertDoesNotExist() // the capsule
 
@@ -99,7 +99,7 @@ class KeyboardFlowTest {
         // the IME springs back and the composer stays the card.
         compose.onNodeWithTag("composer-input").performClick()
         compose.waitUntil(timeoutMillis = 3_000) { imeVisible() }
-        device.swipe(x, (windowH * 0.4f).toInt(), windowH - 3 * imeBottom / 4, 40)
+        device.swipe(x, (windowH * 0.4f).toInt(), x, windowH - 3 * imeBottom / 4, 40)
         compose.waitUntil(timeoutMillis = 1_000) { imeVisible() }
         compose.onNodeWithTag("composer-chip-model").assertExists() // still the card
 
