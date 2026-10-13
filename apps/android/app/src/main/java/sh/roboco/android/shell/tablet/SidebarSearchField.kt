@@ -330,8 +330,9 @@ fun SidebarSearchField(
 @Composable
 private fun SidebarSearchFieldPreviewBody(appearance: Appearance, text: String) {
     RobocoTheme(appearance) {
-        val state = rememberSidebarState()
-        if (text.isNotEmpty()) state.search.edit { append(text) }
+        // The field's state carries the preview's text from the start —
+        // never edited during composition.
+        val state = remember(text) { SidebarState(search = TextFieldState(text)) }
         Box(
             Modifier
                 .fillMaxWidth()

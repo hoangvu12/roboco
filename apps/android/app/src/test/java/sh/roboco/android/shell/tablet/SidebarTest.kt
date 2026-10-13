@@ -205,6 +205,16 @@ class SidebarTest {
         }
     }
 
+    /** Polls until [tag] leaves the tree (the async swap), with a deadline. */
+    private fun awaitGone(tag: String, timeoutMs: Long = 3_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty()) return
+            compose.mainClock.advanceTimeBy(50)
+            compose.waitForIdle()
+        }
+    }
+
     /** Scrolls the root's list [distanceDp] forward (negative = backward). */
     private fun scrollBy(distanceDp: Float) {
         compose.runOnUiThread { runBlocking { state.listState.scrollBy(dp(distanceDp)) } }
@@ -366,7 +376,7 @@ class SidebarTest {
     fun typingWranglerReplacesTheSectionsWithTheHeaderLessHits() {
         mount()
         type("wrangler")
-        awaitTag("session-chat-deploy")
+        awaitGone("section-pinned")
 
         // Exactly the hit, header-less: no section headers remain.
         compose.onNodeWithTag("session-chat-deploy").assertExists()
@@ -426,7 +436,7 @@ class SidebarTest {
     fun staleHitsStayOnScreenWhileTheNewerSearchRuns() {
         mount()
         type("wrangler")
-        awaitTag("session-chat-deploy")
+        awaitGone("section-pinned")
 
         // Block the next search; "wranglerx" is in flight.
         fake.gate = CompletableDeferred()
@@ -434,8 +444,10 @@ class SidebarTest {
         settle()
         assertEquals(listOf("wrangler", "wranglerx"), fake.calls)
 
-        // The previous hits stay on screen — no blank frame.
+        // The previous hits stay on screen — no blank frame, no front
+        // page flash.
         compose.onNodeWithTag("session-chat-deploy").assertExists()
+        compose.onNodeWithTag("section-pinned").assertDoesNotExist()
         compose.onNodeWithTag("search-no-results").assertDoesNotExist()
 
         // Release: zero hits for "wranglerx" → the no-results view.
@@ -481,16 +493,25 @@ class SidebarTest {
     // ------------------------------------------------------- row taps
 
     @Test
-    fun aRowTapOnTheFrontPageOpensTheSessionBesideTheSidebar() {
+    fun rowTapsOpenTheSessionBesideTheSidebarFromTheRootAndTheResults() {
         mount()
-        type("tool") // the field is focused from typing
-        awaitTag("session-chat-tool-rail")
+        // A front-page row tap: one open, no stack change, nothing focused.
+        compose.onNodeWithTag("session-chat-veil").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("openSession(chat-veil)"), router.calls)
+        assertEquals(1, state.stack.entries.size)
+        compose.onNodeWithTag("sidebar-search").assertIsNotFocused()
 
+        // A results row tap (the field is focused from typing): the query
+        // is kept, the field loses focus, the depth stays 1.
+        type("tool")
+        awaitTag("session-chat-tool-rail")
         compose.onNodeWithTag("session-chat-tool-rail").performClick()
         compose.waitForIdle()
-
-        assertEquals(listOf("openSession(chat-tool-rail)"), router.calls)
-        // The stack depth and the query are unchanged; the field lost focus.
+        assertEquals(
+            listOf("openSession(chat-veil)", "openSession(chat-tool-rail)"),
+            router.calls,
+        )
         assertEquals(1, state.stack.entries.size)
         assertEquals("tool", state.query)
         compose.onNodeWithTag("sidebar-search").assertIsNotFocused()
@@ -542,7 +563,7 @@ class SidebarTest {
     fun theCurrentRowFillAlsoWorksInResultsMode() {
         mount()
         type("tool")
-        awaitTag("session-chat-tool-colors")
+        awaitTag("session-chat-tool-rail")
         writeOnUi { currentChat = "chat-tool-colors" }
         compose.waitForIdle()
 

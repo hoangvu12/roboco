@@ -59,8 +59,8 @@ import uniffi.roboco_core.WorkspaceSnapshot
 /**
  * The "Tablet sidebar" page of the debug design gallery
  * (android-ui-parity #105), registered in ticket 22's `Gallery.sections`
- * as `GallerySection("Tablet sidebar", GalleryLayout.Fill, 800) {
- * SidebarGallerySection() }`.
+ * as `GallerySection("Tablet sidebar", GalleryLayout.Scroll,
+ * screenshotHeightDp = 1000) { SidebarGallerySection() }`.
  *
  * The whole 360 × 800 dp sidebar ([Sidebar] — the real front page in its
  * own nav stack, the stacked glass search field, the current-row fill and

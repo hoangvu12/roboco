@@ -374,9 +374,9 @@ object Gallery {
         // front page in its own nav stack with the stacked glass search
         // field, the query filter over the fixture search, the current
         // row, focusSearch()/showSessions() and 107's toolbar slot.
-        // Fill: the section hosts the sidebar's LazyColumn in a fixed
-        // 360 × 800 dp frame.
-        GallerySection("Tablet sidebar", GalleryLayout.Fill, screenshotHeightDp = 1000) {
+        // Scroll like the split gallery: the sidebar's LazyColumn is
+        // bounded by its fixed 360 × 800 dp frame.
+        GallerySection("Tablet sidebar", GalleryLayout.Scroll, screenshotHeightDp = 1000) {
             SidebarGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
