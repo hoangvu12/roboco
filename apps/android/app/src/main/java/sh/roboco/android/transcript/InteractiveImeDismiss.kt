@@ -304,7 +304,9 @@ internal class AndroidImeControl(
                     listener.onFinished()
                 }
 
-                override fun onCancelled(controller: WindowInsetsAnimationControllerCompat) {
+                // jspecify @Nullable in core 1.19 (null when cancelled
+                // before onReady); Kotlin 2.x enforces it on overrides.
+                override fun onCancelled(controller: WindowInsetsAnimationControllerCompat?) {
                     listener.onCancelled(beforeReady = !ready)
                 }
             },

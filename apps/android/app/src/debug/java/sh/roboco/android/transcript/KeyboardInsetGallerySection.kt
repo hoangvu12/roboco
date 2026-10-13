@@ -45,6 +45,7 @@ import sh.roboco.android.composer.composerMorphHost
 import sh.roboco.android.composer.rememberComposerMorphState
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.CapsuleShape
+import sh.roboco.android.design.LocalGalleryCapture
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.GlassSurface
@@ -285,9 +286,17 @@ private fun DriftReadout(viewport: TranscriptViewport, stackState: BottomStackSt
     val ime = WindowInsets.ime
     var text by remember { mutableStateOf("") }
     var maxDrift by remember { mutableStateOf(0f) }
-    LaunchedEffect(viewport, stackState) {
+    // Ticket 22's "no running loops" rule: under the Roborazzi capture
+    // the line is computed once, the frame loop never starts.
+    val capture = LocalGalleryCapture.current
+    LaunchedEffect(viewport, stackState, capture) {
+        var first = true
         while (true) {
-            withFrameNanos { }
+            if (!first) {
+                if (capture) break
+                withFrameNanos { }
+            }
+            first = false
             val stackTop = stackState.insets.stackTop.value
             val drift = if (viewport.following) {
                 (viewport.contentHeight - viewport.offset) - (stackTop - 8f)
