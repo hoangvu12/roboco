@@ -2,18 +2,20 @@ package sh.roboco.android.design
 
 import android.content.res.Configuration
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -47,15 +49,20 @@ fun GroupedListGallerySection() {
             .background(palette.background)
             .verticalScroll(rememberScrollState()),
     ) {
-        // 1. "Notifications" — iOS copy verbatim; the switch is ticket 98's
-        // slot, off by default.
+        // 1. "Notifications" — iOS copy verbatim; ticket 98's RobocoSwitch,
+        // off by default.
+        var notificationsOn by remember { mutableStateOf(false) }
         GroupedHeader("Notifications")
         GroupedRow(
             title = "Notifications",
             subtitle = "When a session finishes, needs you or fails",
             icon = RobocoIcons.Bell,
             position = GroupedPosition.Single,
-            accessories = listOf(GroupedAccessory.Custom { SwitchStandIn(on = false) }),
+            accessories = listOf(
+                GroupedAccessory.Custom {
+                    RobocoSwitch(notificationsOn, { notificationsOn = it }, testTag = toggleTag("notify:enabled"))
+                },
+            ),
             onClick = null,
         )
 
@@ -96,12 +103,17 @@ fun GroupedListGallerySection() {
         // 4. "Sessions" — the two-line subtitle row (84 dp) next to a
         // switch that is on.
         GroupedHeader("Sessions")
+        var groupByProject by remember { mutableStateOf(true) }
         GroupedRow(
             title = "Group by Project",
             subtitle = "Sessions outside your sections, under their project",
             icon = RobocoIcons.SquareStack3dUp,
             position = GroupedPosition.First,
-            accessories = listOf(GroupedAccessory.Custom { SwitchStandIn(on = true) }),
+            accessories = listOf(
+                GroupedAccessory.Custom {
+                    RobocoSwitch(groupByProject, { groupByProject = it }, testTag = toggleTag("groupByProject"))
+                },
+            ),
             onClick = null,
         )
         GroupedRow(
@@ -165,22 +177,6 @@ fun GroupedListGallerySection() {
             previewPressed = true,
         )
     }
-}
-
-/**
- * The switch slot's stand-in until ticket 98's `RobocoSwitch` lands: a
- * static 63 × 28 capsule, accent when on, `controlFill` when off.
- */
-// TODO(98): replace with RobocoSwitch (accent on-tint, thumb drag, the
-// "toggle-<id>" identifier set by 98/99).
-@Composable
-private fun SwitchStandIn(on: Boolean) {
-    val palette = RobocoTheme.palette
-    Box(
-        Modifier
-            .size(63.dp, 28.dp)
-            .background(if (on) palette.accent else palette.controlFill, CapsuleShape),
-    )
 }
 
 @Preview(name = "light")

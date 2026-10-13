@@ -245,6 +245,10 @@ object Gallery {
         GallerySection("Mention suggestions", GalleryLayout.Fill, screenshotHeightDp = 800) {
             MentionSuggestionsGallerySection()
         },
+        // Ticket 98 (iOS toggle switch): the UISwitch port — 63 × 28 track,
+        // accent on-tint, 37 × 24 capsule thumb, tap/drag, press lift,
+        // ToggleOn/Off haptics; 420 dp of fixture card + interactive rows.
+        GallerySection("Switch", screenshotHeightDp = 420) { RobocoSwitchGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
