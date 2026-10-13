@@ -227,10 +227,12 @@ fun LicenceTextSheet(title: String, text: String, onDone: () -> Unit) {
 
 /**
  * The sheet's selection colours: `accent` handles and an `accent`@0.4
- * highlight (the same 0.4 interpretation ticket 127's Select Text sheet
- * uses, so the two text sheets match; UIKit draws the highlight with
- * `window.tintColor` and no source alpha). Quantised through ticket 01's
- * [rgba] — never `Color.copy(alpha = …)`.
+ * highlight. This **overrides** the theme's default wash
+ * (`palette.selectionBackground`, the desktop's `accent.selection` at
+ * 0x3D/0x59) with the ticket's 0.4 — the same interpretation ticket 127's
+ * Select Text sheet uses, so the two full-text sheets match; UIKit draws
+ * the highlight with `window.tintColor` and no source alpha. Quantised
+ * through ticket 01's [rgba] — never `Color.copy(alpha = …)`.
  */
 @Composable
 private fun rememberLicenceSelectionColors(): TextSelectionColors {

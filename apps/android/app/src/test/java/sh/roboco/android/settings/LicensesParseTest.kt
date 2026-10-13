@@ -271,6 +271,29 @@ class LicensesParseTest {
     }
 
     @Test
+    fun fullTextJoinsHeaderAndTextsWithABlankLine() {
+        val withHeader = LicenceEntry(
+            id = "rust:anyhow@1.0.104",
+            title = "anyhow",
+            subtitle = "1.0.104 · MIT OR Apache-2.0",
+            header = "anyhow 1.0.104\nhttps://github.com/dtolnay/anyhow",
+            texts = listOf("MIT text", "Apache text"),
+        )
+        assertEquals(
+            "anyhow 1.0.104\nhttps://github.com/dtolnay/anyhow\n\nMIT text\n\nApache text",
+            withHeader.fullText(),
+        )
+        val withoutHeader = LicenceEntry(
+            id = "geist",
+            title = "Geist and Geist Mono",
+            subtitle = "SIL Open Font License 1.1",
+            header = null,
+            texts = listOf("OFL text"),
+        )
+        assertEquals("OFL text", withoutHeader.fullText())
+    }
+
+    @Test
     fun aSchemaOtherThanOneYieldsAnEmptyList() {
         for (schema in listOf(0, 2, -1)) {
             val json = JSONObject()

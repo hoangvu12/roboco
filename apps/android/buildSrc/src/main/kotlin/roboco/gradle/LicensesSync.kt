@@ -51,12 +51,13 @@ abstract class LicensesSync : DefaultTask() {
         for (file in noticeFiles) {
             file.copyTo(licenses.resolve(file.name), overwrite = true)
         }
+        // Reset first (unconditionally) so a removed SPDX text never
+        // lingers as a stale asset; recreate only when there is something
+        // to stage (an empty spdx/ dir would zip into every APK).
+        val spdx = licenses.resolve("spdx")
+        spdx.deleteRecursively()
         val spdxSources = spdxFiles.toList()
         if (spdxSources.isNotEmpty()) {
-            // Reset first so a removed SPDX text never lingers as a stale
-            // asset (notices overwrite in place instead).
-            val spdx = licenses.resolve("spdx")
-            spdx.deleteRecursively()
             spdx.mkdirs()
             for (file in spdxSources) {
                 file.copyTo(spdx.resolve(file.name), overwrite = true)

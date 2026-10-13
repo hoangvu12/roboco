@@ -83,12 +83,9 @@ class AndroidLicenceTextsTest {
 
     @Test
     fun stagedSpdxAssetsAreNonEmpty() {
-        var count = 0
         for (spdxId in listOf("Apache-2.0", "LGPL-2.1-or-later")) {
             val text = readAsset("${LicenseSources.SpdxDir}/$spdxId.txt")
             assertTrue("licenses/spdx/$spdxId.txt must be staged and non-empty", !text.isNullOrEmpty())
-            count++
         }
-        assertEquals(2, count)
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.runtime.Immutable
 import java.io.FileNotFoundException
 import java.io.IOException
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import sh.roboco.android.R
 
@@ -285,7 +286,7 @@ class LicensesRepository(private val assets: AssetManager, private val resources
         }
         val entries = try {
             parseAndroidLibraries(json) { spdxId -> readAsset("${LicenseSources.SpdxDir}/$spdxId.txt") }
-        } catch (e: org.json.JSONException) {
+        } catch (e: JSONException) {
             Log.w(TAG, "aboutlibraries JSON is malformed: $e")
             emptyList()
         }
@@ -294,16 +295,16 @@ class LicensesRepository(private val assets: AssetManager, private val resources
 
     private fun rustEntries(): List<LicenceEntry> {
         val json = readAsset(LicenseSources.RustCrates) ?: return emptyList()
-        val entries = try {
-            parseRustCrates(json)
-        } catch (e: org.json.JSONException) {
+        return try {
+            val entries = parseRustCrates(json)
+            if (entries.isEmpty() && JSONObject(json).optInt("schema", -1) != 1) {
+                Log.w(TAG, "rust-crates.json schema is not 1 — ignoring the file")
+            }
+            entries
+        } catch (e: JSONException) {
             Log.w(TAG, "rust-crates.json is malformed: $e")
             emptyList()
         }
-        if (entries.isEmpty() && JSONObject(json).optInt("schema", -1) != 1) {
-            Log.w(TAG, "rust-crates.json schema is not 1 — ignoring the file")
-        }
-        return entries
     }
 
     /** One asset-backed entry, or null (logged) when the asset is missing. */

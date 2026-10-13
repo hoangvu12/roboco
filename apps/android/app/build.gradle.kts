@@ -16,7 +16,7 @@ plugins {
     // AboutLibraries (ui-parity#101): the JSON emitter only — no
     // aboutlibraries-compose/-core library artifacts (ticket rule: the
     // plugin's UI is Material, the app's is not).
-    alias(libs.plugins.aboutlibraries)
+    alias(libs.plugins.aboutlibraries.android)
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +92,20 @@ fun coreProfile(buildType: String): String =
     providers.gradleProperty("robocoCoreProfile")
         .orElse(if (buildType == "release") "mobile-dist" else "mobile")
         .get()
+
+// ui-parity#101: the Rust licence data's inputs — the workspace manifests
+// and lockfile (the resolved graph), every crate manifest (the licence
+// fields) and the xtask's own sources. Shared by both build types; each
+// type gets its own task and output directory below.
+val rustLicensesSources = files(
+    repoRootDir.resolve("Cargo.toml"),
+    repoRootDir.resolve("Cargo.lock"),
+    fileTree(repoRootDir.resolve("crates")) { include("*/Cargo.toml") },
+    fileTree(repoRootDir.resolve("crates/xtask/src")),
+)
+
+fun rustLicensesTaskName(buildType: String): String =
+    "rustLicenses" + buildType.replaceFirstChar { it.uppercase() }
 
 for (buildType in listOf("debug", "release")) {
     val profileName = coreProfile(buildType)
@@ -267,19 +281,6 @@ val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
     )
     assetsDir.set(licensesDir)
 }
-
-// The Rust core's licence data (ui-parity#101): one RustLicensesTask per
-// build type (see RustLicenses.kt) writes assets/licenses/rust-crates.json
-// from `cargo xtask android-licenses`, run after the matching core build.
-val rustLicensesSources = files(
-    repoRootDir.resolve("Cargo.toml"),
-    repoRootDir.resolve("Cargo.lock"),
-    fileTree(repoRootDir.resolve("crates")) { include("*/Cargo.toml") },
-    fileTree(repoRootDir.resolve("crates/xtask/src")),
-)
-
-fun rustLicensesTaskName(buildType: String): String =
-    "rustLicenses" + buildType.replaceFirstChar { it.uppercase() }
 
 androidComponents {
     // Tests that reference src/debug classes (the design gallery suite of

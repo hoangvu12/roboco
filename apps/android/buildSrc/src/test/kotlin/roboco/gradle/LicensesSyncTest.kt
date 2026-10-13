@@ -3,7 +3,6 @@ package roboco.gradle
 import org.gradle.testfixtures.ProjectBuilder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 

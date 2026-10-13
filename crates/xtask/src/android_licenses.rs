@@ -127,10 +127,9 @@ pub(crate) fn run(argv: &[String]) -> anyhow::Result<()> {
     // 2. The external crate closure from roboco-mobile, sorted.
     let packages = resolve_external_packages(&metadatas)?;
 
-    // 3. Licence files per crate, texts de-duplicated in first-seen order.
-    let mut texts: Vec<String> = Vec::new();
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut crates: Vec<Value> = Vec::new();
+    // 3. Licence files per crate (texts read here, de-duplicated in
+    //    assemble_output by first appearance over the sorted crate list).
+    let mut crate_texts: Vec<Vec<String>> = Vec::with_capacity(packages.len());
     for package in &packages {
         let manifest = PathBuf::from(&package.manifest_path);
         let dir = manifest.parent().unwrap_or_else(|| Path::new(""));
@@ -141,36 +140,27 @@ pub(crate) fn run(argv: &[String]) -> anyhow::Result<()> {
                 dir.display()
             );
         }
-        let mut indices: Vec<Value> = Vec::new();
-        for path in licence_file_paths(dir, package.license_file.as_deref()) {
+        let mut texts = Vec::new();
+        for path in licence_file_paths(dir, package.license_file.as_deref())? {
             let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let text = normalise_licence_text(&String::from_utf8_lossy(&bytes));
-            if text.is_empty() {
-                continue;
-            }
-            let index = *seen.entry(text.clone()).or_insert_with(|| {
-                texts.push(text);
-                texts.len() - 1
-            });
-            indices.push(json!(index));
+            texts.push(text);
         }
-        crates.push(json!({
-            "name": package.name,
-            "version": package.version,
-            "license": package.license,
-            "repository": package.repository,
-            "texts": indices,
-        }));
+        crate_texts.push(texts);
     }
 
     // 4. Compact JSON, deterministic for one lockfile.
-    let output = json!({"schema": SCHEMA, "crates": crates, "texts": texts});
+    let output = assemble_output(&packages, &crate_texts);
     let bytes = serde_json::to_string(&output).context("serialising rust-crates.json")?;
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     fs::write(&out, bytes).with_context(|| format!("writing {}", out.display()))?;
-    println!("android-licenses: {} crates, {} licence texts", packages.len(), texts.len());
+    println!(
+        "android-licenses: {} crates, {} licence texts",
+        packages.len(),
+        output["texts"].as_array().map(Vec::len).unwrap_or(0)
+    );
     Ok(())
 }
 
@@ -332,17 +322,55 @@ pub(crate) fn resolve_external_packages(metadatas: &[Value]) -> anyhow::Result<V
 }
 
 // ---------------------------------------------------------------------------
+// The output file (pure, testable)
+// ---------------------------------------------------------------------------
+
+/// The output JSON: texts de-duplicated by exact string into the shared
+/// `texts` array — assigned in first-appearance order while iterating the
+/// **sorted** [packages] — each crate referencing the indices it owns.
+/// Empty texts (a licence file that normalised to nothing) are skipped.
+pub(crate) fn assemble_output(packages: &[ExternalPackage], crate_texts: &[Vec<String>]) -> Value {
+    let mut texts: Vec<String> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut crates: Vec<Value> = Vec::with_capacity(packages.len());
+    for (package, package_texts) in packages.iter().zip(crate_texts) {
+        let mut indices: Vec<Value> = Vec::new();
+        for text in package_texts {
+            if text.is_empty() {
+                continue;
+            }
+            let index = *seen.entry(text.clone()).or_insert_with(|| {
+                texts.push(text.clone());
+                texts.len() - 1
+            });
+            indices.push(json!(index));
+        }
+        crates.push(json!({
+            "name": package.name,
+            "version": package.version,
+            "license": package.license,
+            "repository": package.repository,
+            "texts": indices,
+        }));
+    }
+    json!({"schema": SCHEMA, "crates": crates, "texts": texts})
+}
+
+// ---------------------------------------------------------------------------
 // Licence files (pure, testable)
 // ---------------------------------------------------------------------------
 
 /// The licence files of the crate rooted at [dir]: regular files whose
 /// lower-cased name starts with a [LICENCE_NAME_PREFIXES] entry, plus
 /// [license_file] (relative to [dir]) when set and not already matched,
-/// sorted by file name.
-pub(crate) fn licence_file_paths(dir: &Path, license_file: Option<&str>) -> Vec<PathBuf> {
+/// sorted by file name. An unreadable directory is an error — a silently
+/// empty licence list is the under-listing failure mode this task must
+/// avoid.
+pub(crate) fn licence_file_paths(dir: &Path, license_file: Option<&str>) -> anyhow::Result<Vec<PathBuf>> {
     let mut paths: Vec<PathBuf> = Vec::new();
-    let entries = fs::read_dir(dir).ok();
-    for entry in entries.into_iter().flatten().flatten() {
+    let entries = fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
         let path = entry.path();
         if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
@@ -359,7 +387,7 @@ pub(crate) fn licence_file_paths(dir: &Path, license_file: Option<&str>) -> Vec<
         }
     }
     paths.sort();
-    paths
+    Ok(paths)
 }
 
 /// `\r\n` → `\n`, trailing whitespace trimmed; empty stays empty.
@@ -486,7 +514,7 @@ mod tests {
 
     /// The licence-file name filter: prefixes, case-insensitivity,
     /// directories excluded, sorted; `license_file` joins in when not
-    /// already matched and never duplicates.
+    /// already matched and never duplicates. An unreadable dir is an error.
     #[test]
     fn licence_file_names_and_sorting() {
         let dir = std::env::temp_dir().join("xtask-android-licenses-test");
@@ -506,7 +534,7 @@ mod tests {
         ] {
             fs::write(dir.join(name), "text\n").expect("write");
         }
-        let mut paths = licence_file_paths(&dir, Some("license-file"));
+        let mut paths = licence_file_paths(&dir, Some("license-file")).expect("licence files");
         let names: Vec<String> = paths
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -519,12 +547,75 @@ mod tests {
         // The src directory is never matched.
         assert_eq!(paths.len(), 8);
         // license_file already matched by name → no duplicate.
-        paths = licence_file_paths(&dir, Some("LICENSE"));
+        paths = licence_file_paths(&dir, Some("LICENSE")).expect("licence files");
         assert_eq!(paths.len(), 8);
         // An unmatched license_file joins in (it need not exist on disk to
         // be listed; the reader fails loudly on a missing file).
-        paths = licence_file_paths(&dir, Some("docs/COPYING.adoc"));
+        paths = licence_file_paths(&dir, Some("docs/COPYING.adoc")).expect("licence files");
         assert!(paths.iter().any(|p| p.ends_with("COPYING.adoc")));
+        // A missing directory is an error, never a silently empty list.
+        assert!(licence_file_paths(&dir.join("nope"), None).is_err());
+    }
+
+    /// Text de-duplication: identical texts collapse into one shared entry
+    /// (first appearance over the sorted crate list), empties are skipped,
+    /// and the JSON carries the ticket's schema-1 shape.
+    #[test]
+    fn texts_deduplicate_by_exact_string() {
+        let packages = vec![
+            ExternalPackage {
+                id: "p1".to_owned(),
+                name: "anyhow".to_owned(),
+                version: "1.0.104".to_owned(),
+                license: Some("MIT OR Apache-2.0".to_owned()),
+                repository: Some("https://github.com/dtolnay/anyhow".to_owned()),
+                license_file: None,
+                manifest_path: String::new(),
+            },
+            ExternalPackage {
+                id: "p2".to_owned(),
+                name: "serde".to_owned(),
+                version: "1.0.229".to_owned(),
+                license: Some("MIT OR Apache-2.0".to_owned()),
+                repository: None,
+                license_file: None,
+                manifest_path: String::new(),
+            },
+            ExternalPackage {
+                id: "p3".to_owned(),
+                name: "uniffi".to_owned(),
+                version: "0.32.2".to_owned(),
+                license: Some("MPL-2.0".to_owned()),
+                repository: None,
+                license_file: None,
+                manifest_path: String::new(),
+            },
+        ];
+        // anyhow and serde share both texts; uniffi adds one; one crate
+        // bundles an empty text (skipped).
+        let crate_texts = vec![
+            vec!["MIT".to_owned(), "Apache".to_owned()],
+            vec!["Apache".to_owned(), "MIT".to_owned()],
+            vec!["MPL-2.0".to_owned(), String::new()],
+        ];
+        let output = assemble_output(&packages, &crate_texts);
+
+        // First appearance over the sorted crates: anyhow's "MIT" (index 0)
+        // then "Apache" (1); serde reuses both, in its own order; uniffi's
+        // empties are skipped and MPL-2.0 becomes index 2.
+        assert_eq!(output["texts"], json!(["MIT", "Apache", "MPL-2.0"]));
+        let crates = output["crates"].as_array().expect("crates");
+        assert_eq!(
+            crates[0]["texts"],
+            json!([0, 1]),
+            "anyhow keeps its own order into the shared texts"
+        );
+        assert_eq!(crates[1]["texts"], json!([1, 0]), "serde reuses the shared texts");
+        assert_eq!(crates[2]["texts"], json!([2]), "empty texts are skipped");
+        assert_eq!(output["schema"], json!(1));
+        // The crate fields round-trip, repository null when absent.
+        assert_eq!(crates[1]["repository"], Value::Null);
+        assert_eq!(crates[0]["repository"], json!("https://github.com/dtolnay/anyhow"));
     }
 
     /// `\r\n` → `\n` and trailing whitespace trimmed.
