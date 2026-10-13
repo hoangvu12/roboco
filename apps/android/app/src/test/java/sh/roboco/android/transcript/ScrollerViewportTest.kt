@@ -176,7 +176,7 @@ class ScrollerViewportTest {
     @Test
     fun widgetsInsideTheContentMoveOneToOneWithTheScroll() {
         val state = ScrollState(0)
-        host(Scroller(0f, 0f, 200f, 40f, 600f)) {
+        host(Scroller(0f, 0f, 200f, 40f, 600f), state) {
             Box(Modifier.absoluteOffset(400.dp, 0.dp).size(10.dp, 10.dp).testTag("fixture-widget"))
         }
 

@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -136,6 +137,7 @@ object SidebarSearchMetrics {
  *
  * Never reads the list state — 25 owns the band's position.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SidebarSearchField(
     state: SidebarState,

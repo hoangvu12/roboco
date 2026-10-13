@@ -116,8 +116,9 @@ class ModelPipelineHostTest {
         TranscriptState(
             TextEngine.shared,
             ChoreographerPoster(Choreographer.getInstance()),
-            ::TranscriptView,
-        ) { onUpgradeBuilt -> ModelPipeline(worker = gate, onUpgradeBuilt = onUpgradeBuilt) }
+            makeModels = { onUpgradeBuilt -> ModelPipeline(worker = gate, onUpgradeBuilt = onUpgradeBuilt) },
+            makeEngine = ::TranscriptView,
+        )
 
     // -------------------------------------------------------------- helpers
 

@@ -55,10 +55,16 @@ fun interface FrameListener {
 class TranscriptState internal constructor(
     text: TextSystem,
     poster: FramePoster,
-    makeEngine: (TextSystem, LayoutListener) -> TranscriptView,
-    /** 117: the model pipeline factory, injected so tests can gate the worker. */
+    /**
+     * 117: the model pipeline factory, injected so tests can gate the
+     * worker. Declared **before** [makeEngine] so the existing
+     * `TranscriptState(text, poster) { _, relay -> engine }` call sites
+     * keep binding their trailing lambda to `makeEngine`; pass both by
+     * name to inject a pipeline.
+     */
     makeModels: (onUpgradeBuilt: (RowPlacement, RowModel) -> Unit) -> ModelPipeline =
         { ModelPipeline(onUpgradeBuilt = it) },
+    makeEngine: (TextSystem, LayoutListener) -> TranscriptView,
 ) {
     /**
      * Production constructor: main thread only. The check runs inside
@@ -67,7 +73,7 @@ class TranscriptState internal constructor(
      * thread never leaks a running layout worker.
      */
     constructor(text: TextSystem = TextEngine.shared) :
-        this(text, ChoreographerPoster(mainChoreographer()), ::TranscriptView)
+        this(text, ChoreographerPoster(mainChoreographer()), makeEngine = ::TranscriptView)
 
     private val relay = FrameRelay(poster) { applyLatest() }
 

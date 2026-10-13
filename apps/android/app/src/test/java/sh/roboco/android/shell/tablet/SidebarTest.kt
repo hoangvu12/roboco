@@ -1,5 +1,6 @@
 package sh.roboco.android.shell.tablet
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -19,7 +20,8 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.isDisplayed
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -89,7 +91,7 @@ private val deployRow: SessionRow =
 class SidebarTest {
 
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ComponentActivity>()
 
     // ------------------------------------------------------------ the fakes
 
@@ -259,6 +261,26 @@ class SidebarTest {
         )
     }
 
+    /**
+     * The large title on screen: a page pushed over stays composed but
+     * unplaced, so `nav-large-title` can match twice — exactly one must
+     * be displayed, and it carries [title].
+     */
+    private fun assertDisplayedLargeTitle(title: String) {
+        val titles = compose.onAllNodesWithTag("nav-large-title")
+        val count = titles.fetchSemanticsNodes().size
+        val shown = (0 until count).map { titles[it] }.filter { it.isDisplayed() }
+        assertEquals("exactly one large title is displayed", 1, shown.size)
+        shown.single().assert(hasText(title))
+    }
+
+    /** Every node tagged [tag] that is actually displayed (pushed-under pages stay composed, unplaced). */
+    private fun displayedNodes(tag: String): List<SemanticsNodeInteraction> {
+        val all = compose.onAllNodesWithTag(tag)
+        val count = all.fetchSemanticsNodes().size
+        return (0 until count).map { all[it] }.filter { it.isDisplayed() }
+    }
+
     /** Pushes the Pinned folder non-animated (the menu path has its own test). */
     private fun pushPinned() {
         writeOnUi { state.stack.push(FolderRoute.pinned(), animated = false) }
@@ -272,7 +294,7 @@ class SidebarTest {
     fun theSidebarShowsTheTitleTheFieldAndNoOptionsCircle() {
         mount()
         compose.onNodeWithTag("sidebar").assertExists()
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Sessions"))
+        assertDisplayedLargeTitle("Sessions")
         compose.onNodeWithTag("sessions-options").assertDoesNotExist()
 
         // The band at rest: top = 68 + 52 = 120, full width, 52 high.
@@ -469,8 +491,11 @@ class SidebarTest {
         compose.onNodeWithTag("row-menu-rename").assertExists()
         compose.onNodeWithTag("row-menu-archive").assertDoesNotExist()
         compose.onNodeWithTag("row-menu-pin").assertDoesNotExist()
-        // Dismiss the menu (the scrim tap).
-        compose.onNodeWithTag("context-menu-backdrop").performClick()
+        // Dismiss the menu (the scrim tap) on bare backdrop near the
+        // bottom-start corner — a centre tap can land on a menu row.
+        compose.onNodeWithTag("context-menu-backdrop").performTouchInput {
+            click(Offset(24.dp.toPx(), height - 24.dp.toPx()))
+        }
         compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
     }
@@ -522,9 +547,11 @@ class SidebarTest {
     fun aRowTapOnAPushedFolderOpensTheSessionBesideTheSidebar() {
         mount()
         pushPinned()
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Pinned"))
+        assertDisplayedLargeTitle("Pinned")
 
-        compose.onNodeWithTag("session-chat-veil").performClick()
+        // The root stays composed (unplaced) under the folder and also
+        // has a chat-veil row: tap the displayed one, the folder's.
+        displayedNodes("session-chat-veil").single().performClick()
         compose.waitForIdle()
 
         assertEquals(listOf("openSession(chat-veil)"), router.calls)
@@ -589,9 +616,9 @@ class SidebarTest {
         // The folder page pushed INSIDE the sidebar (24's push), and the
         // root (field included) slid away with the push.
         assertEquals(2, state.stack.entries.size)
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Pinned"))
-        compose.onNodeWithTag("session-chat-veil").assertExists() // the folder's rows
-        compose.onNodeWithTag("sidebar-search").assertDoesNotExist()
+        assertDisplayedLargeTitle("Pinned")
+        assertEquals(1, displayedNodes("session-chat-veil").size) // the folder's rows
+        assertTrue(displayedNodes("sidebar-search").isEmpty())
 
         // Back returns to the root with the query and the scroll intact.
         compose.runOnUiThread {
@@ -601,7 +628,7 @@ class SidebarTest {
         compose.mainClock.advanceTimeBy(600) // the pop's spring
         compose.waitForIdle()
         assertEquals(1, state.stack.entries.size)
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Sessions"))
+        assertDisplayedLargeTitle("Sessions")
         assertEquals(firstIndex, state.listState.firstVisibleItemIndex)
     }
 
@@ -613,9 +640,14 @@ class SidebarTest {
         compose.onNodeWithTag("sidebar-search").assertIsFocused()
 
         pushPinned()
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Pinned"))
+        assertDisplayedLargeTitle("Pinned")
         // The root (and the field with it) left the screen: no caret.
-        compose.onNodeWithTag("sidebar-search").assertDoesNotExist()
+        // The root may stay composed but unplaced, so assert "not
+        // displayed and not focused" rather than absence.
+        assertTrue(displayedNodes("sidebar-search").isEmpty())
+        if (compose.onAllNodesWithTag("sidebar-search").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithTag("sidebar-search").assertIsNotFocused()
+        }
         assertEquals("tool", state.query) // the text survives
     }
 
@@ -642,7 +674,7 @@ class SidebarTest {
         compose.mainClock.advanceTimeBy(64)
         compose.onNodeWithTag("sidebar-search").assertIsFocused()
         assertFalse(state.pendingFocus)
-        compose.onNodeWithTag("nav-large-title").assert(hasText("Sessions"))
+        assertDisplayedLargeTitle("Sessions")
     }
 
     @Test

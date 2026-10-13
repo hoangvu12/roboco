@@ -219,7 +219,7 @@ private class GalleryRouter(private val log: MutableList<String>) : AppRouter {
  * the scroll range the bottom-padding check needs; Recent feeds the
  * `SearchSource` the model requires.
  */
-fun sidebarGalleryFixtures(search: SessionSearch): SidebarFixtures {
+internal fun sidebarGalleryFixtures(search: SessionSearch): SidebarFixtures {
     val sections = SessionsScreenFixtures.sections()
     val pinned = sections.first { it.id == FrontPageSections.PINNED }.rows
     val userSections = sections

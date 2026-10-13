@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
@@ -426,11 +427,14 @@ class SessionBottomStackTest {
         compose.onNodeWithTag("queue-stand-in").assertDoesNotExist()
         compose.onNodeWithTag("composer-stand-in").assertDoesNotExist()
 
-        // After the spring: neither is placed nor in the semantics tree.
+        // After the spring: neither is placed. Both slots stay composed
+        // (the container always composes all four), and an unplaced node
+        // keeps its outer test tag in the semantics tree — so "not
+        // displayed", not "does not exist".
         compose.mainClock.advanceTimeBy(700)
         compose.mainClock.advanceTimeByFrame()
-        compose.onNodeWithTag("bottom-stack-queue").assertDoesNotExist()
-        compose.onNodeWithTag("bottom-stack-composer").assertDoesNotExist()
+        compose.onNodeWithTag("bottom-stack-queue").assertIsNotDisplayed()
+        compose.onNodeWithTag("bottom-stack-composer").assertIsNotDisplayed()
         // The questions slot is the one showing.
         compose.onNodeWithTag("bottom-stack-questions").assertExists()
     }
