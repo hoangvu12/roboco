@@ -132,7 +132,9 @@ class StatusPillContentTest {
         val thrown = try {
             pillContent(SessionChrome.Banner.None, now)
             null
-        } catch (expected: IllegalArgumentException) {
+        } catch (expected: IllegalStateException) {
+            // Ticket 73 step 7: `None → error("None has no pill content")`,
+            // and Kotlin's `error()` throws IllegalStateException.
             expected
         }
         assertNotNull("None must throw (the caller keeps the last content instead)", thrown)

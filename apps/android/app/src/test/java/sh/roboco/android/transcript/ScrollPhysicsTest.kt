@@ -19,7 +19,12 @@ class ScrollPhysicsTest {
     @Test
     fun theDecayConstantsMatchUIKit() {
         // k = −1000·ln(0.998); frictionMultiplier = k / 4.2.
-        assertEquals(2.0020027, (-1000.0 * kotlin.math.ln(IOS_DECELERATION_RATE.toDouble())), 1e-6)
+        // The rate is the decimal 0.998: `0.998f.toDouble()` is
+        // 0.99800002574…, whose log gives 2.0019769 — the float literal's
+        // representation error times 1000/r, not a wrong constant. Pin the
+        // constant against the exact decimal instead (2.00200267…).
+        assertEquals(0.998, IOS_DECELERATION_RATE.toDouble(), 1e-7)
+        assertEquals(-1000.0 * kotlin.math.ln(0.998), IOS_DECAY_K.toDouble(), 1e-6)
         assertEquals(IOS_DECAY_K, IOS_FRICTION_MULTIPLIER * 4.2f, 1e-5f)
         // The stop threshold is half a pixel of remaining travel.
         assertEquals(0.5f * IOS_DECAY_K, IOS_FLING_STOP_PX_PER_S, 1e-6f)
@@ -54,7 +59,12 @@ class ScrollPhysicsTest {
     @Test
     fun theBandNeverReachesTheViewportHeight() {
         assertTrue(rubberBand(1e6f, 800f) < 800f)
-        assertTrue(rubberBand(1e6f, 800f) > 799.9f) // but it saturates there
+        // f(1e6) = 800·687.5/688.5 = 798.8381 exactly (u = x·c/d = 687.5),
+        // so the old `> 799.9` at x = 1e6 contradicted the formula itself;
+        // the saturation within 0.1 of d needs u ≥ 7999, i.e. x ≈ 1.2e7.
+        assertEquals(798.8381f, rubberBand(1e6f, 800f), 1e-3f)
+        assertTrue(rubberBand(1e8f, 800f) < 800f)
+        assertTrue(rubberBand(1e8f, 800f) > 799.9f) // but it saturates there (799.988)
     }
 
     @Test

@@ -236,16 +236,22 @@ class TranscriptHostTest {
             compose.waitForIdle()
 
             val compositions = state.hostCompositions
+            // `positionInRoot`, not `boundsInRoot.top`: the bounds are
+            // clipped to every ancestor (`localBoundingBoxOf(clipBounds =
+            // true)`), and the topmost realized user row sits in the 700 dp
+            // overscan above the viewport (band 2304… vs offset 3100), so
+            // its clipped top reads 0 at both offsets.
             val top = compose.onAllNodesWithTag("row-user").fetchSemanticsNodes()
-                .sortedBy { it.boundsInRoot.top }.first().boundsInRoot.top
+                .minOf { it.positionInRoot.y }
 
             state.viewport.setOffset(3200f) // the same 256 dp step (bandStart = 2304 for both)
             compose.waitForIdle()
             assertEquals(bandStart(3100f), bandStart(3200f), 0f)
             assertEquals("scrolling within a step recomposed the host", compositions, state.hostCompositions)
 
+            // The same realized set (no recomposition), so the minimum is the same row.
             val topAfter = compose.onAllNodesWithTag("row-user").fetchSemanticsNodes()
-                .sortedBy { it.boundsInRoot.top }.first().boundsInRoot.top
+                .minOf { it.positionInRoot.y }
             assertEquals("the row did not move up by 100 dp = 200 px", top - 200f, topAfter, 1f)
         } finally {
             state.close()

@@ -46,8 +46,18 @@ const val BOUNCE_OMEGA = 20f
  * edge over a viewport height [d]: `f(x) = (1 − 1/(x·c/d + 1))·d`. The
  * slope at 0 is `c` (the content first moves at 55 % of finger speed)
  * and the displacement never reaches `d`. `x ≥ 0`; `d > 0`.
+ *
+ * Evaluated in the algebraically identical form `x·c·d / (x·c + d)`:
+ * the ticket's literal `1 − 1/(u + 1)` cancels catastrophically in
+ * `Float` for small `x` (at `x = 0.01, d = 800` it gives a slope of
+ * 0.5531 instead of 0.55 — ticket 134's acceptance bound is 1e-3), and
+ * the per-frame deltas at the start of a pull are exactly that small.
+ * The f(x) table values are unchanged to 1e-4.
  */
-fun rubberBand(x: Float, d: Float): Float = (1f - 1f / (x * RUBBER_BAND_C / d + 1f)) * d
+fun rubberBand(x: Float, d: Float): Float {
+    val xc = x * RUBBER_BAND_C
+    return xc * d / (xc + d)
+}
 
 /**
  * The inverse of [rubberBand]: the raw finger travel that produces
