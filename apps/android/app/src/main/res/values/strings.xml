@@ -28,4 +28,12 @@
     <string name="menu_no_section" translatable="false">No Section</string>
     <string name="menu_new_section" translatable="false">New Section…</string>
     <string name="menu_rename" translatable="false">Rename…</string>
+    <!-- The Settings "Sessions" section (android-ui-parity #100), verbatim
+         from ios:Shell/MoreViewController.swift:212-215. `group_by_project`
+         is owned by this ticket only: ticket 46's ⋯ menu writes its labels
+         as Kotlin literals, so the copy is identical but not shared. -->
+    <string name="settings_sessions_header" translatable="false">Sessions</string>
+    <string name="group_by_project" translatable="false">Group by Project</string>
+    <string name="settings_group_by_project_subtitle" translatable="false">Sessions outside your sections, under their project</string>
+    <string name="settings_archived_sessions" translatable="false">Archived Sessions</string>
 </resources>

@@ -52,6 +52,7 @@ import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
+import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
@@ -320,6 +321,10 @@ object Gallery {
         GallerySection("Swipe rows", GalleryLayout.Scroll, screenshotHeightDp = 891) {
             ActionSheetHost { SwipeRowGallerySection() }
         },
+        // Ticket 100 (Settings · Sessions): the Group by Project switch
+        // row bound to the phone-local preference and the Archived push
+        // row — the live block toggles for real and Archived toasts.
+        GallerySection("Settings · Sessions", screenshotHeightDp = 520) { SessionsSettingsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
