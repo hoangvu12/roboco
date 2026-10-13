@@ -38,6 +38,7 @@ import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
+import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 
 /**
@@ -148,6 +149,10 @@ object Gallery {
         // Ticket 31 (PageSheet + SheetHost): the large-detent page sheet
         // with the card-stack recession, stacking and the handoff hide.
         GallerySection("Page sheet", GalleryLayout.Fill, screenshotHeightDp = 891) { PageSheetGallerySection() },
+        // Ticket 64 (box prims + overflow fades): the transcript's chrome —
+        // code block, table, quote bar, folded bubble, file pill, tool
+        // badge and agent card, through the real RowModel path.
+        GallerySection("Transcript chrome", screenshotHeightDp = 760) { RowChromeFixturePage() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
