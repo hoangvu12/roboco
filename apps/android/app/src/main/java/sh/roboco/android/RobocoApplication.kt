@@ -4,6 +4,7 @@ import android.app.Application
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import sh.roboco.android.core.CoreClientWorkspace
@@ -17,11 +18,16 @@ import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.WorkspaceCore
 import sh.roboco.android.core.WorkspaceFeed
 import sh.roboco.android.core.robocoPrefsStore
+import sh.roboco.android.design.ToasterState
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.sessions.CoreRowActions
 import sh.roboco.android.sessions.FoldState
 import sh.roboco.android.sessions.FrontPageModel
+import sh.roboco.android.sessions.asSessionWrites
+import sh.roboco.android.sessions.notices
 import sh.roboco.android.shell.SearchTabState
+import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.CoreClient
 
 /**
@@ -33,8 +39,8 @@ import uniffi.roboco_core.CoreClient
  *
  * Property names are reserved for the parity tickets (android-ui-parity):
  * `prefs`, `workspaceFeed`, `foldState`, `frontPage` (#40, all landed
- * now), `appEvents` (#42), `drafts` (#84) — do not reuse them for
- * something else.
+ * now), `appEvents`, `appToaster`, `rowActions` (#42, landed now),
+ * `drafts` (#84) — do not reuse them for something else.
  */
 class RobocoApplication : Application() {
 
@@ -122,6 +128,48 @@ class RobocoApplication : Application() {
         FrontPageModel(workspaceFeed, prefs, foldState, applicationScope)
     }
 
+    /**
+     * The app's core-event fan-out (ticket 42): one [MutableSharedFlow]
+     * every part of the UI can collect, re-emitted from the single client
+     * listener with a non-blocking `tryEmit` on the Rust callback thread
+     * — 64 slots of slack, and a full buffer drops rather than blocks
+     * the callback. The sink is registered in [rowActions]'s lazy init,
+     * which `onCreate` forces before [coreStartup] starts, so no event
+     * is ever missed.
+     */
+    val appEvents = MutableSharedFlow<ClientEvent>(extraBufferCapacity = 64)
+
+    /**
+     * The app-scoped toast state (ticket 42's wiring of ticket 14):
+     * created once next to the client, **not** inside a composable — an
+     * app-lifetime [CoreRowActions] holding an Activity-scoped host's
+     * `remember { ToasterState() }` would toast into a dead host after a
+     * rotation. Ticket 35 passes it to the root
+     * `ToastHost(state = appToaster)`; until then only the gallery and
+     * the row actions write toasts through it.
+     */
+    val appToaster: ToasterState by lazy { ToasterState() }
+
+    /**
+     * The one object every session/section write goes through (ticket
+     * 42) — the [sh.roboco.android.sessions.RowActions] instance ticket
+     * 35 provides as `LocalRowActions` inside the root `ToastHost`.
+     * Writes run on the serial IO lane, errors toast, a successful
+     * archive shows "Archived · Undo", and the `ClientEvent.Notice`
+     * collector is started once here. App lifetime: a toast's Undo must
+     * outlive the screen that raised it (iOS's `[weak self]` on
+     * `AppModel`).
+     */
+    val rowActions: CoreRowActions by lazy {
+        coreStartup.addEventSink { event -> appEvents.tryEmit(event) }
+        CoreRowActions(
+            writes = { clientOrNull()?.asSessionWrites() },
+            sections = { workspaceFeed.snapshot.value?.front?.sections.orEmpty() },
+            toaster = appToaster,
+            scope = applicationScope,
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         // #609's Fonts.init swallowed missing faces (review bug 8); a
@@ -141,8 +189,12 @@ class RobocoApplication : Application() {
         // start() call below only arms its drains (they skip until the
         // client exists), and the feed's own collector re-triggers once
         // CoreStartup leaves Loading.
+        // #42: forcing `rowActions`'s lazy init registers the appEvents
+        // sink, and startNoticeToasts arms the app-wide Notice collector
+        // before the first event can flow.
         if (core is CoreStatus.Loaded) {
             workspaceFeed.start()
+            rowActions.startNoticeToasts(appEvents.notices())
             coreStartup.start()
         }
     }
