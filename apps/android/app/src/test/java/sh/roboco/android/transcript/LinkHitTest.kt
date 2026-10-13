@@ -76,7 +76,7 @@ class LinkHitTest {
         val links = listOf(LinkHit(10f, 10f, 20f, 20f, "o", 5u))
         // Index 5 against no scrollers: the point is not converted, and
         // (12, 12) is inside the row rect's own slop.
-        val hit = hitLink(noScrollers, links, { 7f }, 12f, 12f)!!
+        val hit = hitLink(links, noScrollers, { 7f }, 12f, 12f)!!
         assertEquals("o", hit.url)
         assertEquals(10f, hit.x, 0f)
         assertEquals(10f, hit.y, 0f)
