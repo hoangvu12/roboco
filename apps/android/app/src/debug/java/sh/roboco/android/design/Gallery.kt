@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.composer.ChipStripGallerySection
 import sh.roboco.android.composer.ComposerTextFieldGallerySection
+import sh.roboco.android.composer.ComposerActionButtonGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
@@ -212,6 +213,10 @@ object Gallery {
         GallerySection("Chrome visibility", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
             ChromeVisibilityGallerySection()
         },
+        // Ticket 58 (composer action button): the trailing send/queue/stop
+        // control — the state morph, the glyph bounce and the long-press
+        // delivery menu over the busy backdrop.
+        GallerySection("Composer action button", screenshotHeightDp = 420) { ComposerActionButtonGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
