@@ -62,6 +62,7 @@ import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.settings.DevicesRowsGallerySection
 import sh.roboco.android.settings.AppearanceGallerySection
+import sh.roboco.android.settings.NotificationRowsGallerySection
 import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
@@ -423,6 +424,15 @@ object Gallery {
         // readout. Fill: the section owns its fixed-height session window.
         GallerySection("Keyboard inset sync", GalleryLayout.Fill, screenshotHeightDp = 915) {
             KeyboardInsetGallerySection()
+        },
+        // Ticket 99 (notification rows): the Settings "Notifications"
+        // section — the master switch and the three kind rows over the
+        // three fixtures (fresh install, granted, denied-with-alert).
+        // Fill: the section is one LazyColumn of three keyed
+        // sub-sections; the denied fixture's alert goes through the
+        // AlertHost GalleryProviders already mounts.
+        GallerySection("Notification rows", GalleryLayout.Fill, screenshotHeightDp = 760) {
+            NotificationRowsGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

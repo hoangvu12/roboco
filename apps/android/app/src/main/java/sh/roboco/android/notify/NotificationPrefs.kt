@@ -32,9 +32,12 @@ enum class NotificationKind(val raw: String, val title: String) {
  * SharedPreferences, not DataStore: the delivery path reads it off the
  * main thread and must never suspend (a notification arriving during
  * startup cannot wait for a DataStore read). Process-wide singleton via
- * [get]; #99 adds its remaining members here.
+ * [get]; #99 adds its remaining members here. The constructor is
+ * `internal` for #99's tests, which build one over a Robolectric-backed
+ * `SharedPreferences` instead of the singleton file (the ticket's test
+ * seam; production always goes through [get]).
  */
-class NotificationPrefs private constructor(private val sp: SharedPreferences) {
+class NotificationPrefs internal constructor(private val sp: SharedPreferences) {
 
     /** The observable choices; flips synchronously on every write. */
     @Immutable
