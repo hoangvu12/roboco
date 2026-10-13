@@ -49,6 +49,7 @@ import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
+import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
@@ -282,6 +283,10 @@ object Gallery {
         GallerySection("New Project browser", GalleryLayout.Fill, screenshotHeightDp = 874) {
             FolderBrowserGallerySection()
         },
+        // Ticket 101 (About & Licenses): the Settings About card — the
+        // Version/Licenses rows and the long-press copy — plus the Licenses
+        // list and the licence-text page sheet in a fixed-height host.
+        GallerySection("About & Licenses", screenshotHeightDp = 1200) { AboutGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

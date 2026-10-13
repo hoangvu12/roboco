@@ -4,6 +4,7 @@ import roboco.gradle.LicensesSync
 import roboco.gradle.RepoPaths
 import roboco.gradle.RobocoFonts
 import roboco.gradle.RobocoVersion
+import roboco.gradle.RustLicensesTask
 import java.io.File
 import java.util.Properties
 
@@ -12,6 +13,10 @@ plugins {
     // AGP 9 carries built-in Kotlin: org.jetbrains.kotlin.android is NOT applied.
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.roborazzi)
+    // AboutLibraries (ui-parity#101): the JSON emitter only — no
+    // aboutlibraries-compose/-core library artifacts (ticket rule: the
+    // plugin's UI is Material, the app's is not).
+    alias(libs.plugins.aboutlibraries.android)
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +93,20 @@ fun coreProfile(buildType: String): String =
         .orElse(if (buildType == "release") "mobile-dist" else "mobile")
         .get()
 
+// ui-parity#101: the Rust licence data's inputs — the workspace manifests
+// and lockfile (the resolved graph), every crate manifest (the licence
+// fields) and the xtask's own sources. Shared by both build types; each
+// type gets its own task and output directory below.
+val rustLicensesSources = files(
+    repoRootDir.resolve("Cargo.toml"),
+    repoRootDir.resolve("Cargo.lock"),
+    fileTree(repoRootDir.resolve("crates")) { include("*/Cargo.toml") },
+    fileTree(repoRootDir.resolve("crates/xtask/src")),
+)
+
+fun rustLicensesTaskName(buildType: String): String =
+    "rustLicenses" + buildType.replaceFirstChar { it.uppercase() }
+
 for (buildType in listOf("debug", "release")) {
     val profileName = coreProfile(buildType)
     val out = RepoPaths.androidCore(project, profileName)
@@ -107,6 +126,19 @@ for (buildType in listOf("debug", "release")) {
         kotlinDir.set(out.resolve("kotlin"))
         jniLibsDir.set(out.resolve("jniLibs"))
         hostDir.set(out.resolve("host"))
+    }
+    // ui-parity#101: the same build type's Rust licence data, run after the
+    // core build (cargo metadata needs the registry sources unpacked).
+    tasks.register<RustLicensesTask>(rustLicensesTaskName(buildType)) {
+        group = "roboco"
+        description =
+            "Writes assets/licenses/rust-crates.json (cargo xtask android-licenses, " +
+                "languages ${coreLanguages.get()})."
+        repoRoot.set(repoRootDir)
+        languages.set(coreLanguages)
+        sources.from(rustLicensesSources)
+        assetsDir.set(layout.buildDirectory.dir("generated/licenses/$buildType"))
+        dependsOn(coreTaskName(buildType))
     }
 }
 
@@ -232,15 +264,20 @@ val syncFonts = tasks.register<roboco.gradle.FontsSync>("syncRobocoFonts") {
 
 // The repo's distribution licenses (android-app#31): a sideloaded APK is the
 // whole distribution, so LICENSE and THIRD_PARTY_NOTICES.md ship inside it
-// under assets/licenses/, beside the font licenses above.
+// under assets/licenses/, beside the font licenses above. The same task
+// stages the committed SPDX fallback texts (ui-parity#101) — licences the
+// AboutLibraries plugin cannot fill offline — under assets/licenses/spdx/.
 val licensesDir = layout.buildDirectory.dir("generated/roboco-licenses")
 
 val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
     group = "roboco"
-    description = "Copies the repository LICENSE and THIRD_PARTY_NOTICES.md into the APK assets."
+    description = "Copies the repository license, notices and SPDX texts into the APK assets."
     noticeFiles.setFrom(
         repoRootDir.resolve("LICENSE"),
         repoRootDir.resolve("THIRD_PARTY_NOTICES.md"),
+    )
+    spdxFiles.setFrom(
+        fileTree(repoRootDir.resolve("apps/android/licenses/spdx")) { include("*.txt") },
     )
     assetsDir.set(licensesDir)
 }
@@ -258,6 +295,7 @@ androidComponents {
     onVariants { variant ->
         val buildType = variant.buildType ?: return@onVariants
         val coreTask = tasks.named<AndroidCoreBuild>(coreTaskName(buildType))
+        val rustLicensesTask = tasks.named<RustLicensesTask>(rustLicensesTaskName(buildType))
         // AGP 9 variant API (no hard-coded sourceSets dirs): the generated
         // Kotlin and jniLibs are outputs of the core task.
         variant.sources.kotlin?.addGeneratedSourceDirectory(coreTask) { it.kotlinDir }
@@ -267,6 +305,33 @@ androidComponents {
         variant.sources.assets?.addGeneratedSourceDirectory(generateAssets) { it.assetsDir }
         variant.sources.assets?.addGeneratedSourceDirectory(syncFonts) { it.assetsDir }
         variant.sources.assets?.addGeneratedSourceDirectory(syncLicenses) { it.assetsDir }
+        variant.sources.assets?.addGeneratedSourceDirectory(rustLicensesTask) { it.assetsDir }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AboutLibraries (ui-parity#101): emit the JSON only. offlineMode keeps the
+// build reproducible (no network in CI; the SPDX texts the plugin would
+// otherwise pull from spdx.org are committed under apps/android/licenses/
+// and staged as assets/licenses/spdx/); fetchRemote* stays off too. The
+// plugin registers the per-variant export tasks that generate
+// res/raw/aboutlibraries.json from each variant's runtime classpath
+// (includeTestVariants defaults to false, so Robolectric/Roborazzi/JUnit
+// never appear; debug-only debugImplementation tooling may, which is
+// acceptable). No aboutlibraries-* library artifacts are used.
+// ---------------------------------------------------------------------------
+aboutLibraries {
+    offlineMode = true
+    collect {
+        fetchRemoteLicense = false
+        fetchRemoteFunding = false
+    }
+    export {
+        excludeFields.addAll("developers", "funding")
+        prettyPrint = false
+    }
+    library {
+        duplicationMode = com.mikepenz.aboutlibraries.plugin.DuplicateMode.MERGE
     }
 }
 
@@ -369,7 +434,13 @@ android {
 // core on jna.library.path, and the generated dirs for the plain tests.
 // ---------------------------------------------------------------------------
 tasks.withType<Test>().configureEach {
-    dependsOn(tasks.named(coreTaskName("debug")), generateAssets, syncFonts, syncLicenses)
+    dependsOn(
+        tasks.named(coreTaskName("debug")),
+        generateAssets,
+        syncFonts,
+        syncLicenses,
+        tasks.named(rustLicensesTaskName("debug")),
+    )
     javaLauncher.set(
         javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) },
     )

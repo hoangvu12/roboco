@@ -1,11 +1,12 @@
 //! `cargo xtask` — repo maintenance tasks.
 //!
-//! One task today: `android-core` (android-app#10), the single entry point
+//! Two tasks: `android-core` (android-app#10), the single entry point
 //! that builds the mobile core for Android and generates its UniFFI Kotlin
-//! bindings from **both Windows and Linux hosts**. Gradle's plain `Exec`
-//! task (ticket 13) and humans call the same command; no bash, so there is
-//! no WSL `bash.exe` trap, and `.dll`/`.exe` naming is handled by
-//! `std::env::consts`.
+//! bindings from **both Windows and Linux hosts**; and `android-licenses`
+//! (android-ui-parity #101), the Rust core's licence data for the Android
+//! Licenses screen. Gradle's plain `Exec` task (ticket 13) and humans call
+//! the same commands; no bash, so there is no WSL `bash.exe` trap, and
+//! `.dll`/`.exe` naming is handled by `std::env::consts`.
 //!
 //! ```text
 //! cargo xtask android-core [--out DIR]                 default target/android-core
@@ -13,6 +14,8 @@
 //!                         [--profile mobile|mobile-dist] default mobile
 //!                         [--languages mobile|all]       default mobile
 //!                         [--skip-host] [--skip-ndk] [--check]
+//!
+//! cargo xtask android-licenses --out FILE [--languages mobile|all]
 //! ```
 //!
 //! Outputs (all under `target/`, git-ignored — generated bindings are never
@@ -20,6 +23,7 @@
 //! `<out>/jniLibs/<abi>/libroboco_mobile.so`, `<out>/host/<libroboco_mobile
 //! or roboco_mobile.dll>` (JVM/Robolectric tests), `<out>/sizes.json`.
 
+mod android_licenses;
 mod args;
 mod elf;
 mod kotlin;
@@ -39,6 +43,7 @@ fn main() -> anyhow::Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
         Some("android-core") => android_core(&argv[1..]),
+        Some("android-licenses") => android_licenses::run(&argv[1..]),
         Some(other) => bail!("unknown task {other:?}\n{}", args::USAGE),
         None => bail!("{}", args::USAGE),
     }
@@ -46,7 +51,7 @@ fn main() -> anyhow::Result<()> {
 
 /// The repo root, baked at compile time (the binary is always built from
 /// this checkout — `cargo xtask` recompiles on demand).
-fn repo_root() -> &'static Path {
+pub(crate) fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -54,7 +59,7 @@ fn repo_root() -> &'static Path {
 }
 
 /// `cargo`, preferring the exact binary that invoked us.
-fn cargo() -> String {
+pub(crate) fn cargo() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())
 }
 
@@ -439,6 +444,22 @@ fn run(cwd: &Path, program: &str, argv: &[&str], env: &[(&str, &str)]) -> anyhow
         bail!("{program} {} failed with {status}", argv.join(" "));
     }
     Ok(())
+}
+
+/// Like [run], but returns the command's standard output as text (stdout
+/// only; stderr passes through to the console). `cargo metadata`'s JSON is
+/// the payload here.
+pub(crate) fn run_capture(cwd: &Path, program: &str, argv: &[&str]) -> anyhow::Result<String> {
+    println!("+ {program} {}", argv.join(" "));
+    let output = std::process::Command::new(program)
+        .args(argv)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("could not run {program}"))?;
+    if !output.status.success() {
+        bail!("{program} {} failed with {}", argv.join(" "), output.status);
+    }
+    String::from_utf8(output.stdout).with_context(|| format!("{program} stdout is not UTF-8"))
 }
 
 #[cfg(test)]
