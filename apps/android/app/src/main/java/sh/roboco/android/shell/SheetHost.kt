@@ -108,6 +108,14 @@ class SheetEntry internal constructor(
     var hiddenForHandoff by mutableStateOf(false)
         internal set
 
+    /**
+     * Ticket 111's [PageSheetScope.dismissBlocked] backing state: while
+     * true the frame ignores drag-to-dismiss and back, and drops the a11y
+     * Dismiss action. Programmatic dismissal ignores it.
+     */
+    var dismissBlocked by mutableStateOf(false)
+        internal set
+
     /** True while an animated dismissal is in flight; the once-guard. */
     internal var dismissing by mutableStateOf(false)
 

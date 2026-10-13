@@ -94,6 +94,16 @@ interface PageSheetScope {
 
     /** The page's clip shape (top corners 38, continuous). */
     val pageShape: Shape
+
+    /**
+     * Ticket 111's hook (UIKit `isModalInPresentation`): while true the
+     * sheet ignores drag-to-dismiss, system and predictive back are
+     * consumed with no visual progress, and the a11y Dismiss action is
+     * gone — a write is in flight. Programmatic [dismiss] ignores the
+     * flag (the success path dismisses through it). Default false, so
+     * ticket 31's behaviour is unchanged for every other sheet.
+     */
+    var dismissBlocked: Boolean
 }
 
 /**
@@ -250,9 +260,13 @@ internal fun PageSheet(
         val settle: (Float) -> Unit = remember(entry, host, heightPx, flingPx) {
             { velocity ->
                 if (!entry.dismissing && !entry.hiddenForHandoff) {
-                    if (PageSheetMath.shouldDismiss(entry.offset.value, heightPx, velocity, flingPx)) {
+                    if (!entry.dismissBlocked &&
+                        PageSheetMath.shouldDismiss(entry.offset.value, heightPx, velocity, flingPx)
+                    ) {
                         host.dismissEntryAndAbove(host.entries.indexOf(entry), animated = true, velocity = velocity)
                     } else {
+                        // Blocked (111's submitting) or a cancel release: the
+                        // sheet springs back to rest, never away.
                         host.settleBack(entry, velocity)
                     }
                 }
@@ -294,7 +308,7 @@ internal fun PageSheet(
                         }
                     },
                     orientation = Orientation.Vertical,
-                    enabled = !entry.hiddenForHandoff && !entry.dismissing,
+                    enabled = !entry.hiddenForHandoff && !entry.dismissing && !entry.dismissBlocked,
                     startDragImmediately = entry.offset.isRunning,
                     onDragStopped = { velocity -> settle(velocity) },
                 )
@@ -302,18 +316,33 @@ internal fun PageSheet(
                 .testTag("page-sheet")
                 .semantics {
                     isTraversalGroup = true
-                    customActions = listOf(
-                        CustomAccessibilityAction(label = "Dismiss") {
-                            scope.dismiss(true)
-                            true
-                        },
-                    )
+                    // 111: while a write blocks dismissal there is no a11y
+                    // Dismiss action either (programmatic dismiss still works).
+                    if (!entry.dismissBlocked) {
+                        customActions = listOf(
+                            CustomAccessibilityAction(label = "Dismiss") {
+                                scope.dismiss(true)
+                                true
+                            },
+                        )
+                    }
                 }
                 .onGloballyPositioned { coordinates -> scope.updatePageBounds(coordinates.boundsInWindow()) },
         ) {
             // Predictive back is registered **before** the content, so a
             // handler inside the content (a menu, an inner NavStack) wins.
+            // The handler stays enabled while dismissal is blocked (111):
+            // the gesture is consumed with no visual progress and no
+            // dismissal, never passed to whatever is below the sheet.
             PredictiveBackHandler(enabled = isTop && !entry.hiddenForHandoff && !entry.dismissing) { events ->
+                if (entry.dismissBlocked) {
+                    try {
+                        events.collect { }
+                    } catch (e: CancellationException) {
+                        throw e
+                    }
+                    return@PredictiveBackHandler
+                }
                 try {
                     events.collect { event ->
                         // b ∈ [0, 1] scrubs y to 0.25·H·b; commit dismisses.
@@ -406,6 +435,12 @@ internal class PageSheetScopeImpl(
 
     override val pageShape: Shape = SmoothTopRoundedShape(PageSheetDefaults.CornerRadius)
 
+    override var dismissBlocked: Boolean
+        get() = entry.dismissBlocked
+        set(value) {
+            entry.dismissBlocked = value
+        }
+
     /** Called from the frame's `onGloballyPositioned` (layout phase). */
     internal fun updatePageBounds(rect: Rect) {
         bounds = rect
@@ -429,7 +464,9 @@ private class PageSheetNestedScroll(
 ) : NestedScrollConnection {
 
     override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-        if (source != NestedScrollSource.UserInput || entry.hiddenForHandoff || entry.dismissing) {
+        if (source != NestedScrollSource.UserInput || entry.hiddenForHandoff || entry.dismissing ||
+            entry.dismissBlocked
+        ) {
             return Offset.Zero
         }
         val y = entry.offset.value
@@ -447,7 +484,9 @@ private class PageSheetNestedScroll(
     }
 
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        if (source != NestedScrollSource.UserInput || entry.hiddenForHandoff || entry.dismissing) {
+        if (source != NestedScrollSource.UserInput || entry.hiddenForHandoff || entry.dismissing ||
+            entry.dismissBlocked
+        ) {
             return Offset.Zero
         }
         val y = entry.offset.value
@@ -468,6 +507,8 @@ private class PageSheetNestedScroll(
         val y = entry.offset.value
         // Release while the sheet is offset: settle it with the release
         // velocity and consume it all, so the content never starts a fling.
+        // While dismissal is blocked (111) the settle springs the sheet
+        // back to rest instead of dismissing it.
         if (!entry.hiddenForHandoff && !entry.dismissing && !y.isNaN() && y > 0f) {
             settle(available.y)
             return available

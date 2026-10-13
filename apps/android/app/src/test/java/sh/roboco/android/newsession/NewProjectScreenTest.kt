@@ -25,6 +25,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import sh.roboco.android.design.Alerts
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.GalleryBackdrop
 import sh.roboco.android.design.ReduceMotion
@@ -125,12 +126,32 @@ class NewProjectScreenTest {
         return controller
     }
 
+    /**
+     * 111's actions over a settled controller: the debug
+     * [FakeProjectWriteApi] (never called — these tests never tap Use)
+     * and a dropped-alerts [sh.roboco.android.design.Alerts.Noop].
+     */
+    private fun actionsFor(controller: FolderBrowserController): FolderBrowserActions =
+        FolderBrowserActions(
+            controller,
+            FakeHostPaths,
+            FakeProjectWriteApi(),
+            Alerts.Noop,
+            CoroutineScope(Dispatchers.Unconfined),
+            onCreated = {},
+            dismissSheet = {},
+        )
+
     /** Presents the screen in a settled page sheet over the backdrop. */
-    private fun present(controller: FolderBrowserController, appearance: Appearance = Appearance.Light) {
+    private fun present(
+        controller: FolderBrowserController,
+        appearance: Appearance = Appearance.Light,
+    ) {
+        val actions = actionsFor(controller)
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-project", SheetStyle.Page(grabber = false)) {
-                NewProjectScreen(sheet = this, onCreated = {}, controller = controller)
+                NewProjectScreen(sheet = this, controller = controller, actions = actions)
             }
         }
         compose.setContent {
@@ -250,13 +271,14 @@ class NewProjectScreenTest {
     @Test
     fun theCloseButtonDismissesOnlyTheNewProjectSheet() {
         val controller = posixController()
+        val actions = actionsFor(controller)
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-session", SheetStyle.Page(grabber = true)) {
                 NewSessionSheetPlaceholder(this)
             }
             state.presentSettledForPreview("new-project", SheetStyle.Page(grabber = false)) {
-                NewProjectScreen(sheet = this, onCreated = {}, controller = controller)
+                NewProjectScreen(sheet = this, controller = controller, actions = actions)
             }
         }
         compose.setContent {
