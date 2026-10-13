@@ -36,11 +36,13 @@ import sh.roboco.android.sessions.FoldState
 import sh.roboco.android.sessions.FrontPageModel
 import sh.roboco.android.sessions.asSessionWrites
 import sh.roboco.android.sessions.notices
+import sh.roboco.android.shell.DeepLinkHub
 import sh.roboco.android.shell.RootInput
 import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SearchTabState
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.CoreClient
+import uniffi.roboco_core.WorkspaceSnapshot
 
 /**
  * The Roboco app shell: verifies the bundled fonts, loads the Rust mobile
@@ -52,7 +54,8 @@ import uniffi.roboco_core.CoreClient
  * Property names are reserved for the parity tickets (android-ui-parity):
  * `prefs`, `workspaceFeed`, `foldState`, `frontPage` (#40, all landed
  * now), `appEvents`, `appToaster`, `rowActions` (#42, landed now),
- * `drafts` (#84) — do not reuse them for something else.
+ * `deepLinks` (#36, landed), `drafts` (#84) — do not reuse them for
+ * something else.
  */
 class RobocoApplication : Application() {
 
@@ -84,6 +87,22 @@ class RobocoApplication : Application() {
      * open coroutines.
      */
     val routerHooks = RouterHooks()
+
+    /**
+     * The process-wide deep-link hub (ticket 36): holds `roboco://` links
+     * and `route` extras until a shell can take them (dispatched after the
+     * shell's first frame), drops everything but `pair` while the pairing
+     * root is on screen, and hands `roboco://pair…` to the handler ticket
+     * 139 registers. App-lifetime on purpose: a link held while the
+     * splash is up survives activity recreation.
+     *
+     * [knownChatIds] reads the workspace snapshot — an in-memory list of
+     * scoped ids (`allSessionIds` below), never a blocking FFI call on the
+     * main thread, and only ever for a link with a **raw** engine id.
+     */
+    val deepLinks: DeepLinkHub by lazy {
+        DeepLinkHub(knownChatIds = { workspaceFeed.snapshot.value.allSessionIds() })
+    }
 
     /**
      * The appearance preference (ticket 96's flow; `System` until 96
@@ -291,4 +310,29 @@ class RobocoApplication : Application() {
 
     /** The live client, or null before `CoreStartState.Ready`. */
     fun clientOrNull(): CoreClient? = coreStartup.clientOrNull()
+}
+
+/**
+ * Every session id the workspace snapshot carries (ticket 36's
+ * `knownChatIds`): pinned, sections, recent, groups, projects,
+ * projectless, pull requests and archived — all **scoped** ids
+ * (`engine:v1:…`), all already in memory (`emptyList()` while the
+ * snapshot is null). Deduplicated: `recent`, `groups`, `projects` and
+ * `projectless` deliberately overlap, and the hub's raw-id resolution
+ * counts **distinct** matching scoped ids.
+ */
+private fun WorkspaceSnapshot?.allSessionIds(): List<String> {
+    if (this == null) return emptyList()
+    return buildList {
+        front.pinned.forEach { add(it.id) }
+        front.sections.forEach { section -> section.sessions.forEach { add(it.id) } }
+        front.recent.forEach { add(it.id) }
+        front.groups.forEach { group -> group.sessions.forEach { add(it.id) } }
+        projects.forEach { project -> project.sessions.forEach { add(it.id) } }
+        addAll(projectless.map { it.id })
+        addAll(pullRequests.open.map { it.id })
+        addAll(pullRequests.merged.map { it.id })
+        addAll(pullRequests.closed.map { it.id })
+        addAll(archived.map { it.id })
+    }.distinct()
 }

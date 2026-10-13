@@ -24,6 +24,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- roboco:// deep links (ticket 36). No autoVerify: custom
+                 scheme. One filter: scheme × the five hosts, any path. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="roboco" />
+                <data android:host="chat" />
+                <data android:host="new" />
+                <data android:host="settings" />
+                <data android:host="search" />
+                <data android:host="pair" />
+            </intent-filter>
         </activity>
         <!-- android-ui-parity #87: the attach menu's camera capture file. No
              uses-permission CAMERA and no uses-feature camera here: the
