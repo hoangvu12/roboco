@@ -55,6 +55,7 @@ import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
+import sh.roboco.android.settings.DevicesRowsGallerySection
 import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
@@ -343,6 +344,12 @@ object Gallery {
         GallerySection("Status pill", screenshotHeightDp = 760) {
             StatusPillGallerySection(liveTicker = !LocalGalleryCapture.current)
         },
+        // Ticket 102 (Devices rows): the Settings Devices section — one
+        // row per paired engine (dot + disclosure) and the "Pair an
+        // engine" row, from DevicesRowSpec fixtures: connected,
+        // reconnecting, revoked, the wrapped incompatible sentence, plus
+        // the pressed and no-engines blocks.
+        GallerySection("Devices rows", screenshotHeightDp = 900) { DevicesRowsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
