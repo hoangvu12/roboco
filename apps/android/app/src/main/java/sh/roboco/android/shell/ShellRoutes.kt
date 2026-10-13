@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.LicensesRoute
@@ -48,7 +49,13 @@ fun ShellRouteContent(route: NavRoute) {
             // Ticket 49: the Search tab's root — the model + list state
             // live on the entry, so the query, results and scroll survive
             // tab switches (29 refocuses the field on re-entry).
-            TabId.Search -> SearchScreen()
+            // The shell's `tab-root-<id>` tag (26's placeholder contract, kept
+            // by 46's SessionsScreen) goes on a wrapper: SearchScreen tags
+            // its own node `search-screen`, and two testTags on one node
+            // would leave only one of them.
+            TabId.Search -> Box(Modifier.fillMaxSize().testTag("tab-root-search")) {
+                SearchScreen()
+            }
             else -> PlaceholderTabRoot(route.tab)
         }
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
