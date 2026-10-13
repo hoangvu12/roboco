@@ -41,6 +41,8 @@ import sh.roboco.android.composer.composerMorphHost
 import sh.roboco.android.composer.previewMorphState
 import sh.roboco.android.composer.rememberComposerMorphState
 import sh.roboco.android.core.Face
+import sh.roboco.android.design.glass.LocalHazeState
+import sh.roboco.android.design.glass.ProvideHazeState
 
 /**
  * The "Composer morph" page of the debug design gallery
