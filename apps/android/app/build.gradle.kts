@@ -538,4 +538,8 @@ dependencies {
     // ui-test-junit4 on the androidTest classpath as well.
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
+    // Instrumented IME flow test (ui-parity #133): raw swipes over the
+    // window, through the IME's own region — Compose injection cannot
+    // reach there and the IME is not a compose node.
+    androidTestImplementation(libs.androidx.uiautomator)
 }

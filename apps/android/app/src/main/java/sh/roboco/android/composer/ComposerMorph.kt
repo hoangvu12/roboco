@@ -38,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import sh.roboco.android.design.LocalReduceMotion
 import sh.roboco.android.design.Motion
+import sh.roboco.android.transcript.InteractiveImeDismiss
 
 /**
  * iOS `ComposerBar.wantsCard` (`ios:Composer/ComposerBar.swift:308-310`):
@@ -269,8 +270,15 @@ fun rememberComposerMorphState(
     // IME, so the rule never fires there.
     val ime = WindowInsets.isImeVisible
     val windowFocused = LocalWindowInfo.current.isWindowFocused
+    // 133: while an interactive transcript drag holds (or is acquiring)
+    // the IME controller, a mid-drag visibility report must not blur —
+    // the drag owns the decision. When it ends (the release finishing
+    // the settle flips the flag), this effect re-runs with the settled
+    // IME state and blurs only if the IME stayed hidden.
+    val imeDrag = InteractiveImeDismiss.active
     var imeSeen by remember { mutableStateOf(false) }
-    LaunchedEffect(ime, state.isFocused, windowFocused) {
+    LaunchedEffect(ime, state.isFocused, windowFocused, imeDrag) {
+        if (imeDrag) return@LaunchedEffect
         val (seen, blur) = imeBlurStep(state.isFocused, ime, windowFocused, imeSeen)
         imeSeen = seen
         if (blur) state.blur()

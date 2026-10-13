@@ -187,10 +187,21 @@ object Motion {
     /** Tab bar minimize-on-scroll morph. ios:Shell/MainTabController.swift:22 (system minimize; values from android-app#19) */
     val TabBarMinimize = IosSpring("tabBarMinimize", 0.40, 0.85f)
 
+    /**
+     * Interactive IME dismiss settle (ticket 133): the standard iOS
+     * keyboard animation duration (`UIKeyboardAnimationDurationUserInfoKey`,
+     * 0.25 s) mapped by the settle-matched rule's critically damped
+     * branch, ζ ≥ 1: `(9.2334 / 0.25)² = 1364.09`. Carries the release
+     * velocity; never oscillates, but can overshoot once toward the
+     * target, so each step is clamped to `[hidden, shown]`.
+     */
+    val ImeSettle = IosSpring("imeSettle", 0.25, 1f)
+
     /** Every spring of ticket 04's Motion table, in table order (MotionTest pins
      * this list). Later tickets' springs stay out and are pinned by their own
-     * tickets' tests — except ui-parity#28's [TabBarMinimize], which its ticket
-     * explicitly adds here (18's AlertScaleIn remains out).
+     * tickets' tests — except ui-parity#28's [TabBarMinimize] and
+     * ui-parity#133's [ImeSettle], which their tickets explicitly add here
+     * (18's AlertScaleIn remains out).
      */
     val allSprings: List<IosSpring> = listOf(
         ComposerMorph,
@@ -203,6 +214,7 @@ object Motion {
         AccessoryRelayout,
         SectionChevron,
         TabBarMinimize,
+        ImeSettle,
     )
 
     // ------------------------------------------------------------ tween tokens
