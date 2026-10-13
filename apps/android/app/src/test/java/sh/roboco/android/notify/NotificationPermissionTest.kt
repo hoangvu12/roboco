@@ -101,9 +101,16 @@ class NotificationPermissionTest {
     fun theResolutionTableMatchesForEveryCombination() {
         // (sdkClass, appEnabled, permissionGranted, blocked) → expected.
         // sdkClass "low" = 31/32 (no runtime permission), "high" = 33/34.
+        // The branches mirror the ticket's table order (rule 1 granted,
+        // rule 2 the 31–32 system-settings-only state, rule 3 the
+        // permission-held-but-app-blocked case, rule 4 the recorded final
+        // denial, rule 5 NotDetermined); the per-rule tests above pin each
+        // rule with literals, so this loop only checks the lattice holds
+        // together.
         fun expected(sdk: Int, appEnabled: Boolean, permissionGranted: Boolean, blocked: Boolean): NotificationStatus = when {
             appEnabled && permissionGranted -> NotificationStatus.Granted
             sdk < 33 -> NotificationStatus.Denied
+            permissionGranted -> NotificationStatus.Denied
             blocked -> NotificationStatus.Denied
             else -> NotificationStatus.NotDetermined
         }
