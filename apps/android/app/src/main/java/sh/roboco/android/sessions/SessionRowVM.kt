@@ -20,6 +20,7 @@ import uniffi.roboco_core.SessionRow
  * tickets that need the owning engine (42 row actions, 50 offline
  * indication) look the FFI row up by id. A later ticket that must add a
  * field appends it with a default so this ticket's fixtures keep compiling.
+ * The composable that draws it is [sh.roboco.android.sessions.SessionRow].
  */
 @Immutable
 data class SessionRowVM(
