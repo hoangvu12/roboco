@@ -2,6 +2,7 @@ package sh.roboco.android.image
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -177,7 +178,7 @@ class ImageViewerScreenshotTest {
                 if (withTile) {
                     Box(
                         Modifier
-                            .padding(start = 18.dp, top = 300.dp)
+                            .absoluteOffset(18.dp, 300.dp)
                             .size(260.dp, 146.dp)
                             .onPlaced { coords ->
                                 goldenTileBounds = Rect(coords.positionInWindow(), coords.size.toSize())

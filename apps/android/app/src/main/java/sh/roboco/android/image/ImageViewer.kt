@@ -229,7 +229,7 @@ val ImageViewerBackgroundAlphaKey = SemanticsPropertyKey<Float>("ImageViewerBack
 class ImageViewerState {
 
     /** The current lifecycle phase. */
-    var phase: ViewerPhase
+    var phase: ViewerPhase = ViewerPhase.Hidden
         private set
 
     /** `phase != Hidden` — also true while a null-preview load is awaited. */

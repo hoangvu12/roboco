@@ -227,7 +227,7 @@ private fun ViewerGalleryTile(
             .imageViewerSource(fixture.reference),
     ) {
         Image(
-            image = fixture.preview,
+            fixture.preview,
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,

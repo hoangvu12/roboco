@@ -8,8 +8,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -54,6 +54,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -131,7 +132,7 @@ class ImageViewerTest {
         Box(
             Modifier
                 .testTag("fixture-tile")
-                .padding(start = 120.dp, top = 200.dp)
+                .absoluteOffset(120.dp, 200.dp)
                 .size(120.dp, 90.dp)
                 .onPlaced { placed -> coords = placed }
                 .clip(rememberSmoothRoundedShape(radius))
@@ -151,16 +152,18 @@ class ImageViewerTest {
         )
     }
 
-    private fun fixtureTilePicture(): ImageBitmap {
+    private fun fixtureTilePicture(): ImageBitmap = tilePicture
+
+    private val tilePicture: ImageBitmap by lazy {
         val bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(0xFF3366CC.toInt())
-        return bitmap.asImageBitmap()
+        bitmap.asImageBitmap()
     }
 
-    private fun fullPicture(): ImageBitmap {
+    private val fullPicture: ImageBitmap by lazy {
         val bitmap = Bitmap.createBitmap(256, 128, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(0xFFEEDDAA.toInt())
-        return bitmap.asImageBitmap()
+        bitmap.asImageBitmap()
     }
 
     /** A request for [state], defaulting to the tile's current rect. */
@@ -185,7 +188,7 @@ class ImageViewerTest {
 
     /** The viewer's current [key] value (background alpha, zoom). */
     private fun viewerValue(key: SemanticsPropertyKey<Float>): Float {
-        val matcher = SemanticsMatcher("has ${key.name}") { config -> config.containsKey(key) }
+        val matcher = SemanticsMatcher("has ${key.name}") { it.config.contains(key) }
         val nodes = compose.onAllNodes(matcher, useUnmergedTree = true).fetchSemanticsNodes()
         assertTrue("no ${key.name} node in the semantics tree", nodes.isNotEmpty())
         return nodes.first().config[key]
@@ -246,14 +249,15 @@ class ImageViewerTest {
     @Test
     fun closeZoomsBackIntoTheCurrentTileRectAndReleasesTheSource() {
         host()
-        openFrozen()
+        // The tile's semantics vanish while the viewer shows
+        // (clearAndSetSemantics on the content), so capture them first.
+        val tile = tileBounds()
+        openFrozen(source = tile)
         compose.mainClock.advanceTimeBy(700)
         assertEquals(ViewerPhase.Shown, state.phase)
 
         compose.runOnUiThread { state.close() }
-        val target = state.closeTarget
-        assertNotNull("the close target is the tile", target)
-        val tile = tileBounds()
+        val target = state.closeTarget ?: fail("the close target is the tile")
         assertEquals(tile.left, target.left, 1f)
         assertEquals(tile.top, target.top, 1f)
         assertEquals(tile.right, target.right, 1f)
@@ -311,7 +315,7 @@ class ImageViewerTest {
     @Test
     fun theFullResolutionBitmapSwapsInWithoutAnimation() {
         host()
-        val full = fullPicture()
+        val full = fullPicture
         compose.runOnUiThread {
             state.show(request(loadFull = { full }))
         }
@@ -327,7 +331,7 @@ class ImageViewerTest {
         host()
         openAndSettle()
         compose.runOnUiThread {
-            state.show(request(source = null, preview = fullPicture()))
+            state.show(request(source = null, preview = fullPicture))
         }
         compose.waitForIdle()
         // The second request never replaced the first's bitmap.
@@ -498,6 +502,8 @@ class ImageViewerTest {
                 state.drag(Offset(0f, 150f))
             }
         }
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame() // apply the drag write
         assertEquals(ViewerPhase.Dragging, state.phase)
         // Progress = 150 / (0.5 · H): the background fades to ≈ 0.88.
         val alpha = viewerValue(ImageViewerBackgroundAlphaKey)

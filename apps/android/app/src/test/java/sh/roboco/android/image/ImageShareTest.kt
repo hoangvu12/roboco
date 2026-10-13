@@ -18,9 +18,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,27 +63,27 @@ class ImageShareTest {
         ImageShare.share(activity, bitmap)
 
         val chooser = shadowOf(activity).nextStartedActivity
-        assertNotNull("the chooser must have been started", chooser)
+            ?: fail("the chooser must have been started")
         assertEquals(Intent.ACTION_CHOOSER, chooser.action)
         val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-        assertNotNull("the chooser's EXTRA_INTENT must be the ACTION_SEND", send)
+            ?: fail("the chooser's EXTRA_INTENT must be the ACTION_SEND")
         assertEquals(Intent.ACTION_SEND, send.action)
         assertEquals("image/png", send.type)
         assertTrue(
             "the read grant must be flagged",
-            send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0,
+            (send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0,
         )
-        assertNotNull("the chooser preview needs the ClipData", send.clipData)
+        assertTrue("the chooser preview needs the ClipData", send.clipData != null)
         val uri = send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-        assertNotNull("EXTRA_STREAM must carry the PNG", uri)
+            ?: fail("EXTRA_STREAM must carry the PNG")
         assertEquals("${activity.packageName}.fileprovider", uri.authority)
 
         // The file exists and decodes back to the bitmap's size.
         val shared = File(activity.cacheDir, ImageShare.SharedDir)
-        val files = shared.listFiles()
-        assertNotNull("cacheDir/shared must exist", files)
+        val files = shared.listFiles() ?: fail("cacheDir/shared must exist")
         assertEquals("exactly one file per share", 1, files.size)
         val decoded = BitmapFactory.decodeStream(activity.contentResolver.openInputStream(uri))
+            ?: fail("the shared PNG must decode")
         assertEquals(64, decoded.width)
         assertEquals(32, decoded.height)
     }
@@ -115,7 +114,7 @@ class ImageShareTest {
         val dir = File(createTempDirectory("image-share-gone").toFile(), "missing")
         // Must not throw: the share's write step mkdirs first.
         ImageShare.prune(dir, System.currentTimeMillis())
-        assertNull(dir.listFiles()) // still absent
+        assertTrue("still absent", !dir.exists())
     }
 
     /** A solid ARGB_8888 bitmap (CompressFormat needs a non-alpha-only config). */
