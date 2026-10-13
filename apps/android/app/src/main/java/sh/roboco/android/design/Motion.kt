@@ -362,6 +362,19 @@ object Motion {
     /** Large-title end-of-scroll snap: 0.46 s critically damped (stiffness ≈ 400). ui-parity#25 (chosen, not measured). */
     val LargeTitleSnap = IosSpring("largeTitleSnap", 0.4617, 1f)
 
+    // -------------------------------------------------- pull to refresh (48)
+    // The refresh control's bounce-back settle (release → the 60 dp hold,
+    // refresh end → 0). UIKit's bounce-back curve is internal with no
+    // exposed numbers, so ticket 48 approximates it as the same 0.4617 s
+    // critically damped settle as the large-title snap — stiffness ≈ 400,
+    // the ticket's tunable `SettleStiffness` in spirit, carried as an
+    // [IosSpring] so no literal is ever pasted (FOUNDATION-D1). A 60 → 0
+    // settle reaches 0.5 dp after ≈ 0.34 s. Stays out of allSprings (04's
+    // table only), pinned by 48's own tests.
+
+    /** Refresh-control settle: 0.46 s critically damped (stiffness ≈ 400). ui-parity#48 (chosen, not measured). */
+    val RefreshSettle = IosSpring("refreshSettle", 0.4617, 1f)
+
     // ------------------------------------------------------ handoff timing set
 
     /** The full handoff timing set, normal or reduced. ios:Session/DraftHandoff.swift:59-131,162-174 */

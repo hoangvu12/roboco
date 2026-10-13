@@ -307,6 +307,10 @@ object Gallery {
         // Ticket 35 (app root): pairing / phone / split selection, the
         // 350 ms cross-fade and the instant sheet dismissal before a swap.
         GallerySection("App root", GalleryLayout.Fill) { AppRootGallerySection() },
+        // Ticket 48 (pull to refresh): the scaffold + the 21-dp cell spinner
+        // over the three fake refresh durations — the rubber-band pull, the
+        // 60-dp hold and the 0.6 s / 3 s window.
+        GallerySection("Pull to refresh", GalleryLayout.Fill, 891) { PullToRefreshGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
