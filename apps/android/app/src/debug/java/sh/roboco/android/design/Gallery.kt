@@ -49,6 +49,7 @@ import sh.roboco.android.sessions.SessionListGallerySection
 import sh.roboco.android.sessions.SessionPromptsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
+import sh.roboco.android.sessions.SessionsScreenGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
@@ -330,6 +331,14 @@ object Gallery {
         // card — header, question, option rows, the Other field/editor and
         // Back + Next, one page per question, plus the interactive toy.
         GallerySection("Question card", screenshotHeightDp = 4200) { QuestionCardGallerySection() },
+        // Ticket 46 (Sessions tab root): the tab's real screen — large
+        // title, ⋯ options menu, header long-press menus, the wallpaper
+        // hero with the live scroll fade — over the 1-off/3-on fixtures,
+        // with the Wallpaper and Group-by-Project toggles and the recorder
+        // readout. Fill: the screen owns its LazyColumn.
+        GallerySection("Sessions screen", GalleryLayout.Fill, screenshotHeightDp = 874) {
+            SessionsScreenGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

@@ -46,6 +46,7 @@ import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
+import sh.roboco.android.design.glass.GlassMenuHost
 import kotlin.math.abs
 
 /**
@@ -224,7 +225,14 @@ class MinimizeOnScrollTest {
     /** The real shell over the placeholder roots. */
     private fun placeShell(shellState: MainTabState) {
         compose.setContent {
-            RobocoTheme { MainTabShell(state = shellState) }
+            RobocoTheme {
+                // Ticket 46: the Sessions root is the real screen now — its
+                // ⋯ needs a GlassMenuHost and its loading spinner a frozen
+                // glyph clock.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    GlassMenuHost { MainTabShell(state = shellState) }
+                }
+            }
         }
         compose.waitForIdle()
     }
@@ -448,15 +456,19 @@ class MinimizeOnScrollTest {
     fun aChromeHidingRouteDisablesTheDetectorAndPopShowsExpandedChrome() {
         val shellState = MainTabState(TabId.Sessions)
         placeShell(shellState)
-        // Minimize over the placeholder root list.
-        compose.onNodeWithTag("tab-root-sessions").performTouchInput { swipeUp() }
+        // Ticket 46: the real Sessions root is empty under Robolectric, so
+        // the minimize runs over the Settings placeholder's list (the
+        // detector is the shell's, tab-agnostic).
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("tab-root-more").performTouchInput { swipeUp() }
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertExists()
         // A pushed chrome-hiding route (a Session): the committed push
         // restores the bar — snapped, not animated — and the detector is
         // disabled while it is on top.
-        compose.runOnUiThread { shellState.stack(TabId.Sessions).push(HidingRoute) }
-        compose.waitUntil(5_000) { shellState.stack(TabId.Sessions).top.route.hidesBottomChrome }
+        compose.runOnUiThread { shellState.stack(TabId.Settings).push(HidingRoute) }
+        compose.waitUntil(5_000) { shellState.stack(TabId.Settings).top.route.hidesBottomChrome }
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertDoesNotExist()
         // Ticket 30 leaves the whole chrome group unplaced over a hiding
@@ -469,10 +481,10 @@ class MinimizeOnScrollTest {
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertDoesNotExist()
         // Popping back shows the expanded chrome over the root list.
-        compose.runOnUiThread { shellState.stack(TabId.Sessions).pop() }
-        compose.waitUntil(5_000) { !shellState.stack(TabId.Sessions).top.route.hidesBottomChrome }
+        compose.runOnUiThread { shellState.stack(TabId.Settings).pop() }
+        compose.waitUntil(5_000) { !shellState.stack(TabId.Settings).top.route.hidesBottomChrome }
         compose.waitForIdle()
-        compose.onNodeWithTag("tab-root-sessions").assertExists()
+        compose.onNodeWithTag("tab-root-more").assertExists()
         compose.onNodeWithTag("tab-bar-minimized").assertDoesNotExist()
         compose.onNodeWithTag("tab-pill").assertWidthIsEqualTo(290.dp)
     }
@@ -481,12 +493,16 @@ class MinimizeOnScrollTest {
     fun switchingTabWhileMinimizedExpandsWithTheSpring() {
         val shellState = MainTabState(TabId.Sessions)
         placeShell(shellState)
-        compose.onNodeWithTag("tab-root-sessions").performTouchInput { swipeUp() }
+        // Ticket 46: minimize over the Settings placeholder's list, then
+        // switch to the (real) Sessions tab while minimized.
+        compose.onNodeWithTag("tab-more").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("tab-root-more").performTouchInput { swipeUp() }
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertExists()
         compose.mainClock.autoAdvance = false
-        // showSettings() while minimized: the expand animates.
-        compose.runOnUiThread { shellState.select(TabId.Settings) }
+        // A tab switch while minimized: the expand animates.
+        compose.runOnUiThread { shellState.select(TabId.Sessions) }
         // The write was made outside composition on the (paused) main
         // looper: hand it to the Recomposer before advancing the frozen clock.
         Snapshot.sendApplyNotifications()
@@ -495,7 +511,7 @@ class MinimizeOnScrollTest {
         assertTrue("mid-expand pill width: $width", width > 48.5f && width < 289.5f)
         compose.mainClock.autoAdvance = true
         compose.waitUntil(5_000) { widthDp("tab-pill") == 290f }
-        compose.onNodeWithTag("tab-root-more").assertExists()
+        compose.onNodeWithTag("tab-root-sessions").assertExists()
     }
 
     /** A route that hides the bottom chrome, like a Session (76). */

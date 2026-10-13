@@ -29,8 +29,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.LocalReduceMotion
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.GlassMenuHost
 
 /**
  * Ticket 29's field and return circle (Robolectric, 402 × 220 dp at xxhdpi
@@ -104,7 +106,13 @@ class SearchTabFieldTest {
     /** The real shell, for the round trip. */
     private fun placeShell(shell: MainTabState) {
         compose.setContent {
-            RobocoTheme { MainTabShell(state = shell, searchState = searchState) }
+            RobocoTheme {
+                // Ticket 46: the real Sessions root needs the menu host and
+                // the frozen glyph clock (the loading spinner).
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    GlassMenuHost { MainTabShell(state = shell, searchState = searchState) }
+                }
+            }
         }
         compose.waitForIdle()
     }

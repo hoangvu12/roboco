@@ -12,7 +12,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.GlassMenuHost
 
 /**
  * The phone shell's one shortcut line (android-ui-parity #33, the
@@ -45,7 +47,11 @@ class MainTabShellShortcutTest {
         compose.setContent {
             RobocoTheme {
                 CompositionLocalProvider(LocalShortcutSink provides sink) {
-                    MainTabShell(state = MainTabState(TabId.Sessions))
+                    // Ticket 46: the real Sessions root needs the menu host
+                    // and the frozen glyph clock (the loading spinner).
+                    ProvideGlyphClock(frozenAtNanos = 0L) {
+                        GlassMenuHost { MainTabShell(state = MainTabState(TabId.Sessions)) }
+                    }
                 }
             }
         }
@@ -62,7 +68,9 @@ class MainTabShellShortcutTest {
         compose.setContent {
             RobocoTheme {
                 CompositionLocalProvider(LocalShortcutSink provides sink) {
-                    MainTabShell(state = MainTabState(TabId.Sessions))
+                    ProvideGlyphClock(frozenAtNanos = 0L) {
+                        GlassMenuHost { MainTabShell(state = MainTabState(TabId.Sessions)) }
+                    }
                 }
             }
         }

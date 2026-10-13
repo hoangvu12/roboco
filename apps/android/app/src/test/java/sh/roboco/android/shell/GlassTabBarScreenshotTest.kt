@@ -23,6 +23,7 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.GlassStage
+import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.glass.LocalHazeState
 import sh.roboco.android.design.ReduceMotion
 
@@ -204,7 +205,12 @@ class GlassTabBarScreenshotTest {
         compose.mainClock.autoAdvance = false
         compose.setContent {
             RobocoTheme {
-                MainTabShell(state = MainTabState(TabId.Sessions))
+                // Ticket 46: the Sessions root is the real screen now — its
+                // ⋯ needs a GlassMenuHost (the golden's background rows
+                // change accordingly; re-record with recordRoborazziDebug).
+                GlassMenuHost {
+                    MainTabShell(state = MainTabState(TabId.Sessions))
+                }
             }
         }
         compose.waitForIdle()

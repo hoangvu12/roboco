@@ -160,6 +160,22 @@ internal object SessionsScreenFixtures {
     /** Recent in reference order (the 1-off set's fourth section). */
     val recentRows: List<SessionRow> = listOf(i18n, downloads, deploy, launchPost)
 
+    /**
+     * The 1-off set with Recent repeated [repeat] times (distinct ids, so
+     * the LazyColumn keys stay unique) — enough scroll range for the hero
+     * fade tests and the `wallpaper_half` golden, whose 377.57 dp of
+     * travel exceed the reference set's two dp.
+     */
+    fun longSections(repeat: Int = 4): List<ListSection> {
+        val recent = buildList {
+            repeat(repeat) { n ->
+                recentRows.forEach { row -> add(row.copy(id = "${row.id}-$n")) }
+            }
+        }
+        return sections().dropLast(1) +
+            ListSection(id = FrontPageSections.RECENT, header = FrontPageSections.RECENT_TITLE, rows = recent)
+    }
+
     // ------------------------------------------------------------ builders
 
     private fun pr(number: Long, state: PullRequestState, title: String, branch: String): PullRequest =
