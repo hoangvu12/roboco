@@ -191,7 +191,7 @@ private fun FixtureCard(label: String, spec: FolderBottomBarSpec) {
 // Previews
 // ---------------------------------------------------------------------------
 
-/** The preview stage: fixture (a) on a full page, light or dark. */
+/** The preview stage: one fixture on a full page, light or dark. */
 @Composable
 private fun FolderBottomBarPreviewStage(appearance: Appearance, spec: FolderBottomBarSpec) {
     RobocoTheme(appearance) {
@@ -199,14 +199,53 @@ private fun FolderBottomBarPreviewStage(appearance: Appearance, spec: FolderBott
     }
 }
 
-@Preview(name = "light")
+private fun spec(label: Char): FolderBottomBarSpec =
+    folderBottomBarFixtures().first { it.first.startsWith(label) }.second
+
+@Preview(name = "a light")
 @Composable
-private fun FolderBottomBarLightPreview() {
-    FolderBottomBarPreviewStage(Appearance.Light, folderBottomBarFixtures().first().second)
+private fun FolderBottomBarALightPreview() {
+    FolderBottomBarPreviewStage(Appearance.Light, spec('a'))
 }
 
-@Preview(name = "dark", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "a dark", uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-private fun FolderBottomBarDarkPreview() {
-    FolderBottomBarPreviewStage(Appearance.Dark, folderBottomBarFixtures().first().second)
+private fun FolderBottomBarADarkPreview() {
+    FolderBottomBarPreviewStage(Appearance.Dark, spec('a'))
+}
+
+@Preview(name = "b light — loading")
+@Composable
+private fun FolderBottomBarBLightPreview() {
+    FolderBottomBarPreviewStage(Appearance.Light, spec('b'))
+}
+
+@Preview(name = "b dark — loading", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun FolderBottomBarBDarkPreview() {
+    FolderBottomBarPreviewStage(Appearance.Dark, spec('b'))
+}
+
+@Preview(name = "c light — busy create")
+@Composable
+private fun FolderBottomBarCLightPreview() {
+    FolderBottomBarPreviewStage(Appearance.Light, spec('c'))
+}
+
+@Preview(name = "c dark — busy create", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun FolderBottomBarCDarkPreview() {
+    FolderBottomBarPreviewStage(Appearance.Dark, spec('c'))
+}
+
+@Preview(name = "d light — two-line status")
+@Composable
+private fun FolderBottomBarDLightPreview() {
+    FolderBottomBarPreviewStage(Appearance.Light, spec('d'))
+}
+
+@Preview(name = "d dark — two-line status", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun FolderBottomBarDDarkPreview() {
+    FolderBottomBarPreviewStage(Appearance.Dark, spec('d'))
 }

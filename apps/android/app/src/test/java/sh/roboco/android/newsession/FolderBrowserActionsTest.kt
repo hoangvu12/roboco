@@ -273,13 +273,13 @@ class FolderBrowserActionsTest {
         assertTrue("still untouched after success", h.controller.submitting)
         assertEquals(listOf("onCreated space-9", "dismiss"), h.order)
 
-        var failed = true
-        val retry = launch { failed = h.actions.createProjectAt("/srv", gitDetected = false) }
+        var retryCreated = true
+        val retry = launch { retryCreated = h.actions.createProjectAt("/srv", gitDetected = false) }
         runCurrent()
         h.api.answer(1, CoreException.HostUnavailable("Engine is offline; reconnecting"))
         runCurrent()
         retry.join()
-        assertFalse(failed)
+        assertFalse(retryCreated)
         assertTrue(h.controller.submitting)
         assertEquals("Couldn't create the project on hetzner-01.", h.controller.status)
     }
