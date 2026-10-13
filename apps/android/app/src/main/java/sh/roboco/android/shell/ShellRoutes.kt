@@ -1,6 +1,13 @@
 package sh.roboco.android.shell
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.LicensesRoute
 import sh.roboco.android.settings.LicensesScreen
 import sh.roboco.android.sessions.FolderRoute
@@ -26,7 +33,8 @@ data class PlaceholderDetailRoute(val tab: TabId, val row: Int) : NavRoute
  * can hold. Tickets 46/103/49 add their branches (replacing the
  * `TabRootRoute` branch per tab); 45 registers the folder route; 76
  * registers the Session route; 101 registers the Licenses screen the
- * Settings "About" row pushes.
+ * Settings "About" row pushes; 102 registers the Engine detail
+ * placeholder (140 replaces it).
  */
 @Composable
 fun ShellRouteContent(route: NavRoute) {
@@ -38,6 +46,17 @@ fun ShellRouteContent(route: NavRoute) {
         // Archived). The tablet sidebar (105) renders pushed routes
         // through this same table, so one branch serves both hosts.
         is FolderRoute -> FolderRouteContent(route)
+        // Ticket 102 (Devices rows): the Engine detail push's placeholder
+        // until 140 builds the page — just enough for the push to be
+        // testable and the tab bar to stay visible.
+        // TODO(140): the real Engine detail screen.
+        is EngineDetailRoute -> Box(
+            Modifier
+                .fillMaxSize()
+                .background(RobocoTheme.palette.background),
+        ) {
+            BasicText("Engine ${route.engineId}")
+        }
         else -> Unit
     }
 }
