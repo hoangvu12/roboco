@@ -115,6 +115,15 @@ import sh.roboco.android.design.glass.LocalHazeState
  * ticket 14's toast anchor, and wraps each entry with
  * [ProvideTransitionProgress] for ticket 85.
  *
+ * **The router (#32):** the shell builds the phone [AppRouter] over its
+ * own state (the adapter implements the [PhoneShell] port over this
+ * shell's tickets) and provides it as [LocalAppRouter] around everything
+ * below — every screen, deep link and notification calls it without
+ * knowing which shell is on screen. The accessory's tap defaults to the
+ * router's `presentNewSession()` (the iOS tab controller's own sheet),
+ * and the sheet host is mounted here so the router can present over the
+ * whole shell.
+ *
  * Not this ticket's: the live counts feed (40) and the app root that shows
  * this shell (35).
  *
@@ -123,10 +132,26 @@ import sh.roboco.android.design.glass.LocalHazeState
  *   feed; `LiveCounts()` draws no glyph and no summary).
  * @param searchState the Search tab's query holder; defaults to
  *   [rememberSearchTabState] (the app-scoped instance).
- * @param onNewSession the accessory's tap (ticket 32 presents the sheet).
+ * @param hooks the app root's [RouterHooks] (ticket 35 creates the one
+ *   instance; tickets 76 and 95 register their implementations on it).
+ *   Defaults to [LocalRouterHooks] — a throwaway instance per shell.
+ * @param sheetHost the shell's sheet host: the phone shell presents its
+ *   page sheets (New Session) over the whole tab shell, so 31's recession
+ *   shrinks the chrome into the card stack. Ticket 35 hoists this mount to
+ *   the app root; until it lands, the shell owns it.
+ * @param presence forwarded [AppRouter.sessionDidAppear]/[Close] events
+ *   (ticket 108's carry-over across the 840 dp breakpoint); `null` by
+ *   default.
+ * @param onNewSession the accessory's tap; `null` (production) presents the
+ *   New Session sheet through the phone router (the iOS tab controller's
+ *   own `presentNewSession`). The gallery demos override it.
  * @param onChrome invoked once with the shell's
  *   [ChromeVisibilityController] (the gallery readout and the tests use
  *   it to observe the live frame / content alpha).
+ * @param onRouter invoked once with the shell's [AppRouter] — the
+ *   equivalent of iOS `window.rootViewController as? AppRouter`, so
+ *   tickets 35/36 can route deep links and launch extras into the shell
+ *   on screen.
  * @param routeContent renders one stack entry; `null` (production) uses
  *   [ShellRouteContent]. The gallery and the goldens pass a demo screen
  *   for routes [ShellRouteContent] does not know yet.
@@ -137,8 +162,12 @@ fun MainTabShell(
     modifier: Modifier = Modifier,
     counts: LiveCounts = LiveCounts(),
     searchState: SearchTabState = rememberSearchTabState(),
-    onNewSession: () -> Unit = {},
+    hooks: RouterHooks = LocalRouterHooks.current,
+    sheetHost: SheetHostState = rememberSheetHostState(),
+    presence: SessionPresenceListener? = null,
+    onNewSession: (() -> Unit)? = null,
     onChrome: (ChromeVisibilityController) -> Unit = {},
+    onRouter: (AppRouter) -> Unit = {},
     routeContent: (@Composable (NavEntry) -> Unit)? = null,
 ) {
     val palette = RobocoTheme.palette
@@ -216,202 +245,226 @@ fun MainTabShell(
             state.onSelected = searchState::onTabSelected
         }
 
-        // #29 + #30: the query holder, the minimize state and the list
-        // bottom insets flow to the tab content (the placeholder roots and
-        // the real screens read LocalBottomChrome.contentPadding).
-        CompositionLocalProvider(
-            LocalSearchTabState provides searchState,
-            LocalTabBarMinimize provides minimize,
-            LocalBottomChrome provides insets,
-        ) {
-            // The scrolling tab content: the only haze source the chrome
-            // samples, wrapped in the minimize detector (#28).
-            Box(Modifier.fillMaxSize().hazeSource(barHaze)) {
-                val tab = state.selected
-                // key(tab) is mandatory: without it one NavStackHost slot serves
-                // different NavStacks and its remembers leak between tabs.
-                key(tab) {
-                    holder.SaveableStateProvider(tab.identifier) {
-                        CompositionLocalProvider(
-                            LocalTabId provides tab,
-                            LocalTabScrollToTop provides state.scrollToTop,
-                        ) {
-                            NavStackHost(
-                                stack = state.stack(tab),
-                                active = true,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .minimizeOnScroll(minimize) {
-                                        // Read per event, never captured: a
-                                        // pushed Session's transcript must
-                                        // not drive the bar, and Search has
-                                        // no pill to minimize (29).
-                                        state.selected != TabId.Search &&
-                                            !state.stack(state.selected).top.route.hidesBottomChrome
-                                    },
-                            ) { entry ->
-                                // #30: every entry gets its live transition
-                                // progress (85's composer cross-fade).
-                                ProvideTransitionProgress(state.stack(tab), entry) {
-                                    val rc = routeContent
-                                    if (rc != null) rc(entry) else ShellRouteContent(entry.route)
+        // #32: the shell's sheet host — the phone shell presents its
+        // page sheets (New Session) over the whole tab shell, tab bar
+        // included, which is what 31's recession shrinks into the card
+        // stack. Ticket 35 hoists this mount to the app root (innermost
+        // of the overlay hosts); until it lands, the shell owns it.
+        SheetHost(sheetHost) {
+            // #32: the phone router over this shell's real state,
+            // provided to every screen below (the iOS window-root cast
+            // `view.window?.rootViewController as? AppRouter`).
+            val shell = rememberPhoneShell(state)
+            val router = rememberPhoneAppRouter(shell, hooks, presence)
+            val onRouterLatest = rememberUpdatedState(onRouter)
+            LaunchedEffect(router) { onRouterLatest.value(router) }
+
+            // #32: the accessory tap presents the New Session sheet
+            // through the router (the iOS tab controller's own
+            // presentNewSession) unless the caller overrode it (the
+            // gallery demos).
+            val accessoryTap = remember(onNewSession, router) {
+                onNewSession ?: { router.presentNewSession() }
+            }
+
+            // #29 + #30: the query holder, the minimize state and the list
+            // bottom insets flow to the tab content (the placeholder roots and
+            // the real screens read LocalBottomChrome.contentPadding).
+            CompositionLocalProvider(
+                LocalAppRouter provides router,
+                LocalSearchTabState provides searchState,
+                LocalTabBarMinimize provides minimize,
+                LocalBottomChrome provides insets,
+            ) {
+                // The scrolling tab content: the only haze source the chrome
+                // samples, wrapped in the minimize detector (#28).
+                Box(Modifier.fillMaxSize().hazeSource(barHaze)) {
+                    val tab = state.selected
+                    // key(tab) is mandatory: without it one NavStackHost slot serves
+                    // different NavStacks and its remembers leak between tabs.
+                    key(tab) {
+                        holder.SaveableStateProvider(tab.identifier) {
+                            CompositionLocalProvider(
+                                LocalTabId provides tab,
+                                LocalTabScrollToTop provides state.scrollToTop,
+                            ) {
+                                NavStackHost(
+                                    stack = state.stack(tab),
+                                    active = true,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .minimizeOnScroll(minimize) {
+                                            // Read per event, never captured: a
+                                            // pushed Session's transcript must
+                                            // not drive the bar, and Search has
+                                            // no pill to minimize (29).
+                                            state.selected != TabId.Search &&
+                                                !state.stack(state.selected).top.route.hidesBottomChrome
+                                        },
+                                ) { entry ->
+                                    // #30: every entry gets its live transition
+                                    // progress (85's composer cross-fade).
+                                    ProvideTransitionProgress(state.stack(tab), entry) {
+                                        val rc = routeContent
+                                        if (rc != null) rc(entry) else ShellRouteContent(entry.route)
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // A tab change or a committed push/pop restores the expanded bar
-            // (a predictive back in progress does not change the committed
-            // top). Snapped, not animated, when either end of the change
-            // hides the bottom chrome (a Session): the reveal has a fixed,
-            // expanded final layout for ticket 30.
-            val top = state.stack(state.selected).top
-            var lastTop by remember { mutableStateOf<Pair<TabId, NavEntry>?>(null) }
-            LaunchedEffect(state.selected, top) {
-                val previous = lastTop
-                lastTop = state.selected to top
-                if (previous == null) return@LaunchedEffect
-                val hides = previous.second.route.hidesBottomChrome || top.route.hidesBottomChrome
-                minimize.expand(animate = !hides)
-            }
+                // A tab change or a committed push/pop restores the expanded bar
+                // (a predictive back in progress does not change the committed
+                // top). Snapped, not animated, when either end of the change
+                // hides the bottom chrome (a Session): the reveal has a fixed,
+                // expanded final layout for ticket 30.
+                val top = state.stack(state.selected).top
+                var lastTop by remember { mutableStateOf<Pair<TabId, NavEntry>?>(null) }
+                LaunchedEffect(state.selected, top) {
+                    val previous = lastTop
+                    lastTop = state.selected to top
+                    if (previous == null) return@LaunchedEffect
+                    val hides = previous.second.route.hidesBottomChrome || top.route.hidesBottomChrome
+                    minimize.expand(animate = !hides)
+                }
 
-            // A bar tap also restores the expanded chrome — an unselected
-            // tab, a re-select (whose scroll-to-top does not pass through
-            // nested scroll) and a pop-to-root all land here (26/24).
-            val onBarTap: (TabId) -> Unit = { tab ->
-                minimize.expand()
-                state.onTabTap(tab, feedback, scope)
-            }
+                // A bar tap also restores the expanded chrome — an unselected
+                // tab, a re-select (whose scroll-to-top does not pass through
+                // nested scroll) and a pop-to-root all land here (26/24).
+                val onBarTap: (TabId) -> Unit = { tab ->
+                    minimize.expand()
+                    state.onTabTap(tab, feedback, scope)
+                }
 
-            // #29: the search morph — one spring from the selection (the
-            // same `searchSelected` read the tab content already uses),
-            // read only through lambdas below.
-            val searchSelected = state.selected == TabId.Search
-            val morph = rememberSearchMorphProgress(searchSelected)
-            val searchPill0 = BarRect(0f, 0f, expandedPill.value, SearchMorphGeometry.RowHeight)
+                // #29: the search morph — one spring from the selection (the
+                // same `searchSelected` read the tab content already uses),
+                // read only through lambdas below.
+                val searchSelected = state.selected == TabId.Search
+                val morph = rememberSearchMorphProgress(searchSelected)
+                val searchPill0 = BarRect(0f, 0f, expandedPill.value, SearchMorphGeometry.RowHeight)
 
-            // The chrome above the content, sampling it: pill + search +
-            // accessory, placed by the geometry at the morphs' positions.
-            // While Search is selected, ticket 29's slots replace 26's.
-            // #30: the whole group is placed / covered / dimmed by
-            // [Modifier.chromeVisibility] — never removed from composition.
-            CompositionLocalProvider(LocalHazeState provides barHaze) {
-                TabChromeLayout(
-                    progress = { minimize.progress.value },
-                    searchProgress = { morph.value },
-                    searchActive = searchSelected,
-                    bottomInset = barBottom,
-                    hasAccessory = true,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .selectableGroup()
-                        .onPlaced { chrome.layoutTopInRoot = it.positionInRoot().y }
-                        .chromeVisibility(chrome),
-                    onRects = { rects ->
-                        searchState.publishImeLift(rects.imeLift)
-                        chrome.updateChromeTop(rects.chromeTop, density)
-                    },
-                    pill = {
-                        // The composition gate flips once per morph, not per
-                        // frame (a derived read over the spring's state).
-                        val showSearchChrome by remember(searchSelected) {
-                            derivedStateOf {
-                                SearchMorph.chromeShowing(searchSelected, morph.value)
-                            }
-                        }
-                        if (showSearchChrome) {
-                            SearchReturnCircle(
-                                previousTab = state.previousTab,
-                                progress = { morph.value },
-                                minimizeProgress = { minimize.progress.value },
-                                pill0 = searchPill0,
-                                active = searchSelected,
-                                // 26's programmatic select: no haptic, like
-                                // the system Close; 28's expand and 30's
-                                // accessory fade-in run as for any switch.
-                                onReturn = { state.select(state.previousTab) },
-                                onTabTap = onBarTap,
-                            )
-                        } else {
-                            GlassTabPill(
-                                selected = state.selected,
-                                onTabTap = onBarTap,
-                                minimizeProgress = { minimize.progress.value },
-                                minimized = minimize.minimized,
-                                onRestore = { minimize.expand() },
-                                expandedWidth = expandedPill,
-                            )
-                        }
-                    },
-                    search = {
-                        SearchTabField(
-                            state = searchState,
-                            progress = { morph.value },
-                            rowWidth = rowW,
-                            active = searchSelected,
-                            onSearchTabTap = { onBarTap(TabId.Search) },
-                        )
-                    },
-                    accessory = {
-                        // #29: the accessory never leaves composition (#577).
-                        // While the row rides on the IME it fades with the
-                        // lift — the same `rowBottom` computation the layout
-                        // made, re-read here in the draw phase and (for the
-                        // hit-test gate) in a derived flip. #30: the content
-                        // also carries the after-Search / pop-reveal fade
-                        // (chrome::accessoryContentAlpha); the two never
-                        // multiply — 29's IME fade sits on the wrapping Box,
-                        // 30's on the content row itself.
-                        val ime = WindowInsets.ime
-                        val b = barBottom.value
-                        val shellState = state
-                        val morphNow = morph
-                        val hittable by remember(density, barBottom) {
-                            derivedStateOf {
-                                val imeBottom = with(density) {
-                                    ime.getBottom(density).toDp().value
+                // The chrome above the content, sampling it: pill + search +
+                // accessory, placed by the geometry at the morphs' positions.
+                // While Search is selected, ticket 29's slots replace 26's.
+                // #30: the whole group is placed / covered / dimmed by
+                // [Modifier.chromeVisibility] — never removed from composition.
+                CompositionLocalProvider(LocalHazeState provides barHaze) {
+                    TabChromeLayout(
+                        progress = { minimize.progress.value },
+                        searchProgress = { morph.value },
+                        searchActive = searchSelected,
+                        bottomInset = barBottom,
+                        hasAccessory = true,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .selectableGroup()
+                            .onPlaced { chrome.layoutTopInRoot = it.positionInRoot().y }
+                            .chromeVisibility(chrome),
+                        onRects = { rects ->
+                            searchState.publishImeLift(rects.imeLift)
+                            chrome.updateChromeTop(rects.chromeTop, density)
+                        },
+                        pill = {
+                            // The composition gate flips once per morph, not per
+                            // frame (a derived read over the spring's state).
+                            val showSearchChrome by remember(searchSelected) {
+                                derivedStateOf {
+                                    SearchMorph.chromeShowing(searchSelected, morph.value)
                                 }
-                                accessoryImeAlpha(
-                                    SearchMorphGeometry.rowBottom(
-                                        b,
-                                        imeBottom,
-                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
-                                    ) - b,
-                                ) >= 0.01f
                             }
-                        }
-                        Box(
-                            Modifier.graphicsLayer {
-                                val imeBottom = ime.getBottom(this).toDp().value
-                                alpha = accessoryImeAlpha(
-                                    SearchMorphGeometry.rowBottom(
-                                        b,
-                                        imeBottom,
-                                        SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
-                                    ) - b,
+                            if (showSearchChrome) {
+                                SearchReturnCircle(
+                                    previousTab = state.previousTab,
+                                    progress = { morph.value },
+                                    minimizeProgress = { minimize.progress.value },
+                                    pill0 = searchPill0,
+                                    active = searchSelected,
+                                    // 26's programmatic select: no haptic, like
+                                    // the system Close; 28's expand and 30's
+                                    // accessory fade-in run as for any switch.
+                                    onReturn = { state.select(state.previousTab) },
+                                    onTabTap = onBarTap,
                                 )
-                            },
-                        ) {
-                            NewSessionAccessory(
-                                counts = counts,
-                                onTap = onNewSession,
-                                inline = minimize.minimized,
-                                labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
-                                contentAlpha = chrome::accessoryContentAlpha,
-                                enabled = hittable,
+                            } else {
+                                GlassTabPill(
+                                    selected = state.selected,
+                                    onTabTap = onBarTap,
+                                    minimizeProgress = { minimize.progress.value },
+                                    minimized = minimize.minimized,
+                                    onRestore = { minimize.expand() },
+                                    expandedWidth = expandedPill,
+                                )
+                            }
+                        },
+                        search = {
+                            SearchTabField(
+                                state = searchState,
+                                progress = { morph.value },
+                                rowWidth = rowW,
+                                active = searchSelected,
+                                onSearchTabTap = { onBarTap(TabId.Search) },
                             )
-                        }
-                    },
-                )
-            }
+                        },
+                        accessory = {
+                            // #29: the accessory never leaves composition (#577).
+                            // While the row rides on the IME it fades with the
+                            // lift — the same `rowBottom` computation the layout
+                            // made, re-read here in the draw phase and (for the
+                            // hit-test gate) in a derived flip. #30: the content
+                            // also carries the after-Search / pop-reveal fade
+                            // (chrome::accessoryContentAlpha); the two never
+                            // multiply — 29's IME fade sits on the wrapping Box,
+                            // 30's on the content row itself.
+                            val ime = WindowInsets.ime
+                            val b = barBottom.value
+                            val shellState = state
+                            val morphNow = morph
+                            val hittable by remember(density, barBottom) {
+                                derivedStateOf {
+                                    val imeBottom = with(density) {
+                                        ime.getBottom(density).toDp().value
+                                    }
+                                    accessoryImeAlpha(
+                                        SearchMorphGeometry.rowBottom(
+                                            b,
+                                            imeBottom,
+                                            SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                        ) - b,
+                                    ) >= 0.01f
+                                }
+                            }
+                            Box(
+                                Modifier.graphicsLayer {
+                                    val imeBottom = ime.getBottom(this).toDp().value
+                                    alpha = accessoryImeAlpha(
+                                        SearchMorphGeometry.rowBottom(
+                                            b,
+                                            imeBottom,
+                                            SearchMorph.chromeShowing(shellState.selected == TabId.Search, morphNow.value),
+                                        ) - b,
+                                    )
+                                },
+                            ) {
+                                NewSessionAccessory(
+                                    counts = counts,
+                                    onTap = accessoryTap,
+                                    inline = minimize.minimized,
+                                    labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
+                                    contentAlpha = chrome::accessoryContentAlpha,
+                                    enabled = hittable,
+                                )
+                            }
+                        },
+                    )
+                }
 
-            // #30: all pointer input over the shell is consumed while the
-            // selected stack transitions (UIKit disables interaction during
-            // transitions); back gestures are not pointer events, so a
-            // predictive back drives the reveal underneath it.
-            ChromeTransitionBlocker(chrome, Modifier.matchParentSize())
+                // #30: all pointer input over the shell is consumed while the
+                // selected stack transitions (UIKit disables interaction during
+                // transitions); back gestures are not pointer events, so a
+                // predictive back drives the reveal underneath it.
+                ChromeTransitionBlocker(chrome, Modifier.matchParentSize())
+            }
         }
     }
 }
