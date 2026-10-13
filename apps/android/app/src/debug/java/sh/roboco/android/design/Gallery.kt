@@ -80,6 +80,7 @@ import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
+import sh.roboco.android.transcript.TranscriptLinksGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 
@@ -477,6 +478,15 @@ object Gallery {
         // Share, with the off-screen-source toggle. Fill: the section owns
         // its full-window ImageViewerHost.
         GallerySection("Image viewer", GalleryLayout.Fill) { ImageViewerGallerySection() },
+        // Ticket 126 (link hit-testing and routing): the real host over
+        // the LinkFixture — a web link, a mailto link, the five no-op
+        // links and a scroller-carried table link — with the real
+        // LinkRouter: Custom Tabs for http(s), the viewer for image
+        // chips, ACTION_VIEW for other schemes, and the iOS no-op links
+        // left as no-ops (decision TRANSCRIPT-D4); the readout shows the
+        // last route. Fill: the section owns its full-window
+        // ImageViewerHost and scrolling.
+        GallerySection("Transcript links", GalleryLayout.Fill) { TranscriptLinksGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
@@ -154,8 +155,11 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
  * [waitForUpOrCancellation] on the same pass — a drag the scrollable
  * consumed, or an up a widget's `clickable` consumed, yields `null` and no
  * tap (iOS controls keep their taps). A tap first tries the link
- * hit-test (the [linkAt] stub until 126) and then fires the generic
- * [TranscriptActions.onTap] hook. No haptics here.
+ * hit-test (126's [linkAt], scroller offsets read at tap time) and then
+ * fires the generic [TranscriptActions.onTap] hook — always, after the
+ * link, in a `finally` (65's contract), so both fire on a link tap and
+ * 81's Initial-pass dismiss observer still sees every tap. No
+ * haptics here, and nothing is ever consumed.
  */
 internal fun Modifier.transcriptTaps(
     state: TranscriptState,
@@ -164,11 +168,28 @@ internal fun Modifier.transcriptTaps(
     awaitEachGesture {
         awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
         val up = waitForUpOrCancellation(PointerEventPass.Final) ?: return@awaitEachGesture
-        val row = state.rowAt(up.position.y.toInt())
-        if (row != null) {
-            val url = linkAt(row, up.position.x / density, (up.position.y - row.topPx()) / density)
-            if (url != null) actions().openLink(url, row.boundsInWindow())
+        val d = density
+        try {
+            val row = state.rowAt(up.position.y.toInt())
+            if (row != null) {
+                // The row spans the full host width at x 0, so pos.x is
+                // already row-local; y becomes row-local via topPx().
+                val hit = linkAt(row, up.position.x / d, (up.position.y - row.topPx()) / d)
+                if (hit != null) {
+                    val rowBounds = row.boundsInWindow()
+                    // The painted fragment rect, dp → window px via the
+                    // row's window origin (the inverse of RowView.swift:78-90).
+                    val linkBounds = Rect(
+                        rowBounds.left + hit.x * d,
+                        rowBounds.top + hit.y * d,
+                        rowBounds.left + (hit.x + hit.w) * d,
+                        rowBounds.top + (hit.y + hit.h) * d,
+                    )
+                    actions().openLink(LinkTap(hit.url, rowBounds, linkBounds))
+                }
+            }
+        } finally {
+            actions().onTap()
         }
-        actions().onTap()
     }
 }

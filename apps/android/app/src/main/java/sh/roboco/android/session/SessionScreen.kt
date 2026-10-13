@@ -16,6 +16,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import sh.roboco.android.image.ImageViewerRequest
 import sh.roboco.android.image.LocalImageViewer
 import sh.roboco.android.shell.LocalNavEntry
@@ -28,6 +29,7 @@ import sh.roboco.android.transcript.TranscriptHost
 import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
+import sh.roboco.android.transcript.rememberLinkRouter
 import sh.roboco.android.transcript.transcriptBottomInset
 import sh.roboco.android.transcript.widgets.imageTileRadius
 
@@ -151,14 +153,40 @@ fun SessionScreen(
     //    125 fills `openImage` through the root overlay's viewer state —
     //    the tile's downsampled bitmap is the start frame, `loadFull` the
     //    binding's full-size read, and the source rect the unclipped
-    //    window rect the tile reports with its tap. 81, 126 and 127
-    //    replace their own defaults here later.
+    //    window rect the tile reports with its tap. 126 fills `openLink`
+    //    through its own router: http(s) links open a Custom Tab, image
+    //    chips load the full image and open the viewer from the row's
+    //    bounds, other schemes go to the system, and the iOS no-op
+    //    links (roboco-file:, file:, drive paths, scheme-less paths —
+    //    decision TRANSCRIPT-D4) stay no-ops. 81 and 127 replace their
+    //    own defaults here later.
     val viewer = LocalImageViewer.current
     val density = LocalDensity.current
-    val actions = remember(controller, attachments, viewer) {
-        val binding = attachments?.let {
+    val binding = remember(controller, attachments) {
+        attachments?.let {
             TranscriptImageBinding(TranscriptImageLoader.get(context), { controller.hostDeviceId }, it)
         }
+    }
+    // 126: the link router. Its viewer request is its own, not the tile's
+    // `openImage` below: the source is the row (iOS presents the whole
+    // RowView), so no corner radius, and the bitmap it passes is already
+    // full size, so no second `loadFull` read (66's has no cache).
+    val router = rememberLinkRouter(
+        loadFull = { reference -> binding?.loadFull(reference) },
+        showImage = { reference, source, bitmap ->
+            viewer?.show(
+                ImageViewerRequest(
+                    reference = reference,
+                    preview = bitmap,
+                    sourceBounds = source,
+                    sourceCornerRadius = 0.dp,
+                    label = null,
+                    loadFull = null,
+                ),
+            )
+        },
+    )
+    val actions = remember(controller, attachments, viewer, router) {
         val openImage: (String, Rect, ImageBitmap?) -> Unit = { reference, source, bitmap ->
             viewer?.show(
                 ImageViewerRequest(
@@ -179,12 +207,13 @@ fun SessionScreen(
         }
         if (binding != null) {
             TranscriptActions(
+                openLink = router::open,
                 openImage = openImage,
                 loadImage = binding::load,
                 cachedImage = binding::cached,
             )
         } else {
-            TranscriptActions()
+            TranscriptActions(openLink = router::open)
         }
     }
 

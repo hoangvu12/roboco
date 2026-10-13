@@ -1,8 +1,20 @@
 package sh.roboco.android.transcript
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.geometry.Rect
+
+/**
+ * One link tap (ticket 126). Both rects are in window px: [rowBounds]
+ * is the row (the viewer's zoom source, as iOS passes the whole
+ * `RowView` for an image chip), [linkBounds] the painted fragment.
+ * No route reads [linkBounds] since decision TRANSCRIPT-D4 dropped the
+ * file menu it anchored; it stays in the contract because 65's tap
+ * test and 129's link nodes build it.
+ */
+@Immutable
+data class LinkTap(val url: String, val rowBounds: Rect, val linkBounds: Rect)
 
 /**
  * The transcript host's callbacks to its screen (ticket 65). Defaults are
@@ -13,17 +25,19 @@ import androidx.compose.ui.geometry.Rect
  * Later tickets change some signatures in place, each updating this class,
  * its callers and #65's tests: **66** replaced the one-arg [loadImage] with
  * the per-engine two-arg form and added [cachedImage] (tickets 75/126 get
- * `loadFull` straight from the binding); **126** changes [openLink] to
+ * `loadFull` straight from the binding); **126** changed [openLink] to
  * `(LinkTap) -> Unit` and the `linkAt` stub to return `LinkAt?`; **137**
  * adds `label: String?` to [openImage].
  */
 @Stable
 class TranscriptActions(
     /**
-     * A painted link was tapped. `source` = the row's bounds in window px
-     * (iOS passes the RowView as the zoom source). Routing: ticket 126.
+     * A painted link was tapped. Routing is ticket 126's `LinkRouter`
+     * (Custom Tab, viewer, the system, or a silent no-op). `rowBounds`
+     * is the row's bounds in window px (iOS passes the RowView as the
+     * zoom source).
      */
-    val openLink: (url: String, source: Rect) -> Unit = { _, _ -> },
+    val openLink: (tap: LinkTap) -> Unit = {},
     /**
      * An image tile was tapped (66 → viewer 125). `source` = the tile's
      * bounds in window px, `bitmap` the decoded tile when it is already in
