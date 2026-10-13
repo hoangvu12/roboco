@@ -1,5 +1,6 @@
 package sh.roboco.android.transcript
 
+import android.content.ComponentCallbacks2
 import android.os.Looper
 import android.os.Trace
 import android.util.Log
@@ -55,6 +56,9 @@ class TranscriptState internal constructor(
     text: TextSystem,
     poster: FramePoster,
     makeEngine: (TextSystem, LayoutListener) -> TranscriptView,
+    /** 117: the model pipeline factory, injected so tests can gate the worker. */
+    makeModels: (onUpgradeBuilt: (RowPlacement, RowModel) -> Unit) -> ModelPipeline =
+        { ModelPipeline(onUpgradeBuilt = it) },
 ) {
     /**
      * Production constructor: main thread only. The check runs inside
@@ -69,6 +73,15 @@ class TranscriptState internal constructor(
 
     /** The engine, for `attach` (51), `setDebugEntries` (135) and toggles (120). Check [isClosed] after teardown. */
     val engine: TranscriptView = makeEngine(text, relay)
+
+    /**
+     * The model pipeline (117): the insertion-ordered row-model cache,
+     * the async upgrade path, the directional prefetch and their single
+     * `sh.roboco.transcript.prefetch` worker. Main thread only, like the
+     * rest of this class; completions hop back through the pipeline's
+     * main handler and check `closed` first.
+     */
+    val models = makeModels(::applyUpgrade)
 
     /** `null` until the first relayed frame, then the newest applied frame. Not cleared by [close]. */
     var frame by mutableStateOf<LayoutFrame?>(null)
@@ -188,9 +201,6 @@ class TranscriptState internal constructor(
     /** The host's latest coordinates, for window/root rect conversions. */
     internal var hostCoordinates: LayoutCoordinates? = null
 
-    /** The key of the (future) model cache: identity is (row, version, width). */
-    data class ModelKey(val key: ULong, val version: ULong, val width: Float)
-
     /** The last width sent to the engine. `0f` until [setViewport] first fires. */
     var viewportWidthDp = 0f
         private set
@@ -244,17 +254,18 @@ class TranscriptState internal constructor(
     }
 
     /**
-     * The model for one placement (ticket 65): the cache seam first
-     * (always `null` until 117), else a **synchronous, counted** build —
-     * `display(p.index)` on the same frame the placement came from (indices
-     * are per frame), wrapped in the `build-model-sync` trace section, with
-     * `RowModel` construction and `storeModel`. A `null` display (a row the
-     * frame no longer has — a race between the frame swap and the host's
-     * remember) logs once and yields `null`: the row host paints nothing
-     * until the next frame re-composes it.
+     * The model for one placement (ticket 65's counted sync fallback,
+     * 117's cache path): the cache seam first, else a **synchronous,
+     * counted** build — `buildModel(frame, p, BuildPath.SYNC)` (the only
+     * `display()` call site in main sources), wrapped in the
+     * `build-model-sync` trace section, with `RowModel` construction and
+     * `storeModel`. A `null` display (a row the frame no longer has — a
+     * race between the frame swap and the host's recomposition) logs
+     * once and yields `null`: the row host paints nothing until the next
+     * frame re-composes it.
      *
-     * Main thread only: `display()` and `RowModel` construction are the
-     * counted path (117 moves them to its prefetch thread).
+     * Main thread only; 65's counters (`syncBuilds`, `maxSyncBuildMs`)
+     * are written here, one increment per call.
      */
     fun modelFor(frame: LayoutFrame, p: RowPlacement): RowModel? {
         val k = ModelKey(p.key, p.version, frame.width())
@@ -263,15 +274,14 @@ class TranscriptState internal constructor(
         Trace.beginSection("build-model-sync") // iOS signpost name
         try {
             TranscriptPerf.syncBuilds++
-            val display = frame.display(p.index)
-            if (display == null) {
+            val m = buildModel(frame, p, BuildPath.SYNC)
+            if (m == null) {
                 if (!nullDisplayLogged) {
                     nullDisplayLogged = true
                     Log.w(TAG, "display(${p.index}) returned null")
                 }
                 return null
             }
-            val m = RowModel(display)
             storeModel(k, m)
             TranscriptPerf.maxSyncBuildMs = max(TranscriptPerf.maxSyncBuildMs, (System.nanoTime() - t0) / 1e6)
             return m
@@ -280,11 +290,76 @@ class TranscriptState internal constructor(
         }
     }
 
-    /** Ticket 117's cache lookup seam: no cache in this ticket, always `null`. */
-    internal fun cachedModel(k: ModelKey): RowModel? = null
+    /** Ticket 117's cache lookup seam: the pipeline's insertion-ordered cache. */
+    internal fun cachedModel(k: ModelKey): RowModel? = models.cache[k]
 
-    /** Ticket 117's cache store seam: a no-op in this ticket. */
-    internal fun storeModel(k: ModelKey, m: RowModel) {}
+    /** Ticket 117's cache store seam: the pipeline's insertion-ordered cache. */
+    internal fun storeModel(k: ModelKey, m: RowModel) = models.cache.store(k, m)
+
+    /**
+     * Ticket 117's resolution of one realized row's model (iOS
+     * `TranscriptListView.swift:377-385`): KEEP the painted model, take
+     * a CACHED one, request an async UPGRADE — the row keeps painting
+     * its old model at the new placement until the build lands and
+     * passes the version guard — or fall back to [modelFor]'s counted
+     * SYNC build. Called from [RowHost] on every recomposition; a few
+     * comparisons, never a `remember` keyed on the version (that would
+     * rebuild on every streaming token and kill the upgrade path).
+     */
+    internal fun resolveModel(row: RealizedRow, frame: LayoutFrame, p: RowPlacement): RowModel? {
+        val w = frame.width()
+        val cur = row.model?.display
+        val k = ModelKey(p.key, p.version, w)
+        return when (decideModel(cur?.key, cur?.version, cur?.width, p.key, p.version, w, k in models.cache)) {
+            ModelAction.KEEP -> row.model
+            ModelAction.CACHED -> models.cache[k].also { row.model = it }
+            ModelAction.UPGRADE -> {
+                models.requestUpgrade(frame, p)
+                row.model
+            }
+            ModelAction.SYNC -> modelFor(frame, p).also { row.model = it }
+        }
+    }
+
+    /**
+     * The upgrade completion's apply guard (iOS
+     * `TranscriptListView.swift:458-465`): the model was always stored;
+     * it reaches the row only if the row is still realized and the
+     * current frame's placement for it still carries the built version —
+     * a late older build must never roll a newer one back (118's veil
+     * would flicker). The `upgradeTick` bump recomposes this row's host,
+     * and only it.
+     */
+    private fun applyUpgrade(p: RowPlacement, m: RowModel) {
+        val row = realized[p.key] ?: return
+        val f = frame ?: return
+        val i = f.indexOf(p.key) ?: return
+        if (f.placement(i)?.version != p.version) return
+        row.model = m
+        row.upgradeTick++
+    }
+
+    /**
+     * Ticket 117: a memory trim at or above `RUNNING_LOW` (10) clears
+     * the model cache through [models] — a pure cache; realized rows
+     * keep painting and prefetch refills. Delivered on the main thread
+     * by the host's `ComponentCallbacks2` registration.
+     */
+    fun onTrimMemory(level: Int) {
+        trimDeliveries++
+        models.trim(level)
+    }
+
+    /** Ticket 117: the `onLowMemory` half of the trim registration (as level `COMPLETE`). */
+    fun onLowMemory() {
+        trimDeliveries++
+        models.trim(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
+    }
+
+    /** Test-only: the trim-registration test counts deliveries through this. */
+    @VisibleForTesting
+    internal var trimDeliveries = 0
+
 
     /** Set by [modelFor] when a display build came back empty. */
     private var nullDisplayLogged = false
@@ -317,39 +392,50 @@ class TranscriptState internal constructor(
      */
     @VisibleForTesting
     internal fun apply(new: LayoutFrame) {
-        if (isClosed) return
-        val old = frame
-        if (old != null && new.revision() == old.revision()) return
-        if (new.styleCount().toInt() != fonts.count) fonts.update(new.styles())
-        // 68: `first` is computed before the swap — `frame` is a delegated
-        // snapshot property, so take a local (never `frame!!`); the
-        // previous frame was missing or had zero rows.
-        val first = old == null || old.rowCount() == 0u
-        // 130 (TLV:301-307): capture the row under the header's bottom
-        // edge before the swap — `following` is read before the runway
-        // height below (69's queued promotion can flip it to true, and
-        // then there is no anchor to apply) and before the old frame is
-        // released. No capture while following or without an old frame.
-        val anchor = ScrollAnchoring.capture(viewport, old?.anchorRows())
-        frame = new
-        // 68 + 69: the scroll model reacts to the new geometry — the first
-        // frame with rows lands at the tail (R2), later frames spring
-        // while following (R3), and the runway height feeds the call (a
-        // queued promotion flips `following` inside it). R4 (not first,
-        // not following) returns `needsAnchor` for the restore below.
-        val needsAnchor = viewport.onFrameApplied(contentHeightFor(new), first)
-        // 130 (TLV:324-330): still not following and an anchor was captured
-        // — shift the offset so the anchored row stays under the header.
-        // A plain `setOffset` write (state + 68's report) is the
-        // momentum-preserving equivalent of iOS's `bounds.origin.y` write:
-        // it never cancels an in-flight fling, never starts or stops the
-        // spring and never touches `following`.
-        if (needsAnchor && anchor != null) {
-            ScrollAnchoring.restore(viewport, anchor, new.anchorRows())
+        // 117: the whole body sits inside the `apply-frame` trace section
+        // and the maxApplyMs timing — iOS's `defer` around `apply(_:)`
+        // (`TranscriptListView.swift:293-298`); the lab bench (136) reads
+        // the counter.
+        Trace.beginSection("apply-frame") // iOS signpost name
+        val t0 = System.nanoTime()
+        try {
+            if (isClosed) return
+            val old = frame
+            if (old != null && new.revision() == old.revision()) return
+            if (new.styleCount().toInt() != fonts.count) fonts.update(new.styles())
+            // 68: `first` is computed before the swap — `frame` is a delegated
+            // snapshot property, so take a local (never `frame!!`); the
+            // previous frame was missing or had zero rows.
+            val first = old == null || old.rowCount() == 0u
+            // 130 (TLV:301-307): capture the row under the header's bottom
+            // edge before the swap — `following` is read before the runway
+            // height below (69's queued promotion can flip it to true, and
+            // then there is no anchor to apply) and before the old frame is
+            // released. No capture while following or without an old frame.
+            val anchor = ScrollAnchoring.capture(viewport, old?.anchorRows())
+            frame = new
+            // 68 + 69: the scroll model reacts to the new geometry — the first
+            // frame with rows lands at the tail (R2), later frames spring
+            // while following (R3), and the runway height feeds the call (a
+            // queued promotion flips `following` inside it). R4 (not first,
+            // not following) returns `needsAnchor` for the restore below.
+            val needsAnchor = viewport.onFrameApplied(contentHeightFor(new), first)
+            // 130 (TLV:324-330): still not following and an anchor was captured
+            // — shift the offset so the anchored row stays under the header.
+            // A plain `setOffset` write (state + 68's report) is the
+            // momentum-preserving equivalent of iOS's `bounds.origin.y` write:
+            // it never cancels an in-flight fling, never starts or stops the
+            // spring and never touches `following`.
+            if (needsAnchor && anchor != null) {
+                ScrollAnchoring.restore(viewport, anchor, new.anchorRows())
+            }
+            // 132 inserts rowMotion.onFrameApplied(...) here (after the
+            // restore), if it has landed.
+            listeners.toList().forEach { it.onFrame(old, new) }
+        } finally {
+            TranscriptPerf.maxApplyMs = max(TranscriptPerf.maxApplyMs, (System.nanoTime() - t0) / 1e6)
+            Trace.endSection()
         }
-        // 132 inserts rowMotion.onFrameApplied(...) here (after the
-        // restore), if it has landed.
-        listeners.toList().forEach { it.onFrame(old, new) }
     }
 
     /**
@@ -378,6 +464,10 @@ class TranscriptState internal constructor(
         if (isClosed) return
         isClosed = true
         relay.close()
+        // 117: stop the model pipeline before the engine — a completion
+        // that still arrives finds the pipeline closed and stops at the
+        // inflight/counter steps.
+        models.close()
         engine.shutdown()
         engine.close()
         listeners.clear()

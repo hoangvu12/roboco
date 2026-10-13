@@ -1,11 +1,14 @@
 package sh.roboco.android.transcript
 
+import android.content.ComponentCallbacks2
+import android.content.res.Configuration
 import android.os.Trace
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -18,6 +21,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Constraints
@@ -53,6 +57,23 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
     val d = density.density
     val palette = TranscriptPalette(LocalIsDark.current)
     val currentActions by rememberUpdatedState(actions)
+
+    // 117: give the model cache back under memory pressure — iOS's
+    // `didReceiveMemoryWarning` clears it (`TranscriptListView.swift:192-198`);
+    // Android's closest equivalents are `onTrimMemory(level)` at or above
+    // `RUNNING_LOW` and `onLowMemory()`. Registered on the application
+    // context (`ComponentCallbacks` are delivered on the main thread) and
+    // unregistered when the host leaves composition.
+    val app = LocalContext.current.applicationContext
+    DisposableEffect(state, app) {
+        val callbacks = object : ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) = state.onTrimMemory(level)
+            override fun onLowMemory() = state.onLowMemory()
+            override fun onConfigurationChanged(newConfig: Configuration) {}
+        }
+        app.registerComponentCallbacks(callbacks)
+        onDispose { app.unregisterComponentCallbacks(callbacks) }
+    }
 
     BoxWithConstraints(
         modifier
@@ -106,6 +127,11 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
                 placeables.forEachIndexed { i, pl ->
                     pl.placeWithLayer(0, (placements[i].y * d).roundToInt() - offPx)
                 }
+                // 117: directional prefetch beyond the realized band, in
+                // the direction of travel first — deduped on (frame, band,
+                // viewport, direction) so its early return precedes any FFI
+                // call on the per-pixel placement passes.
+                state.models.afterLayout(frame, start, bandEnd(start, heightDp), heightDp, state.offset)
                 TranscriptPerf.maxLayoutMs = max(TranscriptPerf.maxLayoutMs, (System.nanoTime() - t0) / 1e6)
                 Trace.endSection()
             }
