@@ -56,7 +56,7 @@ internal fun buildModel(frame: LayoutFrame, p: RowPlacement, path: BuildPath): R
  * fields, `null` before the first build; width compares are exact
  * `Float` equality (both sides come from the same Rust `frame.width()`).
  */
-enum class ModelAction {
+internal enum class ModelAction {
     /** The painted model still matches: keep painting it. */
     KEEP,
 
@@ -71,7 +71,7 @@ enum class ModelAction {
 }
 
 /** See [ModelAction]. */
-fun decideModel(
+internal fun decideModel(
     curKey: ULong?,
     curVersion: ULong?,
     curWidth: Float?,
@@ -94,7 +94,7 @@ fun decideModel(
  * above the content top). Pure — the `viewport <= 0` stop lives in
  * [ModelPipeline.afterLayout].
  */
-fun prefetchRanges(
+internal fun prefetchRanges(
     bandStart: Float,
     bandEnd: Float,
     viewport: Float,
@@ -117,7 +117,7 @@ fun prefetchRanges(
  * (−4 — above default background work, below the boosted UI and render
  * threads). The core thread times out after 10 s idle.
  */
-fun prefetchExecutor(): ThreadPoolExecutor =
+internal fun prefetchExecutor(): ThreadPoolExecutor =
     ThreadPoolExecutor(1, 1, 10, TimeUnit.SECONDS, LinkedBlockingQueue()) { r ->
         Thread(
             { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY); r.run() },
