@@ -242,6 +242,44 @@ class TranscriptState internal constructor(
     }
 
     /**
+     * iOS `pendingFold` (`ios:Transcript/TranscriptListView.swift:161-163`):
+     * the row a disclosure or tool toggle just flipped — its next height
+     * change tweens with the desktop fold (140 ms ease-out). Written
+     * **unconditionally** (under Reduce Motion too, as on iOS) before the
+     * engine call; ticket 132 consumes and clears it and turns this field
+     * into a delegate of its `RowMotion.pendingFold`, leaving the handlers
+     * below untouched. Main thread only.
+     */
+    var pendingFold: ULong? = null
+
+    /**
+     * iOS `rowView(_:toggle:)` (`TranscriptListView.swift:563-567`) minus
+     * the haptic (the widget plays it, ticket 120): mark [pendingFold] then
+     * call `engine.toggle(key)` — the order matters, 132 consumes the mark
+     * when the new frame's row height differs. A true flip: a second tap
+     * before the next frame undoes the first. A no-op once [isClosed].
+     * Main thread only.
+     */
+    fun toggleRow(key: ULong) {
+        if (isClosed) return
+        pendingFold = key // iOS order: before the engine call
+        engine.toggle(key)
+    }
+
+    /**
+     * iOS `rowView(_:toggleDetail:open:)` (`TranscriptListView.swift:569-572`):
+     * [open] is the detail's state **as painted** (the widget's own field,
+     * never inverted locally — two taps before the next frame land once).
+     * Marks [pendingFold] with the **row** key, not the detail key, before
+     * the engine call. A no-op once [isClosed]. Main thread only.
+     */
+    fun toggleDetail(row: ULong, detail: ULong, open: Boolean) {
+        if (isClosed) return
+        pendingFold = row // the row key, not the detail key
+        engine.toggleDetail(row, detail, open)
+    }
+
+    /**
      * Registers a hook that runs on main after each applied frame; returns
      * its remover. Ticket 65's `knownRows` marking owns the first slot
      * (registered in this class's `init`, right after `listeners`, so the

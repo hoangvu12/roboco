@@ -3,7 +3,10 @@ package sh.roboco.android.transcript
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
+import sh.roboco.android.transcript.widgets.ToolChevron
+import sh.roboco.android.transcript.widgets.ToolToggleTarget
 import sh.roboco.android.transcript.widgets.UploadRing
 import sh.roboco.android.transcript.widgets.isPendingReference
 import uniffi.roboco_core.Widget
@@ -27,10 +30,18 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
     when (val k = w.kind) {
         // ticket 119 (copy-code button)
         WidgetKind.CopyCode -> Unit
-        // ticket 120 (disclosure, tool toggle, chevron)
-        is WidgetKind.Disclosure -> Unit
-        is WidgetKind.ToolToggle -> Unit
-        is WidgetKind.Chevron -> Unit
+        // ticket 120 (disclosure, tool toggle, chevron): three separate
+        // widgets with separate rects — the chevron is never dimmed by a
+        // disclosure press, and the toggles carry `open` as painted.
+        is WidgetKind.Disclosure -> DisclosureTarget(
+            expanded = k.expanded,
+            onToggle = { ctx.state.toggleRow(ctx.model.display.key) },
+        )
+        is WidgetKind.ToolToggle -> ToolToggleTarget(
+            open = k.open,
+            onToggle = { ctx.state.toggleDetail(ctx.model.display.key, k.detail, k.open) },
+        )
+        is WidgetKind.Chevron -> ToolChevron(rowKey = ctx.model.display.key, expanded = k.expanded)
         // ticket 123 (status glyphs)
         is WidgetKind.ToolStatus -> Unit
         WidgetKind.Spinner -> Unit

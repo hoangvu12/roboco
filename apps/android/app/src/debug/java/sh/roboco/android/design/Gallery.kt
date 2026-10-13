@@ -72,6 +72,7 @@ import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
+import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 
 /**
@@ -395,6 +396,10 @@ object Gallery {
         // rows running under the background-less stack, plus the New
         // Folder alert in its retry-error state.
         GallerySection("Folder bottom bar", screenshotHeightDp = 600) { FolderBottomBarGallerySection() },
+        // Ticket 120 (transcript disclosure): the tool-group chevron flip
+        // and the invisible disclosure / tool-toggle tap targets — the
+        // static fixture rows plus the live expand / collapse demo.
+        GallerySection("Transcript disclosure") { DisclosureGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
