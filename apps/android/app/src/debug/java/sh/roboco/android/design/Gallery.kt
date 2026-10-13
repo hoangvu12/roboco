@@ -442,6 +442,11 @@ object Gallery {
         GallerySection("Reference", GalleryLayout.Fill, screenshotHeightDp = 1000) {
             ReferenceGalleryPage()
         },
+        // Ticket 82 (queue panel): the glass card above the composer —
+        // the static fixtures (F1, F3, F5, FG), the live action demo over
+        // the fixture source's queue rules, and the re-materializing
+        // glass; the section owns its GlassMenuHost for the ⋯ rows.
+        GallerySection("Queue panel", screenshotHeightDp = 891) { QueuePanelGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
