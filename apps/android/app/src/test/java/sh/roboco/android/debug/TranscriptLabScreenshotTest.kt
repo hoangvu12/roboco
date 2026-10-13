@@ -100,7 +100,7 @@ class TranscriptLabScreenshotTest {
             // The real lab is edge-to-edge (enableEdgeToEdge); with
             // decorFitsSystemWindows the DecorView would consume the
             // dispatched insets before they reach Compose.
-            WindowCompat.setDecorFitsSystemWindows(window, root, false)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
 
             dispatchLabInsets(root, imeVisible = false, imeBottomPx = 0)
             compose.waitForIdle()
