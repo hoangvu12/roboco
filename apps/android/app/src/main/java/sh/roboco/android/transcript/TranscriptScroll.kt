@@ -3,7 +3,6 @@ package sh.roboco.android.transcript
 import androidx.compose.foundation.OverscrollEffect
 import androidx.compose.foundation.gestures.FlingBehavior
 import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.ScrollableDefaults
 import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.gestures.ScrollScope
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -38,19 +37,22 @@ import kotlinx.coroutines.flow.collectLatest
  * the bottom stack.
  *
  * No Material components, no `Animatable`: the spring is the per-frame
- * formula in [TranscriptViewport.springTick]. Ticket 134 will pass its
- * iOS decay curve as [flingBehavior], its rubber band as
- * [overscrollEffect], and append the scroll indicator to this chain
- * (decision TRANSCRIPT-D3); until then the defaults and `null` stand in.
+ * formula in [TranscriptViewport.springTick]. Ticket 134 wired its iOS
+ * physics in as the defaults — [rememberIosFlingBehavior] (the
+ * UIScrollView decay curve) as [flingBehavior],
+ * [rememberTranscriptRubberBand] as [overscrollEffect] and the vertical
+ * scroll indicator (decision TRANSCRIPT-D3) at the end of the chain —
+ * so callers that want the platform behaviour must override both
+ * parameters explicitly.
  *
  * `reverseDirection = true` is `verticalScroll`'s convention flipped to
  * this model's coordinates: a positive delta means the finger moves up,
  * the content moves toward the tail, and the offset grows.
  *
  * @param viewport the scroll model (usually `TranscriptState.viewport`).
- * @param flingBehavior 134 passes the iOS deceleration curve here.
- * @param overscrollEffect 134 passes the rubber band; `null` on purpose —
- *   the Android stretch is not iOS, so none is installed by default.
+ * @param flingBehavior 134's iOS deceleration curve by default.
+ * @param overscrollEffect 134's rubber band by default. `null` opts out
+ *   explicitly (the Android stretch is never installed here).
  * @param interactionSource 65's `scrollInteractions`, passed through for
  *   other consumers only — never used for follow logic (interaction
  *   collection is asynchronous and can arrive after the fling has begun,
@@ -59,8 +61,8 @@ import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun rememberTranscriptScroll(
     viewport: TranscriptViewport,
-    flingBehavior: FlingBehavior = ScrollableDefaults.flingBehavior(),
-    overscrollEffect: OverscrollEffect? = null,
+    flingBehavior: FlingBehavior = rememberIosFlingBehavior(),
+    overscrollEffect: OverscrollEffect? = rememberTranscriptRubberBand(viewport),
     interactionSource: MutableInteractionSource? = null,
 ): Modifier {
     // The dp/px ratio, read inside the non-composable callbacks and
@@ -129,6 +131,10 @@ fun rememberTranscriptScroll(
             flingBehavior = fling,
             interactionSource = interactionSource,
         )
+        // 134 (decision TRANSCRIPT-D3): the iOS vertical scroll indicator,
+        // last in the chain so it draws over the rows. The host (65) and
+        // the lab (135) get it with no call-site change.
+        .transcriptScrollIndicator(viewport)
 }
 
 /**
