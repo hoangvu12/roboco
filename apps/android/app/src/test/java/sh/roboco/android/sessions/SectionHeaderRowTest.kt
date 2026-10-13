@@ -185,7 +185,7 @@ class SectionHeaderRowTest {
     @Test
     fun theRowIsOneButtonNodeWithTheJoinedLabelAndState() {
         var collapsed by mutableStateOf(false)
-        hostClickable { p0.copy(collapsed = collapsed) }
+        hostClickable({ p0.copy(collapsed = collapsed) })
         val config = compose.onNodeWithTag("section-p0").fetchSemanticsNode().config
         assertEquals(Role.Button, config[SemanticsProperties.Role])
         assertEquals(listOf("P0, 2"), config[SemanticsProperties.ContentDescription])
@@ -201,7 +201,7 @@ class SectionHeaderRowTest {
 
     @Test
     fun theChildrenAreClearedFromTheMergedTree() {
-        hostClickable { p0 }
+        hostClickable({ p0 })
         // The merged tree carries neither the title nor the count — one
         // node, whose label already holds both (the live glyph is not
         // part of the label, iOS parity).

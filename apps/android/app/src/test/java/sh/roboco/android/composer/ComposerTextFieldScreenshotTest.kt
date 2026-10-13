@@ -10,6 +10,7 @@ import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.unit.height
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -83,7 +84,7 @@ class ComposerTextFieldScreenshotTest {
         compose.onAllNodesWithTag("composer-text-slot").assertCountEquals(5)
 
         fun heightDp(fields: SemanticsNodeInteractionCollection, index: Int): Float =
-            with(compose.density) { fields[index].getBoundsInRoot().height.toPx() }
+            fields[index].getBoundsInRoot().height.value
 
         // (a)+(b): the capsule's 50 dp minimum (empty or one line).
         assertEquals(50f, heightDp(fields, 0), 0.5f)
@@ -99,9 +100,7 @@ class ComposerTextFieldScreenshotTest {
         val capped = heightDp(fields, 4)
         assertTrue("the card caps at eight lines: $capped", capped in 189f..194f)
         // The (c) preview node is at most two lines tall.
-        val previewNodeHeight = with(compose.density) {
-            compose.onNodeWithTag("composer-input-preview").getBoundsInRoot().height.toPx()
-        }
+        val previewNodeHeight = compose.onNodeWithTag("composer-input-preview").getBoundsInRoot().height.value
         assertTrue("the preview node is ≤ 2 lines: $previewNodeHeight", previewNodeHeight <= 43.5f)
     }
 }
