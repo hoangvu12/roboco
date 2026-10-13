@@ -213,7 +213,7 @@ fun SectionHeaderRow(
     Layout(
         content = {
             FadingText(state.title, titleStyle, Modifier.layoutId("title"))
-            SectionHeaderCount(state.count, countStyle, Modifier.layoutId("count"))
+            SectionHeaderCount(state.count.toString(), countStyle, Modifier.layoutId("count"))
             if (state.live != null) {
                 SectionLiveGlyph(state.live, Modifier.layoutId("glyph"))
             }
