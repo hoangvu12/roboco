@@ -3,7 +3,6 @@ package sh.roboco.android.shell
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.onDispose
 import androidx.compose.runtime.withFrameNanos
 
 /**
