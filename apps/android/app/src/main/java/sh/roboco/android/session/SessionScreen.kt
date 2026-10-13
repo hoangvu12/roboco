@@ -1,5 +1,6 @@
 package sh.roboco.android.session
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +29,7 @@ import sh.roboco.android.transcript.TranscriptHost
 import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
+import sh.roboco.android.transcript.firstUserBubbleInRoot
 import sh.roboco.android.transcript.transcriptBottomInset
 import sh.roboco.android.transcript.widgets.imageTileRadius
 
@@ -42,9 +44,11 @@ import sh.roboco.android.transcript.widgets.imageTileRadius
  *   both). **Never created here**: a `remember {}` would recreate it on
  *   every tab switch;
  * - the first-composition wiring 51/52/66/85 delegate here: the hold
- *   decision, the one-time `attach` + `markSeen` (after the frame listener
- *   is registered, so the first frame is never missed), the landing hook,
- *   the transcript's top inset, the header's `edgeEngaged` signal and the
+ *   decision, 77's arrival `bind` (before the engine attaches, so the
+ *   deferred own turn precedes the first frame with rows), the one-time
+ *   `attach` + `markSeen` (after the frame listener is registered, so
+ *   the first frame is never missed), the landing hook, the
+ *   transcript's top inset, the header's `edgeEngaged` signal and the
  *   [TranscriptActions];
  * - the layer stack: [SessionScaffold] (background, haze state, the header
  *   over everything) wrapping ticket 74's `SessionBottomStack`, whose
@@ -107,6 +111,13 @@ fun SessionScreen(
                 hasAppeared = entry.hasAppeared,
                 arrivalPrepared = state.arrivalPrepared,
             ),
+        )
+        // 77: bind the arrival hooks before the engine attaches below —
+        // the own turn must start before any frame with rows is applied
+        // (the deferred own turn of a pre-push prepareArrival runs here).
+        state.arrival.bind(
+            beginOwnTurn = transcript::beginOwnTurn,
+            bubbleBounds = { transcript.firstUserBubbleInRoot() },
         )
     }
 
@@ -240,15 +251,27 @@ fun SessionScreen(
             state = bottomState,
             model = model,
             transcript = { insets ->
-                OpenRevealLayers(state.reveal, statusBarTop = statusBarTop) {
-                    TranscriptHost(
-                        transcript, actions,
-                        // 133, outermost of the host's chain, so the inset
-                        // node measures before the host measures and places
-                        // its rows; the host itself adds the IME-drag
-                        // observer (interactiveImeDismiss) and 68's scroll.
-                        Modifier.fillMaxSize().transcriptBottomInset(transcript.viewport, insets.covered),
-                    )
+                OpenRevealLayers(
+                    state.reveal,
+                    statusBarTop = statusBarTop,
+                    // 77: the arrival channel joins the open reveal's own
+                    // alpha inside the single graphicsLayer the layers
+                    // compose (never a second layer on the host).
+                    transcriptAlpha = { state.arrival.transcriptAlpha },
+                ) {
+                    // 77: UIKit's alpha-0.01 hit-test rule — while the
+                    // arrival hides it, the transcript takes no taps and
+                    // is absent from semantics, but keeps laying out.
+                    Box(Modifier.arrivalHidden { state.arrival.transcriptAlpha }) {
+                        TranscriptHost(
+                            transcript, actions,
+                            // 133, outermost of the host's chain, so the inset
+                            // node measures before the host measures and places
+                            // its rows; the host itself adds the IME-drag
+                            // observer (interactiveImeDismiss) and 68's scroll.
+                            Modifier.fillMaxSize().transcriptBottomInset(transcript.viewport, insets.covered),
+                        )
+                    }
                 }
             },
             pill = {}, // 73
@@ -262,8 +285,9 @@ fun SessionScreen(
                 if (composerBinding != null) SessionComposerSlot(composerBinding, shown)
             },
             jump = {}, // 131
-            // 85 and 77 make this { nav.stackAlpha() * state.arrival.stackAlpha }.
-            stackAlpha = { 1f },
+            // 77: the arrival channel (85 multiplies its push-pop factor
+            // in: nav.stackAlpha() * state.arrival.stackAlpha).
+            stackAlpha = { state.arrival.stackAlpha },
             modifier = Modifier.fillMaxSize(),
         )
     }

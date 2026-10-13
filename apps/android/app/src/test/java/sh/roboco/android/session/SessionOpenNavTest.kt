@@ -224,7 +224,7 @@ class SessionOpenNavTest {
         host(stack)
         compose.mainClock.advanceTimeBy(100)
         val state = newState()
-        writeOnUi { state.arrivalPrepared = true }
+        writeOnUi { state.arrival.prepareArrival() }
         writeOnUi { stack.push(SessionRoute(state), animated = true) }
 
         compose.mainClock.advanceTimeBy(64)
