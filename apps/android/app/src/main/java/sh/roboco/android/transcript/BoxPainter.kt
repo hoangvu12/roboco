@@ -4,30 +4,63 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import uniffi.roboco_core.BoxPrim
+import uniffi.roboco_core.BoxStyle
 
 /**
- * Draws one [BoxPrim]. This file fixes the seam in ticket 62; ticket 64
- * finishes the body (iOS-exact fill and the 1-device-pixel inside
- * hairline, which takes the row's density). The seed paints both styles
- * as a filled rounded rect, which is enough for the orchestration goldens.
+ * Draws one [BoxPrim] — the iOS box pass (`ios:Transcript/RowModel.swift:148-170`,
+ * ticket 64): a plain circular-corner rounded rect for [BoxStyle.FILL] and a
+ * 1-device-pixel stroke on the rect's inside edge for [BoxStyle.HAIRLINE]
+ * (`rect.insetBy(dx: hairline/2)` with `radius − hairline/2`, radius floored
+ * at 0). Circular corners only — the continuous shape of ticket 01 is for
+ * chrome, not the transcript.
  *
- * The scratch [Paint] and [RectF] live here, not in [RowModel]: all
- * drawing happens on one thread.
+ * Boxes keep the colour's own alpha (several roles are translucent) and
+ * paint in list order, before any text of their layer; the caller
+ * ([RowModel.draw]) resolves the role against the appearance and skips the
+ * whole pass in [RowModel.Pass.Range].
+ *
+ * The scratch [Paint]s and [RectF] live in this object, so it is drawing
+ * (main) thread only — never touched from [RowModel] construction.
  */
 internal object BoxPainter {
 
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    /** A hairline is exactly 1 physical pixel, independent of [android.util.DisplayMetrics.density]. */
+    const val HAIRLINE_PX = 1f
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        isDither = false
+    }
+
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = HAIRLINE_PX
+        isDither = false
+    }
+
     private val rect = RectF()
 
     /**
-     * Fills `box`'s rect in px (`(x, y, x + w, y + h) · d`) with [color].
-     * The hairline distinction is ticket 64's body; the seed draws every
-     * style filled.
+     * Paints `box` at `(x·d, y·d, (x+w)·d, (y+h)·d)` in [color] — the
+     * ARGB the caller resolved from the row's appearance (ticket 02's
+     * `TranscriptPalette(dark).color(role)`); this object never looks at
+     * roles itself. Skia shrinks oversize corner radii proportionally, so
+     * no clamp of our own (the core keeps radii ≤ half the rect).
      */
     fun draw(canvas: Canvas, box: BoxPrim, color: Int, d: Float) {
         rect.set(box.x * d, box.y * d, (box.x + box.w) * d, (box.y + box.h) * d)
-        fill.color = color
-        // Seed: hairlines drawn filled; ticket 64 replaces this body.
-        canvas.drawRoundRect(rect, box.radius * d, box.radius * d, fill)
+        val r = box.radius * d
+        when (box.style) {
+            BoxStyle.FILL -> {
+                fill.color = color
+                canvas.drawRoundRect(rect, r, r, fill)
+            }
+            BoxStyle.HAIRLINE -> {
+                stroke.color = color
+                rect.inset(HAIRLINE_PX / 2, HAIRLINE_PX / 2)
+                val rr = maxOf(0f, r - HAIRLINE_PX / 2)
+                canvas.drawRoundRect(rect, rr, rr, stroke)
+            }
+        }
     }
 }
