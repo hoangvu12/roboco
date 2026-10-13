@@ -241,9 +241,12 @@ fun ToolChevron(rowKey: ULong, expanded: Boolean, modifier: Modifier = Modifier)
             .graphicsLayer { rotationZ = rotation.value },
     ) {
         // scaleAspectFit (ToolViews.swift:42): the glyph square is the
-        // rect's shorter side, centred.
+        // rect's shorter side, centred. Read here: the inner Box's scope is a
+        // DSL-marked receiver, so the outer constraints scope's maxWidth is
+        // not reachable implicitly inside it.
+        val side = minOf(maxWidth, maxHeight)
         Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
-            IconInBox(ToolChevronIcon, tint, box = minOf(maxWidth, maxHeight), weight = SymbolWeight.Regular)
+            IconInBox(ToolChevronIcon, tint, box = side, weight = SymbolWeight.Regular)
         }
     }
 }
