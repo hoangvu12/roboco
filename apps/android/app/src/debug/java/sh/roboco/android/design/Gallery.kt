@@ -217,11 +217,13 @@ object Gallery {
         // control — the state morph, the glyph bounce and the long-press
         // delivery menu over the busy backdrop.
         GallerySection("Composer action button", screenshotHeightDp = 420) { ComposerActionButtonGallerySection() },
+        // Ticket 21 (wallpaper hero): the page-top backdrop — plain,
+        // opacity×scrollFade and cutout fixtures, plus the live store item.
+        GallerySection("Wallpaper hero", screenshotHeightDp = 1400) { WallpaperHeroGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
         // lands, replace the comment with the registration:
-        // 21 "Wallpaper hero"     GallerySection("Wallpaper hero") { WallpaperHeroGallerySection() }
         // 23 "Reference"          GallerySection("Reference", GalleryLayout.Fill) { ReferenceGalleryPage() }  (a full page)
         // Ticket 20 (WallpaperStore) is non-visual and has no gallery entry.
     )
