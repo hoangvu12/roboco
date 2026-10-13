@@ -37,6 +37,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
+import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
@@ -178,6 +179,12 @@ object Gallery {
         // Ticket 52 (session header): the Session screen's bar — glass back
         // circle, two-line fading title view, ⋯ circle over the soft edge.
         GallerySection("Session header", GalleryLayout.Fill, screenshotHeightDp = 420) { SessionHeaderGallerySection() },
+        // Ticket 38 (row meta line): line 2 of the session row — project
+        // tile, project name, branch and the PR badge at the meta slot's
+        // right end, plus the k = 1.6 clamp end.
+        GallerySection("Row meta line", GalleryLayout.Scroll, screenshotHeightDp = 760) {
+            SessionRowMetaGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

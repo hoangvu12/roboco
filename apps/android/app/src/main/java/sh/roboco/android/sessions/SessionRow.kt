@@ -35,7 +35,8 @@ import sh.roboco.android.design.uiStyle
  * The two-line session row (android-ui-parity #37) — the port of iOS
  * `SessionCell` (`ios:Threads/SessionCell.swift`), the title line only:
  * the harness BrandMark, the fading title, the status glyph and the corner
- * word. Ticket 38 fills the meta slot; the gestures (tap, swipe,
+ * word. Ticket 38 fills the meta slot with [SessionRowMetaLine] (the
+ * `meta` parameter's default); the gestures (tap, swipe,
  * long-press) are attached by the list tickets (41, 44) through
  * [modifier].
  *
@@ -59,8 +60,10 @@ import sh.roboco.android.design.uiStyle
  * @param isCurrent the session open beside the sidebar (tablet): a quiet
  *   [sh.roboco.android.design.Palette.rowActive] fill, replaced by the
  *   highlight while pressed (`SessionCell.swift:58-59`).
- * @param meta ticket 38's meta line, empty until then — the slot frame is
- *   reserved either way.
+ * @param meta ticket 38's meta line ([SessionRowMetaLine]) — the slot's
+ *   default, so every caller that omits it (41's list, 49's search
+ *   results, 105's sidebar) draws the project tile, name, branch and PR
+ *   badge; pass `{}` for an explicitly empty slot.
  */
 @Composable
 fun SessionRow(
@@ -69,7 +72,7 @@ fun SessionRow(
     isCurrent: Boolean = false,
     /** 0…1, read in draw only. 41's rememberRowHighlight drives it; 44 forces 0 while lifted. */
     highlight: () -> Float = { 0f },
-    meta: @Composable () -> Unit = {},
+    meta: @Composable () -> Unit = { SessionRowMetaLine(vm) },
 ) {
     val p = RobocoTheme.palette
     val ts = LocalTypeScale.current
