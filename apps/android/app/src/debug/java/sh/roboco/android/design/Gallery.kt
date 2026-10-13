@@ -165,6 +165,10 @@ object Gallery {
         // code block, table, quote bar, folded bubble, file pill, tool
         // badge and agent card, through the real RowModel path.
         GallerySection("Transcript chrome", screenshotHeightDp = 760) { RowChromeFixturePage() },
+        // Ticket 55 (composer surface): the static half of the composer's
+        // capsule ⇄ card morph — the glass surface, the six-slot layout
+        // and the attach button, over the striped backdrop.
+        GallerySection("Composer surface", screenshotHeightDp = 1300) { ComposerSurfaceGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
