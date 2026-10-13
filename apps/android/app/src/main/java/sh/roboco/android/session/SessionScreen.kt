@@ -109,13 +109,16 @@ fun SessionScreen(
     DisposableEffect(state) {
         if (!state.started) {
             state.started = true
+            // The listener outlives this composition (the route holds the
+            // transcript): capture the application context, never the Activity.
+            val appContext = context.applicationContext
             transcript.addFrameListener { _, new ->
                 state.onFrameApplied(new.rowCount().toLong(), new.buildMicros().toLong())
-                    ?.let { OpenProbe.emit(context.applicationContext, it) }
+                    ?.let { OpenProbe.emit(appContext, it) }
             }
             transcript.frame?.let { applied ->
                 state.onFrameApplied(applied.rowCount().toLong(), applied.buildMicros().toLong())
-                    ?.let { OpenProbe.emit(context.applicationContext, it) }
+                    ?.let { OpenProbe.emit(appContext, it) }
             }
             controller.attach(transcript.engine)
             controller.markSeen()
