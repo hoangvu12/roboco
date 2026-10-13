@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
+import sh.roboco.android.composer.AttachMenuGallerySection
 import sh.roboco.android.composer.ChipStripGallerySection
 import sh.roboco.android.composer.ComposerTextFieldGallerySection
 import sh.roboco.android.composer.ComposerActionButtonGallerySection
@@ -249,6 +250,11 @@ object Gallery {
         // accent on-tint, 37 × 24 capsule thumb, tap/drag, press lift,
         // ToggleOn/Off haptics; 420 dp of fixture card + interactive rows.
         GallerySection("Switch", screenshotHeightDp = 420) { RobocoSwitchGallerySection() },
+        // Ticket 87 (composer attach menu): the + pull-down and its staging
+        // demo — static panels, a live ComposerSurface with the real button
+        // (the live half is skipped under capture: it needs an activity's
+        // result registry).
+        GallerySection("Composer attach menu", screenshotHeightDp = 700) { AttachMenuGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
