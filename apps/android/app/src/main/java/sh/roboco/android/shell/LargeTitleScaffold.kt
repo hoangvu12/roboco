@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -56,6 +57,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlin.coroutines.coroutineContext
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -64,6 +66,8 @@ import kotlinx.coroutines.flow.filter
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.Motion
+import sh.roboco.android.design.PullToRefreshIndicator
+import sh.roboco.android.design.PullToRefreshState
 import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.SymbolWeight
@@ -217,6 +221,15 @@ internal object LargeTitleRecompositionProbe {
  *   chrome above the edge effect at `navBottom + max(0, L − c)`, covering
  *   its own spacer item under the large title; pass `null` when absent
  * @param pinnedAccessoryHeight the accessory's fixed height `h`
+ * @param pullToRefresh ticket 48's pull-to-refresh state, or `null` (the
+ *   default) for screens without a refresh — Settings, Licenses, engine
+ *   detail. When non-null: the source box carries the state's
+ *   nested-scroll connection, the list and the pinned accessory ride the
+ *   gap (`Modifier.offset`, never `contentPadding` — the collapse math
+ *   stays intact), the backdrop does **not** move, and the 21-dp cell
+ *   spinner indicator is drawn above the source box, under the edge
+ *   effect. Ignored in [TitleMode.None] — the session screen never passes
+ *   one
  * @param backdrop content behind the list, inside the haze source (the
  *   wallpaper hero, 21/46)
  * @param content the list's items after the scaffold's own
@@ -235,6 +248,7 @@ fun LargeTitleScaffold(
     trailing: @Composable RowScope.() -> Unit = {},
     pinnedAccessory: (@Composable () -> Unit)? = null,
     pinnedAccessoryHeight: Dp = 0.dp,
+    pullToRefresh: PullToRefreshState? = null,
     backdrop: @Composable BoxScope.() -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
@@ -327,18 +341,46 @@ fun LargeTitleScaffold(
     }
 
     val hazeState = rememberHazeState()
+
+    // Pull-to-refresh (48): wired only under a nav row — TitleMode.None
+    // draws its own header and never passes a state. The connection sits
+    // on the source box, the *parent* of the list (never on the list
+    // itself: it must receive the list's own scroll leftovers), the list
+    // reports its viewport height and rides the gap.
+    val pull = if (effectiveMode == TitleMode.None) null else pullToRefresh
+
     ProvideHazeState(state = hazeState) {
         Box(modifier.fillMaxSize().background(palette.background)) {
             // 1. The haze source: everything that scrolls, plus the backdrop
             //    behind it. The LazyColumn fills the screen, so rows draw
             //    into the padding region under the bar and the edge effect
-            //    softens them.
-            Box(Modifier.fillMaxSize().hazeSource(hazeState)) {
+            //    softens them. With a pull-to-refresh the box also carries
+            //    the gesture's nested-scroll connection.
+            Box(
+                if (pull != null) {
+                    Modifier.fillMaxSize().hazeSource(hazeState).nestedScroll(pull.nestedScrollConnection)
+                } else {
+                    Modifier.fillMaxSize().hazeSource(hazeState)
+                },
+            ) {
                 backdrop()
                 LazyColumn(
                     state = listState,
                     contentPadding = listContentPadding,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = if (pull != null) {
+                        // Translation, not contentPadding: offset is
+                        // placement-only, so the large-title collapse math
+                        // and firstVisibleItemScrollOffset are untouched.
+                        // offsetPx is read in the layout phase only — a pull
+                        // frame never recomposes this scaffold. The
+                        // backdrop above stays fixed (iOS backgroundView).
+                        Modifier
+                            .fillMaxSize()
+                            .onSizeChanged { pull.viewportPx = it.height.toFloat() }
+                            .offset { IntOffset(0, pull.offsetPx.roundToInt()) }
+                    } else {
+                        Modifier.fillMaxSize()
+                    },
                 ) {
                     if (hasLargeTitle) {
                         item(key = LargeTitleItemKey, contentType = "largeTitle") {
@@ -359,6 +401,14 @@ fun LargeTitleScaffold(
                     content()
                 }
             }
+            // 1½. Pull-to-refresh indicator (48): the 21-dp cell spinner
+            //     centred in the gap between the nav row and the
+            //     (pushed-down) large-title row — above the source box, so
+            //     the backdrop never covers it, and under the edge effect
+            //     and the nav row (the ticket's z-order). A plain overlay:
+            //     transparent, no pointer input, composed only while the
+            //     gap is open or the spinner runs/closes.
+            if (pull != null) PullToRefreshIndicator(pull, navBottom)
             // 2. The soft scroll edge (not in None): over the content, under
             //    the nav row. With a pinned accessory the height follows the
             //    accessory (see EdgeEffectSlot); without one it is constant,
@@ -393,7 +443,9 @@ fun LargeTitleScaffold(
                                 c = collapseDp(),
                                 inlineOnly = !hasLargeTitle,
                             )
-                            IntOffset(0, y.dp.roundToPx())
+                            // Pull-to-refresh (48): the accessory rides the
+                            // gap with the list (read in the layout phase).
+                            IntOffset(0, y.dp.roundToPx() + (pull?.offsetPx?.roundToInt() ?: 0))
                         }
                         .fillMaxWidth()
                         .height(pinnedAccessoryHeight),
