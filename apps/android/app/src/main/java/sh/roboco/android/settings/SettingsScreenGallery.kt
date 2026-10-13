@@ -1,6 +1,7 @@
 package sh.roboco.android.settings
 
 import android.content.res.Configuration
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
@@ -111,6 +112,9 @@ private fun SettingsScreenGalleryContent(listState: LazyListState, live: Boolean
         versionCode = 1L,
         core = CoreStatus.Loaded("0.1.0"),
     )
+    // Composable reads happen here, not inside the LazyList DSL lambda.
+    val wallpaper = if (live) rememberGalleryWallpaperSectionState() else null
+    val sessionsStrings = sessionsSettingsStrings()
     SettingsScreenContent(listState, topInset = 24.dp) {
         devicesSection(devices)
         notificationRowsSection(
@@ -122,12 +126,12 @@ private fun SettingsScreenGalleryContent(listState: LazyListState, live: Boolean
             onToggle = { _, _ -> },
         )
         appearanceSection(appearance)
-        if (live) {
-            wallpaperSection(rememberGalleryWallpaperSectionState())
+        if (wallpaper != null) {
+            wallpaperSection(wallpaper)
         } else {
             galleryStaticWallpaperSection()
         }
-        sessionsSettingsSection(sessionsSettingsStrings(), { true }, {}, {})
+        sessionsSettingsSection(sessionsStrings, { true }, {}, {})
         aboutSection(about)
     }
 }
