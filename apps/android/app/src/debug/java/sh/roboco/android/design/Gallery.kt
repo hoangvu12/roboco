@@ -49,6 +49,7 @@ import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.SessionOpenGallerySection
+import sh.roboco.android.session.SessionComposerGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
 import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SearchGallerySection
@@ -441,6 +442,14 @@ object Gallery {
         // canvas, scaled to fit. Fill: the page owns its scrolling.
         GallerySection("Reference", GalleryLayout.Fill, screenshotHeightDp = 1000) {
             ReferenceGalleryPage()
+        },
+        // Ticket 78 (session composer): the Session screen's composer in
+        // 74's stack slot — the chrome→composer binding (chips, running /
+        // canSteer / canWrite, placeholder, upload progress), send / stop /
+        // search over the fake commands and the send-failure pill above it,
+        // with live toggles and a command log.
+        GallerySection("Session composer", screenshotHeightDp = 900) {
+            SessionComposerGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

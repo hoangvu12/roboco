@@ -98,7 +98,19 @@ class SessionScreenRoute internal constructor(
         }
         // Ticket 75's screen (the scaffold, the first-composition wiring,
         // the layer stack). 80 adds `onMore`; 66 the attachment reader.
-        SessionScreen(controller, state)
+        // 78: the composer's command set, once per route — over this
+        // route's core (a CoreSessionCore holds the client and the
+        // handle), reading the controller's host device at call time. A
+        // test core that is not a CoreSessionCore yields null and the
+        // composer slot stays empty.
+        val commands: SessionCommands? = remember(entry) {
+            (core as? CoreSessionCore)?.let { c ->
+                entry.retain(CommandsKey) {
+                    CoreSessionCommands(c.client, c.handle, c.chatId) { controller.hostDeviceId }
+                }
+            }
+        }
+        SessionScreen(controller, state, commands = commands)
     }
 
     /** Ticket 77 fills these; 32's default `HandoffAnimator.Instant` calls `finishArrival()`, so empty bodies are safe until then. */
@@ -121,4 +133,7 @@ class SessionScreenRoute internal constructor(
     }
 
     private object CloseKey
+
+    /** 78's command-set retention key. */
+    private object CommandsKey
 }

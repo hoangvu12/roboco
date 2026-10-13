@@ -43,6 +43,7 @@ import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.session.ChromeFillerRegistry
 import sh.roboco.android.session.CoreSessionOpener
+import sh.roboco.android.session.SessionChipsFiller
 import sh.roboco.android.session.installSessionRoutes
 import sh.roboco.android.sessions.CoreRowActions
 import sh.roboco.android.sessions.FoldState
@@ -381,6 +382,11 @@ class RobocoApplication : Application() {
             }.distinctUntilChanged()
                 .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
         }
+        // Ticket 78 (chips): the session composer's chip derivation,
+        // registered at slot 20 — after 79's CAN_WRITE (10), before 73's
+        // BANNER (30), the iOS `refresh()` order. 73 owns the send-failure
+        // state, so this registry never gets a second send-failure filler.
+        chromeFillers.register(ChromeFillerRegistry.CHIPS) { SessionChipsFiller() }
         // Ticket 76: the real session route factory. Every open runs off
         // main through 32's `openSessionRoute`, over `coreStartup.sessionEvents`
         // (51's hub — the same instance the client's events already fan out

@@ -59,6 +59,9 @@ import sh.roboco.android.transcript.transcriptBottomInset
  * @param state the route-held per-screen state; its [SessionScreenState.transcript]
  *   is created on the first main-thread read (60's prewarm built the
  *   engine already)
+ * @param commands ticket 78's command set, built once per route by 76
+ *   (`CoreSessionCommands` over the route's core). `null` — a fake core
+ *   in tests, or no session at all — leaves the composer slot empty
  * @param onMore the ⋯ tap (ticket 80 fills it); the [Rect] is the circle's
  *   bounds in window px
  * @param attachments ticket 66's attachment reader; 76's route passes
@@ -72,6 +75,7 @@ fun SessionScreen(
     controller: SessionController,
     state: SessionScreenState,
     modifier: Modifier = Modifier,
+    commands: SessionCommands? = null,
     onMore: (anchorInWindow: Rect) -> Unit = {},
     attachments: AttachmentReader? = null,
 ) {
@@ -160,6 +164,23 @@ fun SessionScreen(
     val bottomState = rememberBottomStackState()
     val model = BottomStackModel.from(chrome, editing = false)
 
+    // 9.5 Ticket 78: the composer binding — chrome → composer, send /
+    //     stop / search over the route's commands, the upload progress
+    //     pin and the send-failure reporting. The controller is
+    //     entry-retained, so a tab-host disposal never drops the draft;
+    //     without commands (tests, previews) the slot stays empty.
+    val composerBinding = if (commands != null) {
+        rememberSessionComposer(
+            chatId = controller.chatId,
+            chrome = chrome,
+            commands = commands,
+            transcript = transcript,
+            banner = controller.filler<StatusBanner>() ?: NoopSendReporter,
+        )
+    } else {
+        null
+    }
+
     // 10. The layer stack: the scaffold (background, haze, header) around
     //     74's container, with the open-reveal layers in its transcript
     //     slot. 133's `Modifier.transcriptBottomInset` is the viewport's
@@ -200,7 +221,13 @@ fun SessionScreen(
             pill = {}, // 73
             queue = {}, // 82
             questions = {}, // 90/91
-            composer = {}, // 78
+            composer = {
+                // 78: the composer in 74's slot. `shown` is the scope's —
+                // the questions panel replaces the composer
+                // (`composer.isHidden = asking`, :495) and the hidden
+                // composer blurs inside SessionComposerSlot.
+                if (composerBinding != null) SessionComposerSlot(composerBinding, shown)
+            },
             jump = {}, // 131
             // 85 and 77 make this { nav.stackAlpha() * state.arrival.stackAlpha }.
             stackAlpha = { 1f },
