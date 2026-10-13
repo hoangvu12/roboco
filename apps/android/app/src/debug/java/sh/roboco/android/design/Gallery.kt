@@ -255,6 +255,10 @@ object Gallery {
         // (the live half is skipped under capture: it needs an activity's
         // result registry).
         GallerySection("Composer attach menu", screenshotHeightDp = 700) { AttachMenuGallerySection() },
+        // Ticket 33 (tablet split): the 1280 × 800 dp two-pane frame —
+        // 360 dp sidebar + hairline + detail column, the 0.3 s easeInOut
+        // show/hide, and the hardware shortcut buttons.
+        GallerySection("Split layout") { SplitGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
