@@ -234,6 +234,10 @@ object Gallery {
         // 260 dp image row, the 200 ms cross-fade, the per-engine LRU
         // loader and the openImage tap.
         GallerySection("Image tile", screenshotHeightDp = 1100) { ImageTileGallerySection() },
+        // Ticket 67 (upload ring): the ring over pending thumbnails —
+        // the percent and geometry rows, the live demo cadence and the
+        // non-pending control.
+        GallerySection("Upload ring") { UploadRingGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

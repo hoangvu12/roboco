@@ -1,7 +1,11 @@
 package sh.roboco.android.transcript
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
+import androidx.compose.ui.Modifier
 import sh.roboco.android.transcript.widgets.ImageTile
+import sh.roboco.android.transcript.widgets.UploadRing
+import sh.roboco.android.transcript.widgets.isPendingReference
 import uniffi.roboco_core.Widget
 import uniffi.roboco_core.WidgetKind
 
@@ -12,11 +16,15 @@ import uniffi.roboco_core.WidgetKind
  *
  * Exhaustive on purpose, with **no** `else`: a new Rust `WidgetKind`
  * fails compilation here instead of silently rendering nothing. Each
- * branch is empty until its ticket lands (66's image tile is wired).
+ * branch is empty until its ticket lands (66's image tile is wired, with
+ * 67's upload ring in its `overlay` slot).
+ *
+ * The subject is bound to a local so the Image branch's smart cast
+ * survives into the `overlay` lambda (a property smart cast would not).
  */
 @Composable
 internal fun RowWidget(ctx: RowContext, w: Widget) {
-    when (w.kind) {
+    when (val k = w.kind) {
         // ticket 119 (copy-code button)
         WidgetKind.CopyCode -> Unit
         // ticket 120 (disclosure, tool toggle, chevron)
@@ -28,7 +36,26 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         WidgetKind.Spinner -> Unit
         is WidgetKind.Working -> Unit
         // ticket 66 (+ 67's upload ring through `overlay`, 137 extends)
-        is WidgetKind.Image -> ImageTile((w.kind as WidgetKind.Image).reference, w.w, w.h, ctx.actions())
+        is WidgetKind.Image -> ImageTile(
+            reference = k.reference,
+            widthDp = w.w,
+            heightDp = w.h,
+            actions = ctx.actions(),
+            overlay = {
+                // Ticket 67: the ring lives only over a pending reference,
+                // keyed by it — a tile reused for another pending reference
+                // starts a fresh ring at alpha 0, and a host-path reference
+                // drops the ring at once, with no fade (iOS rebuilds the
+                // widget view without one). The lambda (never the value)
+                // keeps a progress change recomposing the ring scope only.
+                if (isPendingReference(k.reference)) key(k.reference) {
+                    UploadRing(
+                        progress = { ctx.state.uploadProgress },
+                        modifier = Modifier.matchParentSize(),
+                    )
+                }
+            },
+        )
         // ticket 127 (the mono tool-detail sheet)
         is WidgetKind.Detail -> Unit
         // ticket 124 (SF-symbol-like icons)
