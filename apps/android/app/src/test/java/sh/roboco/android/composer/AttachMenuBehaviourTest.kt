@@ -58,6 +58,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -291,7 +292,7 @@ class AttachMenuBehaviourTest {
     private fun attachBounds(): DpRect = compose.onNodeWithTag("composer-attach").getBoundsInRoot()
 
     private fun inputText(): String =
-        compose.onNodeWithTag("composer-input").fetchSemanticsNode().config[SemanticsProperties.EditableText]
+        compose.onNodeWithTag("composer-input").fetchSemanticsNode().config[SemanticsProperties.EditableText].text
 
     // ------------------------------------------------- the #714 rules (open)
 

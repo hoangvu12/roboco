@@ -47,12 +47,12 @@ class UploadRingMathTest {
 
     @Test
     fun theSweepIsClampedToTheFloorAndOne() {
-        assertEquals(7.2f, UploadRingMath.sweepDegrees(0.0), 1e-3) // the floor stub
-        assertEquals(7.2f, UploadRingMath.sweepDegrees(-1.0), 1e-3) // below 0
-        assertEquals(7.2f, UploadRingMath.sweepDegrees(Double.NaN), 1e-3) // NaN is 0
-        assertEquals(180f, UploadRingMath.sweepDegrees(0.5), 1e-3)
-        assertEquals(360f, UploadRingMath.sweepDegrees(2.0), 1e-3) // above 1
-        assertEquals(151.2f, UploadRingMath.sweepDegrees(0.42), 1e-3) // the golden's arc
+        assertEquals(7.2f, UploadRingMath.sweepDegrees(0.0), 1e-3f) // the floor stub
+        assertEquals(7.2f, UploadRingMath.sweepDegrees(-1.0), 1e-3f) // below 0
+        assertEquals(7.2f, UploadRingMath.sweepDegrees(Double.NaN), 1e-3f) // NaN is 0
+        assertEquals(180f, UploadRingMath.sweepDegrees(0.5), 1e-3f)
+        assertEquals(360f, UploadRingMath.sweepDegrees(2.0), 1e-3f) // above 1
+        assertEquals(151.2f, UploadRingMath.sweepDegrees(0.42), 1e-3f) // the golden's arc
     }
 
     @Test

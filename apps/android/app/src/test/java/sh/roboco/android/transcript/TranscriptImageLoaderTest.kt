@@ -94,6 +94,8 @@ class TranscriptImageLoaderTest {
             return byteArrayOf(1)
         }
 
+        fun reset() = reads.set(0)
+
         fun releaseAll() {
             synchronized(gates) {
                 gates.forEach { it.complete(Unit) }
