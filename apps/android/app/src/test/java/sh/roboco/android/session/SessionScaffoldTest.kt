@@ -83,18 +83,13 @@ class SessionScaffoldTest {
     /**
      * A state write from the test: `runOnUiThread` runs inline under
      * Robolectric, `sendApplyNotifications` delivers it to the Recomposer
-     * (the frozen clock never idles the paused main looper on its own),
-     * and one frame recomposes.
+     * (the frozen clock never idles the paused main looper on its own);
+     * the following `advanceTimeBy`/`advanceTimeByFrame` runs the
+     * recomposition and the effects.
      */
     private fun writeState(change: () -> Unit) {
         compose.runOnUiThread(change)
         Snapshot.sendApplyNotifications()
-    }
-
-    /** [writeState] plus one frame, when a recomposition is wanted at once. */
-    private fun applyState(change: () -> Unit) {
-        writeState(change)
-        compose.mainClock.advanceTimeByFrame()
     }
 
     /** True when some pixel of the dp region has red below [limit] (text ink). */

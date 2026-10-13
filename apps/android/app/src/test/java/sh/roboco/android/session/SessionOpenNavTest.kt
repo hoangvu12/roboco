@@ -283,6 +283,7 @@ class SessionOpenNavTest {
 
         val second = pushSession(stack, animated = true)
         settleTransition(stack)
+        assertEquals("the pushed-away screen holds, rows or not", OpenReveal.Phase.Holding, second.reveal.phase)
         writeOnUi { stack.pop() }
         settleTransition(stack)
         assertEquals(OpenReveal.Phase.Shown, first.reveal.phase)
