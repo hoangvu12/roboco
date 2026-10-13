@@ -2,7 +2,6 @@ package sh.roboco.android.transcript
 
 import android.content.ClipboardManager
 import android.content.Context
-import android.os.Looper
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
@@ -25,10 +24,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import org.robolectric.shadows.ShadowChoreographer
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
@@ -92,25 +89,8 @@ class TranscriptRowMenuTest {
 
     // ------------------------------------------------------------- helpers
 
-    /**
-     * Sets up a fed state (viewport first, then entries — a width-0 frame
-     * never builds) with a trailing Working row, and waits for the 5-row
-     * frame by stepping the paused main looper (the relay's Choreographer
-     * hop; `compose.waitUntil` never runs that looper — see
-     * `TranscriptHostTest`).
-     */
-    private fun fedState(): TranscriptState {
-        val state = TranscriptState()
-        state.setViewport(411f, 1f)
-        state.engine.setDebugEntries(RowMenuFixture, working = true)
-        val end = System.nanoTime() + 5_000_000_000L
-        while (state.frame?.let { it.width() == 411f && it.rowCount() == 5u } != true) {
-            check(System.nanoTime() < end) { "no 5-row frame at width 411 within 5 s" }
-            shadowOf(Looper.getMainLooper()).idleFor(ShadowChoreographer.getFrameDelay())
-        }
-        TranscriptPerf.reset()
-        return state
-    }
+    /** A fed state with the 5-row frame already applied (see [fedRowMenuState]). */
+    private fun fedState(): TranscriptState = fedRowMenuState()
 
     /** The ticket's host: `ToastHost { ContextMenuHost { TranscriptHost } }`. */
     private fun host(state: TranscriptState, actions: TranscriptActions) {
@@ -171,6 +151,8 @@ class TranscriptRowMenuTest {
 
     private fun clipText(): String = clipboard().primaryClip!!.getItemAt(0).text.toString()
 
+    private fun clipLabel(): String = clipboard().primaryClip!!.description.label.toString()
+
     // --------------------------------------------------------------- tests
 
     @Test
@@ -203,7 +185,7 @@ class TranscriptRowMenuTest {
             settle()
             pick("row-menu-copy")
             assertEquals("Ship it.", clipText())
-            assertEquals("Roboco", clipboard().primaryClip!!.description.label.toString())
+            assertEquals("Roboco", clipLabel())
             assertEquals("choosing an item added no haptic", listOf(Haptic.LongPress), feedback.haptics)
             assertNull("no app toast on API 33+ (the system's own overlay)", toaster.current)
             compose.onNodeWithTag("context-menu-overlay").assertDoesNotExist()
@@ -247,7 +229,7 @@ class TranscriptRowMenuTest {
 
             pick("row-menu-copy-message")
             assertEquals("First paragraph.\n\nSecond paragraph.", clipText())
-            assertEquals("Roboco", clipboard().primaryClip!!.description.label.toString())
+            assertEquals("Roboco", clipLabel())
         } finally {
             state.close()
         }

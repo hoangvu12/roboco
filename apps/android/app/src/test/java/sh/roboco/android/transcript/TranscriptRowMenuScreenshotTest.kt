@@ -1,7 +1,6 @@
 package sh.roboco.android.transcript
 
 import android.content.Context
-import android.os.Looper
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
@@ -19,10 +18,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import org.robolectric.shadows.ShadowChoreographer
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
@@ -88,20 +85,8 @@ class TranscriptRowMenuScreenshotTest {
     }
 
     private fun shot(appearance: Appearance, file: String) {
-        val state = TranscriptState()
+        val state = fedRowMenuState()
         try {
-            // Viewport first, then entries: a width-0 frame never builds.
-            state.setViewport(411f, 1f)
-            state.engine.setDebugEntries(RowMenuFixture, working = true)
-            // The frame arrives through the relay's Choreographer callback,
-            // which the paused main looper schedules one frame delay ahead;
-            // `compose.waitUntil` never runs or advances that looper.
-            val end = System.nanoTime() + 5_000_000_000L
-            while (state.frame?.let { it.width() == 411f && it.rowCount() == 5u } != true) {
-                check(System.nanoTime() < end) { "no 5-row frame at width 411 within 5 s" }
-                shadowOf(Looper.getMainLooper()).idleFor(ShadowChoreographer.getFrameDelay())
-            }
-            TranscriptPerf.reset()
             compose.setContent {
                 RobocoTheme(appearance) {
                     CompositionLocalProvider(LocalFeedback provides NoFeedback) {
