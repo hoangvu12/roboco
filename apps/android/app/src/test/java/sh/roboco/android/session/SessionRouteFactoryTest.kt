@@ -12,12 +12,14 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import sh.roboco.android.composer.QueueChromeFiller
 import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SessionRouteFactory
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.NoHandle
 import uniffi.roboco_core.ParkReason
+import uniffi.roboco_core.QueueGate
 import uniffi.roboco_core.TextSystem
 
 /** Fills nothing; distinguishes filler types for the slot-order test. */
@@ -25,6 +27,26 @@ private class TagFiller(private val tag: String) : ChromeFiller {
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome =
         chrome.copy(error = chrome.error?.let { "$it/$tag" } ?: tag)
 }
+
+/** A [uniffi.roboco_core.QueueItem] with only the queue filler's fields apart (82's test). */
+private fun queueItem(
+    id: String,
+    text: String,
+    visibleText: String = text,
+    gate: QueueGate? = null,
+) = uniffi.roboco_core.QueueItem(
+    id = id,
+    text = text,
+    visibleText = visibleText,
+    attachments = emptyList(),
+    holdForTurnEnd = true,
+    issuedBy = "device",
+    fromThisDevice = true,
+    issuedAtMs = 0L,
+    editedAtMs = null,
+    gate = gate,
+    actionPending = false,
+)
 
 /**
  * [CoreSessionRouteFactory] (android-ui-parity #76) — the failable open:
@@ -36,7 +58,9 @@ private class TagFiller(private val tag: String) : ChromeFiller {
  * call and unregisters; two opens of one chat are two routes; fillers
  * run in slot order, fresh per route; [installSessionRoutes] replaces
  * the `Unavailable` default; android-app#28's cancel-on-open seam is
- * bound through `onSeen`.
+ * bound through `onSeen`; ticket 82's QUEUE-slot registration fills
+ * `chrome.queue` (gate label, `visibleText`) and the route's
+ * `queueActions` needs the live handle (a fake core gets none).
  *
  * Plain JUnit 4, no Robolectric: the opener seam is a fake over
  * [FakeSessionCore], the hub posts synchronously, the factory's `newIo`
@@ -237,7 +261,41 @@ class SessionRouteFactoryTest {
         second.discard()
     }
 
-    // ── registration and the cancel-on-open seam ────────────────────────
+    // ── ticket 82: the queue filler and the actions seam ────────────────
+
+    @Test
+    fun queueFillerFillsTheChromeAndFakeCoresGetNoQueueActions() = runTest {
+        // The QUEUE-slot registration maps `composer.queue` into
+        // `SessionChrome.queue` (gate label, `visibleText`, order) for
+        // every opened route. The route's `queueActions` needs the live
+        // handle: a FakeSessionCore route carries none — only a
+        // CoreSessionCore open gets actions.
+        val registry = ChromeFillerRegistry()
+        registry.register(ChromeFillerRegistry.QUEUE) { _ -> QueueChromeFiller() }
+        val core = FakeSessionCore()
+        core.composerResult = composerState().copy(
+            queue = listOf(
+                queueItem("q1", text = "raw one", visibleText = "one"),
+                queueItem(
+                    "q2",
+                    text = "raw two",
+                    gate = QueueGate.Editing(ownerDeviceId = "dev", expiresAtMs = 0L, mine = true),
+                ),
+            ),
+        )
+        val route = requireNotNull(factory(SessionOpener { core }, fillers = registry).open("chat-a"))
+        assertEquals(
+            listOf(
+                SessionChrome.QueuedItem(id = "q1", text = "one", gate = null),
+                SessionChrome.QueuedItem(id = "q2", text = "raw two", gate = "Editing"),
+            ),
+            route.controller.chrome.value.queue,
+        )
+        assertNull("a fake core has no handle: no queue actions", route.queueActions)
+        route.discard()
+    }
+
+    // ── registration and the cancel-on-open seam ──────────────────────────────
 
     @Test
     fun installSessionRoutesReplacesUnavailable() {

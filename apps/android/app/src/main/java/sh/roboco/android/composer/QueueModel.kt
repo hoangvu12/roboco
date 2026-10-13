@@ -110,11 +110,15 @@ fun queueRowMenu(index: Int, count: Int, onAction: (QueueAction) -> Unit): Menu 
  * SessionViewController.swift` maps it into the chrome but never shows
  * it), so there is no error field here.
  *
- * TODO(76): ticket 76's route factory composes the `ChromeFiller` list
- * passed to `SessionController.create`; this filler joins it as one line,
- * `QueueChromeFiller()` (never a second instance per route). 76 has not
- * landed when this ticket does, so the registration is deferred and the
- * filler is unit-tested in isolation here.
+ * **Registration (76):** `RobocoApplication.onCreate` registers this
+ * filler in 76's `ChromeFillerRegistry` QUEUE slot (50), before
+ * `installSessionRoutes` — `chromeFillers.register(
+ * ChromeFillerRegistry.QUEUE) { QueueChromeFiller() }` — so every
+ * opened route gets one fresh instance (the registry's `create` runs
+ * once per open, after the banner and chips have filled). The
+ * per-route `QueueActions` over the live handle is built by 76's
+ * `CoreSessionRouteFactory` and carried on
+ * `SessionScreenRoute.queueActions` for the screen (78/83) to wire.
  */
 class QueueChromeFiller : ChromeFiller {
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome =
