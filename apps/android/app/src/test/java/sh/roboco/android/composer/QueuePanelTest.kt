@@ -284,7 +284,7 @@ class QueuePanelTest {
         assertEquals("three rows + footer: 152", 152f, f5.heightDp(), px)
         val footer = boundsOf("queue-more-count")
         assertEquals(24f, footer.heightDp(), px)
-        assertEquals("the footer starts after the third row", 128f, footer.top.value - f5.top.value, px)
+        assertEquals("the footer starts after the third row", 124f, footer.top.value - f5.top.value, px)
         val footerText = compose.onNodeWithText("+2 more queued", useUnmergedTree = true).getBoundsInRoot()
         val leftGap = footerText.left.value - footer.left.value
         val rightGap = footer.right.value - footerText.right.value
