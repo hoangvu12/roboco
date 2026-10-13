@@ -320,15 +320,16 @@ fun SessionBottomStack(
                     }
                     entry.placeable.placeWithLayer(xPx, y.roundToInt()) {
                         this.alpha = stackAlpha()
-                        if (extent < motion.target - 0.5f) {
-                            // Collapsing or growing: drawn at the full
-                            // measured height, top-anchored, clipped to the
-                            // revealed part. No clip once settled, so glass
-                            // shadows are not cut.
+                        // While collapsing or growing — either direction —
+                        // the slot is drawn at its full measured height,
+                        // top-anchored, clipped to the revealed part
+                        // `extent × h / (h + gap)`; once settled the visible
+                        // height equals the full height, so no clip is left
+                        // on and the glass shadows are not cut.
+                        val revealed = BottomStackMetrics.visibleHeight(extent, entry.height, gapPx)
+                        if (revealed < entry.height - 0.5f) {
                             this.clip = true
-                            this.shape = SlotClipShape(
-                                BottomStackMetrics.visibleHeight(extent, entry.height, gapPx),
-                            )
+                            this.shape = SlotClipShape(revealed)
                         }
                     }
                     if (entry.slot == BottomStackSlot.Composer) {
