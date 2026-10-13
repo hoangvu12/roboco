@@ -36,9 +36,10 @@ fun interface FrameListener {
  * thread through [FrameRelay] (one coalesced apply per vsync), forwards the
  * viewport only when it changes, and keeps the applied frame, the
  * [uploadProgress] and the [fonts] style table as Compose-observable
- * state. It draws nothing; the scroll model (68, [viewport]), anchoring
- * (130), row motion and painting (62–67, 117, 132) belong to their
- * tickets, which read [frame] and register [FrameListener]s.
+ * state. It draws nothing; the scroll model (68, [viewport]), the
+ * own-turn runway (69), anchoring (130), row motion and painting
+ * (62–67, 117, 132) belong to their tickets, which read [frame] and
+ * register [FrameListener]s.
  *
  * Construct on the main thread (the production constructor checks it
  * before creating the Rust engine, which spawns the `roboco-layout`
@@ -95,6 +96,29 @@ class TranscriptState internal constructor(
     val viewport = TranscriptViewport()
 
     /**
+     * The own-turn runway (69): a sent prompt glides to the top of the
+     * visible area and the reply streams into reserved space under it,
+     * until it fills the viewport and the ordinary tail follow takes
+     * over. The driver owns the pure state machine and the glue to
+     * [viewport] — the height recompute per apply and per geometry
+     * change, the glide flag for 68's spring step, and the follow flip
+     * when a queued prompt is promoted. `currentRows` adapts the applied
+     * [frame], so [beginOwnTurn]/[expectQueuedTurn] capture the user
+     * keys present at call time — before the core applies the send.
+     */
+    private val runway = RunwayDriver(viewport) { frame?.let(::LayoutFrameRows) }
+
+    init {
+        // 69: install the runway refresh (iOS `refreshRunway`, TLV:147-159)
+        // into 68's geometry hook. 68's three inset/viewport setters call
+        // it after writing the value and before the following pin — the
+        // iOS order (inset change → runway height → offset pin,
+        // SVC:373-378). No other call site: on Android the only inputs
+        // that change the height are the applied frame and the geometry.
+        viewport.onGeometryChanged = runway::refresh
+    }
+
+    /**
      * The content y (dp) at the host's top edge — the shared scroll
      * coordinate contract (see the ticket). A row's top on screen is
      * `round(p.y·d) − round(offset·d)`; 68 owns follow and insets, 134
@@ -124,6 +148,30 @@ class TranscriptState internal constructor(
     var bottomInset: Float
         get() = viewport.bottomInset
         set(v) { viewport.setBottomInset(v) }
+
+    /**
+     * Ticket 78 (immediate send: a new turn, a steer, stop-and-send) and
+     * 77 (new-session arrival, before any frame): starts an own turn.
+     * The next new User row — the optimistic prompt echo — glides to the
+     * top of the visible area and owns the reserved space under it until
+     * the reply fills it (iOS `beginOwnTurn`, TLV:77-81). Sets following
+     * **without** starting the spring. 78 calls this just before the FFI
+     * send, so the state may wait on an unresolved key if the send later
+     * fails — the next call replaces it.
+     */
+    fun beginOwnTurn() = runway.beginOwnTurn()
+
+    /**
+     * Ticket 78 (a message queued behind a running turn): records the
+     * user keys present at queue time, first expectation only. That
+     * bubble takes the runway only when it lands in a frame — the
+     * promotion flips `following` on (iOS `expectQueuedTurn`, TLV:83-85,
+     * 96-107). Until then, nothing changes.
+     */
+    fun expectQueuedTurn() = runway.expectQueuedTurn()
+
+    /** `true` while the runway holds reserved space below the prompt (glide step in 68's spring). */
+    val runwayHolding: Boolean get() = runway.holding
 
     /** The host's drag interactions; passed to the scrollable (68) — never used for follow logic. */
     val scrollInteractions = MutableInteractionSource()
@@ -280,11 +328,19 @@ class TranscriptState internal constructor(
     }
 
     /**
-     * The frame's total height (dp) — the Rust core's `totalHeight()`
-     * already ends 16 dp under the last row (68). Ticket 69 replaces the
-     * body with the runway logic.
+     * The content height (dp) for a frame being applied: the runway's
+     * reservation while it holds — the prompt pinned at the top of the
+     * visible area with a viewport of reserved space under it, so
+     * following the tail *is* holding the prompt in place — else the
+     * frame's own `totalHeight()` (69, iOS `contentHeight(for:)`,
+     * TLV:95-142; the natural height already ends 16 dp under the last
+     * row — nothing is added on top). Called as the `onFrameApplied`
+     * argument in [apply], so it runs after the frame swap (and after
+     * 130's anchor capture) and before 68's first-frame snap / follow /
+     * anchor branch; a queued promotion flips `following` inside the
+     * same apply, so R3 starts the spring for it.
      */
-    private fun contentHeightFor(f: LayoutFrame): Float = f.totalHeight()
+    private fun contentHeightFor(f: LayoutFrame): Float = runway.heightFor(LayoutFrameRows(f))
 
     /**
      * Idempotent teardown: cancel a pending relay hop, stop the worker
