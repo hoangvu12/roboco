@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import sh.roboco.android.composer.ChipStripGallerySection
+import sh.roboco.android.composer.ComposerTextFieldGallerySection
 import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
@@ -174,6 +175,10 @@ object Gallery {
         // 55's ComposerSurface (Focus/Blur/Add image/Always card chips and
         // a per-frame isCard/focused/progress readout).
         GallerySection("Composer morph", screenshotHeightDp = 420) { ComposerMorphGallerySection() },
+        // Ticket 57 (composer text field): the text slot — one field for
+        // both modes, the #593 two-line resting preview, the 180 ms height
+        // tween and Ctrl+Enter, in the 268/338 dp slots of a 370 dp composer.
+        GallerySection("Composer text field", screenshotHeightDp = 1100) { ComposerTextFieldGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
