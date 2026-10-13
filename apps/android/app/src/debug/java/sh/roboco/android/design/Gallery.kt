@@ -71,6 +71,7 @@ import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
+import sh.roboco.android.shell.SettingsDialogGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.shell.tablet.SidebarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
@@ -468,6 +469,14 @@ object Gallery {
         // rows").
         GallerySection("Settings screen", GalleryLayout.Fill, screenshotHeightDp = 874) {
             ActionSheetHost { SettingsScreenGallerySection() }
+        },
+        // Ticket 104 (tablet Settings dialog): the `.formSheet` card — a
+        // SheetHost around a fake split (360 dp sidebar + hairline + detail),
+        // with "Show Settings" presenting the centred 540 × 620 card (Done
+        // circle, push, page-sheet stacking, predictive back). Fill: the
+        // section owns its SheetHost and the ActionSheetHost above it.
+        GallerySection("Settings dialog", GalleryLayout.Fill, screenshotHeightDp = 800) {
+            SettingsDialogGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
