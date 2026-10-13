@@ -1,14 +1,23 @@
 package sh.roboco.android
 
 import android.app.Application
+import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import sh.roboco.android.core.AppLifecycleHooks
 import sh.roboco.android.core.CoreClientWorkspace
 import sh.roboco.android.core.CoreLoader
+import sh.roboco.android.core.CoreLifecycleSink
 import sh.roboco.android.core.CoreStartState
 import sh.roboco.android.core.CoreStartup
 import sh.roboco.android.core.CoreStatus
@@ -18,6 +27,7 @@ import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.WorkspaceCore
 import sh.roboco.android.core.WorkspaceFeed
 import sh.roboco.android.core.robocoPrefsStore
+import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ToasterState
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
@@ -26,6 +36,8 @@ import sh.roboco.android.sessions.FoldState
 import sh.roboco.android.sessions.FrontPageModel
 import sh.roboco.android.sessions.asSessionWrites
 import sh.roboco.android.sessions.notices
+import sh.roboco.android.shell.RootInput
+import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SearchTabState
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.CoreClient
@@ -64,6 +76,24 @@ class RobocoApplication : Application() {
     val searchTabState = SearchTabState()
 
     /**
+     * The app root's hook holder (ticket 32, provided by 35 as
+     * `LocalRouterHooks` around the root): one instance for the app's
+     * lifetime. Tickets 76 (`SessionRouteFactory`) and 95
+     * (`HandoffAnimator`) assign their implementations at startup; the
+     * fields are volatile so the assignments are visible to the router's
+     * open coroutines.
+     */
+    val routerHooks = RouterHooks()
+
+    /**
+     * The appearance preference (ticket 96's flow; `System` until 96
+     * wires the store): ticket 35 reads it into `RobocoTheme(appearance)`
+     * — the port of `window.overrideUserInterfaceStyle`
+     * (`SceneDelegate.swift:14`).
+     */
+    val appearance = MutableStateFlow(Appearance.System)
+
+    /**
      * Exactly one DataStore per process for the paired-engines file (a
      * second instance on the same file throws).
      */
@@ -75,10 +105,40 @@ class RobocoApplication : Application() {
     val engineStore by lazy { PairedEngineStore(engineDataStore, KeystoreSecretCipher(this)) }
 
     /**
-     * The startup pipeline. Ticket 35 replaces the `onClientReady`
-     * default with `{ lifecycleHooks.clientReady() }`.
+     * The startup pipeline (71's `onClientReady` hook wired by ticket 35:
+     * the lifecycle hooks re-send the network state to the client it
+     * creates).
      */
-    val coreStartup by lazy { CoreStartup(this, engineStore, applicationScope) }
+    val coreStartup by lazy {
+        CoreStartup(
+            context = this,
+            store = engineStore,
+            scope = applicationScope,
+            onClientReady = { lifecycleHooks.clientReady() },
+        )
+    }
+
+    /**
+     * The process lifecycle / network hooks (ticket 35): foreground and
+     * background `onForeground()`/`onBackground()` and the default-network
+     * `setNetworkOnline(Boolean)` — installed **once** in `onCreate`,
+     * before the startup pipeline runs (71 relies on this order; its
+     * `onClientReady` re-sends the network state to the client it
+     * creates). Never registered from an activity (#609/#621).
+     */
+    lateinit var lifecycleHooks: AppLifecycleHooks
+        private set
+
+    /**
+     * The app root's input (ticket 35): `Loading` while 71's pipeline
+     * loads, `Ready`/`CoreFailed` after — derived from `coreStartup`'s
+     * state and engine list exactly as 71's Implementation states, so the
+     * splash (FirstFrameHold) holds until the engine list is known. The
+     * list includes parked (revoked) engines: they count as paired and
+     * keep the shell up with cached data.
+     */
+    lateinit var rootInput: StateFlow<RootInput>
+        private set
 
     /**
      * The phone-local preference store (ticket 40): the Sessions tab's
@@ -184,6 +244,36 @@ class RobocoApplication : Application() {
         TextEngine.init(this)
         TextEngine.prewarm()
         core = CoreLoader.load()
+        // Ticket 35: the process lifecycle hooks and the default-network
+        // monitor, installed exactly once per process — never from an
+        // Activity (#609 leaked one observer per onCreate) and never from
+        // onStart/onStop (#621 redialed on every rotation). Before
+        // `coreStartup.start()`: the sink resolves the live client, and
+        // `clientReady()` (wired into CoreStartup above) re-sends the
+        // network state to the client it creates. The workspace feed
+        // re-pulls through ClientEvent after onForeground(), so
+        // `afterForeground` is a no-op (iOS's refreshWorkspace).
+        lifecycleHooks = AppLifecycleHooks.install(
+            app = this,
+            lifecycle = ProcessLifecycleOwner.get().lifecycle,
+            sink = { clientOrNull()?.let(::CoreLifecycleSink) },
+        )
+        // Ticket 35: the root input derives from 71's startup state and
+        // engine list; Loading holds the splash until the first root is
+        // known, so a paired user never sees the pairing root flash.
+        rootInput = when (val c = core) {
+            is CoreStatus.Failed -> MutableStateFlow(RootInput.CoreFailed(c.reason))
+            is CoreStatus.Loaded -> combine(coreStartup.state, coreStartup.engines) { s, engines ->
+                when (s) {
+                    CoreStartState.Loading -> RootInput.Loading
+                    is CoreStartState.Failed -> RootInput.CoreFailed(s.reason)
+                    CoreStartState.Ready ->
+                        engines?.let { RootInput.Ready(hasEngines = it.isNotEmpty()) }
+                            ?: RootInput.Loading
+                }
+            }.distinctUntilChanged()
+                .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
+        }
         // Tickets 40/42/51 register their event sinks here, before start().
         // #40: forcing `workspaceFeed`'s lazy init registers its sink; the
         // start() call below only arms its drains (they skip until the

@@ -52,6 +52,7 @@ import sh.roboco.android.sessions.SectionHeaderGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.shell.NavGallerySection
+import sh.roboco.android.shell.AppRootGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
@@ -303,6 +304,9 @@ object Gallery {
         GallerySection("Text sheets", GalleryLayout.Fill, screenshotHeightDp = 420) {
             TextSheetsGallerySection()
         },
+        // Ticket 35 (app root): pairing / phone / split selection, the
+        // 350 ms cross-fade and the instant sheet dismissal before a swap.
+        GallerySection("App root", GalleryLayout.Fill) { AppRootGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
