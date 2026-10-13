@@ -70,6 +70,7 @@ import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.shell.tablet.SidebarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
+import sh.roboco.android.transcript.KeyboardInsetGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
@@ -414,6 +415,14 @@ object Gallery {
         // its fixed-height session window.
         GallerySection("Session open", GalleryLayout.Fill, screenshotHeightDp = 900) {
             SessionOpenGallerySection()
+        },
+        // Ticket 133 (keyboard inset sync): the transcript's IME ride —
+        // the same-pass bottom-inset delivery to the viewport and the
+        // interactive IME dismiss drag, over a fake 4000 dp transcript
+        // with the runway and fallback toggles and the per-frame drift
+        // readout. Fill: the section owns its fixed-height session window.
+        GallerySection("Keyboard inset sync", GalleryLayout.Fill, screenshotHeightDp = 915) {
+            KeyboardInsetGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

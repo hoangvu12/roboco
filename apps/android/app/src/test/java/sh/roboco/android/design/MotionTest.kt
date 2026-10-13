@@ -95,9 +95,15 @@ class MotionTest {
 
     @Test
     fun springStiffnessIsSettleMatched() {
-        // FOUNDATION-D1: omega = ln(1000) / (zeta * T) for zeta < 1 (all ten here).
+        // FOUNDATION-D1: omega = ln(1000) / (zeta * T) for zeta < 1; for the
+        // critically damped branch (zeta >= 1, ImeSettle) omega = 9.2334 / T,
+        // the root of (1 + omega*T)*e^(-omega*T) = 0.001.
         for (spring in Motion.allSprings) {
-            val omega = ln(1000.0) / (spring.damping * spring.durationSec)
+            val omega = if (spring.damping < 1f) {
+                ln(1000.0) / (spring.damping * spring.durationSec)
+            } else {
+                9.2334 / spring.durationSec
+            }
             assertEquals("${spring.name}: omega squared", omega * omega, spring.stiffness.toDouble(), 1e-3)
         }
     }
@@ -107,6 +113,8 @@ class MotionTest {
         // zeta >= 1 branch: omega = 9.2334 / T, root of (1 + omega*T)*e^(-omega*T) = 0.001.
         assertEquals(341.02, IosSpring("test", 0.50, 1.0f).stiffness.toDouble(), 0.01)
         assertEquals(532.85, IosSpring("test", 0.40, 1.0f).stiffness.toDouble(), 0.01)
+        // ui-parity#133: the interactive IME dismiss settle, 0.25 s.
+        assertEquals(1364.09, Motion.ImeSettle.stiffness.toDouble(), 0.01)
     }
 
     @Test
@@ -124,6 +132,9 @@ class MotionTest {
             // ui-parity#28: the tab bar minimize morph (system
             // `tabBarMinimizeBehavior`, values from android-app#19).
             "tabBarMinimize" to 412.78,
+            // ui-parity#133: the interactive IME dismiss settle (iOS's
+            // 0.25 s keyboard duration, critically damped).
+            "imeSettle" to 1364.09,
         )
         for (spring in Motion.allSprings) {
             assertEquals("${spring.name}: table stiffness", expected.getValue(spring.name), spring.stiffness.toDouble(), 0.01)
@@ -141,13 +152,24 @@ class MotionTest {
     }
 
     @Test
+    fun imeSettleIsTheIosKeyboardSettle() {
+        // Ticket 133: IosSpring("imeSettle", 0.25, 1) — critically damped
+        // (never oscillates), the iOS keyboard duration mapped by
+        // FOUNDATION-D1's zeta >= 1 branch.
+        assertEquals(1f, Motion.ImeSettle.damping, 0f)
+        assertEquals(0.25, Motion.ImeSettle.durationSec, 0.0)
+        assertEquals(1364.09, Motion.ImeSettle.stiffness.toDouble(), 0.01)
+    }
+
+    @Test
     fun allSpringsListsEveryNamedToken() {
-        assertEquals(10, Motion.allSprings.size)
+        assertEquals(11, Motion.allSprings.size)
         assertEquals(
             listOf(
                 Motion.ComposerMorph, Motion.ActionButton, Motion.ToastRise, Motion.HandoffBubble,
                 Motion.HandoffBubbleReduced, Motion.JumpButton, Motion.BottomStackReflow,
                 Motion.AccessoryRelayout, Motion.SectionChevron, Motion.TabBarMinimize,
+                Motion.ImeSettle,
             ),
             Motion.allSprings,
         )

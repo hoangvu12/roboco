@@ -561,6 +561,7 @@ dependencies {
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
     // android-app#28's NotificationFlowTest: the system permission dialog,
-    // pressHome and the notification shade (UiDevice), CI-only.
+    // pressHome and the notification shade (UiDevice), CI-only. Also
+    // ui-parity #133's KeyboardFlowTest (raw swipes over the IME).
     androidTestImplementation(libs.androidx.test.uiautomator)
 }

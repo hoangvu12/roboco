@@ -84,6 +84,11 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
             .testTag("transcript")
             .clipToBounds()
             .onPlaced { state.hostCoordinates = it }
+            // 133: interactive IME dismiss — a transcript drag that
+            // reaches into the IME tracks the finger; observes on the
+            // Final pass and never consumes, so the scroll (68), taps
+            // (81) and links (126) still get every event.
+            .interactiveImeDismiss(state.viewport) { state.hostCoordinates }
             // 68: the scroll model — size reporting, the Initial-pass
             // pointer observer, the follow-aware fling and the scrollable
             // itself, in one chain. The box is NOT padded by the insets:
