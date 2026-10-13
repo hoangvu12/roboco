@@ -202,9 +202,9 @@ class TranscriptImageLoader(
      * `RUNNING_*` levels (5/10/15) do nothing.
      */
     override fun onTrimMemory(level: Int) {
-        if (level >= TRIM_MEMORY_BACKGROUND) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
             evictAll()
-        } else if (level >= TRIM_MEMORY_UI_HIDDEN) {
+        } else if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
             lru.trimToSize(lru.maxSize() / 2)
         }
     }

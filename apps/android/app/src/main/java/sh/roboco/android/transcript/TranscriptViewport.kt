@@ -274,7 +274,7 @@ class TranscriptViewport(private val nanoTime: () -> Long = System::nanoTime) {
         val factor = if (glide) {
             // Runway glide: the desktop's frame-rate-independent ease-out
             // (TLV:528-532). dt ≤ 1/30 makes the min(8, …) never bind.
-            1.0 - pow(GLIDE_RETAIN, min(8.0, dt * 60.0))
+            1.0 - GLIDE_RETAIN.toDouble().pow(min(8.0, dt * 60.0))
         } else {
             // Critically damped approach: the tail "settles" into place.
             1.0 - exp(-SETTLE_RATE * dt)

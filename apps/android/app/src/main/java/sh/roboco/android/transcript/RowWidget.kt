@@ -28,7 +28,7 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         WidgetKind.Spinner -> Unit
         is WidgetKind.Working -> Unit
         // ticket 66 (+ 67's upload ring through `overlay`, 137 extends)
-        is WidgetKind.Image -> ImageTile(w.kind.reference, w.w, w.h, ctx.actions())
+        is WidgetKind.Image -> ImageTile((w.kind as WidgetKind.Image).reference, w.w, w.h, ctx.actions())
         // ticket 127 (the mono tool-detail sheet)
         is WidgetKind.Detail -> Unit
         // ticket 124 (SF-symbol-like icons)
