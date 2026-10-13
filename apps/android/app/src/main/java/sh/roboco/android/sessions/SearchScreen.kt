@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -195,15 +196,21 @@ fun SearchScreenContent(
     // The list's content padding (top 0: the scaffold adds its own nav
     // row) and the free-area padding the backdrop overlay and the
     // no-results view share: top = topInset + 44 + 52 (below the expanded
-    // large title), bottom = the same IME-following padding.
-    val listPadding = SearchAreaPadding(ime, density, chrome.contentPadding, chrome.barBottom, top = 0.dp)
-    val freeAreaPadding = SearchAreaPadding(
-        ime,
-        density,
-        chrome.contentPadding,
-        chrome.barBottom,
-        top = topInset + LargeTitleDefaults.NavRowHeight + LargeTitleDefaults.LargeRowHeight,
-    )
+    // large title), bottom = the same IME-following padding. Both are
+    // remembered on the stable keys, so the recomposition per keystroke
+    // never hands the list a new padding instance to re-measure.
+    val listPadding = remember(chrome, ime, density) {
+        SearchAreaPadding(ime, density, chrome.contentPadding, chrome.barBottom, top = 0.dp)
+    }
+    val freeAreaPadding = remember(chrome, ime, density, topInset) {
+        SearchAreaPadding(
+            ime,
+            density,
+            chrome.contentPadding,
+            chrome.barBottom,
+            top = topInset + LargeTitleDefaults.NavRowHeight + LargeTitleDefaults.LargeRowHeight,
+        )
+    }
     val model = rememberSessionListModel(
         sections = listOf(ListSection(id = "results", header = null, rows = results.rows)),
         collapsible = false,

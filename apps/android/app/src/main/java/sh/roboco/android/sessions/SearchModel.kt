@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -130,7 +131,12 @@ class SearchModel(
      * The latest [SearchResults]; `Loading` until the first derivation
      * lands. While a newer query is still being searched the **previous**
      * value stays on screen — no blank flash, no spinner.
+     *
+     * `mapLatest` is the cancellation contract (a newer emission cancels
+     * the running derivation); it is `@ExperimentalCoroutinesApi` in the
+     * pinned coroutines, opted in here, at its only use.
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     val results: StateFlow<SearchResults> =
         combine(
             query.map { it.searchTrim() }.distinctUntilChanged(),
