@@ -19,6 +19,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.RobocoTheme
 
 /**
  * The gesture plumbing of [rememberTranscriptScroll] (ticket 68) on a
@@ -46,8 +48,14 @@ class TranscriptScrollGestureTest {
 
     @Before
     fun setup() {
+        // Ticket 134's scroll indicator sits at the end of the scroll chain
+        // and reads the theme for its colour, so the chain (like the host,
+        // 65) now requires a RobocoTheme — as every transcript test already
+        // provided.
         compose.setContent {
-            Box(Modifier.fillMaxSize().then(rememberTranscriptScroll(viewport)))
+            RobocoTheme(Appearance.Light) {
+                Box(Modifier.fillMaxSize().then(rememberTranscriptScroll(viewport)))
+            }
         }
         compose.waitForIdle() // the box lays out → setViewportHeight(800)
         compose.runOnIdle {

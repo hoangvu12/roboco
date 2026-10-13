@@ -2,6 +2,7 @@ package sh.roboco.android.transcript
 
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import uniffi.roboco_core.LayoutFrame
 
 /**
@@ -67,9 +68,14 @@ internal object ScrollAnchoring {
      * A5–A7. Call after `onFrameApplied` returned `needsAnchor` (not
      * first, still not following). Single-row lookup, no fallback — a
      * row that disappeared leaves everything alone. The move is a plain
-     * `setOffset` write (state + report), clamped to 68's range: the
+     * `setOffset` write (state + report), clamped to the range spanned
+     * by the current offset and the legal bounds: the
      * momentum-preserving equivalent of iOS's `bounds.origin.y` write,
-     * which never cancels a running fling.
+     * which never cancels a running fling. The clamp includes the
+     * current offset (ticket 134's widening of A7): the rubber band and
+     * its bounce keep the offset past a bound, and an anchor shift must
+     * not cut the band — moving back into range stays allowed, moving
+     * further out is still refused (68's R14).
      *
      * Returns whether a correction was written (true even when the clamp
      * lands on the current offset, as in the ticket's clamp example).
@@ -78,7 +84,12 @@ internal object ScrollAnchoring {
         val y = new.yOf(anchor.key) ?: return false
         val target = y + anchor.delta
         if (abs(target - viewport.offset) <= DEAD_BAND) return false
-        viewport.setOffset(target.coerceIn(viewport.minOffset, viewport.maxOffset))
+        viewport.setOffset(
+            target.coerceIn(
+                min(viewport.offset, viewport.minOffset),
+                max(viewport.offset, viewport.maxOffset),
+            ),
+        )
         return true
     }
 }
