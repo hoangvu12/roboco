@@ -349,7 +349,9 @@ class FoldStateTest {
         assertNotNull(fold.state.value.offline["e1:s1"])
 
         // Connected, but the write is refused again: keep it for the next
-        // trigger.
+        // trigger. (`setErrors` is consumed one per call — the tap's call
+        // used the first refusal, so script the second one here.)
+        core.setErrors.add(CoreException.HostUnavailable("engine offline"))
         core.ws = snapshot(1uL, front(sections = listOf(section("e1:s1", collapsed = false))))
         fold.reconcile(core.ws, listOf(engine("A")))
         advanceUntilIdle()

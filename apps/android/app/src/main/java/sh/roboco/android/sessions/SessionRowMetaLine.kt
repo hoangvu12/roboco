@@ -10,6 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -29,6 +31,16 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.rememberBranchIconPainter
 import sh.roboco.android.design.rememberProjectTilePainter
 import sh.roboco.android.design.uiStyle
+
+/**
+ * The glyph's top inside its `AboveBaseline` placeholder, measured up from
+ * the placeholder's bottom (= the text baseline) by the unrounded [riseDp].
+ * Compose ceils `PlaceholderSpan.heightPx` to whole px, so the placeholder
+ * top sits up to 1 px above `baseline − rise`; drawing from its top-left
+ * lifted the tile and branch icon by that fraction (2 px probes on the
+ * k = 1 row). Anchoring to the bottom restores the iOS `bounds.y` geometry.
+ */
+private fun DrawScope.baselineAnchor(riseDp: Float): Float = size.height - riseDp.dp.toPx()
 
 /** The inline content ids: the tile, the branch gap and the branch icon. */
 private const val TILE = "meta.tile"
@@ -64,7 +76,8 @@ private const val BRANCH = "meta.branch"
  * [PlaceholderVerticalAlign.AboveBaseline] (placeholder bottom at the
  * text baseline — NSTextAttachment `bounds.y`'s equivalent): their heights
  * are the rises from [SessionRowMetaMetrics.M], and the glyphs are drawn
- * from each placeholder's top-left with `drawBehind`, hanging below the
+ * with `drawBehind` from `rise` above each placeholder's bottom (the
+ * baseline — see [baselineAnchor]), hanging below the
  * baseline — the hang (tile 3.29 dp at k = 1) always stays inside Geist's
  * descent, so FadingText's clip box never cuts it. The branch gap is a
  * **zero-height** placeholder (13 dp wide, not type-scaled): the same
@@ -112,7 +125,9 @@ fun SessionRowMetaLine(vm: SessionRowVM, modifier: Modifier = Modifier) {
             Spacer(
                 Modifier.fillMaxSize().drawBehind {
                     val s = m.tileSide.dp.toPx()
-                    with(tilePainter) { draw(Size(s, s)) }
+                    translate(top = baselineAnchor(m.tileRise)) {
+                        with(tilePainter) { draw(Size(s, s)) }
+                    }
                 },
             )
         },
@@ -129,7 +144,9 @@ fun SessionRowMetaLine(vm: SessionRowVM, modifier: Modifier = Modifier) {
             Spacer(
                 Modifier.fillMaxSize().drawBehind {
                     val s = m.branchSide.dp.toPx()
-                    with(branchPainter) { draw(Size(s, s), colorFilter = ColorFilter.tint(tint)) }
+                    translate(top = baselineAnchor(m.branchRise)) {
+                        with(branchPainter) { draw(Size(s, s), colorFilter = ColorFilter.tint(tint)) }
+                    }
                 },
             )
         },

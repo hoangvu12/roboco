@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -205,6 +206,10 @@ class SessionPromptsTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread(block)
+        // Frozen clock: the host's state write only reaches the Recomposer
+        // once apply notifications are sent (GlobalSnapshotManager posts that
+        // to the paused main looper, which advanceTimeBy does not idle).
+        Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(500)
     }
 
@@ -230,11 +235,12 @@ class SessionPromptsTest {
         field.assertIsFocused()
         // Decision FOUNDATION-D2: the caret at the end of "Fix flaky test".
         assertEquals(TextRange(14), field.fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange])
-        assertEquals("Fix flaky test", field.fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        // EditableText is an AnnotatedString: compare its plain text.
+        assertEquals("Fix flaky test", field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
 
         field.performTextInput(" CI")
         compose.waitForIdle()
-        assertEquals("Fix flaky test CI", field.fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        assertEquals("Fix flaky test CI", field.fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
 
         field.performTextReplacement("Deflake CI")
         compose.waitForIdle()
@@ -419,7 +425,7 @@ class SessionPromptsTest {
         compose.waitForIdle()
 
         alert("alert").assertExists()
-        assertEquals("Backend", alert("alert-field").fetchSemanticsNode().config[SemanticsProperties.EditableText])
+        assertEquals("Backend", alert("alert-field").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
 
         alert("alert-field").performTextReplacement("  API ")
         compose.waitForIdle()

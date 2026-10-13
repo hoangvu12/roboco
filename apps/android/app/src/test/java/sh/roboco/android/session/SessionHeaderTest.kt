@@ -235,23 +235,50 @@ class SessionHeaderTest {
         return false
     }
 
-    /** Composes the header inside a [widthDp]-wide box (the narrow-cap tests). */
-    private fun hostNarrow(widthDp: Dp) {
+    /**
+     * The state the switching tests flip between two probes. A compose rule
+     * allows exactly one `setContent` per test ("has already set content"),
+     * so a second configuration is a state write + `waitForIdle`, never a
+     * second `setContent`.
+     */
+    private var hostAppearance by mutableStateOf(Appearance.Light)
+    private var hostEngaged by mutableStateOf(false)
+    private var hostWidth by mutableStateOf<Dp?>(null)
+    private var hostFontScale by mutableStateOf(1f)
+
+    /**
+     * [host] with [hostAppearance], [hostEngaged], [hostWidth] (null = the
+     * full window) and [hostFontScale] read from state, so one composition
+     * can be re-probed after [reconfigure].
+     */
+    private fun hostSwitchable(behind: (@Composable () -> Unit)? = null) {
         compose.setContent {
-            RobocoTheme(Appearance.Light) {
-                Box(Modifier.width(widthDp).fillMaxSize().background(background)) {
-                    SessionHeader(
-                        title = SessionHeaderReferenceTitle,
-                        subtitle = "roboco @ MacBook Pro",
-                        edgeEngaged = false,
-                        onMore = {},
-                        showBack = true,
-                        onBack = {},
-                        statusBarTop = 24.dp,
-                    )
+            val base = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(base.density, hostFontScale)) {
+                RobocoTheme(hostAppearance) {
+                    val width = hostWidth
+                    val box = if (width != null) Modifier.width(width) else Modifier
+                    Box(box.fillMaxSize().background(RobocoTheme.palette.background)) {
+                        if (behind != null) behind()
+                        SessionHeader(
+                            title = SessionHeaderReferenceTitle,
+                            subtitle = "roboco @ MacBook Pro",
+                            edgeEngaged = hostEngaged,
+                            onMore = {},
+                            showBack = true,
+                            onBack = {},
+                            statusBarTop = 24.dp,
+                        )
+                    }
                 }
             }
         }
+        compose.waitForIdle()
+    }
+
+    /** Applies a state change on the UI thread and waits for the recomposition. */
+    private fun reconfigure(change: () -> Unit) {
+        compose.runOnUiThread(change)
         compose.waitForIdle()
     }
 
@@ -302,11 +329,12 @@ class SessionHeaderTest {
 
     @Test
     fun narrowWidthsShrinkTheTitleCap() {
-        hostNarrow(360.dp)
+        hostWidth = 360.dp
+        hostSwitchable()
         val narrow = boundsOf("session-title")
         assertEquals(dp(224f), narrow.width, 1.5f)
         assertEquals(dp(180f), narrow.left + narrow.width / 2f, dp(0.5f))
-        hostNarrow(320.dp)
+        reconfigure { hostWidth = 320.dp }
         val narrower = boundsOf("session-title")
         assertEquals(dp(184f), narrower.width, 1.5f)
         assertEquals(dp(160f), narrower.left + narrower.width / 2f, dp(0.5f))
@@ -326,27 +354,10 @@ class SessionHeaderTest {
 
     @Test
     fun titleAndSubtitleSizesIgnoreTheFontScale() {
-        host()
+        hostSwitchable()
         val titleH1 = compose.onNodeWithTag("session-title").fetchSemanticsNode().size.height
         val subtitleH1 = compose.onNodeWithTag("session-subtitle").fetchSemanticsNode().size.height
-        compose.setContent {
-            CompositionLocalProvider(LocalDensity provides Density(3f, 1.3f)) {
-                RobocoTheme(Appearance.Light) {
-                    Box(Modifier.fillMaxSize().background(background)) {
-                        SessionHeader(
-                            title = SessionHeaderReferenceTitle,
-                            subtitle = "roboco @ MacBook Pro",
-                            edgeEngaged = false,
-                            onMore = {},
-                            showBack = true,
-                            onBack = {},
-                            statusBarTop = 24.dp,
-                        )
-                    }
-                }
-            }
-        }
-        compose.waitForIdle()
+        reconfigure { hostFontScale = 1.3f }
         // `fixed(16)`/`fixed(12)` convert dp→sp divided by the font scale,
         // so the rendered line boxes are identical at 1.0 and 1.3.
         assertEquals(
@@ -442,16 +453,12 @@ class SessionHeaderTest {
         // at all (ticket 09's `None` branch) — the box shows through crisp.
         // The probe column (x = 340 dp) is clear of the title (86 … 326)
         // and both circles (16 … 60, 352 … 396) and their shadows.
-        host(
-            engaged = false,
+        hostSwitchable(
             behind = { Box(Modifier.fillMaxWidth().height(120.dp).background(Color.Black)) },
         )
         val rest = compose.onRoot().captureToImage().toPixelMap()
         assertPixel(rest, (dp(340f)).toInt(), (dp(12f)).toInt(), 0x00, 0x00, 0x00, 4, "resting band")
-        host(
-            engaged = true,
-            behind = { Box(Modifier.fillMaxWidth().height(120.dp).background(Color.Black)) },
-        )
+        reconfigure { hostEngaged = true }
         val scrimmed = compose.onRoot().captureToImage().toPixelMap()
         // Inside the band (y = 12 dp): 0.85·(1 − 12/84) ≈ 0.73 background
         // over black ≈ (177, 177, 178).
@@ -603,10 +610,10 @@ class SessionHeaderTest {
 
     @Test
     fun titleAndSubtitleInkMatchThePaletteInLightAndDark() {
-        host(appearance = Appearance.Light)
+        hostSwitchable()
         assertDarkest(pixelsOf("session-title"), "light title", 0x27, 0x27, 0x2C)
         assertDarkest(pixelsOf("session-subtitle"), "light subtitle", 0x62, 0x62, 0x6A, tolerance = 6)
-        host(appearance = Appearance.Dark)
+        reconfigure { hostAppearance = Appearance.Dark }
         assertBrightest(pixelsOf("session-title"), "dark title", 0xE8, 0xE8, 0xEA)
         assertBrightest(pixelsOf("session-subtitle"), "dark subtitle", 0xA9, 0xA9, 0xAE, tolerance = 6)
     }
@@ -615,10 +622,10 @@ class SessionHeaderTest {
     fun theBarGlyphsUseTheMeasuredGlassBarItemInk() {
         // SESSIONS-D1: the chevron and ⋯ cores are the measured iOS 26 glass
         // bar-item ink (#19191B / #F4F4F4), 08's default — not Palette.text.
-        host(appearance = Appearance.Light)
+        hostSwitchable()
         assertDarkest(pixelsOf("session-more"), "light ⋯ glyph", 0x19, 0x19, 0x1B)
         assertDarkest(pixelsOf("nav-back"), "light back glyph", 0x19, 0x19, 0x1B)
-        host(appearance = Appearance.Dark)
+        reconfigure { hostAppearance = Appearance.Dark }
         assertBrightest(pixelsOf("session-more"), "dark ⋯ glyph", 0xF4, 0xF4, 0xF4)
         assertBrightest(pixelsOf("nav-back"), "dark back glyph", 0xF4, 0xF4, 0xF4)
     }

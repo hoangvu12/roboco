@@ -69,6 +69,10 @@ class CollapseAllTest {
         val grouped = newFrontFixture(tmpFolder.root, "collapse-on", snapshot(1uL, workspace()))
         val groupedFeedback = RecordingFeedback()
         grouped.feed.start()
+        // Let Prefs finish its first disk read before flipping the flag:
+        // the load assigns the stored (absent → false) value and would
+        // overwrite a flip made while it is still in flight.
+        advanceUntilIdle()
         grouped.prefs.setGroupByProject(true)
         advanceUntilIdle()
         grouped.model.collapseAll(groupedFeedback)
@@ -114,6 +118,7 @@ class CollapseAllTest {
         )
         val fixture = newFrontFixture(tmpFolder.root, "collapse-idle", snapshot(1uL, page))
         fixture.feed.start()
+        advanceUntilIdle() // Prefs loaded first (see groupsCollapseOnlyWhileGroupingIsOn)
         fixture.prefs.setGroupByProject(true)
         advanceUntilIdle()
         fixture.fold.toggle(FrontPageSections.PINNED, null, NoFeedback)

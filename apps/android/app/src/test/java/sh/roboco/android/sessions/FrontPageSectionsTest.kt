@@ -103,17 +103,23 @@ class FrontPageSectionsTest {
     @Test
     fun groupingOnReplacesRecentWithTheGroupsInCoreOrder() {
         val built = FrontPageSections.build(threeOn(), true, mapOf("A" to "Studio"))
+        // The 3-on fixture has two pins, so Pinned still leads (Spec row 1:
+        // present whenever pins exist, grouping or not); the groups replace
+        // only Recent.
         assertEquals(
-            listOf("e1:s1", "e1:s2", "project:repo:zeron", "home:mbp", "project:repo:edge", "project:repo:blog"),
+            listOf(
+                FrontPageSections.PINNED, "e1:s1", "e1:s2",
+                "project:repo:zeron", "home:mbp", "project:repo:edge", "project:repo:blog",
+            ),
             built.sections.map { it.id },
         )
         assertEquals(
-            listOf("P0", "Mobile", "zeron", "Home \u00B7 MacBook Pro", "edge", "blog"),
+            listOf("Pinned", "P0", "Mobile", "zeron", "Home \u00B7 MacBook Pro", "edge", "blog"),
             built.sections.map { it.header },
         )
         // Groups always have headers; each keeps recency order.
-        assertTrue(built.sections.drop(2).all { it.header != null })
-        assertTrue(built.sections.drop(2).all { it.rows.size == 1 })
+        assertTrue(built.sections.drop(3).all { it.header != null })
+        assertTrue(built.sections.drop(3).all { it.rows.size == 1 })
     }
 
     @Test
@@ -345,8 +351,20 @@ class FrontPageSectionsTest {
             false,
             emptyMap(),
         )
+        // Pinned and a user section precede Recent here, so Recent is headed
+        // and its phone-local fold counts (Spec: `collapsedIds` = every
+        // headed section whose fold is true; only a header-less Recent is
+        // excluded). The unfolded Pinned stays out.
         val collapsed = FrontPageSections.collapsedIds(built.sections) { id -> id == "e1:s1" || id == "recent" }
-        assertEquals(setOf("e1:s1"), collapsed)
+        assertEquals(setOf("e1:s1", FrontPageSections.RECENT), collapsed)
+
+        // The same fold set over a header-less Recent (nothing precedes it)
+        // keeps "recent" out.
+        val headerless = FrontPageSections.build(front(recent = listOf(row("r1"))), false, emptyMap())
+        assertEquals(
+            emptySet<String>(),
+            FrontPageSections.collapsedIds(headerless.sections) { id -> id == "e1:s1" || id == "recent" },
+        )
     }
 
     @Test

@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
@@ -28,7 +29,6 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -42,6 +42,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.LinearFontScaleDensity
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
@@ -86,10 +87,12 @@ class SectionHeaderRowTest {
      * the theme, with the glyph clock frozen at 0. [fontScale] overrides
      * both `LocalDensity` (outside the theme, so its `TypeScale.from` sees
      * it) and `LocalTypeScale` — ticket 22's linear trick, exact at
-     * 0.85 / 1 / 1.6.
+     * 0.85 / 1 / 1.6. It must be [LinearFontScaleDensity]: a plain
+     * `Density(1f, 1.6f)` goes through Android's non-linear font-scale
+     * table (17 sp ≈ 24.6 dp → k ≈ 1.45, a 58 dp row), not k = 1.6.
      */
     private fun host(fontScale: Float = 1f, row: @Composable () -> Unit) {
-        val d = Density(1f, fontScale)
+        val d = LinearFontScaleDensity(1f, fontScale)
         compose.setContent {
             CompositionLocalProvider(
                 LocalDensity provides d,
@@ -291,10 +294,23 @@ class SectionHeaderRowTest {
     fun togglingCollapsedOnAComposedRowAnimatesTheChevronWithTheSectionSpring() {
         compose.mainClock.autoAdvance = false
         var collapsed by mutableStateOf(false)
-        host { SectionHeaderRow(p0.copy(collapsed = collapsed), highlight = { 0f }) }
+        // A second row, composed collapsed from scratch, is hosted alongside
+        // (setContent may run only once per test): its render is the
+        // reference the settled spring must equal.
+        host {
+            Column {
+                SectionHeaderRow(p0.copy(collapsed = collapsed), highlight = { 0f })
+                SectionHeaderRow(p0.copy(id = "fresh", collapsed = true), highlight = { 0f })
+            }
+        }
         val expandedRest = pixels() // 0°, settled
 
         compose.runOnUiThread { collapsed = true }
+        // The write happened outside composition; on the paused clock the
+        // Recomposer only learns of it once apply notifications go out
+        // (GlobalSnapshotManager posts that to the main Looper, which
+        // advanceTimeBy* never idles), so send them before the frames.
+        Snapshot.sendApplyNotifications()
         // One frame of launch alignment, then 80 ms: the spring is
         // analytically at ≈ −63° there — strictly between the ends. (No
         // waitForIdle between the flip and the frame: with the clock
@@ -319,8 +335,7 @@ class SectionHeaderRowTest {
 
         // The settled render equals a row composed collapsed from
         // scratch: the spring rests at exactly the first-frame render.
-        host { SectionHeaderRow(p0.copy(collapsed = true), highlight = { 0f }) }
-        val freshCollapsed = pixels()
+        val freshCollapsed = pixels("section-fresh")
         assertEquals("settled == first-frame collapsed render", 0, differingPixels(settledCollapsed, freshCollapsed))
     }
 }
