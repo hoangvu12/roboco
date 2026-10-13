@@ -85,8 +85,8 @@ private fun FakePresentingScreen(
     val typeScale = LocalTypeScale.current
 
     fun presentNewSession() {
-        state.present("new-session", SheetStyle.Page(grabber = true), onDismissed = {}) { sheetScope ->
-            NewSessionSheetPage(sheetScope)
+        state.present("new-session", SheetStyle.Page(grabber = true), onDismissed = {}) {
+            NewSessionSheetPage(this)
         }
     }
 
@@ -161,8 +161,8 @@ private fun NewSessionSheetPage(sheetScope: PageSheetScope) {
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) { NewSessionSheetPlaceholder(sheetScope) }
         GalleryButton("Stack New Project") {
-            sheetScope.present("new-project", SheetStyle.Page(grabber = false), onDismissed = {}) { inner ->
-                NewProjectPage(inner)
+            sheetScope.present("new-project", SheetStyle.Page(grabber = false), onDismissed = {}) {
+                NewProjectPage(this)
             }
         }
     }
