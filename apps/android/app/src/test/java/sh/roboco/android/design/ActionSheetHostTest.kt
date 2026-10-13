@@ -331,12 +331,18 @@ class ActionSheetHostTest {
         presentFrozen(state, moveSheet)
 
         node("action-sheet-row-0").performClick()
-        compose.mainClock.advanceTimeByFrame() // flush the gesture's frame
+        // The click's up launches the exit; its animateTo takes the NEXT
+        // frame as its start (play time 0).
+        compose.mainClock.advanceTimeByFrame()
 
-        compose.mainClock.advanceTimeBy(249)
+        // advanceTimeBy rounds up to whole 16 ms frames, so 249 would be 16
+        // frames = 256 ms of play time — past the 250 ms fall. 240 is exactly
+        // 15 frames: the last frame whose play time (240 ms) is still < 250.
+        compose.mainClock.advanceTimeBy(240)
         assertTrue("onSelect must not run before the dismiss ends", handlers.isEmpty())
         node("action-sheet").assertExists()
 
+        // One more frame (256 ms ≥ 250): the fall ends, onSelect runs.
         compose.mainClock.advanceTimeBy(1)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
@@ -619,6 +625,11 @@ class ActionSheetHostTest {
         node("action-sheet-row-0").assertIsDisplayed()
         node("action-sheet-row-19").assertIsNotDisplayed()
 
+        // The ScrollBy semantics action animates (foundation's
+        // semanticsScrollBy runs `animate`): on the frozen clock the scroll
+        // never moves, and performScrollToNode re-scrolls until the end of
+        // the range forever. Let the clock run for the scroll.
+        compose.mainClock.autoAdvance = true
         node("action-sheet-rows").performScrollToNode(hasTestTag("action-sheet-row-19"))
         compose.waitForIdle()
         node("action-sheet-row-19").assertIsDisplayed()

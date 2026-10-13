@@ -711,6 +711,15 @@ class ComposerTextFieldTest {
         input().performClick()
         compose.waitForIdle()
         input().assertIsFocused()
+        // The caret is a composed modifier gated on the field's hasFocus
+        // state: it needs one recomposition (a frame — waitForIdle runs
+        // none on the frozen clock) to launch the blink, whose first step
+        // snaps the caret visible (a draw-phase alpha write, redrawn on the
+        // second frame). The 500 ms blink-off never comes (32 ms elapse).
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
         assertTrue("accent caret pixels", countMarker(nodePixels(), Palette.Light.accent) >= 3)
 
         // The font: Geist Regular — the probe renders with the family the
