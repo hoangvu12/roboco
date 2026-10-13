@@ -1,6 +1,8 @@
 package sh.roboco.android.sessions
 
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -8,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import okio.Path.Companion.toOkioPath
 import sh.roboco.android.core.Prefs
 import sh.roboco.android.core.WorkspaceCore
 import sh.roboco.android.core.WorkspaceFeed
@@ -240,6 +243,21 @@ internal class FrontFixture(
     val model: FrontPageModel,
 )
 
+/**
+ * A Preferences DataStore over [file] for plain-JVM tests, backed by the
+ * okio storage. The `java.io.File` storage replaces the file with
+ * `File.renameTo` when `Build.VERSION.SDK_INT < 26` — which is 0 under
+ * the stub android.jar — and on Windows `renameTo` refuses to overwrite
+ * an existing file, so every second write fails with "Unable to rename
+ * ….tmp". Okio's `atomicMove` is `Files.move(ATOMIC_MOVE,
+ * REPLACE_EXISTING)` and replaces on every OS; the on-disk format is the
+ * same Preferences proto.
+ */
+internal fun testPrefsStore(scope: CoroutineScope, file: File): DataStore<Preferences> =
+    PreferenceDataStoreFactory.createWithPath(null, emptyList(), scope) {
+        file.absoluteFile.toOkioPath()
+    }
+
 /** Builds a [FrontFixture] over `<dir>/<fileName>.preferences_pb`. */
 internal fun TestScope.newFrontFixture(
     dir: File,
@@ -251,10 +269,7 @@ internal fun TestScope.newFrontFixture(
     core.engineList = engineList
     val io = StandardTestDispatcher(testScheduler)
     val prefsScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-    val prefsStore = PreferenceDataStoreFactory.create(
-        scope = prefsScope,
-        produceFile = { File(dir, "$fileName.preferences_pb") },
-    )
+    val prefsStore = testPrefsStore(prefsScope, File(dir, "$fileName.preferences_pb"))
     val feed = WorkspaceFeed(core = { core }, scope = CoroutineScope(SupervisorJob() + io), io = io)
     val prefs = Prefs(prefsStore, prefsScope, io = io)
     val fold = FoldState(prefsStore, core, prefsScope, io = io)

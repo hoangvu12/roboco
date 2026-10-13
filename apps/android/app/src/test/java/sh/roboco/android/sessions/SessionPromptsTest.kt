@@ -403,13 +403,17 @@ class SessionPromptsTest {
         assertTrue(noSection.bottom <= cancel.top)
 
         // "No Section" runs the move only after the sheet's 250 ms dismiss.
+        // The frozen clock only moves in whole 16 ms frames (advanceTimeBy
+        // rounds up), so "249 ms" was really 256 ms on top of the click's
+        // and the flush frame — past the 250 ms fall. Check well inside the
+        // dismiss instead (≤ 208 ms of it elapsed), then run it out.
         node("action-sheet-row-2").performClick()
         compose.mainClock.advanceTimeByFrame()
-        compose.mainClock.advanceTimeBy(249)
+        compose.mainClock.advanceTimeBy(200)
         assertTrue("the move must not run before the dismiss ends", actions.calls.isEmpty())
         node("action-sheet").assertExists()
 
-        compose.mainClock.advanceTimeBy(1)
+        compose.mainClock.advanceTimeBy(100)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         assertEquals(listOf("move(c1, null)"), actions.calls)

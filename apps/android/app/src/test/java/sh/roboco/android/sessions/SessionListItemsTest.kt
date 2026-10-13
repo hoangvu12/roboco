@@ -235,8 +235,10 @@ class SessionListItemsTest {
             ListSection(id = "s2", header = null, folders = listOf(folder), rows = emptyList()),
         )
         val built = items(sections)
+        // The second section's copy of f1 is dropped: a repeated "f:f1"
+        // LazyColumn key would crash the list (ticket 41: de-dupe first-wins).
         assertEquals(
-            listOf("h:s", "f:f1", "s:a", "f:f1"),
+            listOf("h:s", "f:f1", "s:a"),
             built.map { it.key },
         )
         val item = built.first { it.key == "f:f1" } as SessionListItem.Folder

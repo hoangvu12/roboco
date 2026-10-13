@@ -189,7 +189,9 @@ class SessionListOpenerTest {
 
         // Releasing the superseded tap: its route is discarded, nothing else pushed.
         factory.firstGate.complete(Unit)
-        compose.waitUntil(10_000) { factory.routes.first { it.chatId == "a" }.discarded }
+        // `any`, not `first`: the IO thread may not have built "a" yet when
+        // the condition is first polled, and a throwing condition ends waitUntil.
+        compose.waitUntil(10_000) { factory.routes.any { it.chatId == "a" && it.discarded } }
         assertEquals("still exactly one pushed session", 2, stack.entries.size)
         assertTrue(router.errors.isEmpty())
     }
