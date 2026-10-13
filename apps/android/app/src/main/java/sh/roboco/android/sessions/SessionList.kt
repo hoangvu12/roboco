@@ -65,7 +65,7 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.SymbolWeight
 import sh.roboco.android.design.rememberSmoothRoundedShape
 import sh.roboco.android.design.uiStyle
-import sh.roboco.android.shell.LocalNavEntry
+import sh.roboco.android.shell.LocalNavEntryOrNull
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
 import uniffi.roboco_core.SessionRow as CoreSessionRow
@@ -157,11 +157,8 @@ fun rememberSessionListModel(
  */
 @Composable
 fun rememberNavEntryOnScreen(): Boolean {
-    val entry = try {
-        LocalNavEntry.current
-    } catch (_: IllegalStateException) {
-        null // No NavStackHost above: the gallery, a preview, a test host.
-    }
+    // Null without a NavStackHost above: the gallery, a preview, a test host.
+    val entry = LocalNavEntryOrNull.current
     if (entry == null) return true
     val stack = LocalNavStack.current
     var onScreen by remember(entry) { mutableStateOf(entry.hasAppeared || stack.top == entry) }

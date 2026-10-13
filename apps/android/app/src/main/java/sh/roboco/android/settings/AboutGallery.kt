@@ -285,25 +285,25 @@ val AboutGallerySections: List<LicenceSection> = listOf(
 )
 
 /** A short MIT text standing in for the real licence files. */
-internal val AboutGalleryMitFixture =
+internal const val AboutGalleryMitFixture =
     "MIT License (fixture)\n\nCopyright (c) 2026 fixture\n\n" +
     "Permission is granted for this gallery fixture text."
 
 /** A short Apache-2.0 stand-in. */
-internal val AboutGalleryApacheFixture =
+internal const val AboutGalleryApacheFixture =
     "Apache License 2.0 (fixture)\n\nCopyright 2026 fixture\n\n" +
     "Licensed under the Apache License, Version 2.0 (fixture text)."
 
 /** A short MPL-2.0 stand-in. */
-internal val AboutGalleryMplFixture = "Mozilla Public License 2.0 (fixture)."
+internal const val AboutGalleryMplFixture = "Mozilla Public License 2.0 (fixture)."
 
 /** A short OFL stand-in — the licence-sheet demo's text. */
-internal val AboutGalleryOflFixture =
+internal const val AboutGalleryOflFixture =
     "SIL Open Font License 1.1 (fixture)\n\nCopyright 2024 fixture\n\n" +
     "This font software is licensed under the SIL Open Font License, Version 1.1 (fixture text)."
 
 /** A short Symbols license stand-in. */
-internal val AboutGallerySymbolsFixture = "The Symbols icon set is MIT licensed (fixture)."
+internal const val AboutGallerySymbolsFixture = "The Symbols icon set is MIT licensed (fixture)."
 
 // ---------------------------------------------------------------------------
 // Previews

@@ -49,6 +49,9 @@ val LocalNavStack = staticCompositionLocalOf<NavStack> { error("No NavStack: com
 /** The [NavEntry] whose screen this content renders. */
 val LocalNavEntry = staticCompositionLocalOf<NavEntry> { error("No NavEntry: compose content inside NavStackHost") }
 
+/** [LocalNavEntry] without the error default: null outside a `NavStackHost` (galleries, previews, plain hosts). */
+val LocalNavEntryOrNull = staticCompositionLocalOf<NavEntry?> { null }
+
 /** Layout ids of the host's non-entry children. */
 private object NavScrimId
 private object NavChromeId
@@ -207,6 +210,7 @@ fun NavStackHost(
                     CompositionLocalProvider(
                         LocalNavStack provides stack,
                         LocalNavEntry provides entry,
+                        LocalNavEntryOrNull provides entry,
                     ) {
                         // During a transition the below layer (and a leaving
                         // `from`) is clearAndSetSemantics: TalkBack announces

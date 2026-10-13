@@ -203,25 +203,26 @@ fun SplitRoot(
             .clipToBounds()
             .then(rememberShellShortcuts(router, shell)),
         measurePolicy = measurePolicy,
-    ) {
-        // 1. The sidebar pane — content slot last, composed before the
-        //    detail so the detail stack's BackHandler registers later and
-        //    wins when both have pushed entries.
-        Box(sidebarPane) {
-            sidebar(shell.sidebarVisible)
-        }
-        // 2. The detail pane background (`Palette.background`): the only
-        //    box re-measured per animation frame; it fills any strip the
-        //    target-width content doesn't cover while it slides.
-        Box(Modifier.background(palette.background))
-        // 3. The detail content box: laid out once at the target width and
-        //    slid; the root's clipToBounds trims the trailing overflow
-        //    while it hides. The slot is ticket 106's — it owns the stack,
-        //    this frame only places it.
-        Box(detailPane) {
-            CompositionLocalProvider(LocalPrefersLargeTitles provides false) {
-                detail(shell.detailRoot)
+        content = {
+            // 1. The sidebar pane — content slot last, composed before the
+            //    detail so the detail stack's BackHandler registers later and
+            //    wins when both have pushed entries.
+            Box(sidebarPane) {
+                sidebar(shell.sidebarVisible)
             }
-        }
-    }
+            // 2. The detail pane background (`Palette.background`): the only
+            //    box re-measured per animation frame; it fills any strip the
+            //    target-width content doesn't cover while it slides.
+            Box(Modifier.background(palette.background))
+            // 3. The detail content box: laid out once at the target width and
+            //    slid; the root's clipToBounds trims the trailing overflow
+            //    while it hides. The slot is ticket 106's — it owns the stack,
+            //    this frame only places it.
+            Box(detailPane) {
+                CompositionLocalProvider(LocalPrefersLargeTitles provides false) {
+                    detail(shell.detailRoot)
+                }
+            }
+        },
+    )
 }
