@@ -2,7 +2,9 @@ package sh.roboco.android.session
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import sh.roboco.android.composer.CoreQueueEditPort
 import sh.roboco.android.composer.QueueActions
+import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.SessionRoute
@@ -136,7 +138,24 @@ class SessionScreenRoute internal constructor(
                 }
             }
         }
-        SessionScreen(controller, state, commands = commands, attachments = attachments)
+        // Ticket 83: the queue-edit port over the same handle, retained
+        // once per route like the commands (stateless — only the handle
+        // matters). A test fake core yields null and the edit lease is
+        // never created; the controller itself is entry-retained next to
+        // 78's binding in SessionScreen.
+        val queueEditPort: QueueEditPort? = remember(entry) {
+            (core as? CoreSessionCore)?.let { c ->
+                entry.retain(QueueEditPortKey) { CoreQueueEditPort(c.handle) }
+            }
+        }
+        SessionScreen(
+            controller,
+            state,
+            commands = commands,
+            attachments = attachments,
+            queueEditPort = queueEditPort,
+            queueActions = queueActions,
+        )
     }
 
     /** Ticket 77 fills these; 32's default `HandoffAnimator.Instant` calls `finishArrival()`, so empty bodies are safe until then. */
@@ -162,4 +181,7 @@ class SessionScreenRoute internal constructor(
 
     /** 78's command-set retention key. */
     private object CommandsKey
+
+    /** 83's queue-edit-port retention key. */
+    private object QueueEditPortKey
 }

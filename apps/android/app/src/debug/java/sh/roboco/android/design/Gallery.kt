@@ -493,6 +493,13 @@ object Gallery {
         GallerySection("Session composer", screenshotHeightDp = 900) {
             SessionComposerGallerySection()
         },
+        // Ticket 83 (queue edit lease): the composer editing a queued row —
+        // the draft's stash/restore, the renewal (3 s here), commit /
+        // cancel through the send hook, the recovery when the lease is
+        // lost or the commit refused, over a FixtureQueueEditPort with
+        // 82's real queue panel and 78's real composer in 74's stack.
+        // Fill: the section owns its fixed-height session window.
+        GallerySection("Queue edit", GalleryLayout.Fill) { QueueEditGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

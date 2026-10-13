@@ -43,8 +43,10 @@ import sh.roboco.android.notify.Notifier
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.session.ChromeFillerRegistry
+import sh.roboco.android.session.CoreSessionCore
 import sh.roboco.android.session.CoreSessionOpener
 import sh.roboco.android.session.SessionChipsFiller
+import sh.roboco.android.session.StatusBanner
 import sh.roboco.android.session.installSessionRoutes
 import sh.roboco.android.sessions.CoreRowActions
 import sh.roboco.android.sessions.FoldState
@@ -84,6 +86,16 @@ class RobocoApplication : Application() {
      * (main) thread and hop to serial IO lanes for the FFI and the disk.
      */
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * Ticket 71's name for the process-lifetime, main-immediate scope:
+     * sibling tickets build their outliving scopes on it (83's
+     * queue-edit finishes, 84's draft writes), so work a screen starts
+     * still runs after its nav entry closes. Same instance as the
+     * private [applicationScope] — one SupervisorJob for the process.
+     */
+    val appScope: CoroutineScope
+        get() = applicationScope
 
     /**
      * The Search tab's query holder (ui-parity #29): app-scoped so the
@@ -388,6 +400,17 @@ class RobocoApplication : Application() {
         // BANNER (30), the iOS `refresh()` order. 73 owns the send-failure
         // state, so this registry never gets a second send-failure filler.
         chromeFillers.register(ChromeFillerRegistry.CHIPS) { SessionChipsFiller() }
+        // Ticket 73 (status banner): the pill's chrome derivation and its
+        // sticky send-failure slot, registered in 76's BANNER slot (30) —
+        // the exact line of 73's wiring contract (`StatusBanner(
+        // retryDelivery = { (core as CoreSessionCore).handle.retryDelivery() })`),
+        // never a second send-failure filler (78 registers no fallback).
+        // 83's queue-edit recovery reports through this filler's
+        // `noteFailureMessage`, and the pill's tap cancels an open edit
+        // through its `onEditingTap`.
+        chromeFillers.register(ChromeFillerRegistry.BANNER) { core ->
+            StatusBanner(retryDelivery = { (core as CoreSessionCore).handle.retryDelivery() })
+        }
         // Ticket 82 (queue panel): the queue mapping into
         // `SessionChrome.queue` — gate labels, `visibleText`, order —
         // registered in 76's QUEUE slot (50), so every opened route fills

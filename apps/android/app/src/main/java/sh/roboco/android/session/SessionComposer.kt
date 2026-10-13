@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import kotlinx.coroutines.CancellationException
@@ -22,15 +23,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.ComposerBar
 import sh.roboco.android.composer.ComposerChip
 import sh.roboco.android.composer.ComposerController
+import sh.roboco.android.composer.ComposerEditHost
 import sh.roboco.android.composer.ComposerMorphState
 import sh.roboco.android.composer.ChipMenuProvider
 import sh.roboco.android.composer.DeliveryMode
+import sh.roboco.android.composer.QueueEditController
+import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.SendResult
 import sh.roboco.android.composer.StagedImage
 import sh.roboco.android.composer.rememberComposerMorphState
+import sh.roboco.android.design.Alerts
+import sh.roboco.android.design.LocalAlerts
 import sh.roboco.android.design.LocalFeedback
 import sh.roboco.android.shell.LocalNavEntryOrNull
 import sh.roboco.android.transcript.RunwayHooks
@@ -367,4 +374,132 @@ fun SessionComposerSlot(binding: SessionComposerBinding, shown: Boolean, modifie
         morph = binding.morph,
         modifier = modifier.fillMaxWidth().testTag("session-composer"),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Ticket 83: the queue-edit lease controller, wired next to 78's binding
+// ---------------------------------------------------------------------------
+
+/** 83's host-adapter retention key (per chat id, on the session's nav entry). */
+private val QueueEditHostKey = "session-queue-edit-host"
+
+/** 83's controller retention key (per chat id, on the session's nav entry). */
+private val QueueEditControllerKey = "session-queue-edit"
+
+/** 83's entry-close key: disposes the controller with the session's other retained state. */
+private val QueueEditDisposeKey = "session-queue-edit-dispose"
+
+/**
+ * Ticket 83's [QueueEditController] in composition — the construction and
+ * wiring step of the ticket (its step 5), built where 78 builds its
+ * binding, with the **same lifetime**: the host and the controller are
+ * retained on the Session nav entry (`entry.retain`), so a tab-host
+ * disposal never drops the stash, and the whole controller dies with the
+ * entry (the [QueueEditDisposeKey] below disposes it where the session's
+ * other controllers are disposed).
+ *
+ * What this wires:
+ * - `binding.queueEdit = edit` — 78's [QueuedEditGate] hook (its `onSend`
+ *   step 1 commits through `interceptSend`; its `applyChrome` writes
+ *   `placeholderOverride` over the chrome's placeholder);
+ * - `banner.onEditingTap = edit::cancelEdit` — 73's pill tap while the
+ *   `Editing` overlay shows;
+ * - the host's composition-scoped half ([ComposerEditHost.refresh]) on
+ *   every recomposition — morph, keyboard, alerts, the chrome's
+ *   placeholder. `binding.morph` is read here after 78's own `SideEffect`
+ *   refreshed it (both effects run in composition order, 78's first).
+ *
+ * Null (and no edit) when: there is no port (a test fake core, previews,
+ * the gallery — those build their own stack), no 73 [StatusBanner] filler
+ * for this route, no nav entry, or no [RobocoApplication] behind the
+ * context (the release scope needs the app's outliving job).
+ *
+ * The screen's own reads — 74's `BottomStackModel.from(chrome, editing)`
+ * and the queue panel's `Edit` routing — stay in `SessionScreen`, which
+ * reads [QueueEditController.isEditing] / `beginEdit` off the returned
+ * controller. Screen on/off flags and the dispose are wired there too
+ * (the `NavEntryEffect` / the entry's close).
+ */
+@Composable
+fun rememberSessionQueueEdit(
+    chatId: String,
+    chrome: SessionChrome,
+    binding: SessionComposerBinding,
+    banner: StatusBanner?,
+    port: QueueEditPort?,
+): QueueEditController? {
+    if (port == null || banner == null) return null
+    val entry = LocalNavEntryOrNull.current ?: return null
+    val app = LocalContext.current.applicationContext as? RobocoApplication ?: return null
+    val alerts = LocalAlerts.current
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    // The release scope: the app's SupervisorJob (it outlives every
+    // screen) with the main dispatcher — a finish a screen started still
+    // reaches the engine after its nav entry (and the entry's scope)
+    // closed.
+    val releaseScope = remember(app) {
+        CoroutineScope(app.appScope.coroutineContext + Dispatchers.Main.immediate)
+    }
+
+    // The host: retained with the controller, seeded from the first
+    // composition, refreshed every recomposition by the SideEffect below.
+    val host = remember(entry) {
+        entry.retain("$QueueEditHostKey:$chatId") {
+            ComposerEditHost(
+                composer = binding.composer,
+                morph = binding.morph,
+                keyboard = { null },
+                alerts = { Alerts.Noop },
+                banner = banner,
+                chromePlaceholder = { "Message" },
+            )
+        }
+    }
+
+    // The controller: the session's entry scope (main, immediate) for
+    // the begin coroutine and the renewal, the release scope for the
+    // finishes.
+    val edit = remember(entry) {
+        entry.retain("$QueueEditControllerKey:$chatId") {
+            QueueEditController(
+                port = port,
+                host = host,
+                scope = entry.scope,
+                releaseScope = releaseScope,
+            )
+        }
+    }
+
+    // The entry's close (a committed pop, a popToRoot, a setRoutes
+    // removal — the same moment the route's own CloseKey releases the
+    // session): dispose the controller, cancelling any open edit before
+    // the entry's scope is gone. Reverse creation order closes this
+    // before the route's release.
+    remember(entry) {
+        entry.retain("$QueueEditDisposeKey:$chatId") {
+            object : AutoCloseable {
+                override fun close() {
+                    edit.dispose()
+                }
+            }
+        }
+    }
+
+    // Every recomposition: the fresh morph / keyboard / alerts / chrome
+    // placeholder onto the retained host, and the two hooks. 78's own
+    // SideEffect (registered earlier in the same composition) has
+    // refreshed `binding.morph` before this one runs.
+    SideEffect {
+        host.refresh(
+            morph = binding.morph,
+            keyboard = { keyboard },
+            alerts = { alerts },
+            chromePlaceholder = { chrome.placeholder },
+        )
+        binding.queueEdit = edit
+        banner.onEditingTap = { edit.cancelEdit() }
+    }
+
+    return edit
 }
