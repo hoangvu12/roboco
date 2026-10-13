@@ -155,8 +155,8 @@ class DisclosureWidgetsTest {
     private class RecordingEngine : TranscriptView(NoHandle) {
         val toggles = ArrayList<ULong>()
         val detailToggles = ArrayList<Triple<ULong, ULong, Boolean>>()
-        override fun toggle(k: ULong) {
-            toggles += k
+        override fun toggle(key: ULong) {
+            toggles += key
         }
 
         override fun toggleDetail(row: ULong, detail: ULong, open: Boolean) {

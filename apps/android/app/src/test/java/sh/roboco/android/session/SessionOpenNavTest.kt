@@ -130,8 +130,10 @@ class SessionOpenNavTest {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 NavStackHost(stack, active = true) { entry ->
-                    if (entry.route is SessionRoute) {
-                        SessionOpenProbeScreen(entry.route)
+                    // A local: no smart cast on a main-module property.
+                    val route = entry.route
+                    if (route is SessionRoute) {
+                        SessionOpenProbeScreen(route)
                     } else {
                         Box(Modifier.fillMaxSize().testTag("root-screen"))
                     }

@@ -327,8 +327,11 @@ internal fun SessionOpenFixtureBody(
             }
         }
         GlassSurface(
+            // fillMaxWidth: GlassSurface wraps its (empty) content, so
+            // without it the capsule measures 0 dp wide and never draws.
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
                 .height(48.dp),
         )
