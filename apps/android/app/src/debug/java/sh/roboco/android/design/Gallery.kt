@@ -35,6 +35,7 @@ import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
+import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.NewSessionAccessoryGallerySection
@@ -169,6 +170,9 @@ object Gallery {
         // capsule ⇄ card morph — the glass surface, the six-slot layout
         // and the attach button, over the striped backdrop.
         GallerySection("Composer surface", screenshotHeightDp = 1300) { ComposerSurfaceGallerySection() },
+        // Ticket 52 (session header): the Session screen's bar — glass back
+        // circle, two-line fading title view, ⋯ circle over the soft edge.
+        GallerySection("Session header", GalleryLayout.Fill, screenshotHeightDp = 420) { SessionHeaderGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
