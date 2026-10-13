@@ -5,6 +5,7 @@ import androidx.compose.ui.test.TestMonotonicFrameClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -116,9 +117,13 @@ class PullToRefreshTimingTest {
     // with a virtual frame clock (density 1: threshold 80, hold 60) — the
     // scope is `this + TestMonotonicFrameClock(this)`.
 
+    /** The state's scope: the runTest scope plus the virtual frame clock. */
+    private fun TestScope.pullScope(): CoroutineScope =
+        CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+
     @Test
     fun spinnerHoldsAtLeastTheFloorThenCloses() = runTest {
-        val scope = CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+        val scope = pullScope()
         var calls = 0
         val state = PullToRefreshState(
             scope,
@@ -142,7 +147,7 @@ class PullToRefreshTimingTest {
 
     @Test
     fun retriggerWhileRefreshingIsIgnored() = runTest {
-        val scope = CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+        val scope = pullScope()
         var calls = 0
         val state = PullToRefreshState(
             scope,
@@ -160,7 +165,7 @@ class PullToRefreshTimingTest {
 
     @Test
     fun longFakeSpinsPastTheFloorAndEndsAtItsOwnTime() = runTest {
-        val scope = CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+        val scope = pullScope()
         val state = PullToRefreshState(
             scope,
             onRefresh = { delay(2000) },
@@ -179,7 +184,7 @@ class PullToRefreshTimingTest {
 
     @Test
     fun neverReturningFakeEndsAtTheCap() = runTest {
-        val scope = CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+        val scope = pullScope()
         val state = PullToRefreshState(
             scope,
             onRefresh = { delay(10_000) },
@@ -196,7 +201,7 @@ class PullToRefreshTimingTest {
 
     @Test
     fun setOffsetForTestPinsTheOffset() = runTest {
-        val scope = CoroutineScope(coroutineContext + TestMonotonicFrameClock(this))
+        val scope = pullScope()
         val state = PullToRefreshState(
             scope,
             onRefresh = {},

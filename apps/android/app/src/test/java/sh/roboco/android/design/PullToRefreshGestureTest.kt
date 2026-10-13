@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
@@ -101,6 +102,12 @@ class PullToRefreshGestureTest {
                         refreshCalls++
                         delay(1500)
                     }),
+                    // A tagged stand-in for the nav row's ⋯ slot: the test
+                    // asserts the bar (this and the inline title) never moves
+                    // during a pull.
+                    trailing = {
+                        Box(Modifier.size(44.dp).testTag("nav-trailing"))
+                    },
                     backdrop = if (withBackdrop) {
                         {
                             Box(Modifier.fillMaxSize().testTag("gallery-backdrop"))
@@ -244,16 +251,18 @@ class PullToRefreshGestureTest {
         host(rows = 30, withBackdrop = true)
         val backdropBefore = compose.onNodeWithTag("gallery-backdrop").getBoundsInRoot()
         val inlineTitleBefore = compose.onNodeWithTag("nav-inline-title").getBoundsInRoot()
+        val trailingBefore = compose.onNodeWithTag("nav-trailing").getBoundsInRoot()
 
         compose.onRoot().performTouchInput {
             swipeDown(startY = 150.dp.toPx(), endY = 300.dp.toPx(), durationMillis = 400)
         }
         settleFrame()
         assertTrue("row moved: ${row0Top()}", row0Top() > 125f)
-        // iOS backgroundView stays fixed; the nav row's inline title does
-        // not move either.
+        // iOS backgroundView stays fixed; the nav row's inline title and ⋯
+        // button do not move either.
         assertEquals(backdropBefore, compose.onNodeWithTag("gallery-backdrop").getBoundsInRoot())
         assertEquals(inlineTitleBefore, compose.onNodeWithTag("nav-inline-title").getBoundsInRoot())
+        assertEquals(trailingBefore, compose.onNodeWithTag("nav-trailing").getBoundsInRoot())
     }
 
     // ---------------------------------------------------------------- coverage
