@@ -46,6 +46,7 @@ import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
+import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -196,6 +197,11 @@ object Gallery {
         // both modes, the #593 two-line resting preview, the 180 ms height
         // tween and Ctrl+Enter, in the 268/338 dp slots of a 370 dp composer.
         GallerySection("Composer text field", screenshotHeightDp = 1100) { ComposerTextFieldGallerySection() },
+        // Ticket 66 (image tile): the rounded picture tile over the
+        // Rust-painted placeholder — three 76 dp user thumbnails and a
+        // 260 dp image row, the 200 ms cross-fade, the per-engine LRU
+        // loader and the openImage tap.
+        GallerySection("Image tile", screenshotHeightDp = 1100) { ImageTileGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

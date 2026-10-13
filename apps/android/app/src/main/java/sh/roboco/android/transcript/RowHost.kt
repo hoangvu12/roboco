@@ -27,10 +27,12 @@ import kotlin.math.max
  * The context a row's slots share (ticket 65): the state (offset, fonts,
  * engine toggles), the realized row (coordinates, fade), the row's kind
  * and model, the paint palette and the actions provider. [actions] is a
- * **provider**, not the actions: widgets (66, 119, 120, 127, 128, 129)
- * call `ctx.actions()` at click time, never at composition, so a screen
- * can rebuild its callbacks freely. [live] is "the row has a `Shimmer`
- * widget" — the tool rail (121) reads it.
+ * **provider**, not the actions: widgets call `ctx.actions()` at click
+ * time, never at composition, so a screen can rebuild its callbacks
+ * freely — except 66's image tile, which takes the actions as a value
+ * (its synchronous cache peek must run during composition) and keeps
+ * them fresh through `rememberUpdatedState`. [live] is "the row has a
+ * `Shimmer` widget" — the tool rail (121) reads it.
  */
 class RowContext(
     val state: TranscriptState,

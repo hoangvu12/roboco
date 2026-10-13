@@ -11,8 +11,9 @@ import androidx.compose.ui.geometry.Rect
  * that builds these is not this ticket: 75/78/81/125/126/127 wire them.
  *
  * Later tickets change some signatures in place, each updating this class,
- * its callers and #65's tests: **66** replaces the one-arg [loadImage]
- * (per-engine loader, `cachedImage`); **126** changes [openLink] to
+ * its callers and #65's tests: **66** replaced the one-arg [loadImage] with
+ * the per-engine two-arg form and added [cachedImage] (tickets 75/126 get
+ * `loadFull` straight from the binding); **126** changes [openLink] to
  * `(LinkTap) -> Unit` and the `linkAt` stub to return `LinkAt?`; **137**
  * adds `label: String?` to [openImage].
  */
@@ -31,10 +32,17 @@ class TranscriptActions(
     val openImage: (reference: String, source: Rect, bitmap: ImageBitmap?) -> Unit = { _, _, _ -> },
     /**
      * Load an attachment / generated image by widget reference (iOS
-     * `imageLoader` + `imageFetcher`). The implementation picks its
-     * dispatcher; the host only ever calls this from a widget's scope.
+     * `imageLoader` + `imageFetcher`). [sidePx] is the decode target (the
+     * shorter source side, never upscaled); the implementation runs the
+     * read off-main and decodes on a background dispatcher.
      */
-    val loadImage: suspend (reference: String) -> ImageBitmap? = { null },
+    val loadImage: suspend (reference: String, sidePx: Int) -> ImageBitmap? = { _, _ -> null },
+    /**
+     * The synchronous cache peek (ticket 66): called during the tile's
+     * composition so a cached picture shows in the first frame, with no
+     * animation and no read. Cheap and main-thread safe.
+     */
+    val cachedImage: (reference: String, sidePx: Int) -> ImageBitmap? = { _, _ -> null },
     /** The mono tool-detail sheet for a Detail widget (127). */
     val showDetail: (title: String, text: String) -> Unit = { _, _ -> },
     /**

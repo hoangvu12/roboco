@@ -1,6 +1,7 @@
 package sh.roboco.android.transcript
 
 import androidx.compose.runtime.Composable
+import sh.roboco.android.transcript.widgets.ImageTile
 import uniffi.roboco_core.Widget
 import uniffi.roboco_core.WidgetKind
 
@@ -11,7 +12,7 @@ import uniffi.roboco_core.WidgetKind
  *
  * Exhaustive on purpose, with **no** `else`: a new Rust `WidgetKind`
  * fails compilation here instead of silently rendering nothing. Each
- * branch is empty until its ticket lands.
+ * branch is empty until its ticket lands (66's image tile is wired).
  */
 @Composable
 internal fun RowWidget(ctx: RowContext, w: Widget) {
@@ -26,8 +27,8 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         is WidgetKind.ToolStatus -> Unit
         WidgetKind.Spinner -> Unit
         is WidgetKind.Working -> Unit
-        // ticket 66 (+ 67's upload ring; 137 extends)
-        is WidgetKind.Image -> Unit
+        // ticket 66 (+ 67's upload ring through `overlay`, 137 extends)
+        is WidgetKind.Image -> ImageTile(w.kind.reference, w.w, w.h, ctx.actions())
         // ticket 127 (the mono tool-detail sheet)
         is WidgetKind.Detail -> Unit
         // ticket 124 (SF-symbol-like icons)
