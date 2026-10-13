@@ -65,6 +65,7 @@ import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.settings.DevicesRowsGallerySection
 import sh.roboco.android.settings.AppearanceGallerySection
 import sh.roboco.android.settings.NotificationRowsGallerySection
+import sh.roboco.android.settings.SettingsScreenGallerySection
 import sh.roboco.android.settings.SessionsSettingsGallerySection
 import sh.roboco.android.shell.NavGallerySection
 import sh.roboco.android.shell.AppRootGallerySection
@@ -456,6 +457,17 @@ object Gallery {
         // LazyColumn.
         GallerySection("Pinned reorder", layout = GalleryLayout.Fill, screenshotHeightDp = 852) {
             PinnedReorderGallerySection()
+        },
+        // Ticket 103 (Settings screen): the tab's real root — the large
+        // title over the six sections in order (Devices, Notifications,
+        // Appearance, Wallpaper, Sessions, About), each through its
+        // section ticket's real emitter and fixture state; "Licenses"
+        // really pushes onto the gallery's stack. Fill: the screen owns
+        // its LazyColumn; the ActionSheetHost makes the Wallpaper "Effect"
+        // row's sheet work (19's bounded-height rule, like "Wallpaper
+        // rows").
+        GallerySection("Settings screen", GalleryLayout.Fill, screenshotHeightDp = 874) {
+            ActionSheetHost { SettingsScreenGallerySection() }
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
