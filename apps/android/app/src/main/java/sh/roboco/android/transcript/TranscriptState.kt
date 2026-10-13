@@ -36,10 +36,12 @@ fun interface FrameListener {
  * thread through [FrameRelay] (one coalesced apply per vsync), forwards the
  * viewport only when it changes, and keeps the applied frame, the
  * [uploadProgress] and the [fonts] style table as Compose-observable
- * state. It draws nothing; the scroll model (68, [viewport]), the
- * own-turn runway (69), anchoring (130), row motion and painting
- * (62–67, 117, 132) belong to their tickets, which read [frame] and
- * register [FrameListener]s.
+ * state. It draws nothing; the scroll model (68, [viewport]) and the
+ * own-turn runway (69) are driven from [apply], as is 130's anchor —
+ * capture before the frame swap, restore after the runway height — so
+ * the reading position survives content changes while not following.
+ * Row motion and painting (62–67, 117, 132) belong to their tickets,
+ * which read [frame] and register [FrameListener]s.
  *
  * Construct on the main thread (the production constructor checks it
  * before creating the Rust engine, which spawns the `roboco-layout`
@@ -300,12 +302,18 @@ class TranscriptState internal constructor(
      * 4. sync [fonts] when the style count moved;
      * 5. compute `first` (68: the previous frame was missing or had zero
      *    rows — always **before** the swap, so the local `old` is the
-     *    previous frame; ticket 130 anchors here) and swap [frame];
-     * 6. hand the new geometry to [viewport] (68: first frame lands at
-     *    the tail, later frames spring while following);
-     * 7. notify the listeners over a copy, so one can remove itself.
-     * (Step 2 — the pull — lives in [applyLatest].) Ticket 130 will insert
-     * its anchor work between steps 5 and 7.
+     *    previous frame), capture 130's anchor over the old rows (also
+     *    before the swap: `following` must be read before the runway
+     *    height below can flip it for a queued turn) and swap [frame];
+     * 6. hand the runway height (69) to [viewport] (68: the first frame
+     *    lands at the tail, later frames spring while following, and R4
+     *    returns `needsAnchor` when not following);
+     * 7. when `needsAnchor` and an anchor was captured, restore 130's
+     *    anchor (a plain offset shift that keeps a fling's momentum) —
+     *    before the listeners, so 131's jump button and the lab meters
+     *    see the final offset;
+     * 8. notify the listeners over a copy, so one can remove itself.
+     * (Step 2 — the pull — lives in [applyLatest].)
      */
     @VisibleForTesting
     internal fun apply(new: LayoutFrame) {
@@ -315,15 +323,32 @@ class TranscriptState internal constructor(
         if (new.styleCount().toInt() != fonts.count) fonts.update(new.styles())
         // 68: `first` is computed before the swap — `frame` is a delegated
         // snapshot property, so take a local (never `frame!!`); the
-        // previous frame was missing or had zero rows. Ticket 130
-        // captures its anchor at this point.
+        // previous frame was missing or had zero rows.
         val first = old == null || old.rowCount() == 0u
+        // 130 (TLV:301-307): capture the row under the header's bottom
+        // edge before the swap — `following` is read before the runway
+        // height below (69's queued promotion can flip it to true, and
+        // then there is no anchor to apply) and before the old frame is
+        // released. No capture while following or without an old frame.
+        val anchor = ScrollAnchoring.capture(viewport, old?.anchorRows())
         frame = new
-        // 68: the scroll model reacts to the new geometry — the first
+        // 68 + 69: the scroll model reacts to the new geometry — the first
         // frame with rows lands at the tail (R2), later frames spring
-        // while following (R3). Ticket 130 consumes `needsAnchor` (R4);
-        // nothing anchors in this ticket.
+        // while following (R3), and the runway height feeds the call (a
+        // queued promotion flips `following` inside it). R4 (not first,
+        // not following) returns `needsAnchor` for the restore below.
         val needsAnchor = viewport.onFrameApplied(contentHeightFor(new), first)
+        // 130 (TLV:324-330): still not following and an anchor was captured
+        // — shift the offset so the anchored row stays under the header.
+        // A plain `setOffset` write (state + 68's report) is the
+        // momentum-preserving equivalent of iOS's `bounds.origin.y` write:
+        // it never cancels an in-flight fling, never starts or stops the
+        // spring and never touches `following`.
+        if (needsAnchor && anchor != null) {
+            ScrollAnchoring.restore(viewport, anchor, new.anchorRows())
+        }
+        // 132 inserts rowMotion.onFrameApplied(...) here (after the
+        // restore), if it has landed.
         listeners.toList().forEach { it.onFrame(old, new) }
     }
 
