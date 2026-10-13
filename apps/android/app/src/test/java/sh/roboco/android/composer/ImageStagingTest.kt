@@ -3,12 +3,14 @@ package sh.roboco.android.composer
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.compose.ui.unit.IntSize
@@ -249,6 +251,25 @@ class AttachFixtureProvider : ContentProvider() {
         val file = fixtures[uri] ?: throw FileNotFoundException("no fixture registered for $uri")
         opens += uri
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    /**
+     * Windows JVM only: `ImageDecoder.createFromAssetFileDescriptor` hands
+     * the descriptor's int fd to Robolectric's native decoder, and a
+     * Windows `java.io.FileDescriptor` has none (files are handles, fd =
+     * -1), so every typed-AFD decode fails there and staging returns null.
+     * Refusing the typed AFD sends `ImageDecoder.ContentResolverSource`
+     * down its own fallback — `openInputStream` + a stream decode
+     * (`nCreate(InputStream, …)`), read through Java. `openInputStream`
+     * still goes through [openFile], so [opens] counts each pick once. On
+     * Linux the production fd path is exercised unchanged.
+     */
+    @Throws(FileNotFoundException::class)
+    override fun openTypedAssetFile(uri: Uri, mimeTypeFilter: String, opts: Bundle?): AssetFileDescriptor? {
+        if (File.separatorChar == '\\') {
+            throw FileNotFoundException("typed AFDs are not decodable on a Windows JVM: $uri")
+        }
+        return super.openTypedAssetFile(uri, mimeTypeFilter, opts)
     }
 
     override fun query(

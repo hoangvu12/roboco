@@ -693,7 +693,13 @@ class GlassMenuBehaviourTest {
         // 800 ms load is still pending after it).
         advance(400)
         compose.onNodeWithTag("glass-menu-loading").assertExists()
+        // SemanticsNode.size / positionInRoot read the live layout node (the
+        // same panel node survives the load), so snapshot the values now —
+        // keeping the node and reading it after the load compared the
+        // grown panel with itself (CI r23).
         val panelBefore = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
+        val topBefore = panelBefore.positionInRoot.y
+        val heightBefore = panelBefore.size.height
 
         advance(900)
         // Let the panel's resize spring (the 0.35 s open spring) settle.
@@ -707,11 +713,11 @@ class GlassMenuBehaviourTest {
         val panelAfter = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
         assertEquals(
             "the anchored corner stays fixed while the panel resizes",
-            panelBefore.positionInRoot.y,
+            topBefore,
             panelAfter.positionInRoot.y,
             1f,
         )
-        assertTrue("the panel grew to fit the branches", panelAfter.size.height > panelBefore.size.height)
+        assertTrue("the panel grew to fit the branches", panelAfter.size.height > heightBefore)
     }
 
     @Test
@@ -844,7 +850,10 @@ class GlassMenuBehaviourTest {
         val rowHeight = rows[0].size.height.toFloat()
         assertEquals("row height 42 dp", dpPx(42f), rowHeight, 1f)
 
-        val edit = compose.onNodeWithText("Edit").fetchSemanticsNode()
+        // The row's clickable merges its descendants, so the merged tree's
+        // "Edit" node is the whole row (x = the panel's, CI r23: 0 px):
+        // read the title text's own node in the unmerged tree.
+        val edit = compose.onNodeWithText("Edit", useUnmergedTree = true).fetchSemanticsNode()
         assertEquals("no icons and no checks: text starts at 20 dp", dpPx(20f), edit.positionInRoot.x - panel.positionInRoot.x, 2f)
     }
 
@@ -870,14 +879,17 @@ class GlassMenuBehaviourTest {
         settleOpen()
 
         val panel = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
-        val edit = compose.onNodeWithText("Edit").fetchSemanticsNode()
+        // The row's clickable merges its descendants, so the merged tree's
+        // "Edit" node is the whole row (x = the panel's, CI r23: 0 px):
+        // read the title text's own node in the unmerged tree.
+        val edit = compose.onNodeWithText("Edit", useUnmergedTree = true).fetchSemanticsNode()
         assertEquals(
             "the icon slot reserves the 61 dp text column",
             dpPx(61f),
             edit.positionInRoot.x - panel.positionInRoot.x,
             2f,
         )
-        val icon = compose.onNodeWithTag("custom-icon").fetchSemanticsNode()
+        val icon = compose.onNodeWithTag("custom-icon", useUnmergedTree = true).fetchSemanticsNode()
         val iconCentre = icon.positionInRoot.x + icon.size.width / 2f
         assertEquals(
             "the leading slot centre sits 36 dp from the panel's leading edge",
@@ -911,7 +923,10 @@ class GlassMenuBehaviourTest {
             rows[0].size.height > dpPx(42f),
         )
         val panel = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
-        val edit = compose.onNodeWithText("Edit").fetchSemanticsNode()
+        // The row's clickable merges its descendants, so the merged tree's
+        // "Edit" node is the whole row (x = the panel's, CI r23: 0 px):
+        // read the title text's own node in the unmerged tree.
+        val edit = compose.onNodeWithText("Edit", useUnmergedTree = true).fetchSemanticsNode()
         assertEquals(
             "the text column does not move",
             dpPx(61f),

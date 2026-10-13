@@ -34,6 +34,7 @@ import androidx.compose.foundation.text.input.TextFieldBuffer
 import androidx.compose.foundation.text.input.TextFieldDecorator
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.delete
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -131,7 +132,7 @@ interface PairClipboard {
  * read once, in [readText], from the Paste tap (the system toast then is
  * expected).
  */
-class AndroidPairClipboard(context: Context) : PairClipboard {
+class AndroidPairClipboard(private val context: Context) : PairClipboard {
 
     private val clipboard: ClipboardManager? =
         context.getSystemService(ClipboardManager::class.java)
@@ -525,7 +526,7 @@ private object StripLineBreaks : InputTransformation {
     override fun TextFieldBuffer.transformInput() {
         var index = 0
         while (index < length) {
-            if (this[index] == '\r' || this[index] == '\n') {
+            if (charAt(index) == '\r' || charAt(index) == '\n') {
                 delete(index, index + 1)
             } else {
                 index++

@@ -107,8 +107,9 @@ class LicensesParseTest {
             foundation.header,
         )
         assertEquals(listOf("Apache text"), foundation.texts)
+        // fullText = the whole header (website line included) + the texts.
         assertEquals(
-            "Compose Foundation 1.10.0\n\nApache text",
+            "Compose Foundation 1.10.0\nhttps://developer.android.com/jetpack/compose\n\nApache text",
             foundation.fullText(),
         )
 
@@ -188,8 +189,10 @@ class LicensesParseTest {
                 library("l:a0", "alpha", "9", "", emptyList()),
             ),
         )
+        // The ticket orders ties "by version string" (§A, like the Rust
+        // test below): lexicographically "10" < "2" < "9".
         assertEquals(
-            listOf("android:l:A", "android:l:a0", "android:l:a1", "android:l:b"),
+            listOf("android:l:a1", "android:l:A", "android:l:a0", "android:l:b"),
             parseAndroidLibraries(json) { null }.map { it.id },
         )
     }
@@ -319,7 +322,7 @@ class LicensesParseTest {
         // then orders them ("1.0.104" < "1.0.9" lexicographically), and
         // "Zed" sorts after both.
         assertEquals(
-            listOf("rust:anyhow@1.0.104", "rust:Anyhow@1.0.9", "rust:Zed@1.0"),
+            listOf("rust:Anyhow@1.0.104", "rust:anyhow@1.0.9", "rust:Zed@1.0"),
             parseRustCrates(json).map { it.id },
         )
     }

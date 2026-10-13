@@ -1,6 +1,5 @@
 package sh.roboco.android.sessions
 
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -258,10 +257,7 @@ class FrontPageModelTest {
             }
 
             val prefsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-            val store = PreferenceDataStoreFactory.create(
-                scope = prefsScope,
-                produceFile = { File(tmpFolder.root, "threads.preferences_pb") },
-            )
+            val store = testPrefsStore(prefsScope, File(tmpFolder.root, "threads.preferences_pb"))
             val prefs = Prefs(store, prefsScope, io = Dispatchers.IO.limitedParallelism(1))
             val fold = FoldState(store, core, prefsScope, io = io)
             val model = FrontPageModel(feed, prefs, fold, scope, compute = Dispatchers.Default)

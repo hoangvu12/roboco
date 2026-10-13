@@ -117,9 +117,7 @@ fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRow
             prompts.newSection(engineId)
         }
 
-        override fun sectionsFor(engineId: String): List<SectionView> {
-            actions.sectionsFor(engineId)
-        }
+        override fun sectionsFor(engineId: String): List<SectionView> = actions.sectionsFor(engineId)
     }
 
 /**
@@ -360,7 +358,8 @@ internal fun sessionRowWrapper(coordinator: SwipeCoordinator, cmd: SessionRowCom
         val vm by rememberUpdatedState(ctx.vm)
         val rec by rememberUpdatedState(ctx.row)
         val palette = RobocoTheme.palette
-        val strings = LocalContext.current.resources::getString
+        val res = LocalContext.current.resources
+        val strings: (Int) -> String = { id -> res.getString(id) }
         val (lead, trail) = remember(ctx.archived, ctx.vm.pinned, palette) {
             sessionSwipeActions({ rec }, { vm }, ctx.archived, cmd, palette.accent, palette.secondary, strings)
         }

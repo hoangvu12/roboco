@@ -11,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -19,6 +18,8 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import kotlinx.coroutines.delay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -69,7 +70,7 @@ class PullToRefreshGestureTest {
         refreshCalls = 0
         feedback.haptics.clear()
         compose.mainClock.autoAdvance = false
-        host(rows = 30)
+        // Each test mounts once (one setContent per test): host(rows = 30) or its own host(...).
     }
 
     /** Composes the host and waits for the first frame. */
@@ -139,6 +140,7 @@ class PullToRefreshGestureTest {
 
     @Test
     fun releasePastThresholdRefreshesOnceWithOneHaptic() {
+        host(rows = 30)
         compose.onRoot().performTouchInput {
             swipeDown(startY = 150.dp.toPx(), endY = 550.dp.toPx(), durationMillis = 600)
         }
@@ -149,6 +151,7 @@ class PullToRefreshGestureTest {
 
     @Test
     fun spinnerHoldsInTheGapThenEnds() {
+        host(rows = 30)
         compose.onRoot().performTouchInput {
             swipeDown(startY = 150.dp.toPx(), endY = 550.dp.toPx(), durationMillis = 600)
         }
@@ -177,13 +180,16 @@ class PullToRefreshGestureTest {
 
     @Test
     fun smallSwipeOpensNoRefresh() {
+        host(rows = 30)
         compose.onRoot().performTouchInput {
             swipeDown(startY = 300.dp.toPx(), endY = 400.dp.toPx(), durationMillis = 300)
         }
         settleFrame()
-        // ~47–51 dp of gap after touch slop: below the 80-dp threshold.
+        // Robolectric's touch slop is 16 dp (ShadowViewConfiguration), so 84 of
+        // the 100 dp reach the drag: rubberBand(84, 700) ~ 43.3 dp of gap, below
+        // the 80-dp threshold (a device's 8 dp slop would give ~47-51).
         val gap = row0Top() - 120f
-        assertTrue("gap $gap", gap in 45f..52f)
+        assertTrue("gap $gap", gap in 40f..48f)
 
         compose.mainClock.advanceTimeBy(800)
         compose.waitForIdle()
@@ -195,6 +201,7 @@ class PullToRefreshGestureTest {
 
     @Test
     fun swipeOnScrolledListScrollsBackBeforeOpeningTheGap() {
+        host(rows = 30)
         // 300 dp down the content (row 8, resting at 632, moves to 332; it
         // stays composed, unlike row 0 which leaves the viewport).
         with(compose.density) { listState.dispatchRawDelta(300.dp.toPx()) }
@@ -220,6 +227,7 @@ class PullToRefreshGestureTest {
 
     @Test
     fun secondSwipeGrowsTheHeldGapWithoutRetriggering() {
+        host(rows = 30)
         compose.onRoot().performTouchInput {
             swipeDown(startY = 150.dp.toPx(), endY = 550.dp.toPx(), durationMillis = 600)
         }

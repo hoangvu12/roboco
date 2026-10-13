@@ -1,7 +1,6 @@
 package sh.roboco.android.sessions
 
 import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import java.io.File
@@ -74,10 +73,8 @@ class FoldStateTest {
         fileName: String = "fold",
     ): FoldState {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val store = PreferenceDataStoreFactory.create(
-            scope = scope,
-            produceFile = { File(tmpFolder.root, "$fileName.preferences_pb") },
-        )
+        // Okio-backed: the File storage cannot overwrite on Windows (see testPrefsStore).
+        val store = testPrefsStore(scope, File(tmpFolder.root, "$fileName.preferences_pb"))
         val fold = FoldState(store, core, scope, io = StandardTestDispatcher(testScheduler))
         fixture = Fixture(fold, store, scope)
         return fold

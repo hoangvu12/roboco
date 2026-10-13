@@ -47,8 +47,11 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityOptionsCompat
+import androidx.core.content.FileProvider
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -140,6 +143,69 @@ class AttachMenuBehaviourTest {
             .setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, true)
         clipboard.clearPrimaryClip()
         DisplayNameProvider.displayName = null
+        resetFileProvider()
+    }
+
+    /**
+     * androidx `FileProvider` caches its parsed roots per authority in a
+     * static map (`sCache`) for the life of the class loader. Robolectric
+     * reuses the sandbox loader across tests but hands every test a fresh
+     * `robolectric-<test>` data dir, so the second test to take a camera
+     * shot resolved its file against the FIRST test's cacheDir ("Failed to
+     * find configured root"). Clearing it makes each test parse
+     * `file_paths.xml` against its own cacheDir.
+     *
+     * Windows JVM only: `SimplePathStrategy.belongsToRoot` matches canonical
+     * paths with `startsWith(root + '/')` — Android's separator, hard-coded
+     * — so on a `\` file system no file ever resolves. There the cache is
+     * seeded with a wrapper over the REAL parsed strategy (the roots
+     * `file_paths.xml` declares, against this test's cacheDir) that does
+     * the containment check with java.nio paths and builds the URI as
+     * `SimplePathStrategy` does (`content://<authority>/<name>/<relative>`).
+     */
+    private fun resetFileProvider() {
+        @Suppress("UNCHECKED_CAST")
+        val cache = FileProvider::class.java.getDeclaredField("sCache")
+            .apply { isAccessible = true }
+            .get(null) as java.util.HashMap<String, Any>
+        synchronized(cache) { cache.clear() }
+        if (File.separatorChar == '/') return
+
+        val authority = "${context.packageName}.fileprovider"
+        val real = FileProvider::class.java
+            .getDeclaredMethod("getPathStrategy", Context::class.java, String::class.java, Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .invoke(null, context, authority, 0)!!
+        @Suppress("UNCHECKED_CAST")
+        val roots = real.javaClass.getDeclaredField("mRoots")
+            .apply { isAccessible = true }
+            .get(real) as Map<String, File>
+        val strategyType = Class.forName(
+            "androidx.core.content.FileProvider\$PathStrategy",
+            false,
+            FileProvider::class.java.classLoader,
+        )
+        val wrapper = Proxy.newProxyInstance(strategyType.classLoader, arrayOf(strategyType)) { _, method, args ->
+            if (method.name == "getUriForFile") {
+                val file = (args!![0] as File).canonicalFile.toPath()
+                val root = roots.entries.firstOrNull { file.startsWith(it.value.toPath()) }
+                    ?: throw IllegalArgumentException("Failed to find configured root that contains $file")
+                val relative = root.value.toPath().relativize(file).joinToString("/")
+                Uri.Builder()
+                    .scheme("content")
+                    .encodedAuthority(authority)
+                    .encodedPath(Uri.encode(root.key) + '/' + Uri.encode(relative, "/"))
+                    .build()
+            } else {
+                method.isAccessible = true
+                try {
+                    method.invoke(real, *(args ?: emptyArray<Any?>()))
+                } catch (failure: InvocationTargetException) {
+                    throw failure.targetException
+                }
+            }
+        }
+        synchronized(cache) { cache[authority] = wrapper }
     }
 
     @After
@@ -592,7 +658,9 @@ class AttachMenuBehaviourTest {
 
         val picked = stagerCalls.single().first.single()
         assertEquals("the camera file is staged from a file:// URI", "file", picked.uri.scheme)
-        assertTrue("same file the URI names", picked.uri.path!!.endsWith(uri.path!!))
+        // Uri.fromFile keeps the JVM's native separators ('\' on Windows);
+        // the content URI's path always uses '/'.
+        assertTrue("same file the URI names", picked.uri.path!!.replace('\\', '/').endsWith(uri.path!!))
         assertFalse("the file is deleted after staging", File(picked.uri.path!!).exists())
         compose.waitUntil { controller.images.size == 1 }
     }

@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
@@ -797,7 +798,8 @@ class ComposerActionButtonTest {
         // No such action in the send state.
         place(sendEnabled)
         assertNull(
-            compose.onNodeWithTag("composer-send").fetchSemanticsNode().config[SemanticsActions.OnLongClick],
+            // getOrNull: config[key] throws when the key is absent.
+            compose.onNodeWithTag("composer-send").fetchSemanticsNode().config.getOrNull(SemanticsActions.OnLongClick),
         )
     }
 }

@@ -18,14 +18,15 @@ import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -528,12 +529,13 @@ class SessionsSettingsSectionTest {
     fun draggingTheThumbRightCommitsOnRelease() {
         val calls = mutableListOf<Boolean>()
         mount(on = false, onGroupByProjectChange = { calls += it })
-        // 24 dp of travel against the 22 dp slide (the finger stays well
-        // inside the 63 dp track): the release fraction passes the halfway
-        // point and commits ON.
+        // 30 dp of travel: Robolectric's 16 dp touch slop is consumed by the
+        // slop detector, leaving 14 dp against the 22 dp slide (fraction
+        // ~0.64), so the release passes the halfway point and commits ON
+        // (RobocoSwitchTest's precedent).
         switchNode().performTouchInput {
             down(center)
-            repeat(3) { moveBy(Offset(8.dp.toPx(), 0f)) }
+            repeat(3) { moveBy(Offset(10.dp.toPx(), 0f)) }
             up()
         }
         compose.waitForIdle()

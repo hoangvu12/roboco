@@ -394,8 +394,14 @@ fun GlassSheet(
         // expanding up grows it, so the bottom never gaps. Read through
         // derivedStateOf so re-layout happens only while the height value
         // actually changes (while expanding), never on a plain drag.
+        // Before the anchors exist the offset is NaN: a sheet that enters
+        // the composition through a recomposition (an overlay request, a
+        // keyed swap) is measured and placed in that same frame, before the
+        // anchors effect above has run. It lays out as Hidden — zero height,
+        // parked at the parent's bottom — until the anchors land.
         val sheetHeightPx: State<Float> = remember(state, parentHeightPx) {
             derivedStateOf {
+                if (state.offset.isNaN()) return@derivedStateOf 0f
                 val settledPosition = state.anchors.positionOf(state.current)
                 val cap = if (settledPosition.isNaN()) state.offset else settledPosition
                 (parentHeightPx - min(state.offset, cap)).coerceAtLeast(0f)
@@ -404,7 +410,10 @@ fun GlassSheet(
         val shape = remember(cornerRadius) { SmoothTopRoundedShape(cornerRadius) }
         Box(
             Modifier
-                .offset { IntOffset(0, state.draggable.requireOffset().roundToInt()) }
+                .offset {
+                    val offset = state.offset
+                    IntOffset(0, if (offset.isNaN()) parentHeightPx.roundToInt() else offset.roundToInt())
+                }
                 .fillMaxWidth()
                 .sheetHeight { sheetHeightPx.value }
                 .clip(shape)

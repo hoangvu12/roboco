@@ -469,7 +469,15 @@ class MinimizeOnScrollTest {
         compose.waitForIdle()
         compose.onNodeWithTag("tab-bar-minimized").assertDoesNotExist()
         // Popping back shows the expanded chrome over the root list.
-        compose.runOnUiThread { shellState.stack(TabId.Sessions).pop() }
+        // A hosted pop only commits once NavStackHost's driver (a
+        // LaunchedEffect keyed on the transition) has animated it, and
+        // waitUntil only advances frames — it never drains the posted apply
+        // notification, so without the explicit send the Recomposer never
+        // sees the transition and the pop never commits.
+        compose.runOnUiThread {
+            shellState.stack(TabId.Sessions).pop()
+            Snapshot.sendApplyNotifications()
+        }
         compose.waitUntil(5_000) { !shellState.stack(TabId.Sessions).top.route.hidesBottomChrome }
         compose.waitForIdle()
         compose.onNodeWithTag("tab-root-sessions").assertExists()

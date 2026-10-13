@@ -542,7 +542,12 @@ class AlertHostTest {
         assertEquals("the second alert waits in the queue", 1, state.queue.size)
 
         compose.onNodeWithText("Dismiss First").performClick()
+        // The fade-out starts on the frame after the click; 200 ms rounds up
+        // to 13 frames (208 ms), so it ends on post-click frame 14, where
+        // `removed()` swaps `current` to the queued alert. That write
+        // recomposes on the following frame (15).
         compose.mainClock.advanceTimeBy(200)
+        compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
 
         compose.onNodeWithText("Second").assertExists()

@@ -1,6 +1,5 @@
 package sh.roboco.android.core
 
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,6 +17,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import sh.roboco.android.sessions.testPrefsStore
 
 /**
  * `Prefs.groupByProject` (android-ui-parity #40) — the port of
@@ -26,7 +26,10 @@ import org.junit.rules.TemporaryFolder
  * persistence, the restart round-trip, and the same-value no-op (the iOS
  * `guard`).
  *
- * Plain JUnit 4: DataStore runs over a temp file on the test scheduler.
+ * Plain JUnit 4: DataStore runs over a temp file on the test scheduler,
+ * through the okio-backed [testPrefsStore] — the File-backed factory
+ * commits with `File.renameTo` when SDK_INT reads the stub's 0, and on
+ * Windows `renameTo` cannot replace the file, so every second write failed.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PrefsTest {
@@ -37,10 +40,7 @@ class PrefsTest {
     /** One live Prefs at a time; the scope is cancellable for the restart test. */
     private fun TestScope.newPrefs(fileName: String): Pair<Prefs, CoroutineScope> {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val store = PreferenceDataStoreFactory.create(
-            scope = scope,
-            produceFile = { File(tmpFolder.root, "$fileName.preferences_pb") },
-        )
+        val store = testPrefsStore(scope, File(tmpFolder.root, "$fileName.preferences_pb"))
         return Prefs(store, scope, io = StandardTestDispatcher(testScheduler)) to scope
     }
 

@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -245,6 +246,11 @@ fun RobocoSwitch(
     val lift = remember { Animatable(0f) }
     var dragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    // Bumped on every drag release: a drag whose `dragging = true` never
+    // reached a recomposition leaves the slide keys unchanged on release
+    // (false → true → false), and a refused value would leave the thumb
+    // parked at the drag's end fraction. The counter forces the spring-back.
+    var releases by remember { mutableIntStateOf(0) }
     var pressed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -259,11 +265,12 @@ fun RobocoSwitch(
         latestOnChange(value)
     }
 
-    // The slide. Relaunches on every checked/dragging/reduce change;
+    // The slide. Relaunches on every checked/dragging/reduce change and
+    // every drag release;
     // relaunching cancels a running slide, and Animatable.animateTo
     // continues from the current value and velocity — never snapTo first.
     // While dragging, the thumb follows the finger instead.
-    LaunchedEffect(checked, dragging, reduce) {
+    LaunchedEffect(checked, dragging, reduce, releases) {
         if (dragging) return@LaunchedEffect
         val target = if (checked) 1f else 0f
         if (reduce) fraction.snapTo(target) else fraction.animateTo(target, RobocoSwitchTokens.Slide.spec())
@@ -329,6 +336,7 @@ fun RobocoSwitch(
                         scope.launch {
                             fraction.snapTo(end)
                             dragging = false
+                            releases++
                             if (completed) commit(SwitchMath.releaseValue(end))
                         }
                     } finally {

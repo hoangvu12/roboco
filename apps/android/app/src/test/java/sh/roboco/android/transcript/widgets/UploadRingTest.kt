@@ -59,7 +59,8 @@ import uniffi.roboco_core.WidgetKind
  *
  * - nothing is emitted while progress is null;
  * - the fade-in: 200 ms easeInOut after null → 0.1, strictly mid-fade at
- *   ~100 ms, settled ≈ 200 ms + the effect's start frame;
+ *   ~100 ms, settled at 200 ms in whole frames + the recomposition and
+ *   effect-start frames;
  * - the fade-out: 250 ms, the label and arc **keep the last non-null
  *   value** while fading (no "0%" flash, no arc collapse), the node is
  *   gone once the alpha reaches 0;
@@ -225,11 +226,15 @@ class UploadRingTest {
         val mid = ringAlpha()
         assertTrue("alpha at ~100 ms should be mid-fade, was $mid", mid in 0.2f..0.8f)
         assertEquals("the label shows p as soon as it arrives", "10%", ringLabel())
-        // … and settled at 1 after the full 200 ms tween plus the start frame.
+        // … and settled at 1 after the full 200 ms tween plus two frames of
+        // latency: frame 1 recomposes on the new value and launches the
+        // effect, frame 2 is the animation's play-time-0 frame, and the
+        // 200 ms tween ends on the first whole 16 ms frame at or past it
+        // (13 frames = 208 ms): 16 + 16 + 208 = 240 ms.
         driveFrames { ringAlpha() >= 0.999f }
         assertEquals(1f, ringAlpha(), 0.001f)
         val settle = compose.mainClock.currentTime - start
-        assertTrue("fade-in takes ~216 ms (200 + one effect-start frame), was $settle ms", settle in 200..234)
+        assertTrue("fade-in takes 240 ms (200 tween in whole frames + two start frames), was $settle ms", settle in 200..240)
     }
 
     // ------------------------------------------------------- the 250 ms fade-out
@@ -251,10 +256,12 @@ class UploadRingTest {
         assertEquals("the arc keeps 36° during the fade-out", 36f, ringSweep(), 0.1f)
         val mid = ringAlpha()
         assertTrue("alpha at ~125 ms should be mid-fade-out, was $mid", mid in 0.02f..0.98f)
-        // … alpha reaches 0 by ~266 ms (250 + the start frame) …
+        // … alpha reaches 0 by 288 ms: the recomposition frame, the
+        // animation's play-time-0 frame, then 250 ms in whole 16 ms frames
+        // (16 frames = 256 ms): 16 + 16 + 256 …
         driveFrames { ringAlpha() <= 0.001f }
         val settle = compose.mainClock.currentTime - start
-        assertTrue("fade-out takes ~266 ms (250 + one effect-start frame), was $settle ms", settle in 250..284)
+        assertTrue("fade-out takes 288 ms (250 tween in whole frames + two start frames), was $settle ms", settle in 250..288)
         // … and by 300 ms nothing is left: no draw, no semantics node.
         compose.mainClock.advanceTimeBy(300)
         assertTrue("the node is gone once the alpha reaches 0", ringNodes().isEmpty())

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,17 +122,30 @@ fun SplitRoot(
     // rows. `sidebarFraction` itself is never read in the composable body
     // (that would recompose this whole composable every animation frame) —
     // only this derived boolean, which flips exactly at settle and at the
-    // start of the reverse slide.
-    var sidebarSettledHidden by remember { mutableStateOf(!shell.sidebarVisible) }
-    LaunchedEffect(shell) {
-        snapshotFlow { !shell.sidebarVisible && shell.sidebarProgress.value == 0f }
-            .collect { settledHidden -> sidebarSettledHidden = settledHidden }
+    // start of the reverse slide. derivedStateOf (not a collector writing a
+    // second state) so the flip recomposes in the very frame the slide
+    // settles, with no extra frame of lag.
+    val sidebarSettledHidden by remember(shell) {
+        derivedStateOf { !shell.sidebarVisible && shell.sidebarProgress.value == 0f }
     }
 
     // The sidebar pane: the hairline is the last modifier *before* the
     // insets/focus/semantics chain so it draws over the content
     // (it is added after the sidebar's navigation view on iOS).
+    //
+    // The settled-hidden clear comes first: a clearing semantics modifier
+    // only wipes the semantics *inside* it (modifiers after it and the
+    // descendants), so after the testTag it would leave a tagged
+    // `split-sidebar` node behind. Outermost, the hidden sidebar has no
+    // semantics at all (the ticket's "no semantics nodes" criterion).
     val sidebarPane = Modifier
+        .then(
+            if (sidebarSettledHidden) {
+                Modifier.clearAndSetSemantics { }
+            } else {
+                Modifier
+            },
+        )
         .testTag("split-sidebar")
         .background(palette.background)
         .drawWithContent {
@@ -148,13 +162,6 @@ fun SplitRoot(
         .onFocusChanged { state -> sidebarHasFocus = state.hasFocus }
         .focusProperties { onEnter = { if (!shell.sidebarVisible) cancelFocusChange() } }
         .focusGroup()
-        .then(
-            if (sidebarSettledHidden) {
-                Modifier.clearAndSetSemantics { }
-            } else {
-                Modifier
-            },
-        )
 
     // The detail pane: the leading inset belongs to the sidebar while it
     // is on screen; hidden, the detail consumes nothing.

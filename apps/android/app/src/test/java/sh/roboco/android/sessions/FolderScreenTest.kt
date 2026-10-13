@@ -349,12 +349,16 @@ class FolderScreenTest {
     @Test
     fun renameShowsThePrefilledAlertAndRetitlesBothTitlesInPlace() {
         // Scroll first so "the offset is unchanged" is a real assertion:
-        // 12 rows give the section list scroll range.
+        // 12 rows give the section list scroll range. Only to the collapsed
+        // edge (the release snaps 26 < c < 52 to c = 52): the large title is
+        // the list's first item and stays composed in the top padding only
+        // while c <= 52 — a 150 dp drag scrolled it out of composition, so
+        // "nav-large-title" no longer existed to be retitled.
         compose.runOnUiThread {
             workspace = FolderFixtures.sectionWorkspace(rows = FolderFixtures.scrollRows)
         }
         compose.waitForIdle()
-        dragUp(150f)
+        dragUp(45f)
         val rowTopBefore = compose.onNodeWithTag("session-chat-scroll-0").fetchSemanticsNode().boundsInRoot.top
 
         openRenameAlert()

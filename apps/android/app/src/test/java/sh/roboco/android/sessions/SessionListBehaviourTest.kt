@@ -14,6 +14,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.PixelMap
@@ -96,7 +97,7 @@ class SessionListBehaviourTest {
         onScreen: () -> Boolean = { true },
         editing: () -> Boolean = { false },
         currentChatId: () -> String? = { null },
-        fontScale: Float = 1f,
+        fontScale: () -> Float = { 1f },
         contentPadding: PaddingValues = PaddingValues(),
         state: LazyListState = LazyListState(),
         onOpenSession: (String) -> Unit = {},
@@ -106,11 +107,12 @@ class SessionListBehaviourTest {
         rowWrapper: SessionRowWrapper = PassThroughRowWrapper,
         leadingItems: LazyListScope.() -> Unit = {},
     ) {
-        val density = LinearFontScaleDensity(3f, fontScale)
         compose.setContent {
             // Frozen glyph clock: a live spinner (the loading overlay, working
             // rows) runs a withFrameNanos loop that never lets Compose idle.
-            CompositionLocalProvider(LocalDensity provides density) {
+            // The density is built in composition from the provider, so a
+            // flipped factor re-provides it (one setContent per test).
+            CompositionLocalProvider(LocalDensity provides LinearFontScaleDensity(3f, fontScale())) {
                 RobocoTheme(Appearance.Light) { ProvideGlyphClock(frozenAtNanos = 0L) {
                     val model = rememberSessionListModel(
                         sections = sections(),
@@ -149,8 +151,13 @@ class SessionListBehaviourTest {
             Triple(1.0f, 62f, 40f),
             Triple(1.6f, 99f, 64f),
         )
+        // One setContent per test (the rule refuses a second): the factor is
+        // swapped through state behind the host's density provider.
+        var scale by mutableStateOf(table.first().first)
+        host(fontScale = { scale })
         for ((factor, session, header) in table) {
-            host(fontScale = factor)
+            compose.runOnUiThread { scale = factor }
+            compose.waitForIdle()
             compose.onNodeWithTag("session-chat-tool-colors").assertHeightIsEqualTo(session.dp)
             compose.onNodeWithTag("section-p0").assertHeightIsEqualTo(header.dp)
         }
@@ -159,12 +166,16 @@ class SessionListBehaviourTest {
     @Test
     fun folderHeightsFollowTheTypeScaleAndThePlainHeaderIsFixed() {
         val table = listOf(0.85f to 39f, 1.0f to 46f, 1.6f to 74f)
+        // One setContent per test: the factor is swapped through state.
+        var scale by mutableStateOf(table.first().first)
+        host(
+            sections = { SessionListFixtures.folderPlainSections() },
+            collapsible = { false },
+            fontScale = { scale },
+        )
         for ((factor, folder) in table) {
-            host(
-                sections = { SessionListFixtures.folderPlainSections() },
-                collapsible = { false },
-                fontScale = factor,
-            )
+            compose.runOnUiThread { scale = factor }
+            compose.waitForIdle()
             compose.onNodeWithTag("folder-pinned-folder").assertHeightIsEqualTo(folder.dp)
             // The plain header is the first item: the folder's top is its
             // 41 dp, at every factor.
@@ -403,6 +414,10 @@ class SessionListBehaviourTest {
         compose.mainClock.autoAdvance = false
         compose.mainClock.advanceTimeBy(100)
         compose.runOnUiThread { factor = 1.6f }
+        // Frozen clock: the write reaches the Recomposer only once apply
+        // notifications are sent (GlobalSnapshotManager posts them to the
+        // paused main looper, which advanceTimeBy does not idle).
+        Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(32)
         compose.onNodeWithTag("session-chat-tool-colors").assertHeightIsEqualTo(99.dp)
         val jump = compose.onNodeWithTag("session-chat-tool-colors").fetchSemanticsNode().boundsInRoot.top
@@ -435,6 +450,7 @@ class SessionListBehaviourTest {
         compose.runOnUiThread {
             sections = sections.map { s -> if (s.id == "recent") s.copy(rows = s.rows.drop(1)) else s }
         }
+        Snapshot.sendApplyNotifications() // frozen clock: deliver the write
         compose.mainClock.advanceTimeBy(32)
         compose.onNodeWithTag("session-chat-i18n").assertDoesNotExist()
     }
@@ -456,6 +472,7 @@ class SessionListBehaviourTest {
             }
         }
         compose.runOnUiThread { sections = move() }
+        Snapshot.sendApplyNotifications() // frozen clock: deliver the write
         compose.mainClock.advanceTimeBy(50)
         val inFlight = compose.onNodeWithTag("session-chat-i18n").fetchSemanticsNode().boundsInRoot.top
         compose.mainClock.advanceTimeBy(1000)
@@ -482,6 +499,7 @@ class SessionListBehaviourTest {
                 }
             }
         }
+        Snapshot.sendApplyNotifications() // frozen clock: deliver the write
         compose.mainClock.advanceTimeBy(50)
         val jump = compose.onNodeWithTag("session-chat-i18n").fetchSemanticsNode().boundsInRoot.top
         compose.mainClock.advanceTimeBy(1000)

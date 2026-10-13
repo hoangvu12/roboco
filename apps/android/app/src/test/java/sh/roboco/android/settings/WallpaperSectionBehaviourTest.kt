@@ -11,6 +11,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
@@ -19,7 +23,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHasClickAction
-import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -124,27 +127,44 @@ class WallpaperSectionBehaviourTest {
     // ------------------------------------------------------------- mounting
 
     /**
+     * The mounted appearance. A compose rule allows one `setContent` per
+     * test, so a light-then-dark test swaps it through [switchAppearance];
+     * the content is keyed on it, so each appearance gets a fresh mount.
+     */
+    private var appearance by mutableStateOf(Appearance.Light)
+
+    /**
      * Ticket 103's shape: the state at screen level (outside the
      * `LazyColumn`, so the launcher's registration survives scrolling),
      * the rows inside it, and the sheet host above both.
      */
     private fun mount(appearance: Appearance = Appearance.Light) {
+        this.appearance = appearance
         compose.setContent {
-            RobocoTheme(appearance) {
-                CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
-                    ActionSheetHost {
-                        val section = rememberWallpaperSectionState(fake)
-                        LazyColumn(
-                            Modifier
-                                .fillMaxSize()
-                                .background(RobocoTheme.palette.background),
-                        ) {
-                            wallpaperSection(section)
+            val current = this.appearance
+            key(current) {
+                RobocoTheme(current) {
+                    CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                        ActionSheetHost {
+                            val section = rememberWallpaperSectionState(fake)
+                            LazyColumn(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(RobocoTheme.palette.background),
+                            ) {
+                                wallpaperSection(section)
+                            }
                         }
                     }
                 }
             }
         }
+        compose.waitForIdle()
+    }
+
+    /** Re-mounts the already-set content in [appearance] (one setContent per test). */
+    private fun switchAppearance(appearance: Appearance) {
+        compose.runOnUiThread { this.appearance = appearance }
         compose.waitForIdle()
     }
 
@@ -222,7 +242,14 @@ class WallpaperSectionBehaviourTest {
 
         sheetNode("action-sheet").assertExists()
         sheetNode("action-sheet-row-2").assertIsSelected() // ASCII
-        sheetNode("action-sheet-row-4").assertIsNotSelected()
+        // Ticket 19 sets `selected` only on the checked row; unchecked rows
+        // carry no Selected property at all (ActionSheetHostTest asserts the
+        // same), so assertIsNotSelected — which needs Selected = false —
+        // cannot apply.
+        assertFalse(
+            "an unchecked row is not selected",
+            SemanticsProperties.Selected in sheetNode("action-sheet-row-4").fetchSemanticsNode().config,
+        )
 
         sheetNode("action-sheet-cancel").performClick()
         compose.waitForIdle() // runs the 250 ms exit on the auto clock
@@ -244,7 +271,11 @@ class WallpaperSectionBehaviourTest {
         sheetNode("action-sheet-row-4").performClick()
         compose.mainClock.advanceTimeByFrame() // flush the gesture's frame
 
-        compose.mainClock.advanceTimeBy(249)
+        // advanceTimeBy rounds up to whole 16 ms frames: 249 would be 16
+        // frames = 256 ms of play time, past the 250 ms exit. 240 is exactly
+        // 15 frames, the last whose play time is still < 250 (as in
+        // ActionSheetHostTest.aRowTapRunsOnSelectOnlyAfterThe250MsDismiss).
+        compose.mainClock.advanceTimeBy(240)
         assertTrue("onSelect must not run before the exit ends", effectCalls.isEmpty())
         sheetNode("action-sheet").assertExists()
 
@@ -446,7 +477,7 @@ class WallpaperSectionBehaviourTest {
         val secondaryDark = Triple(169, 169, 174) // #A9A9AE
 
         for (dark in listOf(false, true)) {
-            mount(if (dark) Appearance.Dark else Appearance.Light)
+            if (dark) switchAppearance(Appearance.Dark) else mount(Appearance.Light)
             setState { it.copy(set = true, name = "IMG_0412", effect = WallpaperEffect.HALFTONE, generation = 1) }
 
             val (dr, dg, db) = if (dark) dangerDark else dangerLight
