@@ -37,6 +37,7 @@ import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
+import sh.roboco.android.sessions.RowActionsGallerySection
 import sh.roboco.android.sessions.SessionRowGallerySection
 import sh.roboco.android.sessions.SessionRowMetaGallerySection
 import sh.roboco.android.sessions.SectionHeaderGallerySection
@@ -201,6 +202,10 @@ object Gallery {
         // group header — title, count, live glyph, spring chevron, and
         // the pressed controlFill. Tap a row to fold it.
         GallerySection("Section header", screenshotHeightDp = 480) { SectionHeaderGallerySection() },
+        // Ticket 42 (row action dispatch): the write surface — mode
+        // switch for the scripted failures, the write buttons and the
+        // notice toast, through the fake SessionWrites.
+        GallerySection("Row actions") { RowActionsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
