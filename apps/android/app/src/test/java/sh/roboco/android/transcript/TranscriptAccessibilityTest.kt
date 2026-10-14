@@ -571,10 +571,6 @@ class TranscriptAccessibilityTest {
             transcript.performSemanticsAction(SemanticsActions.ScrollBy) { end = it(0f, 891f * d) }
             compose.waitForIdle()
             assertFalse("already at the end", end)
-
-            // The scroll range tracks the offset, in px.
-            val range = hostNode().config[SemanticsProperties.VerticalScrollAxisRange]
-            assertEquals((state.viewport.offset - state.viewport.minOffset) * d, range.value(), 1f)
         } finally {
             state.close()
         }
@@ -587,7 +583,7 @@ class TranscriptAccessibilityTest {
         try {
             host(state)
             compose.mainClock.autoAdvance = true
-            compose.onAllNodesWithTag("row-markdown")[0].performTouchInput { longClick() }
+            compose.onAllNodesWithTag("row-markdown", useUnmergedTree = true)[0].performTouchInput { longClick() }
             compose.waitForIdle()
             compose.mainClock.advanceTimeBy(1000)
             compose.waitForIdle()
@@ -621,7 +617,9 @@ class TranscriptAccessibilityTest {
 
     /**
      * 65's band rule: the realized rows cover the viewport, one text node
-     * per realized row, and the tree never holds the whole history.
+     * per realized row, the tree never holds the whole history, and the
+     * host's px scroll range tracks the offset (`(offset − minOffset)·d`,
+     * d = 2 at xhdpi).
      */
     private fun assertBandCoversViewport(state: TranscriptState) {
         val vpTop = state.viewport.offset
@@ -636,6 +634,8 @@ class TranscriptAccessibilityTest {
             "the tree never holds the whole history",
             state.realized.size < state.frame!!.rowCount().toInt(),
         )
+        val range = hostNode().config[SemanticsProperties.VerticalScrollAxisRange]
+        assertEquals("the scroll range tracks the offset, in px", (vpTop - state.viewport.minOffset) * 2f, range.value(), 1f)
     }
 
     private companion object {

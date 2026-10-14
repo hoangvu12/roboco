@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.design.RobocoTheme
 import uniffi.roboco_core.LayoutFrame
+import uniffi.roboco_core.LinkHit
 import uniffi.roboco_core.RowDisplay
 import uniffi.roboco_core.RowKind
 import uniffi.roboco_core.WidgetKind
@@ -186,9 +188,8 @@ internal fun BoxScope.RowLinkNodes(row: RealizedRow, d: RowDisplay, actions: () 
             Spacer(
                 Modifier
                     .absoluteOffset {
-                        val x = if (s == null) l.x else d.scrollers[s].x + l.x - row.scrollerOffsetDp(s)
-                        val y = if (s == null) l.y else d.scrollers[s].y + l.y
-                        IntOffset((x * density).roundToInt(), (y * density).roundToInt())
+                        val pos = linkPosition(d, l, s, if (s == null) 0f else row.scrollerOffsetDp(s))
+                        IntOffset((pos.x * density).roundToInt(), (pos.y * density).roundToInt())
                     }
                     .size(max(l.w, 0f).dp, max(l.h, 0f).dp)
                     .then(if (debug) Modifier.drawBehind { drawRect(stroke, style = Stroke(1f)) } else Modifier)
@@ -200,13 +201,12 @@ internal fun BoxScope.RowLinkNodes(row: RealizedRow, d: RowDisplay, actions: () 
                         onClick {
                             try {
                                 val rb = row.boundsInWindow()
-                                val x = if (s == null) l.x else d.scrollers[s].x + l.x - row.scrollerOffsetDp(s)
-                                val y = if (s == null) l.y else d.scrollers[s].y + l.y
+                                val pos = linkPosition(d, l, s, if (s == null) 0f else row.scrollerOffsetDp(s))
                                 val lb = Rect(
-                                    rb.left + x * dens,
-                                    rb.top + y * dens,
-                                    rb.left + (x + l.w) * dens,
-                                    rb.top + (y + l.h) * dens,
+                                    rb.left + pos.x * dens,
+                                    rb.top + pos.y * dens,
+                                    rb.left + (pos.x + l.w) * dens,
+                                    rb.top + (pos.y + l.h) * dens,
                                 )
                                 actions().openLink(LinkTap(l.url, rb, lb)) // 126
                             } finally {
@@ -219,6 +219,21 @@ internal fun BoxScope.RowLinkNodes(row: RealizedRow, d: RowDisplay, actions: () 
         }
     }
 }
+
+/**
+ * A fragment's painted position in row coordinates (dp): its own rect
+ * when it is row-level, else the scroller viewport's origin plus the
+ * rect minus the live offset — the link half of iOS's
+ * `positionedLinkElements` (`RowView.swift:76-90`, unclipped). Pure; the
+ * caller chooses **when** the offset is read (placement phase for the
+ * node's position, click time for the activation rect).
+ */
+private fun linkPosition(d: RowDisplay, l: LinkHit, s: Int?, scrollerOffsetDp: Float): Offset =
+    if (s == null) {
+        Offset(l.x, l.y)
+    } else {
+        Offset(d.scrollers[s].x + l.x - scrollerOffsetDp, d.scrollers[s].y + l.y)
+    }
 
 /**
  * The host's semantics (the `transcript` node): TalkBack's scrollable
@@ -235,7 +250,10 @@ internal fun BoxScope.RowLinkNodes(row: RealizedRow, d: RowDisplay, actions: () 
  * (`TranscriptListView.swift:8`); a custom scroll model exposes none of
  * it, hence the explicit properties. The scroll-range lambdas read
  * snapshot state at accessibility time, so Compose emits
- * `TYPE_VIEW_SCROLLED` as the offset moves.
+ * `TYPE_VIEW_SCROLLED` as the offset moves. (The ticket asked for
+ * `@OptIn(ExperimentalComposeUiApi::class)` on `testTagsAsResourceId`;
+ * the marker no longer exists in the pinned Compose UI — the property is
+ * stable there — so no opt-in is needed or possible.)
  */
 internal fun Modifier.transcriptHostSemantics(
     state: TranscriptState,
