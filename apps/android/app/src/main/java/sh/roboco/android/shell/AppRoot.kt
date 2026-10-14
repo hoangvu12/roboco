@@ -56,14 +56,23 @@ class AppRootState {
  *
  * Pairing ↔ Shell swaps through [RootCrossfade]: the presentations are
  * dismissed instantly first, then the old root fades out **on top** of
- * the new one over 350 ms. Phone ↔ Split is in place, no fade (108).
- * The first root appears without animation — `RootCrossfade` is first
- * composed with `shown = target`, the `SceneDelegate.swift:95-97` rule.
+ * the new one over 350 ms. Phone ↔ Split is in place, no fade (108 owns
+ * the carry-over). The first root appears without animation —
+ * `RootCrossfade` is first composed with `shown = target`, the
+ * `SceneDelegate.swift:95-97` rule.
  *
  * Must be inside `RobocoTheme`. The root paints the window background
  * ([Palette.background]) under the roots (every root paints its own
  * opaque background too, so the cross-fade never shows it) and consumes
  * or pads **no** insets: every screen applies its own `safeDrawing`/`ime`.
+ *
+ * @param shellScope wraps both shells, inside the shell group of the
+ *   cross-fade. Ticket 108's production wiring passes its
+ *   [ShellStateScope] here, so the hoisted shell state (tabs, tablet,
+ *   sidebar, routers) lives exactly as long as the shell group: it
+ *   survives every Phone ↔ Split switch (the scope is composed for both
+ *   kinds) and is dropped after the 350 ms fade-out to Pairing. The
+ *   default is the identity scope (previews, tests, the gallery).
  */
 @Composable
 fun AppRoot(
@@ -75,6 +84,7 @@ fun AppRoot(
     split: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     coreFailed: @Composable (String) -> Unit = { CoreUnavailableScreen(it) },
+    shellScope: @Composable (kind: RootKind, content: @Composable () -> Unit) -> Unit = { _, c -> c() },
 ) {
     BoxWithConstraints(
         modifier
@@ -124,19 +134,23 @@ fun AppRoot(
                             // Re-chosen live: a width change across 840 dp
                             // switches phone/split in place, inside the
                             // shell group, with no fade (108 owns the
-                            // carry-over).
-                            if (chooseRoot(hasEngines = true, width = maxWidth) == RootKind.Split) {
-                                Box(
-                                    Modifier
-                                        .fillMaxSize()
-                                        .testTag("root-split"),
-                                ) { split() }
-                            } else {
-                                Box(
-                                    Modifier
-                                        .fillMaxSize()
-                                        .testTag("root-phone"),
-                                ) { phone() }
+                            // carry-over). The shell scope wraps the switch,
+                            // so the hoisted shell state survives it.
+                            val shellKind = chooseRoot(hasEngines = true, width = maxWidth)
+                            shellScope(shellKind) {
+                                if (shellKind == RootKind.Split) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .testTag("root-split"),
+                                    ) { split() }
+                                } else {
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .testTag("root-phone"),
+                                    ) { phone() }
+                                }
                             }
                         }
                     }

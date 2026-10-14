@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -29,7 +28,6 @@ import sh.roboco.android.pairing.pairingRootStatus
 import sh.roboco.android.pairing.rememberQrScanRequest
 import sh.roboco.android.sessions.LocalRowActions
 import sh.roboco.android.shell.tablet.Sidebar
-import sh.roboco.android.shell.tablet.SidebarState
 
 /**
  * The real app content wiring (android-ui-parity #35) — the only place
@@ -46,12 +44,12 @@ import sh.roboco.android.shell.tablet.SidebarState
  * 42's app-scoped toaster and `LocalRowActions`) → [AppRoot].
  *
  * `LocalAppRouter` is **not** provided here: each shell provides its own
- * (32 phone, 106 tablet).
- *
- * Ticket 36's hooks also live here (outside `AppRoot`): the hub's
- * pairing-root tracking over `rootState.kind`, and each shell's router
- * attached/detached after its first frame through
- * [DeepLinkRouterEffect].
+ * (32 phone, 106 tablet). Ticket 36's hooks also live here (outside
+ * `AppRoot`): the hub's pairing-root tracking over `rootState.kind`, and
+ * each shell's router attached/detached after its first frame through
+ * [DeepLinkRouterEffect]. Ticket 108's [ShellStateScope] (35's
+ * `shellScope` inside `AppRoot`) owns the hoisted shell state both shells
+ * read.
  */
 @Composable
 fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
@@ -151,6 +149,15 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
  * lambda. 138 wired the real `QrScanRequest` ([rememberQrScanRequest]);
  * 139 derives the root's status line from [pairPage] (its
  * snapshot-backed `current`/`isShowing`) via `pairingRootStatus(pairPage)`.
+ *
+ * 108: [ShellStateScope] wraps both shell slots inside the root (35's
+ * `shellScope`), so 106's hoisted block — the split state, the sidebar
+ * state, the phone-router slot, the settings slot and the tablet router —
+ * now lives there (created once, surviving every Phone ↔ Split switch),
+ * and the slots below only **read** it through [LocalShellStates].
+ * `isCollapsed` has exactly one writer (the scope's `SideEffect`); the
+ * scope's `onDispose` releases every hoisted session when the shell layer
+ * itself leaves composition.
  */
 @Composable
 private fun AppRootWithPairing(
@@ -160,20 +167,6 @@ private fun AppRootWithPairing(
     pairPage: PairPageLauncher?,
 ) {
     val input by app.rootInput.collectAsState()
-    // 106: the split's state, sidebar state, phone-router slot, settings
-    // slot and tablet router — all remembered ABOVE 35's Phone ↔ Split
-    // switch, so the open session's NavEntry survives the switch (the
-    // detail stack is simply hostless while the phone shell is on screen)
-    // and the phone router can forward tab-shell presence into it even
-    // when the split was never shown (a foldable opened folded). 108
-    // later hoists these into its ShellStateScope, keeping the three
-    // hooks: `tabPresence`, the slot's attach and the split's
-    // `LocalAppRouter` + presenter registration.
-    val tablet = rememberTabletShellState() // 33
-    val sidebarState = remember { SidebarState() } // 105
-    val phoneSlot = remember { PhoneRouterSlot() } // 106
-    val settingsSlot = remember { SettingsPresenterSlot() } // 104 + 106
-    val tabletRouter = rememberTabletAppRouter(tablet, phoneSlot, sidebarState, settingsSlot)
     AppRoot(
         input = input,
         state = rootState,
@@ -184,71 +177,83 @@ private fun AppRootWithPairing(
                 onPair = { pairPage?.openPairPage() },
             )
         },
+        // 108: the shell-state scope above the Phone ↔ Split switch (35's
+        // `shellScope`). Everything the two shells share — 26's tab state,
+        // 33's split state, 105's sidebar, 106's slots and tablet router —
+        // is remembered inside it, so the open session's NavEntry and the
+        // phone router survive the switch, and the carry-over owns what
+        // moves across it.
+        shellScope = { shellKind, content -> ShellStateScope(shellKind, content) },
         phone = {
-            // Interim; 108 becomes the single writer of isCollapsed (the
-            // hoisted shell scope) — the split slot below flips it back on
-            // expand.
-            SideEffect { tablet.isCollapsed = true }
-            // 36: the phone router (32's `onRouter` — the
-            // `window.rootViewController as? AppRouter` port) is attached
-            // after the shell's first frame, never during its composition.
-            // 26: the shell state stays the default `rememberMainTabState()`.
-            // 106: `presence` forwards the tab shell's session appear/close
-            // into the split state, and the slot keeps the router for the
-            // tablet router's collapsed delegation.
-            var phoneRouter by remember { mutableStateOf<AppRouter?>(null) }
-            MainTabShell(
-                presence = tabletRouter.tabPresence,
-                onRouter = { router -> phoneRouter = router; phoneSlot.attach(router) },
-            )
-            phoneRouter?.let { DeepLinkRouterEffect(app.deepLinks, it) }
-            // 106: the slot drops the phone router when this shell leaves
-            // (the 840 dp expand cancels its scope, together with this
-            // slot's disposal), so a collapsed delegation keeps the latest
-            // call pending for the fresh shell instead of calling a dead
-            // router.
-            DisposableEffect(phoneRouter) {
-                val attached = phoneRouter
-                onDispose { attached?.let { phoneSlot.detach(it) } }
+            // 108: the hoisted shell state, read through the scope's local.
+            val s = LocalShellStates.current
+            s.saveable.SaveableStateProvider("phone") {
+                // 36: the phone router (32's `onRouter` — the
+                // `window.rootViewController as? AppRouter` port) is attached
+                // after the shell's first frame, never during its composition.
+                // 26: the shell state is the scope's — the tab stacks survive
+                // the 840 dp round trip (one `MainTabState`, like iOS's one
+                // `MainTabController`). 106/108: `presence` forwards the tab
+                // shell's session appear/close into the carry-over through
+                // 106's `tabPresence`, and the slot keeps the router for the
+                // tablet router's collapsed delegation.
+                var phoneRouter by remember { mutableStateOf<AppRouter?>(null) }
+                MainTabShell(
+                    state = s.tabs,
+                    presence = s.presence,
+                    onRouter = { router -> phoneRouter = router; s.phoneSlot.attach(router) },
+                )
+                phoneRouter?.let { DeepLinkRouterEffect(app.deepLinks, it) }
+                // 106: the slot drops the phone router when this shell leaves
+                // (the 840 dp expand cancels its scope, together with this
+                // slot's disposal), so a collapsed delegation keeps the latest
+                // call pending for the fresh shell instead of calling a dead
+                // router.
+                DisposableEffect(phoneRouter) {
+                    val attached = phoneRouter
+                    onDispose { attached?.let { s.phoneSlot.detach(it) } }
+                }
             }
         },
         split = {
-            // Interim; 108 becomes the single writer of isCollapsed.
-            SideEffect { tablet.isCollapsed = false }
-            CompositionLocalProvider(LocalAppRouter provides tabletRouter) {
-                // 104: the presenter must be created INSIDE this provider —
-                // it captures currentCompositionLocalContext, so the card's
-                // rows reach this router. The split registers it in the
-                // settings slot while composed.
-                val presenter = rememberSettingsDialogPresenter()
-                DisposableEffect(presenter) {
-                    settingsSlot.presenter = presenter
-                    onDispose {
-                        if (settingsSlot.presenter === presenter) settingsSlot.presenter = null
+            // 108: the hoisted shell state, read through the scope's local.
+            val s = LocalShellStates.current
+            s.saveable.SaveableStateProvider("split") {
+                CompositionLocalProvider(LocalAppRouter provides s.tabletRouter) {
+                    // 104: the presenter must be created INSIDE this provider —
+                    // it captures currentCompositionLocalContext, so the card's
+                    // rows reach this router. The split registers it in the
+                    // settings slot while composed.
+                    val presenter = rememberSettingsDialogPresenter()
+                    DisposableEffect(presenter) {
+                        s.settingsSlot.presenter = presenter
+                        onDispose {
+                            if (s.settingsSlot.presenter === presenter) s.settingsSlot.presenter = null
+                        }
                     }
+                    // 36: the split's router attached after its first frame,
+                    // like the phone slot's.
+                    DeepLinkRouterEffect(app.deepLinks, s.tabletRouter)
+                    SplitRoot(
+                        shell = s.tablet,
+                        sidebar = { shown ->
+                            // 105: the sidebar pane (its rows read
+                            // `s.tablet.currentChatId` for the highlight);
+                            // 107's toolbar slot stays empty until it lands.
+                            Sidebar(
+                                state = s.sidebar,
+                                currentChatId = s.tablet.currentChatId,
+                                shown = shown,
+                            )
+                        },
+                        // 106: the pane renders the router's persistent detail
+                        // stack — the slot's DetailRoot argument is ignored on
+                        // purpose (the stack is the source of truth; 33 step 5:
+                        // no NavStack, no key(detailGeneration) here).
+                        detail = { _ -> TabletDetailHost(s.tabletRouter.detailStack) },
+                        router = s.tabletRouter,
+                    )
                 }
-                // 36: the split's router attached after its first frame,
-                // like the phone slot's.
-                DeepLinkRouterEffect(app.deepLinks, tabletRouter)
-                SplitRoot(
-                    shell = tablet,
-                    sidebar = { shown ->
-                        // 105: the sidebar pane (its rows read
-                        // `tablet.currentChatId` for the highlight); 107's
-                        // toolbar slot stays empty until it lands.
-                        Sidebar(
-                            state = sidebarState,
-                            currentChatId = tablet.currentChatId,
-                            shown = shown,
-                        )
-                    },
-                    // 106: the pane renders the router's persistent detail
-                    // stack — the slot's DetailRoot argument is ignored on
-                    // purpose (the stack is the source of truth; 33 step 5:
-                    // no NavStack, no key(detailGeneration) here).
-                    detail = { _ -> TabletDetailHost(tabletRouter.detailStack) },
-                    router = tabletRouter,
-                )
             }
         },
     )
