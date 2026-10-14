@@ -135,7 +135,8 @@ class HandoffCaptureTest {
                             // re-recorded the layers), then the screen read.
                             withFrameNanos {}
                             withFrameNanos {}
-                            screens += screenLayer?.toImageBitmap()?.toPixelMap()
+                            val shot = screenLayer?.toImageBitmap()?.toPixelMap()
+                            if (shot != null) screens += shot
                         },
                     )
                 }
