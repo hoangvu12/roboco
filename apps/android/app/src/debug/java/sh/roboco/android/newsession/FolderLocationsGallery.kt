@@ -184,14 +184,14 @@ internal fun FolderLocationsStage(spec: FolderLocationsSpec, modifier: Modifier 
 fun FolderLocationsGallerySection() {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         for ((label, spec) in folderLocationsFixtures()) {
-            FixtureCard(label, spec)
+            LocationsFixtureCard(label, spec)
         }
     }
 }
 
 /** One fixture: the caption, then the 90 dp header at the phone width. */
 @Composable
-private fun FixtureCard(label: String, spec: FolderLocationsSpec) {
+private fun LocationsFixtureCard(label: String, spec: FolderLocationsSpec) {
     val palette = RobocoTheme.palette
     val ts = LocalTypeScale.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
