@@ -522,4 +522,4 @@ class ImageTileStatesTest {
 }
 
 /** One recorded `openImage` call. */
-private data class OpenedImage(val reference: String, val source: Rect, val bitmap: ImageBitmap, val label: String)
+private data class OpenedImage(val reference: String, val source: Rect, val bitmap: ImageBitmap, val label: String?)

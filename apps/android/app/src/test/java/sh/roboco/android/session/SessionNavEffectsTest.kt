@@ -233,7 +233,9 @@ class SessionNavEffectsTest {
         ) {
             SessionNavEffects(lifecycle, entry)
             ProvideTransitionProgress(stack, entry) {
-                SideEffect { progressRef = LocalTransitionProgress.current }
+                // .current is a @Composable read: hoisted out of the SideEffect lambda.
+                val progress = LocalTransitionProgress.current
+                SideEffect { progressRef = progress }
                 SessionNavFakeChromePage(nav, Modifier.fillMaxSize())
             }
         }

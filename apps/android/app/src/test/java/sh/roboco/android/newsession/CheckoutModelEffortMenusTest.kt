@@ -385,8 +385,11 @@ class CheckoutModelEffortMenusTest {
     fun theModelCheckIsTheDraftsHarnessAndIdPairOnly() {
         val picked = MenusPage(NewSessionDraft(projectId = "p1", harness = "claude-code", model = "claude-opus-5-5"))
         val rows = modelRowsOf(picked.menus.model())
-        assertEquals(listOf(false, false, false, true, false), rows.map { it.checked })
-        assertEquals("new-session-menu-model-claude-code-claude-opus-5-5", rows[3].testTag)
+        // Menu order, not input order: sections sort by harness id, so the
+        // rows are Fable, Opus, Haiku, GPT-5.5, GPT-5.4 (as the test above
+        // pins) and Opus 5.5 is row 1.
+        assertEquals(listOf(false, true, false, false, false), rows.map { it.checked })
+        assertEquals("new-session-menu-model-claude-code-claude-opus-5-5", rows[1].testTag)
 
         // A model id that belongs to another harness checks nothing.
         val mixed = MenusPage(NewSessionDraft(projectId = "p1", harness = "codex", model = "claude-opus-5-5"))

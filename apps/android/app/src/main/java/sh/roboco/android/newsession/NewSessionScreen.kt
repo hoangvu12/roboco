@@ -161,7 +161,7 @@ internal fun NewSessionScreenBody(
     val projectMenus = remember(ns, newProjectPresenter) {
         ProjectRunOnMenus(ns, newProjectPresenter, alive::get)
     }
-    val refSource = remember { CoreRefSource { app.clientOrNull() } }
+    val refSource = remember { CoreRefSource(client = { app.clientOrNull() }) }
     val checkoutMenus = remember(ns) {
         CheckoutModelEffortMenus(
             draft = { ns.draft },

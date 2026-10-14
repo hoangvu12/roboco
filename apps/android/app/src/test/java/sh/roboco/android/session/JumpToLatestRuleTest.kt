@@ -72,7 +72,7 @@ class JumpToLatestRuleTest {
     fun theSpringMatchesTheTicketTable() {
         val animation = TargetBasedAnimation(
             animationSpec = Motion.JumpButton.spec(visibilityThreshold = 0.001f),
-            converter = Float.VectorConverter,
+            typeConverter = Float.VectorConverter,
             initialValue = 0f,
             targetValue = 1f,
         )

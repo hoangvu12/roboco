@@ -18,13 +18,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -46,6 +46,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import sh.roboco.android.composer.ChipStrip
 import sh.roboco.android.composer.ComposerController
 import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.FakePrefsStore
@@ -315,7 +316,12 @@ class ProjectMenusUiTest {
         val alive = remember { AtomicBoolean(true) }
         DisposableEffect(Unit) { onDispose { alive.set(false) } }
         val projectMenus = remember { ProjectRunOnMenus(model, presenter, alive::get) }
-        NewSessionChipsEffect(model, composer, newSessionChipMenus(projectMenus.providers()), labels = GalleryLabels)
+        // Remembered like NewSessionScreenBody's map: providers() builds fresh
+        // lambdas per call, so an unremembered map is never equal, restarts
+        // the effect's LaunchedEffect(composer, menus) and its chipMenus write
+        // recomposes this harness every frame (waitForIdle never settles).
+        val menus = remember(projectMenus) { newSessionChipMenus(projectMenus.providers()) }
+        NewSessionChipsEffect(model, composer, menus, labels = GalleryLabels)
         Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
             if (focusProbe) ProjectMenusFocusProbe()
             ChipStrip(composer.chips, composer.chipMenus, canWrite = true, onChipTap = {})
