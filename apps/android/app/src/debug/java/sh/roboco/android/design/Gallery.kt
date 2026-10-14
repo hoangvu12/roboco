@@ -48,6 +48,7 @@ import sh.roboco.android.newsession.FolderBottomBarGallerySection
 import sh.roboco.android.newsession.HandoffCaptureGallerySection
 import sh.roboco.android.newsession.NewSessionCanvasGallerySection
 import sh.roboco.android.newsession.NewSessionChipsGallerySection
+import sh.roboco.android.newsession.ProjectMenusGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.newsession.FolderLocationsGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
@@ -668,6 +669,14 @@ object Gallery {
         // built by newSessionChips over the hard-coded GalleryLabels.
         GallerySection("New-session chips", screenshotHeightDp = 420) {
             NewSessionChipsGallerySection()
+        },
+        // Ticket 113 (new-session project / run-on menus): the project
+        // chip's repository-grouped menu and the host chip's Run on menu
+        // — the five static panel fixtures (P1, P2, R1, R2, R3) over
+        // GlassStage plus the live demo of the two chips over the pure
+        // builders ("New Project…" fakes the created space after 600 ms).
+        GallerySection("New session project menus", screenshotHeightDp = 1400) {
+            ProjectMenusGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
