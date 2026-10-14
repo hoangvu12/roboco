@@ -231,7 +231,9 @@ object Gallery {
         // Fill: the section owns its fillMaxSize + verticalScroll column
         // (inside its GlassMenuHost). Under the default Scroll frame that
         // column was a vertical scroller measured with infinite height.
-        GallerySection("Composer chips", GalleryLayout.Fill, screenshotHeightDp = 1400) { ChipStripGallerySection() },
+        // android-next #01: 1400 → 1600 for the two extra context cards
+        // (~165 dp), so fixture H stays inside the capture.
+        GallerySection("Composer chips", GalleryLayout.Fill, screenshotHeightDp = 1600) { ChipStripGallerySection() },
         // Ticket 64 (box prims + overflow fades): the transcript's chrome —
         // code block, table, quote bar, folded bubble, file pill, tool
         // badge and agent card, through the real RowModel path.

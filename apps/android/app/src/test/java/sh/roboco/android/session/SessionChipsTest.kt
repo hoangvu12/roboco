@@ -8,9 +8,11 @@ import sh.roboco.android.composer.ChipTint
 import sh.roboco.android.composer.ComposerChip
 import uniffi.roboco_core.ContextUsage
 import uniffi.roboco_core.PullRequestState
+import java.util.Locale
 
 /**
- * The chip derivation (android-ui-parity #78): every row of the ticket's
+ * The chip derivation (android-ui-parity #78, with android-next #01's
+ * always-visible context chip): every row of the ticket's
  * two worked-example tables (context usage and rows), the fixed order
  * (model, effort, pr **or** branch, context), the PR-replaces-branch
  * rule, the `claude-code` default mark, the empty-harness rule and the
@@ -39,7 +41,7 @@ class SessionChipsTest {
     private fun chips(
         source: ChipSource,
         reasoningLabel: (String) -> String = ::label,
-    ): List<ComposerChip> = sessionChips(source, reasoningLabel)
+    ): List<ComposerChip> = sessionChips(source, Locale.US, reasoningLabel)
 
     private fun contextSource(tokens: ULong?, window: ULong?): ChipSource = ChipSource(
         harness = null,
@@ -57,7 +59,15 @@ class SessionChipsTest {
 
     @Test
     fun belowHalfShowsNoContextChip() {
-        assertEquals(emptyList<ComposerChip>(), chips(contextSource(499uL, 1000uL)))
+        // android-next #01 (user decision 2026-10-15) supersedes ticket
+        // 78's `fraction >= 0.5` gate: the chip is always shown once usage
+        // is reported, so 49.9 % now shows `50% context` (calm). The name
+        // is kept for history; the body pins the new rule.
+        val chip = chips(contextSource(499uL, 1000uL)).single()
+        assertEquals(SessionChipIds.Context, chip.id)
+        assertEquals("50% context", chip.title)
+        assertEquals("circle.lefthalf.filled", chip.symbol)
+        assertEquals(null, chip.tint)
     }
 
     @Test
@@ -116,12 +126,56 @@ class SessionChipsTest {
 
     @Test
     fun aZeroWindowShowsNoChip() {
-        assertEquals(emptyList<ComposerChip>(), chips(contextSource(5uL, 0uL)))
+        // android-next #01: a zero (unknown) window with tokens > 0 now
+        // shows the bare count instead of hiding; only a zero count with
+        // no window still hides. Name kept, body pins the new rule.
+        assertEquals("5 tokens", chips(contextSource(5uL, 0uL)).single().title)
+        assertEquals(emptyList<ComposerChip>(), chips(contextSource(0uL, 0uL)))
     }
 
     @Test
     fun missingTokensShowNoChip() {
         assertEquals(emptyList<ComposerChip>(), chips(contextSource(null, 1000uL)))
+    }
+
+    /**
+     * android-next #01's visibility table: none / 0 % / 3 % / 49 % / 50 % /
+     * 85 % / unknown window — the title, glyph and tint of each row.
+     */
+    @Test
+    fun theContextChipVisibilityTable() {
+        data class Row(val tokens: ULong?, val window: ULong?, val title: String?, val warn: Boolean)
+        val table = listOf(
+            Row(null, null, null, false), // no usage reported
+            Row(null, 200_000uL, null, false), // a window but no count yet
+            Row(0uL, 200_000uL, "0% context", false),
+            Row(6_000uL, 200_000uL, "3% context", false),
+            Row(490uL, 1000uL, "49% context", false),
+            Row(500uL, 1000uL, "50% context", false),
+            Row(850uL, 1000uL, "85% context", true),
+            Row(48_210uL, null, "48,210 tokens", false), // unknown window
+            Row(48_210uL, 0uL, "48,210 tokens", false), // a zero window is unknown
+        )
+        for (r in table) {
+            val chip = chips(contextSource(r.tokens, r.window)).singleOrNull()
+            assertEquals("tokens ${r.tokens} / window ${r.window}", r.title, chip?.title)
+            if (chip == null) continue
+            assertEquals(SessionChipIds.Context, chip.id)
+            assertEquals(if (r.warn) "exclamationmark.circle" else "circle.lefthalf.filled", chip.symbol)
+            assertEquals(if (r.warn) ChipTint.Warning else null, chip.tint)
+        }
+    }
+
+    @Test
+    fun theContextChipSpellsTheNumbersOutForTalkBack() {
+        assertEquals(
+            "Context 3 percent used, 6,000 of 200,000 tokens",
+            chips(contextSource(6_000uL, 200_000uL)).single().contentDescription,
+        )
+        assertEquals(
+            "Context 48,210 tokens used",
+            chips(contextSource(48_210uL, null)).single().contentDescription,
+        )
     }
 
     // ── the row worked examples ───────────────────────────────────────
@@ -230,7 +284,18 @@ class SessionChipsTest {
     @Test
     fun aNullRowStillShowsTheContextChip() {
         val out = chips(contextSource(620uL, 1000uL))
-        assertEquals(listOf(ComposerChip(SessionChipIds.Context, "62% context", symbol = "circle.lefthalf.filled")), out)
+        // android-next #01 added the TalkBack label to the context chip.
+        assertEquals(
+            listOf(
+                ComposerChip(
+                    SessionChipIds.Context,
+                    "62% context",
+                    symbol = "circle.lefthalf.filled",
+                    contentDescription = "Context 62 percent used, 620 of 1,000 tokens",
+                ),
+            ),
+            out,
+        )
     }
 
     @Test
@@ -250,7 +315,7 @@ class SessionChipsTest {
 
     @Test
     fun theFillerFeedsChromeChipsFromTheRowAndComposer() {
-        val filler = SessionChipsFiller(::label)
+        val filler = SessionChipsFiller(::label, locale = { Locale.US })
         val input = ChromeInput(
             chatId = "chat-a",
             composer = composerState(contextUsage = ContextUsage(tokens = 620uL, window = 1000uL)),
@@ -269,7 +334,13 @@ class SessionChipsTest {
                 ComposerChip(SessionChipIds.Model, "Opus 4.5", icon = ChipIcon.Brand("claude-code")),
                 ComposerChip(SessionChipIds.Effort, "High", symbol = "gauge.with.dots.needle.67percent"),
                 ComposerChip(SessionChipIds.Branch, "ios-rewrite", icon = ChipIcon.Branch),
-                ComposerChip(SessionChipIds.Context, "62% context", symbol = "circle.lefthalf.filled"),
+                // android-next #01: the context chip carries its TalkBack label.
+                ComposerChip(
+                    SessionChipIds.Context,
+                    "62% context",
+                    symbol = "circle.lefthalf.filled",
+                    contentDescription = "Context 62 percent used, 620 of 1,000 tokens",
+                ),
             ),
             filled.chips,
         )

@@ -59,6 +59,10 @@ import sh.roboco.android.design.Palette
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.Glass
 import sh.roboco.android.design.glass.GlassMenuHost
+import sh.roboco.android.session.ContextReading
+import sh.roboco.android.session.contextChip
+import sh.roboco.android.session.contextUsageCard
+import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -337,6 +341,31 @@ class ChipStripTest {
         assertTrue("the strip scrolls (maxValue ${state.maxValue})", state.maxValue > 0)
     }
 
+    /**
+     * android-next #01: the always-present context chip is last in the
+     * strip's order, so at a 360 dp strip the model and effort chips stay
+     * fully in view and only the tail scrolls (the strip's existing rule).
+     */
+    @Test
+    fun anAlwaysPresentContextChipNeverPushesModelOrEffortOffAt360Dp() {
+        val chips = chipFixtureSession() +
+            ComposerChip(id = "pr", title = "1234", icon = ChipIcon.PullRequest, tint = ChipTint.PrOpen) +
+            contextChip(ContextReading.Measured(tokens = 1_048_000uL, window = 1_048_576uL), Locale.US)
+        compose.setContent { Harness(chips = chips, modifier = Modifier.width(360.dp)) }
+        compose.waitForIdle()
+
+        val strip = node("composer-chip-strip")
+        val stripEnd = strip.positionInRoot.x + strip.size.width
+        assertEquals("the strip is 360 dp", 360f, strip.size.width.toFloat(), 0.5f)
+        for (id in listOf("model", "effort")) {
+            val chip = node("composer-chip-$id")
+            assertTrue(
+                "the $id chip ends inside the strip (${chip.positionInRoot.x + chip.size.width} <= $stripEnd)",
+                chip.positionInRoot.x + chip.size.width <= stripEnd,
+            )
+        }
+    }
+
     @Test
     fun atFontScale2TheChipKeepsItsFixedHeight() {
         compose.setContent {
@@ -464,6 +493,63 @@ class ChipStripTest {
         compose.mainClock.advanceTimeBy(200)
         compose.waitForIdle()
         assertEquals(3, provided)
+    }
+
+    /**
+     * android-next #01: the context chip's tap opens the read-only details
+     * card with the grouped numbers; a tap on a card row keeps it open (the
+     * panel swallows it), a tap outside closes it. The chip reads its
+     * numbers to TalkBack.
+     */
+    @Test
+    fun theContextChipOpensTheDetailsCardAndATapOutsideClosesIt() {
+        val reading = ContextReading.Measured(tokens = 5_417uL, window = 1_048_576uL)
+        val taps = mutableListOf<String>()
+        compose.setContent {
+            Harness(
+                // Alone, so the chip is fully inside the strip's viewport.
+                chips = listOf(contextChip(reading, Locale.US)),
+                chipMenus = mapOf("context" to { contextUsageCard(reading, Locale.US) }),
+                onChipTap = { taps.add(it) },
+            )
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("composer-chip-context")
+            .assertTextContains("1% context")
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.ContentDescription,
+                    listOf("Context 1 percent used, 5,417 of 1,048,576 tokens"),
+                ),
+            )
+
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithTag("composer-chip-context").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        compose.onNodeWithTag("glass-menu").assertExists()
+        compose.onNodeWithText("Context window").assertExists()
+        compose.onNodeWithText("5,417 / 1,048,576 tokens").assertExists()
+        compose.onNodeWithText("1% used").assertExists()
+        compose.onNodeWithText("1,043,159 tokens remaining").assertExists()
+        assertEquals("the card is the chip's menu, not onChipTap", emptyList<String>(), taps)
+
+        // A read-only row is no tap target: the card stays open.
+        compose.onNodeWithTag("context-card-remaining").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        compose.onNodeWithTag("glass-menu").assertExists()
+
+        // A tap outside (the strip sits at the top; the corner is bare scrim).
+        compose.onNodeWithTag("glass-menu-scrim").performTouchInput {
+            click(Offset(width - 10f, height - 10f))
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        compose.onNodeWithTag("glass-menu").assertDoesNotExist()
     }
 
     // ----------------------------------------------------------- canWrite

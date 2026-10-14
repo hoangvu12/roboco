@@ -136,6 +136,8 @@ data class ComposerChip(
     val tint: ChipTint? = null,
     /** Brand mark / custom glyph (takes precedence over [symbol]). */
     val icon: ChipIcon? = null,
+    /** TalkBack's label when the title alone is too terse (android-next #01's context chip); `null` reads the title. */
+    val contentDescription: String? = null,
 )
 
 /**
