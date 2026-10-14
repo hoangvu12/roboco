@@ -203,13 +203,28 @@ class CheckoutModelEffortMenusTest {
     // ── the branch load ────────────────────────────────────────────────
 
     @Test
-    fun theBranchLoadRunsOnTheIoLaneAndChecksTheBranchOrTheFirstRef() {
-        val refs = RecordingRefSource(listOf("dev", "main", "a"))
+    fun theBranchLoadSortsCurrentFirstRunsOnIoAndChecksTheBranchOrFirstRef() {
+        // The engine's answer, as android-app#09 returns it: `dev` is current.
+        val engine = CoreRefSource(listRefs = { _, _ ->
+            listOf(
+                RepoRef(name = "main", current = false, worktreePath = null),
+                RepoRef(name = "dev", current = true, worktreePath = null),
+                RepoRef(name = "a", current = false, worktreePath = null),
+            )
+        })
+        var calls = 0
+        val threads = mutableListOf<String>()
+        val refs = RefSource { p ->
+            calls++
+            threads += Thread.currentThread().name
+            engine.refs(p)
+        }
         val page = MenusPage(NewSessionDraft(projectId = "p1"), refSource = refs)
         val rows = loadBranchRows(page)
 
         assertEquals(listOf("dev", "main", "a"), rowTitles(rows))
-        assertEquals("the FFI hop ran on the io lane", listOf("fake-io"), refs.threads)
+        assertEquals("the FFI hop ran on the io lane", listOf("fake-io"), threads)
+        assertEquals(1, calls)
 
         // Nothing picked: the first ref is checked (iOS `draft.branch ?? refs.first`).
         assertEquals("new-session-menu-branch-dev", rows[0].testTag)
