@@ -113,7 +113,7 @@ fun ImageTileGallerySection() {
         TranscriptActions(
             cachedImage = binding::cached,
             loadImage = binding::load,
-            openImage = { reference, source, _ ->
+            openImage = { reference, source, _, _ ->
                 lastOpen = "$reference @ " +
                     "${source.left.toInt()},${source.top.toInt()} " +
                     "${source.width.toInt()}×${source.height.toInt()}"
@@ -227,7 +227,7 @@ private fun TileSlot(
             .size(side.dp, side.dp)
             .background(chip, RoundedCornerShape(imageTileRadius(side.toFloat(), side.toFloat()))),
     ) {
-        ImageTile(reference, side.toFloat(), side.toFloat(), actions, overlay = overlay)
+        ImageTile(reference, ImageTileCopy.FallbackLabel, side.toFloat(), side.toFloat(), actions, overlay = overlay)
     }
 }
 

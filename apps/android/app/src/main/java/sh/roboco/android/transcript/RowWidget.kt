@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import sh.roboco.android.transcript.widgets.CopyCodeButton
 import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
+import sh.roboco.android.transcript.widgets.ImageTileCopy
 import sh.roboco.android.transcript.widgets.RailSpec
 import sh.roboco.android.transcript.widgets.ShimmerWidget
 import sh.roboco.android.transcript.widgets.SpinnerWidget
@@ -60,9 +61,12 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         is WidgetKind.ToolStatus -> ToolStatusWidget(k.running, k.failed)
         WidgetKind.Spinner -> SpinnerWidget()
         is WidgetKind.Working -> WorkingIndicator(k.sinceMs, k.streaming)
-        // ticket 66 (+ 67's upload ring through `overlay`, 137 extends)
+        // ticket 66 (+ 67's upload ring through `overlay`; 137 adds the
+        // alt-text label — `w.payload` for markdown images, "Image" for
+        // user thumbnails and assistant image rows that carry no payload)
         is WidgetKind.Image -> ImageTile(
             reference = k.reference,
+            label = w.payload ?: ImageTileCopy.FallbackLabel,
             widthDp = w.w,
             heightDp = w.h,
             actions = ctx.actions(),

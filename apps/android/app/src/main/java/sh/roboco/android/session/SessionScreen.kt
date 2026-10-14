@@ -250,7 +250,7 @@ fun SessionScreen(
         },
     )
     val actions = remember(controller, attachments, viewer, router) {
-        val openImage: (String, Rect, ImageBitmap?) -> Unit = { reference, source, bitmap ->
+        val openImage: (String, Rect, ImageBitmap?, String?) -> Unit = { reference, source, bitmap, label ->
             viewer?.show(
                 ImageViewerRequest(
                     reference = reference,
@@ -259,7 +259,7 @@ fun SessionScreen(
                     sourceCornerRadius = with(density) {
                         imageTileRadius(source.width.toDp().value, source.height.toDp().value)
                     },
-                    label = null, // 137 fills this with the alt text
+                    label = label, // 137: the alt text
                     loadFull = if (binding != null) {
                         { binding.loadFull(reference) }
                     } else {
