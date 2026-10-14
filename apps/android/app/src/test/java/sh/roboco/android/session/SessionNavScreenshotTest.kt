@@ -1,7 +1,11 @@
 package sh.roboco.android.session
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.captureToImage
@@ -146,21 +150,28 @@ class SessionNavScreenshotTest {
      * 30 % of the way from the page background towards the capsule's
      * full-α colour over the page — the glass fallback fill (no haze
      * source, `forceFallback`), captured from an idle session. The second
-     * `setContent` is the two-tree compare pattern (the TypeFamiliesTest
-     * recreate precedent).
+     * tree is the idle session, swapped in through [idle] — one setContent
+     * per test (a second throws; TypeFamiliesTest recreates the activity
+     * first), each tree with its own stack.
      */
     @Test
     fun theCapsuleBlendsAtThirtyPercentUnderAPushFrozenAt030() {
+        var idle by mutableStateOf(false)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                val stack = remember {
-                    NavStack(DemoRoute("Sessions")).apply {
-                        holdHostlessOps()
-                        push(GallerySessionRoute())
-                        freeze(0.3f)
+                if (!idle) {
+                    val stack = remember {
+                        NavStack(DemoRoute("Sessions")).apply {
+                            holdHostlessOps()
+                            push(GallerySessionRoute())
+                            freeze(0.3f)
+                        }
                     }
+                    SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
+                } else {
+                    val stack = remember { NavStack(DemoRoute("Sessions")) }
+                    SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
                 }
-                SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
             }
         }
         compose.waitForIdle()
@@ -177,12 +188,9 @@ class SessionNavScreenshotTest {
         // The full-α capsule over the page: an idle session (no
         // transition → α 1); the empty content means the surface is the
         // fill itself.
-        compose.setContent {
-            RobocoTheme(Appearance.Light) {
-                val stack = remember { NavStack(DemoRoute("Sessions")) }
-                SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
-            }
-        }
+        compose.runOnUiThread { idle = true }
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         val full = px((201f * d).toInt(), (841f * d).toInt())
