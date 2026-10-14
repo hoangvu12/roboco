@@ -524,7 +524,12 @@ fun SessionScreen(
                     SessionComposerSlot(composerBinding, shown, Modifier.arrivalComposerAnchor(state.arrival))
                 }
             },
-            jump = {}, // 131
+            // 131: the jump-to-latest glass circle — the rule (68's
+            // distanceFromBottom + following) reads as a derivedStateOf, so
+            // only a threshold crossing recomposes; the tap glides the
+            // transcript back to the tail. 85's pop-fade multiplier lands
+            // as `navAlpha` once it ships.
+            jump = { JumpToLatestButton(transcript.viewport) },
             // 77: the arrival channel (85 multiplies its push-pop factor
             // in: nav.stackAlpha() * state.arrival.stackAlpha).
             stackAlpha = { state.arrival.stackAlpha },

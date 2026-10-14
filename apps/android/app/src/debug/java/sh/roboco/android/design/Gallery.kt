@@ -53,6 +53,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
+import sh.roboco.android.session.JumpToLatestGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.SessionOpenGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
@@ -588,6 +589,11 @@ object Gallery {
         // t = 1/3 under capture, hidden by Force reduce motion) plus the
         // frozen phase table from t = 0 to 0.8333.
         GallerySection("Shimmer") { ShimmerGallerySection() },
+        // Ticket 131 (jump to latest): the round glass ↓ above the bottom
+        // stack — the visibility rule, the show/hide spring, the tap glide
+        // and 85's pop-fade multiplier, over the stage fixture with live
+        // toggles and a motion readout.
+        GallerySection("Jump to latest") { JumpToLatestGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

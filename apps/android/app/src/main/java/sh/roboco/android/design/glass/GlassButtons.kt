@@ -106,9 +106,11 @@ object GlassButtonDefaults {
  * [contentDescription] is required for the glyph label; pass `null` only
  * when a parent merges its own label. [interactionSource] lets callers
  * observe or drive the press externally (the gallery's "hold to press"
- * toggle); a new source is remembered otherwise. Ticket 131 will add an
- * `interactive` flag (no pointer input at all when false) — the source
- * plumbing here already isolates it.
+ * toggle); a new source is remembered otherwise. Ticket 131's
+ * [interactive] flag detaches all pointer input (the hiding jump button:
+ * UIKit's model-value hit testing) — no `clickable`, no press, while the
+ * glass and the ink stay as they are (unlike `enabled = false`, which
+ * re-inks tertiary).
  *
  * @param size the frame, square; the capsule corner style makes it a circle
  * @param iconPt the SF Symbol point size passed verbatim to [Icon]
@@ -120,6 +122,9 @@ object GlassButtonDefaults {
  *   bar-item ink ([GlassButtonDefaults.barGlyphInk], SESSIONS-D1), the
  *   `Glass.circleButton` ports pass `RobocoTheme.palette.text`, filled
  *   circles pass white
+ * @param interactive `false` = no pointer input at all: no `clickable`, no
+ *   press, nothing forwarded to the inner [GlassSurface]'s press tracker
+ *   (ticket 131; default `true` — every existing caller is unaffected)
  */
 @Composable
 fun GlassCircleButton(
@@ -134,6 +139,7 @@ fun GlassCircleButton(
     ink: Color = if (filled != null) Color.White else GlassButtonDefaults.barGlyphInk(),
     enabled: Boolean = true,
     interactionSource: MutableInteractionSource? = null,
+    interactive: Boolean = true,
 ) {
     val source = interactionSource ?: remember { MutableInteractionSource() }
     val palette = RobocoTheme.palette
@@ -143,8 +149,11 @@ fun GlassCircleButton(
             .size(size)
             .then(
                 // Opaque variants press via glassPress; glass variants get
-                // their press from GlassSurface below — never both.
-                if (filled != null) {
+                // their press from GlassSurface below — never both. A
+                // non-interactive button (131's hiding jump) attaches
+                // neither, so there is no pointer-input node at all and
+                // touches reach whatever is underneath.
+                if (filled != null && interactive) {
                     Modifier.glassPress(
                         interactionSource = source,
                         shape = CircleShape,
@@ -155,12 +164,18 @@ fun GlassCircleButton(
                     Modifier
                 },
             )
-            .clickable(
-                interactionSource = source,
-                indication = null,
-                enabled = enabled,
-                role = Role.Button,
-                onClick = onClick,
+            .then(
+                if (interactive) {
+                    Modifier.clickable(
+                        interactionSource = source,
+                        indication = null,
+                        enabled = enabled,
+                        role = Role.Button,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier
+                },
             ),
         contentAlignment = Alignment.Center,
     ) {
@@ -172,7 +187,7 @@ fun GlassCircleButton(
             GlassSurface(
                 Modifier.matchParentSize(),
                 shape = CircleShape,
-                interactive = enabled,
+                interactive = enabled && interactive,
                 interactionSource = source,
             ) {
                 // GlassSurface's content box wraps its content (07: "no
