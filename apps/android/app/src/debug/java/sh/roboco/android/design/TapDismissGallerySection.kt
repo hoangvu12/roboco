@@ -64,7 +64,8 @@ fun TapDismissGallerySection() {
     var dismissals by remember { mutableStateOf(0) }
     var linkTaps by remember { mutableStateOf(0) }
     var controlTaps by remember { mutableStateOf(0) }
-    val dismiss = remember(morph) {
+    // Typed: the lambda ends in `dismissals++` (an Int expression).
+    val dismiss: () -> Unit = remember(morph) {
         {
             morph.blur()
             dismissals++

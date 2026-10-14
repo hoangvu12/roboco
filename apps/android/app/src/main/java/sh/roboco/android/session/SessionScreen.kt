@@ -461,7 +461,8 @@ fun SessionScreen(
                         // binding, and the observer's dismiss is a no-op.
                         val tapGate = remember { TranscriptTapGate() }
                         val morph = composerBinding?.morph
-                        val dismiss = remember(morph) { { morph?.blur() } }
+                        // Typed: `{ morph?.blur() }` alone is () -> Unit? (a nullable call).
+                        val dismiss: () -> Unit = remember(morph) { { morph?.blur() } }
                         CompositionLocalProvider(LocalTranscriptTapGate provides tapGate) {
                             TranscriptHost(
                                 transcript, actions,

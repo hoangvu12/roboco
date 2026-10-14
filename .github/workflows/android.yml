@@ -292,6 +292,12 @@ jobs:
   android-emulator:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # The x86_64 emulator needs only the x86_64 core; connectedDebugAndroidTest
+      # is not a unit-test-only invocation, so without this Gradle builds the
+      # default arm64-v8a + x86_64 and cargo-ndk fails on the uninstalled
+      # aarch64-linux-android target (E0463).
+      ROBOCO_ANDROID_ABIS: x86_64
     steps:
       - uses: actions/checkout@v4
       - name: Validate Gradle wrapper
@@ -362,6 +368,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      ROBOCO_ANDROID_ABIS: x86_64 # the x86_64 emulator's core only (see android-emulator)
     steps:
       - uses: actions/checkout@v4
       - name: Validate Gradle wrapper

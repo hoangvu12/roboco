@@ -28,9 +28,9 @@ class NewSessionDraftJsonTest {
     fun encodeOmitsNullOptionalsAndWritesWorktreeAndHarness() {
         val json = NewSessionDraftJson.encode(NewSessionDraft(projectId = "p", effort = "low"))
         val o = JSONObject(json)
-        assertEquals(setOf("projectId", "worktree", "harness", "effort"), o.keySet())
+        assertEquals(setOf("projectId", "worktree", "harness", "effort"), o.keys().asSequence().toSet())
         // Never a JSON null: every written key carries a value.
-        for (key in o.keySet()) assertFalse("key $key is null", o.isNull(key))
+        for (key in o.keys().asSequence().toSet()) assertFalse("key $key is null", o.isNull(key))
         assertEquals("p", o.getString("projectId"))
         assertEquals(false, o.getBoolean("worktree"))
         assertEquals("claude-code", o.getString("harness"))

@@ -93,8 +93,15 @@ object NewSessionDraftJson : NewSessionDraftCodec {
         if (json == null) return NewSessionDraft()
         return try {
             val o = JSONObject(json)
+            // Strictly a JSON string: Android's getString coerces any value
+            // (5 -> "5", an array -> its JSON text), which would keep a
+            // wrong-typed field instead of resetting (the KDoc's contract).
             fun string(key: String): String? =
-                if (o.has(key) && !o.isNull(key)) o.getString(key) else null
+                if (o.has(key) && !o.isNull(key)) {
+                    o.get(key) as? String ?: throw JSONException("$key is not a string")
+                } else {
+                    null
+                }
             NewSessionDraft(
                 projectId = string("projectId"),
                 hostId = string("hostId"),
