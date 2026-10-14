@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -41,11 +42,13 @@ import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
 import sh.roboco.android.shell.NavKind
 import sh.roboco.android.transcript.AttachmentReader
+import sh.roboco.android.transcript.LocalTranscriptTapGate
 import sh.roboco.android.transcript.TranscriptActions
 import sh.roboco.android.transcript.TranscriptHost
 import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
+import sh.roboco.android.transcript.TranscriptTapGate
 import sh.roboco.android.transcript.firstUserBubbleInRoot
 import sh.roboco.android.transcript.rememberLinkRouter
 import sh.roboco.android.transcript.transcriptBottomInset
@@ -447,14 +450,30 @@ fun SessionScreen(
                     // arrival hides it, the transcript takes no taps and
                     // is absent from semantics, but keeps laying out.
                     Box(Modifier.arrivalHidden { state.arrival.transcriptAlpha }) {
-                        TranscriptHost(
-                            transcript, actions,
-                            // 133, outermost of the host's chain, so the inset
-                            // node measures before the host measures and places
-                            // its rows; the host itself adds the IME-drag
-                            // observer (interactiveImeDismiss) and 68's scroll.
-                            Modifier.fillMaxSize().transcriptBottomInset(transcript.viewport, insets.covered),
-                        )
+                        // 81: the tap gate + the Initial-pass dismiss observer.
+                        // The provider must wrap the host so the rows'
+                        // `transcriptControl()` markers can read the gate; the
+                        // observer rides after 133's inset node and before 65's
+                        // own chain (testTag, scrollable, transcriptTaps), never
+                        // consumes, and blurs only the composer — 78's morph,
+                        // a no-op when it is not focused (iOS isFirstResponder).
+                        // Without commands (tests, previews) there is no
+                        // binding, and the observer's dismiss is a no-op.
+                        val tapGate = remember { TranscriptTapGate() }
+                        val morph = composerBinding?.morph
+                        val dismiss = remember(morph) { { morph?.blur() } }
+                        CompositionLocalProvider(LocalTranscriptTapGate provides tapGate) {
+                            TranscriptHost(
+                                transcript, actions,
+                                // 133, outermost of the host's chain, so the inset
+                                // node measures before the host measures and places
+                                // its rows; the host itself adds the IME-drag
+                                // observer (interactiveImeDismiss) and 68's scroll.
+                                Modifier.fillMaxSize()
+                                    .transcriptBottomInset(transcript.viewport, insets.covered)
+                                    .dismissComposerOnTap(tapGate, dismiss),
+                            )
+                        }
                     }
                 }
             },
