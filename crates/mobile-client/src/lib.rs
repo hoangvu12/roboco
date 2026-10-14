@@ -521,7 +521,9 @@ impl Client {
 
     /// Revoke this device's pairing session on the engine
     /// (`RevokePairingSession`), best-effort: called before
-    /// `forget_engine`; failures are logged, never fatal.
+    /// `forget_engine`; failures are logged, never fatal. Capped at 3 s
+    /// (the Android forget flow's own cap — a hung engine must never
+    /// block the forget sequence, and the FFI call is cancellable too).
     pub async fn revoke_own_session(&self, engine_id: &str) -> Result<(), ClientError> {
         let handle = self.engine_handle(engine_id)?;
         let session_id = lock(&self.inner.engines)
@@ -533,16 +535,22 @@ impl Client {
         if session_id.is_empty() {
             return Ok(());
         }
-        match handle
-            .call(
+        match tokio::time::timeout(
+            Duration::from_secs(3),
+            handle.call(
                 roboco_rpc::methods::REVOKE_PAIRING_SESSION,
                 serde_json::json!({"sessionId": session_id}),
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(_) | Err(ClientError::Unsupported { .. }) => Ok(()),
-            Err(error) => {
+            Ok(Ok(_)) | Ok(Err(ClientError::Unsupported { .. })) => Ok(()),
+            Ok(Err(error)) => {
                 tracing::warn!(%error, engine_id, "session revoke failed (best-effort)");
+                Ok(())
+            }
+            Err(_) => {
+                tracing::warn!(engine_id, "session revoke timed out (best-effort)");
                 Ok(())
             }
         }
