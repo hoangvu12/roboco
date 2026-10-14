@@ -3,6 +3,7 @@ package sh.roboco.android.debug
 import android.content.Intent
 import androidx.compose.ui.semantics.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -46,7 +47,7 @@ class MarkdownImageLabTest {
     private val missing = "/tmp/calculator-result/missing.png"
 
     private val scenario: ActivityScenarioRule<TranscriptLabActivity> =
-        ActivityScenarioRule.launch(labIntent())
+        ActivityScenarioRule<TranscriptLabActivity>(labIntent())
 
     @Suppress("DEPRECATION") // the public AndroidComposeTestRule constructor is the one way to hand it a custom rule
     @get:Rule
@@ -115,7 +116,7 @@ class MarkdownImageLabTest {
 
     /** The tile's matcher, by its `ImageTileReferenceKey`. */
     private fun tileOf(reference: String) = SemanticsMatcher("transcript-image for $reference") {
-        it.config.get(ImageTileReferenceKey) == reference
+        it.config.getOrNull(ImageTileReferenceKey) == reference
     }
 
     /** The tile's interaction. */

@@ -387,14 +387,14 @@ class UploadRingTest {
             loadImage = { _, _ -> bitmap },
             openImage = { reference, _, _, _ -> opened.add(reference) },
         )
-        compose.setContent { Host { WidgetTile(state, actions, "pending/9f1c/a.png", 1u) } }
+        compose.setContent { Host { WidgetTile(state, actions, "pending://9f1c/a.png", 1u) } }
         compose.runOnIdle { state.uploadProgress = 0.42 }
         compose.waitForIdle()
 
         // The ring is up over the loaded tile; the tap goes through it.
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
         compose.waitForIdle()
-        assertEquals(listOf("pending/9f1c/a.png"), opened)
+        assertEquals(listOf("pending://9f1c/a.png"), opened)
     }
 
     @Test
@@ -415,11 +415,11 @@ class UploadRingTest {
             Host {
                 Column {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        WidgetTile(state, TranscriptActions(), "pending/u/1.png", 1u)
-                        WidgetTile(state, TranscriptActions(), "pending/u/2.png", 2u)
+                        WidgetTile(state, TranscriptActions(), "pending://u/1.png", 1u)
+                        WidgetTile(state, TranscriptActions(), "pending://u/2.png", 2u)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        WidgetTile(state, TranscriptActions(), "pending/u/3.png", 3u)
+                        WidgetTile(state, TranscriptActions(), "pending://u/3.png", 3u)
                         WidgetTile(state, TranscriptActions(), "/abs/host.png", 4u)
                     }
                 }
