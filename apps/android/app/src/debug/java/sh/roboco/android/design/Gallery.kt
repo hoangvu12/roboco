@@ -31,6 +31,7 @@ import sh.roboco.android.composer.MentionStyleDemo
 import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.composer.StagedThumbnailsGallerySection
+import sh.roboco.android.composer.QuestionPanelBehaviourGallerySection
 import sh.roboco.android.debug.TranscriptLabGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
@@ -534,6 +535,13 @@ object Gallery {
         // header with its wifi-off glyph next to the spinner one, and the
         // live "Engine down" simulate block with the real 4 s grace.
         GallerySection("Connection line", screenshotHeightDp = 900) { ConnectionLineGallerySection() },
+        // Ticket 91 (question panel behaviour): the panel's live state —
+        // configure, picks, the 220 ms auto-advance, the 200 ms paging
+        // fade, submit and its re-arm — driving 90's card in 74's slot
+        // scope, with the fixture buttons (F1/F2/F3/dup ids/offline/
+        // fail next submit) and a one-line answer caption under the
+        // stage.
+        GallerySection("Question panel behaviour") { QuestionPanelBehaviourGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

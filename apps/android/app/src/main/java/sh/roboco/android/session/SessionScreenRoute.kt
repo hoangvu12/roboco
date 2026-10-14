@@ -3,6 +3,8 @@ package sh.roboco.android.session
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import sh.roboco.android.composer.CoreQueueEditPort
+import sh.roboco.android.composer.CoreQuestionPort
+import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.shell.LocalNavEntry
@@ -159,6 +161,17 @@ class SessionScreenRoute internal constructor(
                 entry.retain(QueueEditPortKey) { CoreQueueEditPort(c.handle) }
             }
         }
+        // Ticket 91: the question panel's FFI seam over this route's
+        // handle, one per route (a sibling of `commands` above; the route
+        // carries no `questionActions` field — 75's screen wraps the port
+        // in `QuestionActions` on the app's lifetime scope itself). A
+        // test core that is not a CoreSessionCore yields null and the
+        // questions slot stays empty.
+        val questionPort: QuestionPort? = remember(entry) {
+            (core as? CoreSessionCore)?.let { live ->
+                entry.retain(QuestionsKey) { CoreQuestionPort(live.handle) }
+            }
+        }
         SessionScreen(
             controller,
             state,
@@ -166,6 +179,7 @@ class SessionScreenRoute internal constructor(
             attachments = attachments,
             queueEditPort = queueEditPort,
             queueActions = queueActions,
+            questionPort = questionPort,
         )
     }
 
@@ -201,4 +215,6 @@ class SessionScreenRoute internal constructor(
 
     /** 83's queue-edit-port retention key. */
     private object QueueEditPortKey
+    /** 91's question-port retention key. */
+    private object QuestionsKey
 }
