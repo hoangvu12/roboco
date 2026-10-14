@@ -554,7 +554,7 @@ class SessionMenuTest {
         val hub = syncHub()
         val controller = newController(core, hub)
         val transcript = newTranscript(MenuEngine())
-        val actions = MenuActions { true }
+        val actions = MenuActions({ true })
         val stack = NavStack(MenuRootRoute)
         val entry = stack.push(MenuSessionRoute, animated = false)
         val ref = HostRef()

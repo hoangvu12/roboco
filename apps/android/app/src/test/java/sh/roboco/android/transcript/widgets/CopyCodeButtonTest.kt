@@ -89,7 +89,9 @@ import uniffi.roboco_core.WidgetKind
  * its `delay(1400)` at the tap's clock, and one frame composes the swap.
  * The timeline rows of the ticket's acceptance table are therefore
  * checked at exact millisecond boundaries (+1399 checked, +1400 idle),
- * with the tap's frame's 16 ms subtracted.
+ * with the tap's frame's 16 ms subtracted. Those advances pass
+ * `ignoreFrameDuration = true`: plain `advanceTimeBy(n)` rounds up to a
+ * 16 ms frame, which would already have fired the timer at "+1399".
  *
  * Pixel probes host the button (or the stateless glyph) in a 44 × 32 dp
  * `codeBackground` cell: the glyph ink is `tertiary` idle / `accent`
@@ -415,8 +417,8 @@ class CopyCodeButtonTest {
         // The first frame after the tap already shows pure accent ink —
         // a crossfade would still be part tertiary here.
         assertCellGlyph("swapped", cellPixels(), Palette.Light.codeBackground, Palette.Light.accent)
-        compose.mainClock.advanceTimeBy(1383) // t = 1399 (the tap's frame ran 16)
-        compose.mainClock.advanceTimeBy(1)    // t = 1400: the timer fires
+        compose.mainClock.advanceTimeBy(1383, ignoreFrameDuration = true) // t = 1399 (the tap's frame ran 16)
+        compose.mainClock.advanceTimeBy(1, ignoreFrameDuration = true)    // t = 1400: the timer fires
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         assertIdle()
@@ -430,10 +432,10 @@ class CopyCodeButtonTest {
         hostLive()
         tap()                                  // t = 0: the timer is armed
         assertCheck()
-        compose.mainClock.advanceTimeBy(1383)  // t = 1399 (the tap's frame ran 16)
+        compose.mainClock.advanceTimeBy(1383, ignoreFrameDuration = true)  // t = 1399 (the tap's frame ran 16)
         compose.waitForIdle()
         assertCheck()                          // still checked at +1399 ms
-        compose.mainClock.advanceTimeBy(1)     // t = 1400: the timer fires
+        compose.mainClock.advanceTimeBy(1, ignoreFrameDuration = true)     // t = 1400: the timer fires
         compose.mainClock.advanceTimeByFrame() // the swap-back recomposes
         compose.waitForIdle()
         assertIdle()                           // idle at +1400 ms
@@ -443,12 +445,12 @@ class CopyCodeButtonTest {
     fun tapsAt0And1000msRevertAt1400msAndWriteTwice() {
         hostLive()
         tap()                                  // t = 0 (deadline 1400)
-        compose.mainClock.advanceTimeBy(984)   // t = 1000 (the tap's frame ran 16)
+        compose.mainClock.advanceTimeBy(984, ignoreFrameDuration = true)   // t = 1000 (the tap's frame ran 16)
         tap()                                  // t = 1000 (its own deadline: 2400)
-        compose.mainClock.advanceTimeBy(383)   // t = 1399
+        compose.mainClock.advanceTimeBy(383, ignoreFrameDuration = true)   // t = 1399
         compose.waitForIdle()
         assertCheck()                          // the 1000 ms tap's check is still up
-        compose.mainClock.advanceTimeBy(1)     // t = 1400: the FIRST timer fires
+        compose.mainClock.advanceTimeBy(1, ignoreFrameDuration = true)     // t = 1400: the FIRST timer fires
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         assertIdle()                           // idle at +1400 ms
@@ -460,15 +462,15 @@ class CopyCodeButtonTest {
     fun tapsAt01000And1500msStayCheckedUntil2400ms() {
         hostLive()
         tap()                                  // t = 0 (deadline 1400)
-        compose.mainClock.advanceTimeBy(984)   // t = 1000
+        compose.mainClock.advanceTimeBy(984, ignoreFrameDuration = true)   // t = 1000
         tap()                                  // t = 1000 (deadline 2400)
-        compose.mainClock.advanceTimeBy(484)   // t = 1500
+        compose.mainClock.advanceTimeBy(484, ignoreFrameDuration = true)   // t = 1500
         tap()                                  // t = 1500 (deadline 2900)
         assertCheck()                          // checked from +1500 ms
-        compose.mainClock.advanceTimeBy(883)   // t = 2399
+        compose.mainClock.advanceTimeBy(883, ignoreFrameDuration = true)   // t = 2399
         compose.waitForIdle()
         assertCheck()                          // checked at +2399 ms
-        compose.mainClock.advanceTimeBy(1)     // t = 2400: the 1000 ms tap's timer fires
+        compose.mainClock.advanceTimeBy(1, ignoreFrameDuration = true)     // t = 2400: the 1000 ms tap's timer fires
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         assertIdle()                           // idle at +2400 ms
@@ -499,10 +501,10 @@ class CopyCodeButtonTest {
         writeFrozen { bump.value = 1 }
         assertCheck()
         // … and still reverts on the original timer: t = 1400.
-        compose.mainClock.advanceTimeBy(1367)  // t = 1399 (two frames ran: 32)
+        compose.mainClock.advanceTimeBy(1367, ignoreFrameDuration = true)  // t = 1399 (two frames ran: 32)
         compose.waitForIdle()
         assertCheck()
-        compose.mainClock.advanceTimeBy(1)     // t = 1400
+        compose.mainClock.advanceTimeBy(1, ignoreFrameDuration = true)     // t = 1400
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         assertIdle()
