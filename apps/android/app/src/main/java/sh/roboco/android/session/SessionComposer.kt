@@ -314,7 +314,7 @@ fun rememberSessionComposer(
 
     val binding = if (entry != null) {
         remember(entry) {
-            entry.retain("session-composer-binding:$chatId") {
+            entry.retain(sessionComposerBindingKey(chatId)) {
                 SessionComposerBinding(composer, morph, commands, transcript, banner, entry.scope)
             }
         }
@@ -391,6 +391,13 @@ private val QueueEditControllerKey = "session-queue-edit"
 private val QueueEditDisposeKey = "session-queue-edit-dispose"
 
 /**
+ * 78's composer-binding retention key, per chat id, on the session's nav
+ * entry — one named key for the two readers (78's creation site and 85's
+ * [sessionQueueEditGate] lookup), so the string never forks.
+ */
+private fun sessionComposerBindingKey(chatId: String): String = "session-composer-binding:$chatId"
+
+/**
  * Ticket 85's read-only seam into 78's entry-retained binding: the live
  * [QueuedEditGate] of [chatId] (83's `QueueEditController` once its wiring
  * ran), or null when the binding or the edit lease was never created for
@@ -400,7 +407,7 @@ private val QueueEditDisposeKey = "session-queue-edit-dispose"
  * time rather than composition time.
  */
 internal fun NavEntry.sessionQueueEditGate(chatId: String): QueuedEditGate? =
-    retainedOrNull("session-composer-binding:$chatId")?.queueEdit
+    retainedOrNull(sessionComposerBindingKey(chatId))?.queueEdit
 
 /**
  * Ticket 83's [QueueEditController] in composition — the construction and

@@ -145,8 +145,9 @@ class SessionNavScreenshotTest {
      * inside the capsule (centre, 25 dp up from the frame's bottom) reads
      * 30 % of the way from the page background towards the capsule's
      * full-α colour over the page — the glass fallback fill (no haze
-     * source, `forceFallback`), captured from an idle session in a
-     * second tree.
+     * source, `forceFallback`), captured from an idle session. The second
+     * `setContent` is the two-tree compare pattern (the TypeFamiliesTest
+     * recreate precedent).
      */
     @Test
     fun theCapsuleBlendsAtThirtyPercentUnderAPushFrozenAt030() {

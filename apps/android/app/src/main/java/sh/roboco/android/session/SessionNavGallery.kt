@@ -157,14 +157,14 @@ internal fun SessionNavFixtureScreen() {
 internal fun SessionNavFakeChromePage(nav: SessionNavAlpha, modifier: Modifier = Modifier) {
     val palette = RobocoTheme.palette
     Box(modifier.fillMaxSize().background(palette.background)) {
-        // The fake bottom stack, test tag `bottom-stack` (74's tag).
+        // The fake bottom stack, 74's own `bottom-stack` tag.
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
                 .graphicsLayer { alpha = nav.stackAlpha() }
-                .testTag("bottom-stack"),
+                .testTag(BottomStackTags.Stack),
         ) {
             GlassSurface(modifier = Modifier.fillMaxWidth().height(50.dp)) {}
         }
