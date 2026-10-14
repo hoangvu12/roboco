@@ -20,6 +20,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import sh.roboco.android.transcript.widgets.ToolRailMemory
 import uniffi.roboco_core.FaceRole
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.LayoutListener
@@ -374,5 +375,31 @@ class TranscriptStateTest {
         assertEquals(1.705882, TranscriptState.bodyTextScale(Density(2.0f, 2.0f)).toDouble(), 1e-4)
         // No clamp: #621 would have cut this to 1.6.
         assertTrue(TranscriptState.bodyTextScale(Density(2.0f, 2.0f)) > 1.6f)
+    }
+
+    // ------------------------------------------- the tool rail quiet window (121)
+
+    @Test
+    fun theToolRailQuietWindowOpensOnAttachAndAfterAnEmptyFrame() {
+        ToolRailMemory.resetForTest()
+        var now = 1_000L
+        ToolRailMemory.clock = { now }
+        val h = Harness()
+        val state = h.state
+
+        // The first frame: the previous frame was null.
+        state.apply(FakeFrame(1uL, emptyList()))
+        assertEquals(1_000L + ToolRailMemory.QuietWindowMs, ToolRailMemory.quietUntilMs)
+
+        // A frame whose previous frame was empty (rowCount == 0) re-opens it —
+        // groups arriving on that frame never animate either.
+        now = 2_000L
+        state.apply(FakeFrame(2uL, emptyList(), rows = 2u, height = 100f))
+        assertEquals(2_000L + ToolRailMemory.QuietWindowMs, ToolRailMemory.quietUntilMs)
+
+        // A frame after a non-empty frame does not.
+        now = 3_000L
+        state.apply(FakeFrame(3uL, emptyList(), rows = 3u, height = 150f))
+        assertEquals(2_000L + ToolRailMemory.QuietWindowMs, ToolRailMemory.quietUntilMs)
     }
 }

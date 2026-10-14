@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.transcript.widgets.ToolRailMemory
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.LayoutListener
 import uniffi.roboco_core.RowPlacement
@@ -243,10 +244,22 @@ class TranscriptState internal constructor(
     val knownRows = KnownRows()
 
     init {
-        // After `listeners` so this is the first listener registered: the
-        // marking runs inside the same main-thread relay callback that sets
-        // `frame`, so the set is complete before any recomposition reads
-        // the new frame (61's apply is not reordered).
+        // 121: the tool rail's quiet window — the **first** listener slot
+        // (61's reconciler decision reserves it for this ticket, ahead of
+        // 65's knownRows below) so the window opens before any listener that
+        // could trigger composition work. iOS opens it inside the list view's
+        // `apply`, before the rails are built from the same frame
+        // (TranscriptListView.swift:308-313): the "attach" is the first
+        // frame, or the first frame after an empty one.
+        addFrameListener { old, _ ->
+            if (old == null || old.rowCount() == 0u) ToolRailMemory.onTranscriptAttached()
+        }
+    }
+
+    init {
+        // 65: the second slot — the marking runs inside the same main-thread
+        // relay callback that sets `frame`, so the set is complete before any
+        // recomposition reads the new frame (61's apply is not reordered).
         addFrameListener { old, new -> knownRows.onFrameApplied(old, new) }
     }
 
@@ -305,10 +318,11 @@ class TranscriptState internal constructor(
 
     /**
      * Registers a hook that runs on main after each applied frame; returns
-     * its remover. Ticket 65's `knownRows` marking owns the first slot
-     * (registered in this class's `init`, right after `listeners`, so the
-     * set is complete before any recomposition reads the new frame); later
-     * tickets (121) register theirs after construction.
+     * its remover. Ticket 121's quiet-window listener owns the first slot and
+     * ticket 65's `knownRows` marking the second (both registered in this
+     * class's `init` blocks, right after `listeners`, so they run before any
+     * recomposition reads the new frame); later tickets register theirs
+     * after construction.
      */
     fun addFrameListener(l: FrameListener): () -> Unit {
         listeners += l

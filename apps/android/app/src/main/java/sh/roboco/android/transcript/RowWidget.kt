@@ -2,10 +2,13 @@ package sh.roboco.android.transcript
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
+import sh.roboco.android.transcript.widgets.RailSpec
 import sh.roboco.android.transcript.widgets.ToolChevron
+import sh.roboco.android.transcript.widgets.ToolRail
 import sh.roboco.android.transcript.widgets.ToolToggleTarget
 import sh.roboco.android.transcript.widgets.UploadRing
 import sh.roboco.android.transcript.widgets.isPendingReference
@@ -75,8 +78,17 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         }
         // ticket 124 (SF-symbol-like icons)
         is WidgetKind.Icon -> Unit
-        // ticket 121 (the tool rail)
-        is WidgetKind.ToolRail -> Unit
+        // ticket 121 (the tool rail): the group's row key identifies the
+        // group in the process-wide `revealed` memory, the model is the
+        // re-plan token (a new iOS configure), and the cover runs to the
+        // row's right edge — `rowWidth` in iOS is `d.width - rect.minX`.
+        is WidgetKind.ToolRail -> ToolRail(
+            groupKey = ctx.model.display.key,
+            spec = remember(k) { RailSpec.of(k) },
+            rowWidthDp = ctx.model.display.width - w.x,
+            live = ctx.live,
+            buildToken = ctx.model,
+        )
         // ticket 122 (the shimmer sweep)
         WidgetKind.Shimmer -> Unit
     }
