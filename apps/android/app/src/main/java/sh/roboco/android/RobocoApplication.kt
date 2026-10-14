@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import sh.roboco.android.background.RunWatchController
+import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.QueueChromeFiller
 import sh.roboco.android.core.AppLifecycleHooks
 import sh.roboco.android.core.AppearanceController
@@ -173,6 +174,25 @@ class RobocoApplication : Application() {
 
     /** Keystore-encrypted credentials + DataStore metadata (ticket 71). */
     val engineStore by lazy { PairedEngineStore(engineDataStore, KeystoreSecretCipher(this)) }
+
+    /**
+     * The phone-local per-chat draft store (ticket 84) — unsent composer
+     * text per session under `chat:<engineId>:<scoped chat id>`, plus the
+     * iOS `"new-session"` key (ticket 92 reads and writes it). One
+     * DataStore per process over `noBackupFilesDir/drafts.preferences_pb`
+     * (drafts reference engine ids that are themselves not backed up, so
+     * a restored backup would only hold orphans); the in-memory mirror
+     * warms in `onCreate`, saves are blank-removing and verbatim (iOS
+     * `Drafts`), and the disk writes run on [appScope] so they outlive
+     * every screen. Ticket 140's forget sequence drops an engine's
+     * drafts through `forgetEngine`.
+     */
+    val drafts by lazy {
+        Drafts(
+            Drafts.createDataStore(this, CoroutineScope(SupervisorJob() + Dispatchers.IO)),
+            appScope,
+        )
+    }
 
     /**
      * The startup pipeline (71's `onClientReady` hook wired by ticket 35:
@@ -365,6 +385,11 @@ class RobocoApplication : Application() {
         TextEngine.init(this)
         TextEngine.prewarm()
         core = CoreLoader.load()
+        // Ticket 84: warm the drafts mirror now — Application.onCreate
+        // precedes every activity's setContent, so `peek` is nearly
+        // always loaded by the time a session opens (one opened before
+        // the read finishes falls back to the effect's late load).
+        drafts.warm()
         // Ticket 35: the process lifecycle hooks and the default-network
         // monitor, installed exactly once per process — never from an
         // Activity (#609 leaked one observer per onCreate) and never from

@@ -22,8 +22,11 @@ import sh.roboco.android.image.ImageViewerRequest
 import sh.roboco.android.image.LocalImageViewer
 import sh.roboco.android.composer.QueueAction
 import sh.roboco.android.composer.QueueActions
+import sh.roboco.android.composer.DraftKey
+import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.QueuePanel
+import sh.roboco.android.composer.SessionDraftEffect
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
@@ -92,6 +95,11 @@ import sh.roboco.android.transcript.widgets.imageTileRadius
  * @param queueActions ticket 82's per-route queue actions
  *   (send-now / move / remove), launched on the application scope;
  *   `Edit` never reaches it (83's `beginEdit` owns it)
+ * @param engineId ticket 84: the session's owning engine id
+ *   (`SessionCore.engineId`), the engine half of the per-chat draft key
+ *   (`DraftKey.Chat(engineId, chatId)`). The route passes `core.engineId`;
+ *   `null` — a fake core in tests — leaves the drafts unwired: no saver,
+ *   no seed text, exactly the pre-84 behaviour
  */
 @Composable
 fun SessionScreen(
@@ -103,6 +111,7 @@ fun SessionScreen(
     attachments: AttachmentReader? = null,
     queueEditPort: QueueEditPort? = null,
     queueActions: QueueActions? = null,
+    engineId: String? = null,
 ) {
     // 1. The per-screen state: the same instance the route holds. The
     //    first main-thread read creates the transcript (76's factory
@@ -252,11 +261,28 @@ fun SessionScreen(
     //    appears and disappears instantly, like iOS :432-433.
     val bottomState = rememberBottomStackState()
 
-    // 9.5 Ticket 78: the composer binding — chrome → composer, send /
-    //     stop / search over the route's commands, the upload progress
+    // 9.5 Ticket 78 + 84: the composer binding — chrome → composer, send
+    //     / stop / search over the route's commands, the upload progress
     //     pin and the send-failure reporting. The controller is
     //     entry-retained, so a tab-host disposal never drops the draft;
     //     without commands (tests, previews) the slot stays empty.
+    //     84 adds: the draft key, the entry-retained saver (85 reads the
+    //     same instance through the same retain key) and the seed text —
+    //     read once; the retained controller ignores `initialText` after
+    //     its first creation, and a not-yet-loaded store seeds "" with
+    //     `pendingLoad` for the effect's late load.
+    val drafts = LocalDrafts.current
+    val draftKey = engineId?.let { DraftKey.Chat(it, controller.chatId) }
+    val draftSaver = if (draftKey != null) {
+        remember(entry, draftKey) { entry.sessionDraftSaver(draftKey, drafts) }
+    } else {
+        null
+    }
+    val initialDraftText = if (draftKey != null) {
+        remember(draftKey) { drafts.peek(draftKey) }
+    } else {
+        ""
+    }
     val composerBinding = if (commands != null) {
         rememberSessionComposer(
             chatId = controller.chatId,
@@ -264,6 +290,7 @@ fun SessionScreen(
             commands = commands,
             transcript = transcript,
             banner = controller.filler<StatusBanner>() ?: NoopSendReporter,
+            initialText = initialDraftText,
         )
     } else {
         null
@@ -287,6 +314,16 @@ fun SessionScreen(
         null
     }
     val model = BottomStackModel.from(chrome, editing = queueEdit?.isEditing == true)
+
+    // 9.65 Ticket 84: bind the entry-retained saver to the live composer
+    //     and 83's controller — the late load while the store was not warm
+    //     at seeding, the dispose-time safety-net save (85's dispose-time
+    //     `leave()` runs after it: inner effects dispose first) and the
+    //     ON_STOP background save. The leave save itself (cancel the edit,
+    //     then save) is 85's — this ticket hooks no navigation.
+    if (composerBinding != null && draftSaver != null) {
+        SessionDraftEffect(draftSaver, composerBinding.composer, queueEdit)
+    }
 
     // 9.7 Ticket 83's screen flags: the lease tracks on-screen-ness for
     //     the "acquired after leaving" case only (a begin that resolves

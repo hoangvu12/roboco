@@ -166,6 +166,9 @@ class SessionScreenRoute internal constructor(
             attachments = attachments,
             queueEditPort = queueEditPort,
             queueActions = queueActions,
+            // 84: the engine half of the draft key (the route's core has
+            // it; SessionScreen pairs it with the controller's chatId).
+            engineId = core.engineId,
         )
     }
 
