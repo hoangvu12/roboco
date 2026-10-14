@@ -15,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import uniffi.roboco_core.ClientEvent
+import uniffi.roboco_core.EngineState
 
 /** Fills nothing; distinguishes filler types for [SessionController.filler]. */
 private class NoopFiller : ChromeFiller {
@@ -353,6 +354,97 @@ class SessionControllerTest {
         controller.close()
         advanceUntilIdle()
         assertEquals(logAfterClose, core.callLog.toList())
+    }
+
+    // ── offline read-only (79) ───────────────────────────────────────────
+
+    /**
+     * The engine is not `Connected`: `markSeen()` makes no `markSeen`
+     * FFI call and `close()` makes only `setViewAttached(false)` — the
+     * skip is silent (no failure logged) and the notification cancel
+     * still happens (it is local, never engine state).
+     */
+    @Test
+    fun markSeenAndCloseMakeNoMarkSeenCallWhileNotWritable() = runTest {
+        val core = FakeSessionCore()
+        core.engineResult = engineView(state = EngineState.Reconnecting)
+        val controller = newController(core, fillers = listOf(CanWriteFiller))
+
+        // The first frame already carries the derived flag: the initial
+        // refresh ran synchronously at create (a Reconnecting engine
+        // gives canWrite == false on the first frame).
+        assertEquals(false, controller.chrome.value.canWrite)
+
+        controller.markSeen()
+        advanceUntilIdle()
+        // No markSeen FFI call: only the create-time refresh pulls ran.
+        assertTrue(core.callLog.none { it == "markSeen" })
+
+        controller.close()
+        advanceUntilIdle()
+        // Only the detach ran on the way out; setViewAttached is never
+        // gated (a local subscription switch, 85's rule).
+        assertEquals(listOf("setViewAttached(false)"), core.callLog.drop(3))
+
+        // Silent: no toast, no banner and no Log.w — the skip is not an
+        // error, so the failures list stays empty.
+        assertTrue(loggedFailures.isEmpty())
+    }
+
+    /** With the engine `Connected`, both behave exactly as in ticket 51. */
+    @Test
+    fun markSeenAndCloseMarkAsBeforeWhileConnected() = runTest {
+        val core = FakeSessionCore()
+        core.engineResult = engineView(state = EngineState.Connected)
+        val controller = newController(core, fillers = listOf(CanWriteFiller))
+        assertEquals(true, controller.chrome.value.canWrite)
+
+        controller.markSeen()
+        advanceUntilIdle()
+        assertEquals(listOf("markSeen"), core.callLog.drop(3))
+
+        controller.close()
+        advanceUntilIdle()
+        // Exactly ticket 51's order on the way out.
+        assertEquals(
+            listOf("markSeen", "setViewAttached(false)", "markSeen"),
+            core.callLog.drop(3),
+        )
+    }
+
+    /**
+     * `EnginesChanged` after a state flip updates `chrome.canWrite`
+     * within one refresh, both ways — no grace, no debounce — and the
+     * gate sees the latest refresh at execution time.
+     */
+    @Test
+    fun enginesChangedAfterAStateFlipUpdatesCanWriteBothWays() = runTest {
+        val hub = syncHub()
+        val core = FakeSessionCore()
+        core.engineResult = engineView(state = EngineState.Reconnecting)
+        val controller = newController(core, hub = hub, fillers = listOf(CanWriteFiller))
+        assertEquals(false, controller.chrome.value.canWrite)
+
+        // The engine comes back: one refresh (one event) is enough.
+        core.engineResult = engineView(state = EngineState.Connected)
+        hub.onClientEvent(ClientEvent.EnginesChanged)
+        advanceUntilIdle()
+        assertEquals(true, controller.chrome.value.canWrite)
+
+        // A following markSeen goes through again.
+        controller.markSeen()
+        advanceUntilIdle()
+        assertTrue(core.callLog.contains("markSeen"))
+
+        // And back the other way: offline again skips it.
+        core.engineResult = engineView(state = EngineState.Offline)
+        hub.onClientEvent(ClientEvent.EnginesChanged)
+        advanceUntilIdle()
+        assertEquals(false, controller.chrome.value.canWrite)
+        val marksSoFar = core.callLog.count { it == "markSeen" }
+        controller.markSeen()
+        advanceUntilIdle()
+        assertEquals(marksSoFar, core.callLog.count { it == "markSeen" })
     }
 
     @Test

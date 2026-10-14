@@ -22,6 +22,11 @@
 //!   `{"pairUrl": …}` — a fresh single-use pairing code minted from the
 //!   engine's `PairingStore` (600 s TTL). Pair codes are single-use, so
 //!   every test mints its own instead of sharing one spent URL.
+//!   android-ui-parity #79 adds `GET /listener/stop` and
+//!   `GET /listener/start` — dropping and re-creating the remote listener
+//!   mid-session, so the offline flow tests can kill the engine's
+//!   WebSockets without restarting the process (see
+//!   [spawn_control_endpoint]).
 //!
 //! The mock harness's demo knobs (`ROBOCO_MOCK_*`) are process-global env
 //! read at run time (`crates/harness/src/mock.rs`); the example sets them
@@ -51,7 +56,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use roboco_doc::SessionCommandPayload;
-use roboco_engine::{EngineCore, EngineProfile, HarnessId, pairing, smoke_registry};
+use roboco_engine::{EngineCore, EngineListener, EngineProfile, HarnessId, pairing, smoke_registry};
 use roboco_proto::{RunRequest, SandboxLevel};
 use roboco_rpc::{RpcReply, RpcService, methods};
 
@@ -114,13 +119,10 @@ async fn run(port: u16, control_port: u16, profile: String) {
     // The handle the seed helpers share (typed as the trait object, like
     // web_smoke's seed function takes it).
     let service: Arc<dyn RpcService> = core.rpc_service();
-    let remote = roboco_engine::serve_engine_remote(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-        service.clone(),
-        dir.path(),
-    )
-    .await
-    .unwrap();
+    let bind_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let remote = roboco_engine::serve_engine_remote(bind_addr, service.clone(), dir.path())
+        .await
+        .unwrap();
     let control = TcpListener::bind(format!("127.0.0.1:{control_port}")).unwrap();
 
     seed(&service, &repo, &profile).await;
@@ -136,12 +138,26 @@ async fn run(port: u16, control_port: u16, profile: String) {
             "deviceId": core.device_id,
         })
     );
-    spawn_control_endpoint(control, port, dir.path().to_path_buf());
+
+    // android-ui-parity #79: the remote listener lives in a slot the
+    // control endpoint can take and refill, so a flow test can kill the
+    // engine's WebSockets mid-session (`/listener/stop`) and bring them
+    // back (`/listener/start`) without restarting the process — the
+    // pairing store and the seeded workspace persist in the data dir.
+    let remote_slot = Arc::new(std::sync::Mutex::new(Some(remote)));
+    let handle = tokio::runtime::Handle::current();
+    spawn_control_endpoint(
+        control,
+        bind_addr,
+        service,
+        dir.path().to_path_buf(),
+        remote_slot,
+        handle,
+    );
 
     std::future::pending::<()>().await;
     #[allow(unreachable_code)]
     {
-        drop(remote);
         core.shutdown().await;
     }
 }
@@ -559,9 +575,29 @@ async fn wait_entries(service: &Arc<dyn RpcService>, chat: &str, expected: usize
 
 // ── the control endpoint (test-only) ────────────────────────────────────
 
-/// Serves `GET /mint` forever on a plain blocking thread. No dependencies,
-/// no HTTP crate: one request per connection, `Connection: close`.
-fn spawn_control_endpoint(listener: TcpListener, engine_port: u16, data_dir: PathBuf) {
+/// Serves `GET /mint`, `GET /listener/stop` and `GET /listener/start`
+/// forever on a plain blocking thread. No dependencies, no HTTP crate:
+/// one request per connection, `Connection: close`.
+///
+/// The listener routes (android-ui-parity #79's flow test,
+/// `offlineEngineIsReadOnly`): `/listener/stop` takes the
+/// [EngineListener] out of its slot and stops it — aborting the accept
+/// task drops its cancellation token, whose drop guard ends every
+/// accepted connection, upgraded WebSockets included
+/// (`listener.rs:51-52,62-83`, the upgraded socket's
+/// `cancel.cancelled()` select at `:244-264`). `/listener/start`
+/// re-binds the **same** address over the **same** data dir — the
+/// pairing store persists, so the app's credential stays valid. Both
+/// are idempotent, and `Handle::block_on` is legal here because this
+/// loop runs on a plain std thread, never inside the runtime.
+fn spawn_control_endpoint(
+    listener: TcpListener,
+    bind_addr: std::net::SocketAddr,
+    service: Arc<dyn RpcService>,
+    data_dir: PathBuf,
+    remote_slot: Arc<std::sync::Mutex<Option<EngineListener>>>,
+    handle: tokio::runtime::Handle,
+) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let mut stream = match stream {
@@ -578,9 +614,34 @@ fn spawn_control_endpoint(listener: TcpListener, engine_port: u16, data_dir: Pat
             };
             let body = match (method, path) {
                 ("GET", "/mint") => serde_json::json!({
-                    "pairUrl": mint_pair_url(&data_dir, engine_port),
+                    "pairUrl": mint_pair_url(&data_dir, bind_addr.port()),
                 })
                 .to_string(),
+                ("GET", "/listener/stop") => {
+                    // Idempotent: a second stop finds the slot empty. Only
+                    // this thread locks the slot, so holding the guard
+                    // across block_on cannot deadlock.
+                    if let Some(mut remote) = remote_slot.lock().unwrap().take() {
+                        handle.block_on(remote.stop());
+                    }
+                    serde_json::json!({ "ok": true }).to_string()
+                }
+                ("GET", "/listener/start") => {
+                    // Idempotent: a running listener is left alone. A failed
+                    // re-bind panics the control thread — the rig is broken,
+                    // which the tests report loudly.
+                    if remote_slot.lock().unwrap().is_none() {
+                        let remote = handle
+                            .block_on(roboco_engine::serve_engine_remote(
+                                bind_addr,
+                                service.clone(),
+                                &data_dir,
+                            ))
+                            .expect("android_fixture: restart the engine listener");
+                        *remote_slot.lock().unwrap() = Some(remote);
+                    }
+                    serde_json::json!({ "ok": true }).to_string()
+                }
                 _ => {
                     respond(&mut stream, 404, "{\"error\":\"not found\"}");
                     continue;

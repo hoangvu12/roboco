@@ -1,5 +1,8 @@
 package sh.roboco.android.flows
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
@@ -16,8 +19,13 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import androidx.compose.ui.unit.height
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -593,6 +601,77 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("runway.png")
     }
 
+    // ── the offline read-only flow (Roboco ADD, 79) ──────────────────
+
+    /**
+     * An engine dropping mid-session makes the chat read-only — writes
+     * are refused, never queued (android-app#06/#07). `GET
+     * /listener/stop` on the fixture's control port kills the engine's
+     * listener (every accepted WebSocket ends), the pill shows
+     * `Reconnecting… Cached history is read-only.` within 15 s, Send
+     * greys out (a click does nothing — the draft stays) and the cached
+     * transcript keeps painting, seeded turn included. After `GET
+     * /listener/start` the pill clears and Send re-enables within 30 s
+     * without leaving the screen (the redial backoff caps at 15 s plus
+     * 0–255 ms jitter, android-app#06).
+     */
+    @Test
+    fun offlineEngineIsReadOnly() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Wrangler deploy hygiene").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick()
+            .performTextInput("draft kept offline")
+        compose.onNodeWithTag("composer-send").assertIsEnabled()
+
+        val control = launch.controlUrl(FixtureEngine.Main)!!
+        try {
+            listenerCommand(control, "stop")
+
+            compose.waitUntil(timeoutMillis = 15_000) {
+                compose.onAllNodesWithText("Reconnecting… Cached history is read-only.")
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // Send is disabled and a click does nothing: the draft stays.
+            compose.onNodeWithTag("composer-send").assertIsNotEnabled()
+            compose.onNodeWithTag("composer-send").performClick()
+            compose.waitForIdle()
+            // TODO(ticket 80): assert ⋯ rows gated (79 step 9.7): the
+            // pin/archive menu rows disabled, Copy Transcript enabled —
+            // the ⋯ menu lands with 80, which is blocked by 79.
+            assertEquals(
+                "the draft stays while offline",
+                "draft kept offline",
+                compose.onNodeWithTag("composer-input")
+                    .fetchSemanticsNode().config[SemanticsProperties.EditableText].text,
+            )
+
+            // The cached transcript keeps painting, seeded turn included.
+            assertTrue(compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty())
+            assertTrue(
+                compose.onAllNodesWithTag("row-markdown", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty(),
+            )
+            FlowSemantics.saveScreenshot("offline-readonly.png")
+        } finally {
+            // Whatever happened above, later tests in this run get their
+            // engine back.
+            listenerCommand(control, "start")
+        }
+
+        // Recovery without reopening the screen.
+        compose.waitUntil(timeoutMillis = 30_000) {
+            compose.onAllNodesWithText("Reconnecting… Cached history is read-only.")
+                .fetchSemanticsNodes().isEmpty() &&
+                sendIsEnabled()
+        }
+        compose.onNodeWithTag("composer-send").assertIsEnabled()
+    }
+
     // ── the failed-open flows (the pre-rig tests, now on the rig) ───────
 
     /** `testUnknownChatRouteReturnsToSessions` (:213): the verbatim iOS unknown-id form. */
@@ -707,6 +786,8 @@ class SessionFlowTest {
             name.startsWith("cancelledSwipeBack") -> "chat:chat-long"
         name.startsWith("unknownChat") -> "chat:${unknownChatId().also { routeChatId = it }}"
         name.startsWith("forgottenEngine") -> "chat:${forgottenEngineChatId().also { routeChatId = it }}"
+        // offlineEngine… (79) and everything else: the main engine's
+        // chat-deploy, exactly like sendEchoesAndStreamsReply.
         else -> "chat:chat-deploy"
     }
 
@@ -734,5 +815,45 @@ class SessionFlowTest {
         val encoded = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(json.toByteArray(Charsets.UTF_8))
         return "engine:v1:$encoded"
+    }
+
+    // ── the fixture engine's listener control (79) ─────────────────────
+
+    /**
+     * True when the composer's send button exists and carries no
+     * `disabled()` semantics — the waitUntil-safe form of
+     * `assertIsEnabled` (assertions throw inside the predicate; this
+     * reads the node's config instead).
+     */
+    private fun sendIsEnabled(): Boolean {
+        val nodes = compose.onAllNodesWithTag("composer-send").fetchSemanticsNodes()
+        return nodes.isNotEmpty() && !nodes[0].config.contains(SemanticsProperties.Disabled)
+    }
+
+    /**
+     * `GET /listener/<command>` (`stop` | `start`) on the fixture engine's
+     * control port — ticket 79's fixture routes, which drop and re-create
+     * the engine's remote listener mid-session. On IO like [FixtureRule]'s
+     * mint (the network-on-main guard); a non-200 fails loudly, because
+     * that means the rig broke, not the app.
+     */
+    private fun listenerCommand(controlUrl: String, command: String) {
+        runBlocking {
+            withContext(Dispatchers.IO) {
+                val base = controlUrl.trim().trimEnd('/')
+                val connection = URL("$base/listener/$command").openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 10_000
+                    connection.readTimeout = 10_000
+                    assertEquals(
+                        "the fixture's /listener/$command failed",
+                        200,
+                        connection.responseCode,
+                    )
+                } finally {
+                    connection.disconnect()
+                }
+            }
+        }
     }
 }

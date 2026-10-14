@@ -134,8 +134,12 @@ internal fun pullRequest(
     headRef = "feature",
 )
 
-/** A connected engine view (73/79 read its state and device id). */
-internal fun engineView(engineId: String = "engine:v1:alpha", deviceId: String? = "dev"): EngineView =
+/** An engine view (73/79 read its state and device id); the state defaults to `Connected`. */
+internal fun engineView(
+    engineId: String = "engine:v1:alpha",
+    deviceId: String? = "dev",
+    state: EngineState = EngineState.Connected,
+): EngineView =
     EngineView(
         engineId = engineId,
         name = "Vu-PC",
@@ -144,7 +148,7 @@ internal fun engineView(engineId: String = "engine:v1:alpha", deviceId: String? 
         deviceId = deviceId,
         platform = "android",
         version = "1.0.0",
-        state = EngineState.Connected,
+        state = state,
         lastError = null,
         retryAtMs = null,
         lastConnectedMs = null,
