@@ -98,7 +98,11 @@ class FolderBrowserActionsTest {
         var hang = false
         val calls = mutableListOf<Pair<String, String?>>()
 
-        override suspend fun listFolders(deviceId: String, path: String?): FolderListing? {
+        override suspend fun listFolders(
+            deviceId: String,
+            path: String?,
+            showHidden: Boolean,
+        ): FolderListing? {
             calls += deviceId to path
             if (hang) kotlinx.coroutines.awaitCancellation()
             return listingFor(path)

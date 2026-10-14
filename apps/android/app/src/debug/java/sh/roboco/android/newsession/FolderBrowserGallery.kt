@@ -106,19 +106,31 @@ fun syntheticFolderListing(path: String): FolderListing = FolderListing(
 
 /** An immediate source: [listingFor] runs on the caller's context and never suspends. */
 class ImmediateFolderBrowserSource(
-    private val listingFor: (String?) -> FolderListing?,
+    private val listingFor: (String?, Boolean) -> FolderListing?,
 ) : FolderBrowserSource {
-    override suspend fun listFolders(deviceId: String, path: String?): FolderListing? = listingFor(path)
+    override suspend fun listFolders(
+        deviceId: String,
+        path: String?,
+        showHidden: Boolean,
+    ): FolderListing? = listingFor(path, showHidden)
 }
 
 /** A source that never answers — the "Loading…" fixture. */
 object HangingFolderBrowserSource : FolderBrowserSource {
-    override suspend fun listFolders(deviceId: String, path: String?): FolderListing? = awaitCancellation()
+    override suspend fun listFolders(
+        deviceId: String,
+        path: String?,
+        showHidden: Boolean,
+    ): FolderListing? = awaitCancellation()
 }
 
 /** A source where every call fails (the iOS `try?` → nil). */
 object FailingFolderBrowserSource : FolderBrowserSource {
-    override suspend fun listFolders(deviceId: String, path: String?): FolderListing? = null
+    override suspend fun listFolders(
+        deviceId: String,
+        path: String?,
+        showHidden: Boolean,
+    ): FolderListing? = null
 }
 
 /** The gallery's six fixtures. */
@@ -143,7 +155,7 @@ fun folderBrowserFixtureSource(id: FolderBrowserFixtureId): FolderBrowserSource 
 
 /** The fixture's home answer; any other path descends synthetically (so tapping rows works). */
 private fun immediateSource(vararg fixed: Pair<String?, FolderListing>): FolderBrowserSource =
-    ImmediateFolderBrowserSource { path ->
+    ImmediateFolderBrowserSource { path, _ ->
         fixed.firstOrNull { it.first == path }?.second ?: path?.let(::syntheticFolderListing)
     }
 
@@ -243,7 +255,9 @@ private fun FixtureToggle(label: String, selected: Boolean, onSelect: () -> Unit
  * answers immediately, and the paths come from [FakeHostPaths]. 111 adds
  * the write actions over [FakeProjectWriteApi] (New Folder… browses into
  * the fake new folder; Use calls the fake create and dismisses the sheet
- * — a fixture pick re-presents it settled).
+ * — a fixture pick re-presents it settled), and 112 the locations rail
+ * and the search/typed-path field over [FakeFolderCalls] (the fixture's
+ * drives; a typed path probes the fake, so `Create and add` shows).
  */
 @Composable
 internal fun PageSheetScope.FolderBrowserFixtureSheetPage(fixture: FolderBrowserFixtureId) {
@@ -259,7 +273,12 @@ internal fun PageSheetScope.FolderBrowserFixtureSheetPage(fixture: FolderBrowser
         onCreated = {},
         dismissSheet = { dismiss(animated = true) },
     )
-    NewProjectScreen(sheet = this, controller = controller, actions = actions)
+    val drives = remember(fixture) { fixtureDrives(fixture) }
+    val calls = remember(fixture) {
+        FakeFolderCalls(hosts.associate { it.id to drives })
+    }
+    val nav = rememberFolderNavState(controller, actions, calls)
+    NewProjectScreen(sheet = this, controller = controller, actions = actions, nav = nav)
 }
 
 // ---------------------------------------------------------------------------

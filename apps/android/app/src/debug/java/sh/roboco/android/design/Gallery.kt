@@ -45,6 +45,7 @@ import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
+import sh.roboco.android.newsession.FolderLocationsGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
 import sh.roboco.android.sessions.PinnedReorderGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
@@ -542,6 +543,14 @@ object Gallery {
         // fail next submit) and a one-line answer caption under the
         // stage.
         GallerySection("Question panel behaviour") { QuestionPanelBehaviourGallerySection() },
+        // Ticket 112 (folder browser locations): the Roboco-only rail and
+        // search/typed-path field between the nav bar and the list —
+        // Home + drives chips (the selected one in accentSoft/accent) and
+        // the 40 dp search field, over the ticket's four fixtures A–D
+        // (Linux/Windows drives, a typed path, the disabled state).
+        GallerySection("Folder browser locations", screenshotHeightDp = 560) {
+            FolderLocationsGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
