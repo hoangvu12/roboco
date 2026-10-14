@@ -319,11 +319,13 @@ class SessionNavEffectsTest {
 
         // The spring's curve, from the first animated frame (play 16 ms).
         compose.mainClock.advanceTimeUntil { (stack.transition?.progress ?: 0f) > 0f }
-        compose.mainClock.advanceTimeBy(84) // play 100 ms
+        // Exact advances: plain advanceTimeBy rounds up to whole 16 ms frames
+        // (84 -> 96, sampling at 112 ms of play instead of ~100).
+        compose.mainClock.advanceTimeBy(84, ignoreFrameDuration = true) // play 100 ms
         assertEquals(0.551f, alphas().stack, 0.03f)
         assertEquals(1f, alphas().jump, 0.03f)
         assertEquals("presence == stack α", progressRef!!.presence, alphas().stack, 0.001f)
-        compose.mainClock.advanceTimeBy(150) // play 250 ms
+        compose.mainClock.advanceTimeBy(150, ignoreFrameDuration = true) // play 250 ms
         assertEquals(0.944f, alphas().stack, 0.02f)
         assertEquals("presence == stack α", progressRef!!.presence, alphas().stack, 0.001f)
 
@@ -384,9 +386,10 @@ class SessionNavEffectsTest {
         // ticket's gesture-row times: its own convention lands the decay
         // at ~68 / ~170 ms of spring play for the "+100 / +250 ms" labels.
         compose.mainClock.advanceTimeUntil { (stack.transition?.progress ?: 1f) < 0.4f }
-        compose.mainClock.advanceTimeBy(52)
+        // Exact (see the push test): rounded, 52 -> 64 samples at 80 ms.
+        compose.mainClock.advanceTimeBy(52, ignoreFrameDuration = true)
         assertEquals(0.743f, alphas().stack, 0.03f)
-        compose.mainClock.advanceTimeBy(102)
+        compose.mainClock.advanceTimeBy(102, ignoreFrameDuration = true)
         assertEquals(0.928f, alphas().stack, 0.03f)
 
         compose.mainClock.advanceTimeUntil { stack.transition == null }
@@ -428,7 +431,7 @@ class SessionNavEffectsTest {
 
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.mainClock.advanceTimeUntil { (stack.transition?.progress ?: 1f) > 0.4f }
-        compose.mainClock.advanceTimeBy(52)
+        compose.mainClock.advanceTimeBy(52, ignoreFrameDuration = true) // exact, as above
         assertEquals(0.385f, alphas().stack, 0.03f)
 
         compose.mainClock.advanceTimeUntil { stack.transition == null }

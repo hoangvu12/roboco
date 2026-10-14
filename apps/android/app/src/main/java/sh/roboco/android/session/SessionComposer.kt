@@ -407,7 +407,7 @@ private fun sessionComposerBindingKey(chatId: String): String = "session-compose
  * time rather than composition time.
  */
 internal fun NavEntry.sessionQueueEditGate(chatId: String): QueuedEditGate? =
-    retainedOrNull(sessionComposerBindingKey(chatId))?.queueEdit
+    retainedOrNull<SessionComposerBinding>(sessionComposerBindingKey(chatId))?.queueEdit
 
 /**
  * Ticket 83's [QueueEditController] in composition — the construction and

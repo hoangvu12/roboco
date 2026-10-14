@@ -461,9 +461,13 @@ class SessionFlowTest {
         // Still on the session, and no accessory over it (an empty list
         // also passes — 30 does not place it over a session).
         compose.onNodeWithTag("composer-input").assertIsDisplayed()
+        // isDisplayed() is a SemanticsNodeInteraction extension, not a
+        // SemanticsNode member: check each node through the collection.
+        val accessories = compose.onAllNodesWithTag("new-session")
+        val count = accessories.fetchSemanticsNodes().size
         assertTrue(
             "no New session accessory over the session",
-            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().none { it.isDisplayed() },
+            (0 until count).none { accessories[it].isDisplayed() },
         )
         // The turn is still running right after the cancel.
         assertTrue(

@@ -169,7 +169,12 @@ class SessionNavScreenshotTest {
                     }
                     SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
                 } else {
-                    val stack = remember { NavStack(DemoRoute("Sessions")) }
+                    // An idle SESSION on top (a hostless push completes at
+                    // once): the root alone is NavDemoScreen, which has no
+                    // capsule, so "full" would read the plain background.
+                    val stack = remember {
+                        NavStack(DemoRoute("Sessions")).apply { push(GallerySessionRoute(), animated = false) }
+                    }
                     SessionNavGalleryFrame(stack) { SessionNavFixtureScreen() }
                 }
             }
