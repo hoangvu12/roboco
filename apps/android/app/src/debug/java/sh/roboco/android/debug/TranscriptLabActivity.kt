@@ -5,11 +5,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import sh.roboco.android.RobocoApplication
@@ -61,7 +66,16 @@ class TranscriptLabActivity : ComponentActivity() {
                         isAppearanceLightNavigationBars = !dark
                     }
                 }
-                TranscriptLabScreen(controller, options, runScripts)
+                // Ticket 136: the root publishes every test tag below as a
+                // resource id (`hitch-meter`, `bench-result`), so UiAutomator
+                // and Macrobenchmark find them with By.res — 135 did not set
+                // this, and the lab's own tags were invisible to uiautomator.
+                Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
+                    TranscriptLabScreen(
+                        controller, options, runScripts,
+                        overlay = { LabInstruments(controller, options, runScripts) },
+                    )
+                }
             }
         }
     }

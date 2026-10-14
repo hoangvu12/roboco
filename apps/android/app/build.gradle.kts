@@ -89,9 +89,11 @@ val coreSources = files(
 fun coreTaskName(buildType: String): String =
     "build" + buildType.replaceFirstChar { it.uppercase() } + "Core"
 
+// ui-parity #136: the `benchmark` build type runs the lab against a
+// release-config core, so it maps to `mobile-dist` like release.
 fun coreProfile(buildType: String): String =
     providers.gradleProperty("robocoCoreProfile")
-        .orElse(if (buildType == "release") "mobile-dist" else "mobile")
+        .orElse(if (buildType == "release" || buildType == "benchmark") "mobile-dist" else "mobile")
         .get()
 
 // ui-parity#101: the Rust licence data's inputs — the workspace manifests
@@ -108,7 +110,7 @@ val rustLicensesSources = files(
 fun rustLicensesTaskName(buildType: String): String =
     "rustLicenses" + buildType.replaceFirstChar { it.uppercase() }
 
-for (buildType in listOf("debug", "release")) {
+for (buildType in listOf("debug", "release", "benchmark")) {
     val profileName = coreProfile(buildType)
     val out = RepoPaths.androidCore(project, profileName)
     tasks.register<AndroidCoreBuild>(coreTaskName(buildType)) {
@@ -307,10 +309,25 @@ androidComponents {
     // android-ui-parity #22, 05's HapticsGalleryScreenshotTest, 11's gallery
     // test) do not compile for testReleaseUnitTest: the release variant has
     // no debug source set. Disable its unit tests in one place instead of
-    // moving every such test to src/testDebug.
-    beforeVariants(selector().withBuildType("release")) { v ->
-        (v as? com.android.build.api.variant.HasHostTestsBuilder)
-            ?.hostTests?.get(com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE)?.enable = false
+    // moving every such test to src/testDebug. ui-parity #136: the benchmark
+    // variant carries the same debug sources, so it gets the same disable
+    // (release/benchmark unit-test variants stay disabled).
+    for (disableType in listOf("release", "benchmark")) {
+        beforeVariants(selector().withBuildType(disableType)) { v ->
+            (v as? com.android.build.api.variant.HasHostTestsBuilder)
+                ?.hostTests?.get(com.android.build.api.variant.HostTestBuilder.UNIT_TEST_TYPE)?.enable = false
+        }
+    }
+    // ui-parity #136: the benchmark variant (release config, debug-signed,
+    // profileable, non-debuggable) runs the debug-only lab sources — the
+    // Macrobenchmark builds need release-speed Compose, and the lab lives in
+    // src/debug. The AGP 9 variant API feeds the debug source set in as
+    // static sources (there is no src/debug/res; the assets carry the lab's
+    // fixture image, the manifest its two debug activities).
+    onVariants(selector().withBuildType("benchmark")) { v ->
+        v.sources.kotlin?.addStaticSourceDirectory("src/debug/java")
+        v.sources.assets?.addStaticSourceDirectory("src/debug/assets")
+        v.sources.manifests.addStaticManifestFile("src/debug/AndroidManifest.xml")
     }
     onVariants { variant ->
         val buildType = variant.buildType ?: return@onVariants
@@ -413,6 +430,19 @@ android {
             // built unsigned (CI's workflow_dispatch path) — never the
             // debug key.
             releaseKeystore?.let { signingConfig = signingConfigs.getByName("release") }
+        }
+        // ui-parity #136: the Macrobenchmark build — release performance
+        // (initWith keeps R8 and the mobile-dist core), debug-signed so it
+        // installs locally, profileable and non-debuggable. The debug lab
+        // sources are fed in through the variant API above, and the
+        // `:benchmark` module targets this variant (matchingFallbacks for
+        // every other consumer).
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+            isProfileable = true
         }
     }
 
@@ -583,6 +613,18 @@ dependencies {
     implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)
+    // JankStats, the lab bench's cross-check (ui-parity #136): debug and
+    // benchmark only — the lab code that imports it lives in src/debug,
+    // which the benchmark variant also compiles (the variant API above).
+    debugImplementation(libs.androidx.metrics.performance)
+
+    // ui-parity #136: the benchmark variant compiles the same debug
+    // sources, so it mirrors every debugImplementation line. `add` with the
+    // configuration name: the Kotlin DSL has no typed accessor for a build
+    // type created in this same script.
+    add("benchmarkImplementation", libs.compose.ui.tooling)
+    add("benchmarkImplementation", libs.compose.ui.test.manifest)
+    add("benchmarkImplementation", libs.androidx.metrics.performance)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
