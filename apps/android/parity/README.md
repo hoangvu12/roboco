@@ -26,7 +26,8 @@ so goldens are never recorded locally. Dispatch the Android workflow with
 gh workflow run android.yml -R hoangvu12/roboco --ref <branch> -f record_goldens=true
 ```
 
-The `android-screenshots` job then records the capturing classes, re-verifies
+Only the `android-screenshots` job runs (the other Android jobs are skipped
+on such a dispatch). It records the capturing classes, re-verifies
 them in the same job (any diff = a non-deterministic capture: the run
 fails and nothing is uploaded), writes the board, and uploads
 `android-goldens` (the recorded `src/test/screenshots` tree) plus

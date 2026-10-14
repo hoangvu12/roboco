@@ -84,13 +84,26 @@ class ShellStateScopeTest {
         compose.waitForIdle()
     }
 
-    /** One shell-kind change: write, recompose, one frame (the deferred step). */
+    /**
+     * One shell-kind change on the frozen clock: `waitForIdle` runs no
+     * frame, so frame 1 recomposes (the SideEffect writes isCollapsed and
+     * the restarted `LaunchedEffect(kind)` reaches its `withFrameNanos`) and
+     * frame 2 serves that frame — the carry-over's deferred step.
+     */
     private fun flip(next: RootKind) {
         compose.runOnUiThread {
             kind.value = next
             Snapshot.sendApplyNotifications()
         }
         compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame() // frame 1: recomposition + the restarted effect
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame() // frame 2: the deferred step
+        compose.waitForIdle()
+    }
+
+    /** One frame on the frozen clock: a state write is composed (and applied) only then. */
+    private fun frame() {
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
     }
@@ -137,11 +150,13 @@ class ShellStateScopeTest {
             Snapshot.sendApplyNotifications()
         }
         compose.waitForIdle()
-        // The shell switched, the carry-over is waiting for its frame:
-        // the column still holds its copy.
+        // Frozen clock: waitForIdle composed nothing. Frame 1 recomposes and
+        // starts the restarted effect, which then waits for ITS frame — the
+        // column still holds its copy.
+        assertEquals(0, detailLog.size)
+        frame()
         assertEquals("not before the frame", 0, detailLog.size)
-        compose.mainClock.advanceTimeByFrame()
-        compose.waitForIdle()
+        frame() // frame 2: the deferred step
         assertEquals(listOf("detail.clear"), detailLog)
     }
 
@@ -154,7 +169,8 @@ class ShellStateScopeTest {
             scopeShown.value = false
             Snapshot.sendApplyNotifications()
         }
-        compose.waitForIdle()
+        // Frozen clock: the removal is composed (and onDispose runs) only on a frame.
+        frame()
         // The DisposableEffect runs after the content is forgotten: the
         // tab stacks pop (hostless, so the entries close) and the column
         // clears — once each.
@@ -174,7 +190,8 @@ class ShellStateScopeTest {
             requireNotNull(counter).value = 3
             Snapshot.sendApplyNotifications()
         }
-        compose.waitForIdle()
+        // Frozen clock: the write reaches the text only on a frame.
+        frame()
         compose.onNodeWithText("phone 3").assertExists()
         // Phone → Split → Phone: the holder kept the branch's state, as
         // iOS keeps the tab controller's screens.

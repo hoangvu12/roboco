@@ -86,6 +86,9 @@ env:
 
 jobs:
   android:
+    # A `record_goldens` dispatch runs android-screenshots only (it builds
+    # the host core itself); everything else is skipped to keep it cheap.
+    if: ${{ !inputs.record_goldens }}
     strategy:
       fail-fast: false
       matrix:
@@ -341,6 +344,9 @@ jobs:
   # logic: three android_fixture processes, adb reverse, the suite with
   # the @Tour annotations excluded, and the artefact harvest.
   android-emulator:
+    # A `record_goldens` dispatch runs android-screenshots only (it builds
+    # the host core itself); everything else is skipped to keep it cheap.
+    if: ${{ !inputs.record_goldens }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -416,7 +422,8 @@ jobs:
   # time down. The Tour tests record `screenrecord` mp4s that the
   # artefact step pulls.
   android-emulator-tablet:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    # Never on a record_goldens dispatch (android-screenshots only).
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !inputs.record_goldens
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
