@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
@@ -981,6 +982,7 @@ fun GlassMenuPanel(
                 .width(IntrinsicSize.Max)
                 .widthIn(min = GlassMenuTokens.MinWidth, max = GlassMenuTokens.MaxWidth)
                 .heightIn(max = maxHeight)
+                .contentHeightWhenUnbounded()
                 .verticalScroll(rememberScrollState())
                 .padding(vertical = GlassMenuTokens.PadV),
         ) {
@@ -1026,6 +1028,26 @@ private fun focusModifierAt(
     }
 
 /** The level's text column: 61 dp when the slot is reserved, else 20 dp. */
+/**
+ * The panel's "capped by the incoming constraints" in a parent with no
+ * height bound: the content's own height, nothing to scroll. Without it,
+ * the `verticalScroll` below would be measured with an infinite max height
+ * and throw. That happens to a static panel inside a scrolling column (the
+ * gallery specimens). [GlassMenuHost] always passes a bounded height
+ * (`estimate.maxHeight`), which goes through unchanged, so presented menus
+ * size and scroll exactly as before.
+ */
+private fun Modifier.contentHeightWhenUnbounded(): Modifier = layout { measurable, constraints ->
+    val bounded = if (constraints.hasBoundedHeight) {
+        constraints
+    } else {
+        val content = measurable.maxIntrinsicHeight(constraints.maxWidth)
+        constraints.copy(maxHeight = content.coerceAtLeast(constraints.minHeight))
+    }
+    val placeable = measurable.measure(bounded)
+    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
+
 private fun textColumnStart(slotReserved: Boolean): Dp =
     if (slotReserved) GlassMenuTokens.TextStart else GlassMenuTokens.TextStartNoSlot
 
