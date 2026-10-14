@@ -78,6 +78,11 @@ class MainActivity : ComponentActivity() {
     /** One per activity: the bridge from the framework to the mounted shell. */
     private val shortcutSink = ShortcutSink()
 
+    private companion object {
+        /** android-app#30: the `pair` hold's budget (the redeemer's own). */
+        const val PAIR_HOLD_TIMEOUT_MS = 20_000L
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before the first frame (the androidx edge-to-edge template):
         // transparent bars, icons following the effective night mode.
@@ -102,6 +107,9 @@ class MainActivity : ComponentActivity() {
             // applies them before `showRoot`.
             if (debuggable) {
                 LaunchOptions.current.applyWallpaper(wallpaperTarget(WallpaperStore.get(this)))
+                // android-app#30: the flow rig's pairing URLs, redeemed
+                // before the first frame is released (see the hold below).
+                app.redeemLaunchPairs(LaunchOptions.current.pair)
             }
             handleIntent(intent)
         }
@@ -111,7 +119,18 @@ class MainActivity : ComponentActivity() {
             }
         }
         // The splash stays until the engine list is known (max 2000 ms).
-        holdFirstFrame { app.rootInput.value !is RootInput.Loading }
+        // android-app#30: a launch that carried the `pair` extra (debug
+        // only — `LaunchOptions.parse` empties it otherwise) waits for the
+        // redeemed engines instead, so the flow rig never flashes the
+        // pairing root: the hold bounds it at 20 s, the redeemer's own
+        // startup budget, and the pairing root shows on failure (the
+        // test's own waits then name the rig).
+        val awaitingPair = LaunchOptions.current.pair.isNotEmpty()
+        holdFirstFrame(timeoutMs = if (awaitingPair) PAIR_HOLD_TIMEOUT_MS else 2_000) {
+            val root = app.rootInput.value
+            root !is RootInput.Loading &&
+                (!awaitingPair || root is RootInput.Ready && root.hasEngines)
+        }
         // The debug design gallery (android-ui-parity #22): adb am start with
         // `--es route gallery` opens it on top of the app. Debuggable builds
         // only; the activity does not exist in release.

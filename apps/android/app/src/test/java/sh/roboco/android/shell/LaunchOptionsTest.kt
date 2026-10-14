@@ -42,6 +42,7 @@ class LaunchOptionsTest {
                 "wallpaper-effect" to "halftone",
                 "harness" to "mock",
                 "measureopen" to true,
+                "pair" to "http://127.0.0.1:27701/pair#token=a, http://127.0.0.1:27702/pair#token=b",
             ),
             debuggable = true,
         )
@@ -49,6 +50,28 @@ class LaunchOptionsTest {
         assertEquals("halftone", options.wallpaperEffect)
         assertEquals("mock", options.harness)
         assertTrue(options.measureOpen)
+        assertEquals(
+            listOf(
+                "http://127.0.0.1:27701/pair#token=a",
+                "http://127.0.0.1:27702/pair#token=b",
+            ),
+            options.pair,
+        )
+    }
+
+    // android-app#30: the flow rig's `pair` extra — comma-separated
+    // pairing URLs, trimmed, blanks dropped.
+    @Test
+    fun pairSplitsTrimsAndDropsBlanks() {
+        assertEquals(
+            listOf("http://h:1/pair#token=a", "http://h:2/pair#token=b"),
+            LaunchOptions.parse(
+                mapOf("pair" to " http://h:1/pair#token=a ,,http://h:2/pair#token=b "),
+                debuggable = true,
+            ).pair,
+        )
+        assertEquals(emptyList<String>(), LaunchOptions.parse(mapOf("pair" to ""), debuggable = true).pair)
+        assertEquals(emptyList<String>(), LaunchOptions.parse(emptyMap(), debuggable = true).pair)
     }
 
     @Test
@@ -67,11 +90,13 @@ class LaunchOptionsTest {
     fun nonDebuggableIgnoresEveryDebugExtra() {
         val extras = mapOf(
             "wallpaper" to "/x/a.png",
+            "pair" to "http://h:1/pair#token=a",
             "wallpaper-effect" to "halftone",
             "harness" to "mock",
             "measureopen" to true,
         )
         assertEquals(LaunchOptions(), LaunchOptions.parse(extras, debuggable = false))
+        assertEquals(emptyList<String>(), LaunchOptions.parse(extras, debuggable = false).pair)
     }
 
     @Test
@@ -82,6 +107,7 @@ class LaunchOptionsTest {
                 "wallpaper-effect" to 5,
                 "harness" to "",
                 "measureopen" to "yes",
+                "pair" to 27,
             ),
             debuggable = true,
         )
@@ -89,6 +115,7 @@ class LaunchOptionsTest {
         assertNull(options.wallpaperEffect)
         assertNull(options.harness)
         assertFalse(options.measureOpen)
+        assertEquals(emptyList<String>(), options.pair)
     }
 
     // --------------------------------------------------------------- route

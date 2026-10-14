@@ -1,6 +1,5 @@
 package sh.roboco.android.flows
 
-import android.content.Intent
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -9,13 +8,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,10 +22,9 @@ import sh.roboco.android.MainActivity
  * The keyboard flow on a device (ticket 133, CI-only — no emulator or
  * device in the worker slots): the interactive IME dismiss on the real
  * session screen, the port of `iosui:SessionFlowTests.swift:547-564`'s
- * guard included. The ticket's FixtureRule harness (android-app#30,
- * `route chat:chat-deploy`) has not landed, so the session screen
- * (ui-parity#75) and tap-to-dismiss (#81) are exercised here once they
- * merge — until then this class stays ignored.
+ * guard included. The session screen (ui-parity#75) and the FixtureRule
+ * harness (android-app#30) have both landed, so this runs on the rig's
+ * `main` engine and `chat-deploy`.
  *
  * The IME's top edge is tracked through raw window swipes (UiAutomator,
  * 8 dp from the left edge — inside the 18 dp row margin so no link is
@@ -37,33 +33,21 @@ import sh.roboco.android.MainActivity
  *    for the IME;
  * 2. a drag ending a quarter of the IME above the window bottom (past
  *    half) closes it — the composer collapses to the capsule
- *    (`composer-chip-model` leaves the semantics tree, 55) and the draft
+ *    (`composer-chip-model` leaves the semantics tree) and the draft
  *    is kept; a drag ending three quarters in (above half) reopens it
  *    and keeps the card;
  * 3. a plain tap on the transcript at `(8 dp, 0.35·height)` hides the
  *    IME within 3 s (81) with the draft kept.
  */
-@Ignore("Needs the session screen (ui-parity#75) and the FixtureRule harness (android-app#30); neither has landed")
 @RunWith(AndroidJUnit4::class)
 class KeyboardFlowTest {
 
-    @get:Rule
-    val scenario = ActivityScenarioRule<MainActivity>(
-        Intent(
-            InstrumentationRegistry.getInstrumentation().targetContext,
-            MainActivity::class.java,
-        )
-            .putExtra("route", "chat:chat-deploy"),
-    )
+    private val launch = FixtureRule(routeFor = { "chat:chat-deploy" })
 
     @Suppress("DEPRECATION")
     @get:Rule
-    val compose: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity> =
-        AndroidComposeTestRule(scenario) { rule ->
-            var activity: MainActivity? = null
-            rule.scenario.onActivity { activity = it }
-            checkNotNull(activity) { "Activity was not set in the ActivityScenarioRule" }
-        }
+    val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
+        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
 
     private val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 
