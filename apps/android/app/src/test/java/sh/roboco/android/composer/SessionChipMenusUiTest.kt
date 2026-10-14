@@ -110,6 +110,8 @@ class SessionChipMenusUiTest {
      */
     private class FakeMenuCore(
         override val chatId: String = "chat-a",
+        /** 84's draft key reads this (SessionCore.engineId); UUID-shaped like FakeSessionCore's. */
+        override val engineId: String = "11111111-1111-4111-8111-111111111111",
         private val hub: SessionEventHub? = null,
         row: SessionRow? = chipMenuSessionRow(),
         config: ChatConfig? = chatConfig(model = "claude-fable-5", reasoning = "xhigh"),
