@@ -170,7 +170,8 @@ internal fun SidebarToolbarContent(
 ) {
     // Only the 0 / partial / 1 thresholds may recompose (the gate and the
     // group's enabled flag); the continuous fade is the graphicsLayer read.
-    val vis by remember { derivedStateOf { visibility() } }
+    // Keyed by the lambda so a new capture (a new stack) is never stale.
+    val vis by remember(visibility) { derivedStateOf { visibility() } }
     if (vis == 0f) return
     Row(
         modifier
