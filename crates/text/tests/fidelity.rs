@@ -146,10 +146,35 @@ fn kerning_counts_across_the_break_for_the_fit_only() {
     assert_eq!(line_texts(&p, w), ["long/", "path"]);
     for width in [w, p.max_content_width() - 1.0] {
         let lines = p.lines(width);
+        assert_close(lines[0].fit_width, in_context, "long/ is fitted with the /p kern");
         assert_close(lines[0].width, alone, "long/ is drawn without the /p kern");
         let last = lines[0].fragments.last().unwrap();
         assert_close(last.x + last.width, lines[0].width, "fragments sum to the line width");
     }
+}
+
+/// The negative-kern case pinned (round 32): `/p` kerns tighter than `/` alone, so at a width
+/// between the kerned and the standalone advance the line FITS (`fit_width <= w`) while what is
+/// DRAWN (`width`) is wider than `w` by exactly the kern — the truth on screen, not an overflow
+/// bug (the props overflow invariant checks `fit_width`). `max_line_width`, the sizing fixed
+/// point, stays the fitted width: laying out again at it reproduces the same breaks.
+#[test]
+fn a_negative_kern_across_the_break_draws_wider_than_it_fits() {
+    let mut fx = Fixture::without_fallback();
+    let p = fx.prep("long/path");
+    let in_context = shaped("long/p", 15.0) - shaped("p", 15.0);
+    let alone = shaped("long/", 15.0);
+    let kern = in_context - alone;
+    assert!(kern < -0.05, "Geist kerns /p negatively ({kern})");
+    let w = (in_context + alone) / 2.0;
+    let lines = p.lines(w);
+    assert_eq!(line_texts(&p, w), ["long/", "path"]);
+    assert!(lines[0].fit_width <= w + LINE_FIT_EPSILON, "fits: {} <= {w}", lines[0].fit_width);
+    assert!(lines[0].width > w, "drawn wider than w: {} > {w}", lines[0].width);
+    assert_close(lines[0].width - lines[0].fit_width, -kern, "by exactly the kern");
+    let stats = p.stats(w);
+    assert_eq!(stats.max_line_width, lines.iter().map(|l| l.fit_width).fold(0.0, f32::max));
+    assert_eq!(p.line_count(stats.max_line_width), lines.len(), "the fixed point re-lays the same lines");
 }
 
 /// Where UAX #14 has no opportunity after whitespace (`( x`, `8 !=`), the line still ends after

@@ -46,9 +46,15 @@ pub struct LineRange {
     /// Byte range of the line's visible content in [`Prepared::text`], excluding hanging
     /// trailing whitespace and the forced-break character.
     pub range: Range<usize>,
-    /// Advance of the visible content as CoreText fits it (including the last glyph's kerning
-    /// with the next line's first glyph), plus the hyphen when `hyphenated`.
+    /// Drawn advance of the visible content (the fragments' sum), plus the hyphen when
+    /// `hyphenated`. Excludes the last glyph's kerning with the next line's first glyph: that
+    /// glyph is drawn on the next line (deliberate divergence from upstream zeron-text).
     pub width: f32,
+    /// The advance the line was FITTED with, as CoreText fits it (with that kerning, unless the
+    /// line was reshaped): `fit_width <= max_width` holds wherever a break opportunity fits;
+    /// `width` may exceed `max_width` by the dropped kern (a negative kern made the fit
+    /// narrower than what is drawn).
+    pub fit_width: f32,
     /// The line ends at a soft hyphen that must be drawn as `-`.
     pub hyphenated: bool,
 }
@@ -58,7 +64,9 @@ pub struct LineRange {
 pub struct LineStats {
     /// Number of lines.
     pub line_count: usize,
-    /// Widest line's `width`.
+    /// Widest line's `fit_width` — the sizing fixed point: laying the text out again at this
+    /// width (e.g. a shrink-wrapped bubble) reproduces the same breaks, which a drawn width
+    /// narrower than its fit (a positive kern) would not guarantee.
     pub max_line_width: f32,
 }
 
@@ -67,9 +75,11 @@ pub struct LineStats {
 pub struct Line {
     /// Byte range of the visible content (hanging whitespace excluded).
     pub range: Range<usize>,
-    /// Advance of the visible content as CoreText fits it (including the last glyph's kerning
-    /// with the next line's first glyph), plus the hyphen when `hyphenated`.
+    /// Drawn advance (the fragments' sum), plus the hyphen when `hyphenated` — see
+    /// [`LineRange::width`].
     pub width: f32,
+    /// The fitted advance — see [`LineRange::fit_width`].
+    pub fit_width: f32,
     /// Draw a `-` (U+002D, in the last fragment's style) at `width - hyphen` — i.e. right after
     /// the last fragment.
     pub hyphenated: bool,
@@ -116,7 +126,10 @@ impl From<Pos> for Cursor {
 struct Step {
     /// Where the next line starts.
     next: Pos,
+    /// Drawn width (see [`LineRange::width`]).
     width: f32,
+    /// Fitted width (see [`LineRange::fit_width`]).
+    fit: f32,
     hyphenated: bool,
     /// Last segment wholly on the line, or `NONE` when the line ends inside `next.seg`.
     end_seg: u32,
@@ -259,29 +272,32 @@ impl Prepared {
                 0.0
             }
         };
-        // The REPORTED width of a line ending after segment `k` (deliberate divergence from
-        // upstream zeron-text, android-ui-parity#115 round 29): the fit above keeps CoreText's
-        // paragraph-level advance (the last glyph's kerning with the next line's first glyph,
-        // `tail`, counts unless the line was reshaped), so breaks stay CoreText-exact — but that
-        // next glyph is drawn on the NEXT line, so the width (and the line-final fragment in
-        // `fragments`) never includes the kern. Upstream reported the fit advance, which made
+        // Every line end below computes the FIT width exactly as upstream (CoreText's
+        // paragraph-level advance: the last glyph's kerning with the next line's first glyph,
+        // `tail`, counts unless the line was reshaped), so breaks stay CoreText-exact.
+        // `end_after` derives the DRAWN width from it (deliberate divergence from upstream
+        // zeron-text, android-ui-parity#115 rounds 29/32): that next glyph is drawn on the NEXT
+        // line, so the drawn width (and the line-final fragment in `fragments`) never includes the
+        // kern — `drawn = fit - (cold.tail - tail)`. Upstream reported the fit, which left
         // underlines/veil edges of a line ending in e.g. `/` ~0.04 em short of the drawn text.
-        let drawn = |k: usize, x: f64| x - self.cold[k].tail as f64;
-        let end_after = |seg: usize, width: f64, hyphenated: bool| Step {
+        let end_after = |seg: usize, fit_w: f64, hyphenated: bool| Step {
             next: Pos {
                 seg: seg as u32 + 1,
                 unit: 0,
             },
-            width: width as f32,
+            width: (fit_w - (self.cold[seg].tail as f64 - tail(seg))) as f32,
+            fit: fit_w as f32,
             hyphenated,
             end_seg: seg as u32,
         };
+        // Split inside a segment: no `tail` (the content's last unit is not on the line).
         let end_inside = |seg: usize, unit: u32, width: f64| Step {
             next: Pos {
                 seg: seg as u32,
                 unit,
             },
             width: width as f32,
+            fit: width as f32,
             hyphenated: false,
             end_seg: NONE,
         };
@@ -316,11 +332,12 @@ impl Prepared {
                     if hot[last].brk == BRK_SOFT_HYPHEN {
                         // Break at the soft hyphen anyway; under overflow-wrap: anywhere, when
                         // only the hyphen overflows, break there as a plain grapheme boundary.
-                        let hy = !(self.anywhere && x - tail(last) <= fit);
+                        let x = x - tail(last);
+                        let hy = !(self.anywhere && x <= fit);
                         let w = if hy {
-                            drawn(last, x) + self.cold[last].hyphen as f64
+                            x + self.cold[last].hyphen as f64
                         } else {
-                            drawn(last, x)
+                            x
                         };
                         return Some(end_after(last, w, hy));
                     }
@@ -333,31 +350,31 @@ impl Prepared {
                             return Some(end_inside(i, u, nx));
                         }
                     }
-                    return Some(end_after(last, drawn(last, x), false));
+                    return Some(end_after(last, x - tail(last), false));
                 }
                 x = cand;
             }
             last = i;
             let xe = x - tail(i);
             match h.brk {
-                BRK_MANDATORY => return Some(end_after(i, drawn(i, x), false)),
+                BRK_MANDATORY => return Some(end_after(i, xe, false)),
                 BRK_ALLOWED => {
                     if xe <= fit {
                         brk = i;
-                        brk_w = drawn(i, x);
+                        brk_w = xe;
                         brk_hy = false;
                     }
                 }
                 BRK_HANG_ONLY => {
                     if wrap && xe <= fit && x + self.hang_adv(i, x as f32) as f64 > fit {
-                        return Some(end_after(i, drawn(i, x), false));
+                        return Some(end_after(i, xe, false));
                     }
                 }
                 _ => {
-                    let hyphen = self.cold[i].hyphen as f64;
-                    if xe + hyphen <= fit {
+                    let w = xe + self.cold[i].hyphen as f64;
+                    if w <= fit {
                         brk = i;
-                        brk_w = drawn(i, x) + hyphen;
+                        brk_w = w;
                         brk_hy = true;
                     }
                 }
@@ -371,6 +388,7 @@ impl Prepared {
                         unit: 0,
                     },
                     width: x as f32,
+                    fit: x as f32,
                     hyphenated: false,
                     end_seg: last as u32,
                 });
@@ -397,7 +415,7 @@ impl Prepared {
         let mut stats = LineStats::default();
         while let Some(s) = self.step(pos, fit) {
             stats.line_count += 1;
-            stats.max_line_width = stats.max_line_width.max(s.width);
+            stats.max_line_width = stats.max_line_width.max(s.fit);
             pos = s.next;
         }
         stats
@@ -414,6 +432,7 @@ impl Prepared {
                 end: s.next.into(),
                 range: self.line_bytes(pos, &s, &mut loc),
                 width: s.width,
+                fit_width: s.fit,
                 hyphenated: s.hyphenated,
             });
             pos = s.next;
@@ -444,6 +463,7 @@ impl Prepared {
             end: s.next.into(),
             range: self.line_bytes(pos, &s, &mut Locator::new()),
             width: s.width,
+            fit_width: s.fit,
             hyphenated: s.hyphenated,
         })
     }
@@ -461,6 +481,7 @@ impl Prepared {
             out.push(Line {
                 range,
                 width: s.width,
+                fit_width: s.fit,
                 hyphenated: s.hyphenated,
                 fragments,
             });

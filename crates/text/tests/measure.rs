@@ -175,7 +175,8 @@ fn fallback_graphemes_split_proportionally() {
         let sum: f32 = lines.iter().map(|l| l.width).sum();
         assert_close(sum, total, "split fallback word tiles its width");
         for l in &lines {
-            assert!(l.width <= w + LINE_FIT_EPSILON);
+            // A fit guarantee: the FITTED width.
+            assert!(l.fit_width <= w + LINE_FIT_EPSILON);
         }
     }
 }
