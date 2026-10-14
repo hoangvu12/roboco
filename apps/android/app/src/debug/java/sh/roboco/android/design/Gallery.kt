@@ -226,7 +226,10 @@ object Gallery {
         // Ticket 59 (context chips): the composer toolbar's chip strip —
         // every variant row (session, PR states, context, new session,
         // offline, overflow, rail sample, live menus).
-        GallerySection("Composer chips", screenshotHeightDp = 1400) { ChipStripGallerySection() },
+        // Fill: the section owns its fillMaxSize + verticalScroll column
+        // (inside its GlassMenuHost). Under the default Scroll frame that
+        // column was a vertical scroller measured with infinite height.
+        GallerySection("Composer chips", GalleryLayout.Fill, screenshotHeightDp = 1400) { ChipStripGallerySection() },
         // Ticket 64 (box prims + overflow fades): the transcript's chrome —
         // code block, table, quote bar, folded bubble, file pill, tool
         // badge and agent card, through the real RowModel path.

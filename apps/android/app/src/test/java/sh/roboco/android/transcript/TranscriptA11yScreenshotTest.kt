@@ -26,6 +26,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowChoreographer
+import sh.roboco.android.core.Fonts
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
@@ -63,6 +64,12 @@ class TranscriptA11yScreenshotTest {
         UniffiSandbox.claimCallbacks()
         TextEngine.init(ApplicationProvider.getApplicationContext<Context>())
         runBlocking { TextEngine.await() }
+        // Load the fonts here too: another class's @After Fonts.resetForTest()
+        // (same Robolectric sandbox) clears FontChain while TextEngine keeps
+        // its built system, so await() never re-runs Fonts.load and the row
+        // paints throw "FontChain not built" (verify run 38599396791). The
+        // other transcript screenshot tests load it the same way.
+        Fonts.load(ApplicationProvider.getApplicationContext<Context>())
     }
 
     @Test

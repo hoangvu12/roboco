@@ -28,6 +28,7 @@ import sh.roboco.android.design.LocalToaster
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.hairlineBorder
+import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.uiStyle
 
 /**
@@ -77,12 +78,17 @@ internal fun ChromeVisibilityGallerySection() {
                 .height(874.dp)
                 .hairlineBorder(palette.hairline, RectangleShape),
         ) {
-            MainTabShell(
-                state = state,
-                counts = LiveCounts(working = 2, awaiting = 1),
-                onNewSession = {},
-                onChrome = { chrome = it },
-            )
+            // The app mounts the shell inside RootHosts' GlassMenuHost (15);
+            // the Sessions root's ⋯ button needs one (rememberGlassMenuState
+            // throws without it).
+            GlassMenuHost {
+                MainTabShell(
+                    state = state,
+                    counts = LiveCounts(working = 2, awaiting = 1),
+                    onNewSession = {},
+                    onChrome = { chrome = it },
+                )
+            }
         }
 
         GalleryChromeRow("Push session") {

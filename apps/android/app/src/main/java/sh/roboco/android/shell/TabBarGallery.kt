@@ -36,6 +36,7 @@ import sh.roboco.android.design.FadingHorizontalScroll
 import sh.roboco.android.design.GlassStage
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.glass.LocalHazeState
 import sh.roboco.android.design.hairlineBorder
 import sh.roboco.android.design.uiStyle
@@ -180,7 +181,10 @@ internal fun TabBarGallerySection() {
                 .height(874.dp)
                 .hairlineBorder(palette.hairline, RectangleShape),
         ) {
-            MainTabShell()
+            // The app mounts the shell inside RootHosts' GlassMenuHost (15);
+            // the Sessions root's ⋯ button needs one (rememberGlassMenuState
+            // throws without it).
+            GlassMenuHost { MainTabShell() }
         }
     }
 }
