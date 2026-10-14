@@ -145,12 +145,7 @@ async fn run(mut ctx: EngineCtx) {
     // header would fall through to the engine's browser first-frame auth
     // and then retry forever on its "authentication timeout".
     if entry_field(&ctx, |entry| entry.paired.credential.is_empty()).unwrap_or(true) {
-        park(
-            &ctx,
-            ParkReason::Revoked,
-            "Session revoked; pair again to connect.".into(),
-        )
-        .await;
+        park_revoked(&ctx).await;
         return;
     }
     loop {
@@ -185,12 +180,7 @@ async fn run(mut ctx: EngineCtx) {
                         Ok(client) => Arc::new(client),
                         Err(err) => {
                             if roboco_rpc::is_auth_refused(&err) {
-                                park(
-                                &ctx,
-                                ParkReason::Revoked,
-                                "Session revoked; pair again to connect.".into(),
-                            )
-                            .await;
+                                park_revoked(&ctx).await;
                                 return;
                             }
                             drop_with_retry(&mut ctx, &mut backoff, err.to_string()).await;
@@ -491,10 +481,7 @@ async fn steady(
                         }
                     }
                     Some(EngineCommand::DialRefused) => {
-                        return LinkEnd::Parked {
-                            reason: ParkReason::Revoked,
-                            message: "Session revoked; pair again to connect.".into(),
-                        };
+                        return revoked_end();
                     }
                     Some(EngineCommand::CallsResult { generation: calls_generation, result }) => {
                         if calls_generation == generation {
@@ -516,11 +503,7 @@ async fn steady(
                                         // The session was revoked: park like a
                                         // refused feed dial (HTTP 401 on the
                                         // upgrade), never retry.
-                                        return LinkEnd::Parked {
-                                            reason: ParkReason::Revoked,
-                                            message: "Session revoked; pair again to connect."
-                                                .into(),
-                                        };
+                                        return revoked_end();
                                     }
                                     tracing::warn!(engine = %ctx.engine_id, %err, "calls redial failed");
                                     calls_retry_at = Some(Instant::now());
@@ -857,6 +840,23 @@ async fn flush_cache(ctx: &EngineCtx, bound: Duration) {
 
 /// Park an engine: stop dialing, record why, and wait for the task to be
 /// restarted (forget, re-pair, `reconnect_engine` for incompatible).
+/// The one copy every revoked-session park shows (a refused dial or an
+/// undecryptable credential).
+const REVOKED_MESSAGE: &str = "Session revoked; pair again to connect.";
+
+/// Park as [ParkReason::Revoked] with [REVOKED_MESSAGE].
+async fn park_revoked(ctx: &EngineCtx) {
+    park(ctx, ParkReason::Revoked, REVOKED_MESSAGE.into()).await;
+}
+
+/// The link's end for a revoked session (the calls/feed redial refused).
+fn revoked_end() -> LinkEnd {
+    LinkEnd::Parked {
+        reason: ParkReason::Revoked,
+        message: REVOKED_MESSAGE.into(),
+    }
+}
+
 async fn park(ctx: &EngineCtx, reason: ParkReason, message: String) {
     update_entry(ctx, |entry| {
         entry.state = EngineState::Parked { reason };
@@ -978,7 +978,7 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
     let Some(inner) = ctx.weak.upgrade() else {
         return VersionVerdict::default();
     };
-    let (paired_name, engine_name, base_url) = lock(&inner.engines)
+    let (paired_name, engine_name, base_url, device_version) = lock(&inner.engines)
         .entries
         .iter()
         .find(|entry| entry.paired.engine_id == ctx.engine_id)
@@ -987,6 +987,13 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
                 entry.paired.name.clone(),
                 entry.engine_name.clone(),
                 entry.paired.base_url.clone(),
+                // Ticket 11's fallback: the engine's own Device row version.
+                entry
+                    .rows
+                    .devices
+                    .iter()
+                    .find(|device| device.id == info.device_id)
+                    .and_then(|device| device.version.clone()),
             )
         })
         .unwrap_or_default();
@@ -995,7 +1002,12 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
         paired_name.as_deref(),
         &super::host_of(&base_url),
     );
-    compat::assess_engine(info, &inner.config.app_version, &name)
+    compat::assess_engine(
+        info,
+        &inner.config.app_version,
+        &name,
+        device_version.as_deref(),
+    )
 }
 
 /// Dial an auxiliary connection (calls, spares).
