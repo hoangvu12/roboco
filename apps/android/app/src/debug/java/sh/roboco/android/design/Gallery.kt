@@ -32,6 +32,7 @@ import sh.roboco.android.composer.MentionSuggestionsGallerySection
 import sh.roboco.android.composer.MentionsGallerySection
 import sh.roboco.android.composer.StagedThumbnailsGallerySection
 import sh.roboco.android.composer.QuestionPanelBehaviourGallerySection
+import sh.roboco.android.debug.LabMetersGallerySection
 import sh.roboco.android.debug.TranscriptLabGallerySection
 import sh.roboco.android.design.gallery.AlertGallerySection
 import sh.roboco.android.design.gallery.GlassGallerySection
@@ -609,6 +610,11 @@ object Gallery {
         // card's trailing spinner and the Working/Writing tail row — the
         // fixture plus the live ticking row with its streaming toggle.
         GallerySection("Status widgets") { StatusWidgetsGallerySection() },
+        // Ticket 136 (lab meters): the Transcript Lab's two debug
+        // instruments — the hitch meter label and the bench result label
+        // (static fixtures; the live ones are the lab's `meter`/`bench`
+        // launch extras).
+        GallerySection("Lab meters") { LabMetersGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
