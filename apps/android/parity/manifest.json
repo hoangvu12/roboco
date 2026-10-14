@@ -39,7 +39,7 @@
     "reviewedSha256": null,
     "reviewer": null,
     "date": null,
-    "checklistItems": ["GP-01", "GP-02", "GP-03", "GP-04"],
+    "checklistItems": ["SL-08"],
     "notes": "Group by Project on: Recent replaced by the project groups in reference order. SSIM ratchet entry.",
     "ssimFloor": null
   },
@@ -50,7 +50,7 @@
     "reviewedSha256": null,
     "reviewer": null,
     "date": null,
-    "checklistItems": ["GP-01", "GP-03"],
+    "checklistItems": ["SL-08"],
     "notes": null,
     "ssimFloor": null
   },

@@ -265,7 +265,7 @@ jobs:
         # *Screenshot* suites plus five behaviour tests that also capture)
         # and the parity tests, instead of re-running the whole suite.
         run: >-
-          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true -ProbocoParity=true
           :app:testDebugUnitTest
           --tests '*Screenshot*'
           --tests '*GalleryCapture*'

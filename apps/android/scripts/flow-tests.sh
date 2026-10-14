@@ -14,7 +14,8 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# apps/android/scripts -> the repo root is three levels up.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT/apps/android"
 
 MAIN_PORT=27701

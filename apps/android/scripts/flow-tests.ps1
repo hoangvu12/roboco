@@ -24,7 +24,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\')
+# apps\android\scripts -> the repo root is three levels up.
+$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Set-Location (Join-Path $Root 'apps\android')
 
 $MainPort = 27701
@@ -89,6 +90,10 @@ try {
   exit $LASTEXITCODE
 }
 finally {
+  # Best-effort harvest: under 'Stop', Windows PowerShell 5.1 turns a native
+  # command's stderr line (no tour mp4 on a normal run) into a terminating
+  # error that would skip the rest and replace the Gradle exit code.
+  $ErrorActionPreference = 'Continue'
   foreach ($process in $processes) {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
   }

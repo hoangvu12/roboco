@@ -500,6 +500,13 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
+    // android-app#30's parity gate (G2–G4) is armed against goldens that
+    // are not recorded yet, so it fails until the first sign-off. It runs
+    // only when asked (-ProbocoParity: the android-screenshots CI job), not
+    // in the default unit run that gates every PR.
+    if (!providers.gradleProperty("robocoParity").isPresent) {
+        filter { excludeTestsMatching("sh.roboco.android.parity.*") }
+    }
     systemProperty("jna.library.path", debugHostDir.absolutePath)
     systemProperty("robolectric.graphicsMode", "NATIVE")
     systemProperty("robolectric.pixelCopyRenderMode", "hardware")
