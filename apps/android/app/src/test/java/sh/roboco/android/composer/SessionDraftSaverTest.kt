@@ -1,5 +1,6 @@
 package sh.roboco.android.composer
 
+import android.os.Looper
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -11,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -24,6 +26,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.NoFeedback
@@ -276,4 +279,84 @@ class SessionDraftSaverTest {
 
     /** A route for the nav fixtures above. */
     private object DraftTestRoute : NavRoute
+
+    /**
+     * The effect's fallback load (84's behaviour row): the composer was
+     * seeded before the store finished its first read, so the disk text
+     * arrives late and applies only into an **empty** composer, then
+     * clears the flag. The gate holds the read back; the read runs on the
+     * completing thread (Unconfined), and the effect's await
+     * resumes on the main dispatcher, so the looper is drained the way
+     * CoreStartupTest does (shadowOf(looper).idle()).
+     */
+    @Test
+    fun theEffectAppliesTheLateLoadIntoAnEmptyComposer() {
+        val gate = CompletableDeferred<Unit>()
+        val store = FakePrefsStore(mapOf("chat:E1:c1" to "kept"), gate)
+        val drafts = Drafts(store, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+        drafts.warm()
+        assertFalse(drafts.isLoaded)
+        val composer = newComposer("")
+        val saver = SessionDraftSaver(key, drafts)
+        assertTrue(saver.pendingLoad)
+        val stack = NavStack(DraftTestRoute)
+        val entry = stack.entries.first()
+
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalNavStack provides stack,
+                LocalNavEntry provides entry,
+            ) {
+                SessionDraftEffect(saver, composer, null, drafts)
+            }
+        }
+        compose.waitForIdle()
+        // The load is parked on the gate: nothing applied, flag still set.
+        assertEquals("", composer.text)
+        assertTrue(saver.pendingLoad)
+
+        compose.runOnIdle { gate.complete(Unit) }
+        compose.waitForIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        compose.waitForIdle()
+        assertEquals("kept", composer.text)
+        assertFalse(saver.pendingLoad)
+    }
+
+    /**
+     * Same setup with a non-empty composer: the late load is **not**
+     * applied — the live composer is the source of truth once it holds
+     * text (78's entry-retained controller after a tab switch).
+     */
+    @Test
+    fun theEffectSkipsTheLateLoadWhenTheComposerHasText() {
+        val gate = CompletableDeferred<Unit>()
+        val store = FakePrefsStore(mapOf("chat:E1:c1" to "kept"), gate)
+        val drafts = Drafts(store, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+        drafts.warm()
+        assertFalse(drafts.isLoaded)
+        val composer = newComposer("mine")
+        val saver = SessionDraftSaver(key, drafts)
+        assertTrue(saver.pendingLoad)
+        val stack = NavStack(DraftTestRoute)
+        val entry = stack.entries.first()
+
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalNavStack provides stack,
+                LocalNavEntry provides entry,
+            ) {
+                SessionDraftEffect(saver, composer, null, drafts)
+            }
+        }
+        compose.waitForIdle()
+
+        compose.runOnIdle { gate.complete(Unit) }
+        compose.waitForIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        compose.waitForIdle()
+        // The composer's own text wins; the flag still cleared.
+        assertEquals("mine", composer.text)
+        assertFalse(saver.pendingLoad)
+    }
 }

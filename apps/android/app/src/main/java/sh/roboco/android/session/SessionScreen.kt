@@ -27,6 +27,7 @@ import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.QueuePanel
 import sh.roboco.android.composer.SessionDraftEffect
+import sh.roboco.android.composer.sessionDraftSaver
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
@@ -328,8 +329,9 @@ fun SessionScreen(
     // 9.7 Ticket 83's screen flags: the lease tracks on-screen-ness for
     //     the "acquired after leaving" case only (a begin that resolves
     //     after the user left releases the row instead of stealing the
-    //     composer). The cancel-on-leave itself is 84's (it calls
-    //     cancelEdit before its save), never this.
+    //     composer). The cancel-on-leave itself is 85's (its `leave()`
+    //     calls `cancelEdit` through its adapter before 84's save), never
+    //     this.
     NavEntryEffect(
         onWillAppear = { _ -> queueEdit?.onScreenShown() },
         onWillDisappear = { _, _ -> queueEdit?.onScreenLeft() },

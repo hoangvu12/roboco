@@ -173,8 +173,8 @@ internal fun connectivity(state: ConnectivityState = ConnectivityState.CONNECTED
  */
 internal class FakeSessionCore(
     override val chatId: String = "chat-a",
-    /** 84's draft key reads this; the fixture default matches [sessionRow]/[engineView]. */
-    override val engineId: String = "engine:v1:alpha",
+    /** 84's draft key reads this; a UUID-shaped engine id, like the real `PairedEngine.engineId`. */
+    override val engineId: String = "11111111-1111-4111-8111-111111111111",
 ) : SessionCore {
     var composerResult: ComposerState = composerState(chatId = chatId)
     var sessionRowResult: SessionRow? = null

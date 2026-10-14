@@ -274,7 +274,7 @@ internal fun applyChrome(
  * @param commands the route's command set (76 builds it once per route)
  * @param transcript the screen's [RunwayHooks] (61/67/69)
  * @param banner 73's `StatusBanner` for this route (`controller.filler`)
- * @param initialText 84 later passes `drafts.peek(chatId)`
+ * @param initialText 84 passes `drafts.peek(DraftKey.Chat(engineId, chatId))`
  */
 @Composable
 fun rememberSessionComposer(
