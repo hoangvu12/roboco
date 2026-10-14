@@ -116,7 +116,7 @@ fun TranscriptLabScreen(
     val actions = remember {
         TranscriptActions(
             // 126's router is not merged: open anything through the system.
-            openLink = { url, _ -> openLabLink(context, url) },
+            openLink = { tap -> openLabLink(context, tap.url) },
             // 66's two-arg loader: the fake PNG answers every reference.
             loadImage = { _, sidePx -> LabImages.load(context, sidePx) },
             cachedImage = { _, sidePx -> LabImages.cached(sidePx) },
