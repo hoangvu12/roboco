@@ -185,19 +185,17 @@ class RowMotion {
      * segment's remaining `dy`. Returns [finalY] itself while the key has
      * no track (idle rows read no state).
      */
-    fun visualY(key: ULong, finalY: Float): Float {
-        val list = tracks[key] ?: return finalY
-        var y = finalY
-        for (s in list) y += s.dy * (1f - s.kind.easing.transform(fraction(s)))
-        return y
-    }
+    fun visualY(key: ULong, finalY: Float): Float = remaining(key, finalY) { s -> s.dy }
 
     /** The row's drawn height (dp), like [visualY] over `dh`. */
-    fun visualHeight(key: ULong, finalHeight: Float): Float {
-        val list = tracks[key] ?: return finalHeight
-        var h = finalHeight
-        for (s in list) h += s.dh * (1f - s.kind.easing.transform(fraction(s)))
-        return h
+    fun visualHeight(key: ULong, finalHeight: Float): Float = remaining(key, finalHeight) { s -> s.dh }
+
+    /** `final` plus every live segment's remaining [delta] (dp). */
+    private fun remaining(key: ULong, final: Float, delta: (Segment) -> Float): Float {
+        val list = tracks[key] ?: return final
+        var value = final
+        for (s in list) value += delta(s) * (1f - s.kind.easing.transform(fraction(s)))
+        return value
     }
 
     /**
