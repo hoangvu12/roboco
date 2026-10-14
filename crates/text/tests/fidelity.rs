@@ -128,21 +128,28 @@ fn segment_seams_reproduce_whole_paragraph_shaping() {
     }
 }
 
-/// A line's advance includes the kerning between its last glyph and the next line's first
-/// glyph, as CoreText's paragraph-level fit does: `long/` followed by `path` is narrower than
-/// `long/` alone.
+/// The FIT counts the kerning between a line's last glyph and the next line's first glyph, as
+/// CoreText's paragraph-level fit does (`long/` followed by `path` needs less room than `long/`
+/// alone) — but the line's REPORTED width and its line-final fragment are the drawn advance:
+/// the `p` starts the next line, so `long/` is drawn unkerned. Deliberate divergence from
+/// upstream zeron-text (round 29, android-ui-parity#115), which reported the fit advance and
+/// left underlines and veil edges of such lines ~0.04 em short (TextDriftTest: 2.11 px).
 #[test]
-fn kerning_counts_across_the_break() {
+fn kerning_counts_across_the_break_for_the_fit_only() {
     let mut fx = Fixture::without_fallback();
     let p = fx.prep("long/path");
-    let lines = p.lines(p.max_content_width() - 1.0);
-    assert_eq!(
-        line_texts(&p, p.max_content_width() - 1.0),
-        ["long/", "path"]
-    );
     let in_context = shaped("long/p", 15.0) - shaped("p", 15.0);
-    assert_close(lines[0].width, in_context, "long/ before p");
-    assert!(in_context < shaped("long/", 15.0) - 0.05, "Geist kerns /p");
+    let alone = shaped("long/", 15.0);
+    assert!(in_context < alone - 0.05, "Geist kerns /p");
+    // Between the kerned and the standalone advance: `long/` still fits — the fit is kerned.
+    let w = (in_context + alone) / 2.0;
+    assert_eq!(line_texts(&p, w), ["long/", "path"]);
+    for width in [w, p.max_content_width() - 1.0] {
+        let lines = p.lines(width);
+        assert_close(lines[0].width, alone, "long/ is drawn without the /p kern");
+        let last = lines[0].fragments.last().unwrap();
+        assert_close(last.x + last.width, lines[0].width, "fragments sum to the line width");
+    }
 }
 
 /// Where UAX #14 has no opportunity after whitespace (`( x`, `8 !=`), the line still ends after
