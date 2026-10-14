@@ -91,6 +91,7 @@ import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 import sh.roboco.android.transcript.widgets.ToolRailGallerySection
+import sh.roboco.android.transcript.widgets.TranscriptIconGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -582,6 +583,9 @@ object Gallery {
         GallerySection("Tap to dismiss composer", screenshotHeightDp = 420) {
             TapDismissGallerySection()
         },
+        // Ticket 124 (icon widget): the tool, file-icon and SF-glyph
+        // fixture at the real core rect sizes, light and dark art.
+        GallerySection("Transcript icons") { TranscriptIconGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
