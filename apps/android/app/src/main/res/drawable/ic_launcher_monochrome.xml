@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The themed launcher icon's monochrome layer (android-next #03): the
+     ribbon bow (generated zi_roboco_bow, 24-unit viewport) drawn in a 66 dp
+     box of the 108 dp adaptive canvas, 2.75 dp per unit. The bow's bounds
+     centre is (12, 13.15), so the box sits 3 dp higher than centred
+     (top 18, bottom 24) to put the bow on the canvas centre (54, 54); its
+     farthest point is ~29.7 dp out, inside the 33 dp safe-zone circle. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/zi_roboco_bow"
+    android:insetLeft="21dp"
+    android:insetRight="21dp"
+    android:insetTop="18dp"
+    android:insetBottom="24dp" />

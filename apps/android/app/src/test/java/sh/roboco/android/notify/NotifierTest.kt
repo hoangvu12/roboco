@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -18,6 +19,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import sh.roboco.android.R
 
 /**
  * The notifier (android-app#28): versioned channels with the desktop
@@ -242,6 +244,45 @@ class NotifierTest {
         val intent = targetIntent(notification.contentIntent)
         assertEquals(Intent.ACTION_VIEW, intent.action)
         assertEquals("roboco://chat/engine:v1:a", intent.data.toString())
+    }
+
+    // -------------------------------------------------- branding
+
+    /**
+     * android-next #03: every builder (session event, link lost, budget,
+     * the ongoing run) carries the ribbon-bow small icon, the ribbon blue
+     * accent and the launcher artwork as the large icon.
+     */
+    @Test
+    fun everyNotificationCarriesTheBowTheRibbonAccentAndTheArtwork() {
+        notifier.postSessionEvent("e1", "engine:v1:c1", "A", NotificationKind.Done, null, now)
+        notifier.postLinkLost("e1", "Mac", now)
+        notifier.postBudgetExhausted()
+        val ongoing = notifier.buildOngoing(
+            ongoingContent(
+                OngoingInput(
+                    working = listOf(WorkingRun("engine:v1:a", "Alpha", "Mac", now, fromThisDevice = false)),
+                    awaiting = 0,
+                    engineCount = 1,
+                    liveUpdateDismissed = false,
+                ),
+                now,
+                apiPromotionPossible = false,
+            ),
+            onDeleteDismissed = null,
+        )
+        val all = mapOf(
+            "session" to posted("chat:e1:engine:v1:c1"),
+            "link" to posted("link:e1"),
+            "budget" to posted("budget"),
+            "ongoing" to ongoing,
+        )
+        assertEquals(0xFF4B4F9E.toInt(), ContextCompat.getColor(context, R.color.brand_ribbon))
+        for ((name, n) in all) {
+            assertEquals("$name small icon", R.drawable.zi_roboco_bow, n.smallIcon.resId)
+            assertEquals("$name accent", 0xFF4B4F9E.toInt(), n.color)
+            assertNotNull("$name large icon", n.getLargeIcon())
+        }
     }
 
     // -------------------------------------------------- helpers
