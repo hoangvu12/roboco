@@ -112,6 +112,9 @@ class NotificationFlowTest {
         )
         assertTrue("the Done notification never appeared", appeared == true)
         // Tap it: the chat opens (cold or warm — the hub holds the link).
+        // The tap delivers a NEW intent (onNewIntent → setIntent), which the
+        // rule's ActivityScenario cannot track: tell its teardown.
+        launch.newIntentDelivered = true
         device.findObject(By.text("Run finished")).click()
         device.wait(Until.hasObject(By.pkg(app.packageName)), 10_000)
         // The session screen is on top again (75/76's root).
