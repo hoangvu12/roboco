@@ -9,8 +9,10 @@ import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -373,7 +375,7 @@ class EngineDetailScreenTest {
         val address = compose.onNodeWithText("http://192.168.1.20:27655", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
         assertDp(address.right, 370.dp, "address value right edge")
-        assertTrue("address width ${address.width()} ≤ 185", address.width().value <= 185f)
+        assertTrue("address width ${address.width} ≤ 185", address.width.value <= 185f)
         // FadingText keeps the full text in semantics and never adds "…".
         val faded = compose.onNodeWithText("http://192.168.1.20:27655", useUnmergedTree = true)
             .fetchSemanticsNode().config[SemanticsProperties.Text].single().text
@@ -541,6 +543,9 @@ class EngineDetailScreenTest {
         )
         // After the 1.5 s hold, the value node reads the full id again.
         compose.mainClock.advanceTimeBy(2_000)
+        // The hold's `copied = false` lands inside that advance; on the frozen
+        // clock its apply notification is not guaranteed before the next frame.
+        compose.runOnUiThread { Snapshot.sendApplyNotifications() }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.onNodeWithText("Copied", useUnmergedTree = true).assertDoesNotExist()
@@ -681,7 +686,9 @@ class EngineDetailScreenTest {
         assertEquals("one pop only", 1, stack.entries.size)
         // While popping, the cards still show the last values (no blank
         // frame): the last view survives the flow change.
-        compose.onNodeWithText("MacBook Pro", useUnmergedTree = true).assertExists()
+        // LargeTitleScaffold composes both the large and the inline title with
+        // the text; the large title's tag pins one node.
+        compose.onNodeWithTag("nav-large-title").assert(hasText("MacBook Pro"))
         row("engine-detail-status").assertExists()
         compose.onNodeWithText("Connected", useUnmergedTree = true).assertExists()
     }

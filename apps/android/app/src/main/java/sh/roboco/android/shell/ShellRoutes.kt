@@ -81,7 +81,7 @@ fun ShellRouteContent(route: NavRoute) {
         // actions card (Rename…, Pair again) and the Forget confirm the
         // Devices row's push lands on. 104's tablet Settings dialog routes
         // pushes through this same table.
-        is EngineDetailRoute -> EngineDetailScreen(route.engineId),
+        is EngineDetailRoute -> EngineDetailScreen(route.engineId)
         else -> Unit
     }
 }
