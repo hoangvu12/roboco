@@ -193,7 +193,7 @@ class InboundPairingTest {
     private fun TestScope.newInbound(
         control: PairPageControl,
         logs: MutableList<String>,
-        accepts: (String) -> Boolean = ::StandInAccepts,
+        accepts: (String) -> Boolean = { StandInAccepts(it) },
     ): InboundPairing = InboundPairing(
         control = control,
         scope = CoroutineScope(StandardTestDispatcher(testScheduler)),
