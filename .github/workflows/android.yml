@@ -214,8 +214,15 @@ jobs:
   # run — including failures — so the reviewer's walk never waits on a
   # green build. The goldens themselves are recorded by
   # recordRoborazziDebug runs whose artefacts are committed back.
+  #
+  # NON-BLOCKING for now: no goldens are committed yet
+  # (app/src/test/screenshots is empty), so verify fails on every missing
+  # reference. Drop continue-on-error once the first recorded set lands.
+  # It runs only the capturing classes + the parity tests in verify mode -
+  # the full unit suite already runs in the `android` job above.
   android-screenshots:
     runs-on: ubuntu-24.04
+    continue-on-error: true
     timeout-minutes: 40
     defaults:
       run:
@@ -249,11 +256,25 @@ jobs:
             21
             17
       - name: Install Android SDK pieces
-        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
-      - name: Run the JVM suite, verify the goldens, write the parity board
-        run: ./gradlew --stacktrace "-ProbocoAbis=x86_64" :app:testDebugUnitTest :app:verifyRoborazziDebug :app:parityReport
+      - name: Verify the goldens and the parity gate, write the parity board
+        # roborazzi.test.verify=true is what verifyRoborazziDebug sets; the
+        # --tests filter keeps this to the classes that capture (the
+        # *Screenshot* suites plus five behaviour tests that also capture)
+        # and the parity tests, instead of re-running the whole suite.
+        run: >-
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true
+          :app:testDebugUnitTest
+          --tests '*Screenshot*'
+          --tests '*GalleryCapture*'
+          --tests '*FolderBrowserBottomBarTest'
+          --tests '*NewProjectScreenTest'
+          --tests '*ReferenceBoardTest'
+          --tests '*SessionArrivalTest'
+          --tests 'sh.roboco.android.parity.*'
+          :app:parityReport
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -293,7 +314,7 @@ jobs:
             cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
           fi
       - name: Install Android SDK pieces
-        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
       # 17 builds the app inside the script (the Gradle daemon runs the
       # app's Kotlin + the x86_64 core).
       - uses: actions/setup-java@v4
@@ -322,7 +343,7 @@ jobs:
           disable-animations: true
           force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: apps/android/scripts/flow-tests.sh
+          script: bash apps/android/scripts/flow-tests.sh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -363,7 +384,7 @@ jobs:
             cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
           fi
       - name: Install Android SDK pieces
-        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -389,7 +410,7 @@ jobs:
           force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           # The tour runs WITH its recordings here.
-          script: FLOW_INCLUDE_TOUR=1 apps/android/scripts/flow-tests.sh
+          script: FLOW_INCLUDE_TOUR=1 bash apps/android/scripts/flow-tests.sh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
