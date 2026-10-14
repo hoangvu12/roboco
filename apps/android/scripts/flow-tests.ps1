@@ -86,7 +86,7 @@ try {
     "-Pandroid.testInstrumentationRunnerArguments.fixtureMain=http://127.0.0.1:$MainControl" `
     "-Pandroid.testInstrumentationRunnerArguments.fixtureSlow=http://127.0.0.1:$SlowControl" `
     "-Pandroid.testInstrumentationRunnerArguments.fixtureQuestion=http://127.0.0.1:$QuestionControl" `
-    "-Pandroid.testInstrumentationRunnerArguments.notAnnotation=sh.roboco.android.flows.Tour"
+    "-Pandroid.testInstrumentationRunnerArguments.notAnnotation=sh.roboco.android.flows.Tour,sh.roboco.android.flows.TabletOnly,sh.roboco.android.flows.PhysicalDeviceOnly"
   exit $LASTEXITCODE
 }
 finally {
