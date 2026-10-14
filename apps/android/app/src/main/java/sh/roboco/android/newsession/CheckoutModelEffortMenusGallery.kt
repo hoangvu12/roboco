@@ -37,6 +37,7 @@ import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.glass.GlassMenuPanel
+import sh.roboco.android.design.glass.MenuElement
 import sh.roboco.android.design.glass.MenuLine
 import sh.roboco.android.design.glass.flattenLevel
 import sh.roboco.android.design.uiStyle

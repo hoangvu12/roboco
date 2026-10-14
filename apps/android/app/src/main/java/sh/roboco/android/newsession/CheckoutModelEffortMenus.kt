@@ -42,7 +42,7 @@ fun interface RefSource {
  * use the primary constructor directly.
  */
 class CoreRefSource(
-    private val listRefs: suspend (deviceId: String, repoPath: String) -> List<RepoRef>,
+    private val listRefs: suspend (String, String) -> List<RepoRef>,
 ) : RefSource {
 
     /**
