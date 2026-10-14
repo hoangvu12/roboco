@@ -501,6 +501,14 @@ object Gallery {
         GallerySection("Settings dialog", GalleryLayout.Fill, screenshotHeightDp = 800) {
             SettingsDialogGallerySection()
         },
+        // Ticket 89 (session chip menus): the Model / Reasoning effort / PR
+        // menus behind the composer chips — a live ChipStrip over a fake
+        // core (1.5 s catalog load, optimistic chip updates, failing
+        // writes) plus the static M1/M2/E/P panels the goldens capture.
+        // Fill: the section owns its GlassMenuHost and its own scroll.
+        GallerySection("Session chip menus", GalleryLayout.Fill) {
+            ChipMenuGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

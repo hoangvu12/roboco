@@ -3,6 +3,7 @@ package sh.roboco.android.session
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import sh.roboco.android.composer.QueueActions
+import sh.roboco.android.composer.SessionChipMenus
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.SessionRoute
@@ -112,6 +113,9 @@ class SessionScreenRoute internal constructor(
      * safety net with its `lifecycle.release()`; keep exactly one.
      */
     fun release() {
+        // Ticket 89: the chip-menu loads resolve empty after this (the
+        // in-flight writes still finish — never cancelled).
+        controller.filler<SessionChipMenus>()?.dispose()
         controller.close()
         if (state.transcriptCreated) state.transcript.close()
     }
@@ -171,6 +175,8 @@ class SessionScreenRoute internal constructor(
      * `setViewAttached`/`markSeen` for a screen nobody saw.
      */
     override fun discard() {
+        // Ticket 89: same rule as release — later loads resolve empty.
+        controller.filler<SessionChipMenus>()?.dispose()
         controller.dispose()
         if (state.transcriptCreated) state.transcript.close()
     }

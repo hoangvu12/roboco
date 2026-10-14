@@ -17,7 +17,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import sh.roboco.android.background.RunWatchController
+import sh.roboco.android.composer.CoreChipMenuCore
 import sh.roboco.android.composer.QueueChromeFiller
+import sh.roboco.android.composer.SessionChipMenus
 import sh.roboco.android.core.AppLifecycleHooks
 import sh.roboco.android.core.AppearanceController
 import sh.roboco.android.core.CoreClientWorkspace
@@ -388,6 +390,14 @@ class RobocoApplication : Application() {
         // BANNER (30), the iOS `refresh()` order. 73 owns the send-failure
         // state, so this registry never gets a second send-failure filler.
         chromeFillers.register(ChromeFillerRegistry.CHIPS) { SessionChipsFiller() }
+        // Ticket 89 (chip menus): the content and actions behind the
+        // model / effort / PR chips — slot 21, right after the chips it
+        // decorates. The filler stores the controller-refresh snapshot
+        // and keeps the deferred cache; the loads and writes run on IO
+        // inside it (never on main, the #609 trap).
+        chromeFillers.register(ChromeFillerRegistry.CHIP_MENUS) { core ->
+            SessionChipMenus(CoreChipMenuCore.of(core))
+        }
         // Ticket 82 (queue panel): the queue mapping into
         // `SessionChrome.queue` — gate labels, `visibleText`, order —
         // registered in 76's QUEUE slot (50), so every opened route fills

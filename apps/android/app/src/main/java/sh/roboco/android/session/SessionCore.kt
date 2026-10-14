@@ -1,5 +1,6 @@
 package sh.roboco.android.session
 
+import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.ComposerState
@@ -28,6 +29,13 @@ interface SessionCore {
 
     /** `CoreClient.sessionRow(chatId)` — the cached workspace row, any chat. */
     fun sessionRow(): SessionRow?
+
+    /**
+     * `CoreClient.sessionConfig(chatId)` — the chat's local run config
+     * (android-app#07). Ticket 89's chip menus read it on the controller's
+     * IO lane so their provider never makes an FFI call on main.
+     */
+    fun sessionConfig(): ChatConfig?
 
     /** `CoreClient.engine(handle.engineId())` — the owning engine's view. */
     fun engine(): EngineView?
@@ -66,6 +74,8 @@ class CoreSessionCore(
     override fun composer(): ComposerState = handle.composer()
 
     override fun sessionRow(): SessionRow? = client.sessionRow(chatId)
+
+    override fun sessionConfig(): ChatConfig? = client.sessionConfig(chatId)
 
     override fun engine(): EngineView? = client.engine(engineId)
 

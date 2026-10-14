@@ -1,0 +1,410 @@
+package sh.roboco.android.composer
+
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import sh.roboco.android.design.RobocoIcons
+import sh.roboco.android.design.glass.Menu
+import sh.roboco.android.design.glass.MenuElement
+import sh.roboco.android.design.glass.MenuIcon
+import sh.roboco.android.design.glass.MenuItem
+import sh.roboco.android.session.ChromeFiller
+import sh.roboco.android.session.ChromeInput
+import sh.roboco.android.session.CoreSessionCore
+import sh.roboco.android.session.SessionChrome
+import sh.roboco.android.session.SessionCore
+import uniffi.roboco_core.ChatConfig
+import uniffi.roboco_core.ModelInfo
+import uniffi.roboco_core.SandboxLevel
+import uniffi.roboco_core.SessionRow
+
+/**
+ * The FFI seam of the chip menus (android-ui-parity #89) — the five core
+ * calls `chipMenu`/`setConfig` make (`ios:Session/CoreSessionSource.swift:
+ * 201-245` plus #664). Every member is FFI: call only from IO. A seam so
+ * the plain-JVM tests fake it (the generated records construct without
+ * JNA, the calls do not).
+ */
+interface ChipMenuCore {
+    /** `CoreClient.sessionRow(chatId)` — the cached workspace row. */
+    fun sessionRow(): SessionRow?
+
+    /** `CoreClient.sessionConfig(chatId)` — the chat's local config (#664's selection source). */
+    fun sessionConfig(): ChatConfig?
+
+    /** `CoreClient.listModels(deviceId, harness)` — the engine's catalog. */
+    suspend fun listModels(deviceId: String, harness: String): List<ModelInfo>
+
+    /** The core's static fallback when [listModels] fails outright. */
+    fun fallbackModels(harness: String): List<ModelInfo>
+
+    /** `reasoning_label(level)` — the wire level's display label. */
+    fun reasoningLabel(level: String): String
+
+    /**
+     * `CoreClient.setSessionConfig(chatId, config)` — a **full replace**
+     * (android-app#08: optimistic override, `Mutate setChatConfig`,
+     * revert on error). Throws the generated `CoreException` on failure.
+     */
+    suspend fun setSessionConfig(config: ChatConfig)
+}
+
+/**
+ * The live [ChipMenuCore] over one chat: the route's [CoreSessionCore]
+ * holds the client and the chat id, so a sibling adapter cast (the
+ * registry hands the filler the same `SessionCore` instance).
+ */
+class CoreChipMenuCore(
+    private val client: uniffi.roboco_core.CoreClient,
+    private val chatId: String,
+) : ChipMenuCore {
+    override fun sessionRow(): SessionRow? = client.sessionRow(chatId)
+
+    override fun sessionConfig(): ChatConfig? = client.sessionConfig(chatId)
+
+    override suspend fun listModels(deviceId: String, harness: String): List<ModelInfo> =
+        client.listModels(deviceId, harness)
+
+    override fun fallbackModels(harness: String): List<ModelInfo> =
+        uniffi.roboco_core.fallbackModels(harness)
+
+    override fun reasoningLabel(level: String): String = uniffi.roboco_core.reasoningLabel(level)
+
+    override suspend fun setSessionConfig(config: ChatConfig) {
+        client.setSessionConfig(chatId, config)
+    }
+
+    companion object {
+        /** Production cores are ticket 51's [CoreSessionCore] (public `client`). */
+        fun of(core: SessionCore): ChipMenuCore =
+            CoreChipMenuCore((core as CoreSessionCore).client, core.chatId)
+    }
+}
+
+/** What the PR menu's two rows need from the platform: open the URL, copy it. */
+interface ChipMenuPlatform {
+    /** A Custom Tab (ticket 126's recipe), falling back to `ACTION_VIEW`. */
+    fun openUrl(url: String)
+
+    /** `ClipboardManager` plain text, clip label "Link", no confirmation UI. */
+    fun copyLink(url: String)
+}
+
+/** The deferred-cache key: the selection (tap time) plus the engine device. */
+private data class MenuKey(
+    val chipId: String,
+    val harness: String,
+    val model: String?,
+    val reasoning: String?,
+    val deviceId: String,
+)
+
+/**
+ * The chip menus' content and actions (android-ui-parity #89) — the port
+ * of `CoreSessionSource.chipMenu` + `setConfig` (`ios:Session/
+ * CoreSessionSource.swift:201-245`, with #664's selection, pick rule,
+ * failure pill and immediate refresh). This ticket owns **the content and
+ * the actions only**: ticket 15 draws the menu, ticket 59 anchors it to
+ * the chip at tap time, ticket 73 shows the failure pill.
+ *
+ * Threading (the #609 traps this ticket exists to avoid):
+ * - [fill] stores a **snapshot** (row, config, host device) on the
+ *   controller's IO lane and touches no FFI — everything comes from
+ *   [ChromeInput];
+ * - [menu] runs on **main** at tap time and makes **zero** core calls: it
+ *   reads the snapshot only;
+ * - the deferred loads and the writes make every core call inside
+ *   `withContext(io)` / the write scope;
+ * - iOS's `chipMenu` guard — no row, no menu — holds for every chip id.
+ *
+ * #664's cache lifetime: ticket 15 caches a `Deferred(cached = true)` per
+ * **instance**, and this class keeps one instance per chip id together
+ * with its [MenuKey]. Reopening with an unchanged key shows the cached
+ * rows at once; a pick changes the selection, so the key changes and the
+ * next open loads again — iOS's "until the chrome changes".
+ */
+class SessionChipMenus(
+    private val core: ChipMenuCore,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+) : ChromeFiller {
+
+    /**
+     * Set by ticket 78's wiring (the session screen): `null` = the write
+     * succeeded, else the failure. Ticket 73's `StatusBanner` turns it
+     * into the `Couldn't change session settings: …` pill. Default no-op.
+     */
+    @Volatile
+    var onSettingResult: (Throwable?) -> Unit = {}
+
+    /** The write lane: never cancelled — an in-flight write always finishes, like iOS's synchronous call. */
+    private val writeScope = CoroutineScope(SupervisorJob() + io)
+
+    /** Serialises "read base → write" so two quick picks can never interleave replaces. */
+    private val writeLock = Mutex()
+
+    private val closed = AtomicBoolean(false)
+
+    /** The controller's refresh snapshot (row, config, deviceId) — written on IO, read on main. */
+    @Volatile
+    private var snapshot: Snapshot? = null
+
+    /** The hoisted deferred instances, keyed by chip id. Main thread only. */
+    private val hoisted = mutableMapOf<String, Pair<MenuKey, MenuElement.Deferred>>()
+
+    /** The invalidate handle [bind] stores (the controller's coalescing trigger). */
+    @Volatile
+    private var invalidate: () -> Unit = {}
+
+    private data class Snapshot(val row: SessionRow?, val config: ChatConfig?, val deviceId: String)
+
+    override fun bind(invalidate: () -> Unit) {
+        this.invalidate = invalidate
+    }
+
+    /**
+     * Stores the snapshot and returns the chrome **unchanged** — this
+     * filler fills no chrome field; the menus only decorate the chips
+     * ticket 78 already filled. No FFI: everything comes from [input].
+     */
+    override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
+        snapshot = Snapshot(row = input.row, config = input.config, deviceId = input.composer.host.deviceId)
+        return chrome
+    }
+
+    /**
+     * Ticket 54's `ChipMenuProvider` body (`() -> Menu?`), called on main
+     * at tap time by ticket 59's strip. No FFI, no snapshot state writes:
+     * it reads [snapshot] and builds the [Menu] per the ticket's table
+     * (`model` / `effort` get one hoisted deferred; `pr` two rows;
+     * `branch` / `context` / anything else `null`).
+     */
+    fun menu(chipId: String, platform: ChipMenuPlatform): Menu? {
+        val s = snapshot ?: return null
+        val row = s.row ?: return null // iOS: guard let row
+        val sel = sessionSelection(s.config, row)
+        val harness = sel?.harness ?: DEFAULT_HARNESS
+        return when (chipId) {
+            "model" -> Menu(
+                title = MODEL_MENU_TITLE,
+                children = listOf(
+                    deferred(MenuKey("model", harness, sel?.model, sel?.reasoning, s.deviceId)) {
+                        modelRows(s.deviceId, harness)
+                    },
+                ),
+            )
+            "effort" -> Menu(
+                title = EFFORT_MENU_TITLE,
+                children = listOf(
+                    deferred(MenuKey("effort", harness, sel?.model, sel?.reasoning, s.deviceId)) {
+                        effortRows(s.deviceId, harness)
+                    },
+                ),
+            )
+            "pr" -> {
+                val pr = row.pullRequest ?: return null
+                val url = prUrlOrNull(pr.url) ?: return null
+                Menu(
+                    title = pr.title,
+                    children = listOf(
+                        MenuItem(
+                            title = PR_OPEN_ROW,
+                            icon = MenuIcon.Symbol(RobocoIcons.Safari),
+                            testTag = "chip-menu-pr-open",
+                        ) { platform.openUrl(url) },
+                        MenuItem(
+                            title = PR_COPY_ROW,
+                            icon = MenuIcon.Symbol(RobocoIcons.Link),
+                            testTag = "chip-menu-pr-copy",
+                        ) { platform.copyLink(url) },
+                    ),
+                )
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * The route is discarded / closed (ticket 76's `discard()`, 85's
+     * `release()`): later loads resolve empty — iOS's `guard let self else
+     * { return done([]) }`. **Never cancels writes**: a write that is in
+     * flight when the user pops the screen still completes.
+     */
+    fun dispose() {
+        closed.set(true)
+    }
+
+    // ── the deferred loads (ticket 15 calls them from main) ─────────────
+
+    /**
+     * The model rows: the engine's `listModels` in its order, label +
+     * non-blank description, the checkmark on the load-time selection's
+     * model (#664 re-reads the config + row when the load runs). The
+     * `MenuItem` action only captures values; ticket 15 runs it on main
+     * after the menu closed.
+     */
+    private suspend fun modelRows(deviceId: String, harness: String): List<MenuElement> = withContext(io) {
+        if (closed.get()) return@withContext emptyList()
+        val models = loadModels(deviceId, harness)
+        val selected = sessionSelection(core.sessionConfig(), core.sessionRow())?.model
+        models.map { m ->
+            MenuItem(
+                title = m.label,
+                subtitle = m.description?.takeIf { it.isNotBlank() },
+                checked = m.id == selected,
+                testTag = "chip-menu-model-${m.id}",
+            ) { write { applyModelPick(it, m) } }
+        }
+    }
+
+    /**
+     * The effort rows: the levels of the model the load-time selection
+     * names, else the **first** model's, else none (iOS `??` never fires
+     * on an empty list). `reasoningLabel` is FFI, so the rows are built
+     * here on IO.
+     */
+    private suspend fun effortRows(deviceId: String, harness: String): List<MenuElement> = withContext(io) {
+        if (closed.get()) return@withContext emptyList()
+        val models = loadModels(deviceId, harness)
+        val sel = sessionSelection(core.sessionConfig(), core.sessionRow())
+        val levels = models.firstOrNull { it.id == sel?.model }?.reasoningLevels
+            ?: models.firstOrNull()?.reasoningLevels
+            ?: emptyList()
+        levels.map { level ->
+            MenuItem(
+                title = core.reasoningLabel(level),
+                checked = level == sel?.reasoning,
+                testTag = "chip-menu-effort-$level",
+            ) { write { it.copy(reasoning = level) } }
+        }
+    }
+
+    /**
+     * `listModels` with the fallback: the core itself falls back live →
+     * disk cache → static, so the Kotlin `??` only matters if the call
+     * fails outright (a cancelled load rethrows — ticket 15 cancels its
+     * scope when the menu closes).
+     */
+    private suspend fun loadModels(deviceId: String, harness: String): List<ModelInfo> =
+        try {
+            core.listModels(deviceId, harness)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            core.fallbackModels(harness)
+        }
+
+    // ── the writes (iOS `setConfig`, adapted: suspend + a mutex) ───────
+
+    /**
+     * One config write: read the base **at pick time** (inside the lock,
+     * so a second pick reads the config the first one produced), apply
+     * the change, write the **full** config (a replace — harness, sandbox
+     * and untouched options survive), report the outcome and invalidate
+     * (iOS `refresh()`, success or failure alike). The optimistic refresh
+     * itself is android-app#08's, in the core.
+     */
+    private fun write(change: (ChatConfig) -> ChatConfig) {
+        writeScope.launch {
+            writeLock.withLock {
+                val base = core.sessionConfig()
+                    ?: ChatConfig(
+                        harness = core.sessionRow()?.harness ?: DEFAULT_HARNESS,
+                        model = null,
+                        reasoning = null,
+                        modelOptions = emptyMap(),
+                        sandbox = SandboxLevel.WORKSPACE_WRITE,
+                    )
+                val result = try {
+                    core.setSessionConfig(change(base))
+                    null
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (t: Throwable) {
+                    t
+                }
+                onSettingResult(result)
+                invalidate()
+            }
+        }
+    }
+
+    // ── the deferred hoisting (iOS's cache lifetime) ───────────────────
+
+    /**
+     * Returns the stored deferred while [key] is unchanged, else a new
+     * one (and stores it). Two `menu("model")` calls with one snapshot
+     * return the same instance (one load); after a pick changes the
+     * selection — or the engine device changes — a new instance loads
+     * again.
+     */
+    private fun deferred(key: MenuKey, load: suspend () -> List<MenuElement>): MenuElement.Deferred {
+        val stored = hoisted[key.chipId]
+        if (stored != null && stored.first == key) return stored.second
+        val created = MenuElement.Deferred(cached = true, load = load)
+        hoisted[key.chipId] = key to created
+        return created
+    }
+}
+
+// ── copy (verbatim from the ticket / iOS) ──────────────────────────────────
+
+/** The model menu's pane title. */
+const val MODEL_MENU_TITLE = "Model"
+
+/** The effort menu's pane title. */
+const val EFFORT_MENU_TITLE = "Reasoning effort"
+
+/** The PR menu's first row. */
+const val PR_OPEN_ROW = "Open Pull Request"
+
+/** The PR menu's second row. */
+const val PR_COPY_ROW = "Copy Link"
+
+// ── the pure rules (unit-tested on the plain JVM) ──────────────────────────
+
+/**
+ * The #664 model-pick rule, a copy of android-app#08's `config_for_model`
+ * so the menu logic is JVM-testable without the native lib (both are
+ * pinned by the same 7 vectors; if one changes, change the other):
+ *
+ * - `model = m.id`;
+ * - keep `reasoning` only when it is one of `m.reasoningLevels` (a nil
+ *   counts as "not in"), else `m.defaultReasoning`, else
+ *   [preferredReasoning] (high → medium → first — `catalog::
+ *   default_reasoning`, never the middle index);
+ * - keep only the `modelOptions` pairs whose key is one of `m.options`
+ *   **and** whose value is one of that option's choices;
+ * - `harness` and `sandbox` are never changed (the caller starts from the
+ *   base config).
+ */
+fun applyModelPick(config: ChatConfig, m: ModelInfo): ChatConfig {
+    val keep = config.reasoning != null && config.reasoning in m.reasoningLevels
+    val reasoning = if (keep) config.reasoning else (m.defaultReasoning ?: preferredReasoning(m.reasoningLevels))
+    val options = config.modelOptions.filter { (key, value) ->
+        m.options.any { o -> o.id == key && o.choices.any { it.id == value } }
+    }
+    return config.copy(model = m.id, reasoning = reasoning, modelOptions = options)
+}
+
+/**
+ * `catalog::default_reasoning`: `high` if offered, else `medium`, else
+ * the first level, else `null`. Only used when the FFI's
+ * `ModelInfo.defaultReasoning` is null.
+ */
+internal fun preferredReasoning(levels: List<String>): String? =
+    listOf("high", "medium").firstOrNull { it in levels } ?: levels.firstOrNull()
+
+/**
+ * iOS `URL(string:)` narrowed to the case that matters: a PR url must be
+ * non-blank **and** parse with a scheme, else the chip gets no menu (a
+ * menu whose "Open Pull Request" cannot open is worse than no menu).
+ */
+internal fun prUrlOrNull(url: String?): String? =
+    url?.takeIf { it.isNotBlank() && runCatching { java.net.URI(it) }.getOrNull()?.scheme != null }
