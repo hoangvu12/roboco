@@ -4,7 +4,7 @@ import androidx.camera.core.ImageProxy
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.QRCodeReader
+import com.google.zxing.qrcode.QRCodeReader
 import com.google.zxing.ReaderException
 import com.google.zxing.common.HybridBinarizer
 

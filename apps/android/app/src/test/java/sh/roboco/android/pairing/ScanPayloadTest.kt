@@ -223,7 +223,10 @@ class ScanPayloadTest {
         val d = RejectDebouncer(windowMs = 500)
         assertTrue(d.shouldShow("a", 0))
         assertFalse(d.shouldShow("a", 499))
-        assertTrue(d.shouldShow("a", 500))
+        // Every call stores the time (KDoc: the window runs from the LAST
+        // sighting): 499 + 500 is the first re-flash, not 500.
+        assertFalse(d.shouldShow("a", 998))
+        assertTrue(d.shouldShow("a", 1498))
     }
 
     // ------------------------------------------------------- PairingLinks

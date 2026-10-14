@@ -1,5 +1,6 @@
 package sh.roboco.android.composer
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
@@ -141,6 +142,9 @@ class AttachMenuBehaviourTest {
         // whatever the shadow says; pin it (the rebuild test flips it).
         shadowOf(compose.activity.packageManager)
             .setSystemFeature(PackageManager.FEATURE_CAMERA_ANY, true)
+        // #138 declares CAMERA in the manifest, so the attach menu asks for it
+        // before TakePicture; Robolectric denies runtime permissions by default.
+        shadowOf(compose.activity.application).grantPermissions(Manifest.permission.CAMERA)
         clipboard.clearPrimaryClip()
         DisplayNameProvider.displayName = null
         resetFileProvider()

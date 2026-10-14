@@ -292,7 +292,21 @@ class EngineDetailModelTest {
         )
         assertEquals(
             listOf(EngineStatusRow.Status, EngineStatusRow.Address),
-            statusRows(engineDetailUi(engineView(id = "e1", name = "n", state = EngineState.Connected), now)),
+            // The widened fixture fills version/platform/deviceId by default;
+            // the bare row clears them to leave only the always-on rows.
+            statusRows(
+                engineDetailUi(
+                    engineView(
+                        id = "e1",
+                        name = "n",
+                        state = EngineState.Connected,
+                        deviceId = null,
+                        platform = null,
+                        version = null,
+                    ),
+                    now,
+                ),
+            ),
         )
     }
 
@@ -329,7 +343,9 @@ class EngineDetailModelTest {
 
     @Test
     fun theCopyEllipsesAreTheSingleCharacterU2026() {
-        for (text in listOf(EngineDetailCopy.Rename, EngineDetailCopy.Copied)) {
+        // "Copied" is a plain toast word (no ellipsis); only the menu-style
+        // label carries U+2026.
+        for (text in listOf(EngineDetailCopy.Rename)) {
             assertTrue("U+2026 expected in '$text'", text.endsWith("\u2026"))
         }
         assertEquals("Rename\u2026", EngineDetailCopy.Rename)

@@ -148,13 +148,13 @@ private val StageWidth = 393.dp
 private val StageHeight = 376.dp
 
 /** The thumbnail references (rightmost first, as Rust draws them). */
-private const val ATT1 = "gallery://att-1.png"
-private const val ATT2 = "gallery://att-2.png"
-private const val ATT3 = "gallery://att-3.png"
+private const val ATT1 = "/gallery/att-1.png"
+private const val ATT2 = "/gallery/att-2.png"
+private const val ATT3 = "/gallery/att-3.png"
 
 /** The 260 dp row tile's two references (the swap pair). */
-private const val ROW_A = "gallery://generated.png"
-private const val ROW_B = "gallery://generated-b.png"
+private const val ROW_A = "/gallery/generated.png"
+private const val ROW_B = "/gallery/generated-b.png"
 
 /**
  * The deterministic fixture (goldens and previews): the Rust geometry with
@@ -181,7 +181,7 @@ fun ImageTileOverlayFixture() {
         x = 18,
         y = 100,
         side = 260,
-        reference = "gallery://overlay.png",
+        reference = "/gallery/overlay.png",
         actions = TranscriptActions(),
         overlay = { Box(Modifier.fillMaxSize().background(Color.Red)) },
     )

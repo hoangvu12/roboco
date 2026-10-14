@@ -264,6 +264,15 @@ class SettingsScreenTest {
                                                 onGroupByProjectChange = { groupChanges += it },
                                                 about = about,
                                             )
+                                        } else if (entry.route is EngineDetailRoute) {
+                                            // The page reads this test's engines (with e1), not
+                                            // the app's coreStartup flow: under Robolectric the
+                                            // core may load and publish an empty list, and the
+                                            // page pops itself on a loaded flow without its engine.
+                                            EngineDetailScreen(
+                                                (entry.route as EngineDetailRoute).engineId,
+                                                engines = engines,
+                                            )
                                         } else {
                                             ShellRouteContent(entry.route)
                                         }

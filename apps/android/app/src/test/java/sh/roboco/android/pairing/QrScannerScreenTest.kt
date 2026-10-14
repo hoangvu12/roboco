@@ -150,6 +150,7 @@ class QrScannerScreenTest {
 
         state.value = QrScannerUiState(ScannerPhase.Denied, showForeign = false)
         Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame() // the frozen clock: one frame applies the write
         compose.waitForIdle()
         val denied = bounds(QrReticleTag)
         assertEquals(scanning.left, denied.left, 0.5f)
@@ -208,17 +209,20 @@ class QrScannerScreenTest {
 
         state.value = QrScannerUiState(ScannerPhase.Scanning, showForeign = true)
         Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame() // the frozen clock: one frame applies the write
         compose.waitForIdle()
         compose.onNodeWithText(context.getString(R.string.qr_foreign)).assertExists()
 
         state.value = QrScannerUiState(ScannerPhase.Denied, showForeign = false)
         Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame() // the frozen clock: one frame applies the write
         compose.waitForIdle()
         compose.onNodeWithText(context.getString(R.string.qr_denied)).assertExists()
         compose.onNodeWithTag(QrOpenSettingsTag).assertExists()
 
         state.value = QrScannerUiState(ScannerPhase.Unavailable, showForeign = false)
         Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame() // the frozen clock: one frame applies the write
         compose.waitForIdle()
         compose.onNodeWithText(context.getString(R.string.qr_unavailable)).assertExists()
     }
