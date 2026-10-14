@@ -68,7 +68,7 @@ fun TranscriptIconFixture() {
         Modifier.background(RobocoTheme.palette.background),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Caption("Tool glyphs — 18 dp (tool lines), 13.5 dp (agent cards)")
+        IconCaption("Tool glyphs — 18 dp (tool lines), 13.5 dp (agent cards)")
         IconGrid(
             listOf(
                 IconCell("terminal", "tool-terminal", ColorRole.TEXT_SECONDARY, 18f),
@@ -85,7 +85,7 @@ fun TranscriptIconFixture() {
                 IconCell("terminal·danger", "tool-terminal", ColorRole.DANGER, 18f),
             ),
         )
-        Caption("File icons — 15.75 dp (badges, diff stat), 16 dp (file pills)")
+        IconCaption("File icons — 15.75 dp (badges, diff stat), 16 dp (file pills)")
         IconGrid(
             listOf(
                 IconCell("bot·13.5", "tool-bot", ColorRole.TEXT_SECONDARY, 13.5f),
@@ -97,7 +97,7 @@ fun TranscriptIconFixture() {
                 IconCell("rust·16", "fileicon-files-rust", ColorRole.TEXT_SOFT, 16f),
             ),
         )
-        Caption("SF glyphs — 16 dp (chip rows), 15 dp (inline chips)")
+        IconCaption("SF glyphs — 16 dp (chip rows), 15 dp (inline chips)")
         IconGrid(
             listOf(
                 IconCell("questionmark.bubble", "questionmark.bubble", ColorRole.ACCENT, 16f),
@@ -108,7 +108,7 @@ fun TranscriptIconFixture() {
                 IconCell("photo", "photo", ColorRole.TEXT_SOFT, 15f),
             ),
         )
-        Caption("Task boxes — 18 dp, centred on the 25 dp body line")
+        IconCaption("Task boxes — 18 dp, centred on the 25 dp body line")
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             TaskCell("square", ColorRole.TEXT_TERTIARY)
             TaskCell("checkmark.square.fill", ColorRole.ACCENT)
@@ -141,6 +141,7 @@ private fun IconGrid(cells: List<IconCell>) {
     }
 }
 
+/** One cell: the label above the widget's own box, at the cell's size. */
 @Composable
 private fun IconCellView(cell: IconCell) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -183,7 +184,7 @@ private fun TaskCell(name: String, color: ColorRole) {
 
 /** A section caption: Geist 11 dp fixed in `secondary`. */
 @Composable
-private fun Caption(text: String) {
+private fun IconCaption(text: String) {
     BasicText(
         text,
         style = uiStyle(Face.Sans, LocalTypeScale.current.fixed(11f), RobocoTheme.palette.secondary),

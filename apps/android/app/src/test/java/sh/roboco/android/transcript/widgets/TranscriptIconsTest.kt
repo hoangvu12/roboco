@@ -20,7 +20,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
@@ -422,7 +421,7 @@ class TranscriptIconsTest {
         // A real touch on the widget's bounds (its centre) reaches the
         // parent's pointerInput: the widget consumes nothing. The tap runs
         // synchronously; no idle wait (the clock is frozen).
-        compose.onNodeWithTag("host").performTouchInput { click() }
+        compose.onNodeWithTag("host").performTouchInput { click(center) }
         assertEquals("the tap reached the parent gesture handler", 1, taps.size)
     }
 
