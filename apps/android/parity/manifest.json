@@ -1,0 +1,178 @@
+[
+  {
+    "golden": "sessions/sessions_root_scrolled_light.png",
+    "iosRef": "pr874/1-off.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["SL-01", "SL-02", "SL-03", "SL-04", "SL-05", "SL-06", "SL-07", "SL-08"],
+    "notes": "The parity fixture (the 1-off row set), scrolled so P0 sits under the inline title, as in the reference. SSIM ratchet entry: set ssimFloor at first sign-off (score − 0.02).",
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/sessions_root_scrolled_dark.png",
+    "iosRef": null,
+    "adaptation": "dark-mode re-render of the 1-off set (no dark iOS capture exists; the palette roles are the source)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["SL-02", "SL-03", "SL-04", "SL-05"],
+    "notes": "Dark companion of the light golden.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/session-list-scale-160-light.png",
+    "iosRef": null,
+    "adaptation": "the font-scale-1.6 re-measure golden (the list-only variant; no iOS reference)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["SL-01", "SL-06"],
+    "notes": "1.6 font scale: rows re-measure, no clipped baselines.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/sessions_root_grouped_scrolled_light.png",
+    "iosRef": "pr874/3-on.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["GP-01", "GP-02", "GP-03", "GP-04"],
+    "notes": "Group by Project on: Recent replaced by the project groups in reference order. SSIM ratchet entry.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/sessions_root_grouped_scrolled_dark.png",
+    "iosRef": null,
+    "adaptation": "dark-mode re-render of the 3-on set",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["GP-01", "GP-03"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/sessions_root_wallpaper_rest_light.png",
+    "iosRef": "mobile-polish/home-glass.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["WP-01", "WP-02", "WP-03"],
+    "notes": "Wallpaper hero at scroll 0; the reference is tone-only (colour/glass, not row structure).",
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/sessions_root_wallpaper_rest_dark.png",
+    "iosRef": null,
+    "adaptation": "dark-mode wallpaper hero (tone-only, no iOS capture)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["WP-01", "WP-02"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "sessions/FolderScreen_archived_light.png",
+    "iosRef": null,
+    "adaptation": "structure per ios:Threads/SessionListController.swift:422-460 (the archived list); no iOS capture",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["FA-01", "FA-02", "FA-03"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "transcript/session_transcript_fixture_light_393.png",
+    "iosRef": "mobile-polish/tool-activity.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["TR-01", "TR-02", "TR-03", "TR-04", "TR-05"],
+    "notes": "layoutFixtureMarkdown() through the real core at 393 dp. The reference is tone-only.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "transcript/session_transcript_fixture_dark_393.png",
+    "iosRef": null,
+    "adaptation": "dark-mode transcript fixture (tone-only, no iOS capture)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["TR-01", "TR-03", "TR-05"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "transcript/session_transcript_fixture_light_320.png",
+    "iosRef": null,
+    "adaptation": "the 320 dp narrow-width re-measure (no iOS reference)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["TR-02"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "transcript/session_transcript_fixture_light_768.png",
+    "iosRef": null,
+    "adaptation": "the 768 dp reading-column clamp (no iOS reference)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["TR-02"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "transcript/session_streaming_light.png",
+    "iosRef": "mobile-polish/send-runway.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["ST-01", "ST-02", "ST-03"],
+    "notes": "Veil + working trailer: last entry streaming, working = true, veil frozen at 50%. Tone-only reference.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "settings/settings_screen_top_light.png",
+    "iosRef": "pr874/2-settings.png",
+    "adaptation": null,
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["S-01", "S-02", "S-03", "S-04", "S-05", "S-06", "S-07"],
+    "notes": "The G3 metric table's source screen. SSIM ratchet entry.",
+    "ssimFloor": null
+  },
+  {
+    "golden": "settings/settings_screen_top_dark.png",
+    "iosRef": null,
+    "adaptation": "dark-mode Settings (no dark iOS capture)",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["S-01", "S-02", "S-05"],
+    "notes": null,
+    "ssimFloor": null
+  },
+  {
+    "golden": "settings/settings_screen_bottom_light.png",
+    "iosRef": null,
+    "adaptation": "scrolled to the end, like the reference's lower half",
+    "reviewedSha256": null,
+    "reviewer": null,
+    "date": null,
+    "checklistItems": ["S-01", "S-04"],
+    "notes": null,
+    "ssimFloor": null
+  }
+]

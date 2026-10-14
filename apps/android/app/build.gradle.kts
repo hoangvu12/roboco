@@ -38,6 +38,7 @@ val unitTestOnly: Boolean = gradle.startParameter.taskNames.isNotEmpty() &&
             "compiledebugunittestkotlin",
             "recordroborazzidebug",
             "verifyroborazzidebug",
+            "parityreport",
         )
     }
 
@@ -368,6 +369,12 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // android-app#30: the flow suite's isolation — each instrumented
+        // test runs in its own process with wiped app data, so every test
+        // starts unpaired and clean (the rig re-pairs via the `pair`
+        // extra). Requires the ANDROIDX_TEST_ORCHESTRATOR execution below
+        // and the `androidTestUtil` orchestrator APK.
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
         // No ndk.abiFilters here: AGP refuses abiFilters alongside the ABI
         // splits below, and the splits' include (intersected with
         // -ProbocoAbis) now decides which libroboco_mobile.so is packaged
@@ -433,6 +440,10 @@ android {
     }
 
     testOptions {
+        // android-app#30: every instrumented test in its own process with
+        // `clearPackageData` (above), so the flow suite's pairing state
+        // never bleeds between tests.
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
         unitTests {
             // Robolectric needs the app resources/assets (fonts, icons).
             isIncludeAndroidResources = true
@@ -506,6 +517,26 @@ roborazzi {
     outputDir.set(file("src/test/screenshots"))
 }
 
+// ---------------------------------------------------------------------------
+// The iOS parity gate (android-app#30): the G5 report. G1 is Roborazzi's
+// `verifyRoborazziDebug`; G2–G4 are the `sh.roboco.android.parity` JVM
+// tests; this task writes the side-by-side board the reviewer walks
+// (`apps/android/parity/CHECKLIST.md`), uploaded by the
+// `android-screenshots` CI job on every run.
+// ---------------------------------------------------------------------------
+val parityDir: File = projectDir.parentFile.resolve("parity")
+
+val parityReport = tasks.register<roboco.gradle.ParityReport>("parityReport") {
+    group = "roboco"
+    description =
+        "Writes the iOS parity side-by-side board ([Android | iOS | abs-diff] per " +
+            "golden) plus index.html into build/parity/."
+    manifest.set(file(parityDir.resolve("manifest.json")))
+    goldens.from(fileTree("src/test/screenshots") { include("**/*.png") })
+    iosRefs.from(fileTree(parityDir.resolve("ios")) { include("**/*.png") })
+    outputDir.set(layout.buildDirectory.dir("parity"))
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -566,6 +597,9 @@ dependencies {
     // ui-test-junit4 on the androidTest classpath as well.
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
+    // androidTestUtil: the Orchestrator APK itself (android-app#30) —
+    // installed on the device beside the test APK, not on any classpath.
+    androidTestUtil(libs.androidx.test.orchestrator)
     // android-app#28's NotificationFlowTest: the system permission dialog,
     // pressHome and the notification shade (UiDevice), CI-only. Also
     // ui-parity #133's KeyboardFlowTest (raw swipes over the IME).

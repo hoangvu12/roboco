@@ -87,10 +87,65 @@ derives them from `dist/roboco-artwork.png` and the outputs are committed
   the **host** core via JNA, plus plain JVM tests for the version/asset/network
   contracts.
 - `:app:recordRoborazziDebug` / `:app:verifyRoborazziDebug` — the
-  screenshot goldens in `app/src/test/screenshots/` (the seed for ticket 14).
+  screenshot goldens in `app/src/test/screenshots/`; ubuntu is the source
+  of truth for recording (font rasterisation differs across hosts —
+  Windows gets `:app:compareRoborazziDebug` for local feedback).
+- `:app:parityReport` — the iOS parity board (`build/parity/`), G5 of the
+  parity gate; see `parity/` below.
 - `cargo test -p roboco-android-assets` (repo root) — the icon pipeline.
+
+### The iOS parity gate (android-app#30)
+
+Every committed golden is pinned in `parity/manifest.json` by a human
+sign-off (SHA-256, reviewer, date — `ParityManifestTest`, G2), the
+ratchet entries carry an SSIM floor against their iOS reference
+(`IosParitySimilarityTest`, G4), `IosParityMetricsTest` (G3) asserts the
+measured metric table, and `verifyRoborazziDebug` (G1) gates the pixels.
+The reviewer's walk is `parity/CHECKLIST.md`; the board to open is the
+`android-parity` CI artifact (`:app:parityReport`, uploaded on every run).
+The iOS references live in `parity/ios/` with their sources in
+`parity/ios/SOURCES.md` (upstream is MIT — keep the attribution).
+
+### The instrumented flow suite (android-app#30)
+
+`scripts/flow-tests.sh` (Linux/KVM) and `scripts/flow-tests.ps1`
+(Windows/WHPX) start three `android_fixture` engines (the seeded
+`main` / paced `slow` / question-asking `question` profiles), `adb
+reverse` their ports, and run `:app:connectedDebugAndroidTest` with the
+`fixture*` instrumentation arguments — each test mints a fresh pairing
+URL from `/mint` and pairs through the debug `pair` launch extra
+(`FixtureRule`). The `@Tour` motion recordings run in the tablet CI job
+(`FLOW_INCLUDE_TOUR=1`), the transcript bench on a physical device.
+
+**Linux (KVM):** install the emulator + system image
+(`sdkmanager "emulator" "platform-tools"
+"system-images;android-36;google_apis;x86_64"`), create the AVD
+(`avdmanager create avd -n roboco36 -k … -d pixel_7`), build the fixture
+(`cargo build --locked -p roboco-engine --example android_fixture`),
+then `apps/android/scripts/flow-tests.sh`.
+
+**Windows (WHPX):** enable Windows Hypervisor Platform (elevated
+PowerShell, then reboot — it coexists with Hyper-V, WSL2 and Core
+Isolation; AEHD is sunset 2026-12-31, HAXM is unused from emulator
+36.2): `Enable-WindowsOptionalFeature -Online -FeatureName
+HypervisorPlatform`. Then the same SDK pieces, the AVD, and
+`emulator -accel-check` must report WHPX. `rustup target add
+x86_64-linux-android`, `cargo install cargo-ndk` (NDK r28+;
+28.2.13676358 since 2026-10-12), build the fixture, and run
+`apps\android\scripts\flow-tests.ps1`. Builds go through sccache —
+add worktree roots to sccache's `basedirs`
+([docs/reference/windows-development.md](../../docs/reference/windows-development.md)).
 
 ## Launch extras
 
-*(Placeholder: ticket 30 fills this — CI emulator runs and the extended
-screenshot suite.)*
+Debug builds (`FLAG_DEBUGGABLE`) honour these intent extras (launch-time
+`adb shell am start … --es key value`), all gated to debug — a hostile
+caller cannot use them in release:
+
+| Extra | Values | Effect |
+|---|---|---|
+| `route` | `chat:<id>` \| `new` \| `more` \| `search` | the deep-link route the shell opens once composed (always parsed, like iOS's `-route`) |
+| `wallpaper` / `wallpaper-effect` | path \| `none` / a key | imports the wallpaper / sets the effect at launch (iOS's `-wallpaper` pair) |
+| `harness` | verbatim | pins the new-session draft's harness (iOS's `-harness mock` — never a real agent in tests) |
+| `measureopen` | `true` | ticket 75's open-measurement flag |
+| `pair` | comma-separated URLs | the flow rig's pairing URLs, redeemed before the shell shows (android-app#30) |

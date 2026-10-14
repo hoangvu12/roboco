@@ -199,3 +199,197 @@ jobs:
           path: apps/android/app/build/reports/tests/
           retention-days: 7
           if-no-files-found: ignore
+
+  # android-app#30: the JVM screenshot suite + the iOS parity gate.
+  # ubuntu is the source of truth for recording goldens (font
+  # rasterisation differs across hosts); the job gates on
+  # verifyRoborazziDebug (G1) and the parity tests (G2–G4 run inside
+  # testDebugUnitTest), and uploads the parityReport board (G5) on every
+  # run — including failures — so the reviewer's walk never waits on a
+  # green build. The goldens themselves are recorded by
+  # recordRoborazziDebug runs whose artefacts are committed back.
+  android-screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add the Android Rust target
+        # The unit-test tasks build the x86_64 jniLib + the host core.
+        run: rustup target add x86_64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+        working-directory: .
+      # 17 is the build JDK; 21 runs the Robolectric test JVMs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            17
+      - name: Install Android SDK pieces
+        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run the JVM suite, verify the goldens, write the parity board
+        run: ./gradlew --stacktrace "-ProbocoAbis=x86_64" :app:testDebugUnitTest :app:verifyRoborazziDebug :app:parityReport
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-parity
+          path: |
+            apps/android/app/build/parity
+            apps/android/app/build/outputs/roborazzi
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # android-app#30: the instrumented flow suite against the fixture
+  # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
+  # logic: three android_fixture processes, adb reverse, the suite with
+  # the @Tour annotations excluded, and the artefact harvest.
+  android-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add the Android Rust target
+        run: rustup target add x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+      - name: Install Android SDK pieces
+        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+      # 17 builds the app inside the script (the Gradle daemon runs the
+      # app's Kotlin + the x86_64 core).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the fixture engine
+        run: cargo build --locked -p roboco-engine --example android_fixture
+      # AVD snapshot cache (the runner's README recipe): cold boots cost
+      # minutes on every run otherwise.
+      - uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-36-pixel-7-20261012
+      - name: Run the flow suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          disable-animations: true
+          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: apps/android/scripts/flow-tests.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-flow-artifacts
+          path: |
+            apps/android/app/build/flow-artifacts
+            apps/android/app/build/reports/androidTests
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # android-app#30: the tablet split shell (smallest width ≥ 600) plus the
+  # @Tour motion recordings — push-to-main and dispatch only, keeping PR
+  # time down. The Tour tests record `screenrecord` mp4s that the
+  # artefact step pulls.
+  android-emulator-tablet:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add the Android Rust target
+        run: rustup target add x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+      - name: Install Android SDK pieces
+        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the fixture engine
+        run: cargo build --locked -p roboco-engine --example android_fixture
+      - uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-36-pixel-tablet-20261012
+      - name: Run the tablet + tour suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_tablet
+          disable-animations: true
+          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          # The tour runs WITH its recordings here.
+          script: FLOW_INCLUDE_TOUR=1 apps/android/scripts/flow-tests.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-tablet-artifacts
+          path: |
+            apps/android/app/build/flow-artifacts
+            apps/android/app/build/reports/androidTests
+          retention-days: 14
+          if-no-files-found: ignore
