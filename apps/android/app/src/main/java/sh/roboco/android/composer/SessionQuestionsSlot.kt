@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.CoroutineScope
@@ -401,15 +402,7 @@ fun QuestionPanelBehaviourGallerySection() {
     SideEffect { state.canWrite = !offline }
 
     Column(Modifier.fillMaxWidth()) {
-        ProvideHazeState {
-            GlassStage(
-                modifier = Modifier.width(388.dp),
-                height = 520.dp,
-                backdropModifier = Modifier.hazeSource(LocalHazeState.current!!),
-            ) {
-                with(PreviewSlotScope) { SessionQuestionsSlot(state) }
-            }
-        }
+        QuestionPanelStage(state, height = 520.dp)
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             BehaviourRow("F1") { state.configure(QuestionPanelFixtures.F1) }
             BehaviourRow("F2") { state.configure(QuestionPanelFixtures.F2) }
@@ -456,22 +449,34 @@ private fun BehaviourRow(label: String, value: String = "", onClick: () -> Unit)
 }
 
 // ---------------------------------------------------------------------------
-// Previews (91's step 8): F2 page 1 with option 1 picked, in 90's stage
+// The shared stage and the previews (91's step 8): F2 page 1 with option 1
+// picked, in 90's stage
 // ---------------------------------------------------------------------------
 
+/**
+ * The shared 388 dp stage: the striped backdrop's sibling carries the
+ * panel (ticket 90's B1 stage is 480 dp for the same page height; the
+ * gallery gives the taller fixtures 520 dp). The Roborazzi goldens
+ * mount through it too, so their geometry never diverges.
+ */
 @Composable
-private fun QuestionBehaviourPreviewBody() {
-    val scope = rememberCoroutineScope()
-    val state = remember(scope) { questionFixtureState(scope) }
+internal fun QuestionPanelStage(state: QuestionPanelState, height: Dp) {
     ProvideHazeState {
         GlassStage(
             modifier = Modifier.width(388.dp),
-            height = 480.dp,
+            height = height,
             backdropModifier = Modifier.hazeSource(LocalHazeState.current!!),
         ) {
             with(PreviewSlotScope) { SessionQuestionsSlot(state) }
         }
     }
+}
+
+@Composable
+private fun QuestionBehaviourPreviewBody() {
+    val scope = rememberCoroutineScope()
+    val state = remember(scope) { questionFixtureState(scope) }
+    QuestionPanelStage(state, height = 480.dp)
 }
 
 @Preview(name = "Question behaviour – light")

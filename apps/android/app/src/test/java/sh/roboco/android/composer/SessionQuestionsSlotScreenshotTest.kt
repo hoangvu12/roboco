@@ -1,13 +1,10 @@
 package sh.roboco.android.composer
 
-import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.snapshots.Snapshot
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
-import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import org.junit.After
@@ -20,11 +17,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.Glass
-import sh.roboco.android.design.GlassStage
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
-import sh.roboco.android.design.glass.LocalHazeState
-import sh.roboco.android.design.glass.ProvideHazeState
 
 /**
  * The question **panel behaviour** goldens (android-ui-parity #91),
@@ -80,15 +74,7 @@ class SessionQuestionsSlotScreenshotTest {
         val state = questionFixtureState(CoroutineScope(Dispatchers.Main.immediate))
         compose.setContent {
             RobocoTheme(appearance) {
-                ProvideHazeState {
-                    GlassStage(
-                        modifier = Modifier.width(388.dp),
-                        height = 480.dp,
-                        backdropModifier = Modifier.hazeSource(LocalHazeState.current!!),
-                    ) {
-                        with(PreviewSlotScope) { SessionQuestionsSlot(state) }
-                    }
-                }
+                QuestionPanelStage(state, height = 480.dp)
             }
         }
         return state
