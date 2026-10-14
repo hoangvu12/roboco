@@ -359,13 +359,13 @@ internal fun buildHandoffGalleryFixture(
         val w = composer.width.toFloat()
         val h = composer.height.toFloat()
         val cardPath = smoothRoundedPath(w, h, 26f * d)
-        drawPath(cardPath, Paint().apply { color = card })
+        drawPath(cardPath, Paint().apply { this.color = card })
         drawPath(
             cardPath,
             Paint().apply {
-                color = cardBorder
-                style = PaintingStyle.Stroke
-                strokeWidth = 1f
+                this.color = cardBorder
+                this.style = PaintingStyle.Stroke
+                this.strokeWidth = 1f
             },
         )
     }
