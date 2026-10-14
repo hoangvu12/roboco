@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Custom Tabs (ui-parity#89, shared with 126): package visibility
+         for CustomTabsClient.getPackageName on API 30+; without it the PR
+         chip's "Open Pull Request" falls back to the plain VIEW intent. -->
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Haptics (parity #05): required by Vibrator.vibrate. Normal permission, no prompt. -->

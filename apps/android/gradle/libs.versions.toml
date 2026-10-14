@@ -34,6 +34,9 @@ roborazzi = "1.76.0"
 # Liquid-glass backdrop blur (ui-parity#07): android-app#14's recipe.
 # The blur module only — haze-blur-materials is not the iOS look.
 haze = "2.0.1"
+# Custom Tabs (ui-parity#89, shared with 126's transcript links):
+# the version pr609 used; not a Material artifact.
+browser = "1.10.0"
 # Pinned-folder drag-to-reorder (ui-parity#47): LazyColumn drag handles
 # on Compose runtime/animation/foundation only (no material3). Newest
 # stable on Maven Central, re-verified 2026-10-12.
@@ -62,6 +65,9 @@ compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4
 compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphicsShapes" }
 haze-blur = { module = "dev.chrisbanes.haze:haze-blur", version.ref = "haze" }
+# Custom Tabs (ui-parity#89): PR chip "Open Pull Request" and 126's
+# transcript links — the same launcher and settings for both.
+androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }

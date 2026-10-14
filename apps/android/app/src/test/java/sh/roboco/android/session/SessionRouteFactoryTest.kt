@@ -195,7 +195,7 @@ class SessionRouteFactoryTest {
             val core = FakeSessionCore()
             core.engineResult = engineView().copy(state = state)
             val route = requireNotNull(factory(SessionOpener { core }).open("chat-a"))
-            assertEquals(listOf("composer", "sessionRow", "engine"), core.callLog)
+            assertEquals(listOf("composer", "sessionRow", "engine", "sessionConfig"), core.callLog)
             route.discard()
         }
     }

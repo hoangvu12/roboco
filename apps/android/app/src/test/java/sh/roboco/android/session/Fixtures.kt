@@ -1,6 +1,7 @@
 package sh.roboco.android.session
 
 import uniffi.roboco_core.ChatIndicator
+import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ComposerState
 import uniffi.roboco_core.Connectivity
 import uniffi.roboco_core.ConnectivityState
@@ -176,6 +177,9 @@ internal class FakeSessionCore(
 ) : SessionCore {
     var composerResult: ComposerState = composerState(chatId = chatId)
     var sessionRowResult: SessionRow? = null
+
+    /** Ticket 89: the chat's local config; `null` = no config yet. */
+    var sessionConfigResult: ChatConfig? = null
     var engineResult: EngineView? = null
     var attachTranscriptResult: Boolean = true
     var composerFailures: Int = 0
@@ -200,6 +204,11 @@ internal class FakeSessionCore(
     override fun sessionRow(): SessionRow? {
         callLog += "sessionRow"
         return sessionRowResult
+    }
+
+    override fun sessionConfig(): ChatConfig? {
+        callLog += "sessionConfig"
+        return sessionConfigResult
     }
 
     override fun engine(): EngineView? {

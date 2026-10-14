@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ComposerState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.SessionRow
@@ -30,8 +31,10 @@ data class ChromeInput(
     val row: SessionRow?,
     /** The owning engine's view — for 73 (banner) and 79 (canWrite). */
     val engine: EngineView?,
-    // Ticket 89 appends `val config: ChatConfig? = null` (read via its
-    // SessionCore.sessionConfig()); keep it last and defaulted.
+    // Ticket 89 (chip menus): the chat's local config — the #664
+    // config-first selection the menus' deferred loads re-read. Read once
+    // per refresh next to the row, so the provider never calls FFI.
+    val config: ChatConfig? = null,
 )
 
 /**
@@ -304,7 +307,16 @@ class SessionController private constructor(
             val engine = core.engine()
             hostDeviceId = c.host.deviceId
             pinned = row?.pinned == true
-            val input = ChromeInput(chatId = core.chatId, composer = c, row = row, engine = engine)
+            // Ticket 89: the local config beside the row — the menus'
+            // deferred loads re-read it at load time (#664), so it rides
+            // along on every refresh.
+            val input = ChromeInput(
+                chatId = core.chatId,
+                composer = c,
+                row = row,
+                engine = engine,
+                config = core.sessionConfig(),
+            )
             var next = baseChrome(c, row)
             for (filler in fillers) next = filler.fill(next, input)
             _chrome.value = next

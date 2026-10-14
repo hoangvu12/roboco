@@ -23,6 +23,9 @@ import sh.roboco.android.composer.QuestionActions
 import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.SessionQuestionsSlot
 import sh.roboco.android.composer.rememberQuestionPanelState
+import sh.roboco.android.composer.ChipMenuProvider
+import sh.roboco.android.composer.SessionChipMenus
+import sh.roboco.android.composer.rememberChipMenuPlatform
 import sh.roboco.android.image.ImageViewerRequest
 import sh.roboco.android.image.LocalImageViewer
 import sh.roboco.android.composer.QueueAction
@@ -338,6 +341,34 @@ fun SessionScreen(
         rememberQuestionPanelState(controller, questionActions)
     } else {
         null
+    }
+
+    // 9.6 Ticket 89: the chip-menu providers and the write-failure
+    //     reporting. This SideEffect sits **after** 78's own
+    //     `binding.apply(chrome)` (SideEffects run in composition order),
+    //     so its closing re-apply is what puts the providers on the
+    //     composer's first frame; the map's lambdas themselves run only
+    //     at tap time (ticket 59), never during composition. The
+    //     provider reads only the controller-refresh snapshot — no FFI
+    //     on main; the loads and writes hop to IO inside
+    //     [SessionChipMenus].
+    composerBinding?.let { binding ->
+        val chipMenus = remember(controller) { controller.filler<SessionChipMenus>() }
+        val banner = remember(controller) { controller.filler<StatusBanner>() }
+        val platform = rememberChipMenuPlatform()
+        SideEffect {
+            chipMenus?.let { menus ->
+                menus.onSettingResult = { t ->
+                    if (t == null) banner?.noteSettingSucceeded() else banner?.noteSettingFailed(t)
+                }
+                // iOS render :488-491: the provider map is rebuilt on
+                // every chrome change (the chips it decorates are).
+                binding.chipMenus = { chips ->
+                    chips.associate { chip -> chip.id to ChipMenuProvider { menus.menu(chip.id, platform) } }
+                }
+            }
+            binding.apply(chrome)
+        }
     }
 
     // 10. The layer stack: the scaffold (background, haze, header) around
