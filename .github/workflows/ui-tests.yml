@@ -112,7 +112,8 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
       - name: Install cargo-ndk
-        run: cargo install --locked cargo-ndk@^4
+        # Pinned like android.yml/release.yml (CARGO_NDK_VERSION 4.1.2).
+        run: cargo install --locked cargo-ndk --version 4.1.2
       - name: Build the mobile core and generate bindings
         run: cargo xtask android-core --profile mobile-dist --check
       - name: Upload core sizes

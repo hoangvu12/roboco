@@ -226,7 +226,7 @@ jobs:
   # run — including failures — so the reviewer's walk never waits on a
   # green build. The goldens themselves are recorded by a workflow_dispatch
   # run with `record_goldens` (record, determinism re-verify, board, the
-  # `android-goldens` artifact a human commits back — docs/reference/ci.md
+  # `android-goldens` artifact a human commits back — docs/reference/android-development.md
   # and apps/android/parity/README.md).
   #
   # NON-BLOCKING for now: no goldens are committed yet

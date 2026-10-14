@@ -338,8 +338,14 @@ jobs:
                   echo "::error::$src signer SHA-256 $digest does not match ANDROID_CERT_SHA256 ($expected)"
                   exit 1
                 fi
+              elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+                # android-app#31: a tagged release ships APKs whose signer
+                # SHA-256 equals ANDROID_CERT_SHA256, so the pin cannot be
+                # skipped when the variable is missing.
+                echo "::error::ANDROID_CERT_SHA256 is not set: a tagged release must pin the signer (signer SHA-256: $digest)"
+                exit 1
               else
-                echo "ANDROID_CERT_SHA256 variable is not set; signer SHA-256: $digest"
+                echo "ANDROID_CERT_SHA256 variable is not set; signer SHA-256: $digest (not a tag: not enforced)"
               fi
               echo "Signer SHA-256 ($abi): $digest" >> "$GITHUB_STEP_SUMMARY"
             fi
