@@ -30,7 +30,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.sin
+import kotlin.math.sqrt
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,6 +47,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.Motion
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.Glass
@@ -114,6 +119,18 @@ class JumpToLatestButtonTest {
         applyState()
     }
 
+    /**
+     * The 0 → 1 step response of a unit-mass, zero-initial-velocity
+     * underdamped spring (ζ < 1) at [tSec] — what Compose's SpringSpec
+     * integrates for [stiffness] and [damping].
+     */
+    private fun underdampedStep(stiffness: Double, damping: Double, tSec: Double): Float {
+        val omega = sqrt(stiffness)
+        val decay = damping * omega
+        val omegaD = omega * sqrt(1 - damping * damping)
+        return (1 - exp(-decay * tSec) * (cos(omegaD * tSec) + decay / omegaD * sin(omegaD * tSec))).toFloat()
+    }
+
     /** A tap at the button's centre (100, 100) dp, through the root's coordinates. */
     private fun tapTheButtonCentre() {
         compose.onRoot().performTouchInput { click(Offset(100.dp.toPx(), 100.dp.toPx())) }
@@ -179,8 +196,9 @@ class JumpToLatestButtonTest {
     // ------------------------------------------------------- the motion
 
     /**
-     * The show spring at 96 ms of its own play time: mid-flight (the
-     * ticket's 0.58 ± 0.05), then settled at 1 after 600 ms more.
+     * The show spring at 96 ms of its own play time: mid-flight (≈ 0.779
+     * ± 0.05 under IosSpring's settle-matched mapping; the ticket's 0.58
+     * assumed ω0 = 2π/T), then settled at 1 after 600 ms more.
      */
     @Test
     fun theShowSpringIsMidFlightAt96msAndSettlesToOne() {
@@ -204,9 +222,18 @@ class JumpToLatestButtonTest {
         compose.mainClock.advanceTimeByFrame() // the spring's first frame: play time 0
         compose.mainClock.advanceTimeBy(96)
         val p = motion.progress.value
-        // The ticket's 0.58 ± 0.05 (analytic IosSpring(0.35, 0.80) at 96 ms
-        // ≈ 0.582) — no launch-phase widening now that the sample is exact.
-        assertTrue("mid-flight at 96 ms of play (was $p)", p in 0.53f..0.63f)
+        // The expected value comes from the spring the app actually runs:
+        // IosSpring maps (T 0.35, ζ 0.80) to the settle-matched
+        // ω = ln(1000) / (ζ·T) ≈ 24.67 rad/s (stiffness ≈ 608.6, decision
+        // FOUNDATION-D1), not the response model ω0 = 2π/T ≈ 17.95 behind
+        // the ticket's 0.58. Under the real mapping p(96 ms) ≈ 0.779 — CI on
+        // 4d59594c read 0.7793233, the analytic value to 7 digits, so the
+        // sampling is exact. Same ±0.05 window as before.
+        val expected = underdampedStep(Motion.JumpButton.stiffness.toDouble(), Motion.JumpButton.damping.toDouble(), 0.096)
+        assertTrue(
+            "mid-flight at 96 ms of play (was $p, expected $expected ± 0.05)",
+            abs(p - expected) <= 0.05f,
+        )
         assertTrue(motion.progress.isRunning)
         assertTrue(motion.target)
 

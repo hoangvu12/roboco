@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -26,6 +27,7 @@ import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -257,8 +259,28 @@ class CheckoutModelEffortMenusUiTest {
         compose.onNodeWithTag("new-session-menu-branch-$picked").performClick()
         compose.waitUntil(5_000) { rowsOf("glass-menu") == 0 }
         compose.onNodeWithTag("composer-chip-branch").assertTextContains(picked, substring = true)
+        // Diagnostics (round 35; CI 4d59594c timed out at the `calls == 2`
+        // wait, not diagnosed statically): pin WHERE the third open stops.
+        // The longer "fix/ws-reconnect" title pushes the chip past the
+        // strip's right edge (≈391 vs ≈377 dp by Geist metrics) — the one
+        // difference from the passing worktree test. Bounds are captured
+        // before the click so the message shows whether the chip was clipped.
+        val chipBounds = compose.onNodeWithTag("composer-chip-branch").getUnclippedBoundsInRoot()
+        val stripBounds = compose.onNodeWithTag("composer-chip-strip").getUnclippedBoundsInRoot()
         compose.onNodeWithTag("composer-chip-branch").performClick()
-        compose.waitUntil(5_000) { refs.calls == 2 }
+        val presented = runCatching { compose.waitUntil(5_000) { rowsOf("glass-menu") > 0 } }.isSuccess
+        assertTrue(
+            "the third open never presented the menu — chip $chipBounds vs strip $stripBounds " +
+                "(a chip right edge past the strip's means the click landed on a clipped chip)",
+            presented,
+        )
+        val loaded = runCatching { compose.waitUntil(5_000) { refs.calls == 2 } }.isSuccess
+        assertTrue(
+            "the menu is up but the ref source was not called again: calls=${refs.calls}, " +
+                "loading rows=${rowsOf("glass-menu-loading")}, " +
+                "picked rows=${rowsOf("new-session-menu-branch-$picked")}",
+            loaded,
+        )
         compose.waitUntil(5_000) { rowsOf("new-session-menu-branch-$picked") > 0 }
         compose.onNodeWithTag("new-session-menu-branch-$picked").assertIsSelected()
     }

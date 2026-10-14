@@ -40,6 +40,9 @@ import uniffi.roboco_core.layoutFixtureMarkdown
  * and 15, like the curly quotes before): Minikin tailors URL and hyphen breaks, Rust keeps
  * CoreText's UAX 14, and CoreText parity is the product target. They are
  * scored separately and logged, never asserted; the 99 % covers the rest.
+ * So are MONO cases of text with double-width code points (round 35,
+ * `MonoWide.plan != NONE`): ticket 63 measures and paints those clusters
+ * as 2 mono cells, StaticLayout at 1 em — TextDriftTest skips the same runs.
  *
  * Ground truth runs at density 1: `StaticLayout.Builder` takes an Int
  * width, and `w × d` is fractional for common densities, which would
@@ -125,6 +128,14 @@ class LineBreakAccuracyTest {
         var lineDiff = 0
         var excludedCases = 0
         var excludedExact = 0
+        // MONO × double-width code points (decision, round 35): ticket 63 measures
+        // AND paints a double-width mono cluster as 2 cells (AndroidMeasurer +
+        // TextRunPainter via MonoWide.plan) — self-consistent in the app — while
+        // StaticLayout lays CJK out at 1 em, so it is no ground truth there (corpus
+        // #5: Rust 42 + 8 × 16.8 = 176.4 breaks at 13, Android 42 + 9 × 14 = 168
+        // fits 14). TextDriftTest skips exactly these runs (same predicate).
+        var monoWideCases = 0
+        var monoWideExact = 0
         val report = ArrayList<String>()
         // Diagnostics only (never asserted): mismatches per corpus string and
         // per face, so a run shows WHICH texts diverge — 12 samples cannot.
@@ -154,13 +165,20 @@ class LineBreakAccuracyTest {
                         val androidStarts = staticLayoutStarts(text, paint, w)
                         cases++
                         val excluded = index in MINIKIN_HYPHEN_URL_CASES
+                        val monoWide = !excluded && face == FaceRole.MONO &&
+                            MonoWide.plan(text, 0, text.length) !== MonoWide.NONE
                         if (excluded) excludedCases++
+                        if (monoWide) monoWideCases++
                         if (rust == androidStarts) {
-                            if (excluded) excludedExact++ else exact++
+                            when {
+                                excluded -> excludedExact++
+                                monoWide -> monoWideExact++
+                                else -> exact++
+                            }
                         } else {
                             // iOS counts height (line-count) diffs on mismatches
                             // only; here they are reported, never asserted.
-                            if (rust.size != androidStarts.size && !excluded) lineDiff++
+                            if (rust.size != androidStarts.size && !excluded && !monoWide) lineDiff++
                             perText[index]++
                             perFace[face] = (perFace[face] ?: 0) + 1
                             perTextFace[index][face] = (perTextFace[index][face] ?: 0) + 1
@@ -168,7 +186,7 @@ class LineBreakAccuracyTest {
                                 firstMiss[index] = "$face ${size}pt w=$w: rust $rust vs android $androidStarts" +
                                     disputedLine(text, paint, w, rust, androidStarts)
                             }
-                            if (!excluded && report.size < 12) {
+                            if (!excluded && !monoWide && report.size < 12) {
                                 report += "$face ${size}pt w=$w: rust $rust vs " +
                                     "android $androidStarts — ${text.take(48)}"
                             }
@@ -178,17 +196,24 @@ class LineBreakAccuracyTest {
             }
         }
 
-        val scored = cases - excludedCases
+        val scored = cases - excludedCases - monoWideCases
         val rate = exact.toDouble() / scored
         val summary = "LINEBREAK ACCURACY exact=$exact/$scored " +
             "(${"%.2f".format(Locale.ROOT, rate * 100)}%) " +
             "lineCountDiffs=$lineDiff locale=${TextAccuracy.localeTag()} " +
-            "(excluding the Minikin hyphen/URL strings ${MINIKIN_HYPHEN_URL_CASES.keys.sorted()})"
+            "(excluding the Minikin hyphen/URL strings ${MINIKIN_HYPHEN_URL_CASES.keys.sorted()} " +
+            "and MONO x double-width text)"
         TextAccuracy.log(summary)
         // Informational: how far Minikin's hyphen/URL tailoring is from Rust's.
         TextAccuracy.log(
             "LINEBREAK HYPHEN/URL (informational, not asserted) exact=$excludedExact/$excludedCases " +
                 "(${"%.2f".format(Locale.ROOT, excludedExact * 100.0 / excludedCases)}%)",
+        )
+        // Informational: MONO x double-width text, by ticket 63's 2-cell rule.
+        TextAccuracy.log(
+            "LINEBREAK MONO-WIDE (informational, not asserted: ticket 63 measures and paints " +
+                "double-width mono clusters as 2 cells, StaticLayout at 1 em; TextDriftTest skips " +
+                "the same runs) exact=$monoWideExact/$monoWideCases",
         )
         report.forEach { TextAccuracy.log("  MISMATCH $it") }
         corpus.forEachIndexed { index, text ->
