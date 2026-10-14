@@ -70,7 +70,7 @@ const PROFILE_ENV: &[(&str, &[(&str, &str)])] = &[
     ),
     ("slow", &[("ROBOCO_MOCK_DELAY_MS", "150"), ("ROBOCO_MOCK_REPEAT", "4")]),
     ("question", &[("ROBOCO_MOCK_QUESTION", "1")]),
-);
+];
 
 /// The fixed commit identity of the fixture repo: identical content,
 /// author and dates make the root commit — and therefore the
