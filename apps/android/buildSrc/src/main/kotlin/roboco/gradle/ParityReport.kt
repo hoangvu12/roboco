@@ -50,6 +50,13 @@ abstract class ParityReport : DefaultTask() {
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val goldens: ConfigurableFileCollection
 
+    /**
+     * The root [goldens] lives under (`app/src/test/screenshots/`): a
+     * manifest `golden` is a path relative to it (`sessions/x_light.png`).
+     */
+    @get:Internal
+    abstract val goldensRoot: DirectoryProperty
+
     /** The committed iOS references: `apps/android/parity/ios/`. */
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -72,8 +79,13 @@ abstract class ParityReport : DefaultTask() {
         out.deleteRecursively()
         out.mkdirs()
 
-        val goldensRoot = goldens.firstOrNull()?.let { file -> file.parentFile } // one file per entry below
         val entries = ManifestJson.parse(manifest.get().asFile.readText())
+        // Goldens by their exact path relative to the screenshots root, like
+        // the references below: a bare name or `endsWith` match could pair
+        // `a/x.png` with `b/x.png` (and `endsWith` depends on the host's
+        // separator).
+        val goldensBase = goldensRoot.get().asFile
+        val goldensByPath = goldens.files.associateBy { it.relativeTo(goldensBase).invariantSeparatorsPath }
         // References by their exact path relative to parity/ios. A bare
         // `File.name == ref` match never hit (refs carry their folder), so
         // every board showed "reference missing" and no iOS side (verify run
@@ -83,7 +95,7 @@ abstract class ParityReport : DefaultTask() {
         val refsByPath = iosRefs.files.associateBy { it.relativeTo(iosBase).invariantSeparatorsPath }
         val unresolved = mutableListOf<String>()
         val rows = entries.map { entry ->
-            val goldenFile = goldens.firstOrNull { it.name == entry.golden || it.path.endsWith(entry.golden) }
+            val goldenFile = goldensByPath[entry.golden]
             val refFile = entry.iosRef?.let { ref ->
                 refsByPath[ref].also {
                     if (it == null) unresolved += "${entry.golden}: iosRef '$ref' resolves to no file under $iosBase"

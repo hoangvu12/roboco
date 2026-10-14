@@ -21,13 +21,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import sh.roboco.android.core.Face
+import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.hairlineBorder
 import sh.roboco.android.design.hairlineWidth
+import sh.roboco.android.design.uiStyle
 
 /**
  * The navigation gallery (ticket 24): demo routes, the demo screen, the fake
@@ -48,17 +49,20 @@ internal data class DemoRoute(val title: String, val hides: Boolean = false) : N
     override val paneTitle: String get() = title
 }
 
-/** TODO(03): `uiStyle(Face.SansSemibold, ts.fixed(30f))`. */
-private fun demoTitleStyle(color: Color) =
-    TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 30.sp, color = color)
+/** The demo screen's title: SansSemibold, fixed 30. */
+@Composable
+private fun demoTitleStyle(color: Color): TextStyle =
+    uiStyle(Face.SansSemibold, LocalTypeScale.current.fixed(30f), color)
 
-/** TODO(03): `uiStyle(Face.SansMedium, ts.fixed(15f))`. */
-private fun demoButtonStyle(color: Color) =
-    TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 15.sp, color = color)
+/** The demo buttons: SansMedium, fixed 15. */
+@Composable
+private fun demoButtonStyle(color: Color): TextStyle =
+    uiStyle(Face.SansMedium, LocalTypeScale.current.fixed(15f), color)
 
-/** TODO(03): `uiStyle(Face.Mono, ts.fixed(12f))`. */
-private fun demoMonoStyle(color: Color) =
-    TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = color)
+/** The demo readouts: Mono, fixed 12. */
+@Composable
+private fun demoMonoStyle(color: Color): TextStyle =
+    uiStyle(Face.Mono, LocalTypeScale.current.fixed(12f), color)
 
 /**
  * A demo screen: opaque `Palette.background` fill with a centred title

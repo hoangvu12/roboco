@@ -265,9 +265,11 @@ class TabletAppRouter(
 
     /** The openSession result handling: highlight only after a successful open. */
     private fun applyOpened(chatId: String, route: SessionRoute?) {
-        if (!accept(route)) return
+        // accept() already rejects null (the open-error path); the null check
+        // only gives the compiler its smart cast — never a crash.
+        if (!accept(route) || route == null) return
         shell.currentChatId = chatId
-        shell.setDetailSession(route!!)
+        shell.setDetailSession(route)
     }
 
     override fun openSession(chatId: String) {
@@ -316,12 +318,12 @@ class TabletAppRouter(
     internal fun onDraftCreated(chatId: String, handoff: DraftHandoff?) {
         if (handoff == null || shell.isCollapsed) return openSession(chatId)
         resolve(chatId) { route ->
-            if (!accept(route)) return@resolve
+            if (!accept(route) || route == null) return@resolve
             shell.currentChatId = chatId
             // Compose may draw the new route before a later callback, so
             // the route hides its content first (32's adaptation of
             // performWithoutAnimation; 77 makes it plain state writes).
-            route!!.prepareArrival()
+            route.prepareArrival()
             shell.setDetailSession(route)
             // A focused BasicTextField that moves to the leaving list
             // stays composed for one more frame: hide the IME now, in the

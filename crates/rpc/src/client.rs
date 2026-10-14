@@ -452,8 +452,10 @@ pub async fn connect_ws_authenticated(url: &str, credential: &str) -> Result<Rpc
 
 /// Per-message size ceiling for client WebSocket connections. #621 measured
 /// a 16.4 MB transcript reset; tungstenite 0.24's 64 MiB default would drop a
-/// growing one, so the mobile client raises the ceiling to 256 MiB (the
-/// engine's server side stays at defaults: client→engine frames are small).
+/// growing one, so every client dial ([`connect_ws`] and
+/// [`connect_ws_authenticated`], desktop and mobile alike) raises the ceiling
+/// to 256 MiB (the engine's server side stays at defaults: client→engine
+/// frames are small).
 pub const MAX_MESSAGE_BYTES: usize = 256 << 20;
 
 async fn connect_ws_with_session(

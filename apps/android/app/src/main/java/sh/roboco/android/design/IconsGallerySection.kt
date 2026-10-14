@@ -25,8 +25,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.core.Face
 
-// TODO(22): register in design/Gallery.kt as
-//   GallerySection("Icons") { IconsGallerySection() }.
 
 /**
  * The "Icons" page of the design gallery (android-ui-parity #06): the whole
