@@ -600,9 +600,12 @@ dependencies {
     debugImplementation(libs.compose.ui.test.manifest)
 
     // Instrumented Keystore tests (ticket 71) — CI-only, no emulator locally.
+    // androidx-test-runner/ext-junit (and plain JUnit for the accuracy
+    // tests' asserts, ui-parity #115) are on the androidTest classpath.
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.junit)
     // Instrumented compose tests (ui-parity #97's WallpaperSettingsFlowTest,
     // CI-only): the compose test rule and its matchers need the BOM and
     // ui-test-junit4 on the androidTest classpath as well.
