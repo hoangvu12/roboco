@@ -305,7 +305,11 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     if !check {
         return Ok(());
     }
-    android_core_checks(&out, profile, languages, &abis)
+    // --skip-ndk produced no Android libraries, so no ABI is *expected*:
+    // the checks still verify any jniLibs a previous full run left behind,
+    // plus the generated Kotlin and sizes.json.
+    let expected_abis: &[String] = if skip_ndk { &[] } else { &abis };
+    android_core_checks(&out, profile, languages, expected_abis)
 }
 
 fn refuse_rustflags() -> anyhow::Result<()> {
@@ -345,10 +349,10 @@ fn android_core_checks(
             }
         }
         abi_dirs.sort();
-    } else if !expected_abis.is_empty() {
-        // Fine for `--skip-ndk` runs (the Windows CI host path); the
+    } else if expected_abis.is_empty() {
+        // `--skip-ndk` runs (the Windows CI host path) expect no ABI; the
         // Android job runs the full command.
-        println!("android-core checks: no jniLibs to verify (built with --skip-ndk?)");
+        println!("android-core checks: no jniLibs to verify (built with --skip-ndk)");
     }
     for abi in expected_abis {
         if !abi_dirs
