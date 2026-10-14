@@ -23,7 +23,6 @@ import sh.roboco.android.composer.QuestionActions
 import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.SessionQuestionsSlot
 import sh.roboco.android.composer.rememberQuestionPanelState
-import sh.roboco.android.composer.ChipMenuProvider
 import sh.roboco.android.composer.SessionChipMenus
 import sh.roboco.android.composer.rememberChipMenuPlatform
 import sh.roboco.android.image.ImageViewerRequest
@@ -403,7 +402,7 @@ fun SessionScreen(
                 // iOS render :488-491: the provider map is rebuilt on
                 // every chrome change (the chips it decorates are).
                 binding.chipMenus = { chips ->
-                    chips.associate { chip -> chip.id to ChipMenuProvider { menus.menu(chip.id, platform) } }
+                    chips.associate { chip -> chip.id to { menus.menu(chip.id, platform) } }
                 }
             }
             binding.apply(chrome)

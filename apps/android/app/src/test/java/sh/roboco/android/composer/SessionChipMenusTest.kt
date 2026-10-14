@@ -69,7 +69,7 @@ class SessionChipMenusTest {
 
         /** Ended `setSessionConfig` calls, failed or not (volatile: polled across threads). */
         @Volatile
-        private var writeCount = 0
+        @Volatile private var writeCount = 0
 
         override fun sessionRow(): SessionRow? {
             callLog += "sessionRow" to Thread.currentThread().name
@@ -115,6 +115,17 @@ class SessionChipMenusTest {
         }
 
         fun methodNames(): List<String> = callLog.map { it.first }
+    }
+
+    /**
+     * Polls [done] for up to 5 s. awaitWrites returns when setSessionConfig
+     * itself ended on the io thread; onSettingResult and the invalidate run
+     * right after it, so assertions on them wait here first.
+     */
+    private fun awaitUntil(what: String, done: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!done() && System.nanoTime() < deadline) Thread.sleep(10)
+        assertTrue(what, done())
     }
 
     /** Records the platform side of the PR menu. */
@@ -515,6 +526,7 @@ class SessionChipMenusTest {
         val rows = loadRows(deferredOf(menus, "model"))
         rows.first { it.title == "Opus 5" }.action()
         core.awaitWrites(1)
+        awaitUntil("the result and the invalidate ran") { results.size == 1 && invalidations == 1 }
 
         // The base was the current config; the pick rule set the model and
         // kept xhigh (Opus 5 offers it).
@@ -559,6 +571,7 @@ class SessionChipMenusTest {
 
         loadRows(deferredOf(menus, "model")).first { it.title == "Fable 5.1" }.action()
         core.awaitWrites(1)
+        awaitUntil("the result and the invalidate ran") { results.size == 1 && invalidations == 1 }
 
         assertEquals(1, results.size)
         assertSame("the exact throwable reaches the pill", failure, results[0])

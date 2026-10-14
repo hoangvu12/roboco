@@ -110,7 +110,10 @@ class SessionChipMenusUiTest {
      */
     private class FakeMenuCore(
         override val chatId: String = "chat-a",
-        private val hub: SessionEventHub? = null,
+        /** 84's draft key reads this (SessionCore.engineId); UUID-shaped like FakeSessionCore's. */
+        override val engineId: String = "11111111-1111-4111-8111-111111111111",
+        /** The controller's hub; [controllerSetup] wires it in, so the optimistic write's events reach the controller. */
+        @Volatile var hub: SessionEventHub? = null,
         row: SessionRow? = chipMenuSessionRow(),
         config: ChatConfig? = chatConfig(model = "claude-fable-5", reasoning = "xhigh"),
     ) : SessionCore, ChipMenuCore {
@@ -246,9 +249,9 @@ class SessionChipMenusUiTest {
 
     private fun chipProviders(menus: SessionChipMenus, platform: ChipMenuPlatform): Map<String, ChipMenuProvider> =
         mapOf(
-            "model" to ChipMenuProvider { menus.menu("model", platform) },
-            "effort" to ChipMenuProvider { menus.menu("effort", platform) },
-            "pr" to ChipMenuProvider { menus.menu("pr", platform) },
+            "model" to { menus.menu("model", platform) },
+            "effort" to { menus.menu("effort", platform) },
+            "pr" to { menus.menu("pr", platform) },
         )
 
     /** The chat-deploy demo chips (the iOS fixture's harness/model/effort row). */
@@ -263,6 +266,10 @@ class SessionChipMenusUiTest {
         core: FakeMenuCore,
     ): Triple<SessionController, SessionChipMenus, StatusBanner> {
         val hub = SessionEventHub(post = { it.run() })
+        // The fake fires the optimistic override's ComposerChanged /
+        // WorkspaceChanged through this hub - the refresh that shows a pick
+        // while its write is still suspended.
+        core.hub = hub
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         val banner = StatusBanner(retryDelivery = {})
         menus.onSettingResult = { t ->
@@ -489,7 +496,7 @@ class SessionChipMenusUiTest {
         )
         var providerCalls = 0
         val counting: Map<String, ChipMenuProvider> = mapOf(
-            "model" to ChipMenuProvider {
+            "model" to {
                 providerCalls++
                 menus.menu("model", RecordingPlatform())
             },
