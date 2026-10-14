@@ -592,6 +592,7 @@ val parityReport = tasks.register<roboco.gradle.ParityReport>("parityReport") {
     manifest.set(file(parityDir.resolve("manifest.json")))
     goldens.from(fileTree("src/test/screenshots") { include("**/*.png") })
     iosRefs.from(fileTree(parityDir.resolve("ios")) { include("**/*.png") })
+    iosRoot.set(parityDir.resolve("ios"))
     outputDir.set(layout.buildDirectory.dir("parity"))
 }
 

@@ -4,11 +4,13 @@ import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
 import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -24,15 +26,17 @@ import org.gradle.api.tasks.TaskAction
  *
  * Both sides are normalized the same way the SSIM ratchet (G4) normalizes
  * them: the iOS reference is cropped (status bar 0–54 pt, home indicator
- * bottom 34 pt) and scaled by 393/460 to 393 px wide; the Android golden
- * (393 dp at 3×) is scaled by 1/3 — both land at 393 × 764, laid out
+ * bottom 34 pt) and scaled to the Android panel's width; the Android
+ * golden (393 or 402 dp at 3×) is scaled by 1/3. The two are laid out
  * beside a 6 px gutter. The heatmap is the per-channel absolute
  * difference, amplified 4× and tinted (black = equal), so small drifts
  * stay visible.
  *
- * The task is a report, never a gate: a missing golden or reference
- * renders a placeholder cell naming what is absent (the recording pass
- * has not run), and the task still succeeds — G1–G4 are the gates.
+ * The task is a report, not a gate: a missing golden renders a
+ * placeholder cell naming what is absent (the recording pass has not
+ * run), and the task still succeeds — G1–G4 are the gates. The one
+ * exception is a manifest `iosRef` that resolves to no file under
+ * [iosRoot]: the board is still written, then the task fails naming it.
  */
 abstract class ParityReport : DefaultTask() {
 
@@ -51,6 +55,13 @@ abstract class ParityReport : DefaultTask() {
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val iosRefs: ConfigurableFileCollection
 
+    /**
+     * The root [iosRefs] lives under (`apps/android/parity/ios/`): a
+     * manifest `iosRef` is a path relative to it (`pr874/1-off.png`).
+     */
+    @get:Internal
+    abstract val iosRoot: DirectoryProperty
+
     /** `app/build/parity/`. */
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -63,13 +74,32 @@ abstract class ParityReport : DefaultTask() {
 
         val goldensRoot = goldens.firstOrNull()?.let { file -> file.parentFile } // one file per entry below
         val entries = ManifestJson.parse(manifest.get().asFile.readText())
+        // References by their exact path relative to parity/ios. A bare
+        // `File.name == ref` match never hit (refs carry their folder), so
+        // every board showed "reference missing" and no iOS side (verify run
+        // 38628538796). An exact relative path also keeps `a/1-off.png` from
+        // matching `b/1-off.png`.
+        val iosBase = iosRoot.get().asFile
+        val refsByPath = iosRefs.files.associateBy { it.relativeTo(iosBase).invariantSeparatorsPath }
+        val unresolved = mutableListOf<String>()
         val rows = entries.map { entry ->
             val goldenFile = goldens.firstOrNull { it.name == entry.golden || it.path.endsWith(entry.golden) }
-            val refFile = entry.iosRef?.let { ref -> iosRefs.firstOrNull { it.name == ref } }
+            val refFile = entry.iosRef?.let { ref ->
+                refsByPath[ref].also {
+                    if (it == null) unresolved += "${entry.golden}: iosRef '$ref' resolves to no file under $iosBase"
+                }
+            }
             writeRow(out, entry, goldenFile, refFile)
             Row(entry.golden, entry.iosRef, goldenFile != null, refFile != null, entry.reviewedSha256 != null)
         }
         writeIndex(out, rows)
+        // Loud, after the board is written (it still uploads for the
+        // diagnosis): an unresolved iosRef is a manifest or path bug, never
+        // a "reference missing" cell to walk past.
+        if (unresolved.isNotEmpty()) {
+            logger.error("parityReport: ${unresolved.size} iosRef(s) unresolved:\n" + unresolved.joinToString("\n"))
+            throw GradleException("parityReport: manifest iosRef(s) resolve to no file:\n" + unresolved.joinToString("\n"))
+        }
     }
 
     /** One `[android | ios | diff]` PNG per entry (or the placeholder cell). */
@@ -82,7 +112,14 @@ abstract class ParityReport : DefaultTask() {
             return
         }
         val left = android?.let { scale(it, 1f / 3f) }
-        val right = ios?.let { scale(crop(ios), 393f / 460f) }
+        // The reference scaled to the Android panel's width (the golden at
+        // 1/3), not a fixed 393/460: the mobile-polish references are
+        // 1206 px, and 393/460 drew them ~1030 px wide beside a 402 px
+        // panel, the diff then comparing mis-scaled images.
+        val right = ios?.let {
+            val cropped = crop(ios)
+            scale(cropped, (left?.width ?: 393).toFloat() / cropped.width)
+        }
         val height = maxOf(left?.height ?: 0, right?.height ?: 0, 1)
         val width = (left?.width ?: 0) + (right?.width ?: 0) + 6
         val image = BufferedImage(width + 4, height + 4, BufferedImage.TYPE_INT_ARGB)
@@ -181,12 +218,17 @@ abstract class ParityReport : DefaultTask() {
     private fun writeIndex(out: File, rows: List<Row>) {
         val cells = rows.joinToString("\n") { row ->
             val file = "${row.golden.removeSuffix(".png")}.png"
+            val reference = when {
+                row.hasRef -> "present"
+                row.iosRef == null -> "none (adaptation)"
+                else -> "NOT FOUND"
+            }
             """
             |<section>
             |  <h2>${row.golden}</h2>
             |  <p>iosRef: ${row.iosRef ?: "— (Roboco adaptation)"} ·
             |     golden ${if (row.hasGolden) "present" else "NOT RECORDED"} ·
-            |     reference ${if (row.hasRef) "present" else "missing"} ·
+            |     reference $reference ·
             |     sign-off ${if (row.signed) "pinned" else "pending"}</p>
             |  <img src="$file" alt="${row.golden}">
             |</section>
