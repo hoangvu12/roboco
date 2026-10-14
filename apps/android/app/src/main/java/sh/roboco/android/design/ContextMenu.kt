@@ -239,9 +239,14 @@ fun Modifier.contextMenu(
             // Record-then-draw: the row always records into the layer, and
             // draws it only when not lifted — the overlay draws the layer
             // instead, so a streaming row updates inside the preview.
-            // `this` is the ContentDrawScope, a Density (a bare `density`
-            // would resolve to Density.density: Float).
-            layer.record(this, layoutDirection, size.toIntSize()) {
+            // DrawScope's `GraphicsLayer.record(size) {}`, not the member
+            // `record(density, …)`: the scope re-binds this draw node on every
+            // replay. The overlay draws the layer from a DIFFERENT node, and a
+            // software replay (Robolectric's snapshot path, software rendering)
+            // runs the block outside this draw pass, where the member form's
+            // captured `drawContent()` throws ("drawContent for a `null` node")
+            // — the same bug as the handoff capture (round 34).
+            layer.record(size.toIntSize()) {
                 this@drawWithContent.drawContent()
             }
             if (!source.lifted) drawLayer(layer)

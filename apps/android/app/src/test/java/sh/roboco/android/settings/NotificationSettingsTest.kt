@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.getOrNull
@@ -418,7 +419,12 @@ class NotificationSettingsTest {
         assertTrue(h.state.rows.first().checked)
         assertEquals(4, h.state.rows.size)
         assertTrue(h.state.prefs.enabled)
-        // The guard is free again: off then on requests a second time.
+        // The guard is free again: off then on requests a second time. Only
+        // a NotDetermined status requests (on while Granted just enables, no
+        // ask), so the permission reads NotDetermined again first (e.g. it
+        // was reset in system settings) — otherwise the second on-toggle
+        // takes the Granted path and the count stays at 1 whatever the guard.
+        h.fakeStatus = NotificationStatus.NotDetermined
         h.state.onMasterToggled(false)
         h.state.onMasterToggled(true)
         assertEquals(2, h.requests)
@@ -610,9 +616,19 @@ class NotificationSettingsTest {
         mount()
 
         switchNode(NotificationCopy.MasterId).assertIsOff()
-        // Two taps in one go: the in-flight guard keeps one request.
-        switchNode(NotificationCopy.MasterId).performClick()
-        switchNode(NotificationCopy.MasterId).performClick()
+        // Two taps in one go: the in-flight guard keeps one request. Both
+        // taps must land in the same frame: two performClick()s idle (and
+        // recompose) in between, so the second tap would see the switch
+        // drawn on (pendingOn) and request OFF — enabled = false, the
+        // round-30 failure. Invoking the switch's click action twice in one
+        // main-thread turn is the real double tap: `latestChecked` is still
+        // false for both, so both request ON and the guard swallows one.
+        val tap = switchNode(NotificationCopy.MasterId).fetchSemanticsNode()
+            .config[SemanticsActions.OnClick].action!!
+        compose.runOnUiThread {
+            tap()
+            tap()
+        }
         compose.waitForIdle()
 
         assertEquals("exactly one POST_NOTIFICATIONS request", 1, registry.requestCodes.size)

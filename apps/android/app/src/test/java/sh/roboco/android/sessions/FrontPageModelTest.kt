@@ -4,7 +4,10 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
@@ -258,6 +261,33 @@ class FrontPageModelTest {
             }
 
             val prefsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            try {
+                runThreadingChecks(core, feed, scope, prefsScope, io, main)
+            } finally {
+                // No real-thread lane may outlive the test: FoldState's
+                // background persist (collapseAll's local write) used to
+                // land after TemporaryFolder deleted the dir, and its
+                // FileNotFoundException on `threads.preferences_pb.tmp` was
+                // reported by kotlinx-coroutines-test to whichever runTest
+                // ran next (uiStaysNullUntilPrefsFoldAndASnapshotAreLoaded,
+                // the slower Windows runner hitting it every run).
+                prefsScope.coroutineContext[Job]!!.cancelAndJoin()
+                // Main never advances here: cancel only (a join would wait
+                // for a dispatch that never comes).
+                scope.cancel()
+            }
+        }
+    }
+
+    private suspend fun runThreadingChecks(
+        core: FakeWorkspaceCore,
+        feed: WorkspaceFeed,
+        scope: CoroutineScope,
+        prefsScope: CoroutineScope,
+        io: kotlinx.coroutines.CoroutineDispatcher,
+        main: Thread,
+    ) {
+        run {
             val store = testPrefsStore(prefsScope, File(tmpFolder.root, "threads.preferences_pb"))
             val prefs = Prefs(store, prefsScope, io = Dispatchers.IO.limitedParallelism(1))
             val fold = FoldState(store, core, prefsScope, io = io)

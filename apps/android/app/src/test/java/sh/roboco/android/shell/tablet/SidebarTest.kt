@@ -465,6 +465,15 @@ class SidebarTest {
         fake.gate = CompletableDeferred()
         compose.onNodeWithTag("sidebar-search").performTextInput("x")
         settle()
+        // The search call itself runs on the real Dispatchers.Default
+        // (SearchModel's `work`): settle() only advances virtual time, so on
+        // a slow runner (windows-2022) "wranglerx" had not reached the fake
+        // yet. Poll in real time, like awaitTag.
+        val deadline = System.currentTimeMillis() + 3_000
+        while (fake.calls.size < 2 && System.currentTimeMillis() < deadline) {
+            compose.mainClock.advanceTimeBy(50)
+            compose.waitForIdle()
+        }
         assertEquals(listOf("wrangler", "wranglerx"), fake.calls)
 
         // The previous hits stay on screen — no blank frame, no front

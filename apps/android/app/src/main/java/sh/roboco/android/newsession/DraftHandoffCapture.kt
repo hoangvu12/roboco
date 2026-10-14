@@ -227,7 +227,13 @@ fun rememberHandoffCaptureState(): HandoffCaptureState {
 fun Modifier.handoffScene(state: HandoffCaptureState): Modifier =
     onGloballyPositioned { state.sceneCoords = it }
         .drawWithContent {
-            state.sceneLayer.record(this, layoutDirection, size.toIntSize()) {
+            // DrawScope's `GraphicsLayer.record(size) {}`, not the member
+            // `record(density, …)`: the node's scope re-binds its draw node
+            // on every replay. A software snapshot (`toImageBitmap` on a
+            // software path) replays the block outside the draw pass, where
+            // the member form's captured `drawContent()` throws ("drawContent
+            // for a `null` node") and the capture returned null.
+            state.sceneLayer.record(size.toIntSize()) {
                 this@drawWithContent.drawContent()
             }
             drawLayer(state.sceneLayer)
@@ -246,7 +252,8 @@ fun Modifier.handoffComposer(state: HandoffCaptureState): Modifier =
     onGloballyPositioned { state.composerCoords = it }
         .graphicsLayer { this.alpha = if (state.composerHidden) 0f else 1f }
         .drawWithContent {
-            state.composerLayer.record(this, layoutDirection, size.toIntSize()) {
+            // DrawScope's record (see handoffScene): replay-safe outside the draw pass.
+            state.composerLayer.record(size.toIntSize()) {
                 this@drawWithContent.drawContent()
             }
             drawLayer(state.composerLayer)

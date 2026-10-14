@@ -264,9 +264,21 @@ class SessionQuestionsSlotTest {
         Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeByFrame()
         val short = compose.onNodeWithTag(QuestionPanelTags.PAGE).getBoundsInRoot().height.value
+        // F2's page 1 is 384.4 dp and F3's 294.5 dp at this width (≈ 90 dp
+        // apart: one option row fewer, one wrapped line fewer), so the old
+        // "> 100 dp" margin failed even with the snap working. Pin the snap
+        // itself: the first frame already holds the settled F3 height.
+        compose.mainClock.advanceTimeBy(1_000)
+        val settled = compose.onNodeWithTag(QuestionPanelTags.PAGE).getBoundsInRoot().height.value
         assertTrue(
+            "F3's page 1 is clearly shorter than F2's (tall=$tall, settled=$settled)",
+            tall - settled > 50f,
+        )
+        assertEquals(
             "the height snapped to F3's page 1 in the first frame (tall=$tall, short=$short)",
-            tall - short > 100f,
+            settled,
+            short,
+            0.5f,
         )
     }
 
