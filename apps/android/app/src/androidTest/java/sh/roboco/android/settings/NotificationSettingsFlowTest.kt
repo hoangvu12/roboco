@@ -12,7 +12,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
+import java.util.regex.Pattern
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
@@ -77,9 +80,19 @@ class NotificationSettingsFlowTest {
         settingsList.performScrollToNode(hasTestTag("settings-notify:enabled"))
 
         val masterSwitch = compose.onNodeWithTag(toggleTag("notify:enabled"), useUnmergedTree = true)
+        // While the system dialog (another app's window) still has focus,
+        // the Compose test finds no hierarchy and throws instead of
+        // answering false, and waitUntil does not catch it. Run a2590960
+        // failed that way: polled at 19:53:47.485 with the permission
+        // controller still focused, before its CLOSE transition at 48.05.
+        // "No hierarchy yet" is "not shown yet".
         val kindsShown = {
-            compose.onAllNodes(hasTestTag(toggleTag("notify:done")), useUnmergedTree = true)
-                .fetchSemanticsNodes().isNotEmpty()
+            try {
+                compose.onAllNodes(hasTestTag(toggleTag("notify:done")), useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            } catch (e: IllegalStateException) {
+                false
+            }
         }
 
         // "tap toggle-notify:enabled if its value isn't 1": the kinds are
@@ -88,10 +101,24 @@ class NotificationSettingsFlowTest {
             masterSwitch.performClick()
 
             // The system dialog's Allow button, by resource then by text.
-            val allow = device.findObject(By.res("com.android.permissioncontroller:id/permission_allow_button"))
-                ?: device.findObject(By.text("Allow"))
-            assertNotNull("the system Allow button was not found", allow)
-            allow.click()
+            // Wait for it, and tap until the dialog is gone: the same run's
+            // first tap landed during the dialog's open transition and the
+            // InputDispatcher dropped it ("Not sending touch gesture to …
+            // ActivityRecordInputSink … GrantPermissionsActivity").
+            val dialog = By.pkg(Pattern.compile(".*permissioncontroller"))
+            val allowSelector = By.res(Pattern.compile(".*:id/permission_allow_button"))
+            var gone = false
+            for (attempt in 1..3) {
+                val allow = device.wait(Until.findObject(allowSelector), 5_000)
+                    ?: device.findObject(By.text("Allow"))
+                if (attempt == 1) assertNotNull("the system Allow button was not found", allow)
+                if (allow == null) break // the dialog closed between attempts
+                allow.click()
+                gone = device.wait(Until.gone(dialog), 5_000) == true
+                if (gone) break
+            }
+            assertTrue("the permission dialog did not close after Allow", gone || !device.hasObject(dialog))
+            device.waitForIdle()
         }
 
         // "toggle-notify:done must exist" ("kinds shown once on"): the
