@@ -242,6 +242,38 @@ internal fun sidebarGalleryFixtures(search: SessionSearch): SidebarFixtures {
     )
 }
 
+/**
+ * The Sessions root at its settled, loaded and empty state ("No sessions
+ * yet") for captures that mount the real shell (MainTabShell's Sessions tab
+ * through `ShellRouteContent`). Without a fixture the screen reads the app's
+ * `FrontPageModel`, whose first value lands from the core's background
+ * startup on wall time. A capture then shows the loading spinner or the empty
+ * copy depending on the race (record run 38607283018's determinism
+ * re-verify). With it: no sections, `loading = false`, no connection line,
+ * no search hits.
+ */
+internal fun settledEmptySessionsFixtures(): SidebarFixtures = SidebarFixtures(
+    sections = emptyList(),
+    workspace = WorkspaceSnapshot(
+        revision = 1uL,
+        computedAtMs = 0L,
+        pinsReady = false,
+        synced = true,
+        front = FrontPage(
+            pinned = emptyList(),
+            sections = emptyList(),
+            recent = emptyList(),
+            groups = emptyList(),
+        ),
+        projects = emptyList(),
+        projectless = emptyList(),
+        pullRequests = PullRequestGroups(emptyList(), emptyList(), emptyList()),
+        archived = emptyList(),
+        devices = emptyList(),
+    ),
+    search = { _, _ -> emptyList() },
+)
+
 /** The fake core search: "tool" → 49's hits, "wrangler" → the deploy row, else nothing. */
 private val gallerySearch: SessionSearch = { q, _ ->
     when (q) {

@@ -53,6 +53,7 @@ import sh.roboco.android.newsession.ProjectMenusGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.newsession.FolderLocationsGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
+import sh.roboco.android.sessions.LocalSidebarFixtures
 import sh.roboco.android.sessions.PinnedReorderGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
@@ -90,6 +91,7 @@ import sh.roboco.android.shell.SettingsDialogGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
 import sh.roboco.android.shell.SidebarToolbarGallerySection
 import sh.roboco.android.shell.tablet.SidebarGallerySection
+import sh.roboco.android.shell.tablet.settledEmptySessionsFixtures
 import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.image.ImageViewerGallerySection
 import sh.roboco.android.transcript.KeyboardInsetGallerySection
@@ -178,7 +180,7 @@ object Gallery {
         GallerySection("Glass buttons") { GlassButtonsGallerySection() },
         GallerySection("GlassMenu", GalleryLayout.Fill) { GlassMenuGallerySection() },
         // Ticket 26 (glass tab bar): the phone shell's bottom chrome.
-        GallerySection("Tab bar", screenshotHeightDp = 1700) { TabBarGallerySection() },
+        GallerySection("Tab bar", screenshotHeightDp = 1700) { SettledSessionsUnderCapture { TabBarGallerySection() } },
         // Ticket 09: Fill because it owns the LazyColumn.
         GallerySection("Scroll edge effect", layout = GalleryLayout.Fill) { ScrollEdgeEffectGallerySection() },
         GallerySection("Action sheet", GalleryLayout.Fill) { ActionSheetGallerySection() },
@@ -272,7 +274,7 @@ object Gallery {
         // Ticket 30 (chrome visibility): hidden over a Session, the
         // after-Search fade, the pop reveal, the bottom insets.
         GallerySection("Chrome visibility", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
-            ChromeVisibilityGallerySection()
+            SettledSessionsUnderCapture { ChromeVisibilityGallerySection() }
         },
         // Ticket 58 (composer action button): the trailing send/queue/stop
         // control — the state morph, the glyph bounce and the long-press
@@ -777,6 +779,23 @@ fun GalleryProviders(appearance: Appearance, capture: Boolean = false, content: 
                 ProvideFeedback(inner)
             }
         }
+    }
+}
+
+/**
+ * Under capture, the real shell's Sessions root (Tab bar, Chrome visibility)
+ * renders the settled empty front page ([settledEmptySessionsFixtures])
+ * instead of the app's live `FrontPageModel`, whose async first load raced
+ * the capture (spinner vs "No sessions yet"). Interactive gallery use keeps
+ * the live data.
+ */
+@Composable
+private fun SettledSessionsUnderCapture(content: @Composable () -> Unit) {
+    if (LocalGalleryCapture.current) {
+        val fixtures = remember { settledEmptySessionsFixtures() }
+        CompositionLocalProvider(LocalSidebarFixtures provides fixtures, content = content)
+    } else {
+        content()
     }
 }
 

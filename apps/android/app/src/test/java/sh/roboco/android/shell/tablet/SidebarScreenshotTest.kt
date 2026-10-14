@@ -1,12 +1,12 @@
 package sh.roboco.android.shell.tablet
 
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.unit.dp
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -47,8 +47,8 @@ import uniffi.roboco_core.SearchHit
  *   ("Model picker catalog sync"), drawn `rowActive`;
  * - `sidebar_scrolled_pinned` — scrolled 104 dp: the band pinned under the
  *   nav row (c = 52), rows scrolling under it;
- * - `sidebar_query_hits` — query "tool": the three header-less hits (the
- *   archived one last) and the clear button;
+ * - `sidebar_query_hits` — query "tool" (set unfocused: no caret): the three
+ *   header-less hits (the archived one last) and the clear button;
  * - `sidebar_query_no_results` — query "zzz": the empty list + 49's
  *   "No Results" view;
  * - `sidebar_focused_empty` — the field focused and empty: caret +
@@ -146,11 +146,20 @@ class SidebarScreenshotTest {
         }
     }
 
-    /** Focuses the field, types [text] and waits for the search to land. */
-    private fun type(text: String) {
-        compose.onNodeWithTag("sidebar-search").requestFocus()
-        compose.mainClock.advanceTimeByFrame()
-        compose.onNodeWithTag("sidebar-search").performTextInput(text)
+    /**
+     * Sets the query on the field's state, unfocused: no caret, like
+     * SearchMorphScreenshotTest's preset text. The search reads the raw
+     * text whether or not the field has focus, and the clear button
+     * follows non-empty text, so the hits, the "No Results" view and the
+     * clear button are the same. Focusing and typing put a blinking caret
+     * in the shot, and [awaitTag] polls the async search on wall time (a
+     * variable count of 50 ms steps). The blink phase at capture then
+     * varied: record run 38607283018's determinism re-verify failed on
+     * the caret alone. The focused caret is covered by the
+     * sidebar_focused_empty goldens, whose clock steps are fixed.
+     */
+    private fun query(text: String) {
+        compose.runOnUiThread { state.search.setTextAndPlaceCursorAtEnd(text) }
         compose.mainClock.advanceTimeBy(100)
         compose.waitForIdle()
     }
@@ -213,7 +222,7 @@ class SidebarScreenshotTest {
     @Test
     fun queryHitsLight() {
         shot(Appearance.Light, "sidebar_query_hits_light.png") {
-            type("tool")
+            query("tool")
             awaitTag("session-chat-tool-rail")
             compose.mainClock.advanceTimeBy(500) // 41's swap animation settles
             compose.waitForIdle()
@@ -223,7 +232,7 @@ class SidebarScreenshotTest {
     @Test
     fun queryHitsDark() {
         shot(Appearance.Dark, "sidebar_query_hits_dark.png") {
-            type("tool")
+            query("tool")
             awaitTag("session-chat-tool-rail")
             compose.mainClock.advanceTimeBy(500)
             compose.waitForIdle()
@@ -233,7 +242,7 @@ class SidebarScreenshotTest {
     @Test
     fun queryNoResultsLight() {
         shot(Appearance.Light, "sidebar_query_no_results_light.png") {
-            type("zzz")
+            query("zzz")
             awaitTag("search-no-results")
             compose.mainClock.advanceTimeBy(500)
             compose.waitForIdle()
@@ -243,7 +252,7 @@ class SidebarScreenshotTest {
     @Test
     fun queryNoResultsDark() {
         shot(Appearance.Dark, "sidebar_query_no_results_dark.png") {
-            type("zzz")
+            query("zzz")
             awaitTag("search-no-results")
             compose.mainClock.advanceTimeBy(500)
             compose.waitForIdle()

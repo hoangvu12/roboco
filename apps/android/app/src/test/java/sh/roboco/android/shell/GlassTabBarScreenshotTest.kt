@@ -26,6 +26,8 @@ import sh.roboco.android.design.GlassStage
 import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.glass.LocalHazeState
 import sh.roboco.android.design.ReduceMotion
+import sh.roboco.android.sessions.LocalSidebarFixtures
+import sh.roboco.android.shell.tablet.settledEmptySessionsFixtures
 
 /**
  * Ticket 26's goldens: the bar on 22's striped [GlassStage] backdrop (the
@@ -209,7 +211,13 @@ class GlassTabBarScreenshotTest {
                 // ⋯ needs a GlassMenuHost (the golden's background rows
                 // change accordingly; re-record with recordRoborazziDebug).
                 GlassMenuHost {
-                    MainTabShell(state = MainTabState(TabId.Sessions))
+                    // The Sessions root at its settled empty state: the live
+                    // FrontPageModel's first load races the capture on wall
+                    // time (spinner vs "No sessions yet"; record run
+                    // 38607283018 tripped the gallery's copy of this shell).
+                    CompositionLocalProvider(LocalSidebarFixtures provides settledEmptySessionsFixtures()) {
+                        MainTabShell(state = MainTabState(TabId.Sessions))
+                    }
                 }
             }
         }

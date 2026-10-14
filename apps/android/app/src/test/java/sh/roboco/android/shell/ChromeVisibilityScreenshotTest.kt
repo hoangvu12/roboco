@@ -1,5 +1,6 @@
 package sh.roboco.android.shell
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -13,6 +14,8 @@ import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.GlassMenuHost
+import sh.roboco.android.sessions.LocalSidebarFixtures
+import sh.roboco.android.shell.tablet.settledEmptySessionsFixtures
 
 /**
  * Ticket 30's goldens: the whole [MainTabShell] chrome group — pill,
@@ -60,13 +63,19 @@ class ChromeVisibilityScreenshotTest {
                 // ⋯ needs a GlassMenuHost (the golden's background rows
                 // change accordingly; re-record with recordRoborazziDebug).
                 GlassMenuHost {
-                    MainTabShell(
-                        state = state,
-                        counts = LiveCounts(working = 0, awaiting = 1),
-                        routeContent = { entry ->
-                            if (entry.route is TabRootRoute) ShellRouteContent(entry.route) else NavDemoScreen(entry)
-                        },
-                    )
+                    // The Sessions root at its settled empty state: the live
+                    // FrontPageModel's first load races the capture on wall
+                    // time (spinner vs "No sessions yet"; record run
+                    // 38607283018 tripped the gallery's copy of this shell).
+                    CompositionLocalProvider(LocalSidebarFixtures provides settledEmptySessionsFixtures()) {
+                        MainTabShell(
+                            state = state,
+                            counts = LiveCounts(working = 0, awaiting = 1),
+                            routeContent = { entry ->
+                                if (entry.route is TabRootRoute) ShellRouteContent(entry.route) else NavDemoScreen(entry)
+                            },
+                        )
+                    }
                 }
             }
         }
