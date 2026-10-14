@@ -228,7 +228,7 @@ class WorkingIndicatorTest {
                 RobocoTheme(Appearance.Light) {
                     Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
                         Box(Modifier.size(354.dp, 54.dp)) {
-                            WorkingIndicator(sinceMs = nowMs - 75_000L, clock = { nowMs })
+                            WorkingIndicator(sinceMs = nowMs - 75_000L, streaming = false, clock = { nowMs })
                         }
                     }
                 }
@@ -343,7 +343,7 @@ class WorkingIndicatorTest {
                     Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
                         if (shown) {
                             Box(Modifier.size(354.dp, 36.dp)) {
-                                WorkingIndicator(sinceMs = nowMs - 74_500L, clock = { nowMs })
+                                WorkingIndicator(sinceMs = nowMs - 74_500L, streaming = false, clock = { nowMs })
                             }
                         }
                     }
@@ -554,7 +554,7 @@ class WorkingIndicatorTest {
                     CompositionLocalProvider(LocalReduceMotion provides true) {
                         Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
                             Box(Modifier.size(354.dp, 36.dp)) {
-                                WorkingIndicator(sinceMs = nowMs - 74_500L, clock = { nowMs })
+                                WorkingIndicator(sinceMs = nowMs - 74_500L, streaming = false, clock = { nowMs })
                             }
                         }
                     }
