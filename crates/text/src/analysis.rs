@@ -5,8 +5,9 @@
 //!
 //! CoreText is the target on every platform. Android's Minikin tailors URL and hard-hyphen
 //! breaks differently (a whole URL token to the next line, `/`-before and `=`/`&`-after breaks
-//! inside URLs, no break after a hard hyphen); that is an accepted divergence, not a bug — the
-//! Android `LineBreakAccuracyTest` scores those strings separately (android-ui-parity#115).
+//! inside URLs, no break after a hard hyphen — Minikin's line-breaking hyphens include U+2013 EN
+//! DASH, where UAX 14 breaks after it); that is an accepted divergence, not a bug — the Android
+//! `LineBreakAccuracyTest` scores those strings separately (android-ui-parity#115).
 
 use std::sync::OnceLock;
 

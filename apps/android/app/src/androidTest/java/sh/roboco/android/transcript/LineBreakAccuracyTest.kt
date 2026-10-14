@@ -35,9 +35,9 @@ import uniffi.roboco_core.layoutFixtureMarkdown
  * and reports line-count differences instead of asserting them; the hard
  * gate for run agreement is [TextDriftTest].
  *
- * The URL and hard-hyphen strings (#3, #4, #10, #13) are an expected
- * Android divergence (round 29 decision, tickets 115 and 15, like the
- * curly quotes before): Minikin tailors URL and hyphen breaks, Rust keeps
+ * The URL and hard-hyphen strings (#3, #4, #8 — U+2013 EN DASH, #10, #13)
+ * are an expected Android divergence (round 29/33 decisions, tickets 115
+ * and 15, like the curly quotes before): Minikin tailors URL and hyphen breaks, Rust keeps
  * CoreText's UAX 14, and CoreText parity is the product target. They are
  * scored separately and logged, never asserted; the 99 % covers the rest.
  *
@@ -101,20 +101,22 @@ class LineBreakAccuracyTest {
             }
         }
 
-        // The expected Android divergence (decision, round 29 — tickets 115
-        // and 15): Minikin tailors URL and hard-hyphen breaks (whole URL
-        // token to the next line when an earlier word break exists; inside a
-        // URL, break before `/`, after `=`/`&`; never after a hard hyphen,
-        // with or without hyphenation), where Rust follows CoreText's UAX 14
-        // — and CoreText parity is the product target. Those strings are
-        // scored separately and reported, never asserted; any OTHER string's
-        // mismatch still counts against the 99 %. Guarded by content below,
-        // so a corpus reorder cannot silently exclude the wrong strings.
-        for (index in MINIKIN_URL_HYPHEN_CASES) {
+        // The expected Android divergence (decisions, rounds 29 and 33 —
+        // tickets 115 and 15): Minikin tailors URL and hard-hyphen breaks
+        // (whole URL token to the next line when an earlier word break
+        // exists; inside a URL, break before `/`, after `=`/`&`; never after a
+        // line-breaking hyphen — U+002D and U+2013 EN DASH among them — with
+        // or without hyphenation), where Rust follows CoreText's UAX 14 — and
+        // CoreText parity is the product target. Those strings are scored
+        // separately and reported, never asserted; any OTHER string's
+        // mismatch still counts against the 99 %. Each excluded string is
+        // guarded by the content that makes it a case, so a corpus reorder
+        // cannot silently exclude the wrong strings.
+        for ((index, trigger) in MINIKIN_HYPHEN_URL_CASES) {
             val text = corpus[index]
             assertTrue(
-                "excluded corpus string #$index must be a URL/hyphen case: ${text.take(48)}",
-                text.contains("://") || text.contains("roboco-text"),
+                "excluded corpus string #$index must contain $trigger: ${text.take(48)}",
+                text.contains(trigger),
             )
         }
 
@@ -151,7 +153,7 @@ class LineBreakAccuracyTest {
                             .map { it.toInt() }
                         val androidStarts = staticLayoutStarts(text, paint, w)
                         cases++
-                        val excluded = index in MINIKIN_URL_HYPHEN_CASES
+                        val excluded = index in MINIKIN_HYPHEN_URL_CASES
                         if (excluded) excludedCases++
                         if (rust == androidStarts) {
                             if (excluded) excludedExact++ else exact++
@@ -163,7 +165,8 @@ class LineBreakAccuracyTest {
                             perFace[face] = (perFace[face] ?: 0) + 1
                             perTextFace[index][face] = (perTextFace[index][face] ?: 0) + 1
                             if (firstMiss[index] == null) {
-                                firstMiss[index] = "$face ${size}pt w=$w: rust $rust vs android $androidStarts"
+                                firstMiss[index] = "$face ${size}pt w=$w: rust $rust vs android $androidStarts" +
+                                    disputedLine(text, paint, w, rust, androidStarts)
                             }
                             if (!excluded && report.size < 12) {
                                 report += "$face ${size}pt w=$w: rust $rust vs " +
@@ -180,11 +183,11 @@ class LineBreakAccuracyTest {
         val summary = "LINEBREAK ACCURACY exact=$exact/$scored " +
             "(${"%.2f".format(Locale.ROOT, rate * 100)}%) " +
             "lineCountDiffs=$lineDiff locale=${TextAccuracy.localeTag()} " +
-            "(excluding the Minikin URL/hyphen strings $MINIKIN_URL_HYPHEN_CASES)"
+            "(excluding the Minikin hyphen/URL strings ${MINIKIN_HYPHEN_URL_CASES.keys.sorted()})"
         TextAccuracy.log(summary)
-        // Informational: how far Minikin's URL/hyphen tailoring is from Rust's.
+        // Informational: how far Minikin's hyphen/URL tailoring is from Rust's.
         TextAccuracy.log(
-            "LINEBREAK URL/HYPHEN (informational, not asserted) exact=$excludedExact/$excludedCases " +
+            "LINEBREAK HYPHEN/URL (informational, not asserted) exact=$excludedExact/$excludedCases " +
                 "(${"%.2f".format(Locale.ROOT, excludedExact * 100.0 / excludedCases)}%)",
         )
         report.forEach { TextAccuracy.log("  MISMATCH $it") }
@@ -202,14 +205,42 @@ class LineBreakAccuracyTest {
         assertTrue(summary, rate >= 0.99)
     }
 
+    /**
+     * Diagnostics only: for the first line where the two breakers disagree,
+     * Android's own advance (no context, trailing spaces trimmed) of the line
+     * as each breaker ended it, against `w` — so a boundary miss (corpus #9's
+     * off-by-one grapheme) shows the size of the measurement gap instead of
+     * a guess (round 33).
+     */
+    private fun disputedLine(text: String, paint: TextPaint, w: Int, rust: List<Int>, android: List<Int>): String {
+        val k = (1 until minOf(rust.size, android.size)).firstOrNull { rust[it] != android[it] } ?: return ""
+        val start = rust[k - 1]
+        fun advance(end: Int): Float {
+            var e = end
+            while (e > start && text[e - 1] == ' ') e--
+            return paint.getRunAdvance(text, start, e, start, e, false, e)
+        }
+        return " | line ${k - 1} from $start: android end ${android[k]} adv=${advance(android[k])}, " +
+            "rust end ${rust[k]} adv=${advance(rust[k])}, w=$w"
+    }
+
     private companion object {
         /**
          * Corpus indices scored separately as the expected Android
-         * divergence (round 29): #3 the URL literal, #4 the hard-hyphen
-         * literal (`roboco-text`), #10 and #13 the fixture paragraphs with
+         * divergence, each with the content that makes it a case (the
+         * guard): #3 the URL literal, #4 the hard-hyphen literal
+         * (`roboco-text`, round 29), #8 the en-dash literal (Minikin treats
+         * U+2013 as a line-breaking hyphen: Rust breaks after `en–`, Android
+         * before it — round 33), #10 and #13 the fixture paragraphs with
          * links. See the comment at their use.
          */
-        val MINIKIN_URL_HYPHEN_CASES = setOf(3, 4, 10, 13)
+        val MINIKIN_HYPHEN_URL_CASES = mapOf(
+            3 to "://",
+            4 to "roboco-text",
+            8 to "–",
+            10 to "://",
+            13 to "://",
+        )
     }
 
     /**
