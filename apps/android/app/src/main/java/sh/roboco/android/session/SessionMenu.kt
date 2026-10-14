@@ -186,7 +186,8 @@ fun rememberSessionMenu(
  *    code owns — unless the transcript is closed, in which case the last
  *    applied [TranscriptState.frame] is used (owned by the state,
  *    **never closed**);
- * 2. on [work]: `plainText()` and the fresh wrapper's `close()`;
+ * 2. on [work]: `plainText()` and the fresh wrapper's `close()` (the
+ *    pr621 closing rule);
  * 3. back on main: the platform `ClipboardManager` write.
  *
  * Feedback (android-app#22): API 33+ shows the system's own copy overlay
@@ -209,7 +210,16 @@ internal suspend fun copyTranscript(
     val held: LayoutFrame? = if (fresh == null) transcript.frame else null
     val text = withContext(work) {
         when {
-            fresh != null -> fresh.use { it.plainText() }
+            // pr621's closing rule: the fresh wrapper is closed in a
+            // finally, so a throwing plainText() never leaks it. (A bare
+            // `use` does not resolve here: kotlin.io's applies to
+            // java.io.Closeable, the bindings' own to `Disposable` in
+            // uniffi.roboco_core.)
+            fresh != null -> try {
+                fresh.plainText()
+            } finally {
+                fresh.close()
+            }
             held != null -> held.plainText()
             else -> ""
         }

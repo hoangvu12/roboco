@@ -30,6 +30,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowClipboardManager
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalToaster
 import sh.roboco.android.design.RobocoIcons
@@ -72,10 +75,12 @@ import uniffi.roboco_core.TranscriptView
  * compose-ui-test, the clock frozen and advanced like ticket 15's
  * behaviour tests).
  *
- * The goldens live in [SessionMenuScreenshotTest]; the end-to-end copy
- * on a paired engine in the instrumented `SessionFlowTest` (CI-only).
- * The transcript fakes follow [TranscriptState]'s test conventions
- * (`NoHandle` engines whose overridden members touch no JNA).
+ * The Binder-limit failure row lives in [SessionMenuClipboardFailureTest]
+ * (a custom shadow, class-scoped). The goldens live in
+ * [SessionMenuScreenshotTest]; the end-to-end copy on a paired engine in
+ * the instrumented `SessionFlowTest` (CI-only). The transcript fakes
+ * follow [TranscriptState]'s test conventions (`NoHandle` engines whose
+ * overridden members touch no JNA).
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -97,16 +102,6 @@ class SessionMenuTest {
     }
 
     // ------------------------------------------------------------ the fakes
-
-    /** The [Toaster] fake: records every `show`. */
-    private class RecordingToaster : Toaster {
-        data class Shown(val text: String, val action: String?)
-        val shown = mutableListOf<Shown>()
-        val texts: List<String> get() = shown.map { it.text }
-        override fun show(text: String, action: String?, onAction: (() -> Unit)?) {
-            shown += Shown(text, action)
-        }
-    }
 
     /**
      * The [RowActions] fake: records pin/archive calls, reports the
@@ -172,55 +167,6 @@ class SessionMenuTest {
             chrome.copy(canWrite = value)
     }
 
-    /** A frame with a fixed text; counts `plainText`/`close` and records the thread. */
-    private class MenuFrame(private val text: String, private val rev: ULong = 1uL) : LayoutFrame(NoHandle) {
-        var plainTextCalls = 0
-            private set
-        var plainTextThread: Thread? = null
-            private set
-        var closeCalls = 0
-            private set
-
-        override fun revision() = rev
-        override fun styleCount() = 0u
-        override fun styles(): List<StyleDesc> = emptyList()
-        override fun rowCount() = 0u
-        override fun totalHeight() = 0f
-
-        override fun plainText(): String {
-            plainTextCalls++
-            plainTextThread = Thread.currentThread()
-            return text
-        }
-
-        override fun close() {
-            closeCalls++
-        }
-    }
-
-    /** Serves [next] from `frame()`; nothing else is called. */
-    private class MenuEngine : TranscriptView(NoHandle) {
-        var next: LayoutFrame? = null
-        var frameCalls = 0
-            private set
-
-        override fun setViewport(width: Float, textScale: Float) {}
-
-        override fun frame(): LayoutFrame {
-            frameCalls++
-            return next ?: error("no frame staged")
-        }
-
-        override fun shutdown() {}
-        override fun close() {}
-    }
-
-    /** A poster that never fires: no relay hop, so no frame is ever applied. */
-    private object MenuNoopPoster : FramePoster {
-        override fun post(callback: Choreographer.FrameCallback) {}
-        override fun remove(callback: Choreographer.FrameCallback) {}
-    }
-
     private object MenuRootRoute : NavRoute
     private object MenuSessionRoute : NavRoute
 
@@ -245,16 +191,6 @@ class SessionMenuTest {
         io = Dispatchers.Unconfined,
         isMainThread = { false },
     )
-
-    private fun newTranscript(engine: MenuEngine): TranscriptState =
-        TranscriptState(TextSystem(NoHandle), MenuNoopPoster) { _, _ -> engine }
-
-    private fun clipboard(): ClipboardManager =
-        ApplicationProvider.getApplicationContext<Context>().getSystemService(ClipboardManager::class.java)!!
-
-    /** One real `copyTranscript` lane, on its own thread (thread identity is observable). */
-    private fun copyWork() = Executors.newSingleThreadExecutor { r -> Thread(r, "session-menu-copy") }
-        .asCoroutineDispatcher()
 
     /** Delivers pending writes and runs the frame that recomposes them. */
     private fun frame() {
@@ -536,7 +472,7 @@ class SessionMenuTest {
         val toaster = RecordingToaster()
         val work = copyWork()
         try {
-            copyTranscript(state, clipboard(), toaster, sdkInt = 33, work = work)
+            copyTranscript(state, appClipboard(), toaster, sdkInt = 33, work = work)
         } finally {
             work.close()
         }
@@ -551,7 +487,7 @@ class SessionMenuTest {
         assertFalse(staged.plainTextThread === Thread.currentThread())
         assertEquals("the fresh wrapper is closed exactly once", 1, staged.closeCalls)
 
-        val clip = clipboard().primaryClip
+        val clip = appClipboard().primaryClip
         assertEquals("Transcript", clip?.description?.label?.toString())
         assertEquals("a\n\n---\n\nb", clip?.getItemAt(0)?.text?.toString())
         assertTrue("API 33+: no toast of our own", toaster.shown.isEmpty())
@@ -565,33 +501,12 @@ class SessionMenuTest {
         val toaster = RecordingToaster()
         val work = copyWork()
         try {
-            copyTranscript(state, clipboard(), toaster, sdkInt = 32, work = work)
+            copyTranscript(state, appClipboard(), toaster, sdkInt = 32, work = work)
         } finally {
             work.close()
         }
         assertEquals(listOf("Copied"), toaster.texts)
         assertNull("the toast carries no action", toaster.shown[0].action)
-    }
-
-    @Test
-    fun aFailedClipboardWriteToastsCouldNotCopyWithoutCrashing() = runBlocking {
-        val engine = MenuEngine()
-        engine.next = MenuFrame("huge transcript")
-        val state = newTranscript(engine)
-        val toaster = RecordingToaster()
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val throwing = object : ClipboardManager(context, null) {
-            override fun setPrimaryClip(clip: ClipData): Unit =
-                throw RuntimeException("TransactionTooLargeException: data parcel size 1124320 bytes")
-        }
-        val work = copyWork()
-        try {
-            copyTranscript(state, throwing, toaster, sdkInt = 33, work = work)
-        } finally {
-            work.close()
-        }
-        assertEquals(listOf("Could not copy the transcript."), toaster.texts)
-        assertEquals("the fresh wrapper was still closed", 1, (engine.next as MenuFrame).closeCalls)
     }
 
     @Test
@@ -604,7 +519,7 @@ class SessionMenuTest {
         val toaster = RecordingToaster()
         val work = copyWork()
         try {
-            copyTranscript(state, clipboard(), toaster, sdkInt = 33, work = work)
+            copyTranscript(state, appClipboard(), toaster, sdkInt = 33, work = work)
         } finally {
             work.close()
         }
@@ -612,7 +527,7 @@ class SessionMenuTest {
         assertEquals("after close, every engine call would throw — none was made", 0, engine.frameCalls)
         assertEquals(1, held.plainTextCalls)
         assertEquals("the held frame belongs to the state: never closed", 0, held.closeCalls)
-        assertEquals("kept", clipboard().primaryClip?.getItemAt(0)?.text?.toString())
+        assertEquals("kept", appClipboard().primaryClip?.getItemAt(0)?.text?.toString())
         assertTrue(toaster.shown.isEmpty())
     }
 
@@ -623,11 +538,11 @@ class SessionMenuTest {
         val toaster = RecordingToaster()
         val work = copyWork()
         try {
-            copyTranscript(state, clipboard(), toaster, sdkInt = 33, work = work)
+            copyTranscript(state, appClipboard(), toaster, sdkInt = 33, work = work)
         } finally {
             work.close()
         }
-        assertEquals("", clipboard().primaryClip?.getItemAt(0)?.text?.toString())
+        assertEquals("", appClipboard().primaryClip?.getItemAt(0)?.text?.toString())
         assertTrue(toaster.shown.isEmpty())
     }
 
@@ -669,7 +584,17 @@ class SessionMenuTest {
         compose.onNodeWithTag("session-menu-pin").assertExists()
         compose.onNodeWithTag("session-menu-copy").assertExists()
         compose.onNodeWithTag("session-menu-archive").assertExists()
-        closeViaBack()
+
+        // The enabled Pin row routes the scoped chat id to RowActions
+        // (the pick closes the menu first, then acts on the next frame).
+        compose.onNodeWithTag("session-menu-pin").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        assertEquals(listOf("c1" to true), actions.pins)
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        compose.onNodeWithTag("glass-menu").assertDoesNotExist()
 
         // A refresh flips the pin state while the menu is closed; the
         // next open reads it from the click lambda — no recomposition.
@@ -766,5 +691,116 @@ class SessionMenuTest {
         assertTrue("a disabled row does nothing", actions.pins.isEmpty())
         assertFalse("the menu stays open (ticket 15 swallows the tap)", ref.host!!.isClosing)
         compose.onNodeWithTag("glass-menu").assertExists()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File-level fakes, shared by [SessionMenuTest] and
+// [SessionMenuClipboardFailureTest].
+// ---------------------------------------------------------------------------
+
+/** The [Toaster] fake: records every `show`. */
+private class RecordingToaster : Toaster {
+    data class Shown(val text: String, val action: String?)
+    val shown = mutableListOf<Shown>()
+    val texts: List<String> get() = shown.map { it.text }
+    override fun show(text: String, action: String?, onAction: (() -> Unit)?) {
+        shown += Shown(text, action)
+    }
+}
+
+/** A frame with a fixed text; counts `plainText`/`close` and records the thread. */
+private class MenuFrame(private val text: String, private val rev: ULong = 1uL) : LayoutFrame(NoHandle) {
+    var plainTextCalls = 0
+        private set
+    var plainTextThread: Thread? = null
+        private set
+    var closeCalls = 0
+        private set
+
+    override fun revision() = rev
+    override fun styleCount() = 0u
+    override fun styles(): List<StyleDesc> = emptyList()
+    override fun rowCount() = 0u
+    override fun totalHeight() = 0f
+
+    override fun plainText(): String {
+        plainTextCalls++
+        plainTextThread = Thread.currentThread()
+        return text
+    }
+
+    override fun close() {
+        closeCalls++
+    }
+}
+
+/** Serves [next] from `frame()`; nothing else is called. */
+private class MenuEngine : TranscriptView(NoHandle) {
+    var next: LayoutFrame? = null
+    var frameCalls = 0
+        private set
+
+    override fun setViewport(width: Float, textScale: Float) {}
+
+    override fun frame(): LayoutFrame {
+        frameCalls++
+        return next ?: error("no frame staged")
+    }
+
+    override fun shutdown() {}
+    override fun close() {}
+}
+
+/** A poster that never fires: no relay hop, so no frame is ever applied. */
+private object MenuNoopPoster : FramePoster {
+    override fun post(callback: Choreographer.FrameCallback) {}
+    override fun remove(callback: Choreographer.FrameCallback) {}
+}
+
+private fun newTranscript(engine: MenuEngine): TranscriptState =
+    TranscriptState(TextSystem(NoHandle), MenuNoopPoster) { _, _ -> engine }
+
+/** One real `copyTranscript` lane, on its own thread (thread identity is observable). */
+private fun copyWork() = Executors.newSingleThreadExecutor { r -> Thread(r, "session-menu-copy") }
+    .asCoroutineDispatcher()
+
+private fun appClipboard(): ClipboardManager =
+    ApplicationProvider.getApplicationContext<Context>().getSystemService(ClipboardManager::class.java)!!
+
+// ---------------------------------------------------------------------------
+// The Binder-limit failure, as its own class: the shadow that throws is
+// scoped per test class, so the success rows keep Robolectric's working
+// clipboard. `ClipboardManager` cannot be faked by subclassing — the SDK
+// jar exposes no public constructor — a custom shadow is the seam.
+// ---------------------------------------------------------------------------
+
+/** The failure class's shadow: every `setPrimaryClip` throws Binder's transaction limit. */
+@Implements(ClipboardManager::class)
+private class ThrowingClipboardShadow : ShadowClipboardManager() {
+    @Implementation
+    override fun setPrimaryClip(clip: ClipData) {
+        throw RuntimeException("TransactionTooLargeException: data parcel size 1124320 bytes")
+    }
+}
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36], shadows = [ThrowingClipboardShadow::class])
+class SessionMenuClipboardFailureTest {
+
+    @Test
+    fun aFailedClipboardWriteToastsCouldNotCopyWithoutCrashing() = runBlocking {
+        val engine = MenuEngine()
+        engine.next = MenuFrame("huge transcript")
+        val state = newTranscript(engine)
+        val toaster = RecordingToaster()
+        val work = copyWork()
+        try {
+            copyTranscript(state, appClipboard(), toaster, sdkInt = 33, work = work)
+        } finally {
+            work.close()
+        }
+        assertEquals(listOf("Could not copy the transcript."), toaster.texts)
+        assertEquals("the fresh wrapper was still closed", 1, (engine.next as MenuFrame).closeCalls)
     }
 }
