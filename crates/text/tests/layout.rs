@@ -163,7 +163,8 @@ fn urls_and_paths_break_with_anywhere() {
     let lines = p.lines(100.0);
     assert!(lines.len() > 1);
     for l in &lines {
-        assert!(l.width <= 100.0 + LINE_FIT_EPSILON);
+        // A fit guarantee: the FITTED width (the drawn one may exceed it by a kern).
+        assert!(l.fit_width <= 100.0 + LINE_FIT_EPSILON);
     }
     assert_eq!(
         lines
@@ -409,11 +410,13 @@ fn walk_lines_stats_and_lines_agree() {
         assert_eq!(p.line_count(w), lines.len());
         let stats = p.stats(w);
         assert_eq!(stats.line_count, lines.len());
-        let widest = lines.iter().map(|l| l.width).fold(0.0, f32::max);
+        // `max_line_width` is the widest FITTED width (the sizing fixed point).
+        let widest = lines.iter().map(|l| l.fit_width).fold(0.0, f32::max);
         assert_eq!(stats.max_line_width, widest);
         for (a, b) in walked.iter().zip(&lines) {
             assert_eq!(a.range, b.range);
             assert_eq!(a.width, b.width);
+            assert_eq!(a.fit_width, b.fit_width);
             assert_eq!(a.hyphenated, b.hyphenated);
         }
         // layout_next_line resumes from any line start without hidden state
@@ -646,7 +649,7 @@ fn min_and_max_content_width() {
     );
     // laying out at min-content never overflows
     let w = p.min_content_width();
-    assert!(p.lines(w).iter().all(|l| l.width <= w + LINE_FIT_EPSILON));
+    assert!(p.lines(w).iter().all(|l| l.fit_width <= w + LINE_FIT_EPSILON));
     let p = fx.prep_with("wide line\nfit\nmid", opts(WhiteSpace::PreWrap));
     assert_close(
         p.max_content_width(),

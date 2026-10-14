@@ -3,6 +3,8 @@ package sh.roboco.android.flows
 import android.content.Intent
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +86,17 @@ class FixtureRule(
     lateinit var scenario: ActivityScenario<MainActivity>
         private set
 
+    /**
+     * Set by a test that brings MainActivity back through a NEW intent (a
+     * notification tap): MainActivity.onNewIntent calls `setIntent`, and
+     * ActivityScenario matches lifecycle events against its own start
+     * intent, so from then on it ignores the activity's stage changes and
+     * `close()` throws "Current state was null unexpectedly"
+     * (NotificationFlowTest, run 38567067554 — the test body had passed).
+     * Teardown then finishes the live activities directly.
+     */
+    var newIntentDelivered = false
+
     override fun apply(base: Statement, description: Description): Statement =
         object : Statement() {
             override fun evaluate() {
@@ -124,10 +137,27 @@ class FixtureRule(
                 try {
                     base.evaluate()
                 } finally {
-                    scenario.close()
+                    try {
+                        scenario.close()
+                    } catch (untracked: NullPointerException) {
+                        if (!newIntentDelivered) throw untracked
+                        finishLiveActivities()
+                    }
                 }
             }
         }
+
+    /** Finishes every live activity (the untracked-scenario teardown, see [newIntentDelivered]). */
+    private fun finishLiveActivities() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            for (stage in listOf(Stage.RESUMED, Stage.PAUSED, Stage.STARTED, Stage.STOPPED, Stage.CREATED)) {
+                monitor.getActivitiesInStage(stage).forEach { it.finish() }
+            }
+        }
+        instrumentation.waitForIdleSync()
+    }
 
     /**
      * The fixture engines' control URLs from the instrumentation

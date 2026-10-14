@@ -1,5 +1,6 @@
 package sh.roboco.android.flows
 
+import android.content.ComponentName
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -15,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import sh.roboco.android.MainActivity
 import sh.roboco.android.RobocoApplication
+import sh.roboco.android.background.RunWatchService
 import sh.roboco.android.notify.NotificationPrefs
 
 /**
@@ -89,11 +91,20 @@ class RunWatchServiceTest {
         assertFalse("the service must be gone after the last run leaves Working", servicePresent())
     }
 
-    /** `dumpsys activity services sh.roboco.android` mentions the service. */
+    /**
+     * `dumpsys activity services sh.roboco.android` mentions the service.
+     * dumpsys prints the component in its SHORT form
+     * (`sh.roboco.android/.background.RunWatchService`), which never contains
+     * the fully-qualified class name the old check searched for: the service
+     * ran (the system logged its FGS start) but this check never saw it
+     * (run 38567067554), and the "absent" test passed vacuously. Both forms
+     * are matched.
+     */
     private fun servicePresent(): Boolean {
         val dump = device.executeShellCommand(
             "dumpsys activity services sh.roboco.android",
         )
-        return dump.contains("sh.roboco.android.background.RunWatchService")
+        val component = ComponentName(app, RunWatchService::class.java)
+        return dump.contains(component.flattenToShortString()) || dump.contains(component.flattenToString())
     }
 }

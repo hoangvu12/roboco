@@ -163,7 +163,8 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
     assert_eq!(p.line_count(w), lines.len(), "{ctx}");
     assert_eq!(stats.line_count, lines.len(), "{ctx}");
     assert_eq!(walked.len(), lines.len(), "{ctx}");
-    let widest = lines.iter().map(|l| l.width).fold(0.0, f32::max);
+    // `max_line_width` is the sizing fixed point: the widest FITTED width.
+    let widest = lines.iter().map(|l| l.fit_width).fold(0.0, f32::max);
     assert_eq!(stats.max_line_width, widest, "{ctx}");
 
     let graphemes: Vec<usize> = text
@@ -179,6 +180,15 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
         let lctx = format!("{ctx} line {li} {:?}", &text[line.range.clone()]);
         assert_eq!(line.range, walk.range, "{lctx}");
         assert_eq!(line.width, walk.width, "{lctx}");
+        assert_eq!(line.fit_width, walk.fit_width, "{lctx}");
+        // Drawn and fitted widths differ only by the last glyph's kerning with the next line's
+        // first glyph (dropped from the drawn width): one kerning pair, never more.
+        assert!(
+            (line.width - line.fit_width).abs() < 2.0,
+            "{lctx}: drawn {} vs fitted {}",
+            line.width,
+            line.fit_width
+        );
         assert_eq!(line.hyphenated, walk.hyphenated, "{lctx}");
         assert_eq!(walk.start, cursor, "{lctx}");
         assert!(walk.end > walk.start, "{lctx}: no progress");
@@ -238,8 +248,10 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
             assert!(hyphen > 0.0, "{lctx}");
         }
 
-        // Overflow only for a single unbreakable unit.
-        if line.width > w + LINE_FIT_EPSILON && p.options().white_space != WhiteSpace::Pre {
+        // Overflow only for a single unbreakable unit — a FIT guarantee, so on `fit_width`: the
+        // drawn `width` may exceed `w` by the kern the fit counted (a negative kern across the
+        // break, e.g. `c/` before `t` fits w = 15 kerned, and is drawn 15.24 wide).
+        if line.fit_width > w + LINE_FIT_EPSILON && p.options().white_space != WhiteSpace::Pre {
             let body = text[line.range.clone()].trim_end_matches('\u{AD}');
             // Zero-advance graphemes (WJ, ligature tails) stay with the unit before them.
             let visible = body
@@ -247,7 +259,7 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
                 .filter(|g| !g.chars().all(|c| matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}')))
                 .count();
             let one_grapheme = visible <= 1
-                || (visible <= 3 && line.width <= p.min_content_width() + LINE_FIT_EPSILON);
+                || (visible <= 3 && line.fit_width <= p.min_content_width() + LINE_FIT_EPSILON);
             let in_atomic = p.spans().iter().any(|s| {
                 s.atomic && s.range.start <= line.range.start && line.range.end <= s.range.end
             });
@@ -264,7 +276,7 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
             assert!(
                 one_grapheme || in_atomic || atomic_plus || one_segment,
                 "{lctx}: overflow {} > {w}",
-                line.width
+                line.fit_width
             );
         }
     }
@@ -326,9 +338,9 @@ fn random_paragraphs_hold_invariants() {
             let m = p.min_content_width();
             for l in p.lines(m) {
                 assert!(
-                    l.width <= m + 0.02,
+                    l.fit_width <= m + 0.02,
                     "{ctx}: min-content overflow {} > {m}",
-                    l.width
+                    l.fit_width
                 );
             }
         }

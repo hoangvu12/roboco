@@ -128,6 +128,10 @@ class LineBreakAccuracyTest {
         // per face, so a run shows WHICH texts diverge — 12 samples cannot.
         val perText = IntArray(corpus.size)
         val perFace = HashMap<FaceRole, Int>()
+        // Per text: the face split and its FIRST mismatch (the 12-sample report
+        // is all SANS 14pt — it could not show which face #5's 84 misses were).
+        val perTextFace = Array(corpus.size) { HashMap<FaceRole, Int>() }
+        val firstMiss = arrayOfNulls<String>(corpus.size)
         for (face in faces) {
             for (size in sizes) {
                 val paint = paints.getValue(face to size)
@@ -157,6 +161,10 @@ class LineBreakAccuracyTest {
                             if (rust.size != androidStarts.size && !excluded) lineDiff++
                             perText[index]++
                             perFace[face] = (perFace[face] ?: 0) + 1
+                            perTextFace[index][face] = (perTextFace[index][face] ?: 0) + 1
+                            if (firstMiss[index] == null) {
+                                firstMiss[index] = "$face ${size}pt w=$w: rust $rust vs android $androidStarts"
+                            }
                             if (!excluded && report.size < 12) {
                                 report += "$face ${size}pt w=$w: rust $rust vs " +
                                     "android $androidStarts — ${text.take(48)}"
@@ -182,7 +190,11 @@ class LineBreakAccuracyTest {
         report.forEach { TextAccuracy.log("  MISMATCH $it") }
         corpus.forEachIndexed { index, text ->
             if (perText[index] > 0) {
-                TextAccuracy.log("  BY TEXT #$index ${perText[index]}/${cases / corpus.size} — ${text.take(48)}")
+                TextAccuracy.log(
+                    "  BY TEXT #$index ${perText[index]}/${cases / corpus.size} " +
+                        "${perTextFace[index]} — ${text.take(48)}",
+                )
+                TextAccuracy.log("    FIRST #$index ${firstMiss[index]}")
             }
         }
         perFace.forEach { (face, n) -> TextAccuracy.log("  BY FACE $face $n") }
