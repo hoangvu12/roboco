@@ -31,6 +31,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlin.math.abs
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -93,6 +94,9 @@ class WorkingIndicatorTest {
     /** The fake wall clock: epoch ms the tests advance by hand. */
     private var nowMs = 1_000_000_000_000L
 
+    /** The row fixtures' states, closed in [After] (the repo's convention). */
+    private val states = mutableListOf<TranscriptState>()
+
     /** The owned lifecycle, STARTED from [Before]. */
     private val owner = MutableLifecycleOwner()
 
@@ -120,6 +124,12 @@ class WorkingIndicatorTest {
         compose.mainClock.autoAdvance = false
         WorkingIndicatorProbe.reset()
         owner.moveTo(Lifecycle.State.STARTED)
+    }
+
+    @After
+    fun closeStates() {
+        states.forEach { it.close() }
+        states.clear()
     }
 
     // ------------------------------------------------------------- the hosts
@@ -441,6 +451,7 @@ class WorkingIndicatorTest {
     @Test
     fun rowWidgetDispatchesAllThreeStatusWidgets() {
         val state = TranscriptState(TextSystem(NoHandle), ManualPoster()) { _, _ -> NoopEngine() }
+            .also { states += it }
         val workingSince = System.currentTimeMillis() - 60_000L
         compose.setContent {
             CompositionLocalProvider(LocalLifecycleOwner provides owner) {
