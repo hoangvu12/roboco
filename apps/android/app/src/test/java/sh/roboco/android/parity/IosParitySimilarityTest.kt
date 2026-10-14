@@ -37,16 +37,20 @@ class IosParitySimilarityTest {
                 problems += "${entry.golden}: not recorded yet (./gradlew :app:recordRoborazziDebug)"
                 continue
             }
-            // The ratchet applies to entries with a floor; entries with a
-            // reference but no floor yet still print their score so the
-            // first sign-off can baseline it (the pending failure lives in
-            // ParityManifestTest).
-            val score = score(golden, reference)
-            val floor = entry.ssimFloor
-            if (floor == null) {
-                println("parity ssim ${entry.golden}: score $score (floor not baselined yet)")
+            // Every entry with a reference prints its score, floor or not,
+            // so the first sign-off can baseline it (the pending failure
+            // lives in ParityManifestTest). A scoring error is recorded
+            // per entry: one bad pair must not hide the other scores (verify
+            // run 38622776189's crash on the first entry printed none).
+            val score = try {
+                score(golden, reference)
+            } catch (e: Exception) {
+                problems += "${entry.golden}: could not score against ${entry.iosRef} ($e)"
                 continue
             }
+            val floor = entry.ssimFloor
+            println("parity ssim ${entry.golden}: score $score (floor ${floor ?: "not baselined yet"})")
+            if (floor == null) continue
             if (score < floor) {
                 problems += "${entry.golden}: SSIM $score < floor $floor (regression, or lower the floor with a manifest note)"
             }

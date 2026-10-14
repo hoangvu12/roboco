@@ -5,6 +5,7 @@ import java.io.File
 import javax.imageio.ImageIO
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Windowed SSIM over luminance (android-app#30's G4) in plain Kotlin, no
@@ -134,13 +135,16 @@ internal object Ssim {
         val top = topPx.toInt().coerceIn(0, image.height / 2)
         val bottom = bottomPx.toInt().coerceIn(0, image.height / 2)
         val cropped = image.getSubimage(0, top, image.width, image.height - top - bottom)
-        val scaled = scale(cropped, 393f / cropped.width)
+        // Exactly 393 px wide. `width * (393f / width)` truncated to 392 for
+        // the 1206 px (402 dp @3x) goldens (1206 × 0.32587 = 392.99997), and
+        // the 393-wide getSubimage below then threw RasterFormatException
+        // (verify run 38622776189). The height scales by the same ratio.
+        val height = max(1, (cropped.height.toDouble() * 393.0 / cropped.width).roundToInt())
+        val scaled = scale(cropped, 393, height)
         return scaled.getSubimage(0, 0, 393, min(scaled.height, 764))
     }
 
-    private fun scale(source: BufferedImage, factor: Float): BufferedImage {
-        val w = max(1, (source.width * factor).toInt())
-        val h = max(1, (source.height * factor).toInt())
+    private fun scale(source: BufferedImage, w: Int, h: Int): BufferedImage {
         val image = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
         val g = image.createGraphics()
         try {

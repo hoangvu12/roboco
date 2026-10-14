@@ -63,8 +63,8 @@ class IosParityMetricsTest {
 
     @Test
     fun settingsRowHeights() {
-        // 51 / 67 / 83 dp (± 2): rows are delimited by full-width
-        // hairlines inside a card; the heights measured between them.
+        // 51 / 67 / 83 dp (± 2): rows are delimited by inset hairlines
+        // inside a card; the heights measured between them.
         val golden = golden("settings/settings_screen_top_light.png")
         val heights = golden.settingsRowHeightsDp()
         assertTrue("no settings rows measured (hairlines not found)", heights.isNotEmpty())
@@ -95,8 +95,13 @@ class IosParityMetricsTest {
     fun sessionsRowMargins() {
         // SessionCell.swift / research 01 §2.3: rows inset 20 dp from the
         // screen edges; the rows are the widest content below the title.
+        // The row's leftmost content is the 20 dp harness mark. The
+        // per-scanline mode of leftInsetOf measured the title/meta text
+        // column instead (54 dp: more scanlines cross text than marks, the
+        // same 20 / 54 split as 1-off.png), so the inset here is the
+        // leftmost edge hit by several scanlines.
         val golden = golden("sessions/sessions_root_scrolled_light.png")
-        val left = golden.leftInsetOf(cardish = false)
+        val left = golden.leftmostContentInset()
         assertDp("row left margin", left, expectedDp = 20, toleranceDp = 1)
     }
 
@@ -188,6 +193,24 @@ private class GoldenImage(image: BufferedImage) {
         return insets.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
     }
 
+    /**
+     * The leftmost content edge (px) over the middle band: the smallest
+     * first-content x that at least [minHits] scanlines share, so a stray
+     * anti-aliased pixel cannot set it. Unlike [leftInsetOf]'s mode, this
+     * is the row's outer inset (the leading glyph), not its text column.
+     */
+    fun leftmostContentInset(minHits: Int = 3): Int {
+        val background = histogram().mostCommon(0)
+        val startY = height / 4
+        val endY = height * 3 / 4
+        val firsts = (startY until endY step 4).mapNotNull { y ->
+            (0 until width).firstOrNull { x -> colorDelta(rgb(x, y), background) > 3.0 }
+        }
+        val counts = firsts.groupingBy { it }.eachCount()
+        val edge = counts.keys.sorted().firstOrNull { counts.getValue(it) >= minHits }
+        return checkNotNull(edge) { "no content edge shared by $minHits scanlines in the middle band" }
+    }
+
     /** The right inset (px), the mirror of [leftInsetOf] (cards only). */
     fun rightInsetOf(): Int {
         val bucket = histogram()
@@ -207,8 +230,9 @@ private class GoldenImage(image: BufferedImage) {
 
     /**
      * The settings rows' heights in dp: rows are the stretches between
-     * full-width hairlines (or background) inside a card — a hairline y
-     * has almost no card-fill pixels and is not the page background.
+     * the inset hairlines (or background) inside a card — a hairline y
+     * has no card-fill pixels inside the sampled band and is not the page
+     * background.
      */
     fun settingsRowHeightsDp(): List<Float> {
         val bucket = histogram()
@@ -217,8 +241,14 @@ private class GoldenImage(image: BufferedImage) {
         val left = leftInsetOf(cardish = true)
         val right = width - rightInsetOf()
         if (right <= left) return emptyList()
-        val x0 = left + 12
-        val x1 = right - 12
+        // The separators are inset, not full width (as on iOS: from the
+        // text column, 72 dp, to 16 dp short of the card's end). A band
+        // from the card's edges sees card fill beside every hairline, so
+        // rows never split and whole cards were measured (verify run
+        // 38622776189: [119.67, 84.67, 156.0, …]). Sample from the card's
+        // middle to 20 dp short of its end, inside the hairline's span.
+        val x0 = (left + right) / 2
+        val x1 = right - 20 * 3
         val rowStates = mutableListOf<Boolean>() // true = content row
         val rowStarts = mutableListOf<Int>()
         for (y in 0 until height) {
