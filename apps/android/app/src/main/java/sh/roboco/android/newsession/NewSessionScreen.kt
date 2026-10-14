@@ -153,16 +153,28 @@ internal fun NewSessionScreenBody(
     // 109: the chip strip's data. 113: the project / run-on menu map —
     // the page's liveness guard (the iOS [weak self] of the browser's
     // onCreated), 110's presenter seam, and the menu glue over 92's
-    // model, whose providers read the live model at tap time. 114 will
-    // add the checkout / model / effort map as a further argument of
-    // this same newSessionChipMenus call.
+    // model, whose providers read the live model at tap time. 114: the
+    // checkout / model / effort map (refs through 71's client).
     val alive = remember { AtomicBoolean(true) }
     DisposableEffect(Unit) { onDispose { alive.set(false) } }
     val newProjectPresenter = rememberNewProjectPresenter()
     val projectMenus = remember(ns, newProjectPresenter) {
         ProjectRunOnMenus(ns, newProjectPresenter, alive::get)
     }
-    val chipMenus = remember(projectMenus) { newSessionChipMenus(projectMenus.providers()) }
+    val refSource = remember { CoreRefSource { app.clientOrNull() } }
+    val checkoutMenus = remember(ns) {
+        CheckoutModelEffortMenus(
+            draft = { ns.draft },
+            project = { ns.project },
+            models = { ns.models },
+            selectedModel = { ns.selectedModel },
+            update = ns::update,
+            refSource = refSource,
+        )
+    }
+    val chipMenus = remember(projectMenus, checkoutMenus) {
+        newSessionChipMenus(projectMenus.providers(), checkoutMenus.providers())
+    }
     NewSessionChipsEffect(ns, composer, chipMenus, labels)
     val morph = rememberComposerMorphState(
         alwaysCard = true,
