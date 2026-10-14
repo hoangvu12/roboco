@@ -104,10 +104,20 @@ abstract class ParityReport : DefaultTask() {
             } finally {
                 g2.dispose()
             }
-            ImageIO.write(combined, "png", target)
+            writePng(combined, target)
         } else {
-            ImageIO.write(image, "png", target)
+            writePng(image, target)
         }
+    }
+
+    /**
+     * Golden names carry their subdirectory (`sessions/…png`), so the
+     * target's parent may not exist yet - ImageIO then fails with "Can't
+     * create an ImageOutputStream!". A false return (no PNG writer) fails too.
+     */
+    private fun writePng(image: BufferedImage, target: File) {
+        target.parentFile?.mkdirs()
+        check(ImageIO.write(image, "png", target)) { "no PNG writer for $target" }
     }
 
     /** The iOS crop: drop the status bar (0–54 pt) and the home indicator (bottom 34 pt). */
@@ -165,7 +175,7 @@ abstract class ParityReport : DefaultTask() {
         } finally {
             g.dispose()
         }
-        ImageIO.write(image, "png", target)
+        writePng(image, target)
     }
 
     private fun writeIndex(out: File, rows: List<Row>) {
