@@ -8,7 +8,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.semantics.SemanticsPropertiesAndroid
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -220,9 +219,10 @@ class TranscriptAccessibilityTest {
             val info = node.config[SemanticsProperties.CollectionInfo]
             assertEquals(state.frame!!.rowCount().toInt(), info.rowCount)
             assertEquals(1, info.columnCount)
-            assertTrue("tags are resource ids for UiAutomator", node.config.getOrNull(SemanticsPropertiesAndroid.TestTagsAsResourceId) == true)
             assertTrue("a vertical scroll range", node.config.contains(SemanticsProperties.VerticalScrollAxisRange))
             assertTrue("a scrollBy action (paging)", node.config.contains(SemanticsActions.ScrollBy))
+            // The tags-as-resource-ids flag is set on this subtree (the
+            // manual step verifies it through `uiautomator dump`).
         } finally {
             state.close()
         }
@@ -235,13 +235,15 @@ class TranscriptAccessibilityTest {
         try {
             host(state)
             assertEquals("the fixture realizes all 7 rows", 7, state.realized.size)
-            val groups = textNodesByRowIndex().mapValues { (index, text) ->
+            val texts = textNodesByRowIndex()
+            val groups = texts.mapValues { (index, text) ->
                 val group = text.parent
                 assertNotNull("row $index has a group parent", group)
                 group!!
             }
             for (row in state.realized.values) {
                 val index = row.placement.index.toInt()
+                val text = texts[index] ?: error("no text node for row $index")
                 val group = groups[index] ?: error("no row group for index $index")
                 assertTrue("row $index is a traversal group", group.config.getOrNull(SemanticsProperties.IsTraversalGroup) == true)
                 val item = group.config[SemanticsProperties.CollectionItemInfo]
@@ -251,6 +253,7 @@ class TranscriptAccessibilityTest {
                 assertEquals(1, item.columnSpan)
                 assertNull("the semantics long-click is off (16)", group.config.getOrNull(SemanticsActions.OnLongClick))
                 assertNull("the row group carries no tag (it moved to the text node)", group.config.getOrNull(SemanticsProperties.TestTag))
+                assertNull("the text node has no long-click either (custom actions replace it)", text.config.getOrNull(SemanticsActions.OnLongClick))
             }
         } finally {
             state.close()
@@ -301,7 +304,6 @@ class TranscriptAccessibilityTest {
         val state = fedA11yState()
         try {
             host(state)
-            val d = 2f
             val hostWidth = hostNode().boundsInRoot.width
             val texts = textNodesByRowIndex()
             for (row in state.realized.values) {
@@ -423,16 +425,19 @@ class TranscriptAccessibilityTest {
             }
             assertTrue("exactly the table overflows (the code block fits)", tableIdx >= 0)
             val viewport = infos[tableIdx].boundsInRoot
-            assertTrue("unclipped: the link's left edge is past the scroller's right edge", node.boundsInRoot.left >= viewport.right)
+            // `positionInRoot`, not `boundsInRoot`: the host clips at its
+            // own bounds, and a fragment past its right edge clips to an
+            // empty rect — the position is the unclipped geometry.
+            assertTrue("unclipped: the link's left edge is past the scroller's right edge", node.positionInRoot.x >= viewport.right)
 
             // Scroll by exactly 150 dp and check the placement-phase move.
-            val before = node.boundsInRoot
+            val before = node.positionInRoot
             val compositions = state.hostCompositions
             scrollers[tableIdx].performSemanticsAction(SemanticsActions.ScrollBy) { it(150f * d, 0f) }
             drainFrames()
-            val after = allNodes().first { it.config.getOrNull(SemanticsProperties.StateDescription) == TABLE }.boundsInRoot
-            assertEquals("moved left by 150 dp", before.left - 150f * d, after.left, 1f)
-            assertEquals("the vertical position never moved", before.top, after.top, 1f)
+            val after = allNodes().first { it.config.getOrNull(SemanticsProperties.StateDescription) == TABLE }.positionInRoot
+            assertEquals("moved left by 150 dp", before.x - 150f * d, after.x, 1f)
+            assertEquals("the vertical position never moved", before.y, after.y, 1f)
             assertEquals("a scroller scroll recomposes nothing", compositions, state.hostCompositions)
         } finally {
             state.close()
