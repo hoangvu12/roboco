@@ -14,6 +14,7 @@ pub mod motion;
 pub mod preview;
 pub mod qr;
 pub mod remote;
+pub mod tailcat;
 pub mod view;
 pub mod workspace;
 
