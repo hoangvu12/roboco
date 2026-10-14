@@ -14,6 +14,7 @@ import sh.roboco.android.transcript.widgets.ToolChevron
 import sh.roboco.android.transcript.widgets.ToolRail
 import sh.roboco.android.transcript.widgets.ToolStatusWidget
 import sh.roboco.android.transcript.widgets.ToolToggleTarget
+import sh.roboco.android.transcript.widgets.TranscriptIcon
 import sh.roboco.android.transcript.widgets.UploadRing
 import sh.roboco.android.transcript.widgets.WorkingIndicator
 import sh.roboco.android.transcript.widgets.isPendingReference
@@ -86,8 +87,17 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         is WidgetKind.Detail -> DetailWidget(k.title, w.payload ?: "") { t, s ->
             ctx.actions().showDetail(t, s)
         }
-        // ticket 124 (SF-symbol-like icons)
-        is WidgetKind.Icon -> Unit
+        // ticket 124 (icon widget): the name decides the art — aspect-fit
+        // template drawables for tool-*, untinted colour PNGs (with a
+        // -dark variant per appearance) for fileicon-*, ticket 06 glyphs
+        // at rect.h × 0.8 Medium for SF names, nothing (logged once) for
+        // anything else. Decorative: no tap handling, no semantics node.
+        is WidgetKind.Icon -> TranscriptIcon(
+            name = k.name,
+            color = k.color,
+            heightDp = w.h.coerceAtLeast(0f),
+            palette = ctx.palette,
+        )
         // ticket 121 (the tool rail): the group's row key identifies the
         // group in the process-wide `revealed` memory, the model is the
         // re-plan token (a new iOS configure), and the cover runs to the
