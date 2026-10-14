@@ -44,11 +44,11 @@ class FolderSearchTest {
 
     @Test
     fun filterIndicesRanksPrefixesFirstAndStaysStable() {
-        // dev (prefix 0), Documents (prefix 0), github (substring 1);
+        // dev (prefix 0), Documents (prefix 0), android (substring 1);
         // the two prefixes keep their input order.
         assertEquals(
-            listOf(0, 1, 4),
-            filterIndices("d", listOf("dev", "notes.txt", "Documents", ".config", "github")),
+            listOf(0, 2, 4),
+            filterIndices("d", listOf("dev", "notes.txt", "Documents", ".config", "android")),
         )
         // A blank query ranks everything 1: input order, everything kept.
         assertEquals(

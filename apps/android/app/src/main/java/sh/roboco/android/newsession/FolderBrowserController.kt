@@ -42,7 +42,9 @@ import uniffi.roboco_core.hostPathParent
  */
 
 /** android-app#09 `listFolders`: returns null on any failure (the iOS `try?`), never throws except cancellation. */
-fun interface FolderBrowserSource {
+// A plain interface: a fun interface's abstract method may not declare
+// a default (showHidden), and nothing builds a source from a SAM lambda.
+interface FolderBrowserSource {
     /** `showHidden` also lists `.`-folders (the engine's only switch, `query: "."`) — ticket 112 turns it on. */
     suspend fun listFolders(deviceId: String, path: String?, showHidden: Boolean = false): FolderListing?
 }

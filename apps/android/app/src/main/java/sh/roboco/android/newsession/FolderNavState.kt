@@ -248,7 +248,7 @@ class FolderNavState(
                 enabled = !host.loading && !host.submitting && host.deviceId == t.deviceId,
                 onClick = { createTyped() },
             )
-            TypedPath.Failed -> null
+            is TypedPath.Failed -> null
         }
     }
 

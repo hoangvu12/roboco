@@ -586,6 +586,7 @@ class FolderNavStateTest {
         nav.onGo()
         runCurrent()
         host.deviceId = "dev-2"
+        nav.onDevice("dev-2", online = true) // the screen's LaunchedEffect on the switch
         calls.completePrepare(0, PreparedPath(path = "/home/wing/exists", exists = true, gitDetected = true))
         runCurrent()
         assertEquals(TypedPath.Idle, nav.typed)
