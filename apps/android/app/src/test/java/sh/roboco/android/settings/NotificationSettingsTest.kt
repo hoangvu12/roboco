@@ -697,7 +697,7 @@ class NotificationSettingsTest {
     }
 
     @Test
-    fun alertNotNowSlidesTheSwitchBackOff() {
+    fun alertNotNowSlidesTheSwitchBackOffOnScreen() {
         mountFake(NotificationStatus.Denied)
         clickMaster()
 

@@ -306,7 +306,7 @@ class TranscriptRowMenuTest {
             // 20 dp from the row's left edge, mid-height: the row, not the
             // control — a2 is a single-block message, so Copy and Select
             // Text only (no Copy Message).
-            a2.performTouchInput { longClick(Offset(20f * d, size.height / 2f)) }
+            a2.performTouchInput { longClick(Offset(20f * d, height / 2f)) }
             compose.waitForIdle()
             settle()
             compose.onNodeWithTag("row-menu-copy").assertExists()

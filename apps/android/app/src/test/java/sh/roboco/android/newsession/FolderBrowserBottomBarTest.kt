@@ -11,6 +11,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
@@ -24,6 +25,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.After
 import org.junit.Assert.assertEquals
