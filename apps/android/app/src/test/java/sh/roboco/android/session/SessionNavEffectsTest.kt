@@ -526,6 +526,7 @@ class SessionNavEffectsTest {
         val ffiBefore = core.callLog.toList()
 
         compose.activityRule.scenario.recreate()
+        compose.waitForIdle() // Robolectric posts the recreate to the looper
         // The old composition disposes as a configuration change: only the
         // save runs (the queued-edit lease must survive the recreation).
         assertEquals(listOf("save"), log.filter { it != "dispose" })
