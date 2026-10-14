@@ -2,6 +2,7 @@ package sh.roboco.android.flows
 
 import android.os.SystemClock
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
@@ -411,11 +412,15 @@ class SessionFlowTest {
         SystemClock.sleep(1_000)
         compose.waitForIdle()
 
-        // The capsule (one line: 50 dp) and the kept draft.
+        // The capsule (one line: 50 dp) and the kept draft: iOS asserts
+        // hasPrefix("Half-written") — the sim keyboard's autocorrect may
+        // append — so prefix, not contains (EditableText is an
+        // AnnotatedString).
         val capsuleHeight = compose.onNodeWithTag("session-composer").getBoundsInRoot().height.value
         assertTrue("the composer rests as the capsule (was $capsuleHeight dp)", capsuleHeight < 90f)
-        compose.onNodeWithTag("composer-input")
-            .assertTextContains("Half-written", substring = true)
+        val draft = compose.onNodeWithTag("composer-input").fetchSemanticsNode()
+            .config[SemanticsProperties.EditableText].text
+        assertTrue("the draft is kept (was '$draft')", draft.startsWith("Half-written"))
         FlowSemantics.saveScreenshot("composer-minimized.png")
     }
 

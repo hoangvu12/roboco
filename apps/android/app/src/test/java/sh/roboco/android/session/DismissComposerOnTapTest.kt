@@ -3,6 +3,7 @@ package sh.roboco.android.session
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -153,9 +154,11 @@ class DismissComposerOnTapTest {
 
     /**
      * The fixture: a scrolling transcript with the observer, and the
-     * 74-style blocked strip over its bottom edge holding the field.
-     * Children of the strip: 0…40 dp and 48…88 dp, the 8 dp gap between
-     * them at 40…48 dp.
+     * 74-style blocked strip over its bottom edge holding the field. The
+     * strip is 40 + 8 + 40 = 88 dp (the ticket's "overlapping its bottom
+     * 100 dp" realized exactly): children at 0…40 dp and 48…88 dp, the
+     * 8 dp gap between them at 40…48 dp — which is also the strip's
+     * centre, so a swipe injected at the centre starts in the gap.
      */
     @Composable
     private fun TapDismissStage(
