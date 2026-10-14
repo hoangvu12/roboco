@@ -416,16 +416,16 @@ class SettingsScreenTest {
     }
 
     @Test
-    // Tall window, no scroll: at 874 dp the Remove row sits below the fold,
-    // and the scroll-then-click there never went idle (the CI run spun for
-    // 21 minutes into an OutOfMemoryError in the frame loop). At 3000 dp
-    // every row is in view from the start, as in the reload test below.
-    @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
+    // Back at the class's 874 dp phone height (it ran at 3000 dp while the
+    // scroll-then-click there never went idle): the bounded diagnostic
+    // below settled and removed on CI 3bd01174, so the frame loop no longer
+    // reproduces. Remove sits below the fold, so the row is scrolled in first.
     fun tappingRemoveWallpaperRemovesAtOnce() {
         // The wallpaper is set (a fixture flip before mounting): the
         // effect and remove rows exist.
         wallpaperFlow.value = wallpaperFlow.value.copy(set = true, name = "IMG_0412")
         mount()
+        scrollToRow(WallpaperRowIds.Remove)
         row(WallpaperRowIds.Remove).performClick()
         compose.waitForIdle()
         assertEquals(1, removeCalls)
@@ -439,7 +439,8 @@ class SettingsScreenTest {
      * frozen clock, fixed scroll steps and at most 240 frames, recording the
      * scroll value and Remove's bounds per frame. A frame loop fails with
      * that trace (which value oscillates names the cause) instead of hanging
-     * the job. Once it is green on CI, the 3000 dp variant above can go.
+     * the job. Green on CI 3bd01174, so the test above is back at 874 dp;
+     * this one stays as the guard that names the loop if it returns.
      */
     @Test
     fun removeWallpaperBelowTheFoldSettlesAndRemoves() {

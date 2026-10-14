@@ -422,18 +422,23 @@ private fun Scrim(alpha: Animatable<Float, AnimationVector1D>, onScrimTap: () ->
 }
 
 /**
- * Consumes every pointer change that reaches the card itself (Main pass).
- * The card's children — the field, the buttons, the text scroll — process
- * the Main pass *before* this node, so they are unaffected; the scrim and
- * everything below see consumed changes only. Without this, a tap on the
- * card's padding area would fall through to the scrim's tap detector.
+ * Makes the card a hit target and consumes the **down** that lands on it
+ * (Main pass, after the children): a tap on the card's padding never
+ * reaches the scrim's tap detector, which treats a consumed down as
+ * "inside the card".
+ *
+ * Downs only, never moves or ups. A button's `clickable` re-checks every
+ * intermediate event on the Final pass and cancels its tap when an
+ * ancestor consumed it (`waitForUpOrCancellation`), and a real finger's tap
+ * carries a few ACTION_MOVEs: consuming them here dropped button taps on
+ * phones (the ActionSheet's identical swallower did, round 44).
  */
 private fun Modifier.swallowCardTaps(): Modifier = pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
             val event = awaitPointerEvent()
             for (change in event.changes) {
-                if (!change.isConsumed) change.consume()
+                if (change.pressed && !change.previousPressed && !change.isConsumed) change.consume()
             }
         }
     }

@@ -341,6 +341,29 @@ class AlertHostTest {
         create.assertIsNotEnabled() // ""
     }
 
+    /**
+     * Round 44: the card's tap swallower consumed every move, so a real
+     * finger's tap (a few ACTION_MOVEs between down and up) was cancelled by
+     * the button's clickable, as in the ActionSheet bug. A finger-like tap
+     * must fire the button's handler.
+     */
+    @Test
+    fun aFingerTapWithSmallMovesFiresTheButton() {
+        val state = host()
+        compose.waitForIdle()
+        compose.runOnUiThread { state.show(notNowAlert) }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("alert-primary").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 2f))
+            moveBy(Offset(3f, -1f))
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals(listOf("settings"), handlers)
+    }
+
     @Test
     fun tappingADisabledButtonDoesNothing() {
         val state = host()

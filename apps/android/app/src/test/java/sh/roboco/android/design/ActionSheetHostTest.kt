@@ -277,6 +277,32 @@ class ActionSheetHostTest {
         assertEquals(204f / 255f, pixel.blue, 0.005f)
     }
 
+    /**
+     * User bug (round 44, the 3bd01174 debug APK on a phone): option taps
+     * "don't do anything", intermittently. A real finger's tap carries a few
+     * ACTION_MOVEs between down and up, and the cards' tap swallower consumed
+     * them, so the row's clickable cancelled the tap on the Final pass. A
+     * finger-like tap (moves well inside touch slop) must select, every time.
+     */
+    @Test
+    fun aFingerTapWithSmallMovesSelectsTheOption() {
+        val state = host()
+        for (attempt in 1..3) {
+            handlers.clear()
+            compose.runOnUiThread { state.show(wallpaperSheet) }
+            compose.waitForIdle() // present + settle on the auto clock
+            compose.onNodeWithTag("action-sheet-row-2").performTouchInput {
+                down(center)
+                moveBy(Offset(0f, 2f))
+                moveBy(Offset(3f, -1f))
+                moveBy(Offset(-1f, 1f))
+                up()
+            }
+            compose.waitForIdle() // the 250 ms dismiss, then onSelect
+            assertEquals("attempt $attempt", listOf("select:ASCII"), handlers)
+        }
+    }
+
     // -------------------------------------------------- present / dismiss
 
     private fun hasSheetKey(key: SemanticsPropertyKey<Float>): SemanticsMatcher =
