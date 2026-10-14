@@ -39,6 +39,7 @@ val unitTestOnly: Boolean = gradle.startParameter.taskNames.isNotEmpty() &&
             "recordroborazzidebug",
             "verifyroborazzidebug",
             "parityreport",
+            "paritymanifest",
         )
     }
 
@@ -575,6 +576,18 @@ val parityReport = tasks.register<roboco.gradle.ParityReport>("parityReport") {
     goldens.from(fileTree("src/test/screenshots") { include("**/*.png") })
     iosRefs.from(fileTree(parityDir.resolve("ios")) { include("**/*.png") })
     outputDir.set(layout.buildDirectory.dir("parity"))
+}
+
+// G2's tooling (android-app#30): stub manifest entries for unlisted goldens,
+// and the sign-off mode (--sign=pending|all|<paths> --reviewer=… --date=…)
+// that pins reviewedSha256 to the recorded PNGs. See apps/android/parity/README.md.
+tasks.register<roboco.gradle.ParityManifest>("parityManifest") {
+    group = "roboco"
+    description =
+        "Adds stub parity-manifest entries for unlisted goldens; with --sign, pins " +
+            "reviewedSha256/reviewer/date for the reviewed entries."
+    manifest.set(file(parityDir.resolve("manifest.json")))
+    goldensDir.set(file("src/test/screenshots"))
 }
 
 dependencies {

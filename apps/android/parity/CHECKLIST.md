@@ -17,8 +17,10 @@ were walked — so skipping this walk is impossible once a golden lands.
    are judged on colour, type, bubble and rail only — structure and
    metrics come from the Swift source.
 4. Record the pass: fill `reviewedSha256` (the recorded PNG's SHA-256),
-   `reviewer`, `date` and any notes in `manifest.json`, in the same PR.
-   For the SSIM entries, also record `ssimFloor` = first score − 0.02.
+   `reviewer`, `date` and any notes in `manifest.json`, in the same PR —
+   `./gradlew :app:parityManifest --sign=<goldens> --reviewer=… --date=…`
+   pins all three from the files (see `README.md` here).
+   For the SSIM entries, also record `ssimFloor` = first score − 0.02 (by hand).
 
 ## Sessions list (`sessions-list`, `sessions-group-by-project`)
 

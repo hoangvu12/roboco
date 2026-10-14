@@ -173,6 +173,25 @@ base64 -w0 roboco-release.jks > roboco-release.jks.b64
    can follow `https://github.com/hoangvu12/roboco` with the APK filter
    `android-arm64-v8a\.apk$`. Releases also carry desktop assets.
 
+## Screenshot goldens (CI)
+
+The Roborazzi goldens (`apps/android/app/src/test/screenshots/`) are
+recorded on CI only — ubuntu is the source of truth (font rasterisation
+differs across hosts; Windows gets `:app:compareRoborazziDebug` for local
+feedback). Dispatch the Android workflow with `record_goldens`:
+
+```bash
+gh workflow run android.yml -R hoangvu12/roboco --ref feat/android-app -f record_goldens=true
+```
+
+The `android-screenshots` job records the capturing classes, re-verifies
+them in the same job (a diff fails the run: a non-deterministic capture),
+writes the parity board and uploads the `android-goldens` artifact. Push
+and PR runs only verify, non-blocking until the first signed-off set
+lands. Bringing the set in, the manifest stubs and the sign-off
+(`:app:parityManifest`) are in
+[apps/android/parity/README.md](../../apps/android/parity/README.md).
+
 ## The emulator
 
 Create an API 36 x86_64 AVD (above). The emulator has no engine; the app
