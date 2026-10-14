@@ -4,11 +4,11 @@ import uniffi.roboco_core.WorkspaceSnapshot
 
 /**
  * The New Session / New Project option records (android-ui-parity #92,
- * ticket 92's `NewSessionOptions.kt`, created here by #110 because #92 had
- * not landed when the folder browser was built — the declarations follow
- * #92's spec verbatim so the merge is a no-op):
- * `ios:Session/NewSessionViewController.swift:3-44` ported onto the merged
- * `WorkspaceSnapshot` (android-app#07).
+ * `NewSessionOptions.kt`): the port of `ios:Session/NewSessionViewController.swift:3-44`
+ * onto the merged `WorkspaceSnapshot` (android-app#07). #110 first
+ * created the file as a stand-in because #92 had not landed when the
+ * folder browser was built — the declarations follow #92's spec
+ * verbatim, so the merge was a no-op and #92 keeps them here.
  *
  * [HostOption] is what #110's folder browser picks its engine from; #92's
  * draft model and #113's menus consume all three records. The phone is

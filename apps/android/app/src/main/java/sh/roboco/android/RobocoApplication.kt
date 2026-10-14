@@ -43,6 +43,7 @@ import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.NotificationPolicy
 import sh.roboco.android.notify.NotificationPrefs
 import sh.roboco.android.notify.Notifier
+import sh.roboco.android.newsession.NewSessionDraftStore
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.LaunchPairRedeemer
 import sh.roboco.android.pairing.PairedEngineStore
@@ -78,8 +79,8 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * Property names are reserved for the parity tickets (android-ui-parity):
  * `prefs`, `workspaceFeed`, `foldState`, `frontPage` (#40, all landed
  * now), `appEvents`, `appToaster`, `rowActions` (#42, landed now),
- * `deepLinks` (#36, landed), `drafts` (#84) — do not reuse them for
- * something else.
+ * `deepLinks` (#36, landed), `drafts` (#84), `newSessionDrafts` (#92) —
+ * do not reuse them for something else.
  */
 class RobocoApplication : Application() {
 
@@ -213,6 +214,26 @@ class RobocoApplication : Application() {
     val drafts by lazy {
         Drafts(
             Drafts.createDataStore(this, CoroutineScope(SupervisorJob() + Dispatchers.IO)),
+            appScope,
+        )
+    }
+
+    /**
+     * The New Session page's sticky state (ticket 92): the options draft
+     * as JSON under `newSessionDraft` (the iOS `UserDefaults` key) in one
+     * DataStore per process over `noBackupFilesDir/new_session.preferences_pb`
+     * (engine-scoped ids — the same no-backup rule as the drafts), the
+     * typed text in [drafts] under the iOS `"new-session"` key, and the
+     * staged images in memory only. Every draft change is persisted on
+     * [appScope]; the mirror warms in `onCreate`, and the debug
+     * `-harness`-style extra is applied once on the first read after the
+     * load. Ticket 140's forget sequence resets or strips it through
+     * `forgetEngine`.
+     */
+    val newSessionDrafts by lazy {
+        NewSessionDraftStore(
+            NewSessionDraftStore.createDataStore(this, CoroutineScope(SupervisorJob() + Dispatchers.IO)),
+            drafts,
             appScope,
         )
     }
@@ -422,6 +443,9 @@ class RobocoApplication : Application() {
         // always loaded by the time a session opens (one opened before
         // the read finishes falls back to the effect's late load).
         drafts.warm()
+        // Ticket 92: the same for the new-session options mirror — a
+        // page opened before the read finishes takes the late-load path.
+        newSessionDrafts.warm()
         // Ticket 35: the process lifecycle hooks and the default-network
         // monitor, installed exactly once per process — never from an
         // Activity (#609 leaked one observer per onCreate) and never from
