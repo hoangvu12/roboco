@@ -184,7 +184,8 @@ feedback). Dispatch the Android workflow with `record_goldens`:
 gh workflow run android.yml -R hoangvu12/roboco --ref feat/android-app -f record_goldens=true
 ```
 
-The `android-screenshots` job records the capturing classes, re-verifies
+Such a run executes `android-screenshots` only (the build matrix and both
+emulator jobs are skipped). It records the capturing classes, re-verifies
 them in the same job (a diff fails the run: a non-deterministic capture),
 writes the parity board and uploads the `android-goldens` artifact. Push
 and PR runs only verify, non-blocking until the first signed-off set

@@ -144,6 +144,7 @@ class SidebarToolbarScreenshotTest {
     }
 
     /** The toolbar at rest, nothing wired (the `rest` / `rtl` content). */
+    @Composable
     private fun BoxScope.restToolbar() {
         ToolbarSlot {
             SidebarToolbarContent(
@@ -156,6 +157,7 @@ class SidebarToolbarScreenshotTest {
     }
 
     /** 105's slot geometry inside a [GlassStage]: bottom 24, height 44. */
+    @Composable
     private fun BoxScope.ToolbarSlot(content: @Composable () -> Unit) {
         Box(
             Modifier

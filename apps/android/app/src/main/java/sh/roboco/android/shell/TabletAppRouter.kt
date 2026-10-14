@@ -17,8 +17,8 @@ interface TabletShell {
 
     /**
      * Ticket 33's `TabletShellState.isCollapsed` — one writer in
-     * production (108's `SideEffect` in 35's root composition; the interim
-     * `SideEffect`s in `RobocoAppContent` until then). Default true.
+     * production: 108's `SideEffect` in `ShellStateScope` (ShellStates.kt),
+     * derived from the shell kind. Default true.
      */
     val isCollapsed: Boolean
 
