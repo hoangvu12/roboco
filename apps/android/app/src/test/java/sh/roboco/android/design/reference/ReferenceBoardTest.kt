@@ -2,6 +2,9 @@ package sh.roboco.android.design.reference
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
@@ -99,16 +102,16 @@ class ReferenceBoardTest {
 
         // 936 × 1000: iOS | 16 px grey gutter | the Android render.
         val board = Bitmap.createBitmap(936, 1000, Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(board)
-        canvas.drawColor(android.graphics.Color.WHITE)
+        val canvas = Canvas(board)
+        canvas.drawColor(Color.WHITE)
         canvas.drawBitmap(ios, 0f, 0f, null)
-        canvas.drawRect(460f, 0f, 476f, 1000f, android.graphics.Paint().apply { color = 0xFF8E8E93.toInt() })
+        canvas.drawRect(460f, 0f, 476f, 1000f, Paint().apply { color = 0xFF8E8E93.toInt() })
         canvas.drawBitmap(android, 476f, 0f, null)
 
         // The alignment overlay: the Android render with the PNG on top at
         // half alpha — misalignments show as doubled glyphs.
         val overlay = android.copy(Bitmap.Config.ARGB_8888, false)
-        android.graphics.Canvas(overlay).drawBitmap(ios, 0f, 0f, android.graphics.Paint().apply { alpha = 128 })
+        Canvas(overlay).drawBitmap(ios, 0f, 0f, Paint().apply { alpha = 128 })
 
         val dir = File("build/outputs/roborazzi").apply { mkdirs() }
         val boardPng = File(dir, "reference-board.png")

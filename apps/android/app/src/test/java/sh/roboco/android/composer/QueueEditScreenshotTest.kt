@@ -14,10 +14,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.Glass
 import sh.roboco.android.design.QueueEditGallerySection
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.Glass
 
 /**
  * The queue-edit goldens (android-ui-parity #83), recorded by

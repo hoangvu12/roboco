@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -154,13 +155,21 @@ class QueueEditControllerTest {
         port: FakePort,
         host: FakeHost,
         renewEveryMs: Long = 20_000L,
-    ): QueueEditController = QueueEditController(
-        port = port,
-        host = host,
-        scope = CoroutineScope(StandardTestDispatcher(testScheduler)),
-        releaseScope = CoroutineScope(StandardTestDispatcher(testScheduler)),
-        renewEveryMs = renewEveryMs,
-    )
+    ): QueueEditController {
+        // Children of the background scope's Job: runTest cancels it before
+        // its final drain, so a still-open edit's `while (true) delay(...)`
+        // renewal ends instead of draining forever on virtual time. Only
+        // the Job is taken (not the background marker), so the tasks stay
+        // foreground for the tests' own advanceUntilIdle().
+        val job = Job(backgroundScope.coroutineContext[Job])
+        return QueueEditController(
+            port = port,
+            host = host,
+            scope = CoroutineScope(job + StandardTestDispatcher(testScheduler)),
+            releaseScope = CoroutineScope(job + StandardTestDispatcher(testScheduler)),
+            renewEveryMs = renewEveryMs,
+        )
+    }
 
     // ------------------------------------------------------------ begin
 

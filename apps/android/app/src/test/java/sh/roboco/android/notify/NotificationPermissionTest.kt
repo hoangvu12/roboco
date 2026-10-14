@@ -134,7 +134,10 @@ class NotificationPermissionTest {
     /** The ticket's five-row situation table, plus the granted rows. */
     @Test
     fun blockedAfterResultMatchesTheSituationTable() {
-        val f = NotificationPermission::blockedAfterResult
+        // A local fun, not a function reference: named arguments are not
+        // allowed on a function-type value, and the table reads better with them.
+        fun f(granted: Boolean, requestedBefore: Boolean, rationaleNow: Boolean) =
+            NotificationPermission.blockedAfterResult(granted, requestedBefore, rationaleNow)
         // First ask, "Allow": granted — never blocked, whatever the flags.
         assertEquals("first ask allowed", false, f(true, requestedBefore = false, rationaleNow = false))
         assertEquals("first ask allowed (no rationale)", false, f(true, false, false))

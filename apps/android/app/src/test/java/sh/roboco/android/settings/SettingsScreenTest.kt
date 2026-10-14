@@ -6,10 +6,9 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
-import androidx.activity.result.ActivityOptionsCompat
-import androidx.activity.result.ActivityResultContract
 import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.ActivityResultRegistryOwner
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
@@ -25,11 +24,13 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityOptionsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -687,7 +688,7 @@ class SettingsScreenTest {
         compose.waitForIdle()
         compose.runOnUiThread { shellState.select(TabId.Settings) }
         compose.waitUntil(5_000) {
-            compose.onNodeWithTag(settingsTag(NotificationCopy.kindId(NotificationKind.Done)))
+            compose.onAllNodesWithTag(settingsTag(NotificationCopy.kindId(NotificationKind.Done)))
                 .fetchSemanticsNodes().isNotEmpty()
         }
         switchNode(NotificationCopy.MasterId).assertIsOn()

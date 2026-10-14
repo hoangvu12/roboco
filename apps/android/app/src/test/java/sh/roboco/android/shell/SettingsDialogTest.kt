@@ -341,8 +341,10 @@ class SettingsDialogTest {
         // Clipped to the card: the pushed screen stays inside its bounds.
         assertTrue(pushed.left.value >= card.left.value - 1f)
         assertTrue(pushed.right.value <= card.right.value + 1f)
-        // 25's back circle shows; the Done circle is the root's only.
-        compose.onNodeWithTag("nav-back").assertExists()
+        // The Done circle is the root's only. (25's back circle belongs to a
+        // route screen's own LargeTitleScaffold; this fixture's NavDemoScreen
+        // draws none, so it is not asserted here - LargeTitleScaffoldTest
+        // covers it.)
         compose.onNodeWithTag("settings-done").assertDoesNotExist()
     }
 
