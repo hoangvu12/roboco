@@ -65,6 +65,20 @@
                 <data android:host="pair" />
             </intent-filter>
         </activity>
+        <!-- Share target for pairing links (ticket 139). No UI: forwards
+             into the app's own task (see PairShareActivity). -->
+        <activity
+            android:name=".pairing.PairShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
         <!-- android-app#28: the run-watching foreground service (type
              dataSync; type decision table in the ticket). Runs only while a
              run is Working and notifications are on; never started from the
