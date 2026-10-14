@@ -142,7 +142,7 @@ class SessionScreenRoute internal constructor(
             }
         }
         // Ticket 75's screen (the scaffold, the first-composition wiring,
-        // the layer stack). 80 adds `onMore`; 66 the attachment reader.
+        // the layer stack). 66 the attachment reader.
         // 78: the composer's command set, once per route — over this
         // route's core (a CoreSessionCore holds the client and the
         // handle), reading the controller's host device at call time. A
@@ -184,6 +184,12 @@ class SessionScreenRoute internal constructor(
             queueEditPort = queueEditPort,
             queueActions = queueActions,
             questionPort = questionPort,
+            // Ticket 80: the ⋯ menu — the header's onMore opens the session
+            // menu built fresh on every tap (pin state and canWrite read
+            // at open time). The route's `transcript` property forces the
+            // main-thread first read here, the same instance 75's screen
+            // composes below.
+            onMore = rememberSessionMenu(controller, transcript),
             // 84: the engine half of the draft key (the route's core has
             // it; SessionScreen pairs it with the controller's chatId).
             engineId = core.engineId,

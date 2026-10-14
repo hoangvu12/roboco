@@ -1,0 +1,304 @@
+package sh.roboco.android.session
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.res.Configuration
+import android.os.Build
+import android.util.Log
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.RobocoIcons
+import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.Toaster
+import sh.roboco.android.design.glass.GlassCircleButton
+import sh.roboco.android.design.glass.GlassMenuPanel
+import sh.roboco.android.design.glass.Menu
+import sh.roboco.android.design.glass.MenuIcon
+import sh.roboco.android.design.glass.MenuItem
+import sh.roboco.android.design.glass.flattenLevel
+import sh.roboco.android.design.glass.rememberGlassMenuState
+import sh.roboco.android.sessions.ActionOutcome
+import sh.roboco.android.sessions.LocalRowActions
+import sh.roboco.android.shell.AppRouter
+import sh.roboco.android.shell.LocalAppRouter
+import sh.roboco.android.shell.LocalNavEntry
+import sh.roboco.android.shell.LocalNavStack
+import sh.roboco.android.transcript.TranscriptState
+import uniffi.roboco_core.LayoutFrame
+
+/**
+ * The header's ⋯ pull-down (android-ui-parity #80) — the port of
+ * `sessionMenu()` (`ios:Session/SessionViewController.swift:523-544`):
+ * three rows in one untitled group, **Pin/Unpin, Copy Transcript,
+ * Archive** (destructive). Everything visual belongs to ticket 15's
+ * [Menu]/[MenuItem]/[GlassMenuPanel]; this file owns only the content,
+ * the three actions and the one router hook the Archive action needs.
+ *
+ * The menu is **rebuilt on every open** (iOS
+ * `UIDeferredMenuElement.uncached`): [rememberSessionMenu] builds a fresh
+ * [Menu] inside the click lambda, so the pin title and the disabled flags
+ * are always current, never cached in composition.
+ *
+ * Roboco adaptations (79/42/22): Pin/Unpin and Archive are disabled while
+ * `canWrite == false` (Copy Transcript stays live — it reads only local
+ * state); the leave after Archive happens only on `Ok`/`Gone` outcomes;
+ * Copy Transcript builds the string off main and handles Binder's
+ * transaction limit with a failure toast.
+ */
+
+/**
+ * Pure: the ⋯ menu for one open. iOS `SessionViewController.sessionMenu()`
+ * — no `Menu` title, one group, no separators, three rows in order.
+ *
+ * - row 1: "Pin" (SF `pin`) / "Unpin" (SF `pin.slash`) by [pinned],
+ *   `app.setPinned(chatId, !pinned)`;
+ * - row 2: "Copy Transcript" (SF `doc.on.doc`), never disabled — it reads
+ *   only the local transcript;
+ * - row 3: "Archive" (SF `archivebox`), destructive, disabled with Pin
+ *   while the engine is offline (79's `canWrite`).
+ *
+ * Keep it pure: no `@Composable`, no state reads. [rememberSessionMenu]
+ * calls this once per open, from the click lambda.
+ */
+fun sessionMenu(
+    pinned: Boolean,
+    canWrite: Boolean,
+    onSetPinned: (Boolean) -> Unit,
+    onCopyTranscript: () -> Unit,
+    onArchive: () -> Unit,
+): Menu = Menu(
+    title = null,
+    children = listOf(
+        MenuItem(
+            title = if (pinned) "Unpin" else "Pin",
+            icon = MenuIcon.Symbol(if (pinned) RobocoIcons.PinSlash else RobocoIcons.Pin),
+            disabled = !canWrite,
+            testTag = "session-menu-pin",
+            action = { onSetPinned(!pinned) },
+        ),
+        MenuItem(
+            title = "Copy Transcript",
+            icon = MenuIcon.Symbol(RobocoIcons.DocOnDoc),
+            testTag = "session-menu-copy",
+            action = onCopyTranscript,
+        ),
+        MenuItem(
+            title = "Archive",
+            icon = MenuIcon.Symbol(RobocoIcons.Archivebox),
+            destructive = true,
+            disabled = !canWrite,
+            testTag = "session-menu-archive",
+            action = onArchive,
+        ),
+    ),
+)
+
+/**
+ * The [SessionHeader] `onMore` handler (80's step 7): returns a lambda
+ * that builds a fresh [sessionMenu] from the **current** pin state and
+ * `SessionChrome.canWrite`, and opens it on ticket 15's host at the ⋯
+ * circle's window rect. The values are read inside the click lambda —
+ * never during composition — so each open is current (the uncached
+ * deferred element) and a pin toggle between opens needs no
+ * recomposition.
+ *
+ * The writes go through [LocalRowActions] (42), the Undo through the
+ * app-scoped [LocalToaster] (14) — both outlive this screen, so the
+ * "Archived · Undo" toast still works after the pop. Copy runs in the
+ * composition scope: if the screen leaves mid-copy the copy is cancelled
+ * (acceptable — the menu is closed and the user is gone).
+ *
+ * Requires [sh.roboco.android.shell.LocalNavStack] /
+ * [sh.roboco.android.shell.LocalNavEntry] (any screen inside a
+ * `NavStackHost`) and a mounted `GlassMenuHost` (the app root, 35).
+ */
+@Composable
+fun rememberSessionMenu(
+    controller: SessionController,
+    transcript: TranscriptState,
+): (anchorInWindow: Rect) -> Unit {
+    val menuState = rememberGlassMenuState()
+    val actions = LocalRowActions.current
+    val router = LocalAppRouter.current
+    val nav = LocalNavStack.current
+    val entry = LocalNavEntry.current
+    val toaster = LocalToaster.current
+    // The application context: the clipboard service outlives any
+    // activity-level context flip while this remembered lambda is held.
+    val appContext = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    return remember(controller, transcript, menuState, actions, router, nav, entry, toaster) {
+        { anchor: Rect ->
+            val chatId = controller.chatId
+            val menu = sessionMenu(
+                pinned = controller.pinned,
+                canWrite = controller.chrome.value.canWrite,
+                onSetPinned = { pinned -> actions.setPinned(chatId, pinned) },
+                onCopyTranscript = {
+                    scope.launch {
+                        val clipboard = appContext.getSystemService(ClipboardManager::class.java)
+                            ?: return@launch
+                        copyTranscript(transcript, clipboard, toaster)
+                    }
+                },
+                onArchive = {
+                    actions.archive(chatId) { outcome ->
+                        if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) {
+                            leaveAfterArchive(
+                                chatId,
+                                router,
+                                isTopAndIdle = { nav.top == entry && nav.transition == null },
+                                pop = { nav.pop(animated = true) },
+                            )
+                        }
+                    }
+                },
+            )
+            menuState.open(anchor, menu)
+        }
+    }
+}
+
+/**
+ * Copies `plainText()` of the **latest** frame (iOS
+ * `UIPasteboard.general.string = engine.frame().plainText()`), off main:
+ *
+ * 1. on main: `transcript.engine.frame()` — a fresh Kotlin wrapper this
+ *    code owns — unless the transcript is closed, in which case the last
+ *    applied [TranscriptState.frame] is used (owned by the state,
+ *    **never closed**);
+ * 2. on [work]: `plainText()` and the fresh wrapper's `close()`;
+ * 3. back on main: the platform `ClipboardManager` write.
+ *
+ * Feedback (android-app#22): API 33+ shows the system's own copy overlay
+ * — nothing here; API 31–32 shows Roboco's "Copied" toast. A
+ * `TransactionTooLargeException`-style `RuntimeException` from Binder
+ * logs and toasts "Could not copy the transcript." (iOS's pasteboard has
+ * no such limit; Android's must not crash the app). An empty transcript
+ * copies `""`, as iOS does.
+ */
+internal suspend fun copyTranscript(
+    transcript: TranscriptState,
+    clipboard: ClipboardManager,
+    toaster: Toaster,
+    sdkInt: Int = Build.VERSION.SDK_INT,
+    work: CoroutineDispatcher = Dispatchers.Default,
+) {
+    // Both reads happen on main; never read the snapshot-state
+    // `transcript.frame` off main.
+    val fresh: LayoutFrame? = if (transcript.isClosed) null else transcript.engine.frame()
+    val held: LayoutFrame? = if (fresh == null) transcript.frame else null
+    val text = withContext(work) {
+        when {
+            fresh != null -> fresh.use { it.plainText() }
+            held != null -> held.plainText()
+            else -> ""
+        }
+    }
+    try {
+        clipboard.setPrimaryClip(ClipData.newPlainText("Transcript", text))
+        // Android 12/12L has no copy confirmation of its own; Android 13+
+        // shows its overlay and a second toast would duplicate it.
+        if (sdkInt <= Build.VERSION_CODES.S_V2) toaster.show("Copied")
+    } catch (e: RuntimeException) {
+        Log.w("Roboco", "copy transcript failed: $e")
+        toaster.show("Could not copy the transcript.")
+    }
+}
+
+/**
+ * Router first (the tablet split's embedded draft, iOS
+ * `split.showDraft(prompt: nil, focus: false)`), else pop this screen if
+ * it is still the stack's top and no transition is running. The guard
+ * stops a late `onResult` from popping a *different* screen — the user
+ * may have swiped back while the write was in flight.
+ *
+ * Lambdas instead of `NavStack`/`NavEntry` because `NavStack` is a final
+ * class (ticket 24) and cannot be faked; the production call site is
+ * `{ nav.top == entry && nav.transition == null }` / `{ nav.pop(animated = true) }`.
+ */
+internal fun leaveAfterArchive(
+    chatId: String,
+    router: AppRouter,
+    isTopAndIdle: () -> Boolean,
+    pop: () -> Unit,
+) {
+    if (router.leaveArchivedSession(chatId)) return
+    if (isTopAndIdle()) pop()
+}
+
+// ---------------------------------------------------------------------------
+// Previews (step 9): the open state, statically — a @Preview cannot drive
+// the host's open animation, so the panel is rendered directly through
+// [GlassMenuPanel] next to a 44 dp ⋯ circle, at the placement the host
+// would use (panel trailing edge = circle trailing edge, panel top =
+// circle top: `cover = true`).
+// ---------------------------------------------------------------------------
+
+/** The previews' shared fixture: the ⋯ circle with the menu open below it. */
+@Composable
+private fun SessionMenuOpenPreview(pinned: Boolean, canWrite: Boolean) {
+    Box(Modifier.fillMaxWidth().height(220.dp).background(RobocoTheme.palette.background)) {
+        GlassCircleButton(
+            icon = RobocoIcons.Ellipsis,
+            contentDescription = "More",
+            onClick = {},
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 16.dp),
+        )
+        GlassMenuPanel(
+            lines = flattenLevel(
+                null,
+                sessionMenu(
+                    pinned = pinned,
+                    canWrite = canWrite,
+                    onSetPinned = {},
+                    onCopyTranscript = {},
+                    onArchive = {},
+                ).children,
+                { null },
+                isRoot = true,
+                backTitle = null,
+            ),
+            onRow = {},
+            onSubmenu = {},
+            onBack = {},
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 16.dp),
+        )
+    }
+}
+
+@Preview(name = "light")
+@Composable
+private fun SessionMenuUnpinnedLightPreview() {
+    RobocoTheme(Appearance.Light) { SessionMenuOpenPreview(pinned = false, canWrite = true) }
+}
+
+@Preview(name = "dark", uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun SessionMenuPinnedDarkPreview() {
+    RobocoTheme(Appearance.Dark) { SessionMenuOpenPreview(pinned = true, canWrite = true) }
+}
+
+@Preview(name = "read-only light")
+@Composable
+private fun SessionMenuReadOnlyLightPreview() {
+    RobocoTheme(Appearance.Light) { SessionMenuOpenPreview(pinned = false, canWrite = false) }
+}

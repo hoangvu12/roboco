@@ -46,6 +46,16 @@ interface AppRouter {
     /** The Session screen really left its stack (pop committed, not a cancelled back gesture). No-op on phone except [SessionPresenceListener]. */
     fun sessionDidClose(chatId: String) {}
 
+    /**
+     * Ticket 80: the open session was archived from its ⋯ menu.
+     * Returns true when the router moved away itself (tablet split
+     * expanded → embedded draft, iOS `split.showDraft(prompt: nil,
+     * focus: false)`); false = the caller pops its own stack. The phone
+     * router and [Noop] keep this default; ticket 106's tablet router
+     * overrides it.
+     */
+    fun leaveArchivedSession(chatId: String): Boolean = false
+
     companion object {
         /** Previews / tests without a shell: does nothing. */
         val Noop: AppRouter = object : AppRouter {
