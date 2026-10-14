@@ -47,10 +47,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.Glass
 import sh.roboco.android.design.NoFeedback
 import sh.roboco.android.design.Palette
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.Glass
 import sh.roboco.android.session.FakeSessionCore
 import sh.roboco.android.session.QuestionsChromeFiller
 import sh.roboco.android.session.SessionController
