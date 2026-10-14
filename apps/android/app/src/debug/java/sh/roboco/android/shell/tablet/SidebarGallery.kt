@@ -4,15 +4,11 @@ import android.content.res.Configuration
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
@@ -24,7 +20,6 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -33,13 +28,11 @@ import androidx.compose.ui.unit.dp
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.AlertHost
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.CapsuleShape
 import sh.roboco.android.design.ContextMenuHost
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastHost
 import sh.roboco.android.design.glass.GlassMenuHost
-import sh.roboco.android.design.glass.GlassSurface
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.sessions.FrontPageSections
 import sh.roboco.android.sessions.LocalSidebarFixtures
@@ -49,6 +42,7 @@ import sh.roboco.android.sessions.SessionsScreenFixtures
 import sh.roboco.android.sessions.SidebarFixtures
 import sh.roboco.android.shell.AppRouter
 import sh.roboco.android.shell.DraftHandoff
+import sh.roboco.android.shell.SidebarToolbar
 import uniffi.roboco_core.FrontPage
 import uniffi.roboco_core.PullRequestGroups
 import uniffi.roboco_core.SearchField
@@ -78,7 +72,8 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * "focusSearch()" / "showSessions()" call [SidebarState]'s methods, and
  * "Current: none / row 2" flips [Sidebar]'s `currentChatId` to the second
  * Pinned row. The log line lists every [AppRouter] call the fake router
- * recorded (tap a row: `openSession(chat-veil)`).
+ * recorded (tap a row: `openSession(chat-veil)`; tap the toolbar's gear or
+ * `+`: `showSettings()` / `presentNewSession(null)`).
  */
 @Composable
 fun SidebarGallerySection(currentInitially: String? = null) {
@@ -113,7 +108,15 @@ fun SidebarGallerySection(currentInitially: String? = null) {
                                     scaleY = scale
                                     transformOrigin = TransformOrigin(0f, 0f)
                                 },
-                            toolbar = { SidebarToolbarPlaceholder() },
+                            toolbar = { stack ->
+                                // 107: the real toolbar (gear → the fake
+                                // router's log, ⋯ → 46's menu on the
+                                // sidebar's stack, + → the router).
+                                SidebarToolbar(
+                                    sidebarStack = stack,
+                                    router = router,
+                                )
+                            },
                         )
                     }
                 }
@@ -140,25 +143,6 @@ fun SidebarGallerySection(currentInitially: String? = null) {
 
 /** The second Pinned row of 46's fixture — the gallery's current-row toggle. */
 private const val CurrentRowId = "chat-models"
-
-/**
- * 107's placeholder toolbar: an 88 × 44 dp glass capsule 16 dp from the
- * leading edge with its bottom at the navigation-bar inset + 12 — the
- * footprint of 107's toolbar row until that ticket replaces it.
- */
-@Composable
-private fun BoxScope.SidebarToolbarPlaceholder() {
-    GlassSurface(
-        modifier = Modifier
-            .align(Alignment.BottomStart)
-            .padding(
-                start = 16.dp,
-                bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp,
-            )
-            .size(88.dp, 44.dp),
-        shape = CapsuleShape,
-    )
-}
 
 /** The gallery's text button. */
 @Composable

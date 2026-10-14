@@ -51,6 +51,14 @@
     <string name="shortcut_search" translatable="false">Search</string>
     <string name="shortcut_toggle_sidebar" translatable="false">Toggle Sidebar</string>
 
+    <!-- The tablet sidebar's bottom toolbar (android-ui-parity #107), verbatim
+         from ios:Shell/SplitRootController.swift:239-252. Note the lower-case
+         "s" in "New session": the bar item's accessibility label, not the
+         Ctrl+N shortcut's "New Session" above. -->
+    <string name="sidebar_settings" translatable="false">Settings</string>
+    <string name="sidebar_options" translatable="false">Options</string>
+    <string name="sidebar_new_session" translatable="false">New session</string>
+
     <!-- Row swipe actions and the row's context menu (android-ui-parity #44),
          verbatim from ios:Threads/SessionListController.swift:228-296 — the
          swipe a11y labels double as the menu titles. U+2026 in the … entries. -->
