@@ -43,6 +43,7 @@ import sh.roboco.android.design.gallery.TabBarMinimizeGallerySection
 import sh.roboco.android.design.gallery.ToastGallerySection
 import sh.roboco.android.design.reference.ReferenceGalleryPage
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
+import sh.roboco.android.newsession.CheckoutModelEffortMenusGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
 import sh.roboco.android.newsession.HandoffCaptureGallerySection
@@ -674,6 +675,12 @@ object Gallery {
         // tile sizes — Loading/Loaded/Failed, compact and full, retry and
         // the unfetchable remote — over the Rust placeholder boxes.
         GallerySection("Image tile states", screenshotHeightDp = 1300) { ImageTileStatesGallerySection() },
+        // Ticket 114 (new-session menus): the Checkout / Model / Reasoning
+        // effort chip-menu content — the static panels K1–K3, M, E1–E2 and
+        // the live demo (hero stand-in + chips over the in-memory draft, a
+        // 1.5 s fake ref load) over the shared GalleryBackdrop. Fill: the
+        // live demo owns its GlassMenuHost.
+        GallerySection("New-session menus", GalleryLayout.Fill) { CheckoutModelEffortMenusGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

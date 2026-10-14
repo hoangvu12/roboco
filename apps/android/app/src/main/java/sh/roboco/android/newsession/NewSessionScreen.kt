@@ -148,7 +148,23 @@ internal fun NewSessionScreenBody(
     // 109: the chip strip's data (the menu map is `remember`ed so the
     // effect's LaunchedEffect key stays stable — 113 and 114 add their
     // provider maps as further arguments of this same call).
-    val chipMenus = remember { newSessionChipMenus() }
+    // 114: the checkout / model / effort menu content — one instance per
+    // page, built over the live model (every provider reads the draft at
+    // tap time, every pick goes through ns.update), the refs through 71's
+    // client. 113 adds its projectMenus.providers() in front of this same
+    // newSessionChipMenus call.
+    val refSource = remember { CoreRefSource { app.clientOrNull() } }
+    val checkoutMenus = remember(ns) {
+        CheckoutModelEffortMenus(
+            draft = { ns.draft },
+            project = { ns.project },
+            models = { ns.models },
+            selectedModel = { ns.selectedModel },
+            update = ns::update,
+            refSource = refSource,
+        )
+    }
+    val chipMenus = remember(checkoutMenus) { newSessionChipMenus(checkoutMenus.providers()) }
     NewSessionChipsEffect(ns, composer, chipMenus)
     val morph = rememberComposerMorphState(
         alwaysCard = true,
