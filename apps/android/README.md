@@ -89,7 +89,10 @@ derives them from `dist/roboco-artwork.png` and the outputs are committed
 - `:app:recordRoborazziDebug` / `:app:verifyRoborazziDebug` — the
   screenshot goldens in `app/src/test/screenshots/`; ubuntu is the source
   of truth for recording (font rasterisation differs across hosts —
-  Windows gets `:app:compareRoborazziDebug` for local feedback).
+  Windows gets `:app:compareRoborazziDebug` for local feedback). Record
+  through the workflow's `record_goldens` dispatch — see `parity/README.md`.
+- `:app:parityManifest` — stub manifest entries for unlisted goldens, and
+  the sign-off mode (`--sign=… --reviewer=… --date=…`); `parity/README.md`.
 - `:app:parityReport` — the iOS parity board (`build/parity/`), G5 of the
   parity gate; see `parity/` below.
 - `cargo test -p roboco-android-assets` (repo root) — the icon pipeline.

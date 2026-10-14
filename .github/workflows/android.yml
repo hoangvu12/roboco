@@ -58,6 +58,15 @@ on:
       - '.cargo/config.toml'
       - '.github/workflows/android.yml'
   workflow_dispatch:
+    inputs:
+      record_goldens:
+        # android-app#30: android-screenshots RECORDS the Roborazzi goldens
+        # instead of verifying them, re-verifies them (determinism), writes
+        # the parity board and uploads `android-goldens` for a human to
+        # commit — see apps/android/parity/README.md.
+        description: 'Record the Roborazzi goldens (android-screenshots) and upload them as android-goldens'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -212,8 +221,10 @@ jobs:
   # verifyRoborazziDebug (G1) and the parity tests (G2–G4 run inside
   # testDebugUnitTest), and uploads the parityReport board (G5) on every
   # run — including failures — so the reviewer's walk never waits on a
-  # green build. The goldens themselves are recorded by
-  # recordRoborazziDebug runs whose artefacts are committed back.
+  # green build. The goldens themselves are recorded by a workflow_dispatch
+  # run with `record_goldens` (record, determinism re-verify, board, the
+  # `android-goldens` artifact a human commits back — docs/reference/ci.md
+  # and apps/android/parity/README.md).
   #
   # NON-BLOCKING for now: no goldens are committed yet
   # (app/src/test/screenshots is empty), so verify fails on every missing
@@ -222,11 +233,21 @@ jobs:
   # the full unit suite already runs in the `android` job above.
   android-screenshots:
     runs-on: ubuntu-24.04
-    continue-on-error: true
+    # Non-blocking for push/PR verify runs until the first signed-off set
+    # lands; a `record_goldens` dispatch must fail visibly (the determinism
+    # re-verify below), so it is blocking there.
+    continue-on-error: ${{ !inputs.record_goldens }}
     timeout-minutes: 40
     defaults:
       run:
         working-directory: apps/android
+    env:
+      # The capturing classes: the *Screenshot* suites plus the behaviour
+      # tests that also capture. One list for every step below (expanded
+      # into --tests arguments with globbing off).
+      CAPTURE_TESTS: >-
+        *Screenshot* *GalleryCapture* *FolderBrowserBottomBarTest
+        *NewProjectScreenTest *ReferenceBoardTest *SessionArrivalTest
     steps:
       - uses: actions/checkout@v4
       - name: Validate Gradle wrapper
@@ -260,21 +281,52 @@ jobs:
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
       - name: Verify the goldens and the parity gate, write the parity board
+        if: ${{ !inputs.record_goldens }}
         # roborazzi.test.verify=true is what verifyRoborazziDebug sets; the
-        # --tests filter keeps this to the classes that capture (the
-        # *Screenshot* suites plus five behaviour tests that also capture)
-        # and the parity tests, instead of re-running the whole suite.
-        run: >-
-          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true -ProbocoParity=true
-          :app:testDebugUnitTest
-          --tests '*Screenshot*'
-          --tests '*GalleryCapture*'
-          --tests '*FolderBrowserBottomBarTest'
-          --tests '*NewProjectScreenTest'
-          --tests '*ReferenceBoardTest'
-          --tests '*SessionArrivalTest'
-          --tests 'sh.roboco.android.parity.*'
-          :app:parityReport
+        # --tests filter keeps this to the classes that capture and the
+        # parity tests, instead of re-running the whole suite.
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true -ProbocoParity=true \
+            :app:testDebugUnitTest "${tests[@]}" --tests 'sh.roboco.android.parity.*' \
+            :app:parityReport
+      # ── record_goldens (workflow_dispatch) ────────────────────────────
+      # Ubuntu is the goldens' source of truth (font rasterisation differs
+      # across hosts). The property form, not :app:recordRoborazziDebug:
+      # that task is not a Test task and rejects --tests, and this records
+      # exactly the set the verify step checks. The parity tests are left
+      # out (G2-G4 read the goldens being written).
+      - name: Record the goldens
+        if: ${{ inputs.record_goldens }}
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.record=true \
+            :app:testDebugUnitTest "${tests[@]}"
+      - name: Re-verify the recorded goldens (determinism)
+        if: ${{ inputs.record_goldens }}
+        # Same runner, same inputs: any diff is a non-deterministic capture
+        # (clock, animation, async load) and must be fixed before the set
+        # is committed. --rerun: Gradle must not skip it as up to date.
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true \
+            :app:testDebugUnitTest --rerun "${tests[@]}"
+      - name: Write the parity board
+        if: ${{ inputs.record_goldens }}
+        run: ./gradlew --stacktrace "-ProbocoAbis=x86_64" :app:parityReport
+      - name: Upload the recorded goldens
+        if: ${{ inputs.record_goldens }}
+        uses: actions/upload-artifact@v4
+        with:
+          # Unzip into apps/android/app/src/test/screenshots and commit (see
+          # apps/android/parity/README.md for the manifest + sign-off steps).
+          name: android-goldens
+          path: apps/android/app/src/test/screenshots
+          retention-days: 7
+          if-no-files-found: error
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -284,7 +336,6 @@ jobs:
             apps/android/app/build/outputs/roborazzi
           retention-days: 14
           if-no-files-found: ignore
-
   # android-app#30: the instrumented flow suite against the fixture
   # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
   # logic: three android_fixture processes, adb reverse, the suite with
