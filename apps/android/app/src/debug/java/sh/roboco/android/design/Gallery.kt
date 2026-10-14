@@ -53,6 +53,7 @@ import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
+import sh.roboco.android.pairing.QrScannerGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionNavGallerySection
 import sh.roboco.android.session.JumpToLatestGallerySection
@@ -638,6 +639,15 @@ object Gallery {
         // text when the table is swiped. Fill: the host owns scrolling.
         GallerySection("Transcript accessibility", GalleryLayout.Fill, screenshotHeightDp = 891) {
             TranscriptA11yGallerySection()
+        },
+        // Ticket 138 (QR scanner): the forced-dark camera stage over the
+        // fake preview — the reticle, caption and the ✕ in the image
+        // viewer's placement, with the phase/foreign toggles (the real
+        // 2 s foreign timer), the denied state's Open Settings capsule and
+        // a Launch real scanner row that reports only the scan's length
+        // and parse verdict. Fill: the stage owns the full body.
+        GallerySection("QR scanner", GalleryLayout.Fill) {
+            QrScannerGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

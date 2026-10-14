@@ -34,6 +34,7 @@ import sh.roboco.android.pairing.PairingRoot
 import sh.roboco.android.pairing.PairingRootStatus
 import sh.roboco.android.pairing.ProvidePairPage
 import sh.roboco.android.pairing.StorePairedEngineSink
+import sh.roboco.android.pairing.rememberQrScanRequest
 import sh.roboco.android.sessions.LocalRowActions
 
 /**
@@ -146,8 +147,9 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
  * [AppRoot] with the Pair page hook wired (72's step 8): the root
  * content, one body for both the launcher-present and
  * launcher-absent cases, with [pairPage] read **outside** the pairing
- * lambda. 138 replaces `qrScan = null`; 139 replaces the hoisted
- * `pairingStatus` with `pairingRootStatus(pairPage)`.
+ * lambda. 138 wired the real [QrScanRequest] (`rememberQrScanRequest`);
+ * 139 replaces the hoisted `pairingStatus` with
+ * `pairingRootStatus(pairPage)`.
  */
 @Composable
 private fun AppRootWithPairing(

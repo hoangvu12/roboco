@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The QR scanner's open transition (ui-parity#138): slides up over the
+     Pair page, 350 ms decelerate_cubic — the approximation of UIKit's
+     .fullScreen coverVertical (VoiceStageViewController's presentation);
+     ImageViewer itself zooms from its thumbnail, which a camera has no
+     source view for. Reduced motion launches with 0 instead. -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromYDelta="100%p"
+    android:toYDelta="0"
+    android:duration="350"
+    android:interpolator="@android:interpolator/decelerate_cubic" />

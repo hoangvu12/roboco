@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The underlying activity "stays put" while the scanner slides up
+     (ui-parity#138): a 350 ms alpha 1 → 1 no-op with the open slide's
+     duration, so the Pair page never fades or jumps. -->
+<alpha xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromAlpha="1"
+    android:toAlpha="1"
+    android:duration="350" />

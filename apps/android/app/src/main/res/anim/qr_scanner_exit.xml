@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The QR scanner's close transition (ui-parity#138): slides down,
+     300 ms accelerate_cubic — UIKit's coverVertical dismissal side.
+     Fired by the ✕ and by an accepted pairing URL alike. Reduced motion
+     closes with 0 instead. -->
+<translate xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fromYDelta="0"
+    android:toYDelta="100%p"
+    android:duration="300"
+    android:interpolator="@android:interpolator/accelerate_cubic" />
