@@ -43,6 +43,7 @@ class ScrollPerformanceTest {
      */
     @Test
     fun flingLongTranscript() = rule.measureRepeated(
+        packageName = TARGET,
         iterations = 5,
         metrics = listOf(FrameTimingMetric()),
         setupBlock = {
@@ -65,6 +66,7 @@ class ScrollPerformanceTest {
      */
     @Test
     fun scrollWhileStreaming() = rule.measureRepeated(
+        packageName = TARGET,
         iterations = 3,
         metrics = listOf(FrameTimingMetric()),
         setupBlock = {
@@ -88,6 +90,7 @@ class ScrollPerformanceTest {
      */
     @Test
     fun launchIntoLongTranscript() = rule.measureRepeated(
+        packageName = TARGET,
         iterations = 5,
         metrics = listOf(StartupTimingMetric()),
         startupMode = StartupMode.COLD,
