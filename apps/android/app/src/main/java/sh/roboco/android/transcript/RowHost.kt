@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
@@ -17,6 +19,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.design.LiftHighlight
+import sh.roboco.android.design.LocalReduceMotion
 import sh.roboco.android.design.Motion
 import sh.roboco.android.design.contextMenu
 import uniffi.roboco_core.LayoutFrame
@@ -97,6 +100,32 @@ internal fun RowHost(
     row.model = model
     row.appear = appear
 
+    // 118: the streaming veil. One instance per row key — the first model
+    // it ever sees only becomes the diff baseline, so a re-realized row
+    // shows its text fully. Chunks are recorded during composition, before
+    // the new model is ever drawn (pr609 Transcript.kt:220-223): the
+    // `remember(model)` block runs once per new model instance. Under
+    // reduce motion nothing is recorded and what exists is dropped (iOS
+    // RowView.swift:121 — the frame loop below is not Compose-animator
+    // scaled, so the explicit gate is required).
+    val reduced = LocalReduceMotion.current
+    val veil = remember(p.key) { Veil() }
+    val veilClock = remember(p.key) { mutableLongStateOf(0L) }
+    if (model != null) remember(model) { veil.grow(model, animate = !reduced); Unit }
+    // One frame loop for all chunks (each carries its own 220 ms clock):
+    // while any is live, stamp unstarted ones and drop expired ones at
+    // every frame tick, and write the tick's time into `veilClock` so the
+    // draw below re-runs — read only there, never in composition. The
+    // loop's last tick returns false and the final clock write redraws
+    // once more with no live chunk: the plain Pass.All draw.
+    LaunchedEffect(model) {
+        while (veil.hasChunks) {
+            val more = withFrameNanos { t -> veilClock.longValue = t; veil.tick(t) }
+            if (!more) break
+        }
+    }
+    row.veil = veil
+
     // 128: the last touch-down in this row (row-local px, NaN when no
     // finger is down) — the menu's "not on a control" rule reads it at
     // long-press time. `remember(p.key)` keeps one array per row key.
@@ -123,10 +152,17 @@ internal fun RowHost(
             // row-local pixels. Observes only, never consumes.
             .trackRowDown(down)
             .drawBehind {
-                // No style sync here: 61's apply synced the table, 62's
-                // draw calls `fonts.useDensity` itself. Pass.All.
+                // No style sync here: 61's apply synced the table and the
+                // veil's first pass calls `fonts.useDensity` itself (62's
+                // rule). 118: the veil composes the passes (Chrome,
+                // settled and fresh Ranges, one bounded layer per live
+                // chunk); `veilClock` is read here, in the draw phase,
+                // so every veil frame redraws without recomposing.
                 val m = model ?: return@drawBehind
-                drawIntoCanvas { c -> m.draw(0, c.nativeCanvas, d, palette, state.fonts) }
+                val now = veilClock.longValue
+                drawIntoCanvas { c ->
+                    veil.draw(c.nativeCanvas, m, d, palette, state.fonts, now)
+                }
             },
     ) {
         if (model != null) {
