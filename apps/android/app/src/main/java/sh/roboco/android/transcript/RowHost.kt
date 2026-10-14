@@ -12,11 +12,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.design.LiftHighlight
 import sh.roboco.android.design.LocalReduceMotion
@@ -57,6 +60,14 @@ class RowContext(
  * to the whole row through [Modifier.graphicsLayer], and the row's
  * scrollers and row-level widgets as children in iOS z-order (scrollers in
  * index order, then widgets in display order).
+ *
+ * 132 adds the Tools-row growth clip on the same layer: while a Tools row
+ * has a live motion track it clips to its measured (animating) bounds, so
+ * a growing group reveals top-down and nothing spills over the row below;
+ * the painted content is never scaled (the row paints its model at
+ * natural size from the row's top-left, iOS `contentMode = .topLeft`).
+ * Every other row — and a Tools row at rest — never clips (glyph
+ * overhangs, 65).
  *
  * 128 adds the row's long-press menu: [Modifier.contextMenu] on the same
  * root node (after the fade-in layer, before the layer-0 draw, so the
@@ -134,7 +145,22 @@ internal fun RowHost(
     Box(
         Modifier
             .testTag(rowTag(p.kind))
-            .graphicsLayer { alpha = appear.value } // read in the layer phase
+            // 132: the test-only mirror of the layer clip below (the Tools
+            // growth clip) — `RowMotionHostTest` reads it; TalkBack never
+            // does. Reads `rowMotion.isAnimating`, which reads `version`:
+            // a track appearing or ending re-applies semantics, never
+            // recomposes the row.
+            .semantics { this[RowClipKey] = p.kind == RowKind.TOOLS && state.rowMotion.isAnimating(p.key) }
+            .graphicsLayer {
+                alpha = appear.value // read in the layer phase
+                // 132 (TLV:411-415): a Tools row clips to its animating
+                // bounds while a track is live; the completion never comes
+                // off early here (iOS clears it per animator). Everything
+                // else stays unclipped, and the clip is never driven at
+                // rest.
+                clip = p.kind == RowKind.TOOLS && state.rowMotion.isAnimating(p.key)
+                shape = RectangleShape
+            }
             // 128: the row's context menu (16's gesture and lift, 15's
             // panel). The items are built here, at long-press time, never
             // cached in composition; a null menu (no model, a control
@@ -203,6 +229,13 @@ internal fun rowTag(kind: RowKind): String = when (kind) {
     RowKind.IMAGE -> "row-image"
     RowKind.WORKING -> "row-working"
 }
+
+/**
+ * Test-only semantics: whether the row's layer clips (ticket 132's
+ * Tools-row growth clip). Not read by TalkBack — `RowMotionHostTest` is
+ * the only consumer, like 120's `ChevronAngleKey`.
+ */
+internal val RowClipKey = SemanticsPropertyKey<Boolean>("RowClip")
 
 /**
  * A widget's slot (ticket 65): the rect `(w.x, w.y, max(w.w, 0),

@@ -9,12 +9,15 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Rect
@@ -30,6 +33,7 @@ import sh.roboco.android.design.LocalIsDark
 import sh.roboco.android.design.TranscriptPalette
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.collectLatest
 
 /**
  * The virtualized Compose transcript host (ticket 65): Rust owns every
@@ -52,6 +56,13 @@ import kotlin.math.roundToInt
  * below zero accordingly. Anchoring is 130, the model cache 117, the
  * veil 118, widgets 66+, and the row long-press menu (128) rides on every
  * row through the one [rememberRowMenuPerformer] created here.
+ *
+ * Ticket 132 tweens the rows here: while a fold or reveal runs, the
+ * measured height and the placed y read the row's **drawn** geometry
+ * ([TranscriptState.rowMotion] — the placement plus the live segments'
+ * remainder), one `withFrameNanos` loop ticks the clock, and the offset
+ * and content height stay final. Only rows whose placement moved are
+ * re-measured; the tick loop is suspended while no track is live.
  */
 @Composable
 fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier: Modifier = Modifier) {
@@ -111,6 +122,21 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
             state.setViewport(widthDp, TranscriptState.bodyTextScale(density))
         }
 
+        // 132: the row-motion clock — one frame loop per host, running only
+        // while a track is live (suspended, no frame requests, while idle).
+        // `collectLatest` restarts the loop whenever `version` moves (a
+        // track added, the last one gone, a row dropped): the fresh loop
+        // re-enters `withFrameNanos`, and the next frame stamps the new
+        // segments' starts and ticks the clock — the Compose `Animatable`
+        // convention, without any per-row `Animatable` (#609's `snapTo`
+        // restarts are exactly what this avoids).
+        LaunchedEffect(state) {
+            val m = state.rowMotion
+            snapshotFlow { m.version }.collectLatest {
+                while (m.hasTracks) withFrameNanos { m.tick(it) }
+            }
+        }
+
         val frame = state.frame ?: return@BoxWithConstraints
         val start by remember(state) { derivedStateOf { bandStart(state.offset) } }
         SideEffect { state.hostCompositions++ } // the no-recomposition test reads this
@@ -125,17 +151,33 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
             Trace.beginSection("layout-rows") // iOS signpost name
             val t0 = System.nanoTime()
             val w = constraints.maxWidth
-            val placeables = measurables.mapIndexed { i, m ->
-                m.measure(
-                    Constraints.fixed(w, (placements[i].height * d).roundToInt().coerceAtLeast(0)),
+            // 132: the drawn geometry. `version` is subscribed on every
+            // pass and `clockNanos` only while a track is live, so an idle
+            // transcript never re-measures (65's counters hold); while a
+            // tween runs, each tick's clock write re-measures and
+            // re-places once, and rows whose constraint did not change
+            // skip re-measure (Compose's own rule). `from == to` rows keep
+            // their constraints exactly.
+            val motion = state.rowMotion
+            motion.version
+            if (motion.hasTracks) motion.clockNanos
+            val placeables = measurables.mapIndexed { i, measurable ->
+                val height = motion.visualHeight(placements[i].key, placements[i].height)
+                measurable.measure(
+                    Constraints.fixed(w, (height * d).roundToInt().coerceAtLeast(0)),
                 )
             }
             layout(w, constraints.maxHeight) {
                 // The only per-pixel offset read: a change re-places, never
                 // recomposes (state reads in the place block are observed).
+                // 132: the placed y is the drawn one — the motion track's
+                // remainder rides on top of the final placement.
                 val offPx = (state.offset * d).roundToInt()
                 placeables.forEachIndexed { i, pl ->
-                    pl.placeWithLayer(0, (placements[i].y * d).roundToInt() - offPx)
+                    pl.placeWithLayer(
+                        0,
+                        (motion.visualY(placements[i].key, placements[i].y) * d).roundToInt() - offPx,
+                    )
                 }
                 // 117: directional prefetch beyond the realized band, in
                 // the direction of travel first — deduped on (frame, band,

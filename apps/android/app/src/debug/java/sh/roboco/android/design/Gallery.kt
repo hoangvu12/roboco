@@ -84,6 +84,7 @@ import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.image.ImageViewerGallerySection
 import sh.roboco.android.transcript.KeyboardInsetGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
+import sh.roboco.android.transcript.RowMotionGallerySection
 import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
@@ -604,6 +605,13 @@ object Gallery {
         GallerySection("Session push/pop", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
             SessionNavGallerySection()
         },
+        // Ticket 132 (fold and tool-group growth row tweening): the real
+        // host over MotionFixture — "Show more" tweens the rows below over
+        // 140 ms easeOut, "Slow ×10" stretches the curve, and the gallery's
+        // Force reduce motion toggle makes it jump. Fill: the section owns
+        // the transcript's scrolling; the golden (22's parameterized
+        // capture, the only one) pins the pre-frame chrome.
+        GallerySection("Transcript row motion", GalleryLayout.Fill, 891) { RowMotionGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
