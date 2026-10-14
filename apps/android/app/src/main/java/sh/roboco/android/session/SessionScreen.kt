@@ -20,6 +20,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.image.ImageViewerRequest
 import sh.roboco.android.image.LocalImageViewer
+import sh.roboco.android.composer.QueueAction
+import sh.roboco.android.composer.QueueActions
+import sh.roboco.android.composer.QueueEditPort
+import sh.roboco.android.composer.QueuePanel
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
@@ -80,6 +84,14 @@ import sh.roboco.android.transcript.widgets.imageTileRadius
  *   non-null the transcript actions load and cache images through a
  *   [TranscriptImageBinding] pinned to the controller's host device;
  *   otherwise the defaults stay no-ops
+ * @param queueEditPort ticket 83's queue-edit port over this route's
+ *   handle (built once per route by 76's `SessionScreenRoute`; the
+ *   controller itself is entry-retained next to 78's binding). `null` —
+ *   a fake core in tests, or no session at all — leaves the edit lease
+ *   uncreated
+ * @param queueActions ticket 82's per-route queue actions
+ *   (send-now / move / remove), launched on the application scope;
+ *   `Edit` never reaches it (83's `beginEdit` owns it)
  */
 @Composable
 fun SessionScreen(
@@ -89,6 +101,8 @@ fun SessionScreen(
     commands: SessionCommands? = null,
     onMore: (anchorInWindow: Rect) -> Unit = {},
     attachments: AttachmentReader? = null,
+    queueEditPort: QueueEditPort? = null,
+    queueActions: QueueActions? = null,
 ) {
     // 1. The per-screen state: the same instance the route holds. The
     //    first main-thread read creates the transcript (76's factory
@@ -232,10 +246,11 @@ fun SessionScreen(
         }
     }
 
-    // 9. The bottom stack's state and visibility model (74). 83 replaces
-    //    the `editing` flag with its lease state.
+    // 9. The bottom stack's state and visibility model (74). 83 feeds
+    //    its editing flag from the queue-edit lease (`editingId != null`,
+    //    snapshot state): an edit toggle is non-structural — the pill
+    //    appears and disappears instantly, like iOS :432-433.
     val bottomState = rememberBottomStackState()
-    val model = BottomStackModel.from(chrome, editing = false)
 
     // 9.5 Ticket 78: the composer binding — chrome → composer, send /
     //     stop / search over the route's commands, the upload progress
@@ -253,6 +268,35 @@ fun SessionScreen(
     } else {
         null
     }
+
+    // 9.6 Ticket 83: the queue-edit lease controller — construction,
+    //     `binding.queueEdit`, the pill's `onEditingTap` and the
+    //     entry-retention (the ticket's step 5), built where 78 built the
+    //     binding, with the same lifetime. Null without a port (a test
+    //     fake core) or a 73 banner filler: no edit lease, the queue
+    //     panel's Edit is a no-op.
+    val queueEdit = if (composerBinding != null) {
+        rememberSessionQueueEdit(
+            chatId = controller.chatId,
+            chrome = chrome,
+            binding = composerBinding,
+            banner = controller.filler<StatusBanner>(),
+            port = queueEditPort,
+        )
+    } else {
+        null
+    }
+    val model = BottomStackModel.from(chrome, editing = queueEdit?.isEditing == true)
+
+    // 9.7 Ticket 83's screen flags: the lease tracks on-screen-ness for
+    //     the "acquired after leaving" case only (a begin that resolves
+    //     after the user left releases the row instead of stealing the
+    //     composer). The cancel-on-leave itself is 84's (it calls
+    //     cancelEdit before its save), never this.
+    NavEntryEffect(
+        onWillAppear = { _ -> queueEdit?.onScreenShown() },
+        onWillDisappear = { _, _ -> queueEdit?.onScreenLeft() },
+    )
 
     // 10. The layer stack: the scaffold (background, haze, header) around
     //     74's container, with the open-reveal layers in its transcript
@@ -304,7 +348,24 @@ fun SessionScreen(
                 }
             },
             pill = {}, // 73
-            queue = {}, // 82
+            queue = {
+                // 82 + 83: the queue card above the composer. Its ⋯ menu's
+                // Edit opens the queued-message edit lease (83,
+                // entry-retained with the composer); everything else goes
+                // to the route's QueueActions on the application scope —
+                // fire-and-forget, so a Remove tapped just before a
+                // committed Back still reaches the engine.
+                QueuePanel(
+                    items = chrome.queue,
+                    glassVisible = glassVisible,
+                    animateGlass = animateGlass,
+                    writable = chrome.canWrite,
+                    onAction = { id, action ->
+                        if (action == QueueAction.Edit) queueEdit?.beginEdit(id)
+                        else queueActions?.perform(id, action)
+                    },
+                )
+            },
             questions = {}, // 90/91
             composer = {
                 // 78: the composer in 74's slot. `shown` is the scope's —
