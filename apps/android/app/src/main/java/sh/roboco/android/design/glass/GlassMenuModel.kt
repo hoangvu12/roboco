@@ -73,6 +73,12 @@ data class MenuItem(
     /** `.disabled`: title greys to `secondary`, taps are ignored. */
     val disabled: Boolean = false,
     val testTag: String? = null,
+    /**
+     * A read-only line (android-next #01's context card): normal inks, no
+     * tap target, no press highlight and not announced as disabled — the
+     * title and subtitle read as one TalkBack node. [action] never runs.
+     */
+    val informational: Boolean = false,
     val action: () -> Unit,
 ) : MenuElement
 

@@ -789,7 +789,7 @@ fun GlassMenuContent(
     // --------------------------------------------------------- interaction
 
     fun pick(item: MenuItem) {
-        if (!open || item.disabled) return
+        if (!open || item.disabled || item.informational) return
         onDismissRequest() // 1. start the close (isClosing flips at once)
         // 2. Haptic: none. 3. the action on the next frame, after the close
         //    has started, so an alert it opens never flashes under the menu.
@@ -960,7 +960,7 @@ fun GlassMenuPanel(
     val paneTitleText = (lines.firstNotNullOfOrNull { it as? MenuLine.Title })?.text ?: "Menu"
     val focusIndex = focusRequester?.let {
         lines.indexOfFirst { line ->
-            (line is MenuLine.Row && !line.item.disabled) || line is MenuLine.Back
+            (line is MenuLine.Row && !line.item.disabled && !line.item.informational) || line is MenuLine.Back
         }.takeIf { index -> index >= 0 }
     } ?: -1
     val shape = rememberSmoothRoundedShape(GlassMenuTokens.Radius)
@@ -1209,6 +1209,7 @@ private fun MenuRowLine(
         onClick = { onRow(item) },
         testTag = item.testTag ?: "glass-menu-item",
         focusModifier = focusModifier,
+        informational = item.informational,
     )
 }
 
@@ -1283,6 +1284,7 @@ private fun MenuRowLayout(
     testTag: String,
     a11yDescription: String? = null,
     focusModifier: Modifier = Modifier,
+    informational: Boolean = false,
 ) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
@@ -1304,17 +1306,26 @@ private fun MenuRowLayout(
         focusModifier
             .fillMaxWidth()
             .heightIn(min = GlassMenuTokens.RowHeight)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                enabled = !disabled,
-                role = Role.Button,
-                onClick = onClick,
+            .then(
+                if (informational) {
+                    // A read-only line: no tap target (the panel swallows
+                    // the tap, so the menu stays open), one merged node.
+                    Modifier.semantics(mergeDescendants = true) {}
+                } else {
+                    Modifier
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            enabled = !disabled,
+                            role = Role.Button,
+                            onClick = onClick,
+                        )
+                        .pressHighlight(palette, pressed)
+                },
             )
-            .pressHighlight(palette, pressed)
             .testTag(testTag)
             .semantics {
-                selected = checked
+                if (!informational) selected = checked
                 if (disabled) this@semantics.disabled()
                 a11yDescription?.let { stateDescription = it }
             },
