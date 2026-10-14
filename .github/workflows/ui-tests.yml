@@ -113,6 +113,11 @@ jobs:
       - name: Install cargo-ndk
         # Pinned like android.yml/release.yml (CARGO_NDK_VERSION 4.1.2).
         run: cargo install --locked cargo-ndk --version 4.1.2
+      # android-next#02: android-core also builds libroboco_tailcat.so.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Build the mobile core and generate bindings
         run: cargo xtask android-core --profile mobile-dist --check
       - name: Upload core sizes
@@ -138,6 +143,22 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -mod=readonly -count=1 ./...
+      # android-next#02: the C ABI Android loads (./capi). Built and tested
+      # with cgo on the host too, so a broken export fails here and not only
+      # in the Android jobs.
+      - name: C ABI (cgo) vet, tests and host c-shared build
+        working-directory: adapters/roboco-tailcat
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go vet -mod=readonly ./capi
+          go test -mod=readonly -count=1 ./capi
+          go build -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared -o "$RUNNER_TEMP/libroboco_tailcat.so" ./capi
+          ls -l "$RUNNER_TEMP/libroboco_tailcat.so"
+          for symbol in abi_version start_client close free; do
+            nm -D --defined-only "$RUNNER_TEMP/libroboco_tailcat.so" | grep -qE " T roboco_tailcat_${symbol}\$" || {
+              echo "::error::libroboco_tailcat.so does not export roboco_tailcat_${symbol}"; exit 1; }
+          done
 
   ui-tests:
     runs-on: ubuntu-24.04

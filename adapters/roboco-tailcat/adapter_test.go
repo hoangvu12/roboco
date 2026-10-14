@@ -2,8 +2,11 @@ package tailcatnative
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,11 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/envknob"
 	"tailscale.com/net/netcheck"
 	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
@@ -178,4 +183,94 @@ func assertPrivateModeOnPOSIX(t *testing.T, path string) {
 	if got := st.Mode().Perm(); got != 0600 {
 		t.Fatalf("%s mode = %o, want 600", path, got)
 	}
+}
+
+// The Android path: the identity lives with the caller, never on disk.
+func TestClientStateDecodeFailsClosed(t *testing.T) {
+	created, err := decodeClientState("")
+	if err != nil || created.Role != "client" || created.PrivateKey.IsZero() {
+		t.Fatalf("empty state did not create a client identity: %v", err)
+	}
+	valid, err := json.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := decodeClientState(string(valid))
+	if err != nil || again.PrivateKey != created.PrivateKey {
+		t.Fatalf("valid state did not round-trip: %v", err)
+	}
+	server, err := json.Marshal(&stateFile{Version: stateVersion, Role: "server", PrivateKey: key.NewNode(), PresharedKey: tailcat.NewPresharedKey()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string]string{
+		"corrupt":     `not json SECRET`,
+		"server role": string(server),
+		"zero key":    `{"version":1,"role":"client"}`,
+		"old version": strings.Replace(string(valid), `"version":1`, `"version":9`, 1),
+	} {
+		if _, err := decodeClientState(input); err == nil {
+			t.Errorf("%s state was accepted", name)
+		} else if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "private") {
+			t.Errorf("%s error echoes its input: %v", name, err)
+		}
+	}
+	if _, _, err := StartClientState("tcSECRET", string(valid), ""); err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("bad address: %v", err)
+	}
+}
+
+func TestLocalDERPClientStateRoundTrip(t *testing.T) {
+	dm := integration.RunDERPAndSTUN(t, logger.Discard, "127.0.0.1")
+	region := dm.Regions[1]
+	if region == nil {
+		t.Fatal("local DERP has no region 1")
+	}
+	// HTTP, like the engine: Tailcat's Ping sends HEAD / through the proxy.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, _ = w.Write([]byte("reply:" + string(body)))
+	}))
+	defer backend.Close()
+	server, err := startServer(backend.Listener.Addr().String(), filepath.Join(t.TempDir(), "server.key"), "", 0, region)
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Close()
+
+	httpClient := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 15 * time.Second}
+	roundTrip := func(client *Client) {
+		t.Helper()
+		response, err := httpClient.Post(client.URL(), "text/plain", strings.NewReader("bytes"))
+		if err != nil {
+			t.Fatalf("request through the client: %v", err)
+		}
+		defer response.Body.Close()
+		got, err := io.ReadAll(response.Body)
+		if err != nil || string(got) != "reply:bytes" {
+			t.Fatalf("proxy response = %q, %v", got, err)
+		}
+	}
+
+	first, state, err := StartClientState(server.Address(), "", "")
+	if err != nil {
+		t.Fatalf("start client with a new identity: %v", err)
+	}
+	roundTrip(first)
+	first.Close()
+	if state == "" || strings.Contains(state, server.Address()) {
+		t.Fatal("returned state is empty or embeds the address")
+	}
+
+	// Reconnecting with the stored identity keeps it: the server sees the
+	// same peer, not a new one per launch.
+	second, again, err := StartClientState(server.Address(), state, "")
+	if err != nil {
+		t.Fatalf("start client with the stored identity: %v", err)
+	}
+	defer second.Close()
+	if again != state {
+		t.Fatal("stored identity changed on reuse")
+	}
+	roundTrip(second)
 }

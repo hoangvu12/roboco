@@ -71,6 +71,14 @@ val appVersionCode: Int = RobocoVersion.versionCode(
 // output directory. -ProbocoCoreProfile overrides the profile per build type.
 // ---------------------------------------------------------------------------
 val skipCore = providers.gradleProperty("robocoSkipCore").isPresent
+// android-next#02: the Go Tailcat transport is built unless
+// -ProbocoSkipTailcat or ROBOCO_ANDROID_TAILCAT=0/false/no/off (the xtask
+// reads the same variable).
+val tailcatEnabled: Boolean = !providers.gradleProperty("robocoSkipTailcat").isPresent &&
+    providers.environmentVariable("ROBOCO_ANDROID_TAILCAT")
+        .map { it.trim().lowercase() !in setOf("0", "false", "no", "off") }
+        .orElse(true)
+        .get()
 val coreLanguages = providers.gradleProperty("robocoCoreLanguages").orElse("mobile")
 
 val coreSources = files(
@@ -85,6 +93,9 @@ val coreSources = files(
     fileTree(repoRootDir.resolve("crates/proto")),
     fileTree(repoRootDir.resolve("crates/syntax")),
     fileTree(repoRootDir.resolve("crates/xtask")),
+    fileTree(repoRootDir.resolve("adapters/roboco-tailcat")) {
+        include("**/*.go", "go.mod", "go.sum")
+    },
 )
 
 fun coreTaskName(buildType: String): String =
@@ -126,6 +137,7 @@ for (buildType in listOf("debug", "release", "benchmark")) {
         languages.set(coreLanguages)
         ndkHome.set(androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath })
         skipIfOutputsExist.set(skipCore)
+        tailcat.set(tailcatEnabled)
         sources.from(coreSources)
         kotlinDir.set(out.resolve("kotlin"))
         jniLibsDir.set(out.resolve("jniLibs"))

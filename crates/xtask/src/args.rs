@@ -16,7 +16,8 @@ pub const DEFAULT_ABIS: &[&str] = &["arm64-v8a", "x86_64"];
 
 pub const USAGE: &str = "usage: cargo xtask android-core [--out DIR]
                          [--abis arm64-v8a,x86_64] [--profile mobile|mobile-dist]
-                         [--languages mobile|all] [--skip-host] [--skip-ndk] [--check]";
+                         [--languages mobile|all] [--skip-host] [--skip-ndk]
+                         [--skip-tailcat] [--check]";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
@@ -84,6 +85,9 @@ pub struct AndroidCoreArgs {
     pub languages: Languages,
     pub skip_host: bool,
     pub skip_ndk: bool,
+    /// Build without `libroboco_tailcat.so` (android-next#02). Also set by
+    /// `ROBOCO_ANDROID_TAILCAT=0`, which the caller folds in.
+    pub skip_tailcat: bool,
     pub check: bool,
 }
 
@@ -99,6 +103,7 @@ pub fn parse(
     let mut languages = Languages::Mobile;
     let mut skip_host = false;
     let mut skip_ndk = false;
+    let mut skip_tailcat = false;
     let mut check = false;
 
     let mut index = 0;
@@ -127,6 +132,7 @@ pub fn parse(
             "--languages" => languages = Languages::parse(&value()?)?,
             "--skip-host" => skip_host = true,
             "--skip-ndk" => skip_ndk = true,
+            "--skip-tailcat" => skip_tailcat = true,
             "--check" => check = true,
             "--help" | "-h" => anyhow::bail!("{USAGE}"),
             _ => anyhow::bail!("unknown flag {arg:?}\n{USAGE}"),
@@ -146,6 +152,7 @@ pub fn parse(
         languages,
         skip_host,
         skip_ndk,
+        skip_tailcat,
         check,
     })
 }
@@ -198,7 +205,7 @@ mod tests {
         assert_eq!(args.abis, ["arm64-v8a", "x86_64"]);
         assert_eq!(args.profile, Profile::Mobile);
         assert_eq!(args.languages, Languages::Mobile);
-        assert!(!args.skip_host && !args.skip_ndk && !args.check);
+        assert!(!args.skip_host && !args.skip_ndk && !args.skip_tailcat && !args.check);
     }
 
     #[test]
@@ -215,6 +222,7 @@ mod tests {
                 "all",
                 "--skip-host",
                 "--skip-ndk",
+                "--skip-tailcat",
                 "--check",
             ]),
             Path::new("default"),
@@ -225,7 +233,7 @@ mod tests {
         assert_eq!(args.abis, ["arm64-v8a", "x86_64"]);
         assert_eq!(args.profile, Profile::MobileDist);
         assert_eq!(args.languages, Languages::All);
-        assert!(args.skip_host && args.skip_ndk && args.check);
+        assert!(args.skip_host && args.skip_ndk && args.skip_tailcat && args.check);
 
         let inline = parse(
             &argv(&["--out=o2", "--profile=mobile", "--languages=mobile"]),

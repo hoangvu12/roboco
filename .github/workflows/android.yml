@@ -7,7 +7,8 @@ name: Android
 # ubuntu job uploads the APK; windows proves the build needs no bash/WSL.
 # On pushes to main it also runs the unsigned x86_64 assembleRelease R8
 # smoke (android-app#31) so R8 breakage surfaces before a tag; the signed
-# release APKs are built by release.yml only.
+# release APKs are built by release.yml only. Every job that builds the core
+# also builds the Go Tailcat transport (android-next#02), so each sets up Go.
 
 on:
   pull_request:
@@ -25,6 +26,7 @@ on:
       - 'crates/proto/**'
       - 'crates/syntax/**'
       - 'crates/xtask/**'
+      - 'adapters/roboco-tailcat/**'
       - 'crates/ui/assets/fonts/**'
       - 'crates/ui/assets/icons/**'
       - 'crates/ui/assets/file-icons/**'
@@ -49,6 +51,7 @@ on:
       - 'crates/proto/**'
       - 'crates/syntax/**'
       - 'crates/xtask/**'
+      - 'adapters/roboco-tailcat/**'
       - 'crates/ui/assets/fonts/**'
       - 'crates/ui/assets/icons/**'
       - 'crates/ui/assets/file-icons/**'
@@ -129,6 +132,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         shell: pwsh
         run: |
@@ -202,6 +211,12 @@ jobs:
           java-version: |
             21
             17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         shell: pwsh
         run: |
@@ -237,10 +252,42 @@ jobs:
           path: apps/android/app/build/outputs/apk/release/*.apk
           retention-days: 14
           if-no-files-found: error
-      - name: Test the asset generator (Rust)
+      - name: Test the asset generator and the xtask (Rust)
         if: runner.os == 'Linux'
-        run: cargo test --locked -p roboco-android-assets
+        run: cargo test --locked -p roboco-android-assets -p roboco-xtask
         working-directory: .
+      - name: Check the native libraries in the debug APKs
+        # android-next#02: every split carries the core AND the Tailcat
+        # transport for its own ABI. Sizes go to the job summary (stored is
+        # the compressed size in the APK: useLegacyPackaging compresses .so).
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk"
+          if (-not $apks) { Write-Output "::error::no debug APK was built"; exit 1 }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Native libraries in the debug APKs", "", "| APK | library | stored (KB) | uncompressed (KB) |", "| --- | --- | ---: | ---: |"
+          $missing = @()
+          foreach ($apk in $apks) {
+            $abi = $apk.BaseName -replace '^app-(.+)-debug$', '$1'
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($apk.FullName)
+            try {
+              foreach ($lib in "libroboco_mobile.so", "libroboco_tailcat.so") {
+                $entry = $zip.GetEntry("lib/$abi/$lib")
+                if ($entry) {
+                  $stored = [math]::Round($entry.CompressedLength / 1KB)
+                  $full = [math]::Round($entry.Length / 1KB)
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| $($apk.Name) | $lib | $stored | $full |"
+                } else {
+                  $missing += "$($apk.Name) has no lib/$abi/$lib"
+                }
+              }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          foreach ($line in $missing) { Write-Output "::error::$line" }
+          if ($missing) { exit 1 }
       - name: Append build sizes to the job summary
         if: always()
         shell: pwsh
@@ -343,6 +390,12 @@ jobs:
           java-version: |
             21
             17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
         working-directory: .
@@ -455,6 +508,12 @@ jobs:
           if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
             cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
           fi
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
       # 17 builds the app inside the script (the Gradle daemon runs the
@@ -528,6 +587,12 @@ jobs:
           if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
             cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
           fi
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
       - uses: actions/setup-java@v4
