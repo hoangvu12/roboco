@@ -43,23 +43,29 @@ import uniffi.roboco_core.hostPathParent
 
 /** android-app#09 `listFolders`: returns null on any failure (the iOS `try?`), never throws except cancellation. */
 fun interface FolderBrowserSource {
-    suspend fun listFolders(deviceId: String, path: String?): FolderListing?
+    /** `showHidden` also lists `.`-folders (the engine's only switch, `query: "."`) — ticket 112 turns it on. */
+    suspend fun listFolders(deviceId: String, path: String?, showHidden: Boolean = false): FolderListing?
 }
 
 /**
  * The source over the live core: resolves [client] at call time (null →
  * `null` — iOS's `try?` on a missing client), calls `listFolders` on [io]
  * and swallows every non-cancellation failure with a log. The
- * `showHidden` flag stays `false` here — only ticket 112 may turn it on.
+ * `showHidden` flag passes straight through — 112's `.`-query reload is
+ * the only caller that sets it.
  */
 class CoreFolderBrowserSource(
     private val client: () -> CoreClient?,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : FolderBrowserSource {
-    override suspend fun listFolders(deviceId: String, path: String?): FolderListing? {
+    override suspend fun listFolders(
+        deviceId: String,
+        path: String?,
+        showHidden: Boolean,
+    ): FolderListing? {
         val c = client() ?: return null
         return try {
-            withContext(io) { c.listFolders(deviceId = deviceId, path = path, showHidden = false) }
+            withContext(io) { c.listFolders(deviceId = deviceId, path = path, showHidden = showHidden) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -185,6 +191,14 @@ class FolderBrowserController(
     var path: String? by mutableStateOf(null)
         private set
 
+    /**
+     * The engine user's home path: the last successful **pathless** load's
+     * `listing.path`; null until known. 112's Home chip root. Reset on
+     * engine change (a pathless load re-resolves it on success).
+     */
+    var home: String? by mutableStateOf(null)
+        private set
+
     var loading: Boolean by mutableStateOf(false)
         private set
 
@@ -221,6 +235,19 @@ class FolderBrowserController(
     val title: String by derivedStateOf {
         listing?.let { l -> paths.name(l.path) }?.takeIf { it.isNotEmpty() } ?: FolderBrowserCopy.DefaultTitle
     }
+
+    /** True when the current listing's path has a parent — the `..` row's own check, read by 112's filtered list. */
+    val listingHasParent: Boolean
+        get() = listing?.let { paths.parent(it.path) != null } ?: false
+
+    /**
+     * Ticket 112's navigation hook: when non-null, row taps browse through
+     * it (clearing 112's query and typed-path state) instead of calling
+     * [load] directly; null (the default, and what the tests use unless
+     * they wire it) keeps the direct load. The tap guard and the path
+     * arithmetic stay here either way.
+     */
+    var onNavigate: ((path: String?, gitHint: Boolean?) -> Unit)? = null
 
     /** The engine capsule's label: the selected engine's name, or the empty copy. */
     val capsuleTitle: String get() = engine?.name ?: FolderBrowserCopy.NoEngines
@@ -261,12 +288,14 @@ class FolderBrowserController(
         when {
             current == null && hosts.isNotEmpty() -> {
                 engine = hosts.firstOrNull { it.online } ?: hosts.firstOrNull()
+                home = null
                 load(null)
             }
             current != null && hosts.none { it.id == current.id } -> {
                 // The selected engine was forgotten while the sheet was open:
                 // the default pick runs again (may be null → the no-engines status).
                 engine = hosts.firstOrNull { it.online } ?: hosts.firstOrNull()
+                home = null
                 load(null)
             }
             current != null -> engine = hosts.first { it.id == current.id }
@@ -279,6 +308,7 @@ class FolderBrowserController(
         checkMainThread()
         val picked = engines.firstOrNull { it.id == id } ?: return
         engine = picked
+        home = null
         load(null)
     }
 
@@ -286,9 +316,12 @@ class FolderBrowserController(
      * `load(_:)`: `Loading…` + a generation bump, then the FFI call on
      * the scope; a stale reply changes nothing at all. With no engine:
      * the no-engines status and a generation bump (so a forgotten
-     * engine's in-flight reply can never apply), nothing else.
+     * engine's in-flight reply can never apply), nothing else. A
+     * successful **pathless** load records [home] (112's Home chip root);
+     * `showHidden` asks the engine for `.`-folders (112's `.`-query
+     * reload — 110 itself never sets it).
      */
-    fun load(path: String?, isRepoHint: Boolean? = null) {
+    fun load(path: String?, isRepoHint: Boolean? = null, showHidden: Boolean = false) {
         checkMainThread()
         val e = engine ?: run {
             generation++
@@ -300,7 +333,7 @@ class FolderBrowserController(
         status = FolderBrowserCopy.Loading
         val gen = ++generation
         scope.launch {
-            val result = source.listFolders(e.id, path)
+            val result = source.listFolders(e.id, path, showHidden)
             // A newer load (another engine or folder) superseded this one.
             if (gen != generation) return@launch
             loading = false
@@ -317,6 +350,7 @@ class FolderBrowserController(
                 this@FolderBrowserController.path = result.path
                 listingIsRepo = isRepoHint
                 status = result.path
+                if (path == null) home = result.path
                 listingSerial++
             }
             onListingApplied?.invoke(e.id, result)
@@ -327,7 +361,9 @@ class FolderBrowserController(
      * `didSelectItemAt` with the `pr685:…:161-162` guard: taps are ignored
      * while loading, while 111's submitting is set, and when the listing
      * came from another engine. Parent → up one level; folder → down (the
-     * row's `isRepo` becomes the next listing's hint).
+     * row's `isRepo` becomes the next listing's hint). 112's wiring routes
+     * the browse through [onNavigate] (clearing its query); the direct
+     * [load] stays the default.
      */
     fun tap(row: FolderRow) {
         checkMainThread()
@@ -336,9 +372,15 @@ class FolderBrowserController(
         val l = listing ?: return
         if (listingEngineId != e.id) return
         when (row) {
-            FolderRow.Parent -> paths.parent(l.path)?.let { load(it, isRepoHint = null) }
-            is FolderRow.Folder -> load(paths.join(l.path, row.name), isRepoHint = row.isRepo)
+            FolderRow.Parent -> paths.parent(l.path)?.let { browseTo(it, null) }
+            is FolderRow.Folder -> browseTo(paths.join(l.path, row.name), row.isRepo)
         }
+    }
+
+    /** The tap's browse: 112's hook when wired, else the direct load. */
+    private fun browseTo(path: String?, gitHint: Boolean?) {
+        val nav = onNavigate
+        if (nav != null) nav(path, gitHint) else load(path, isRepoHint = gitHint)
     }
 
     /**

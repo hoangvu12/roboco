@@ -36,6 +36,7 @@ import sh.roboco.android.shell.NewSessionSheetPlaceholder
 import sh.roboco.android.shell.SheetHost
 import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
+import uniffi.roboco_core.DriveEntry
 import uniffi.roboco_core.FolderEntry
 import uniffi.roboco_core.FolderListing
 
@@ -104,7 +105,11 @@ class NewProjectScreenTest {
     ) : FolderBrowserSource {
         val calls = mutableListOf<Pair<String, String?>>()
 
-        override suspend fun listFolders(deviceId: String, path: String?): FolderListing? {
+        override suspend fun listFolders(
+            deviceId: String,
+            path: String?,
+            showHidden: Boolean,
+        ): FolderListing? {
             calls += deviceId to path
             return listingFor(path)
         }
@@ -142,16 +147,34 @@ class NewProjectScreenTest {
             dismissSheet = {},
         )
 
+    /** 112's nav over the same pair: the debug [FakeFolderCalls] with the macOS drives. */
+    private fun navFor(
+        controller: FolderBrowserController,
+        actions: FolderBrowserActions,
+    ): FolderNavState = FolderNavState(
+        FolderBrowserHostAdapter(controller, actions),
+        FakeFolderCalls(
+            mapOf(
+                "dev-mbp" to listOf(
+                    DriveEntry(name = "Macintosh HD", path = "/"),
+                    DriveEntry(name = "Seagate", path = "/Volumes/Seagate"),
+                ),
+            ),
+        ),
+        CoroutineScope(Dispatchers.Unconfined),
+    )
+
     /** Presents the screen in a settled page sheet over the backdrop. */
     private fun present(
         controller: FolderBrowserController,
         appearance: Appearance = Appearance.Light,
     ) {
         val actions = actionsFor(controller)
+        val nav = navFor(controller, actions)
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-project", SheetStyle.Page(grabber = false)) {
-                NewProjectScreen(sheet = this, controller = controller, actions = actions)
+                NewProjectScreen(sheet = this, controller = controller, actions = actions, nav = nav)
             }
         }
         compose.setContent {
@@ -272,13 +295,14 @@ class NewProjectScreenTest {
     fun theCloseButtonDismissesOnlyTheNewProjectSheet() {
         val controller = posixController()
         val actions = actionsFor(controller)
+        val nav = navFor(controller, actions)
         val state = SheetHostState()
         compose.runOnUiThread {
             state.presentSettledForPreview("new-session", SheetStyle.Page(grabber = true)) {
                 NewSessionSheetPlaceholder(this)
             }
             state.presentSettledForPreview("new-project", SheetStyle.Page(grabber = false)) {
-                NewProjectScreen(sheet = this, controller = controller, actions = actions)
+                NewProjectScreen(sheet = this, controller = controller, actions = actions, nav = nav)
             }
         }
         compose.setContent {

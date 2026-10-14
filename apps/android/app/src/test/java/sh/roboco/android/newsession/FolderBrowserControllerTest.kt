@@ -50,10 +50,18 @@ class FolderBrowserControllerTest {
     /** A source whose replies the test completes by call index, in any order. */
     private class GatedSource : FolderBrowserSource {
         val calls = mutableListOf<Pair<String, String?>>()
+
+        /** The `showHidden` flag of each recorded call (112's `.`-query reload). */
+        val hiddenFlags = mutableListOf<Boolean>()
         private val gates = mutableListOf<CompletableDeferred<FolderListing?>>()
 
-        override suspend fun listFolders(deviceId: String, path: String?): FolderListing? {
+        override suspend fun listFolders(
+            deviceId: String,
+            path: String?,
+            showHidden: Boolean,
+        ): FolderListing? {
             calls += deviceId to path
+            hiddenFlags += showHidden
             val gate = CompletableDeferred<FolderListing?>()
             synchronized(gates) { gates += gate }
             return gate.await()
