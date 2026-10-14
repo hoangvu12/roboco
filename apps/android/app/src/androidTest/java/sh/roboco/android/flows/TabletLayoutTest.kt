@@ -32,8 +32,9 @@ import sh.roboco.android.MainActivity
 @RunWith(AndroidJUnit4::class)
 class TabletLayoutTest {
 
-    @get:Rule
-    val launch = FixtureRule()
+    // Not a JUnit rule itself: the compose rule wraps it (FixtureRule's
+    // usage) - as a second @Rule it launched the activity twice.
+    private val launch = FixtureRule()
 
     @Suppress("DEPRECATION")
     @get:Rule
@@ -101,17 +102,18 @@ class TabletLayoutTest {
     private fun portrait() = orientation(Configuration.ORIENTATION_PORTRAIT)
 
     /**
-     * Rotates through `wm set-user-rotation` + `settings put`: the
+     * Rotates by locking auto-rotate and setting `user_rotation` (1 =
+     * landscape, 0 = portrait): the
      * activity declares `configChanges`, so the rotation is a resize,
      * not a recreation — the sidebar/session survive it, which is part
      * of what the iOS test checks.
      */
     private fun orientation(orientation: Int) {
-        val name = if (orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+        val rotation = if (orientation == Configuration.ORIENTATION_LANDSCAPE) 1 else 0
         val device = androidx.test.uiautomator.UiDevice
             .getInstance(InstrumentationRegistry.getInstrumentation())
-        device.executeShellCommand("settings put system user_rotation 1")
-        device.executeShellCommand("wm set-user-rotation $name")
+        device.executeShellCommand("settings put system accelerometer_rotation 0")
+        device.executeShellCommand("settings put system user_rotation $rotation")
         Thread.sleep(1_000) // the resize's settle — a tour-style wait
     }
 }

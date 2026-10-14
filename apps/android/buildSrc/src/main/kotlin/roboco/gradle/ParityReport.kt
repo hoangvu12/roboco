@@ -239,8 +239,7 @@ internal object ManifestJson {
     fun parse(text: String): List<ManifestEntry> {
         val parser = Parser(text)
         val value = parser.parseValue()
-        parser.skipWhitespace()
-        parser.expectEnd()
+        parser.expectEnd() // skips trailing whitespace itself
         val array = value as? List<*> ?: error("manifest root must be an array")
         return array.map { item ->
             val obj = item as? Map<*, *> ?: error("manifest entries must be objects")

@@ -125,7 +125,7 @@ class IosParityMetricsTest {
     private fun assertDp(what: String, px: Int, expectedDp: Int, toleranceDp: Int) {
         val dp = px / 3f
         val within = abs(dp - expectedDp) <= toleranceDp
-        assertTrue("$what is $dp dp (expected $expectedDp ± $tolerance)", within)
+        assertTrue("$what is $dp dp (expected $expectedDp ± $toleranceDp)", within)
     }
 
     private companion object {

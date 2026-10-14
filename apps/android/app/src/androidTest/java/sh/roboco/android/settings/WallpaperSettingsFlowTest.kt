@@ -16,6 +16,7 @@ import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
 import sh.roboco.android.MainActivity
 import sh.roboco.android.core.WallpaperStore
 import sh.roboco.android.flows.FixtureRule

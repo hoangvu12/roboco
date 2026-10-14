@@ -55,7 +55,10 @@ class FolderNavStateTest {
         override var listingDeviceId: String? by mutableStateOf(null)
         override var home: String? by mutableStateOf(null)
         override var loading: Boolean by mutableStateOf(false)
-        override var submitting: Boolean by mutableStateOf(false)
+        // Not `override var submitting`: its JVM setter setSubmitting(Z)V
+        // would clash with the interface's fun setSubmitting(busy) below.
+        var submittingNow: Boolean by mutableStateOf(false)
+        override val submitting: Boolean get() = submittingNow
 
         /** (path, showHidden, gitHint) per [load]. */
         val loads = mutableListOf<Triple<String?, Boolean, Boolean?>>()
@@ -68,7 +71,7 @@ class FolderNavStateTest {
         }
 
         override fun setSubmitting(busy: Boolean) {
-            submitting = busy
+            submittingNow = busy
             submits += busy
         }
 
@@ -236,7 +239,7 @@ class FolderNavStateTest {
 
     @Test
     fun chipTapsAndGoAreIgnoredWhileSubmitting() = runTest {
-        val host = FakeHost().apply { submitting = true }
+        val host = FakeHost().apply { submittingNow = true }
         val calls = FakeCalls()
         val nav = navState(host, calls)
         nav.onPickLocation(LocationChipModel("data", "/mnt/data"))
@@ -495,10 +498,10 @@ class FolderNavStateTest {
         assertTrue(host.submits.isEmpty())
         // The same for submitting and a foreign device.
         host.loading = false
-        host.submitting = true
+        host.submittingNow = true
         nav.useOverride!!.onClick!!.invoke()
         runCurrent()
-        host.submitting = false
+        host.submittingNow = false
         host.deviceId = "dev-2"
         nav.useOverride!!.onClick!!.invoke()
         runCurrent()
@@ -583,6 +586,7 @@ class FolderNavStateTest {
         nav.onGo()
         runCurrent()
         host.deviceId = "dev-2"
+        nav.onDevice("dev-2", online = true) // the screen's LaunchedEffect on the switch
         calls.completePrepare(0, PreparedPath(path = "/home/wing/exists", exists = true, gitDetected = true))
         runCurrent()
         assertEquals(TypedPath.Idle, nav.typed)

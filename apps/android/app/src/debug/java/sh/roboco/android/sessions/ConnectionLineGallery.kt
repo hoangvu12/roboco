@@ -195,7 +195,7 @@ private fun SimulateConnectionLine(captionStyle: TextStyle) {
         if (down) "Engine up" else "Engine down",
         style = captionStyle,
         modifier = Modifier
-            .clickable(indication = null) {
+            .clickable(interactionSource = null, indication = null) {
                 down = !down
                 engines.value = listOf(
                     fakeEngine(
