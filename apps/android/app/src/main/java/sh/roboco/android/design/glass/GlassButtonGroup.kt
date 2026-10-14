@@ -92,7 +92,7 @@ fun GlassButtonGroup(
             items.forEach { item ->
                 val source = item.interactionSource ?: remember { MutableInteractionSource() }
                 var bounds by remember { mutableStateOf(Rect.Zero) }
-                var slot = Modifier
+                var slotModifier = Modifier
                     .size(slotSize)
                     .onGloballyPositioned { bounds = it.boundsInWindow() }
                     .glassPress(
@@ -108,8 +108,8 @@ fun GlassButtonGroup(
                         role = Role.Button,
                     ) { item.onClick(bounds) }
                     .semantics { contentDescription = item.contentDescription }
-                item.testTag?.let { tag -> slot = slot.testTag(tag) }
-                Box(slot, contentAlignment = Alignment.Center) {
+                item.testTag?.let { tag -> slotModifier = slotModifier.testTag(tag) }
+                Box(slotModifier, contentAlignment = Alignment.Center) {
                     // Bar ink even when disabled (the ink never dims for a
                     // tap-blocked group); the label lives on the slot's
                     // semantics, so the glyph itself carries none.

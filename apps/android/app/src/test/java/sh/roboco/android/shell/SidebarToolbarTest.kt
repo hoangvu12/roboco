@@ -35,6 +35,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.rememberHazeState
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.runBlocking
@@ -184,11 +185,11 @@ class SidebarToolbarTest {
     // The wired test's own trio (105's fixture search answers nothing).
     private val sidebarState = SidebarState()
     private val sidebarActions = RecordingActions(sidebarState.stack)
-    private val fixtures: SidebarFixtures =
-        sidebarGalleryFixtures(emptySearch)
 
     /** A search that never answers: the wired test never types. */
     private val emptySearch: SessionSearch = { _, _ -> emptyList() }
+
+    private val fixtures: SidebarFixtures = sidebarGalleryFixtures(emptySearch)
 
     // -------------------------------------------------------------- mount
 
