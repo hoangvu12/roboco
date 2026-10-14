@@ -41,6 +41,7 @@ import sh.roboco.android.design.reference.ReferenceGalleryPage
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
+import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
 import sh.roboco.android.sessions.PinnedReorderGallerySection
 import sh.roboco.android.shell.ChromeVisibilityGallerySection
@@ -457,6 +458,12 @@ object Gallery {
         GallerySection("Pinned reorder", layout = GalleryLayout.Fill, screenshotHeightDp = 852) {
             PinnedReorderGallerySection()
         },
+        // Ticket 50 (connection line): the multi-engine offline
+        // indication — every examples-table fixture (spinners, dots,
+        // overflow, the long INCOMPATIBLE sentence), the offline Home
+        // header with its wifi-off glyph next to the spinner one, and the
+        // live "Engine down" simulate block with the real 4 s grace.
+        GallerySection("Connection line", screenshotHeightDp = 900) { ConnectionLineGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

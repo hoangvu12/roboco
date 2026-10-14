@@ -261,7 +261,11 @@ class FrontPageModelTest {
             val store = testPrefsStore(prefsScope, File(tmpFolder.root, "threads.preferences_pb"))
             val prefs = Prefs(store, prefsScope, io = Dispatchers.IO.limitedParallelism(1))
             val fold = FoldState(store, core, prefsScope, io = io)
-            val model = FrontPageModel(feed, prefs, fold, scope, compute = Dispatchers.Default)
+            // Ticket 50: the health model rides the same Main-imposter
+            // scope — its StateFlow starts at Healthy and combine reads
+            // the value without needing the (never-advanced) collector.
+            val health = EngineHealthModel(feed.engines, feed.connectivity, scope)
+            val model = FrontPageModel(feed, prefs, fold, health, scope, compute = Dispatchers.Default)
             withTimeout(5_000) {
                 prefs.awaitLoaded()
                 fold.awaitLoaded()
