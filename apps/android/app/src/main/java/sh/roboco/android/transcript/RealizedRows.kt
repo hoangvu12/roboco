@@ -56,6 +56,13 @@ class RealizedRow internal constructor(
     /** The fade-in animation, `null` for rows already at alpha 1. */
     internal var appear: Animatable<Float, AnimationVector1D>? = null
 
+    /**
+     * 118: the row's streaming veil, one per row host (grown in
+     * composition, drawn in the host's layer-0 `drawBehind`). `null`
+     * until the host first composed. Tests read this.
+     */
+    internal var veil: Veil? = null
+
     /** The row's current fade alpha (1 for known rows). Tests read this. */
     val appearAlpha: Float get() = appear?.value ?: 1f
 
