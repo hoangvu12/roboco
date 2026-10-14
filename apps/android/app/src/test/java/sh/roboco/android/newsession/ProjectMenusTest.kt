@@ -24,6 +24,7 @@ import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.design.glass.MenuLine
 import sh.roboco.android.design.glass.MenuSection
 import sh.roboco.android.design.glass.flattenLevel
+import sh.roboco.android.design.glass.hasContent
 
 /**
  * The Project / Run on menu content (android-ui-parity #113) — the pure
