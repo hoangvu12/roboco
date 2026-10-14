@@ -1027,7 +1027,6 @@ private fun focusModifierAt(
         Modifier
     }
 
-/** The level's text column: 61 dp when the slot is reserved, else 20 dp. */
 /**
  * The panel's "capped by the incoming constraints" in a parent with no
  * height bound: the content's own height, nothing to scroll. Without it,
@@ -1048,6 +1047,7 @@ private fun Modifier.contentHeightWhenUnbounded(): Modifier = layout { measurabl
     layout(placeable.width, placeable.height) { placeable.place(0, 0) }
 }
 
+/** The level's text column: 61 dp when the slot is reserved, else 20 dp. */
 private fun textColumnStart(slotReserved: Boolean): Dp =
     if (slotReserved) GlassMenuTokens.TextStart else GlassMenuTokens.TextStartNoSlot
 
