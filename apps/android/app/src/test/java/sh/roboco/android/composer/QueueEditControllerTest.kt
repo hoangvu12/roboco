@@ -843,7 +843,11 @@ class QueueEditControllerTest {
         val lease = (acquired as EditStart.Acquired).lease
         assertEquals("L1", lease.leaseId)
         assertEquals("q1", lease.rowId)
-        assertSame("the uniffi lease rides along", handle.beginResult.lease, lease.core)
+        assertSame(
+            "the uniffi lease rides along",
+            (handle.beginResult as QueueEditStart.Acquired).lease,
+            lease.core,
+        )
 
         handle.beginResult = QueueEditStart.Locked
         assertEquals(EditStart.Locked, port.begin("q1", "inst-2"))

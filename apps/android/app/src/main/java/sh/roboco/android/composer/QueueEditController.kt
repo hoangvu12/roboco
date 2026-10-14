@@ -399,12 +399,13 @@ class QueueEditController(
      * `host.showFailure` carries the matching copy into the pill.
      */
     private fun recoverCommit(editedRaw: String?, outcome: EditFinish) {
-        val edited = editedRaw ?: return
-        val parked = stash
-        if ((editingId != null || pending) && parked != null) {
-            stash = parked.copy(text = QueueEditText.merge(edited, parked.text))
-        } else {
-            host.text = QueueEditText.merge(edited, host.text)
+        if (editedRaw != null) {
+            val parked = stash
+            if ((editingId != null || pending) && parked != null) {
+                stash = parked.copy(text = QueueEditText.merge(editedRaw, parked.text))
+            } else {
+                host.text = QueueEditText.merge(editedRaw, host.text)
+            }
         }
         val message = QueueEditCopy.finishMessage(outcome) ?: return
         host.showFailure(message)
