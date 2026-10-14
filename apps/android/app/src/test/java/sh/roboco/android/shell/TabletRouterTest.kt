@@ -724,10 +724,12 @@ class TabletRouterTest {
     fun showSessionInDetail_noDismiss_noSameIdReturn() = runTest {
         val r = rig(testScheduler)
         r.log.clear()
+        // Something is presented (the fake's Settings card flag — the
+        // fake logs any dismissPresented call): 108's
+        // SplitDetailColumn.showSession never dismisses it.
+        r.shell.settingsUp = true
         r.router.showSessionInDetail("c4")
         advanceUntilIdle()
-        // 108's SplitDetailColumn.showSession: no dismissal, no early
-        // return — even with (fake) presentations up.
         assertEquals(listOf("current=c4", "session(c4)"), r.log)
         r.log.clear()
 
