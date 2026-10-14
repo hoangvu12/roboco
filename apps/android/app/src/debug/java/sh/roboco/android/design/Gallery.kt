@@ -44,6 +44,7 @@ import sh.roboco.android.design.reference.ReferenceGalleryPage
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
+import sh.roboco.android.newsession.NewSessionCanvasGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.newsession.FolderLocationsGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
@@ -613,6 +614,13 @@ object Gallery {
         // Ticket 124 (icon widget): the tool, file-icon and SF-glyph
         // fixture at the real core rect sizes, light and dark art.
         GallerySection("Transcript icons") { TranscriptIconGallerySection() },
+        // Ticket 93 (New session canvas): the composer-first page — harness
+        // mark + headline centred over the wallpaper hero, the composer
+        // cutout, the sheet nav bar, a real ComposerBar, and the five
+        // toggles (embedded / keyboard / harness / no wallpaper / narrow).
+        GallerySection("New session canvas", GalleryLayout.Fill) {
+            NewSessionCanvasGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
