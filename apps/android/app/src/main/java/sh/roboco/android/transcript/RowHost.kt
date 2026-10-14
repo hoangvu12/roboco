@@ -15,12 +15,17 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CollectionItemInfo
+import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.design.LiftHighlight
 import sh.roboco.android.design.LocalReduceMotion
 import sh.roboco.android.design.Motion
+import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.contextMenu
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.RowKind
@@ -52,7 +57,8 @@ class RowContext(
 
 /**
  * One realized row (ticket 65): exactly **one** root layout node (the host
- * indexes measurables by placement order), tagged by its kind, its layer-0
+ * indexes measurables by placement order) — the row group of ticket 129's
+ * semantics tree — its layer-0
  * canvas drawn behind everything at row-local origin, the fade-in applied
  * to the whole row through [Modifier.graphicsLayer], and the row's
  * scrollers and row-level widgets as children in iOS z-order (scrollers in
@@ -62,6 +68,10 @@ class RowContext(
  * root node (after the fade-in layer, before the layer-0 draw, so the
  * recorded preview contains everything the row paints but not the
  * fade-in alpha) and the [performer] shared by every row of one host.
+ * 129 turns the root into a TalkBack **row group** (`isTraversalGroup` +
+ * `CollectionItemInfo`, the `row-*` tag moved to the full-size text node
+ * inside, the semantics long-click off — its custom actions replace it),
+ * with the link nodes as the last children.
  */
 @Composable
 internal fun RowHost(
@@ -133,14 +143,23 @@ internal fun RowHost(
 
     Box(
         Modifier
-            .testTag(rowTag(p.kind))
+            // 129: the row group — traversal group + collection item. The
+            // `row-*` test tag moved to the full-size text node (a child
+            // with identical bounds), so the tag's tests and touches keep
+            // working; the row's custom actions live there too.
+            .semantics {
+                isTraversalGroup = true
+                collectionItemInfo = CollectionItemInfo(p.index.toInt(), 1, 0, 1)
+            }
             .graphicsLayer { alpha = appear.value } // read in the layer phase
             // 128: the row's context menu (16's gesture and lift, 15's
             // panel). The items are built here, at long-press time, never
             // cached in composition; a null menu (no model, a control
             // under the finger, or nothing to show) leaves the gesture
             // alone — no haptic, no lift, and the release is a normal tap.
-            .contextMenu(LiftHighlight.TranscriptRow) {
+            // 129: `semanticsLongClick = false` — the row container must
+            // not be a TalkBack stop between the row text and its widgets.
+            .contextMenu(LiftHighlight.TranscriptRow, semanticsLongClick = false) {
                 val m = row.model ?: return@contextMenu null
                 val x = down[0]
                 if (!x.isNaN() && isOverControl(m.display, x / d, down[1] / d, row::scrollerOffsetDp)) {
@@ -165,6 +184,10 @@ internal fun RowHost(
                 }
             },
     ) {
+        // 129: the row's full-size text node — the z-order **bottom**, so
+        // explore-by-touch reaches the widgets and links first (iOS puts
+        // the text element last). Emitted even before the model resolves.
+        RowTextNode(p.kind, model, frame, p.index, performer)
         if (model != null) {
             val ctx = RowContext(
                 state = state,
@@ -186,14 +209,17 @@ internal fun RowHost(
                 val sc = w.scroller?.toInt()
                 if (sc == null || sc >= n) WidgetBox(ctx, w)
             }
+            // 129: the link nodes — the z-order **top**, one per painted
+            // fragment, positioned (and repositioned) by their scrollers.
+            RowLinkNodes(row, model.display, actionsProvider)
         }
     }
 }
 
 /**
  * The row identifier of a kind (iOS `RowView.swift:146-153`). Ticket 129
- * later moves the tag to the row's full-size text node (same count and
- * bounds, so these tags' tests keep passing).
+ * moved the tag from the row's root Box to its full-size text node (the
+ * same bounds and count, so these tags' tests keep passing).
  */
 internal fun rowTag(kind: RowKind): String = when (kind) {
     RowKind.MARKDOWN -> "row-markdown"
@@ -220,11 +246,26 @@ internal fun rowTag(kind: RowKind): String = when (kind) {
  */
 @Composable
 internal fun WidgetBox(ctx: RowContext, w: Widget) {
+    // 129: the debug bounds overlay outlines exposed widget groups in
+    // `Palette.danger` — read in composition, drawn only in the a11y
+    // gallery (never in production).
+    val outline = LocalTranscriptA11yBounds.current && w.kind.isControl()
     Box(
         Modifier
             .absoluteOffset(w.x.dp, w.y.dp)
             .size(max(w.w, 0f).dp, max(w.h, 0f).dp)
-            .then(if (w.kind.isTranscriptControl) Modifier.transcriptControl() else Modifier),
+            .then(if (w.kind.isTranscriptControl) Modifier.transcriptControl() else Modifier)
+            // 129: exposed kinds group at 0f around the widget's own node;
+            // the hidden kinds are cleared from the tree entirely.
+            .widgetSemantics(w.kind)
+            .then(
+                if (outline) {
+                    val danger = RobocoTheme.palette.danger // #DC2626 light / #F87171 dark
+                    Modifier.drawBehind { drawRect(danger, style = Stroke(1f)) }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         RowWidget(ctx, w)
     }

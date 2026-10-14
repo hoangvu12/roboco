@@ -88,6 +88,7 @@ import sh.roboco.android.transcript.KeyboardInsetGallerySection
 import sh.roboco.android.transcript.RowChromeFixturePage
 import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
+import sh.roboco.android.transcript.TranscriptA11yGallerySection
 import sh.roboco.android.transcript.TranscriptHostGallerySection
 import sh.roboco.android.transcript.TranscriptLinksGallerySection
 import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
@@ -629,6 +630,14 @@ object Gallery {
         // 412 dp-wide phone frame, like the Bottom stack section.
         GallerySection("Jump to latest", GalleryLayout.Fill, screenshotHeightDp = 480) {
             JumpToLatestGallerySection()
+        },
+        // Ticket 129 (transcript accessibility): the real host over the
+        // A11yFixture with the bounds outlines on — link fragments in
+        // accent (violet), exposed widget groups in danger (red), on the
+        // painted text; the table's `wiki` outline slides with the painted
+        // text when the table is swiped. Fill: the host owns scrolling.
+        GallerySection("Transcript accessibility", GalleryLayout.Fill, screenshotHeightDp = 891) {
+            TranscriptA11yGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
