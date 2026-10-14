@@ -135,11 +135,13 @@ private fun groupCheckouts(projects: List<ProjectOption>, groupKey: String): Lis
 @Composable
 internal fun ProjectMenusStaticPanels() {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        PanelStage("P1 — project menu, a checkout picked (roboco checked)", projectMenuP1(), 430.dp)
-        PanelStage("P2 — project menu, no project (No Project… checked)", projectMenuP2(), 430.dp)
-        PanelStage("R1 — run on, the repository's two checkouts", runOnMenuR1(), 260.dp)
-        PanelStage("R2 — run on, a third clone on the same engine (paths)", runOnMenuR2(), 320.dp)
-        PanelStage("R3 — run on without a project (every engine)", runOnMenuR3(), 260.dp)
+        // Stage heights leave room for the font-scale-1.3 golden (the
+        // panels grow ~30% taller; see ProjectMenusScreenshotTest).
+        PanelStage("P1 — project menu, a checkout picked (roboco checked)", projectMenuP1(), 500.dp)
+        PanelStage("P2 — project menu, no project (No Project… checked)", projectMenuP2(), 500.dp)
+        PanelStage("R1 — run on, the repository's two checkouts", runOnMenuR1(), 240.dp)
+        PanelStage("R2 — run on, a third clone on the same engine (paths)", runOnMenuR2(), 310.dp)
+        PanelStage("R3 — run on without a project (every engine)", runOnMenuR3(), 240.dp)
     }
 }
 

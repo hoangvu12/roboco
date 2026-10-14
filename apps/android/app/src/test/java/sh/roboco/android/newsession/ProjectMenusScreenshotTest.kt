@@ -1,8 +1,11 @@
 package sh.roboco.android.newsession
 
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.chrisbanes.haze.rememberHazeState
 import org.junit.After
@@ -43,7 +46,7 @@ import sh.roboco.android.design.glass.GlassMenuHost
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = [36], qualifiers = "w420dp-h2000dp-mdpi")
+@Config(sdk = [36], qualifiers = "w420dp-h2100dp-mdpi")
 class ProjectMenusScreenshotTest {
 
     @get:Rule
@@ -70,6 +73,29 @@ class ProjectMenusScreenshotTest {
     @Test
     fun goldensDark() {
         goldenShot(Appearance.Dark, "newsession/project_menus_dark.png")
+    }
+
+    /**
+     * The font-scale AC: at 1.3 the titles and subtitles grow (ticket 15's
+     * `scaled` text) while the row geometry — the 36 dp slot centre, the
+     * 61 dp text start — stays put (15's own test pins the mechanics; this
+     * pins it over this ticket's real menus).
+     */
+    @Test
+    fun goldenAtFontScale13() {
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(1f, fontScale = 1.3f)) {
+                RobocoTheme(Appearance.Light) {
+                    GlassMenuHost(hazeState = rememberHazeState()) {
+                        ProjectMenusStaticPanels()
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage("newsession/project_menus_fontscale13.png")
     }
 
     private fun goldenShot(appearance: Appearance, file: String) {
