@@ -348,7 +348,9 @@ internal fun buildHandoffGalleryFixture(
         restore()
     }
 
-    // ── the composer picture: the draft card as if above a keyboard.
+    // ── the composer picture: the draft card as if above a keyboard
+    //    (a 26 dp continuous-corner card — `smoothRoundedPath` is
+    //    `SmoothRoundedShape`'s path, for Canvas painters).
     val composerLeft = 16f * d
     val composerWidth = (widthPx - 32f * d).coerceAtLeast(1f)
     val composerHeight = 120f * d
@@ -357,10 +359,10 @@ internal fun buildHandoffGalleryFixture(
     Canvas(composer).apply {
         val w = composer.width.toFloat()
         val h = composer.height.toFloat()
-        val r = 26f * d
-        drawRoundRect(0f, 0f, w, h, r, r, Paint().apply { color = card })
-        drawRoundRect(
-            0f, 0f, w, h, r, r,
+        val cardPath = smoothRoundedPath(w, h, 26f * d)
+        drawPath(cardPath, Paint().apply { color = card })
+        drawPath(
+            cardPath,
             Paint().apply {
                 color = cardBorder
                 style = PaintingStyle.Stroke

@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -234,9 +233,9 @@ internal fun HandoffOverlayCanvas(state: HandoffOverlayState, modifier: Modifier
                 val sceneAlpha = 1f - set.sceneProgress
                 if (sceneAlpha > 0f) {
                     val frame = handoff.sceneFrame
-                    val scale = lerp(1f, set.timings.dissolveScale, set.sceneProgress)
+                    val settleScale = lerp(1f, set.timings.dissolveScale, set.sceneProgress)
                     withTransform({
-                        scale(scale, scale, pivot = frame.center)
+                        scale(settleScale, settleScale, pivot = frame.center)
                         translate(frame.left, frame.top)
                     }) {
                         clipPath(set.sceneClip(this)) {
