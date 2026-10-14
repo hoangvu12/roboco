@@ -283,7 +283,19 @@ class CoreStartupTest {
         }
 
         assertNotNull(fixture.startup.engines.value)
-        assertEquals("EnginesChanged must re-read engines()", readsBefore + 1, engineReads.get())
+        // At least one read, not exactly one: the engine really dials
+        // 127.0.0.1:9, and every view change (Connecting -> Reconnecting,
+        // the dial error, the retry time) makes the real core emit its own
+        // EnginesChanged from its own thread (mobile-client `publish`).
+        // CoreStartup refreshes once per event (coalesced), so a core event
+        // landing beside the synthetic one is a second legitimate read.
+        // CI b2e14660 (ubuntu, where the refused dial is fastest) got
+        // readsBefore + 2. The core's timing races the test; the app code
+        // doesn't double-refresh.
+        assertTrue(
+            "EnginesChanged must re-read engines(): before=$readsBefore after=${engineReads.get()}",
+            engineReads.get() >= readsBefore + 1,
+        )
         assertTrue("the event path must not touch the main looper", shadowOf(Looper.getMainLooper()).isIdle)
         assertTrue("the event still hops to main through the session hub", fixture.hubHops.get() >= 1)
         fixture.close()
