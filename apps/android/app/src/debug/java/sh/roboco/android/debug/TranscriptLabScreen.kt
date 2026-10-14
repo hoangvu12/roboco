@@ -66,8 +66,14 @@ import sh.roboco.android.design.glass.ScrollEdgeEffect
 import sh.roboco.android.design.glass.ScrollEdgeEffectDefaults
 import sh.roboco.android.design.hairlineBorder
 import sh.roboco.android.design.uiStyle
+import sh.roboco.android.image.ImageViewerHost
+import sh.roboco.android.image.ImageViewerRequest
+import sh.roboco.android.image.LocalImageViewer
+import sh.roboco.android.image.rememberImageViewerState
 import sh.roboco.android.transcript.TranscriptActions
 import sh.roboco.android.transcript.TranscriptHost
+import sh.roboco.android.transcript.TranscriptImageBinding
+import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptViewport
 
 /**
@@ -101,6 +107,67 @@ fun TranscriptLabScreen(
     runScripts: Boolean,
     overlay: @Composable BoxScope.(contentTop: Dp) -> Unit = {},
 ) {
+    val context = LocalContext.current
+    if (options.images) {
+        // Ticket 137 (`--ez images true`): 135's fake PNG loader would
+        // answer the missing image too, so the screen swaps in a real
+        // [TranscriptImageBinding] over [LabImageReader] (the two
+        // workspace PNGs after 600 ms, NotFound otherwise) and mounts
+        // 125's viewer host so a loaded tile opens the preview with the
+        // alt text as its label.
+        ImageViewerHost(rememberImageViewerState()) {
+            val viewer = LocalImageViewer.current
+            val binding = remember {
+                TranscriptImageBinding(TranscriptImageLoader.get(context), { "lab" }, LabImageReader)
+            }
+            val actions = remember(viewer, binding) {
+                TranscriptActions(
+                    // 126's router is not merged: open anything through the system.
+                    openLink = { tap -> openLabLink(context, tap.url) },
+                    loadImage = binding::load,
+                    cachedImage = binding::cached,
+                    openImage = { reference, source, bitmap, label ->
+                        viewer?.show(
+                            ImageViewerRequest(
+                                reference = reference,
+                                preview = bitmap,
+                                sourceBounds = source,
+                                sourceCornerRadius = 14.dp,
+                                label = label,
+                                loadFull = { binding.loadFull(reference) },
+                            ),
+                        )
+                    },
+                )
+            }
+            LabScreenBody(controller, options, runScripts, actions, overlay)
+        }
+    } else {
+        val actions = remember {
+            TranscriptActions(
+                // 126's router is not merged: open anything through the system.
+                openLink = { tap -> openLabLink(context, tap.url) },
+                // 66's two-arg loader: the fake PNG answers every reference.
+                loadImage = { _, sidePx -> LabImages.load(context, sidePx) },
+                cachedImage = { _, sidePx -> LabImages.cached(sidePx) },
+            )
+        }
+        LabScreenBody(controller, options, runScripts, actions, overlay)
+    }
+}
+
+/**
+ * The lab's body (135) — everything but the actions wiring, split so the
+ * `images` mode (137) can wrap it in 125's [ImageViewerHost].
+ */
+@Composable
+private fun LabScreenBody(
+    controller: TranscriptLabController,
+    options: LabOptions,
+    runScripts: Boolean,
+    actions: TranscriptActions,
+    overlay: @Composable BoxScope.(contentTop: Dp) -> Unit,
+) {
     val palette = RobocoTheme.palette
     val viewport = controller.state.viewport
     val hazeState = rememberHazeState()
@@ -112,16 +179,6 @@ fun TranscriptLabScreen(
     val status = WindowInsets.statusBars
     val safe = WindowInsets.safeDrawing
     val layoutDir = LocalLayoutDirection.current
-    val context = LocalContext.current
-    val actions = remember {
-        TranscriptActions(
-            // 126's router is not merged: open anything through the system.
-            openLink = { tap -> openLabLink(context, tap.url) },
-            // 66's two-arg loader: the fake PNG answers every reference.
-            loadImage = { _, sidePx -> LabImages.load(context, sidePx) },
-            cachedImage = { _, sidePx -> LabImages.cached(sidePx) },
-        )
-    }
     // The scroll edge engages once content scrolled past the top
     // (68's `scrollY = offset + topInset`); the derived state changes
     // only when the Boolean flips.

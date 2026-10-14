@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import sh.roboco.android.transcript.TranscriptState
+import uniffi.roboco_core.DebugEntry
 import uniffi.roboco_core.layoutFixtureMarkdown
 
 /**
@@ -43,8 +44,8 @@ class TranscriptLabController(
     /** iOS `composer.running` — the Send/Stop button state. */
     val running: Boolean get() = stream.running
 
-    /** The launch fixture: N turns pushed once with `working = false`. */
-    fun seed(turns: Int) = stream.seed(turns)
+    /** The launch fixture: N turns (plus 137's `images`-mode entries) pushed once with `working = false`. */
+    fun seed(turns: Int, extra: List<DebugEntry> = emptyList()) = stream.seed(turns, extra)
 
     /**
      * `send(_:)` (`TranscriptLabViewController.swift:102-114`):

@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -47,7 +46,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.LocalReduceMotion
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.transcript.AttachmentReader
@@ -59,14 +57,15 @@ import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 
 /**
- * The tile's behaviour (ticket 66, Compose test rule at 393 dp × xxhdpi →
- * d = 3, so a 260 dp tile decodes to sidePx 780): the radius rule, the
- * first-frame cache hit with no read, the 200 ms easeInOut cross-fade
- * through the test clock (also under reduce motion — iOS does not gate
- * it), the claim (a late result for an old reference is cached but never
- * shown), taps only when loaded with the exact unclipped window rect and
- * the shown bitmap, the image semantics and click action presence, blank
- * engine ids, and failed reads staying empty.
+ * The tile's 66 behaviours that survive 137 (the state machine is
+ * [ImageTileStatesTest]'s): the radius rule, the first-frame cache hit
+ * with no read (alpha 1, no animation), the claim (a late result for an
+ * old reference is cached but never shown), taps opening only a loaded
+ * tile with the exact unclipped window rect and the shown bitmap, the
+ * image semantics with the click action present in **every** state
+ * (137: Loading/Failed taps retry), and failed reads / blank engine ids
+ * now ending in the Failed state instead of an empty tile. 137 removed
+ * the 200 ms cross-fade — its two tween tests were deleted with it.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -78,6 +77,9 @@ class ImageTileTest {
 
     /** The Rust `ChipBackground` placeholder colour (light) under every tile. */
     private val PLACEHOLDER = Color(0xFFE7E7EB.toInt())
+
+    /** The tile's a11y label, as a markdown image's alt text would give it. */
+    private val LABEL = "Calculation result: 8"
 
     @After
     fun reset() = ReduceMotion.resetForTest()
@@ -139,7 +141,7 @@ class ImageTileTest {
                 .size(260.dp, 260.dp)
                 .background(PLACEHOLDER, RoundedCornerShape(14.dp)),
         ) {
-            ImageTile(reference, 260f, 260f, actions)
+            ImageTile(reference, LABEL, 260f, 260f, actions)
         }
     }
 
@@ -158,15 +160,6 @@ class ImageTileTest {
     private fun alpha(): Float = tiles().firstOrNull()?.config?.get(ImageTileAlphaKey) ?: -1f
 
     private fun loaded(): Boolean = tiles().firstOrNull()?.config?.get(ImageTileLoadedKey) == true
-
-    /** Advances frozen frames until [condition] holds (5 s of frames). */
-    private fun driveFrames(condition: () -> Boolean) {
-        repeat(300) {
-            if (condition()) return
-            compose.mainClock.advanceTimeByFrame()
-        }
-        error("condition not met within 300 frames")
-    }
 
     // ------------------------------------------------------------ the radius
 
@@ -199,56 +192,7 @@ class ImageTileTest {
         assertEquals("cache hit: loaded in the first frame", true, loaded())
         assertEquals("no animation on a hit", 1f, alpha(), 0.001f)
         assertEquals("no read on a hit", 0, reader.reads.get())
-    }
-
-    // ------------------------------------------------------ the 200 ms fade
-
-    @Test
-    fun aMissCrossFadesInOver200MsEaseInOut() {
-        compose.mainClock.autoAdvance = false
-        val reader = FakeReader()
-        val loader = newLoader()
-        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
-        val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
-
-        compose.setContent { Host { TestTile("a.png", actions) } }
-        driveFrames { loaded() }
-
-        // The picture lands at alpha 0 …
-        assertEquals(0f, alpha(), 0.001f)
-        val landTime = compose.mainClock.currentTime
-        // … is roughly half-faded at the 100 ms midpoint (frame-stepped:
-        // `advanceTimeBy` rounds up to whole frames) …
-        repeat(7) { compose.mainClock.advanceTimeByFrame() }
-        val mid = alpha()
-        assertTrue("alpha at ~100 ms should be about half, was $mid", mid in 0.3f..0.65f)
-        // … and settles at 1 after the full 200 ms tween.
-        driveFrames { alpha() >= 0.999f }
-        assertEquals(1f, alpha(), 0.001f)
-        val doneTime = compose.mainClock.currentTime
-        assertTrue("the fade takes ~200 ms, was ${doneTime - landTime} ms", doneTime - landTime in 200..250)
-    }
-
-    @Test
-    fun underReduceMotionTheCrossFadeStillRuns() {
-        compose.mainClock.autoAdvance = false
-        val reader = FakeReader()
-        val loader = newLoader()
-        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
-        val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
-
-        compose.setContent {
-            Host {
-                CompositionLocalProvider(LocalReduceMotion provides true) {
-                    TestTile("a.png", actions)
-                }
-            }
-        }
-        driveFrames { loaded() }
-        assertEquals(0f, alpha(), 0.001f)
-        // 13 frames ≈ the animation's 200 ms plus its start frame.
-        repeat(13) { compose.mainClock.advanceTimeByFrame() }
-        assertEquals("the cross-fade is not gated by reduce motion", 1f, alpha(), 0.001f)
+        assertEquals("the alt text is the label", LABEL, node().config[SemanticsProperties.ContentDescription]?.firstOrNull())
     }
 
     // ------------------------------------------------------------- the claim
@@ -298,21 +242,22 @@ class ImageTileTest {
         val actions = TranscriptActions(
             cachedImage = binding::cached,
             loadImage = binding::load,
-            openImage = { r, rect, bmp -> opened.add(Triple(r, rect, bmp!!)) },
+            openImage = { r, rect, bmp, _ -> opened.add(Triple(r, rect, bmp!!)) },
         )
 
         compose.setContent { Host { TestTile("a.png", actions) } }
         compose.waitForIdle()
 
-        // Not loaded yet: the tap falls through (no click action, nothing
-        // is consumed by the tile).
+        // Not loaded yet: the tap retries (137), it never opens the viewer.
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
         compose.waitForIdle()
-        assertTrue(opened.isEmpty())
+        assertTrue("no viewer while Loading", opened.isEmpty())
+        assertEquals("the retry joined the in-flight read", 1, reader.reads.get())
 
         reader.releaseAll()
-        compose.waitForIdle() // the fade runs and completes on the auto clock
+        compose.waitForIdle() // the load lands, instantly at alpha 1
         assertEquals(true, loaded())
+        assertEquals(1f, alpha(), 0.001f)
 
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
         compose.waitForIdle()
@@ -335,7 +280,7 @@ class ImageTileTest {
     // ----------------------------------------------------------- semantics
 
     @Test
-    fun theNodeCarriesImageSemanticsAndClickOnlyWhenLoaded() {
+    fun theNodeCarriesImageSemanticsAndClickInEveryState() {
         val reader = FakeReader(gateRefs = setOf("a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
@@ -344,26 +289,31 @@ class ImageTileTest {
         compose.setContent { Host { TestTile("a.png", actions) } }
         compose.waitForIdle()
 
-        val empty = node().config
-        assertEquals(Role.Image, empty[SemanticsProperties.Role])
-        assertEquals("Image", empty[SemanticsProperties.ContentDescription]?.firstOrNull())
-        assertEquals("transcript-image", empty[SemanticsProperties.TestTag])
-        assertEquals("a.png", empty[ImageTileReferenceKey])
-        assertEquals(false, empty[ImageTileLoadedKey])
-        assertNull("no click action while empty", empty.getOrNull(SemanticsActions.OnClick))
+        val loading = node().config
+        assertEquals(Role.Image, loading[SemanticsProperties.Role])
+        assertEquals(LABEL, loading[SemanticsProperties.ContentDescription]?.firstOrNull())
+        assertEquals("transcript-image", loading[SemanticsProperties.TestTag])
+        assertEquals("a.png", loading[ImageTileReferenceKey])
+        assertEquals(false, loading[ImageTileLoadedKey])
+        assertEquals(ImageTileStatus.Loading, loading[ImageTileStatusKey])
+        assertEquals(ImageTileCopy.Loading, loading[SemanticsProperties.StateDescription])
+        assertNotNull("137: the click action exists while Loading (it retries)", loading.getOrNull(SemanticsActions.OnClick))
 
         reader.releaseAll()
         compose.waitForIdle()
 
         val loadedConfig = node().config
         assertEquals(true, loadedConfig[ImageTileLoadedKey])
+        assertEquals(ImageTileStatus.Loaded, loadedConfig[ImageTileStatusKey])
+        assertEquals(ImageTileCopy.LoadedValue, loadedConfig[SemanticsProperties.StateDescription])
+        assertEquals(ImageTileCopy.LoadedHint, loadedConfig[ImageTileHintKey])
         assertNotNull("click action once loaded", loadedConfig.getOrNull(SemanticsActions.OnClick))
     }
 
     // ------------------------------------------------------------ failures
 
     @Test
-    fun aFailedReadLeavesTheTileEmpty() {
+    fun aFailedReadShowsTheFailedStateAndATapRetries() {
         val reader = FakeReader(failRefs = setOf("a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
@@ -371,7 +321,7 @@ class ImageTileTest {
         val actions = TranscriptActions(
             cachedImage = binding::cached,
             loadImage = binding::load,
-            openImage = { _, _, _ -> opened.incrementAndGet() },
+            openImage = { _, _, _, _ -> opened.incrementAndGet() },
         )
 
         compose.setContent { Host { TestTile("a.png", actions) } }
@@ -380,16 +330,18 @@ class ImageTileTest {
 
         assertEquals(false, loaded())
         assertEquals(0f, alpha(), 0.001f)
+        assertEquals(ImageTileStatus.Failed, node().config[ImageTileStatusKey])
         assertEquals(1, reader.reads.get()) // one read, then the effect ended
         assertNull(loader.cached(ImageKey("e1", "a.png"), 780))
 
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
         compose.waitForIdle()
-        assertEquals(0, opened.get())
+        assertEquals("the failed tap starts a new read (137)", 2, reader.reads.get())
+        assertEquals("still nothing opened", 0, opened.get())
     }
 
     @Test
-    fun aBlankEngineIdMeansNoReadAndAnEmptyTile() {
+    fun aBlankEngineIdMeansNoReadAndAFailedTile() {
         val reader = FakeReader()
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "" }, reader)
@@ -399,7 +351,7 @@ class ImageTileTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(600)
 
-        assertEquals(false, loaded())
+        assertEquals(ImageTileStatus.Failed, node().config[ImageTileStatusKey])
         assertEquals(0, reader.reads.get())
         assertNull(loader.cached(ImageKey("", "a.png"), 780))
     }

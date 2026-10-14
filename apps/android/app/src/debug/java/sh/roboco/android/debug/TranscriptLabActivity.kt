@@ -22,6 +22,7 @@ import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.shell.toExtrasMap
 import sh.roboco.android.transcript.TranscriptState
+import uniffi.roboco_core.DebugEntry
 
 /**
  * The debug-only Transcript Lab activity (android-ui-parity #135) — the
@@ -49,8 +50,28 @@ class TranscriptLabActivity : ComponentActivity() {
         // Main thread only (61): the Rust layout worker is spawned here.
         // The app's `TextEngine.prewarm()` has usually built the text
         // system already, so this does not block on the font load.
-        controller = TranscriptLabController(TranscriptState(), scope = lifecycleScope)
-        controller.seed(options.turns)
+        // With `images` (137) the controller's fixture is the edge-case
+        // markdown — so the seeded turns **and** the Send stream both use
+        // it (the streaming check: no duplicate tiles while it streams).
+        controller = if (options.images) {
+            TranscriptLabController(TranscriptState(), fixture = LAB_IMAGES_EXTRAS_FIXTURE, scope = lifecycleScope)
+        } else {
+            TranscriptLabController(TranscriptState(), scope = lifecycleScope)
+        }
+        if (options.images) {
+            // The pr817 demo chat: the prompt, then the reply with the
+            // served screenshot, its download link and the missing one.
+            // `--ei turns 1` keeps the list short.
+            controller.seed(
+                options.turns,
+                extra = listOf(
+                    DebugEntry("img-u", true, LAB_IMAGES_PROMPT, false),
+                    DebugEntry("img-a", false, LAB_IMAGES_FIXTURE, false),
+                ),
+            )
+        } else {
+            controller.seed(options.turns)
+        }
         // Rotation and dark-mode changes are absorbed (configChanges in
         // the manifest), so the entries, a live stream and this controller
         // survive; the scripts only run on a fresh launch.

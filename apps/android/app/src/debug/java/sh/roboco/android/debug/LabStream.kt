@@ -89,9 +89,9 @@ class LabStream(
     /** The next word index to stream (`i`, `TranscriptLabViewController.swift:118`). */
     private var cursor = 0
 
-    /** The launch fixture: `entries` plus the one `working = false` push. */
-    fun seed(turns: Int) {
-        entries = LabScript.initialEntries(turns, fixture)
+    /** The launch fixture: `entries` plus the one `working = false` push. [extra] (137) appends after the fixture turns — the lab's image prompts. */
+    fun seed(turns: Int, extra: List<DebugEntry> = emptyList()) {
+        entries = LabScript.initialEntries(turns, fixture) + extra
         push(entries, false)
     }
 

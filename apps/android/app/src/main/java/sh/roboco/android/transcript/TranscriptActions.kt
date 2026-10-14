@@ -27,7 +27,8 @@ data class LinkTap(val url: String, val rowBounds: Rect, val linkBounds: Rect)
  * the per-engine two-arg form and added [cachedImage] (tickets 75/126 get
  * `loadFull` straight from the binding); **126** changed [openLink] to
  * `(LinkTap) -> Unit` and the `linkAt` stub to return `LinkAt?`; **137**
- * adds `label: String?` to [openImage].
+ * added `label: String?` to [openImage] (the alt text, forwarded into
+ * 125's `ImageViewerRequest.label`).
  */
 @Stable
 class TranscriptActions(
@@ -41,9 +42,11 @@ class TranscriptActions(
     /**
      * An image tile was tapped (66 → viewer 125). `source` = the tile's
      * bounds in window px, `bitmap` the decoded tile when it is already in
-     * memory (a head start for the viewer's cross-fade).
+     * memory (a head start for the viewer's cross-fade), `label` the alt
+     * text (137: the tile's accessibility label, forwarded into the
+     * viewer's `ImageViewerRequest.label`).
      */
-    val openImage: (reference: String, source: Rect, bitmap: ImageBitmap?) -> Unit = { _, _, _ -> },
+    val openImage: (reference: String, source: Rect, bitmap: ImageBitmap?, label: String?) -> Unit = { _, _, _, _ -> },
     /**
      * Load an attachment / generated image by widget reference (iOS
      * `imageLoader` + `imageFetcher`). [sidePx] is the decode target (the

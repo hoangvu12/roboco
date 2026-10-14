@@ -98,6 +98,7 @@ import sh.roboco.android.transcript.TranscriptLinksGallerySection
 import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
+import sh.roboco.android.transcript.widgets.ImageTileStatesGallerySection
 import sh.roboco.android.transcript.widgets.ShimmerGallerySection
 import sh.roboco.android.transcript.widgets.StatusWidgetsGallerySection
 import sh.roboco.android.transcript.widgets.ToolRailGallerySection
@@ -669,6 +670,10 @@ object Gallery {
         GallerySection("New-session chips", screenshotHeightDp = 420) {
             NewSessionChipsGallerySection()
         },
+        // Ticket 137 (inline markdown images): every tile state at both
+        // tile sizes — Loading/Loaded/Failed, compact and full, retry and
+        // the unfetchable remote — over the Rust placeholder boxes.
+        GallerySection("Image tile states", screenshotHeightDp = 1300) { ImageTileStatesGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

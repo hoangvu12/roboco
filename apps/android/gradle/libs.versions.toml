@@ -26,6 +26,10 @@ androidxTestOrchestrator = "1.6.1"
 # macrobenchmark module. 2.4.0: the latest stable on Google Maven as of
 # 2026-10-12 (ticket 136's re-verification).
 uiAutomator = "2.4.0"
+# ui-parity #137's MarkdownImageLabTest: Intents.init/intended pins the
+# share chooser without a matching activity. 3.7.0 is the release
+# paired with runner/core 1.7.0.
+androidxTestEspresso = "3.7.0"
 jna = "5.19.1"
 junit = "4.13.2"
 # Squircle corners (SmoothRoundedShape): newest stable 1.x on maven.google.com
@@ -80,6 +84,7 @@ androidx-test-core = { group = "androidx.test", name = "core", version.ref = "an
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 androidx-test-orchestrator = { group = "androidx.test", name = "orchestrator", version.ref = "androidxTestOrchestrator" }
+androidx-test-espresso-intents = { group = "androidx.test.espresso", name = "espresso-intents", version.ref = "androidxTestEspresso" }
 # The notification flow test (android-app#28): the system permission dialog,
 # pressHome and the notification shade. androidTest-only.
 androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiAutomator" }

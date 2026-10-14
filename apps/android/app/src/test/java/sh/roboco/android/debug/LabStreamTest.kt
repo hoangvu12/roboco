@@ -54,6 +54,26 @@ class LabStreamTest {
         assertEquals(false, log.calls[0].second)
     }
 
+    /** 137: the lab's image fixtures append after the seeded turns. */
+    @Test
+    fun seedAppendsTheExtraEntriesAfterTheTurns() {
+        val log = PushLog()
+        val stream = LabStream("F", push = log)
+        stream.seed(
+            1,
+            extra = listOf(
+                DebugEntry("img-u", true, "Show the calculation screenshot.", false),
+                DebugEntry("img-a", false, "![Calculation result: 8](/workspace/calculator/5-plus-3.png)", false),
+            ),
+        )
+        assertEquals(1, log.calls.size)
+        val entries = log.calls[0].first
+        assertEquals("u0, a0, img-u, img-a", entries.joinToString(", ") { it.id })
+        assertEquals("Show the calculation screenshot.", entries[2].text)
+        assertEquals("![Calculation result: 8](/workspace/calculator/5-plus-3.png)", entries[3].text)
+        assertEquals(false, log.calls[0].second)
+    }
+
     @Test
     fun beginAppendsWithoutPushing() {
         val log = PushLog()

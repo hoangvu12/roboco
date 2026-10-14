@@ -385,7 +385,7 @@ class UploadRingTest {
         val actions = TranscriptActions(
             cachedImage = { _, _ -> bitmap },
             loadImage = { _, _ -> bitmap },
-            openImage = { reference, _, _ -> opened.add(reference) },
+            openImage = { reference, _, _, _ -> opened.add(reference) },
         )
         compose.setContent { Host { WidgetTile(state, actions, "pending/9f1c/a.png", 1u) } }
         compose.runOnIdle { state.uploadProgress = 0.42 }

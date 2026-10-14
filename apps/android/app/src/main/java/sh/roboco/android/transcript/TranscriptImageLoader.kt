@@ -22,7 +22,10 @@ import kotlinx.coroutines.withContext
 /**
  * The tile loader's cache key (ticket 66, following upstream #817's
  * `imageCacheKey`): two engines can serve different files under the same
- * path, so the reference alone is never enough.
+ * path, so the reference alone is never enough. The length-prefix shape
+ * of iOS's `"\(device.utf8.count):\(device)\(reference)"` is data-class
+ * equality here: `ImageKey("a", "bc") != ImageKey("ab", "c")` for the
+ * same reason — neither pair collides.
  */
 data class ImageKey(val engineDeviceId: String, val reference: String)
 
@@ -37,10 +40,12 @@ fun interface AttachmentReader {
 }
 
 /**
- * Bytes → bitmap. [sidePx] > 0 asks for a tile whose shorter side is
- * exactly `sidePx` px (downsampled, never upscaled); `0` asks for the full
- * image with the long side capped at [FullSideCap]. Throws on failure —
- * the loader turns that into a null result.
+ * Bytes → bitmap. [sidePx] > 0 asks for a tile whose **longer** side is
+ * exactly `sidePx` px (downsampled, never upscaled; ticket 137: the tile
+ * is aspect-fit, so the picture must fit the whole source inside the
+ * square, not crop it); `0` asks for the full image with the long side
+ * capped at [FullSideCap]. Throws on failure — the loader turns that
+ * into a null result.
  */
 fun interface ImageDecode {
     fun decode(bytes: ByteArray, sidePx: Int): DecodedImage
@@ -52,14 +57,37 @@ class DecodedImage(val bitmap: ImageBitmap, val full: Boolean)
 /** Long-side cap of `decode(bytes, 0)` (full-size loads, tickets 125/126). */
 internal const val FullSideCap = 4096
 
+/** A Windows drive-absolute reference (`C:\\…` or `C:/…`). */
+private val drivePath = Regex("^[A-Za-z]:[\\\\/]")
+
+/**
+ * Whether an image reference can be served by `readAttachment` at all
+ * (ticket 137, Roboco's no-RPC adaptation). The engine's path jail serves
+ * only absolute paths and `pending://` upload references: POSIX absolute
+ * (`/…`), Windows drive-absolute (`C:\\…`, `C:/…`) and `\\\\…` UNC/verbatim
+ * paths are **fetchable** (the engine decides whether to serve them), as
+ * is any `pending://…` reference. Everything else — `http(s)://` (the
+ * phone never fetches HTTP image URLs, #817), `data:`, `file:`,
+ * `roboco-file:`, relative paths and the empty string — is refused
+ * without a round trip: the tile fails synchronously, and no engine id
+ * is even read.
+ */
+fun isFetchableImageReference(ref: String): Boolean = when {
+    ref.isEmpty() -> false
+    ref.startsWith("pending://") -> true
+    drivePath.containsMatchIn(ref) -> true
+    ref.startsWith("/") || ref.startsWith("\\\\") -> true
+    else -> false
+}
+
 /**
  * The real decoder (ticket 66 step 1): `ImageDecoder` with EXIF
- * orientation applied, integer ceil-division downsampling so the shorter
- * source side lands on exactly `sidePx` (a float `ceil(w·scale)` can
- * overshoot by 1 px) and the long side capped at [FullSideCap] for full
- * loads. `ALLOCATOR_DEFAULT` may hand back a `HARDWARE` bitmap — it draws
- * in Compose but its pixels cannot be read; tests inject
- * `ALLOCATOR_SOFTWARE`.
+ * orientation applied, integer ceil-division downsampling so the **longer**
+ * source side lands on exactly `sidePx` (ticket 137's fit rule — a float
+ * `ceil(w·scale)` can overshoot by 1 px) and the long side capped at
+ * [FullSideCap] for full loads. `ALLOCATOR_DEFAULT` may hand back a
+ * `HARDWARE` bitmap — it draws in Compose but its pixels cannot be read;
+ * tests inject `ALLOCATOR_SOFTWARE`.
  */
 internal class PlatformImageDecode(
     private val allocator: Int = ImageDecoder.ALLOCATOR_DEFAULT,
@@ -72,9 +100,9 @@ internal class PlatformImageDecode(
             val w = info.size.width
             val h = info.size.height
             if (sidePx > 0) {
-                val short = min(w, h)
-                if (short > sidePx) {
-                    d.setTargetSize(ceilDiv(w, short, sidePx), ceilDiv(h, short, sidePx))
+                val long = maxOf(w, h)
+                if (long > sidePx) {
+                    d.setTargetSize(ceilDiv(w, long, sidePx), ceilDiv(h, long, sidePx))
                     full = false
                 }
             } else if (maxOf(w, h) > FullSideCap) {
@@ -120,11 +148,12 @@ class TranscriptImageLoader(
 
     /**
      * Main-thread safe, no I/O: the usable entry per the hit rule — a
-     * `full` entry always serves, a downsampled one only when its shorter
-     * side is still ≥ `sidePx`. Otherwise null (a re-decode follows).
+     * `full` entry always serves, a downsampled one only when its
+     * **longer** side is still ≥ `sidePx` (137: the tile is aspect-fit).
+     * Otherwise null (a re-decode follows).
      */
     fun cached(key: ImageKey, sidePx: Int): ImageBitmap? =
-        lru.get(key)?.takeIf { it.full || min(it.bitmap.width, it.bitmap.height) >= sidePx }?.bitmap
+        lru.get(key)?.takeIf { it.full || maxOf(it.bitmap.width, it.bitmap.height) >= sidePx }?.bitmap
 
     /**
      * Cache → in-flight deferred → read + decode. Null on any failure
@@ -183,17 +212,17 @@ class TranscriptImageLoader(
 
     /**
      * Store unless the existing entry is at least as good: a `full` entry
-     * always wins, and a larger downsample beats a smaller one, so a
-     * 76 dp decode never replaces a 260 dp one.
+     * always wins, and a larger (longer-side, 137) downsample beats a
+     * smaller one, so a 76 dp decode never replaces a 260 dp one.
      */
     private fun store(key: ImageKey, decoded: DecodedImage) {
         val old = lru.get(key)
-        if (old == null || (!old.full && (decoded.full || minSide(decoded) > minSide(old)))) {
+        if (old == null || (!old.full && (decoded.full || maxSide(decoded) > maxSide(old)))) {
             lru.put(key, decoded)
         }
     }
 
-    private fun minSide(e: DecodedImage): Int = min(e.bitmap.width, e.bitmap.height)
+    private fun maxSide(e: DecodedImage): Int = maxOf(e.bitmap.width, e.bitmap.height)
 
     /**
      * NSCache's memory-pressure eviction, as an app-level callback:
@@ -251,7 +280,10 @@ class TranscriptImageLoader(
  * One session's view of the loader (ticket 66): fixes the engine
  * ([engineDeviceId] — `{ controller.hostDeviceId }`, ticket 51, read at
  * call time) and the [reader]. A blank engine id (no host yet) means no
- * read and no cache entry.
+ * read and no cache entry, and (137) an unfetchable reference — `http(s)`,
+ * `data:`, other URI schemes, relative paths — short-circuits to a null
+ * result **before** the engine id is read or the reader is called, so the
+ * tile fails without a round trip.
  */
 class TranscriptImageBinding(
     private val loader: TranscriptImageLoader,
@@ -259,18 +291,21 @@ class TranscriptImageBinding(
     private val reader: AttachmentReader,
 ) {
     fun cached(reference: String, sidePx: Int): ImageBitmap? {
+        if (!isFetchableImageReference(reference)) return null
         val id = engineDeviceId()
         if (id.isBlank()) return null
         return loader.cached(ImageKey(id, reference), sidePx)
     }
 
     suspend fun load(reference: String, sidePx: Int): ImageBitmap? {
+        if (!isFetchableImageReference(reference)) return null
         val id = engineDeviceId()
         if (id.isBlank()) return null
         return loader.load(ImageKey(id, reference), sidePx, reader)
     }
 
     suspend fun loadFull(reference: String): ImageBitmap? {
+        if (!isFetchableImageReference(reference)) return null
         val id = engineDeviceId()
         if (id.isBlank()) return null
         return loader.loadFull(ImageKey(id, reference), reader)

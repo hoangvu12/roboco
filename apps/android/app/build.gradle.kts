@@ -660,4 +660,7 @@ dependencies {
     // pressHome and the notification shade (UiDevice), CI-only. Also
     // ui-parity #133's KeyboardFlowTest (raw swipes over the IME).
     androidTestImplementation(libs.androidx.test.uiautomator)
+    // ui-parity #137's MarkdownImageLabTest: Intents.init/intended pins
+    // the viewer's share chooser (ACTION_CHOOSER), CI-only.
+    androidTestImplementation(libs.androidx.test.espresso.intents)
 }
