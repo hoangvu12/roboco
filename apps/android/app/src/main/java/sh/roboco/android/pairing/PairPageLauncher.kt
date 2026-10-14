@@ -5,7 +5,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.CoroutineDispatcher
@@ -61,10 +64,30 @@ class PairPageLauncher internal constructor(
     /**
      * The page's model, `null` while nothing is open. Kept after a
      * dismissal while the phase is `Redeeming`, so a reopen shows that
-     * same redeem ("Pairing…"); ticket 139 makes this state-backed.
+     * same redeem ("Pairing…"); ticket 139 makes this state-backed
+     * (snapshot-observable) so the pairing root's status line can
+     * derive from it.
      */
-    internal var current: PairPageModel? = null
+    internal var current: PairPageModel? by mutableStateOf(null)
         private set
+
+    /**
+     * Ticket 139: whether the page's sheet is currently presented —
+     * written by [openPairPage] and the `onDismissed` callback (31
+     * fires it for animated, drag, back and instant dismissals alike).
+     * Observable, so the root's status line and the inbound links both
+     * read it.
+     */
+    var isShowing: Boolean by mutableStateOf(false)
+        private set
+
+    /**
+     * Ticket 139: a redeem is running, **whether the page shows or not**
+     * — `current` survives a dismissal while `Redeeming` (72), so a
+     * link that arrives then is ignored instead of replacing the URL
+     * being redeemed.
+     */
+    val isRedeeming: Boolean get() = current?.phase is PairPhase.Redeeming
 
     /**
      * Opens (or refills) the Pair page.
@@ -116,6 +139,10 @@ class PairPageLauncher internal constructor(
             PairPage(fresh, this, qrScan, clipboard)
         }
         val onDismissed = {
+            // 139: the observable flag flips first, so the root's status
+            // line recomposes onto its own Redeeming/Error line as the
+            // page goes (31 calls this for every dismissal kind).
+            isShowing = false
             // Keep a model that is still redeeming: the background redeem
             // must survive the sheet, and a reopen shows it.
             val m = current
@@ -127,7 +154,11 @@ class PairPageLauncher internal constructor(
         } else {
             sheetHost.present(PAIR_KEY, SheetStyle.Page(grabber = true), onDismissed = onDismissed, content = content)
         }
-        if (!presented) {
+        if (presented) {
+            // 139: the flag is set only on a successful present — the
+            // "already presenting" no-op leaves it untouched.
+            isShowing = true
+        } else {
             Log.w(TAG, "openPairPage: another sheet is up; ignored")
         }
     }

@@ -38,9 +38,13 @@ sealed interface DeepLink {
     /**
      * The whole trimmed `roboco://pair…` string; ticket 139 decodes and
      * validates the `#url=` fragment. **Never log it** — the fragment
-     * carries the pairing token.
+     * carries the pairing token — so the data class's generated
+     * `toString()` is overridden (139): any generic log line that
+     * interpolates a `DeepLink` would otherwise print the token.
      */
-    data class Pair(val link: String) : DeepLink
+    data class Pair(val link: String) : DeepLink {
+        override fun toString(): String = "Pair(<redacted>)"
+    }
 }
 
 /**

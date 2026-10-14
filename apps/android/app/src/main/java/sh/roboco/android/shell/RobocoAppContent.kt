@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -28,12 +27,13 @@ import sh.roboco.android.design.ProvideFeedback
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.pairing.CoreClientPairingBackend
+import sh.roboco.android.pairing.InboundPairingLinks
 import sh.roboco.android.pairing.LocalPairPage
 import sh.roboco.android.pairing.PairPageLauncher
 import sh.roboco.android.pairing.PairingRoot
-import sh.roboco.android.pairing.PairingRootStatus
 import sh.roboco.android.pairing.ProvidePairPage
 import sh.roboco.android.pairing.StorePairedEngineSink
+import sh.roboco.android.pairing.pairingRootStatus
 import sh.roboco.android.sessions.LocalRowActions
 
 /**
@@ -87,9 +87,6 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
             val fontStatus by FontGate.statusFlow.collectAsState()
             FontGateHost(fontStatus) { // 03: keep this wrapper
                 val presentations = remember { RootPresentations() }
-                // 34: the hoisted status line; nobody writes it yet
-                // (139 later derives it instead).
-                val pairingStatus = remember { mutableStateOf<PairingRootStatus>(PairingRootStatus.None) }
                 CompositionLocalProvider(LocalRouterHooks provides app.routerHooks) { // 32: one per app root
                     RootHosts(presentations, toaster = app.appToaster) { // 42's app-scoped toaster
                         // 42's row actions, provided inside the root
@@ -107,13 +104,12 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                             // One movable root for both branches: `Ready`
                             // moves it under the launcher instead of
                             // discarding everything remembered below it.
-                            val root = remember(app, rootState, presentations, pairingStatus) {
+                            val root = remember(app, rootState, presentations) {
                                 movableContentOf { pairPage: PairPageLauncher? ->
                                     AppRootWithPairing(
                                         app = app,
                                         rootState = rootState,
                                         presentations = presentations,
-                                        pairingStatus = pairingStatus,
                                         pairPage = pairPage,
                                     )
                                 }
@@ -131,6 +127,13 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                                     store = store,
                                     qrScan = null, // 138 lands the scanner
                                 ) {
+                                    // 139: the inbound pairing-link handler
+                                    // (deep links and shares). Registered only
+                                    // while the root input is Ready, one frame
+                                    // after the root is drawn; while
+                                    // Loading/CoreFailed the hub holds links.
+                                    val input by app.rootInput.collectAsState()
+                                    InboundPairingLinks(ready = input is RootInput.Ready)
                                     root(LocalPairPage.current)
                                 }
                             }
@@ -146,15 +149,15 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
  * [AppRoot] with the Pair page hook wired (72's step 8): the root
  * content, one body for both the launcher-present and
  * launcher-absent cases, with [pairPage] read **outside** the pairing
- * lambda. 138 replaces `qrScan = null`; 139 replaces the hoisted
- * `pairingStatus` with `pairingRootStatus(pairPage)`.
+ * lambda. 138 replaces `qrScan = null`; 139 derives the root's status
+ * line from [pairPage] (its snapshot-backed `current`/`isShowing`)
+ * instead of the hoisted `mutableStateOf` nobody wrote.
  */
 @Composable
 private fun AppRootWithPairing(
     app: RobocoApplication,
     rootState: AppRootState,
     presentations: RootPresentations,
-    pairingStatus: MutableState<PairingRootStatus>,
     pairPage: PairPageLauncher?,
 ) {
     val input by app.rootInput.collectAsState()
@@ -164,7 +167,7 @@ private fun AppRootWithPairing(
         presentations = presentations,
         pairing = {
             PairingRoot(
-                status = pairingStatus.value,
+                status = pairingRootStatus(pairPage),
                 onPair = { pairPage?.openPairPage() },
             )
         },

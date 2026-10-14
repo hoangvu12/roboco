@@ -10,14 +10,21 @@ import android.view.Menu
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.lifecycle.lifecycleScope
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import sh.roboco.android.core.WallpaperStore
 import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.design.GalleryLaunch
 import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.NotificationPrefs
+import sh.roboco.android.pairing.PairingLinks
+import sh.roboco.android.pairing.ffiAcceptsPairingUrl
 import sh.roboco.android.shell.AppRootState
+import sh.roboco.android.shell.DeepLink
 import sh.roboco.android.shell.DeepLinks
 import sh.roboco.android.shell.LaunchOptions
 import sh.roboco.android.shell.LocalShortcutSink
@@ -198,6 +205,30 @@ class MainActivity : ComponentActivity() {
             }
         }
         LaunchOptions.route(intent.extras.toExtrasMap())?.let(hub::submit)
+        // Ticket 139: the share trampoline re-targets its surviving
+        // candidates here as an explicit ACTION_SEND (never the raw
+        // shared text). The FFI validation runs off the main thread; a
+        // share without an accepted link just leaves the app open, with
+        // a fixed-string log. The accepted link is re-wrapped as a pair
+        // deep link so both paths share one handler and one hold queue.
+        if (intent.action == Intent.ACTION_SEND) {
+            // runCatching: a hostile parcel can throw BadParcelableException.
+            val text = runCatching {
+                intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            }.getOrNull()
+            if (!text.isNullOrBlank()) {
+                lifecycleScope.launch {
+                    val url = withContext(Dispatchers.Default) {
+                        PairingLinks.urlFromSharedText(text, ::ffiAcceptsPairingUrl)
+                    }
+                    if (url == null) {
+                        Log.i("PairingLinks", "share ignored: no pairing link")
+                    } else {
+                        hub.submit(DeepLink.Pair(PairingLinks.deepLinkFor(url)))
+                    }
+                }
+            }
+        }
     }
 
     /**
