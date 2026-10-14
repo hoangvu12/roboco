@@ -18,6 +18,11 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import sh.roboco.android.RobocoApplication
+import sh.roboco.android.composer.QuestionActions
+import sh.roboco.android.composer.QuestionPort
+import sh.roboco.android.composer.SessionQuestionsSlot
+import sh.roboco.android.composer.rememberQuestionPanelState
 import sh.roboco.android.image.ImageViewerRequest
 import sh.roboco.android.image.LocalImageViewer
 import sh.roboco.android.shell.LocalNavEntry
@@ -73,6 +78,10 @@ import sh.roboco.android.transcript.widgets.imageTileRadius
  * @param commands ticket 78's command set, built once per route by 76
  *   (`CoreSessionCommands` over the route's core). `null` — a fake core
  *   in tests, or no session at all — leaves the composer slot empty
+ * @param questionPort ticket 91's FFI seam for the question panel —
+ *   76's route builds one `CoreQuestionPort` per open from its core; the
+ *   screen wraps it in `QuestionActions` on the app's lifetime scope.
+ *   `null` — a fake core in tests — leaves the questions slot empty
  * @param onMore the ⋯ tap (ticket 80 fills it); the [Rect] is the circle's
  *   bounds in window px
  * @param attachments ticket 66's attachment reader; 76's route passes
@@ -87,6 +96,7 @@ fun SessionScreen(
     state: SessionScreenState,
     modifier: Modifier = Modifier,
     commands: SessionCommands? = null,
+    questionPort: QuestionPort? = null,
     onMore: (anchorInWindow: Rect) -> Unit = {},
     attachments: AttachmentReader? = null,
 ) {
@@ -254,6 +264,25 @@ fun SessionScreen(
         null
     }
 
+    // 9.6 Ticket 91: the question panel state and its engine RPC lane.
+    //     The actions wrap the route's port on the application-lifetime
+    //     scope (71's `appScope`, the same lifetime 82's queue commands
+    //     run on — never the composition's), so an answer submitted just
+    //     before a committed Back still reaches the engine. Without a
+    //     port (tests, previews, a fake core) the questions slot stays
+    //     empty, exactly like the composer without commands.
+    val app = LocalContext.current.applicationContext
+    val questionActions = if (questionPort != null && app is RobocoApplication) {
+        remember(questionPort) { QuestionActions(questionPort, app.appScope) }
+    } else {
+        null
+    }
+    val questionPanel = if (questionActions != null) {
+        rememberQuestionPanelState(controller, questionActions)
+    } else {
+        null
+    }
+
     // 10. The layer stack: the scaffold (background, haze, header) around
     //     74's container, with the open-reveal layers in its transcript
     //     slot. 133's `Modifier.transcriptBottomInset` is the viewport's
@@ -305,7 +334,15 @@ fun SessionScreen(
             },
             pill = {}, // 73
             queue = {}, // 82
-            questions = {}, // 90/91
+            questions = {
+                // 91: the question panel in 74's questions slot — the
+                // configure/picks/auto-advance/paging-fade/submit glue
+                // around 90's card, fed from the controller's chrome.
+                // 74 hides the composer and the queue while
+                // chrome.questions != null; the slot stays composed, so
+                // the panel keeps its items while collapsing.
+                questionPanel?.let { SessionQuestionsSlot(it) }
+            },
             composer = {
                 // 78: the composer in 74's slot. `shown` is the scope's —
                 // the questions panel replaces the composer

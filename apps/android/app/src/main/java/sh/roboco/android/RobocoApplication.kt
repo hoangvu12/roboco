@@ -44,6 +44,7 @@ import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.session.ChromeFillerRegistry
 import sh.roboco.android.session.CoreSessionOpener
+import sh.roboco.android.session.QuestionsChromeFiller
 import sh.roboco.android.session.SessionChipsFiller
 import sh.roboco.android.session.installSessionRoutes
 import sh.roboco.android.sessions.CoreRowActions
@@ -84,6 +85,17 @@ class RobocoApplication : Application() {
      * (main) thread and hop to serial IO lanes for the FFI and the disk.
      */
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /**
+     * Ticket 91: the application-lifetime scope sibling tickets read for
+     * engine RPCs that must outlive the screen that started them (91's
+     * `QuestionActions`). The same lifetime 82's queue commands run on —
+     * the `queueScope` handed to `installSessionRoutes` is this very
+     * scope. Never cancelled on pop; a Submit tapped just before a
+     * committed Back still reaches the engine.
+     */
+    val appScope: CoroutineScope
+        get() = applicationScope
 
     /**
      * The Search tab's query holder (ui-parity #29): app-scoped so the
@@ -395,6 +407,14 @@ class RobocoApplication : Application() {
         // fresh instance; the per-route `QueueActions` over the live
         // handle is built by the factory below (never a shared filler).
         chromeFillers.register(ChromeFillerRegistry.QUEUE) { _ -> QueueChromeFiller() }
+        // Ticket 91 (question panel): the open input request mapped into
+        // `SessionChrome.questions` (request id + one Question per
+        // UserInputQuestion, field for field, entry_id dropped) —
+        // registered in 76's QUESTIONS slot (40), after the banner and
+        // chips, before the queue, the iOS `refresh()` order. The filler
+        // makes no FFI call; the panel's per-route QuestionActions over
+        // the live handle is built by 75's screen from 76's route core.
+        chromeFillers.register(ChromeFillerRegistry.QUESTIONS) { _ -> QuestionsChromeFiller() }
         // Ticket 76: the real session route factory. Every open runs off
         // main through 32's `openSessionRoute`, over `coreStartup.sessionEvents`
         // (51's hub — the same instance the client's events already fan out
