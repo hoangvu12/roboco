@@ -146,7 +146,7 @@ fun rememberSessionMenu(
     val appContext = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
     return remember(controller, transcript, menuState, actions, router, nav, entry, toaster) {
-        { anchor: Rect ->
+        val open: (Rect) -> Unit = { anchor: Rect ->
             val chatId = controller.chatId
             val menu = sessionMenu(
                 pinned = controller.pinned,
@@ -174,6 +174,7 @@ fun rememberSessionMenu(
             )
             menuState.open(anchor, menu)
         }
+        open
     }
 }
 
