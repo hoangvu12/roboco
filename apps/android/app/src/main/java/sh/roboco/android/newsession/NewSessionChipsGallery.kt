@@ -25,7 +25,8 @@ import sh.roboco.android.design.uiStyle
 /**
  * The "New-session chips" page of the debug design gallery
  * (android-ui-parity #109), registered by ticket 22's registry as
- * `GallerySection("New-session chips") { NewSessionChipsGallerySection() }`.
+ * `GallerySection("New-session chips", screenshotHeightDp = 420) {
+ * NewSessionChipsGallerySection() }`.
  *
  * Lives in the main source set on purpose: every fixture goes through
  * [newSessionChips] over [GalleryLabels] (no native library — the
