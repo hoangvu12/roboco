@@ -181,13 +181,18 @@ private var warnedNoContextMenuHost = false
  * Semantics: an `onLongClick` "Show menu" action (the label ticket 46
  * expects) opens the menu as if long-pressed at the row centre, with the
  * haptic, and returns `false` when the menu is null/empty. Ticket 129
- * later adds `semanticsLongClick: Boolean = true` after [liftState].
+ * passes `semanticsLongClick = false` on the transcript rows: the row
+ * container would otherwise become a TalkBack focus stop ("double-tap
+ * and hold to long press") between the row text and its widgets; the
+ * touch gesture path is unchanged, and the row text node's custom
+ * actions replace it.
  */
 fun Modifier.contextMenu(
     highlight: LiftHighlight,
     enabled: Boolean = true,
     liftState: ContextMenuLiftState? = null,
     swallowWithoutMenu: Boolean = false,
+    semanticsLongClick: Boolean = true,
     menu: () -> Menu?,
 ): Modifier = composed {
     val host = LocalContextMenuHost.current
@@ -241,18 +246,26 @@ fun Modifier.contextMenu(
             }
             if (!source.lifted) drawLayer(layer)
         }
-        .semantics {
-            if (enabled) {
-                onLongClick(label = "Show menu") {
-                    val coords = source.coords
-                    if (coords == null) {
-                        false
-                    } else {
-                        open(Offset(coords.size.width / 2f, coords.size.height / 2f))
+        .then(
+            // 129: optional — see the parameter docs. The gesture path
+            // below never depends on this node existing.
+            if (semanticsLongClick) {
+                Modifier.semantics {
+                    if (enabled) {
+                        onLongClick(label = "Show menu") {
+                            val coords = source.coords
+                            if (coords == null) {
+                                false
+                            } else {
+                                open(Offset(coords.size.width / 2f, coords.size.height / 2f))
+                            }
+                        }
                     }
                 }
-            }
-        }
+            } else {
+                Modifier
+            },
+        )
         .pointerInput(enabled, host, swallowWithoutMenu) {
             if (enabled) detectContextPress(swallowWithoutMenu) { position -> open(position) }
         }

@@ -51,7 +51,9 @@ import kotlin.math.roundToInt
  * The offset can be negative (`−topInset`); the realized band starts
  * below zero accordingly. Anchoring is 130, the model cache 117, the
  * veil 118, widgets 66+, and the row long-press menu (128) rides on every
- * row through the one [rememberRowMenuPerformer] created here.
+ * row through the one [rememberRowMenuPerformer] created here. Ticket
+ * 129 adds the host's TalkBack semantics (collection, scroll range and
+ * the paging `scrollBy`) on the same node as the scrollable.
  */
 @Composable
 fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier: Modifier = Modifier) {
@@ -83,6 +85,13 @@ fun TranscriptHost(state: TranscriptState, actions: TranscriptActions, modifier:
     BoxWithConstraints(
         modifier
             .testTag("transcript")
+            // 129: the TalkBack tree root — `CollectionInfo` for the
+            // applied frame, a px scroll range and the paging `scrollBy`
+            // (see [Modifier.transcriptHostSemantics]). Reading
+            // `state.frame` here recomposes the host per frame, which
+            // keeps `rowCount` current. Outer to 68's scrollable, so this
+            // `scrollBy` replaces the raw one on the same node.
+            .transcriptHostSemantics(state, state.frame, d)
             .clipToBounds()
             .onPlaced { state.hostCoordinates = it }
             // 133: interactive IME dismiss — a transcript drag that
