@@ -125,21 +125,24 @@ import sh.roboco.android.design.glass.LocalHazeState
  * and the sheet host is mounted here so the router can present over the
  * whole shell.
  *
- * Not this ticket's: the live counts feed (40) and the app root that shows
- * this shell (35).
+ * The app root (35) shows this shell; its owner (`RobocoAppContent`) feeds
+ * [counts] from the workspace feed through [rememberLiveCounts].
  *
  * @param state the tab state; defaults to [rememberMainTabState].
- * @param counts the accessory's live summary (ticket 40 wires the real
- *   feed; `LiveCounts()` draws no glyph and no summary).
+ * @param counts the accessory's live summary (the owner passes
+ *   [rememberLiveCounts]; `LiveCounts()` draws no glyph and no summary).
  * @param searchState the Search tab's query holder; defaults to
  *   [rememberSearchTabState] (the app-scoped instance).
  * @param hooks the app root's [RouterHooks] (ticket 35 creates the one
  *   instance; tickets 76 and 95 register their implementations on it).
  *   Defaults to [LocalRouterHooks] — a throwaway instance per shell.
- * @param sheetHost the shell's sheet host: the phone shell presents its
- *   page sheets (New Session) over the whole tab shell, so 31's recession
- *   shrinks the chrome into the card stack. Ticket 35 hoists this mount to
- *   the app root; until it lands, the shell owns it.
+ * @param sheetHost the host the phone shell presents its page sheets (New
+ *   Session) on. `null` (production): the app root's host ([RootHosts],
+ *   ticket 35, read through [LocalSheetHost]) — above the Phone ↔ Split
+ *   switch, so a presented sheet survives it and the root's instant
+ *   dismissal (forgetting the last engine) tears it down; 31's recession
+ *   then scales the whole root. Without a root host (galleries, previews,
+ *   tests mounting the shell alone) the shell mounts its own over itself.
  * @param presence forwarded [AppRouter.sessionDidAppear]/[Close] events
  *   (ticket 108's carry-over across the 840 dp breakpoint); `null` by
  *   default.
@@ -164,7 +167,7 @@ fun MainTabShell(
     counts: LiveCounts = LiveCounts(),
     searchState: SearchTabState = rememberSearchTabState(),
     hooks: RouterHooks = LocalRouterHooks.current,
-    sheetHost: SheetHostState = rememberSheetHostState(),
+    sheetHost: SheetHostState? = null,
     presence: SessionPresenceListener? = null,
     onNewSession: (() -> Unit)? = null,
     onChrome: (ChromeVisibilityController) -> Unit = {},
@@ -220,10 +223,15 @@ fun MainTabShell(
     // #33: the phone router (#32) built before the root modifier — the
     // hardware-shortcut modifier needs the real router, and reading
     // LocalAppRouter here would still see Noop (32 provides it inside this
-    // composable, below the root). sheetHost is passed explicitly:
-    // LocalSheetHost is provided by the SheetHost mount further down, but
-    // it is that same instance, so the adapter sees an identical shell.
-    val shell = rememberPhoneShell(state, sheetHost)
+    // composable, below the root). The sheet host is passed explicitly:
+    // the root's (35) when the app root provides one, else this shell's own
+    // (mounted further down, so LocalSheetHost below is that same instance
+    // and the adapter sees an identical shell either way).
+    val rootSheetHost = LocalSheetHost.current
+    val ownSheetHost = rememberSheetHostState()
+    val host = sheetHost ?: rootSheetHost ?: ownSheetHost
+    val mountsOwnHost = host !== rootSheetHost
+    val shell = rememberPhoneShell(state, host)
     val router = rememberPhoneAppRouter(shell, hooks, presence)
 
     BoxWithConstraints(
@@ -263,12 +271,11 @@ fun MainTabShell(
             state.onSelected = searchState::onTabSelected
         }
 
-        // #32: the shell's sheet host — the phone shell presents its
-        // page sheets (New Session) over the whole tab shell, tab bar
-        // included, which is what 31's recession shrinks into the card
-        // stack. Ticket 35 hoists this mount to the app root (innermost
-        // of the overlay hosts); until it lands, the shell owns it.
-        SheetHost(sheetHost) {
+        // #32/#35: the page sheets (New Session) present on the app root's
+        // host (RootHosts, the innermost overlay host, around the whole
+        // root); only a shell mounted without one hosts its own here, over
+        // the whole tab shell, tab bar included.
+        ShellSheetHost(host, mount = mountsOwnHost) {
             // #32: the phone router over this shell's real state,
             // provided to every screen below (the iOS window-root cast
             // `view.window?.rootViewController as? AppRouter`); constructed
@@ -484,4 +491,14 @@ fun MainTabShell(
             }
         }
     }
+}
+
+/**
+ * Mounts [SheetHost] for [state] only when the shell owns it ([mount]);
+ * on the app root's host the content composes as is (the root's
+ * [SheetHost] already provides [LocalSheetHost] and presents above it).
+ */
+@Composable
+private fun ShellSheetHost(state: SheetHostState, mount: Boolean, content: @Composable () -> Unit) {
+    if (mount) SheetHost(state, content) else content()
 }

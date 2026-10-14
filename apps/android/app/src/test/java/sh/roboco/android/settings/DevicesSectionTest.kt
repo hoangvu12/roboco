@@ -10,8 +10,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsNode
@@ -47,8 +50,11 @@ import sh.roboco.android.pairing.ProvidePairPage
 import sh.roboco.android.shell.NavStack
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
+import sh.roboco.android.shell.LocalPageSheetScope
+import sh.roboco.android.shell.PageSheetScope
 import sh.roboco.android.shell.SheetHost
 import sh.roboco.android.shell.SheetHostState
+import sh.roboco.android.shell.SheetStyle
 import sh.roboco.android.shell.TabId
 import sh.roboco.android.shell.TabRootRoute
 import uniffi.roboco_core.EngineState
@@ -508,6 +514,72 @@ class DevicesSectionTest {
         assertTrue("the Pair page is presented", sheetHost.entries.isNotEmpty())
         assertEquals("pair", sheetHost.entries.last().key)
         assertEquals("the pair row pushes nothing", 1, stack.entries.size)
+    }
+
+    /**
+     * /code-review F4 (ticket 104): inside a sheet (the tablet Settings
+     * dialog's card) the Pair page stacks over that sheet through
+     * [LocalEnclosingSheet] (`LocalPageSheetScope`); presenting from the
+     * root host would be refused while the card is up.
+     */
+    @Test
+    fun insideASheetTheDefaultPairHandlerStacksThePairPageOverIt() {
+        val sheetHost = SheetHostState()
+        val stack = NavStack(TabRootRoute(TabId.Settings))
+        val enclosing = RecordingSheetScope()
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                CompositionLocalProvider(
+                    LocalNavStack provides stack,
+                    LocalNavEntry provides stack.entries.first(),
+                ) {
+                    SheetHost(sheetHost) {
+                        ProvidePairPage(
+                            backend = StubPairingBackend,
+                            store = MapPairedEngineSink,
+                            qrScan = null,
+                        ) {
+                            CompositionLocalProvider(LocalPageSheetScope provides enclosing) {
+                                val devices = rememberDevicesSectionState(engines = flow)
+                                LazyColumn(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(RobocoTheme.palette.background),
+                                ) {
+                                    devicesSection(devices)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        row("settings-pair").performClick()
+        compose.waitForIdle()
+
+        assertEquals("the Pair page stacks over the enclosing sheet", listOf("pair"), enclosing.presented)
+        assertTrue("the root host presents nothing", sheetHost.entries.isEmpty())
+    }
+
+    /** A [PageSheetScope] that records what is stacked on it. */
+    private class RecordingSheetScope : PageSheetScope {
+        val presented = mutableListOf<String>()
+        override val key: String = "settings-dialog"
+        override fun dismiss(animated: Boolean) {}
+        override fun present(
+            key: String,
+            style: SheetStyle,
+            onDismissed: (() -> Unit)?,
+            content: @Composable PageSheetScope.() -> Unit,
+        ): Boolean {
+            presented += key
+            return true
+        }
+        override val pageBoundsInWindow: Rect = Rect.Zero
+        override val pageShape: Shape = RectangleShape
+        override var dismissBlocked: Boolean = false
     }
 
     @Test
