@@ -3,6 +3,7 @@ package sh.roboco.android.composer
 import android.app.Activity
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
 import android.net.Uri
@@ -539,7 +540,7 @@ class SessionChipMenusUiTest {
         shadowOf(activity.packageManager).addResolveInfoForIntent(
             Intent(Intent.ACTION_VIEW, Uri.parse("http://")),
             ResolveInfo().apply {
-                activityInfo = android.content.pm.ActivityInfo().apply {
+                activityInfo = ActivityInfo().apply {
                     packageName = "com.example.browser"
                     name = "com.example.browser.Browser"
                 }

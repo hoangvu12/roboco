@@ -19,6 +19,7 @@ import sh.roboco.android.session.ChromeFiller
 import sh.roboco.android.session.ChromeInput
 import sh.roboco.android.session.CoreSessionCore
 import sh.roboco.android.session.SessionChrome
+import sh.roboco.android.session.SessionChipIds
 import sh.roboco.android.session.SessionCore
 import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ModelInfo
@@ -191,23 +192,23 @@ class SessionChipMenus(
         val sel = sessionSelection(s.config, row)
         val harness = sel?.harness ?: DEFAULT_HARNESS
         return when (chipId) {
-            "model" -> Menu(
+            SessionChipIds.Model -> Menu(
                 title = MODEL_MENU_TITLE,
                 children = listOf(
-                    deferred(MenuKey("model", harness, sel?.model, sel?.reasoning, s.deviceId)) {
+                    deferred(MenuKey(SessionChipIds.Model, harness, sel?.model, sel?.reasoning, s.deviceId)) {
                         modelRows(s.deviceId, harness)
                     },
                 ),
             )
-            "effort" -> Menu(
+            SessionChipIds.Effort -> Menu(
                 title = EFFORT_MENU_TITLE,
                 children = listOf(
-                    deferred(MenuKey("effort", harness, sel?.model, sel?.reasoning, s.deviceId)) {
+                    deferred(MenuKey(SessionChipIds.Effort, harness, sel?.model, sel?.reasoning, s.deviceId)) {
                         effortRows(s.deviceId, harness)
                     },
                 ),
             )
-            "pr" -> {
+            SessionChipIds.Pr -> {
                 val pr = row.pullRequest ?: return null
                 val url = prUrlOrNull(pr.url) ?: return null
                 Menu(

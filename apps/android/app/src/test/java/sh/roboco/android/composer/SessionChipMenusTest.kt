@@ -195,7 +195,8 @@ class SessionChipMenusTest {
             chatConfig(model = "m1", reasoning = null),
             applyModelPick(chatConfig(reasoning = "high"), m("m1", emptyList(), null)),
         )
-        // 5 — options survive only when the model still offers id + choice.
+        // 5 — options survive only when the model still offers id + choice;
+        //    an option key the model does not offer at all is dropped too.
         val opus5 = m(
             "m1",
             FULL_LADDER,
@@ -205,7 +206,10 @@ class SessionChipMenusTest {
         assertEquals(
             chatConfig(model = "m1", reasoning = "low", modelOptions = mapOf("contextWindow" to "1m", "fastMode" to "on")),
             applyModelPick(
-                chatConfig(reasoning = "low", modelOptions = mapOf("contextWindow" to "1m", "fastMode" to "on")),
+                chatConfig(
+                    reasoning = "low",
+                    modelOptions = mapOf("contextWindow" to "1m", "fastMode" to "on", "thinking" to "on"),
+                ),
                 opus5,
             ),
         )

@@ -1,11 +1,9 @@
 package sh.roboco.android.composer
 
-import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabColorSchemeParams
@@ -18,6 +16,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import sh.roboco.android.design.Palette
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.notify.findActivity
 
 /**
  * The production [ChipMenuPlatform] (android-ui-parity #89): a Custom Tab
@@ -96,7 +95,3 @@ fun openInCustomTab(context: Context, url: String, dark: Boolean) {
     } catch (_: SecurityException) {
     }
 }
-
-/** The nearest [Activity] up the context chain, else `null` (an application context). */
-private tailrec fun Context.findActivity(): Activity? =
-    this as? Activity ?: (this as? ContextWrapper)?.baseContext?.findActivity()
