@@ -133,8 +133,10 @@ class DegradeGraceTest {
         g.graced("a", true, 0)
         assertTrue(g.graced("a", true, 4000))
         g.clear()
-        assertFalse(g.graced("a", true, 4001))
+        // Checked right after the clear: the graced call below starts a
+        // fresh timer at 4001 (deadline 8001), as a first sighting should.
         assertNull(g.nextDeadline(4001))
+        assertFalse(g.graced("a", true, 4001))
     }
 
     @Test

@@ -33,6 +33,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
@@ -205,16 +207,20 @@ class ConnectionLineTest {
         assertEquals(22f, b.bottom.value, 0.5f)
     }
 
+    // One test per clamp end: a test may set its content only once.
     @Test
-    fun theGlyphStays12dpAtTheFontScaleClampEnds() {
-        for (k in floatArrayOf(0.85f, 1.6f)) {
-            host(fontScale = k) { ConnectionLine(reconnecting, onTap = {}) }
-            val b = compose.onNodeWithTag("connection-line-glyph", useUnmergedTree = true)
-                .getBoundsInRoot()
-            assertEquals("k = $k: 12 dp wide", 12f, b.width.value, 0.5f)
-            assertEquals("k = $k: 12 dp tall", 12f, b.height.value, 0.5f)
-            assertEquals("k = $k: x stays 20", 20f, b.left.value, 0.5f)
-        }
+    fun theGlyphStays12dpAtTheLowFontScaleClamp() = assertGlyph12dpAt(0.85f)
+
+    @Test
+    fun theGlyphStays12dpAtTheHighFontScaleClamp() = assertGlyph12dpAt(1.6f)
+
+    private fun assertGlyph12dpAt(k: Float) {
+        host(fontScale = k) { ConnectionLine(reconnecting, onTap = {}) }
+        val b = compose.onNodeWithTag("connection-line-glyph", useUnmergedTree = true)
+            .getBoundsInRoot()
+        assertEquals("k = $k: 12 dp wide", 12f, b.width.value, 0.5f)
+        assertEquals("k = $k: 12 dp tall", 12f, b.height.value, 0.5f)
+        assertEquals("k = $k: x stays 20", 20f, b.left.value, 0.5f)
     }
 
     @Test
