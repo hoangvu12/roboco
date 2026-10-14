@@ -69,7 +69,7 @@ class TranscriptRowMenuScreenshotTest {
         // Load the fonts here too: another class's @After Fonts.resetForTest()
         // (same Robolectric sandbox) clears FontChain while TextEngine keeps
         // its built system, so await() never re-runs Fonts.load and the row
-        // paints throw "FontChain not built" (record run 38599396791). The
+        // paints throw "FontChain not built" (verify run 38599396791). The
         // other transcript screenshot tests load it the same way.
         Fonts.load(ApplicationProvider.getApplicationContext<Context>())
         Glass.forceFallback = true
