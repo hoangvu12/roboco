@@ -17,12 +17,17 @@ class HitchCounterTest {
     fun regularIntervalsProduceNoHitch() {
         val counter = HitchCounter()
         var t = 1_000_000_000L
+        var texts = 0
         repeat(120) {
-            assertNull(counter.onFrame(t, budget, 0uL))
+            // The only non-null returns are the 30-frame text refreshes;
+            // a hitch never appears.
+            if (counter.onFrame(t, budget, 0uL) != null) texts++
             t += budget
         }
         assertEquals(0, counter.hitches)
         assertEquals(120, counter.frames)
+        // Frames 30, 60, 90 and 120 each refreshed the text.
+        assertEquals(4, texts)
     }
 
     @Test
