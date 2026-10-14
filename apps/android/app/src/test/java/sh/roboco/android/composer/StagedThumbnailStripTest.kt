@@ -627,13 +627,16 @@ class StagedThumbnailStripTest {
         images = threeRed()
         mountFocusFixture()
         val state = requireNotNull(morph)
+        // Staged images make it a card from the first frame (progress 1);
+        // the x tap must leave that as it was.
+        val progressBefore = state.progress
 
         // x: its own click removes; the control marker keeps the glass's
         // tap-to-focus away; nothing focuses.
         compose.onNodeWithTag("composer-glass").performTouchInput { click(Offset(43f, 25f)) }
         compose.waitForIdle()
         assertFalse("x never focuses the field", state.isFocused)
-        assertEquals("the morph progress is untouched", 0f, state.progress, 1e-3f)
+        assertEquals("the morph progress is untouched", progressBefore, state.progress, 1e-3f)
         assertEquals(listOf("b", "c"), images.map { it.id })
 
         // A tap on the photo itself (tile 0's centre, away from x).
