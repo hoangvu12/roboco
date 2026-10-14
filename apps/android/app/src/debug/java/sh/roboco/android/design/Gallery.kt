@@ -55,6 +55,7 @@ import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionNavGallerySection
+import sh.roboco.android.session.JumpToLatestGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.SessionOpenGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
@@ -620,6 +621,14 @@ object Gallery {
         // toggles (embedded / keyboard / harness / no wallpaper / narrow).
         GallerySection("New session canvas", GalleryLayout.Fill) {
             NewSessionCanvasGallerySection()
+        },
+        // Ticket 131 (jump to latest): the round glass ↓ above the bottom
+        // stack — the visibility rule, the show/hide spring, the tap glide
+        // and 85's pop-fade multiplier, over the stage fixture with live
+        // toggles and a motion readout. Fill: the stage is a fixed
+        // 412 dp-wide phone frame, like the Bottom stack section.
+        GallerySection("Jump to latest", GalleryLayout.Fill, screenshotHeightDp = 480) {
+            JumpToLatestGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

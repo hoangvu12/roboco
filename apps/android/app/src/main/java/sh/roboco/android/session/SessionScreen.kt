@@ -532,7 +532,12 @@ fun SessionScreen(
                     SessionComposerSlot(composerBinding, shown, Modifier.arrivalComposerAnchor(state.arrival))
                 }
             },
-            jump = {}, // 131: when it lands, `JumpToLatestButton(transcript.viewport, navAlpha = nav::jumpAlpha)` here — never a folded-in Animatable (that would restart its spring).
+            // 131: the jump-to-latest glass circle — the rule (68's
+            // distanceFromBottom + following) reads as a derivedStateOf, so
+            // only a threshold crossing recomposes; the tap glides the
+            // transcript back to the tail. 85's pop-fade multiplier rides
+            // in as `navAlpha` (a lambda — never a folded-in Animatable).
+            jump = { JumpToLatestButton(transcript.viewport, navAlpha = nav::jumpAlpha) },
             // 85 × 77: the stack's two alpha factors — the push/pop
             // choreography (85's `LocalSessionNavAlpha`) multiplied by
             // 77's arrival channel. 74 reads this only in placement
