@@ -2,6 +2,11 @@
 //! opportunities as CoreText finds them (Unicode 17 rules via ICU4X, Apple's quote tailoring,
 //! dictionary breaks for SA scripts), segments with hanging trailing whitespace split off, and
 //! the script-run boundaries shaping must not cross.
+//!
+//! CoreText is the target on every platform. Android's Minikin tailors URL and hard-hyphen
+//! breaks differently (a whole URL token to the next line, `/`-before and `=`/`&`-after breaks
+//! inside URLs, no break after a hard hyphen); that is an accepted divergence, not a bug — the
+//! Android `LineBreakAccuracyTest` scores those strings separately (android-ui-parity#115).
 
 use std::sync::OnceLock;
 

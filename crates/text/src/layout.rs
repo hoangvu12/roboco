@@ -259,6 +259,14 @@ impl Prepared {
                 0.0
             }
         };
+        // The REPORTED width of a line ending after segment `k` (deliberate divergence from
+        // upstream zeron-text, android-ui-parity#115 round 29): the fit above keeps CoreText's
+        // paragraph-level advance (the last glyph's kerning with the next line's first glyph,
+        // `tail`, counts unless the line was reshaped), so breaks stay CoreText-exact — but that
+        // next glyph is drawn on the NEXT line, so the width (and the line-final fragment in
+        // `fragments`) never includes the kern. Upstream reported the fit advance, which made
+        // underlines/veil edges of a line ending in e.g. `/` ~0.04 em short of the drawn text.
+        let drawn = |k: usize, x: f64| x - self.cold[k].tail as f64;
         let end_after = |seg: usize, width: f64, hyphenated: bool| Step {
             next: Pos {
                 seg: seg as u32 + 1,
@@ -308,12 +316,11 @@ impl Prepared {
                     if hot[last].brk == BRK_SOFT_HYPHEN {
                         // Break at the soft hyphen anyway; under overflow-wrap: anywhere, when
                         // only the hyphen overflows, break there as a plain grapheme boundary.
-                        let x = x - tail(last);
-                        let hy = !(self.anywhere && x <= fit);
+                        let hy = !(self.anywhere && x - tail(last) <= fit);
                         let w = if hy {
-                            x + self.cold[last].hyphen as f64
+                            drawn(last, x) + self.cold[last].hyphen as f64
                         } else {
-                            x
+                            drawn(last, x)
                         };
                         return Some(end_after(last, w, hy));
                     }
@@ -326,31 +333,31 @@ impl Prepared {
                             return Some(end_inside(i, u, nx));
                         }
                     }
-                    return Some(end_after(last, x - tail(last), false));
+                    return Some(end_after(last, drawn(last, x), false));
                 }
                 x = cand;
             }
             last = i;
             let xe = x - tail(i);
             match h.brk {
-                BRK_MANDATORY => return Some(end_after(i, xe, false)),
+                BRK_MANDATORY => return Some(end_after(i, drawn(i, x), false)),
                 BRK_ALLOWED => {
                     if xe <= fit {
                         brk = i;
-                        brk_w = xe;
+                        brk_w = drawn(i, x);
                         brk_hy = false;
                     }
                 }
                 BRK_HANG_ONLY => {
                     if wrap && xe <= fit && x + self.hang_adv(i, x as f32) as f64 > fit {
-                        return Some(end_after(i, xe, false));
+                        return Some(end_after(i, drawn(i, x), false));
                     }
                 }
                 _ => {
-                    let w = xe + self.cold[i].hyphen as f64;
-                    if w <= fit {
+                    let hyphen = self.cold[i].hyphen as f64;
+                    if xe + hyphen <= fit {
                         brk = i;
-                        brk_w = w;
+                        brk_w = drawn(i, x) + hyphen;
                         brk_hy = true;
                     }
                 }
@@ -537,7 +544,6 @@ impl Prepared {
         } else {
             (s.next.seg as usize, Some(s.next.unit))
         };
-        let reshaped = start.unit == 0 && self.hot[start.seg as usize].flags & F_LEAD != 0;
         // Line position after the previous segment's content, as `step` tracks it.
         let mut lx = 0.0f64;
         for seg in start.seg as usize..=last {
@@ -557,8 +563,10 @@ impl Prepared {
                 0.0
             };
             lx += lead as f64;
-            // The reshaped line's last glyph has no kerning with the next line.
-            let tail = if reshaped && seg == last && to.is_none() {
+            // A line's last glyph is drawn without its kerning with the next line's first glyph,
+            // whatever the fit counted (see `step`'s `drawn`: divergence from upstream
+            // zeron-text, which dropped it on reshaped lines only).
+            let tail = if seg == last && to.is_none() {
                 c.tail
             } else {
                 0.0
@@ -631,6 +639,11 @@ impl Prepared {
                         } else {
                             self.units[(c.units + k) as usize] as f64
                         };
+                    }
+                    // The content's last unit carries the kerning with what follows
+                    // (`add_to_last`); at the line end it is not drawn (see `tail` above).
+                    if u1 == c.n_units {
+                        x -= tail as f64;
                     }
                     let l = std::mem::take(&mut lead);
                     fb.piece(piece.span, a, b, px as f32 - l, (x - px) as f32 + l, tab);
