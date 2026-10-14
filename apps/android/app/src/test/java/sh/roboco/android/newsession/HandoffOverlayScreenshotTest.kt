@@ -169,7 +169,7 @@ class HandoffOverlayScreenshotTest {
         mount(Appearance.Light)
         runHandoff()
         compose.mainClock.advanceTimeByFrame()
-        capture("start_light.png")
+        capture("start_light")
     }
 
     @Test
@@ -177,7 +177,7 @@ class HandoffOverlayScreenshotTest {
         mount(Appearance.Dark)
         runHandoff()
         compose.mainClock.advanceTimeByFrame()
-        capture("start_dark.png")
+        capture("start_dark")
     }
 
     /** The clock at 300 ms (the bubble was found at the first poll). */
@@ -187,7 +187,7 @@ class HandoffOverlayScreenshotTest {
         runHandoff()
         compose.mainClock.advanceTimeByFrame()
         while (compose.mainClock.currentTime < 300) compose.mainClock.advanceTimeByFrame()
-        capture("mid_light.png")
+        capture("mid_light")
     }
 
     @Test
@@ -196,7 +196,7 @@ class HandoffOverlayScreenshotTest {
         runHandoff()
         compose.mainClock.advanceTimeByFrame()
         while (compose.mainClock.currentTime < 300) compose.mainClock.advanceTimeByFrame()
-        capture("mid_dark.png")
+        capture("mid_dark")
     }
 
     /**
@@ -213,7 +213,7 @@ class HandoffOverlayScreenshotTest {
             compose.mainClock.advanceTimeByFrame()
         }
         compose.mainClock.advanceTimeByFrame()
-        capture("land_light.png")
+        capture("land_light")
         assertLandingColours(dark = false)
     }
 
@@ -226,7 +226,7 @@ class HandoffOverlayScreenshotTest {
             compose.mainClock.advanceTimeByFrame()
         }
         compose.mainClock.advanceTimeByFrame()
-        capture("land_dark.png")
+        capture("land_dark")
         assertLandingColours(dark = true)
     }
 

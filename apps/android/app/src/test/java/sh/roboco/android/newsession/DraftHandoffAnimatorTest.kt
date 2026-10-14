@@ -29,6 +29,7 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import kotlin.coroutines.cancellation.CancellationException
@@ -241,6 +242,9 @@ class DraftHandoffAnimatorTest {
         handoff: DraftHandoff = fixture,
         route: SessionRoute = knownRoute,
     ): DraftHandoffAnimator {
+        // Most tests drive the default mount; only the custom-content ones
+        // mount themselves first (one setContent per test).
+        if (hooks == null) mount()
         val h = checkNotNull(hooks) { "mount first" }
         var animator: DraftHandoffAnimator? = null
         compose.runOnIdle {
@@ -748,19 +752,25 @@ class DraftHandoffAnimatorTest {
         return bitmap
     }
 
-    /** The fake chat's composer capsule: bottom of the window. */
-    private val ChatComposerRect = Rect(48f, 2420f, 828f, 2556f)
+    // A companion, not instance fields: `fixture` (declared above) reads
+    // SceneColor/ComposerColor during construction, before instance
+    // fields declared later are initialised (they'd still be Color(0));
+    // and `const` is only legal at top level / in objects.
+    private companion object {
+        /** The fake chat's composer capsule: bottom of the window. */
+        val ChatComposerRect = Rect(48f, 2420f, 828f, 2556f)
 
-    /** The fake first user bubble: the flight's target. */
-    private val BubbleDestRect = Rect(700f, 300f, 1140f, 390f)
+        /** The fake first user bubble: the flight's target. */
+        val BubbleDestRect = Rect(700f, 300f, 1140f, 390f)
 
-    private val SceneColor = Color(0xFF99AABB)
-    private val ComposerColor = Color(0xFFBBCC99)
+        val SceneColor = Color(0xFF99AABB)
+        val ComposerColor = Color(0xFFBBCC99)
 
-    /** The light theme's `Palette.background` (the underlay's fill). */
-    private val PageBackground = Color(0xFFF3F3F5)
+        /** The light theme's `Palette.background` (the underlay's fill). */
+        val PageBackground = Color(0xFFF3F3F5)
 
-    private const val BlankText = "  \n"
+        const val BlankText = "  \n"
+    }
 
     private fun close(actual: Color, expected: Color): Boolean =
         abs(actual.red - expected.red) <= 2f / 255f &&

@@ -49,7 +49,6 @@ import sh.roboco.android.newsession.HandoffOverlayCanvas
 import sh.roboco.android.newsession.HandoffOverlayHost
 import sh.roboco.android.newsession.HandoffOverlaySet
 import sh.roboco.android.newsession.HandoffOverlayState
-import sh.roboco.android.newsession.buildHandoffGalleryFixture
 import sh.roboco.android.newsession.bubbleStartRect
 import sh.roboco.android.newsession.fallbackBubbleTarget
 import sh.roboco.android.newsession.flightRect
