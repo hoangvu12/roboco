@@ -414,12 +414,16 @@ class SettingsScreenTest {
     }
 
     @Test
+    // Tall window, no scroll: at 874 dp the Remove row sits below the fold,
+    // and the scroll-then-click there never went idle (the CI run spun for
+    // 21 minutes into an OutOfMemoryError in the frame loop). At 3000 dp
+    // every row is in view from the start, as in the reload test below.
+    @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
     fun tappingRemoveWallpaperRemovesAtOnce() {
         // The wallpaper is set (a fixture flip before mounting): the
         // effect and remove rows exist.
         wallpaperFlow.value = wallpaperFlow.value.copy(set = true, name = "IMG_0412")
         mount()
-        scrollToRow(WallpaperRowIds.Remove)
         row(WallpaperRowIds.Remove).performClick()
         compose.waitForIdle()
         assertEquals(1, removeCalls)
@@ -466,6 +470,9 @@ class SettingsScreenTest {
     }
 
     @Test
+    // Tall window: at 874 dp Group by Project straddles the fold (its centre
+    // sits below the window), so the switch click landed nowhere.
+    @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
     fun flippingGroupByProjectCallsTheWriterAndTheSwitchFollowsTheFlow() {
         mount()
         switchNode("groupByProject").performClick()

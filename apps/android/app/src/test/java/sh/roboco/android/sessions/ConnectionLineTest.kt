@@ -26,9 +26,10 @@ import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performSemanticsAction
@@ -109,12 +110,15 @@ class ConnectionLineTest {
             CompositionLocalProvider(
                 LocalDensity provides d,
                 LocalTypeScale provides TypeScale.from(d),
-                LocalReduceMotion provides reduce,
             ) {
                 RobocoTheme(Appearance.Light) {
-                    ProvideGlyphClock(frozenAtNanos = 0L) {
-                        Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
-                            content()
+                    // Inside the theme: RobocoTheme's ProvideReduceMotion
+                    // re-provides the system value over anything outside it.
+                    CompositionLocalProvider(LocalReduceMotion provides reduce) {
+                        ProvideGlyphClock(frozenAtNanos = 0L) {
+                            Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                                content()
+                            }
                         }
                     }
                 }
@@ -227,9 +231,13 @@ class ConnectionLineTest {
     fun theCaptionStartsAtX40() {
         host { ConnectionLine(reconnecting, onTap = {}) }
         // The text node itself (its own layout node, placed at the slot's
-        // start edge) and the caption frame agree on the left edge.
-        val text = compose.onNodeWithText("Reconnecting\u2026", useUnmergedTree = true)
-            .getBoundsInRoot()
+        // start edge) and the caption frame agree on the left edge. The
+        // frame (FadingText) carries the caption as its own Text semantics
+        // too, so the inner text node is the match that is not the frame.
+        val text = compose.onNode(
+            hasText("Reconnecting\u2026") and !hasTestTag("connection-line-caption"),
+            useUnmergedTree = true,
+        ).getBoundsInRoot()
         assertEquals(40f, text.left.value, 0.5f)
         val frame = compose.onNodeWithTag("connection-line-caption", useUnmergedTree = true)
             .getBoundsInRoot()
@@ -373,11 +381,15 @@ class ConnectionLineTest {
         compose.waitForIdle()
         val settled = pixels()
         assertPixel(settled, 26, 16, 220, 38, 38, "settled dot")
-        assertEquals(
-            "the layout slot never moves — only the layer does",
-            firstBounds,
-            compose.onNodeWithTag("connection-line").getBoundsInRoot(),
-        )
+        // getBoundsInRoot includes the graphicsLayer's translationY, so the
+        // first frame reads EntranceRise (4 dp) lower; the slot itself (the
+        // settled bounds: at the top, same x and size) never moves.
+        val settledBounds = compose.onNodeWithTag("connection-line").getBoundsInRoot()
+        assertEquals("the layout slot never moves — only the layer does", 0f, settledBounds.top.value, 0.5f)
+        assertEquals(settledBounds.left.value, firstBounds.left.value, 0.5f)
+        assertEquals(settledBounds.width.value, firstBounds.width.value, 0.5f)
+        assertEquals(settledBounds.height.value, firstBounds.height.value, 0.5f)
+        assertEquals("the first frame is the layer's 4 dp rise", 4f, (firstBounds.top - settledBounds.top).value, 0.5f)
     }
 
     @Test

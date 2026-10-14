@@ -58,7 +58,8 @@ class VeilTest {
 
     private fun newFonts(): StyleFonts = StyleFonts().apply {
         update(RowFixtures.styles)
-        useDensity(density)
+        // Qualified: inside apply, a bare `density` is StyleFonts.density (0).
+        useDensity(this@VeilTest.density)
     }
 
     /** A model over the given text (runs empty — grow only reads text and key). */

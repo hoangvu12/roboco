@@ -163,6 +163,11 @@ class RowMotionHostTest {
             assertEquals(RowKind.MARKDOWN, pA1.kind)
             assertTrue("the fixture's prompt must start folded", pU1.height < 300f)
             val rowB = state.realized[pA1.key]!!
+            // The first frame landed at the tail, so the host follows it and
+            // the fold apply would start 68's follow spring (R3), sliding the
+            // offset under the row tween. Released, the apply keeps the
+            // offset final (R4 + 130's anchor) and only the rows animate.
+            state.viewport.releaseFollow()
             val oldTop = rowB.topPx()
 
             compose.mainClock.autoAdvance = false
@@ -233,6 +238,9 @@ class RowMotionHostTest {
             val u1Key = state.frame!!.placement(0u)!!.key
             val pA1 = state.frame!!.placement(1u)!!
             val rowB = state.realized[pA1.key]!!
+            // Not following: a following host springs its offset toward the
+            // new tail after the apply (R3), moving the row a frame later.
+            state.viewport.releaseFollow()
 
             compose.mainClock.autoAdvance = false
             ReduceMotion.debugOverride = true

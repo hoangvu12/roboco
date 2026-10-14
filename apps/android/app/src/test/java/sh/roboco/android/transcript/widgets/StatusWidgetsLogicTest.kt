@@ -91,7 +91,8 @@ class StatusWidgetsLogicTest {
         val s = workingLabel(true, 0, secondary, tertiary)
         assertEquals(1, s.spanStyles.size)
         assertEquals(0, s.spanStyles[0].start)
-        assertEquals(9, s.spanStyles[0].end)
+        // "Writing…" = 7 letters + the one U+2026 char = 8, like "Working…".
+        assertEquals(8, s.spanStyles[0].end)
         assertEquals(secondary, s.spanStyles[0].item.color)
     }
 

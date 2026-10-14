@@ -157,14 +157,18 @@ class FolderLocationsHeaderTest {
         // fill tests below sample width - 20 for the same reason). Scan the
         // field's centre row for the first pixel that leaves the fill.
         val map = pixels("folder-search")
-        val y = map.height / 2
-        val fill = channels(map[map.width - 20, y])
+        val fill = channels(map[map.width - 20, map.height / 2])
+        // The leftmost ink over the text band, not the centre row alone:
+        // the first glyph is an `S`, whose mid-height spine starts ~4 px
+        // right of the glyph's left edge (the centre row alone read 16).
         var glyphStart = -1
-        for (x in 2 until map.width / 2) {
-            val p = channels(map[x, y])
-            if (abs(p[0] - fill[0]) > 12f || abs(p[1] - fill[1]) > 12f || abs(p[2] - fill[2]) > 12f) {
-                glyphStart = x
-                break
+        for (y in map.height / 4..map.height * 3 / 4) {
+            for (x in 2 until map.width / 2) {
+                val p = channels(map[x, y])
+                if (abs(p[0] - fill[0]) > 12f || abs(p[1] - fill[1]) > 12f || abs(p[2] - fill[2]) > 12f) {
+                    if (glyphStart < 0 || x < glyphStart) glyphStart = x
+                    break
+                }
             }
         }
         assertTrue("the placeholder starts 12 dp inside the field box (≈12), was $glyphStart", glyphStart in 9..15)

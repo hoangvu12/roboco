@@ -34,6 +34,7 @@ import sh.roboco.android.design.Cue
 import sh.roboco.android.design.Feedback
 import sh.roboco.android.design.Haptic
 import sh.roboco.android.design.LocalFeedback
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToasterState
 import sh.roboco.android.design.ToastHost
@@ -96,10 +97,15 @@ class TranscriptRowMenuTest {
     private fun host(state: TranscriptState, actions: TranscriptActions) {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                CompositionLocalProvider(LocalFeedback provides feedback) {
-                    ToastHost(state = toaster) {
-                        ContextMenuHost {
-                            TranscriptHost(state, actions, Modifier.fillMaxSize())
+                // Frozen glyph clock: the fixture's Working row subscribes the
+                // trailer glyph to the theme's endless withFrameNanos loop, and
+                // an auto-advancing test clock never sees Compose idle.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    CompositionLocalProvider(LocalFeedback provides feedback) {
+                        ToastHost(state = toaster) {
+                            ContextMenuHost {
+                                TranscriptHost(state, actions, Modifier.fillMaxSize())
+                            }
                         }
                     }
                 }

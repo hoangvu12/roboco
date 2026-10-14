@@ -176,11 +176,13 @@ class ProjectMenusTest {
                 "e3:dev-studio",
             ),
         )
-        // 5 — all offline, no device: the first member (options order).
+        // 5 — all offline, no device: the first member (options order) —
+        // the offline copy that was passed in, not the online fixture row.
+        val offlineMac = mac.copy(online = false)
         assertEquals(
-            mac,
+            offlineMac,
             pickProjectTarget(
-                listOf(mac.copy(online = false), vps.copy(online = false)),
+                listOf(offlineMac, vps.copy(online = false)),
                 NewSessionDraft(),
                 "",
             ),
@@ -233,8 +235,9 @@ class ProjectMenusTest {
         assertEquals("e3:dev-studio", kept.hostId)
         assertEquals("main", kept.branch)
         assertTrue(kept.worktree)
-        // no hosts at all: hostId stays null.
-        assertNull(NewSessionDraft(hostId = "e3:dev-studio").withNoProject(emptyList()).hostId)
+        // no hosts at all: hostId stays null. (From a draft with no host:
+        // a picked host is always kept, as iOS's `hostId ?? …` does.)
+        assertNull(NewSessionDraft(projectId = "x").withNoProject(emptyList()).hostId)
     }
 
     @Test

@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import androidx.test.espresso.Espresso
 import dev.chrisbanes.haze.rememberHazeState
@@ -165,6 +166,11 @@ class CheckoutModelEffortMenusUiTest {
         chip.assertExists()
         chip.assertTextEquals("Xhigh")
 
+        // The effort chip is the strip's last chip: on this 393 dp page it
+        // sits past the strip's scroll viewport, where a centre click
+        // lands outside the strip and never reaches it. Scroll it in first
+        // (a user swipes the strip the same way).
+        chip.performScrollTo()
         chip.performClick()
         compose.waitUntil(5_000) { rowsOf("new-session-menu-effort-low") > 0 }
 
@@ -185,6 +191,8 @@ class CheckoutModelEffortMenusUiTest {
         val page = NewSessionMenusDemoPage(refSource = ImmediateRefSource())
         launch(page)
 
+        // Scrolled in first: see theEffortPickerLoadsPicksAndTheChipSurvives.
+        compose.onNodeWithTag("composer-chip-effort").performScrollTo()
         compose.onNodeWithTag("composer-chip-effort").performClick()
         compose.waitUntil(5_000) { rowsOf("new-session-menu-effort-low") > 0 }
 
@@ -241,15 +249,18 @@ class CheckoutModelEffortMenusUiTest {
         assertEquals("no loading row on the cached open", 0, rowsOf("glass-menu-loading"))
         compose.onNodeWithTag("new-session-menu-branch-main").assertIsSelected()
 
-        // Pick dev: the draft changed, so the next open loads again and
-        // the picked branch is the selected row.
-        compose.onNodeWithTag("new-session-menu-branch-dev").performClick()
+        // Pick another ref: the draft changed, so the next open loads again
+        // and the picked branch is the selected row. (The ref must be one
+        // of NewSessionMenusRefs — ImmediateRefSource serves that list,
+        // which has no `dev`.)
+        val picked = "fix/ws-reconnect"
+        compose.onNodeWithTag("new-session-menu-branch-$picked").performClick()
         compose.waitUntil(5_000) { rowsOf("glass-menu") == 0 }
-        compose.onNodeWithTag("composer-chip-branch").assertTextContains("dev", substring = true)
+        compose.onNodeWithTag("composer-chip-branch").assertTextContains(picked, substring = true)
         compose.onNodeWithTag("composer-chip-branch").performClick()
         compose.waitUntil(5_000) { refs.calls == 2 }
-        compose.waitUntil(5_000) { rowsOf("new-session-menu-branch-dev") > 0 }
-        compose.onNodeWithTag("new-session-menu-branch-dev").assertIsSelected()
+        compose.waitUntil(5_000) { rowsOf("new-session-menu-branch-$picked") > 0 }
+        compose.onNodeWithTag("new-session-menu-branch-$picked").assertIsSelected()
     }
 
     // ── the worktree toggle ────────────────────────────────────────────

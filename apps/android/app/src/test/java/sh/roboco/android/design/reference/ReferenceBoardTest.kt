@@ -110,7 +110,8 @@ class ReferenceBoardTest {
 
         // The alignment overlay: the Android render with the PNG on top at
         // half alpha — misalignments show as doubled glyphs.
-        val overlay = android.copy(Bitmap.Config.ARGB_8888, false)
+        // Mutable: a Canvas refuses an immutable bitmap.
+        val overlay = android.copy(Bitmap.Config.ARGB_8888, true)
         Canvas(overlay).drawBitmap(ios, 0f, 0f, Paint().apply { alpha = 128 })
 
         val dir = File("build/outputs/roborazzi").apply { mkdirs() }

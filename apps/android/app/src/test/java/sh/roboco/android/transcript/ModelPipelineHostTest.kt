@@ -21,7 +21,6 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -145,11 +144,16 @@ class ModelPipelineHostTest {
     }
 
     /**
-     * The ticket's flush: drain the worker (its non-gated sentinel task
-     * runs behind everything admitted so far), run the posted completions
-     * on the paused main looper, then let Compose recompose.
+     * The ticket's flush: let Compose lay out, drain the worker (its
+     * non-gated sentinel task runs behind everything admitted so far), run
+     * the posted completions on the paused main looper, then let Compose
+     * recompose.
      */
     private fun flush(state: TranscriptState) {
+        // Layout first: a pending placement pass (a scroll, a new frame)
+        // queues its prefetch/upgrade only here — draining the worker
+        // before it would leave that task's completion unposted.
+        compose.waitForIdle()
         state.models.awaitWorkerIdle()
         shadowOf(Looper.getMainLooper()).idle()
         compose.waitForIdle()
@@ -164,6 +168,26 @@ class ModelPipelineHostTest {
         f.rowsIn(0f, Float.MAX_VALUE).count { it.kind == RowKind.USER }
 
     private fun lastRowOf(f: LayoutFrame): RowPlacement = f.placement(f.rowCount() - 1u)!!
+
+    /**
+     * Admits gated tasks one at a time (flushing after each) until [k]'s
+     * build has landed; returns how many builds were admitted. Every
+     * `setDebugEntries` allocates fresh entries, so the core rebuilds the
+     * unchanged user row too (`RowBuilder` reuses an entry's rows only for
+     * the same `Arc`) and that row's upgrade queues ahead of the assistant
+     * row's — a bare `release(1)` would admit the user row's build only.
+     * A permit is fed only while [k] is still in flight, i.e. pending.
+     */
+    private fun releaseUntilLanded(state: TranscriptState, k: ModelKey): Int {
+        var admitted = 0
+        while (k in state.models.inflight) {
+            check(admitted < 8) { "$k never landed" }
+            gate.release(1)
+            admitted++
+            flush(state)
+        }
+        return admitted
+    }
 
     // ---------------------------------------------------------------- tests
 
@@ -272,14 +296,15 @@ class ModelPipelineHostTest {
             assertEquals("the upgrade path never sync-builds", syncBaseline, TranscriptPerf.syncBuilds)
             assertTrue(ModelKey(key, v2, w) in state.models.inflight)
 
-            gate.release(1)
-            flush(state)
+            // The user row's identical rebuild may queue ahead (see
+            // releaseUntilLanded): every admitted build is counted once.
+            val firstBuilds = releaseUntilLanded(state, ModelKey(key, v2, w))
             assertEquals("the new model was applied", v2, row.model!!.display.version)
-            assertEquals(1, TranscriptPerf.asyncBuilds)
+            assertEquals(firstBuilds, TranscriptPerf.asyncBuilds)
             assertNotNull("the upgrade was stored", state.models.cache[ModelKey(key, v2, w)])
             val upgrades = hook.records.filter { it.first == BuildPath.UPGRADE }
-            assertEquals(1, upgrades.size)
-            assertFalse("the upgrade build ran on main", upgrades.single().second)
+            assertEquals(firstBuilds, upgrades.size)
+            assertTrue("an upgrade build ran on main", upgrades.none { it.second })
 
             // v3 then v4, both gated: the stale v3 lands first and is
             // stored, not applied; v4 applies.
@@ -299,15 +324,19 @@ class ModelPipelineHostTest {
             val v4 = lastRowOf(state.frame!!).version
             assertTrue("both keys are in flight", ModelKey(key, v4, w) in state.models.inflight)
 
-            gate.release(1) // the v3 build lands first: stored, not applied
-            flush(state)
+            // The v3 build lands first: stored, not applied.
+            val staleBuilds = releaseUntilLanded(state, ModelKey(key, v3, w))
             assertNotNull("the stale build is still stored", state.models.cache[ModelKey(key, v3, w)])
             assertEquals("a stale build never rolls the row back", v2, row.model!!.display.version)
 
-            gate.release(1) // the v4 build lands: the current version, applied
-            flush(state)
+            // The v4 build lands: the current version, applied.
+            val currentBuilds = releaseUntilLanded(state, ModelKey(key, v4, w))
             assertEquals(v4, row.model!!.display.version)
-            assertEquals("two more upgrade builds", 3, TranscriptPerf.asyncBuilds)
+            assertEquals(
+                "every admitted upgrade build is counted once",
+                firstBuilds + staleBuilds + currentBuilds,
+                TranscriptPerf.asyncBuilds,
+            )
         } finally {
             state.close()
         }

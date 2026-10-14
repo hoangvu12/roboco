@@ -436,7 +436,9 @@ class ImageViewerTest {
         compose.runOnIdle {
             runBlocking {
                 state.stopSettles()
-                state.pan(Offset(600f, 0f))
+                // pan() ADDS to the current offset, and the double tap left tx
+                // at its own zoom-centred value (−0.75·W): pan to exactly 600.
+                state.pan(Offset(600f - state.tx.value, 0f))
             }
         }
         val drawn = state.displayedT()
@@ -462,7 +464,9 @@ class ImageViewerTest {
             swipeWithVelocity(
                 start = Offset(view.width * 0.75f, view.height * 0.5f),
                 end = Offset(view.width * 0.15f, view.height * 0.5f),
-                endVelocity = -3000f,
+                // A speed, not a signed velocity: the direction is start → end
+                // (swipeWithVelocity rejects a negative endVelocity).
+                endVelocity = 3000f,
                 durationMillis = 200,
             )
         }
@@ -526,7 +530,9 @@ class ImageViewerTest {
                 start = Offset(centerX, centerY),
                 end = Offset(centerX, centerY + 60f), // 20 dp
                 endVelocity = 3000f, // 1000 dp/s > 800
-                durationMillis = 60,
+                // 60 px ending at 3000 px/s cannot take 60 ms (the gesture
+                // generator rejects it); 40 ms is the length it accepts.
+                durationMillis = 40,
             )
         }
         compose.waitForIdle()

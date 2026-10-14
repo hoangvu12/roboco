@@ -75,7 +75,22 @@ fun rememberTranscriptScroll(
     // returned in px (`consumed dp × density`) — returning the wrong
     // value would break nested scrolling and stop flings dead.
     val state = remember(viewport) {
-        ScrollableState { px -> viewport.scrollByUser(px / density) * density }
+        lateinit var self: ScrollableState
+        self = ScrollableState { px ->
+            // A nested child's leftover (a horizontal scroller's drag reaches
+            // here as performRawScroll with no delta on our axis, outside our
+            // own scroll) is never a transcript drag start: scrollByUser(0)
+            // would mark the transcript dragging and start the interactive
+            // IME dismiss though nothing moved (InteractiveImeDismissTest).
+            // Our own 0 (the rubber band's drag-start mark) arrives inside
+            // our scroll and still goes through.
+            if (px == 0f && !self.isScrollInProgress) {
+                0f
+            } else {
+                viewport.scrollByUser(px / density) * density
+            }
+        }
+        self
     }
 
     // Flags the momentum window around the inner behavior, so the

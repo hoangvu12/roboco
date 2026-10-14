@@ -377,7 +377,11 @@ class DraftHandoffAnimatorTest {
         assertTrue("the dissolve starts on the first frame after 50 ms", t0 in 50..82)
 
         advanceTo(210)
-        val expected = Motion.EaseOut.transform((((210 - t0) / 320f)).coerceIn(0f, 1f))
+        // advanceTimeBy rounds up to whole frames, so the clock stands on
+        // the frame at/after 210 ms (224): the expected value is taken at
+        // the clock's real time, not the nominal 210.
+        val at = now()
+        val expected = Motion.EaseOut.transform((((at - t0) / 320f)).coerceIn(0f, 1f))
         assertEquals(
             "the eased value at 210 ms (Motion.EaseOut of the half-way progress)",
             expected,

@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -148,7 +149,13 @@ class StagedThumbnailStripTest {
         RobocoTheme(appearance) {
             val direction = if (rtl) LayoutDirection.Rtl else LayoutDirection.Ltr
             CompositionLocalProvider(LocalLayoutDirection provides direction) {
-                Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                // Pinned top-LEFT in both directions: a TopStart Box would
+                // mirror the 342 dp strip to x = 48 in the 390 dp RTL window,
+                // and the RTL test's coordinates are the strip's own (0…342).
+                Box(
+                    Modifier.fillMaxSize().background(RobocoTheme.palette.background),
+                    contentAlignment = AbsoluteAlignment.TopLeft,
+                ) {
                     StagedThumbnailStrip(
                         images = images,
                         onRemove = onRemove,

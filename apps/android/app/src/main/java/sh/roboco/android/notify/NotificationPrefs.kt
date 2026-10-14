@@ -115,12 +115,28 @@ class NotificationPrefs internal constructor(private val sp: SharedPreferences) 
         @Volatile
         private var instance: NotificationPrefs? = null
 
+        /** The application [instance] was built on. */
+        @Volatile
+        private var owner: Context? = null
+
+        /**
+         * The singleton, keyed to the application it was built on. In
+         * production there is exactly one application per process, so this
+         * builds once; a JVM that hosts several applications in turn
+         * (Robolectric rebuilds the app per test method while statics
+         * survive) gets a fresh instance over the current application's
+         * file instead of a stale one writing into a dead app's storage.
+         */
         @Synchronized
         fun get(context: Context): NotificationPrefs {
             val app = context.applicationContext
-            return instance ?: NotificationPrefs(
+            instance?.let { if (owner === app) return it }
+            return NotificationPrefs(
                 app.getSharedPreferences(FILE, Context.MODE_PRIVATE),
-            ).also { instance = it }
+            ).also {
+                instance = it
+                owner = app
+            }
         }
     }
 }

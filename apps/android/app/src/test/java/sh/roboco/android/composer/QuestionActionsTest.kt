@@ -133,6 +133,8 @@ class QuestionActionsTest {
         )
         port.failWith = CoreException.HostUnavailable("Engine is offline; reconnecting")
         actions.respond("r1", answers) { failures++ }
+        // FakePort keeps failing until cleared: only r1 is the failing call.
+        port.failWith = null
         actions.respond("r2", answers) { failures++ }
         assertEquals("only the failing call reported", 1, failures)
         assertEquals("both calls reached the port", listOf("r1" to answers, "r2" to answers), port.calls)

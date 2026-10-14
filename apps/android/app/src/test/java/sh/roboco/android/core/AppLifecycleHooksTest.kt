@@ -6,6 +6,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.test.core.app.ApplicationProvider
 import java.util.Collections
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -32,8 +33,12 @@ class AppLifecycleHooksTest {
 
     /** A sink that records its calls and the threads they ran on. */
     private class RecordingSink : LifecycleSink {
-        val calls = Collections.synchronizedList(mutableListOf<String>())
-        val threads = Collections.synchronizedList(mutableListOf<String>())
+        // Copy-on-write, not Collections.synchronizedList: the test thread
+        // iterates (any/count/all) while the roboco-lifecycle thread adds,
+        // and a synchronized list's iterator is not guarded
+        // (ConcurrentModificationException).
+        val calls = CopyOnWriteArrayList<String>()
+        val threads = CopyOnWriteArrayList<String>()
 
         override fun onForeground() {
             calls += "onForeground"

@@ -112,7 +112,9 @@ class BottomStackMetricsTest {
     fun stackBottomTakesTheMaxOfImeAndNav() {
         assertEquals(907f, BottomStackMetrics.stackBottom(915f, 0f, 0f), 0.01f)
         assertEquals(607f, BottomStackMetrics.stackBottom(915f, 300f, 24f), 0.01f)
-        assertEquals(611f, BottomStackMetrics.stackBottom(915f, 24f, 300f), 0.01f)
+        // The nav bar wins the same way: 915 − max(24, 300) − 8 = 607 (the
+        // literal was mis-computed as 611).
+        assertEquals(607f, BottomStackMetrics.stackBottom(915f, 24f, 300f), 0.01f)
     }
 
     /** The content inset floors at 0 when the stack covers nothing. */

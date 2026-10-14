@@ -102,8 +102,15 @@ class NotificationPermissionRobolectricTest {
     @Test
     fun notGrantedAndBlockedIsDenied() {
         prefs.permissionBlocked = true
-        // Below 33: rule 2 fires first anyway. On 33+: rule 4.
-        assertEquals(NotificationStatus.Denied, status())
+        if (highSdk) {
+            // Rule 4: the recorded final denial.
+            assertEquals(NotificationStatus.Denied, status())
+        } else {
+            // Below 33 the permission trivially holds, so rule 1 (app
+            // toggle on) wins before the blocked flag is ever read — and
+            // clears it as stale.
+            assertEquals(NotificationStatus.Granted, status())
+        }
     }
 
     // -------------------------------------------------- recordRequestResult
@@ -132,8 +139,10 @@ class NotificationPermissionRobolectricTest {
         assertTrue("the second denial is final", prefs.permissionBlocked)
         assertTrue(prefs.permissionRequested)
 
-        // Which status() then reports as Denied (rule 4).
-        assertEquals(NotificationStatus.Denied, status())
+        // Which status() then reports as Denied (rule 4) on 33+. Below 33
+        // there is no runtime permission: the enabled app toggle (rule 1)
+        // reports Granted regardless of the bookkeeping.
+        assertEquals(if (highSdk) NotificationStatus.Denied else NotificationStatus.Granted, status())
     }
 
     @Test

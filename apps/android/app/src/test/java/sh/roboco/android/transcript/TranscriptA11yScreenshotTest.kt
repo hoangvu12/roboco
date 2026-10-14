@@ -29,6 +29,7 @@ import org.robolectric.shadows.ShadowChoreographer
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 
 /**
@@ -91,9 +92,14 @@ class TranscriptA11yScreenshotTest {
             TranscriptPerf.reset()
             compose.setContent {
                 RobocoTheme(Appearance.Light) {
-                    CompositionLocalProvider(LocalTranscriptA11yBounds provides true) {
-                        Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
-                            TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                    // Frozen glyph clock: the Working row's trailer would
+                    // otherwise run the theme's endless withFrameNanos loop,
+                    // so the auto-advancing clock never idles.
+                    ProvideGlyphClock(frozenAtNanos = 0L) {
+                        CompositionLocalProvider(LocalTranscriptA11yBounds provides true) {
+                            Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                                TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                            }
                         }
                     }
                 }

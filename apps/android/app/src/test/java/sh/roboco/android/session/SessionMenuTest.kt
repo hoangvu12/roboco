@@ -775,9 +775,13 @@ private fun appClipboard(): ClipboardManager =
 // jar exposes no public constructor — a custom shadow is the seam.
 // ---------------------------------------------------------------------------
 
-/** The failure class's shadow: every `setPrimaryClip` throws Binder's transaction limit. */
+/**
+ * The failure class's shadow: every `setPrimaryClip` throws Binder's
+ * transaction limit. Not `private`: Robolectric instantiates shadows
+ * reflectively and needs a public class (`internal` is public bytecode).
+ */
 @Implements(ClipboardManager::class)
-private class ThrowingClipboardShadow : ShadowClipboardManager() {
+internal class ThrowingClipboardShadow : ShadowClipboardManager() {
     @Implementation
     override fun setPrimaryClip(clip: ClipData) {
         throw RuntimeException("TransactionTooLargeException: data parcel size 1124320 bytes")
