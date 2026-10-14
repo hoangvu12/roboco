@@ -202,7 +202,13 @@ class SessionController private constructor(
         onSeen?.invoke(core.chatId)
         scope.launch {
             try {
-                core.markSeen()
+                // 79: an offline engine would only fail (android-app#06
+                // refuses the RPC within 50 ms), so the mark is skipped
+                // silently — no toast, no banner, no log. The check runs
+                // here, at execution time on this lane, so it sees the
+                // chrome of the latest refresh (which runs on the same
+                // lane). The notification cancel above stays: it is local.
+                if (_chrome.value.canWrite) core.markSeen()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
@@ -263,7 +269,11 @@ class SessionController private constructor(
         scope.launch {
             try {
                 core.setViewAttached(false)
-                core.markSeen()
+                // 79: the same silent skip as markSeen() on the way out.
+                // Never gate setViewAttached itself — it is a local
+                // subscription switch and must work offline (85's rule);
+                // there is no catch-up mark on a later reconnect either.
+                if (_chrome.value.canWrite) core.markSeen()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {

@@ -46,6 +46,7 @@ import sh.roboco.android.notify.Notifier
 import sh.roboco.android.pairing.KeystoreSecretCipher
 import sh.roboco.android.pairing.LaunchPairRedeemer
 import sh.roboco.android.pairing.PairedEngineStore
+import sh.roboco.android.session.CanWriteFiller
 import sh.roboco.android.session.ChromeFillerRegistry
 import sh.roboco.android.session.CoreSessionCore
 import sh.roboco.android.session.CoreSessionOpener
@@ -451,6 +452,14 @@ class RobocoApplication : Application() {
             }.distinctUntilChanged()
                 .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
         }
+        // Ticket 79 (offline read-only): `SessionChrome.canWrite`
+        // derived from the owning engine's state — `true` only for
+        // `EngineState.Connected` (writes to anything else are refused
+        // at once by the core, android-app#06). Registered in 76's
+        // CAN_WRITE slot (10), the first filler, so later fillers (73's
+        // banner) can read `chrome.canWrite`; the factory returns the
+        // same stateless object for every open.
+        chromeFillers.register(ChromeFillerRegistry.CAN_WRITE) { CanWriteFiller }
         // Ticket 78 (chips): the session composer's chip derivation,
         // registered at slot 20 — after 79's CAN_WRITE (10), before 73's
         // BANNER (30), the iOS `refresh()` order. 73 owns the send-failure

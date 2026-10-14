@@ -559,6 +559,12 @@ object Gallery {
         GallerySection("Session chip menus", GalleryLayout.Fill) {
             ChipMenuGallerySection()
         },
+        // Ticket 79 (offline read-only): the session's read-only fixture —
+        // 73's Reconnecting pill 8 dp above the offline composer (disabled
+        // send look while a turn runs, tertiary chips, the kept draft, the
+        // attach + still enabled) on the striped backdrop, plus a live
+        // canWrite toggle under the fixture (hidden under capture).
+        GallerySection("Session offline", screenshotHeightDp = 300) { SessionOfflineGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
