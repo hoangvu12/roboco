@@ -30,6 +30,7 @@ import sh.roboco.android.MainActivity
  * round trips.
  */
 @RunWith(AndroidJUnit4::class)
+@TabletOnly
 class TabletLayoutTest {
 
     // Not a JUnit rule itself: the compose rule wraps it (FixtureRule's

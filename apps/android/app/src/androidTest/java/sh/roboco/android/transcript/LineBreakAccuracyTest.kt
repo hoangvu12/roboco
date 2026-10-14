@@ -3,9 +3,11 @@ package sh.roboco.android.transcript
 import android.graphics.Paint
 import android.graphics.text.LineBreakConfig
 import android.os.Build
+import android.os.Debug
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.Locale
 import org.junit.Assert.assertEquals
@@ -101,7 +103,17 @@ class LineBreakAccuracyTest {
             for (size in sizes) {
                 val paint = paints.getValue(face to size)
                 for (w in widths) {
-                    for (text in corpus) {
+                    for ((index, text) in corpus.withIndex()) {
+                        // Breadcrumb (7ea846c0: this loop grew native memory to
+                        // ~1.7 GB and was OOM-killed mid-matrix): the last line
+                        // before a kill names the case; the native heap tells a
+                        // stuck case (one line, memory climbing) from a per-call
+                        // leak (cases advancing, memory climbing).
+                        Log.d(
+                            "RobocoTextAccuracy",
+                            "case $cases $face ${size}pt w=$w text#$index len=${text.length} " +
+                                "native=${Debug.getNativeHeapAllocatedSize() / 1_048_576} MB",
+                        )
                         val rust = debugLineStarts(textSystem, face, size, w.toFloat(), text)
                             .map { it.toInt() }
                         val androidStarts = staticLayoutStarts(text, paint, w)

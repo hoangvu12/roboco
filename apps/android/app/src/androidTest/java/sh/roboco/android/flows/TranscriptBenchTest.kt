@@ -29,6 +29,7 @@ import java.io.File
  * forward-looking pattern the pre-rig flow tests set.
  */
 @RunWith(AndroidJUnit4::class)
+@PhysicalDeviceOnly
 class TranscriptBenchTest {
 
     @Test
