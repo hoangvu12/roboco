@@ -17,6 +17,7 @@ internal const val LAB_EXTRA_AUTOSCROLL = "autoscroll"
 internal const val LAB_EXTRA_METER = "meter"
 internal const val LAB_EXTRA_BENCH = "bench"
 internal const val LAB_EXTRA_APPEARANCE = "appearance"
+internal const val LAB_EXTRA_IMAGES = "images"
 
 /**
  * The Transcript Lab's parsed launch extras (android-ui-parity #135) —
@@ -41,6 +42,8 @@ data class LabOptions(
     val meter: Boolean = false,
     /** Ticket 136 (scroll benchmark). Parsed here so the extra is stable. */
     val bench: Boolean = false,
+    /** Ticket 137 (inline markdown images): the image fixture + LabImageReader. */
+    val images: Boolean = false,
     /** `null` = the app's persisted appearance (ticket 96), else System. */
     val appearance: Appearance? = null,
 ) {
@@ -63,6 +66,7 @@ data class LabOptions(
             autoscroll = flag(extras, LAB_EXTRA_AUTOSCROLL),
             meter = flag(extras, LAB_EXTRA_METER),
             bench = flag(extras, LAB_EXTRA_BENCH),
+            images = flag(extras, LAB_EXTRA_IMAGES),
             appearance = when ((extras[LAB_EXTRA_APPEARANCE] as? String)?.trim()?.lowercase(Locale.ROOT)) {
                 "system" -> Appearance.System
                 "light" -> Appearance.Light

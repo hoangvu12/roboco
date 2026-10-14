@@ -1,14 +1,25 @@
 package sh.roboco.android.debug
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import sh.roboco.android.transcript.AttachmentReader
 
 /**
  * The lab's fake image loader (android-ui-parity #135): the bundled
@@ -76,5 +87,130 @@ object LabImages {
                 }
             }.getOrNull()
         }?.also { bitmap = it }
+    }
+}
+
+/**
+ * The `--ez images true` lab's user prompt (ticket 137, pr817's demo chat
+ * `chat-images`): "Show the calculation screenshot." — verbatim.
+ */
+const val LAB_IMAGES_PROMPT = "Show the calculation screenshot."
+
+/**
+ * The `--ez images true` lab's assistant reply (ticket 137, the pr817 demo
+ * fixture `transcripts.rs:616-621`, verbatim): the served workspace PNG
+ * (960 × 540), its separate download link, and a missing image whose path
+ * the engine jail refuses (`/tmp`).
+ */
+const val LAB_IMAGES_FIXTURE =
+    "Here are the screenshots.\n\n" +
+        "![Calculation result: 8](/workspace/calculator/5-plus-3.png)\n\n" +
+        "[Download screenshot](/workspace/calculator/5-plus-3.png)\n\n" +
+        "![Missing screenshot](/tmp/calculator-result/missing.png)"
+
+/**
+ * The lab's markdown-image edge cases (ticket 137): inline tiles in text
+ * order, a quoted tile, a listed tile, a linked tile with its caption
+ * link, an unfetchable remote (immediately Failed, no read), a relative
+ * path (ditto), and the heading/table-cell **linked-alt fallback** that
+ * #817 keeps because those still call `prepare_runs` directly.
+ */
+const val LAB_IMAGES_EXTRAS_FIXTURE =
+    "Before ![First](/workspace/calculator/5-plus-3.png) after " +
+        "![Second](/workspace/calculator/portrait.png) end.\n\n" +
+        "> ![Quoted](/workspace/calculator/5-plus-3.png)\n\n" +
+        "- ![Listed](/workspace/calculator/portrait.png)\n\n" +
+        "[![Linked](/workspace/calculator/5-plus-3.png)](https://example.com/details)\n\n" +
+        "![Remote](https://example.com/remote.png)\n\n" +
+        "![Relative](assets/shot.png)\n\n" +
+        "### Heading ![Logo](/workspace/calculator/5-plus-3.png)\n\n" +
+        "| Shot |\n| --- |\n| ![Cell](/workspace/calculator/5-plus-3.png) |"
+
+/**
+ * The deterministic lab art (ticket 137; the #817 demo's generated PNG
+ * stand-in): a two-stop diagonal gradient `#5B43E8` (top-left) →
+ * `#F0A04B` (bottom-right) with a white 2 px grid every 100 px — 66's
+ * fixture palette, so the tile's aspect-fit letterboxing is obvious.
+ * Memoized per size.
+ */
+internal val labGradientCache = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
+
+internal fun labGradientBitmap(w: Int, h: Int): Bitmap = labGradientCache.getOrPut(w to h) {
+    val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    paint.shader = LinearGradient(
+        0f, 0f, w.toFloat(), h.toFloat(),
+        0xFF5B43E8.toInt(), 0xFFF0A04B.toInt(),
+        Shader.TileMode.CLAMP,
+    )
+    canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+    paint.shader = null
+    paint.color = 0xFFFFFFFF.toInt()
+    paint.strokeWidth = 2f
+    var x = 100
+    while (x < w) {
+        canvas.drawLine(x.toFloat(), 0f, x.toFloat(), h.toFloat(), paint)
+        x += 100
+    }
+    var y = 100
+    while (y < h) {
+        canvas.drawLine(0f, y.toFloat(), w.toFloat(), y.toFloat(), paint)
+        y += 100
+    }
+    bitmap
+}
+
+/** PNG bytes of [labGradientBitmap] at `w × h`, memoized per size. */
+private val labPngCache = ConcurrentHashMap<Pair<Int, Int>, ByteArray>()
+
+/**
+ * The lab's generated attachment (ticket 137): the gradient art as PNG
+ * bytes, memoized per size. The heavy encode runs on the caller's
+ * dispatcher — [LabImageReader] wraps it in `Dispatchers.Default`.
+ */
+fun labFixturePng(w: Int, h: Int): ByteArray = labPngCache.getOrPut(w to h) {
+    ByteArrayOutputStream().use { out ->
+        labGradientBitmap(w, h).compress(Bitmap.CompressFormat.PNG, 100, out)
+        out.toByteArray()
+    }
+}
+
+/**
+ * The lab's image attachment source (ticket 137, `--ez images true`): the
+ * deterministic stand-in for `readAttachment` — the two workspace PNGs
+ * after 600 ms, `IOException` for anything else after 300 ms (the engine
+ * jail refusing `/tmp/...`), with a per-reference read count so the lab
+ * tests and the retry demo can pin the RPC count.
+ */
+object LabImageReader : AttachmentReader {
+
+    /** The lab image the `images` extra serves, verbatim from #817's demo. */
+    internal const val LAB_LANDSCAPE = "/workspace/calculator/5-plus-3.png"
+
+    /** The portrait companion (the Roboco addition). */
+    internal const val LAB_PORTRAIT = "/workspace/calculator/portrait.png"
+
+    private val readsByRef = ConcurrentHashMap<String, AtomicInteger>()
+
+    /** How many reads [reference] has seen (0 before the first). */
+    fun reads(ref: String): Int = readsByRef[ref]?.get() ?: 0
+
+    override suspend fun read(engineDeviceId: String, reference: String): ByteArray {
+        readsByRef.getOrPut(reference) { AtomicInteger() }.incrementAndGet()
+        return when (reference) {
+            LAB_LANDSCAPE -> {
+                delay(600)
+                withContext(Dispatchers.Default) { labFixturePng(960, 540) }
+            }
+            LAB_PORTRAIT -> {
+                delay(600)
+                withContext(Dispatchers.Default) { labFixturePng(540, 960) }
+            }
+            else -> {
+                delay(300)
+                throw IOException("NotFound: $reference")
+            }
+        }
     }
 }
