@@ -185,7 +185,7 @@ private fun LocationsRail(
                         .testTag(if (chip.path == null) "location-home" else "location-drive-${chip.path}")
                         // The chip merges descendants, so the flag lands on
                         // the merged node the tests read.
-                        .semantics { selected = isSelected },
+                        .semantics { this.selected = isSelected },
                 )
             }
         }
