@@ -541,6 +541,16 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
+    // A failure prints its message, causes and stack in the job log. The
+    // default short form is just "IllegalStateException at X.kt:32". Record
+    // run 38595804909 failed 12 captures that way: no message, and on the
+    // record path nothing else was uploaded.
+    testLogging {
+        events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showCauses = true
+        showStackTraces = true
+    }
     // android-app#30's parity gate (G2–G4) is armed against goldens that
     // are not recorded yet, so it fails until the first sign-off. It runs
     // only when asked (-ProbocoParity: the android-screenshots CI job), not

@@ -339,6 +339,21 @@ jobs:
             apps/android/app/build/outputs/roborazzi
           retention-days: 14
           if-no-files-found: ignore
+      # The Gradle test reports and JUnit XML, on BOTH paths (verify and
+      # record_goldens), pass or fail. The XML <system-out> carries
+      # IosParitySimilarityTest's "parity ssim <golden>: score X" lines (the
+      # ssimFloor baselines: score - 0.02), and every failure keeps its
+      # message. Record run 38595804909 failed 12 captures with nothing
+      # uploaded.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-screenshots-test-reports
+          path: |
+            apps/android/app/build/reports/tests/
+            apps/android/app/build/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
   # android-app#30: the instrumented flow suite against the fixture
   # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
   # logic: three android_fixture processes, adb reverse, the suite with
