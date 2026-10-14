@@ -1,5 +1,5 @@
-# Android targets need 16 KB page-aligned ELF segments (Play requirement for
-# targetSdk 35+; NDK r28 defaults to it, but we pin it regardless of NDK
+# Android targets need 16 KB page-aligned ELF segments (Android 15+ devices
+# with 16 KB pages; NDK r28 defaults to it, but we pin it regardless of NDK
 # version). `cargo xtask android-core --check` verifies the PT_LOAD alignment
 # of every produced .so.
 #

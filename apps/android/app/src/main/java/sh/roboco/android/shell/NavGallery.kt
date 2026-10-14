@@ -48,15 +48,18 @@ internal data class DemoRoute(val title: String, val hides: Boolean = false) : N
     override val paneTitle: String get() = title
 }
 
-/** TODO(03): `uiStyle(Face.SansSemibold, ts.fixed(30f))`. */
+// The demo styles stay on the platform font on purpose: it keeps the nav
+// goldens (NavDemoScreen in the nav/chrome/session push-pop captures) stable.
+
+/** The demo screen's title (platform sans, 30 sp). */
 private fun demoTitleStyle(color: Color) =
     TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 30.sp, color = color)
 
-/** TODO(03): `uiStyle(Face.SansMedium, ts.fixed(15f))`. */
+/** The demo buttons (platform sans, 15 sp). */
 private fun demoButtonStyle(color: Color) =
     TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 15.sp, color = color)
 
-/** TODO(03): `uiStyle(Face.Mono, ts.fixed(12f))`. */
+/** The demo readouts (platform monospace, 12 sp). */
 private fun demoMonoStyle(color: Color) =
     TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = color)
 

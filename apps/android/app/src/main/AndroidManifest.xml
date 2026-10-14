@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Custom Tabs (ui-parity#89, shared with 126): package visibility
-         for CustomTabsClient.getPackageName on API 30+; without it the PR
-         chip's "Open Pull Request" falls back to the plain VIEW intent. -->
+    <!-- Custom Tabs (ui-parity#89 and #126): package visibility for
+         CustomTabsClient.getPackageName on API 30+. Without it the PR chip's
+         "Open Pull Request" and every transcript web link fall back to the
+         plain VIEW intent / the external browser. -->
     <queries>
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
@@ -29,16 +30,6 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-    <!-- ui-parity #126: Custom Tabs provider visibility (Android 11+
-         package visibility). Without this <queries> entry
-         CustomTabsClient.getPackageName returns null on API 30+ and every
-         web link in the transcript silently falls back to the external
-         browser. -->
-    <queries>
-        <intent>
-            <action android:name="android.support.customtabs.action.CustomTabsService" />
-        </intent>
-    </queries>
     <application
         android:name=".RobocoApplication"
         android:allowBackup="false"

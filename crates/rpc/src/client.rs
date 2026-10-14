@@ -394,17 +394,40 @@ fn wire_error(error: String) -> RpcError {
         .unwrap_or(RpcError::Failed(error))
 }
 
+/// The one prefix a refused upgrade is rendered with (tungstenite's own
+/// `Error::Http` text), produced from the structured status in
+/// [`dial_error`] and nowhere else.
+const HTTP_ERROR_PREFIX: &str = "HTTP error: ";
+
 /// Did the WebSocket upgrade refuse this client's session credential?
 ///
-/// Tungstenite renders a refused upgrade as
-/// `RpcError::Transport("HTTP error: 401 Unauthorized")` (403 when the bind
-/// policy forbids the address). A paired client maps this to "session
-/// revoked / pair again" — unlike a browser it never sees the 4401 close
-/// code, because the pump treats Close as end-of-stream.
+/// A refused upgrade (401, or 403 when the bind policy forbids the address)
+/// is classified from tungstenite's structured `Error::Http` status in
+/// [`dial_error`] and rendered as `RpcError::Transport("HTTP error: 401 …")`.
+/// Only that exact prefix plus status token counts: a URL or address that
+/// merely contains "401"/"403" (`ws://10.0.0.1:4013`, "timed out dialing …")
+/// is a transport failure, never a revocation. A paired client maps a
+/// refusal to "session revoked / pair again" — unlike a browser it never
+/// sees the 4401 close code, because the pump treats Close as end-of-stream.
 pub fn is_auth_refused(err: &RpcError) -> bool {
     match err {
-        RpcError::Transport(message) => message.contains("401") || message.contains("403"),
+        RpcError::Transport(message) => message
+            .strip_prefix(HTTP_ERROR_PREFIX)
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|status| status == "401" || status == "403"),
         _ => false,
+    }
+}
+
+/// Maps a failed WebSocket upgrade to a transport error, classifying an
+/// HTTP refusal from the response's structured status (never by searching
+/// the rendered text, which can carry the URL).
+fn dial_error(error: tokio_tungstenite::tungstenite::Error) -> RpcError {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            RpcError::Transport(format!("{HTTP_ERROR_PREFIX}{}", response.status()))
+        }
+        other => RpcError::Transport(other.to_string()),
     }
 }
 
@@ -429,8 +452,10 @@ pub async fn connect_ws_authenticated(url: &str, credential: &str) -> Result<Rpc
 
 /// Per-message size ceiling for client WebSocket connections. #621 measured
 /// a 16.4 MB transcript reset; tungstenite 0.24's 64 MiB default would drop a
-/// growing one, so the mobile client raises the ceiling to 256 MiB (the
-/// engine's server side stays at defaults: client→engine frames are small).
+/// growing one, so every client dial ([`connect_ws`] and
+/// [`connect_ws_authenticated`], desktop and mobile alike) raises the ceiling
+/// to 256 MiB (the engine's server side stays at defaults: client→engine
+/// frames are small).
 pub const MAX_MESSAGE_BYTES: usize = 256 << 20;
 
 async fn connect_ws_with_session(
@@ -491,7 +516,7 @@ async fn connect_ws_with_session(
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    .map_err(dial_error)?;
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     tokio::spawn(crate::pump::pump(
@@ -560,6 +585,42 @@ mod auth_and_close_tests {
         )));
         assert!(!is_auth_refused(&RpcError::Failed("401-ish".into())));
         assert!(!is_auth_refused(&RpcError::Closed));
+    }
+
+    #[test]
+    fn a_url_or_address_containing_401_or_403_is_not_a_refusal() {
+        // The old substring match parked these engines as Revoked forever.
+        for message in [
+            "timed out dialing ws://10.0.0.1:4013/",
+            "timed out dialing ws://192.168.40.1:27654/",
+            "IO error: Connection refused (os error 111) dialing ws://10.4.0.3:4030",
+            "unsupported engine URL scheme (expected ws or wss): http://h:4401",
+            "HTTP error: 4013 Unknown",
+            "HTTP error: 503 Service Unavailable at ws://h:403/",
+        ] {
+            assert!(
+                !is_auth_refused(&RpcError::Transport(message.into())),
+                "classified as a refusal: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_is_classified_from_tungstenites_structured_status() {
+        use tokio_tungstenite::tungstenite::{
+            Error as WsError,
+            http::{Response, StatusCode},
+        };
+        // tungstenite 0.24: `Error::Http(Response<Option<Vec<u8>>>)`.
+        let http = |status: StatusCode| {
+            WsError::Http(Response::builder().status(status).body(None).unwrap())
+        };
+        assert!(is_auth_refused(&dial_error(http(StatusCode::UNAUTHORIZED))));
+        assert!(is_auth_refused(&dial_error(http(StatusCode::FORBIDDEN))));
+        assert!(!is_auth_refused(&dial_error(http(
+            StatusCode::SERVICE_UNAVAILABLE
+        ))));
+        assert!(!is_auth_refused(&dial_error(WsError::ConnectionClosed)));
     }
 
     #[tokio::test]

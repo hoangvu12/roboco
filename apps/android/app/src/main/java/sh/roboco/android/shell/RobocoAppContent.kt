@@ -113,7 +113,10 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                                 // Stable across recompositions, so
                                 // ProvidePairPage keeps its launcher (it must
                                 // not be rebuilt mid-redeem).
-                                val backend = remember(client) { CoreClientPairingBackend(client) }
+                                val backend = remember(client) {
+                                    // 28: a forgotten engine's notifications go with it.
+                                    CoreClientPairingBackend(client, onForgotten = app.notifier::cancelEngine)
+                                }
                                 val store = remember(app) { StorePairedEngineSink(app.engineStore, app.coreStartup) }
                                 // 138: the real scanner — the Pair page's
                                 // Scan QR row appears (72) whenever a
@@ -198,8 +201,13 @@ private fun AppRootWithPairing(
                 // 106's `tabPresence`, and the slot keeps the router for the
                 // tablet router's collapsed delegation.
                 var phoneRouter by remember { mutableStateOf<AppRouter?>(null) }
+                // 27 step 4: the accessory's live summary off the one
+                // workspace feed (the owner reads it once; the flow
+                // coalesces by revision off the main thread).
+                val counts by rememberLiveCounts(app.workspaceFeed.snapshot)
                 MainTabShell(
                     state = s.tabs,
+                    counts = counts,
                     presence = s.presence,
                     onRouter = { router -> phoneRouter = router; s.phoneSlot.attach(router) },
                 )

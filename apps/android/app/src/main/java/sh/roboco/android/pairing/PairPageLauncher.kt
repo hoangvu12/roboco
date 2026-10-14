@@ -213,8 +213,14 @@ fun ProvidePairPage(
  * `pairEngine`, `forgetEngine` and the top-level `parsePairingUrl`
  * (android-app#06; `runCatching` because a parse failure is a normal
  * "does not parse", never an error to surface while typing).
+ * [onForgotten] runs after a successful `forgetEngine` (ticket 28: the
+ * engine's notifications go with it — production passes
+ * `Notifier.cancelEngine`).
  */
-class CoreClientPairingBackend(private val client: CoreClient) : PairingBackend {
+class CoreClientPairingBackend(
+    private val client: CoreClient,
+    private val onForgotten: (engineId: String) -> Unit = {},
+) : PairingBackend {
 
     override fun parse(input: String): PairingTarget? =
         runCatching { uniffi.roboco_core.parsePairingUrl(input) }.getOrNull()
@@ -224,6 +230,7 @@ class CoreClientPairingBackend(private val client: CoreClient) : PairingBackend 
 
     override suspend fun forget(engineId: String) {
         client.forgetEngine(engineId)
+        onForgotten(engineId)
     }
 }
 

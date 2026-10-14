@@ -108,6 +108,7 @@ class EngineDetailStateTest {
     private val sheets = FakeSheets()
     private val pops = mutableListOf<Unit>()
     private val drafted = mutableListOf<Pair<String, ForgetDraftsContext>>()
+    private val forgottenNotifications = mutableListOf<String>()
     private var contextReads = 0
     private var callsAtContextRead: List<String>? = null
 
@@ -139,6 +140,7 @@ class EngineDetailStateTest {
             sheets = sheets,
             requestPop = { pops += Unit },
             forgetDrafts = ForgetDrafts { id, context -> drafted += id to context },
+            onEngineForgotten = { id -> forgottenNotifications += id },
             forgetContext = {
                 contextReads++
                 callsAtContextRead = backend.calls.toList()
@@ -350,6 +352,30 @@ class EngineDetailStateTest {
         assertEquals(listOf("e1" to ForgetDraftsContext(snapshot = null, enginesLeft = 2)), drafted)
         assertEquals("the context is read once", 1, contextReads)
         assertEquals("read before any FFI call", emptyList<String>(), callsAtContextRead)
+    }
+
+    /**
+     * /code-review F6 (ticket 28: "all of an engine's notifications when
+     * that engine is forgotten"): a successful forget clears them once; a
+     * failed forget leaves them.
+     */
+    @Test
+    fun aSuccessfulForgetClearsTheEnginesNotifications() = runTest {
+        val page = state()
+        page.onForget(connectedView)
+        selectForget()
+        advanceUntilIdle()
+        assertEquals(listOf("e1"), forgottenNotifications)
+    }
+
+    @Test
+    fun aFailedForgetLeavesTheEnginesNotifications() = runTest {
+        backend.forgetThrows = CoreException.HostException("engine refused")
+        val page = state()
+        page.onForget(connectedView)
+        selectForget()
+        advanceUntilIdle()
+        assertTrue("nothing cancelled", forgottenNotifications.isEmpty())
     }
 
     @Test

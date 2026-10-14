@@ -21,6 +21,7 @@ import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.groupedSection
 import sh.roboco.android.design.settingsTag
 import sh.roboco.android.pairing.LocalPairPage
+import sh.roboco.android.shell.LocalEnclosingSheet
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import uniffi.roboco_core.EngineState
@@ -237,21 +238,21 @@ private fun defaultOpenEngine(): (engineId: String) -> Unit {
 
 /**
  * The default pair handler: ticket 72's [LocalPairPage] launcher, normal
- * mode (no prefill, no re-pair). Without a launcher (before the core is
- * ready, outside the app root) the click is a logged no-op.
+ * mode (no prefill, no re-pair), presented over [LocalEnclosingSheet] when
+ * the section sits inside a sheet (104: the tablet Settings dialog, whose
+ * card would otherwise make the root host refuse the page). Null on
+ * phones: the root host presents it. Without a launcher (before the core
+ * is ready, outside the app root) the click is a logged no-op.
  */
 @Composable
 private fun defaultPair(): () -> Unit {
     val pairPage = LocalPairPage.current
-    return remember(pairPage) {
+    val enclosingSheet = LocalEnclosingSheet.current
+    return remember(pairPage, enclosingSheet) {
         {
             val launcher = pairPage
             if (launcher != null) {
-                // TODO(104): over = LocalEnclosingSheet.current — the
-                // tablet Settings dialog's sheet scope, so the Pair page
-                // stacks over the card instead of being refused by the
-                // root host. Null on phones.
-                launcher.openPairPage(prefill = null, replaceEngineId = null, over = null)
+                launcher.openPairPage(prefill = null, replaceEngineId = null, over = enclosingSheet)
             } else {
                 Log.w("Devices", "no PairPageLauncher")
             }

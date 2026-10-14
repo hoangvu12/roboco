@@ -45,9 +45,17 @@ data class IosSpring(val name: String, val durationSec: Double, val damping: Flo
      */
     val stiffness: Float
         get() {
-            val omega = if (damping < 1f) ln(1000.0) / (damping * durationSec) else CriticalSettle / durationSec
+            val omega = naturalFrequency
             return (omega * omega).toFloat()
         }
+
+    /**
+     * The settle-matched natural frequency ω (rad/s) behind [stiffness]:
+     * for consumers that step the spring ODE themselves (the transcript
+     * bounce) instead of building a Compose spring.
+     */
+    val naturalFrequency: Double
+        get() = if (damping < 1f) ln(1000.0) / (damping * durationSec) else CriticalSettle / durationSec
 
     /** The Compose spring with this damping ratio and stiffness. */
     fun <T> spec(visibilityThreshold: T? = null): SpringSpec<T> =
@@ -386,6 +394,28 @@ object Motion {
 
     /** Refresh-control settle: 0.46 s critically damped (stiffness ≈ 400). ui-parity#48 (chosen, not measured). */
     val RefreshSettle = IosSpring("refreshSettle", 0.4617, 1f)
+
+    // Glass press (07-owned approximations of the iOS 26 system-glass touch
+    // response): the ticket gives damping/stiffness pairs (0.7/600 and
+    // 0.55/380). The durations are those pairs' settle-matched T =
+    // ln(1000)/(ζ·√k), written out so no stiffness is pasted; IosSpring's
+    // stiffness reproduces 600f and 380f exactly (the former in-place
+    // back-solve in Glass.kt, bit for bit).
+
+    /** Glass press-down: damping 0.7, settle-matched stiffness 600. ui-parity#07. */
+    val GlassPressDown = IosSpring("glassPressDown", 0.40286847594469244, 0.7f)
+
+    /** Glass press release/cancel: damping 0.55, settle-matched stiffness 380, one small overshoot. ui-parity#07. */
+    val GlassPressRelease = IosSpring("glassPressRelease", 0.64429156582968516, 0.55f)
+
+    /**
+     * Transcript overscroll bounce (134): critically damped, ω = 20 rad/s
+     * (stiffness 400, android-app#16 line 214), T = 9.2334 / 20. Stepped
+     * per frame as an exact ODE, so consumers read [IosSpring.naturalFrequency]
+     * (exactly 20f as a Float). Not [LargeTitleSnap]: its 0.4617 s gives
+     * ω = 19.9987.
+     */
+    val TranscriptBounce = IosSpring("transcriptBounce", 0.46167, 1f)
 
     // ------------------------------------------------ connection line (50)
     // The Sessions front page's multi-engine connection line (the Roboco

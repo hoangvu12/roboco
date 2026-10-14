@@ -85,6 +85,10 @@ class EngineDetailState(
      * count), so the "last engine → full reset" reading of `enginesLeft =
      * 0` never fires by accident. */
     private val forgetContext: () -> ForgetDraftsContext = { ForgetDraftsContext(null, 0) },
+    /** Ticket 28: an engine's notifications go when it is forgotten
+     * (production: `Notifier.cancelEngine`). Runs once `forget` succeeded;
+     * the default no-op keeps tests light. */
+    private val onEngineForgotten: (engineId: String) -> Unit = {},
     private val io: CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
 ) {
     private var copiedHold: Job? = null
@@ -239,6 +243,12 @@ class EngineDetailState(
             engineDetailLogW("engine forget failed engine=$engineId cause=${error.javaClass.simpleName}")
             return
         }
+        // Ticket 28: all of the engine's notifications go with it (its
+        // chats' and its link-lost one), whatever the store does next.
+        runCatching { onEngineForgotten(engineId) }
+            .onFailure { error ->
+                engineDetailLogW("engine notifications cancel failed engine=$engineId cause=${error.javaClass.simpleName}")
+            }
         runCatching { withContext(io) { backend.removeStored(engineId) } }
             .onFailure { error ->
                 // 71's caller contract: the record comes back on next

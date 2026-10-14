@@ -1,6 +1,10 @@
 package sh.roboco.android.shell
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -91,9 +95,9 @@ fun liveCountsOf(front: FrontPage): LiveCounts = countLive(
  *  - the derivation runs on `Dispatchers.Default` — a few hundred rows of
  *    iteration are cheap, but never on the main thread.
  *
- * The owner is the shell (tickets 26/30), which reads ticket 40's
- * `RobocoApplication.workspaceFeed.snapshot` once and collects this flow;
- * this ticket only provides the function.
+ * The owner is the shell owner (`RobocoAppContent`'s phone slot), which
+ * reads ticket 40's `RobocoApplication.workspaceFeed.snapshot` once and
+ * collects this flow through [rememberLiveCounts].
  */
 fun liveCountsFlow(workspace: Flow<WorkspaceSnapshot?>): Flow<LiveCounts> =
     workspace
@@ -101,6 +105,17 @@ fun liveCountsFlow(workspace: Flow<WorkspaceSnapshot?>): Flow<LiveCounts> =
         .map { ws -> ws?.let { liveCountsOf(it.front) } ?: LiveCounts() }
         .distinctUntilChanged()
         .flowOn(Dispatchers.Default)
+
+/**
+ * The accessory's live counts as Compose state (ticket 27 step 4): one
+ * [liveCountsFlow] per [workspace] instance, collected while the shell's
+ * lifecycle is at least STARTED, starting from `LiveCounts()`.
+ */
+@Composable
+fun rememberLiveCounts(workspace: Flow<WorkspaceSnapshot?>): State<LiveCounts> {
+    val counts = remember(workspace) { liveCountsFlow(workspace) }
+    return counts.collectAsStateWithLifecycle(initialValue = LiveCounts())
+}
 
 /**
  * The summary parts, in iOS order (`ios:Shell/MainTabController.swift:322-325`):

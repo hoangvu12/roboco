@@ -65,12 +65,11 @@ object NewSessionAccessoryMetrics {
 
     /**
      * The preview/fixture margin: 21 from the screen edges at 402 dp —
-     * ticket 26's `GlassTabBarDefaults.SideMargin` (same value, not a code
-     * dependency: 26's tab pill file is not on this branch yet). In the
-     * shell the capsule takes ticket 28's row box (rowL/rowW: 398 cap,
-     * centred), not this margin.
+     * ticket 26's [GlassTabBarDefaults.SideMargin]. In the shell the capsule
+     * takes ticket 28's row box (rowL/rowW: 398 cap, centred), not this
+     * margin.
      */
-    val SideMargin = 21.dp
+    val SideMargin = GlassTabBarDefaults.SideMargin
 
     /** Expanded: capsule bottom to the tab pill's top (ticket 30 applies). */
     val GapAbovePill = 8.dp

@@ -165,7 +165,9 @@ class TabletShellState internal constructor(
             restore = { values ->
                 val arg = values[3] as String?
                 val root = when (values[2] as String) {
-                    "session" -> DetailRoot.Session(arg!!)
+                    // A saved session without its id (a corrupted bundle)
+                    // degrades to the empty detail instead of crashing.
+                    "session" -> arg?.let { DetailRoot.Session(it) } ?: DetailRoot.Empty
                     "empty" -> DetailRoot.Empty
                     else -> DetailRoot.Draft(arg, focusOnAppear = false)
                 }

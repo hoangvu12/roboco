@@ -28,7 +28,9 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityOptionsCompat
 import androidx.lifecycle.Lifecycle
@@ -427,6 +429,78 @@ class SettingsScreenTest {
         row(WallpaperRowIds.Remove).performClick()
         compose.waitForIdle()
         assertEquals(1, removeCalls)
+    }
+
+    /**
+     * /code-review F7 diagnostics (ticket 103): the same tap at the class's
+     * real 874 dp, where Remove starts below the fold. The old
+     * scroll-then-click there never went idle (21 min into an OOM). It could
+     * not be pinned statically, so this test bounds every step instead: a
+     * frozen clock, fixed scroll steps and at most 240 frames, recording the
+     * scroll value and Remove's bounds per frame. A frame loop fails with
+     * that trace (which value oscillates names the cause) instead of hanging
+     * the job. Once it is green on CI, the 3000 dp variant above can go.
+     */
+    @Test
+    fun removeWallpaperBelowTheFoldSettlesAndRemoves() {
+        wallpaperFlow.value = wallpaperFlow.value.copy(set = true, name = "IMG_0412")
+        mount()
+        compose.mainClock.autoAdvance = false
+        val trace = StringBuilder()
+        val stepPx = with(compose.density) { 300.dp.toPx() }
+        var visible = false
+        for (step in 0 until 12) {
+            if (removeInView()) {
+                visible = true
+                break
+            }
+            compose.onNode(scrollableMatcher).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, stepPx) }
+            repeat(3) { compose.mainClock.advanceTimeByFrame() }
+            trace.append("step $step: ").append(frameState()).append('\n')
+        }
+        assertTrue("Remove never came into view:\n$trace", visible)
+        // Settle: done after 30 unchanged frames, failing after 240.
+        var last = frameState()
+        var still = 0
+        var frames = 0
+        while (frames < 240 && still < 30) {
+            compose.mainClock.advanceTimeByFrame()
+            frames++
+            val now = frameState()
+            if (now == last) {
+                still++
+            } else {
+                still = 0
+                trace.append("frame $frames: ").append(now).append('\n')
+            }
+            last = now
+        }
+        assertTrue(
+            "the page never settled after scrolling to Remove (the frame loop):\n${trace.takeLast(4_000)}",
+            still >= 30,
+        )
+        row(WallpaperRowIds.Remove).performClick()
+        repeat(3) { compose.mainClock.advanceTimeByFrame() }
+        assertEquals(1, removeCalls)
+    }
+
+    /** The scroll value/max and Remove's bounds: one line per frame of the trace. */
+    private fun frameState(): String {
+        val list = compose.onNode(scrollableMatcher).fetchSemanticsNode()
+        val axis = list.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange)
+        val remove = compose.onAllNodesWithTag(settingsTag(WallpaperRowIds.Remove))
+            .fetchSemanticsNodes()
+            .firstOrNull()
+            ?.boundsInRoot
+        return "scroll=${axis?.value?.invoke()}/${axis?.maxValue?.invoke()} remove=$remove"
+    }
+
+    /** Remove is composed and clear of the bottom chrome (200 px margin). */
+    private fun removeInView(): Boolean {
+        val rootBottom = compose.onRoot().fetchSemanticsNode().boundsInRoot.bottom
+        return compose.onAllNodesWithTag(settingsTag(WallpaperRowIds.Remove))
+            .fetchSemanticsNodes()
+            .any { it.boundsInRoot.top >= 0f && it.boundsInRoot.bottom <= rootBottom - 200f }
     }
 
     @Test

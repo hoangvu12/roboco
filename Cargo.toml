@@ -216,7 +216,7 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 16
 
-# Play / GitHub release APKs. Keeps the symbol table (`strip = "debuginfo"`):
+# The GitHub release APKs (ADR 0009: no Play Store). Keeps the symbol table (`strip = "debuginfo"`):
 # UniFFI library-mode bindgen and JNA's dlsym need exported symbols.
 [profile.mobile-dist]
 inherits = "release"

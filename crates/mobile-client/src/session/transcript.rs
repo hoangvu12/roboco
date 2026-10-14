@@ -186,6 +186,8 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
         return;
     };
     let mut backoff = RESUBSCRIBE_BACKOFF;
+    // Set by a desync: the next subscribe goes without `resume`.
+    let mut after_desync = false;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -195,25 +197,17 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
         if !wait_while_disconnected(&handle, &core, &cancel).await {
             return;
         }
-        let resume = resume_summary(&core);
+        let resume = resume_for_attempt(&mut after_desync, || resume_summary(&core));
         let first_open = {
             let state = lock(&core.state);
             !state.has_full_reset && !state.hydrated_from_cache && resume.is_none()
         };
-        let mut params = serde_json::json!({"chatId": core.chat_id});
-        if let Some(resume) = resume {
-            // `resume` takes precedence over `openingTail`: the client
-            // already has content painted from its cache.
-            params["resume"] = serde_json::to_value(&resume).unwrap_or(Value::Null);
-            params["digests"] = Value::Bool(true);
-        } else if first_open {
-            params["openingTail"] = Value::Bool(true);
-            if core.resume_capable() {
-                params["digests"] = Value::Bool(true);
-            }
-        } else if core.resume_capable() {
-            params["digests"] = Value::Bool(true);
-        }
+        let params = subscribe_params(
+            &core.chat_id,
+            resume.as_ref(),
+            first_open,
+            core.resume_capable(),
+        );
         let connection = match handle.transcript_connection().await {
             Ok(connection) => connection,
             Err(_) => {
@@ -277,7 +271,12 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
                 Err(_desync) => {
                     // The healthy heal path: immediate resubscribe for a
                     // fresh reset; the backoff curve stays where it is.
+                    // Ticket 12: that resubscribe goes WITHOUT `resume` (a
+                    // plain reset). The held entries and digests are
+                    // unchanged by the failed frame, so the same summary
+                    // would be sent again and a bad one could loop forever.
                     immediate = true;
+                    after_desync = true;
                     break;
                 }
             }
@@ -287,6 +286,45 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
             return;
         }
     }
+}
+
+/// The resume summary for this subscribe attempt: none right after a
+/// desync (ticket 12's plain reset, consuming the flag, without building a
+/// summary), otherwise whatever `summary` yields.
+pub(crate) fn resume_for_attempt<R>(
+    after_desync: &mut bool,
+    summary: impl FnOnce() -> Option<R>,
+) -> Option<R> {
+    if std::mem::take(after_desync) {
+        None
+    } else {
+        summary()
+    }
+}
+
+/// The `WatchDocMessages` params for one subscribe attempt. `resume` takes
+/// precedence over `openingTail` (the client already has content painted
+/// from its cache); without either, a resume-capable engine is still asked
+/// for digests (a plain reset that carries them).
+pub(crate) fn subscribe_params(
+    chat_id: &str,
+    resume: Option<&roboco_doc::TranscriptResume>,
+    first_open: bool,
+    resume_capable: bool,
+) -> Value {
+    let mut params = serde_json::json!({"chatId": chat_id});
+    if let Some(resume) = resume {
+        params["resume"] = serde_json::to_value(resume).unwrap_or(Value::Null);
+        params["digests"] = Value::Bool(true);
+    } else if first_open {
+        params["openingTail"] = Value::Bool(true);
+        if resume_capable {
+            params["digests"] = Value::Bool(true);
+        }
+    } else if resume_capable {
+        params["digests"] = Value::Bool(true);
+    }
+    params
 }
 
 /// The cache-write rule: a quiet tail writes every frame; a streaming
@@ -442,6 +480,11 @@ impl SessionCore {
                         state.entries.iter().map(|e| e.id.clone()).collect();
                     state.digests.retain(|id, _| live.contains(id));
                 }
+            } else if is_reset {
+                // Ticket 12: a reset without digests drops the stored ones.
+                // They describe content the reset just replaced, and a
+                // later resume summary built from them would be stale.
+                state.digests.clear();
             }
             // Adoption: any frame id matching a pending send's message id
             // adopts it (no duplicate row — the engine reuses the id).
@@ -488,6 +531,7 @@ impl SessionCore {
 mod tests {
     use super::*;
     use roboco_doc::transcript_delta::{apply_transcript_frame, diff_transcript};
+    use std::collections::BTreeMap;
 
     fn entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
@@ -825,6 +869,69 @@ mod tests {
             Some(true),
             CACHE_WRITE_MIN_INTERVAL + Duration::from_millis(1)
         ));
+    }
+
+    /// Ticket 12: right after a desync the next subscribe carries no
+    /// `resume` (a plain digests reset), so a bad summary cannot loop; the
+    /// attempt after that builds a summary again.
+    #[test]
+    fn the_resubscribe_after_a_desync_never_resumes() {
+        let mut after_desync = true;
+        let mut built = 0;
+        let first = resume_for_attempt(&mut after_desync, || {
+            built += 1;
+            Some("summary")
+        });
+        assert_eq!(first, None, "the post-desync attempt must not resume");
+        assert_eq!(built, 0, "no summary is even built for it");
+        assert!(!after_desync, "the flag is consumed");
+        let second = resume_for_attempt(&mut after_desync, || {
+            built += 1;
+            Some("summary")
+        });
+        assert_eq!(second, Some("summary"));
+        assert_eq!(built, 1);
+
+        // Without a summary the params are a plain subscribe that still asks
+        // a resume-capable engine for digests, and never for the opening tail
+        // once content is shown.
+        let plain = subscribe_params("chat-1", None, false, true);
+        assert!(plain.get("resume").is_none());
+        assert!(plain.get("openingTail").is_none());
+        assert_eq!(plain["digests"], Value::Bool(true));
+        assert_eq!(plain["chatId"], Value::String("chat-1".into()));
+        let first_open = subscribe_params("chat-1", None, true, false);
+        assert_eq!(first_open["openingTail"], Value::Bool(true));
+        assert!(first_open.get("digests").is_none());
+    }
+
+    /// Ticket 12: a reset that carries no digests drops the stored ones; a
+    /// reset that carries them replaces them.
+    #[test]
+    fn a_reset_without_digests_drops_the_stored_digests() {
+        let core = test_core();
+        let reset = |digests: Option<BTreeMap<String, String>>| DecodedFrame {
+            update: TranscriptUpdate {
+                frame: TranscriptFrame::Reset {
+                    reset: vec![entry("a", "one"), entry("b", "two")],
+                },
+                context_usage: None,
+                replay_baseline: None,
+                digests,
+            },
+            history_pending: false,
+        };
+        let with = BTreeMap::from([
+            ("a".to_string(), "d-a".to_string()),
+            ("b".to_string(), "d-b".to_string()),
+        ]);
+        core.apply_decoded(reset(Some(with))).unwrap();
+        assert_eq!(lock(&core.state).digests.len(), 2);
+        core.apply_decoded(reset(None)).unwrap();
+        assert!(
+            lock(&core.state).digests.is_empty(),
+            "stale digests survived a reset without digests"
+        );
     }
 
     fn test_core() -> SessionCore {

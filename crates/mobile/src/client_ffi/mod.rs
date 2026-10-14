@@ -60,7 +60,8 @@ pub struct CoreClient {
     client: Arc<mc::Client>,
 }
 
-#[allow(dead_code)] // consumed in Rust by tickets 07/08/09's layout work
+/// Rust-only accessors (not exported over FFI): the layout engine and the
+/// integration tests reach the client through these.
 impl CoreClient {
     /// The Rust client (crate-internal consumers).
     pub fn client(&self) -> &mc::Client {

@@ -60,6 +60,14 @@ class TabletShellStateTest {
         assertEquals(DetailRoot.Session("chat-9"), restored.detailRoot)
     }
 
+    /** /code-review F16: a saved session without its id degrades to Empty, never !!. */
+    @Test
+    fun aSessionRootWithoutAnIdRestoresEmpty() {
+        val restored = TabletShellState.Saver.restore(listOf("chat-1", true, "session", null))!!
+        assertEquals(DetailRoot.Empty, restored.detailRoot)
+        assertEquals("chat-1", restored.currentChatId)
+    }
+
     @Test
     fun emptyRoundTrip() {
         val restored = roundTrip(TabletShellState(null, true, DetailRoot.Empty))

@@ -78,8 +78,8 @@ import uniffi.roboco_core.EngineView
  *     mode);
  *  3. **Destructive** — "Forget", confirmed through 19's action sheet
  *     (decision SHELL-D1), revoking the phone's own session first
- *     (best-effort), then `forgetEngine`, the stored record, the drafts
- *     (84/92) and one pop. Forgetting the last engine leaves the rest to
+ *     (best-effort), then `forgetEngine`, the engine's notifications
+ *     (28), the stored record, the drafts (84/92) and one pop. Forgetting the last engine leaves the rest to
  *     ticket 35's root cross-fade.
  *
  * The engine comes from ticket 71's `engines` flow — never an FFI call in
@@ -96,6 +96,7 @@ fun EngineDetailScreen(
     backend: EngineDetailBackend? = null,
     forgetDrafts: ForgetDrafts? = null,
     forgetContext: (() -> ForgetDraftsContext)? = null,
+    onEngineForgotten: ((engineId: String) -> Unit)? = null,
     nowMs: () -> Long = System::currentTimeMillis,
     io: CoroutineDispatcher = Dispatchers.IO,
     modifier: Modifier = Modifier,
@@ -168,7 +169,11 @@ fun EngineDetailScreen(
             )
         }
     }
-    val state = remember(engineId, effectiveBackend, toaster, alerts, sheets, requestPop, effectiveDrafts, effectiveContext) {
+    // Ticket 28: forgetting clears the engine's notifications.
+    val effectiveForgotten = onEngineForgotten ?: remember(app) { { id: String -> app.notifier.cancelEngine(id) } }
+    val state = remember(
+        engineId, effectiveBackend, toaster, alerts, sheets, requestPop, effectiveDrafts, effectiveContext, effectiveForgotten,
+    ) {
         EngineDetailState(
             engineId = engineId,
             backend = effectiveBackend,
@@ -179,6 +184,7 @@ fun EngineDetailScreen(
             sheets = sheets,
             requestPop = requestPop,
             forgetDrafts = effectiveDrafts,
+            onEngineForgotten = effectiveForgotten,
             forgetContext = effectiveContext,
             io = io,
         )
