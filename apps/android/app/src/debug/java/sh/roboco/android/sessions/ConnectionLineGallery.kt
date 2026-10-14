@@ -186,7 +186,11 @@ private fun SimulateConnectionLine(captionStyle: TextStyle) {
     val health = remember { EngineHealthModel(engines, conn, scope) }
     val ui by health.ui.collectAsState()
     var down by remember { mutableStateOf(false) }
-    ConnectionLine(ui.line, onTap = {})
+    // A null line (every engine healthy) emits nothing at all — the same
+    // rule as the list item.
+    ui.line?.let { line ->
+        ConnectionLine(line, onTap = {})
+    }
     BasicText(
         if (down) "Engine up" else "Engine down",
         style = captionStyle,

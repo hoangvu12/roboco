@@ -12,9 +12,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import uniffi.roboco_core.Connectivity
 import uniffi.roboco_core.ConnectivityState
-import uniffi.roboco_core.EngineDiagnostics
 import uniffi.roboco_core.EngineState
-import uniffi.roboco_core.EngineView
 
 /**
  * [EngineHealthModel] (android-ui-parity #50) — the re-check loop:
@@ -33,41 +31,8 @@ class EngineHealthModelTest {
 
     // -------------------------------------------------------------- helpers
 
-    /** One paired engine; every field the ticket exercises set apart. */
-    private fun engine(
-        id: String,
-        name: String = id,
-        state: EngineState = EngineState.Connected,
-    ): EngineView = EngineView(
-        engineId = id,
-        name = name,
-        host = "host-$id",
-        baseUrl = "http://127.0.0.1:1",
-        deviceId = null,
-        platform = null,
-        version = null,
-        state = state,
-        lastError = null,
-        retryAtMs = null,
-        lastConnectedMs = null,
-        capabilities = emptyList(),
-        notice = null,
-        fromCache = false,
-        diagnostics = EngineDiagnostics(
-            repairedRows = 0u,
-            skippedRows = 0u,
-            lastDecodeError = null,
-            missingStreams = emptyList(),
-            generation = 0uL,
-        ),
-    )
-
-    private fun connectivity(state: ConnectivityState): Connectivity =
-        Connectivity(state = state, retryAtMs = null, lastFailure = null, degradedChats = emptyList())
-
-    // The model's scope is `runTest`'s backgroundScope, so each test
-    // builds its model inline — the shape is identical every time, which
-    // keeps the virtual-clock reads (`testScheduler.currentTime`) honest.
+    // `engine(...)` / `connectivity(...)` come from WorkspaceFixtures.kt
+    // (the same source set, same package).
 
     // ------------------------------------------------------------- the loop
 

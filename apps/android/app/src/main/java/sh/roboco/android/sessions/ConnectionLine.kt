@@ -27,6 +27,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -127,7 +128,10 @@ fun ConnectionLine(ui: ConnectionLineUi, onTap: () -> Unit, modifier: Modifier =
         if (entrance.value < 1f) entrance.animateTo(1f, Motion.connectionLineIn())
     }
     val src = remember { MutableInteractionSource() }
-    val pressed by src.collectIsPressedAsState()
+    // The State itself, deliberately not `by`: the draw phase reads
+    // `.value`, so a press change redraws without recomposing (and the
+    // spec pins the read to the draw lambdas).
+    val pressed = src.collectIsPressedAsState()
     val fillShape = rememberSmoothRoundedShape(ConnectionLineTokens.FillCornerRadius)
     // The semantics onClick survives recomposition with the latest tap
     // without re-running the semantics update; the clickable below gets

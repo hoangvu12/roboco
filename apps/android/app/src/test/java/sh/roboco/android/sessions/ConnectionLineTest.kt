@@ -78,28 +78,12 @@ class ConnectionLineTest {
 
     // ------------------------------------------------------------ fixtures
 
-    /** The ticket's "1 engine, Reconnecting" screenshot fixture. */
-    private val reconnecting = ConnectionLineUi(
-        listOf(ConnectionLineEntry(ConnectionGlyph.Spinner, "Reconnecting\u2026")),
-    )
-
-    /** The "Studio revoked / Laptop reconnecting" mixed fixture. */
-    private val mixed = ConnectionLineUi(
-        listOf(
-            ConnectionLineEntry(ConnectionGlyph.DangerDot, "Studio \u2014 Session revoked"),
-            ConnectionLineEntry(ConnectionGlyph.Spinner, "Laptop \u2014 Reconnecting\u2026"),
-        ),
-    )
-
-    /** Five degraded engines: three lines + "+2 more" (four lines total). */
-    private val overflow = ConnectionLineUi(
-        listOf(
-            ConnectionLineEntry(ConnectionGlyph.Spinner, "A \u2014 Reconnecting\u2026"),
-            ConnectionLineEntry(ConnectionGlyph.Spinner, "B \u2014 Reconnecting\u2026"),
-            ConnectionLineEntry(ConnectionGlyph.Spinner, "C \u2014 Reconnecting\u2026"),
-            ConnectionLineEntry(null, "+2 more"),
-        ),
-    )
+    // The shared debug fixtures (the same shapes the gallery and the
+    // goldens draw); only the pixel-math dot row is local, because it
+    // needs a static glyph and a short caption.
+    private val reconnecting = ConnectionLineFixtures.reconnecting
+    private val mixed = ConnectionLineFixtures.mixed
+    private val overflow = ConnectionLineFixtures.fiveEngines
 
     /** The static dot fixture the pixel checks use (no spinner pixels). */
     private val dangerDot = ConnectionLineUi(

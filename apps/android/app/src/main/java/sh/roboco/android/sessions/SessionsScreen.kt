@@ -204,6 +204,11 @@ fun SessionsScreen(
  * animations swap the two by key. [pinnedAccessory]/[pinnedAccessoryHeight]
  * are 25's stacked-accessory slots (the sidebar search field), and
  * [topInset] replaces 46's local read so tests can fix 24 dp.
+ *
+ * Ticket 50: [connectionLine] is the multi-engine health line, emitted
+ * as the **first** item on the front page only (never in results mode,
+ * folder pages or Search); [onConnectionLineTap] is its tap — the real
+ * screen routes it to `AppRouter.showSettings`.
  */
 @Composable
 internal fun SessionsScreenContent(

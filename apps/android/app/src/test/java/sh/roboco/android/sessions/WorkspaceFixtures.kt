@@ -130,6 +130,7 @@ internal fun engine(
     engineId: String,
     name: String = engineId,
     state: EngineState = EngineState.Connected,
+    lastError: String? = null,
 ): EngineView = EngineView(
     engineId = engineId,
     name = name,
@@ -139,7 +140,7 @@ internal fun engine(
     platform = null,
     version = null,
     state = state,
-    lastError = null,
+    lastError = lastError,
     retryAtMs = null,
     lastConnectedMs = null,
     capabilities = emptyList(),

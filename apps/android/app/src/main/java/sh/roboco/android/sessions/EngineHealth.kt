@@ -166,12 +166,12 @@ object EngineHealth {
         // (a not-yet-read `null` counts as not offline), `"engine:<id>"`
         // iff the engine is anything but `Connected`.
         val osRaw = connectivity?.state == ConnectivityState.OFFLINE
-        val engineKeys = engines.map { "engine:" + it.engineId }
+        val engineKeys = engines.map { engineKey(it.engineId) }
 
         // 3. The grace pass, then the retain that drops sources that no
         // longer exist (`connectivity.rs:110`).
         val osDegraded = grace.graced(OS_KEY, osRaw, nowMs)
-        val engineDegraded = engines.map { grace.graced("engine:" + it.engineId, it.state !is EngineState.Connected, nowMs) }
+        val engineDegraded = engines.map { grace.graced(engineKey(it.engineId), it.state !is EngineState.Connected, nowMs) }
         grace.retain((setOf(OS_KEY) + engineKeys).toSet())
 
         // 4. Offline engine ids (the wifi-off glyph): while the device is
@@ -241,6 +241,9 @@ object EngineHealth {
 
     /** The raw sources' key for the OS posture. */
     private const val OS_KEY = "os"
+
+    /** The raw sources' key for one engine. */
+    private fun engineKey(engineId: String) = "engine:$engineId"
 }
 
 /**

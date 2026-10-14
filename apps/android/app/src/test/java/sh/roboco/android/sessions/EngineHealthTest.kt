@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.roboco_core.Connectivity
 import uniffi.roboco_core.ConnectivityState
-import uniffi.roboco_core.EngineDiagnostics
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.ParkReason
@@ -30,38 +29,9 @@ class EngineHealthTest {
 
     // ------------------------------------------------------------ fixtures
 
-    /** One paired engine; every field the ticket exercises set apart. */
-    private fun engine(
-        id: String,
-        name: String = id,
-        state: EngineState = EngineState.Connected,
-        lastError: String? = null,
-    ): EngineView = EngineView(
-        engineId = id,
-        name = name,
-        host = "host-$id",
-        baseUrl = "http://127.0.0.1:1",
-        deviceId = null,
-        platform = null,
-        version = null,
-        state = state,
-        lastError = lastError,
-        retryAtMs = null,
-        lastConnectedMs = null,
-        capabilities = emptyList(),
-        notice = null,
-        fromCache = false,
-        diagnostics = EngineDiagnostics(
-            repairedRows = 0u,
-            skippedRows = 0u,
-            lastDecodeError = null,
-            missingStreams = emptyList(),
-            generation = 0uL,
-        ),
-    )
-
-    private fun connectivity(state: ConnectivityState): Connectivity =
-        Connectivity(state = state, retryAtMs = null, lastFailure = null, degradedChats = emptyList())
+    // `engine(...)` / `connectivity(...)` come from WorkspaceFixtures.kt
+    // (the same source set, same package); the INCOMPATIBLE cases pass
+    // `lastError` through the shared builder.
 
     // -------------------------------------------------- the grace hand-off
 
