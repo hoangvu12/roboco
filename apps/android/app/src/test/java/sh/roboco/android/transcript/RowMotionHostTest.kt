@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.test.core.app.ApplicationProvider
@@ -196,7 +197,14 @@ class RowMotionHostTest {
             // through the row nodes' test-only clip channel.
             val rowNodes = compose.onAllNodesWithTag("row-user").fetchSemanticsNodes() +
                 compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes()
-            assertTrue("a non-Tools row must not clip", rowNodes.none { it.config[RowClipKey] })
+            // 129 moved the row-* tag to the full-size text child; RowClipKey stays
+            // on the row root beside the layer clip it mirrors, so read it on the
+            // tagged node's semantics parent (the root).
+            assertTrue("each tagged node's parent must be a row root carrying RowClipKey", rowNodes.isNotEmpty() && rowNodes.all { it.parent?.config?.contains(RowClipKey) == true })
+            assertTrue(
+                "a non-Tools row must not clip",
+                rowNodes.none { it.parent?.config?.getOrNull(RowClipKey) == true },
+            )
 
             // 160 ms more: done, exactly at the new placement, no tracks.
             compose.mainClock.advanceTimeBy(160)
