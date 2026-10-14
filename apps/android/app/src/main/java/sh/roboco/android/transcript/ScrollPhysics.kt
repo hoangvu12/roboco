@@ -1,6 +1,10 @@
 package sh.roboco.android.transcript
 
 import kotlin.math.exp
+import sh.roboco.android.design.Motion
+import sh.roboco.android.design.UIScrollViewRubberBandC
+import sh.roboco.android.design.rubberBandOffset
+import sh.roboco.android.design.rubberBandTravel
 
 /**
  * The transcript's scroll physics constants and pure maths (ticket 134):
@@ -35,11 +39,11 @@ const val IOS_FRICTION_MULTIPLIER = 0.4766673f
 /** Stop when the remaining travel v/k is below half a pixel (px/s). */
 const val IOS_FLING_STOP_PX_PER_S = 0.5f * IOS_DECAY_K
 
-/** UIKit rubber-band coefficient (android-app#16 line 211). */
-const val RUBBER_BAND_C = 0.55f
+/** UIKit rubber-band coefficient (android-app#16 line 211): the shared [UIScrollViewRubberBandC]. */
+const val RUBBER_BAND_C = UIScrollViewRubberBandC
 
-/** Bounce spring: dampingRatio 1, stiffness 400 → ω = √400 (android-app#16 line 214). */
-const val BOUNCE_OMEGA = 20f
+/** Bounce spring: dampingRatio 1, stiffness 400 → ω = 20 (android-app#16 line 214): [Motion.TranscriptBounce]. */
+val BOUNCE_OMEGA: Float = Motion.TranscriptBounce.naturalFrequency.toFloat()
 
 /**
  * The band's visible displacement for a raw finger travel [x] past an
@@ -54,10 +58,7 @@ const val BOUNCE_OMEGA = 20f
  * the per-frame deltas at the start of a pull are exactly that small.
  * The f(x) table values are unchanged to 1e-4.
  */
-fun rubberBand(x: Float, d: Float): Float {
-    val xc = x * RUBBER_BAND_C
-    return xc * d / (xc + d)
-}
+fun rubberBand(x: Float, d: Float): Float = rubberBandOffset(x, d)
 
 /**
  * The inverse of [rubberBand]: the raw finger travel that produces
@@ -67,7 +68,7 @@ fun rubberBand(x: Float, d: Float): Float {
  * callers only invert within `0.5·d` (ticket B2), far from the clamp.
  */
 fun rubberBandInverse(displacement: Float, d: Float): Float =
-    displacement * d / (RUBBER_BAND_C * (d - displacement.coerceAtMost(d * 0.999f)))
+    rubberBandTravel(displacement.coerceAtMost(d * 0.999f), d)
 
 /**
  * One exact step of the critically damped bounce toward 0 (ζ = 1,

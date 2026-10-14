@@ -8,6 +8,8 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sign
 import kotlin.math.sqrt
+import sh.roboco.android.design.UIScrollViewRubberBandC
+import sh.roboco.android.design.rubberBandOffset
 
 /**
  * The image viewer's pure geometry (android-ui-parity #125): the port of
@@ -34,8 +36,8 @@ const val ViewerMaxZoom = 5f
 /** The double-tap rect is W/2.5 x H/2.5, so the scale becomes 2.5. */
 const val ViewerDoubleTapZoom = 2.5f
 
-/** UIScrollView's rubber-band coefficient (c = 0.55). */
-const val ViewerRubberBandC = 0.55f
+/** UIScrollView's rubber-band coefficient (c = 0.55): the shared [UIScrollViewRubberBandC]. */
+const val ViewerRubberBandC = UIScrollViewRubberBandC
 
 /** Drag-to-dismiss distance threshold: 100 dp of vertical drag. */
 const val ViewerDismissDistanceDp = 100f
@@ -148,17 +150,13 @@ fun rubberZoom(zRaw: Float, min: Float = ViewerMinZoom, max: Float = ViewerMaxZo
 /**
  * The UIScrollView rubber band `rb(x, dim) = (1 − 1/(x·0.55/dim + 1))·dim`,
  * sign-preserving: `x` is the overshoot in px (either sign), `dim` the
- * pan dimension (`W` or `H`). Evaluated in the algebraically identical
- * stable form `x·c·d / (x·c + d)` (the literal `1 − 1/(u + 1)` cancels
- * catastrophically in `Float` for small `x`, exactly like ticket 134's
- * `rubberBand`).
+ * pan dimension (`W` or `H`). The magnitude is the shared stable
+ * [rubberBandOffset] (`x·c·d / (x·c + d)`; the literal `1 − 1/(u + 1)`
+ * cancels catastrophically in `Float` for small `x`).
  */
 fun rubberBand(overshootPx: Float, dimPx: Float): Float {
     if (overshootPx == 0f || dimPx <= 0f) return 0f
-    val x = abs(overshootPx)
-    val d = abs(dimPx)
-    val xc = x * ViewerRubberBandC
-    return (xc * d / (xc + d)) * sign(overshootPx)
+    return rubberBandOffset(abs(overshootPx), abs(dimPx)) * sign(overshootPx)
 }
 
 /** Dismiss progress `p = min(1, |dy| / (0.5·H))`. */

@@ -13,11 +13,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Immutable
 import sh.roboco.android.design.CapsuleShape
-import sh.roboco.android.design.IosSpring
+import sh.roboco.android.design.Motion
 import sh.roboco.android.design.SmoothRoundedShape
 import sh.roboco.android.design.rgb
-import kotlin.math.ln
-import kotlin.math.sqrt
 
 /**
  * The glass material, per appearance (ticket 07). Every value is the
@@ -72,18 +70,11 @@ object Glass {
     /** Interactive press scale about the centre (the iOS 26 glass swell). */
     const val PressScale = 1.06f
 
-    /**
-     * Press-down spring (07-owned): damping 0.7 / stiffness 600 per the
-     * ticket. Built through [IosSpring] — never a pasted stiffness literal
-     * (decision FOUNDATION-D1) — with the duration back-solved from the
-     * ticket's pair, so the settle-matched stiffness lands on 600.
-     */
-    val PressDownSpring: SpringSpec<Float> =
-        IosSpring("glassPressDown", pressSettleSec(0.7f, 600f), 0.7f).spec()
+    /** Press-down spring (07-owned): [Motion.GlassPressDown], damping 0.7 / stiffness 600. */
+    val PressDownSpring: SpringSpec<Float> = Motion.GlassPressDown.spec()
 
-    /** Press release/cancel spring (07-owned): damping 0.55 / stiffness 380, one small overshoot. */
-    val PressReleaseSpring: SpringSpec<Float> =
-        IosSpring("glassPressRelease", pressSettleSec(0.55f, 380f), 0.55f).spec()
+    /** Press release/cancel spring (07-owned): [Motion.GlassPressRelease], damping 0.55 / stiffness 380. */
+    val PressReleaseSpring: SpringSpec<Float> = Motion.GlassPressRelease.spec()
 
     /** Shadow offset: the light iOS capture sits slightly low (+y). */
     val ShadowOffsetY = 2.dp
@@ -143,14 +134,6 @@ object Glass {
      */
     val blurAvailable: Boolean
         @Composable @ReadOnlyComposable get() = LocalGlassTier.current == GlassTier.Blur
-
-    /**
-     * The IosSpring duration whose settle-matched stiffness equals
-     * `stiffness` for `damping` < 1: T = ln(1000) / (ζ·√k), the inverse of
-     * IosSpring's own ω = ln(1000) / (ζ·T).
-     */
-    private fun pressSettleSec(damping: Float, stiffness: Float): Double =
-        ln(1000.0) / (damping * sqrt(stiffness.toDouble()))
 }
 
 /**

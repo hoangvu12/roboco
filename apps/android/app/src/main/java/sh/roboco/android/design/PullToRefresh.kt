@@ -93,8 +93,8 @@ object PullToRefreshDefaults {
     /** The gap kept open while the spinner runs. `*` UIKit's standard `UIRefreshControl` height (60 pt), not app source. */
     val HoldHeight = 60.dp
 
-    /** UIKit `UIScrollView` rubber-band coefficient. */
-    const val RubberBandC = 0.55f
+    /** UIKit `UIScrollView` rubber-band coefficient (the shared [UIScrollViewRubberBandC]). */
+    const val RubberBandC = UIScrollViewRubberBandC
 
     /** The cell spinner's scale — the 21 × 21 dp box, the same loader as the session open (ticket 11). */
     const val SpinnerScale = 1.75f
@@ -119,14 +119,13 @@ object PullToRefreshMath {
 
     /**
      * iOS rubber band: `offset = (1 − 1 / (drag·c/v + 1)) · v` with
-     * `v = max(viewport, 1)` and `drag ≥ 0`. Never NaN: a zero/negative
-     * viewport clamps to 1, an overflowing drag saturates at `v`.
+     * `v = max(viewport, 1)` and `drag ≥ 0`, through the shared stable
+     * [rubberBandOffset] (the literal form cancels in `Float` for small
+     * drags). Never NaN: a zero/negative viewport clamps to 1, a saturating
+     * drag converges on `v`.
      */
-    fun rubberBand(drag: Float, viewport: Float, c: Float = PullToRefreshDefaults.RubberBandC): Float {
-        val v = viewport.coerceAtLeast(1f)
-        val d = drag.coerceAtLeast(0f)
-        return (1f - 1f / (d * c / v + 1f)) * v
-    }
+    fun rubberBand(drag: Float, viewport: Float, c: Float = PullToRefreshDefaults.RubberBandC): Float =
+        rubberBandOffset(drag.coerceAtLeast(0f), viewport.coerceAtLeast(1f), c)
 
     /**
      * The inverse of [rubberBand], for grabbing a settling list:
@@ -140,7 +139,7 @@ object PullToRefreshMath {
         val v = viewport.coerceAtLeast(1f)
         val o = offset.coerceIn(0f, v - 1f)
         if (o <= 0f) return 0f
-        return (v / c) * o / (v - o)
+        return rubberBandTravel(o, v, c)
     }
 
     /**

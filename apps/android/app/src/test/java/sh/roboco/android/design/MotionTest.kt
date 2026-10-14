@@ -161,6 +161,23 @@ class MotionTest {
         assertEquals(1364.09, Motion.ImeSettle.stiffness.toDouble(), 0.01)
     }
 
+    /**
+     * /code-review F9 (FOUNDATION-D1: no pasted stiffness): the glass press
+     * pairs and the transcript bounce moved into tokens with motion
+     * unchanged, bit for bit. Zero tolerance on purpose: 600f/380f are what
+     * the former in-place back-solve produced, and 20f is the former
+     * `BOUNCE_OMEGA` literal (LargeTitleSnap's 0.4617 s would give 19.9987).
+     */
+    @Test
+    fun theGlassPressAndTranscriptBounceTokensKeepTheirNumbersExactly() {
+        assertEquals(600f, Motion.GlassPressDown.stiffness, 0f)
+        assertEquals(0.7f, Motion.GlassPressDown.damping, 0f)
+        assertEquals(380f, Motion.GlassPressRelease.stiffness, 0f)
+        assertEquals(0.55f, Motion.GlassPressRelease.damping, 0f)
+        assertEquals(20f, Motion.TranscriptBounce.naturalFrequency.toFloat(), 0f)
+        assertEquals(1f, Motion.TranscriptBounce.damping, 0f)
+    }
+
     @Test
     fun allSpringsListsEveryNamedToken() {
         assertEquals(11, Motion.allSprings.size)
