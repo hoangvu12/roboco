@@ -8,6 +8,7 @@ import sh.roboco.android.transcript.widgets.CopyCodeButton
 import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
 import sh.roboco.android.transcript.widgets.RailSpec
+import sh.roboco.android.transcript.widgets.ShimmerWidget
 import sh.roboco.android.transcript.widgets.ToolChevron
 import sh.roboco.android.transcript.widgets.ToolRail
 import sh.roboco.android.transcript.widgets.ToolToggleTarget
@@ -92,7 +93,9 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
             live = ctx.live,
             buildToken = ctx.model,
         )
-        // ticket 122 (the shimmer sweep)
-        WidgetKind.Shimmer -> Unit
+        // ticket 122 (the shimmer sweep): the live group's title
+        // re-drawn in TEXT through the moving mask; emitted before 120's
+        // disclosure, so the tap target sits on top and keeps the input.
+        WidgetKind.Shimmer -> ShimmerWidget(ctx, w)
     }
 }

@@ -90,6 +90,7 @@ import sh.roboco.android.transcript.TranscriptLinksGallerySection
 import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
+import sh.roboco.android.transcript.widgets.ShimmerGallerySection
 import sh.roboco.android.transcript.widgets.ToolRailGallerySection
 
 /**
@@ -582,6 +583,11 @@ object Gallery {
         GallerySection("Tap to dismiss composer", screenshotHeightDp = 420) {
             TapDismissGallerySection()
         },
+        // Ticket 122 (live title shimmer): the sweeping highlight over a
+        // streaming tool group's title — the live specimen (frozen at
+        // t = 1/3 under capture, hidden by Force reduce motion) plus the
+        // frozen phase table from t = 0 to 0.8333.
+        GallerySection("Shimmer") { ShimmerGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

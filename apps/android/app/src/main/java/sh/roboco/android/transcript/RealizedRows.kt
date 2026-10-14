@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
+import sh.roboco.android.transcript.widgets.ShimmerClock
 import uniffi.roboco_core.ColorRole
 import uniffi.roboco_core.RowKind
 import uniffi.roboco_core.RowPlacement
@@ -71,6 +72,17 @@ class RealizedRow internal constructor(
      * scroller, fed by [RowScroller]. Snapshot-observable, main thread only.
      */
     val scrollers = ScrollerRegistry()
+
+    /**
+     * 122: the row's shimmer clock — one per row host, so the live group's
+     * title sweep restarts only when the row re-enters composition, never
+     * on a streaming version bump (iOS rebuilds the `ShimmerView` per
+     * configure; Roboco keeps the phase, like desktop's per-group start
+     * instant). Lazily built: only rows that ever host a live tool group
+     * read it, and the frame loop runs only while a `Shimmer` widget is
+     * composed.
+     */
+    internal val shimmerClock: ShimmerClock by lazy(LazyThreadSafetyMode.NONE) { ShimmerClock() }
 
     /** The current density (px per dp), kept by the row host. */
     internal var density: Float = 1f
