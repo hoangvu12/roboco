@@ -385,8 +385,11 @@ const val PR_COPY_ROW = "Copy Link"
  *   base config).
  */
 fun applyModelPick(config: ChatConfig, m: ModelInfo): ChatConfig {
-    val keep = config.reasoning != null && config.reasoning in m.reasoningLevels
-    val reasoning = if (keep) config.reasoning else (m.defaultReasoning ?: preferredReasoning(m.reasoningLevels))
+    // Bind first: the uniffi record fields are `var`, so `config.reasoning`
+    // never smart-casts after a null check.
+    val currentReasoning = config.reasoning
+    val keep = currentReasoning != null && currentReasoning in m.reasoningLevels
+    val reasoning = if (keep) currentReasoning else (m.defaultReasoning ?: preferredReasoning(m.reasoningLevels))
     val options = config.modelOptions.filter { (key, value) ->
         m.options.any { o -> o.id == key && o.choices.any { it.id == value } }
     }

@@ -395,8 +395,8 @@ class RobocoApplication : Application() {
         // decorates. The filler stores the controller-refresh snapshot
         // and keeps the deferred cache; the loads and writes run on IO
         // inside it (never on main, the #609 trap).
-        chromeFillers.register(ChromeFillerRegistry.CHIP_MENUS) { core ->
-            SessionChipMenus(CoreChipMenuCore.of(core))
+        chromeFillers.register(ChromeFillerRegistry.CHIP_MENUS) { sessionCore ->
+            SessionChipMenus(CoreChipMenuCore.of(sessionCore))
         }
         // Ticket 82 (queue panel): the queue mapping into
         // `SessionChrome.queue` — gate labels, `visibleText`, order —

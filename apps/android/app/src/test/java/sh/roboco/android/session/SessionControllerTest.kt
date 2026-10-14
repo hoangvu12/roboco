@@ -299,7 +299,7 @@ class SessionControllerTest {
         // logs it and still marks the view attached.
         assertEquals(
             listOf("attachTranscript", "setViewAttached(true)"),
-            core.callLog.drop(3),
+            core.callLog.drop(4),
         )
         assertEquals(1, loggedFailures.size)
         assertTrue(loggedFailures.single().first.contains("returned false"))
@@ -314,7 +314,7 @@ class SessionControllerTest {
 
         controller.attach(view)
         advanceUntilIdle()
-        assertEquals(listOf("attachTranscript"), core.callLog.drop(3))
+        assertEquals(listOf("attachTranscript"), core.callLog.drop(4))
         assertEquals("attach failed", loggedFailures.single().first)
 
         // The bind failed: the same view instance is not masked out —
@@ -323,7 +323,7 @@ class SessionControllerTest {
         advanceUntilIdle()
         assertEquals(
             listOf("attachTranscript", "attachTranscript", "setViewAttached(true)"),
-            core.callLog.drop(3),
+            core.callLog.drop(4),
         )
     }
 
@@ -336,7 +336,7 @@ class SessionControllerTest {
 
         controller.close()
         advanceUntilIdle()
-        assertEquals(listOf("setViewAttached(false)", "markSeen"), core.callLog.drop(3))
+        assertEquals(listOf("setViewAttached(false)", "markSeen"), core.callLog.drop(4))
 
         // Events after close: no refresh (the controller unregistered).
         val callsAfterClose = core.composerCalls

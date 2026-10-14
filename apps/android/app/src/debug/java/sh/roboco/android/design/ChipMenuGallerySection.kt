@@ -434,7 +434,7 @@ private class GalleryChipMenuCore(
 // ---------------------------------------------------------------------------
 
 /** M1 — the model menu, resolved: Opus 5 checked. */
-internal fun chipMenuM1Lines(): List<MenuLine> = flattenLevel(
+fun chipMenuM1Lines(): List<MenuLine> = flattenLevel(
     "Model",
     galleryModels().map { m ->
         MenuItem(
@@ -450,7 +450,7 @@ internal fun chipMenuM1Lines(): List<MenuLine> = flattenLevel(
 )
 
 /** M2 — the model menu while the catalog loads: one "Loading…" row. */
-internal fun chipMenuM2Lines(): List<MenuLine> = flattenLevel(
+fun chipMenuM2Lines(): List<MenuLine> = flattenLevel(
     "Model",
     listOf(
         MenuElement.Deferred(cached = true) { galleryModels().map { m -> MenuItem(m.label) {} } },
@@ -461,7 +461,7 @@ internal fun chipMenuM2Lines(): List<MenuLine> = flattenLevel(
 )
 
 /** E — the reasoning effort menu: High checked. */
-internal fun chipMenuELines(): List<MenuLine> = flattenLevel(
+fun chipMenuELines(): List<MenuLine> = flattenLevel(
     "Reasoning effort",
     GALLERY_FULL_LADDER.map { level ->
         MenuItem(
@@ -476,7 +476,7 @@ internal fun chipMenuELines(): List<MenuLine> = flattenLevel(
 )
 
 /** P — the PR menu: the long title wraps, both rows iconed. */
-internal fun chipMenuPLines(): List<MenuLine> = flattenLevel(
+fun chipMenuPLines(): List<MenuLine> = flattenLevel(
     "Android: session chip menus for model, reasoning effort and pull request with a long title",
     listOf(
         MenuItem("Open Pull Request", icon = MenuIcon.Symbol(RobocoIcons.Safari), testTag = "chip-menu-pr-open") {},

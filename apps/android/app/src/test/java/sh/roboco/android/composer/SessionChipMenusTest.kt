@@ -67,7 +67,8 @@ class SessionChipMenusTest {
         var setConfigFailure: Throwable? = null
         val setConfigs = mutableListOf<ChatConfig>()
 
-        /** Ended `setSessionConfig` calls, failed or not. */
+        /** Ended `setSessionConfig` calls, failed or not (volatile: polled across threads). */
+        @Volatile
         private var writeCount = 0
 
         override fun sessionRow(): SessionRow? {
@@ -337,9 +338,9 @@ class SessionChipMenusTest {
 
         val menu = menus.menu("pr", platform)
         assertNotNull(menu)
-        val checked = menu!!
-        assertEquals("Fixture PR", checked.title)
-        val rows = checked.children.filterIsInstance<MenuItem>()
+        val prMenu = menu!!
+        assertEquals("Fixture PR", prMenu.title)
+        val rows = prMenu.children.filterIsInstance<MenuItem>()
         assertEquals(2, rows.size)
         assertEquals("Open Pull Request", rows[0].title)
         assertEquals("Copy Link", rows[1].title)
@@ -368,9 +369,9 @@ class SessionChipMenusTest {
 
         val menu = menus.menu("model", RecordingPlatform())
         assertNotNull(menu)
-        val checked = menu!!
-        assertEquals("Model", checked.title)
-        val deferred = checked.children.single() as MenuElement.Deferred
+        val modelMenu = menu!!
+        assertEquals("Model", modelMenu.title)
+        val deferred = modelMenu.children.single() as MenuElement.Deferred
         assertTrue(deferred.cached)
         assertTrue(core.callLog.isEmpty()) // the provider made no core call
 
@@ -511,9 +512,9 @@ class SessionChipMenusTest {
         rows.first { it.title == "Opus 5" }.action()
         core.awaitWrites(1)
 
-        // The base was the current config; the pick rule replaced model
-        // and reasoning (xhigh → the model's default high).
-        assertEquals(listOf(chatConfig(model = "claude-opus-5", reasoning = "high")), core.setConfigs)
+        // The base was the current config; the pick rule set the model and
+        // kept xhigh (Opus 5 offers it).
+        assertEquals(listOf(chatConfig(model = "claude-opus-5", reasoning = "xhigh")), core.setConfigs)
         assertEquals(listOf<Throwable?>(null), results)
         assertEquals(1, invalidations)
     }
@@ -571,19 +572,22 @@ class SessionChipMenusTest {
         val rows = loadRows(deferredOf(menus, "model"))
         val first = rows.first { it.title == "Opus 5" }
         val second = rows.first { it.title == "Sonnet 5" }
+        // The load's own calls (listModels + the load-time selection read)
+        // sit below this index; only the writes' get/set pairs count.
+        val callsBeforePicks = core.methodNames().size
 
         first.action() // acquires the lock, reads the base, suspends on the gate
         second.action() // queued behind the mutex
         Thread.sleep(100)
         // Only the first write's get+set happened: the second has not read yet.
-        assertEquals(listOf("sessionConfig", "setSessionConfig"), core.methodNames())
+        assertEquals(listOf("sessionConfig", "setSessionConfig"), core.methodNames().drop(callsBeforePicks))
 
         gate.complete(Unit)
         core.awaitWrites(2)
         assertEquals(
             "get, set, get, set — never get, get",
             listOf("sessionConfig", "setSessionConfig", "sessionConfig", "setSessionConfig"),
-            core.methodNames(),
+            core.methodNames().drop(callsBeforePicks),
         )
     }
 

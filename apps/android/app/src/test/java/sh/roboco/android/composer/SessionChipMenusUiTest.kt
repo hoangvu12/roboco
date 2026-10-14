@@ -32,6 +32,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric.buildActivity
@@ -382,7 +383,7 @@ class SessionChipMenusUiTest {
     fun aSuspendedCatalogShowsExactlyOneLoadingRowThenTheRows() {
         val core = FakeMenuCore()
         val gate = CompletableDeferred<Unit>()
-        core.listModelsGateHolder = gate
+        core.listModelsGate = gate
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         menus.fill(
             SessionChrome(),
@@ -531,9 +532,23 @@ class SessionChipMenusUiTest {
     @Test
     fun aCustomTabsServiceIsPinnedWithTheSchemeAndToolbarColours() {
         val activity = buildActivity(Activity::class.java).setup().get()
+        val pm = shadowOf(activity.packageManager)
+        // The default VIEW handler for http (androidx's getPackageName
+        // resolves it first and adds its package to the candidate list)…
+        shadowOf(activity.packageManager).addResolveInfoForIntent(
+            Intent(Intent.ACTION_VIEW, Uri.parse("http://")),
+            ResolveInfo().apply {
+                activityInfo = android.content.pm.ActivityInfo().apply {
+                    packageName = "com.example.browser"
+                    name = "com.example.browser.Browser"
+                }
+            },
+        )
+        // …and that package's Custom Tabs service (needs the <queries>
+        // element on a real device).
         val serviceIntent = Intent("android.support.customtabs.action.CustomTabsService")
             .setPackage("com.example.browser")
-        shadowOf(activity.packageManager).addResolveInfoForIntent(
+        pm.addResolveInfoForIntent(
             serviceIntent,
             ResolveInfo().apply {
                 serviceInfo = ServiceInfo().apply {
