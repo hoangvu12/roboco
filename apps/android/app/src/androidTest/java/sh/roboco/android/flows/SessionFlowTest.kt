@@ -66,12 +66,13 @@ import sh.roboco.android.RobocoApplication
  * `KeyboardFlowTest` set the pattern). Unwired rows:
  * `testTappingLinkOpensIt` (ui-parity #126's link hit-test + Custom Tab
  * routing), `testImageUploadShowsRingOnThumbnail` (ui-parity #93's
- * clipboard-image paste path), `testNewSessionFromAccessory`, `testNewSessionRemembersDraftWhenClosed`,
+ * clipboard-image paste path), `testNewSessionRemembersDraftWhenClosed`,
  * `testNewSessionHeadlineStaysAboveComposer`,
  * `testEffortPickerInNewSession`, `testModelChipNamesAModelAtOnce`,
  * `testNewProjectFolderBrowser` and
- * `testProjectPickerGroupsClonesAndHostPicksCheckout` (the New Session
- * sheet is still `NewSessionSheetPlaceholder`, ui-parity #92/#113).
+ * `testProjectPickerGroupsClonesAndHostPicksCheckout` (the chips and
+ * menus of ui-parity #92/#109/#113/#114 — the sheet itself, 93, and the
+ * create + first send, 94, have landed).
  *
  * Route/engine per test (fixture §5): the `questionPanel*` test runs on
  * the `question` engine (`chat-ask`), the queue/cancelled-swipe rows on
@@ -995,11 +996,54 @@ class SessionFlowTest {
     @Test
     fun imageUploadShowsRingOnThumbnail() = fail("unwired: see the @Ignore reason")
 
-    @Ignore("Needs the real New Session sheet (ui-parity #92/#113 replace NewSessionSheetPlaceholder)")
-    @Test
-    fun newSessionFromAccessory() = fail("unwired: see the @Ignore reason")
+    // ── the New Session flow (94's create + first send) ──────────────
 
-    @Ignore("Needs the real New Session sheet (ui-parity #92/#113)")
+    /**
+     * `testNewSessionFromAccessory` (`SessionFlowTests.swift:245-262`):
+     * the accessory opens the sheet (93), typing and Send run 94's create
+     * + first send, and the handoff lands in the new session — the
+     * transcript exists within 10 s, the IME is down within 3 s, the
+     * optimistic echo (`You: Add a dark mode toggle`) shows within 5 s,
+     * and 1 s later the sheet (and its `Close` button) is gone. The
+     * capture froze the page mid-handoff; until 95 lands, the router's
+     * `HandoffAnimator.Instant` reveals the session at once.
+     */
+    @Test
+    fun newSessionFromAccessory() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("new-session").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("new-session.png")
+
+        compose.onNodeWithTag("composer-input").performClick()
+            .performTextInput("Add a dark mode toggle to settings")
+        compose.onNodeWithTag("composer-send").performClick()
+
+        // "hands off into the new session"
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        }
+        // Sending puts the keyboard away.
+        compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.startsWith("You: Add a dark mode toggle"))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        // The handoff ends with the sheet gone and the message in the
+        // transcript (iOS sleeps 1 s before asserting no Close).
+        SystemClock.sleep(1_000)
+        compose.waitForIdle()
+        compose.waitUntil(timeoutMillis = 2_000) {
+            compose.onAllNodesWithContentDescription("Close").fetchSemanticsNodes().isEmpty()
+        }
+        FlowSemantics.saveScreenshot("new-session-created.png")
+    }
+
+    @Ignore("Needs the chips and menus of ui-parity #92/#109/#113/#114 (the draft-remember path)")
     @Test
     fun newSessionRemembersDraftWhenClosed() = fail("unwired: see the @Ignore reason")
 
@@ -1031,7 +1075,8 @@ class SessionFlowTest {
             name.startsWith("tabsAndSearch") ||
             name.startsWith("searchTab") ||
             name.startsWith("pullToRefresh") ||
-            name.startsWith("archiveWithUndo") -> null
+            name.startsWith("archiveWithUndo") ||
+            name.startsWith("newSessionFromAccessory") -> null
         name.startsWith("questionPanel") -> "chat:chat-ask"
         name.startsWith("toolGroupsRender") -> "chat:chat-veil"
         name.startsWith("queue") ||

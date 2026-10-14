@@ -45,6 +45,7 @@ import sh.roboco.android.design.reference.ReferenceGalleryPage
 import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
+import sh.roboco.android.newsession.HandoffCaptureGallerySection
 import sh.roboco.android.newsession.NewSessionCanvasGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.newsession.FolderLocationsGallerySection
@@ -653,6 +654,13 @@ object Gallery {
         // (static fixtures; the live ones are the lab's `meter`/`bench`
         // launch extras).
         GallerySection("Lab meters") { LabMetersGallerySection() },
+        // Ticket 94 (create + first send): the handoff capture — the fake
+        // sheet page with both capture modifiers, the three captured
+        // bitmaps (scene, composer, text rect) and the failure alert
+        // capsule.
+        GallerySection("New session: handoff capture", screenshotHeightDp = 891) {
+            HandoffCaptureGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

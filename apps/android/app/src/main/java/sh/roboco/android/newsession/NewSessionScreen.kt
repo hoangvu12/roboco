@@ -1,22 +1,34 @@
 package sh.roboco.android.newsession
 
+import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import kotlinx.coroutines.CancellationException
+import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.ComposerBar
 import sh.roboco.android.composer.ComposerController
 import sh.roboco.android.composer.SendResult
 import sh.roboco.android.composer.StagedImage
 import sh.roboco.android.composer.rememberComposerController
 import sh.roboco.android.composer.rememberComposerMorphState
+import sh.roboco.android.design.LocalAlerts
+import sh.roboco.android.notify.NotificationPermission
+import sh.roboco.android.notify.findActivity
 import sh.roboco.android.shell.DraftHandoff
+import sh.roboco.android.shell.LocalPageSheetScope
 
 /**
  * The New Session page (android-ui-parity #93) — the port of
@@ -32,8 +44,8 @@ import sh.roboco.android.shell.DraftHandoff
  * page over a fake model (the built-in catalog is FFI — a fake catalog
  * keeps the JVM honest, as in 92's model tests).
  *
- * [onCreated] is 94's: it fires after create + first send. Until then the
- * [bindNewSessionComposer] stub keeps every send `Kept`.
+ * [onCreated] is 94's: it fires after the create + first send, with the
+ * captured handoff (or null when the page left composition mid-flight).
  */
 @Composable
 fun NewSessionScreen(
@@ -48,30 +60,88 @@ fun NewSessionScreen(
     modifier: Modifier = Modifier,
 ) {
     val ns = rememberNewSessionModel(prompt)
-    NewSessionScreenBody(ns, embedded, onClose, focusOnAppear, fileSearch, modifier)
+    NewSessionScreenBody(ns, embedded, onCreated, onClose, focusOnAppear, fileSearch, modifier)
 }
 
 /**
  * The page over a built model: the composer (created with 92's
  * `initialText` and seeded with its `initialImages` **before the first
  * frame**, like iOS's `init`), 92's remember-on-close/background effect,
- * the morph pinned to the card (`alwaysCard`), the focus-on-appear wait and
- * the canvas.
+ * the morph pinned to the card (`alwaysCard`), the focus-on-appear wait,
+ * the canvas — and 94's create + first send: the handoff capture state
+ * on the page and composer roots, the offline `canWrite` gate (Send
+ * disabled, chips live) and the `onSend` handler that creates the chat,
+ * captures the handoff and calls `onCreated`.
  */
 @Composable
 internal fun NewSessionScreenBody(
     ns: NewSessionModel,
     embedded: Boolean,
+    onCreated: (chatId: String, handoff: DraftHandoff?) -> Unit = { _, _ -> },
     onClose: () -> Unit,
     focusOnAppear: Boolean,
     fileSearch: NewSessionFileSearch,
     modifier: Modifier = Modifier,
 ) {
     val composer = rememberComposerController(initialText = ns.initialText)
+
+    // ── 94: the handoff capture, the offline gate, the send handler ─────
+
+    // The capture state: the page root records the scene, the composer
+    // root records the composer. The sheet's own shape (31's 38 dp top
+    // corners) rides into the record — 95 clips the scene picture with
+    // it; the embedded column has no sheet scope, so a rectangle. A
+    // plain field, set in composition, before the first draw.
+    val capture = rememberHandoffCaptureState()
+    capture.sceneShape = LocalPageSheetScope.current?.pageShape ?: RectangleShape
+
+    // The send handler: 92's page model, the core client (71's holder —
+    // `null` before the startup load finishes fails exactly like iOS's
+    // `guard let client`), the ambient alerts, the activity for the
+    // one-time notification ask (android-app#28) and the capture.
+    val alerts = LocalAlerts.current
+    val context = LocalContext.current
+    val app = context.applicationContext as RobocoApplication
+    // Unwrap the ContextWrapper chain to the activity (the ask needs a
+    // ComponentActivity; a preview context unwraps to null and the ask
+    // is skipped).
+    val activity = remember(context) { context.findActivity() as? ComponentActivity }
+    val latestOnCreated by rememberUpdatedState(onCreated)
+    val handler = remember {
+        NewSessionSendHandler(
+            page = ModelNewSessionPage(ns),
+            creator = NewSessionCreator(CoreNewSessionCore { app.clientOrNull() }),
+            alerts = alerts,
+            askAfterFirstSession = {
+                activity?.let { target -> NotificationPermission.askAfterFirstSession(target) }
+            },
+            capture = capture::capture,
+            onCreated = { chatId, handoff -> latestOnCreated(chatId, handoff) },
+        )
+    }
+
+    // The offline gate: Send disabled while the target engine is offline
+    // (79's rule: no grace, no debounce); the chips stay live — the
+    // canvas passes `chipsCanWrite = true` below, so the user can move
+    // off an offline engine. Reading the value here (not only inside
+    // the SideEffect) makes a flip recompose this scope, so the push
+    // below always sees the fresh value.
+    val canWrite by remember {
+        derivedStateOf {
+            val o = ns.currentOptions
+            newSessionCanWrite(ns.draft, o?.projects ?: emptyList(), o?.hosts ?: emptyList())
+        }
+    }
+    val canWriteNow = canWrite
+    SideEffect { composer.canWrite = canWriteNow }
+
     remember(composer) {
         // Runs once, before the first frame (iOS sets these in `init` and
         // `viewDidLoad`).
         bindNewSessionComposer(composer, project = { ns.project }, ns.initialImages, fileSearch)
+        // 94: the real send handler replaces the `Kept` stub the bind
+        // installs for direct-bind tests.
+        composer.onSend = { text, images, _ -> handler.send(text, images) }
         true
     }
     NewSessionDraftEffect(ns, composer)
@@ -89,11 +159,24 @@ internal fun NewSessionScreenBody(
         embedded = embedded,
         onClose = onClose,
         onBackgroundTap = { morph.blur(); keyboard?.hide() },
-        // 94: add its capture modifiers to this ComposerBar modifier when
-        // it wires onSend + onCreated.
-        composer = { ComposerBar(composer, morph, Modifier.testTag("new-session-composer")) },
+        composer = {
+            ComposerBar(
+                composer,
+                morph,
+                Modifier
+                    .testTag("new-session-composer")
+                    .handoffComposer(capture),
+                textHidden = capture.textHidden,
+                onTextRect = capture::onTextRect,
+                chipsCanWrite = true,
+            )
+        },
         state = canvasState,
-        modifier = modifier,
+        // 94: the page root records the scene (its Layout holds the
+        // backdrop, the nav bar and the composer; 31's grabber stays
+        // outside). Chained after the caller's modifier so the recording
+        // covers everything the sheet-sized node draws.
+        modifier = modifier.handoffScene(capture),
     )
 }
 
@@ -112,7 +195,8 @@ internal fun NewSessionScreenBody(
  *   project read **at call time** (`self.project`, `:236`), `chatId = null`,
  *   and errors read as no matches (the `try?` of `AppModel.swift:607-610`).
  *   Cancellation still propagates: 86 uses it to drop stale queries;
- * - the `Kept` send stub 94 replaces.
+ * - the `Kept` send stub, which the screen overwrites with 94's real
+ *   handler (direct-bind tests keep the stub).
  */
 internal fun bindNewSessionComposer(
     composer: ComposerController,
