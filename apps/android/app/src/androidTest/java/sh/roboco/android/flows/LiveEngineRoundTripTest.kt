@@ -85,9 +85,9 @@ class LiveEngineRoundTripTest {
         //    placeholder (ui-parity #92/#113), so the round-trip runs on
         //    the fixture's seeded `chat-deploy` — the same wire path.)
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithTag("session-chat-deploy").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-deploy").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }

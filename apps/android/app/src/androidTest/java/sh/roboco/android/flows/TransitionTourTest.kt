@@ -1,8 +1,13 @@
 package sh.roboco.android.flows
 
+import android.os.ParcelFileDescriptor
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Configurator
 import androidx.test.uiautomator.UiDevice
+import java.util.regex.Pattern
+import sh.roboco.android.shell.ScopedIds
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -15,9 +20,10 @@ import org.junit.runner.RunWith
  * (`android-emulator-tablet`, push/dispatch only) runs it and the
  * artefact copy pulls the recordings.
  *
- * `adb shell screenrecord` runs in a background shell thread (bounded at
- * 180 s, the `--time-limit` cap); the tour stops it at the end with
- * `pkill -INT screenrecord` so the mp4 finalizes. Recordings land in
+ * `screenrecord` runs through the one UiAutomation connection (bounded at
+ * 180 s, the `--time-limit` cap; `executeShellCommand` is already
+ * asynchronous); the tour stops it at the end with `pkill -INT
+ * screenrecord` so the mp4 finalizes. Recordings land in
  * `/sdcard/roboco-tour-<name>.mp4`, where `flow-tests.sh`'s artefact
  * step picks them up.
  */
@@ -39,7 +45,7 @@ class TransitionTourTest {
             waitForText("Sessions")
             sleep(1_000)
             // Push a session, then pop.
-            tapTag("session-chat-cjk")
+            tapSession("chat-cjk")
             waitForTag("transcript")
             sleep(2_000)
             device.pressBack()
@@ -70,7 +76,7 @@ class TransitionTourTest {
         record("push-pop") {
             waitForText("Sessions")
             sleep(1_000)
-            tapTag("session-chat-cjk")
+            tapSession("chat-cjk")
             sleep(2_000)
             device.pressBack()
             sleep(2_000)
@@ -110,6 +116,18 @@ class TransitionTourTest {
         device.findObject(androidx.test.uiautomator.By.res(appPackage, tag))?.click()
     }
 
+    /**
+     * Taps a session row by the engine's raw chat id: the row's tag is
+     * `session-<scoped id>` (`engine:v1:…`) on a paired phone, never
+     * `session-chat-cjk` — see [FlowSemantics.sessionRow].
+     */
+    private fun tapSession(rawChatId: String) {
+        device.findObjects(By.res(Pattern.compile(".*session-.*"))).firstOrNull { row ->
+            val id = row.resourceName?.substringAfter("session-")
+            id != null && (id == rawChatId || ScopedIds.rawId(id) == rawChatId)
+        }?.click()
+    }
+
     private fun sleep(ms: Long) {
         // The tour's whole point is watching the animations run — the
         // sleeps are the tour's content, not state waits.
@@ -121,22 +139,24 @@ class TransitionTourTest {
      * `/sdcard/roboco-tour-<name>.mp4`.
      */
     private fun record(name: String, body: () -> Unit) {
-        val recorder = Thread {
-            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
-                "screenrecord --time-limit 180 /sdcard/roboco-tour-$name.mp4",
-            )
-        }
-        recorder.isDaemon = true
-        recorder.start()
+        // UiDevice first, then the UiAutomation with UiDevice's own flags,
+        // both on this thread: getUiAutomation() with other flags tears down
+        // and reconnects the shared connection, and the old recorder
+        // thread's concurrent connect raced it ("Calling from not trusted
+        // UID!" / "Already connected.", run 38531061823).
+        device
+        val automation = InstrumentationRegistry.getInstrumentation()
+            .getUiAutomation(Configurator.getInstance().uiAutomationFlags)
+        // Asynchronous: returns at once; the fd reaches EOF when screenrecord exits.
+        val recording = automation.executeShellCommand("screenrecord --time-limit 180 /sdcard/roboco-tour-$name.mp4")
         try {
             body()
         } finally {
-            // Finalize the recording (SIGINT makes screenrecord close the
-            // mp4); give it a beat to flush.
-            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
-                "pkill -INT screenrecord || true",
-            )
-            recorder.join(2_000)
+            // No shell here (Runtime.exec): a `|| true` would reach pkill as
+            // arguments. SIGINT makes screenrecord finalize the mp4.
+            automation.executeShellCommand("pkill -INT screenrecord").close()
+            // Wait for screenrecord to exit (EOF), bounded by its 180 s limit.
+            runCatching { ParcelFileDescriptor.AutoCloseInputStream(recording).use { it.readBytes() } }
         }
     }
 }

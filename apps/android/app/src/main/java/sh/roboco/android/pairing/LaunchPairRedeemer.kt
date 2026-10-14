@@ -42,31 +42,43 @@ class LaunchPairRedeemer(
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
-    /** Redeems every URL in order; the first failure does not stop the rest. */
-    fun redeem(urls: List<String>) {
+    /**
+     * Redeems every URL in order; the first failure does not stop the rest.
+     * [onDone] receives the number of engines paired (0 when the client
+     * never came up), on [scope]'s dispatcher, once every URL was tried.
+     */
+    fun redeem(urls: List<String>, onDone: (redeemed: Int) -> Unit = {}) {
         if (urls.isEmpty()) return
         scope.launch {
-            val core = awaitClient()
-            if (core == null) {
-                Log.w(TAG, "pair extra: no client within ${STARTUP_TIMEOUT_MS} ms; nothing redeemed")
-                return@launch
-            }
-            for (url in urls) {
-                redeemOne(core, url)
+            var redeemed = 0
+            try {
+                val core = awaitClient()
+                if (core == null) {
+                    Log.w(TAG, "pair extra: no client within ${STARTUP_TIMEOUT_MS} ms; nothing redeemed")
+                    return@launch
+                }
+                for (url in urls) {
+                    if (redeemOne(core, url)) redeemed++
+                }
+            } finally {
+                onDone(redeemed)
             }
         }
     }
 
-    private suspend fun redeemOne(core: CoreClient, url: String) {
-        try {
+    /** True when the engine was paired (persisted or not — see [persist]). */
+    private suspend fun redeemOne(core: CoreClient, url: String): Boolean {
+        return try {
             val engine = withContext(io) { core.pairEngine(url, null) }
             persist(engine)
+            true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             // Class name only — the URL carries the token (the redaction
             // rule PairPageModel's background-failure log follows).
             Log.w(TAG, "pair extra: redeem failed (${error::class.simpleName})")
+            false
         }
     }
 

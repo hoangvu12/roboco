@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.BackEventCompat
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -138,15 +139,15 @@ class SessionFlowTest {
         // Sections fold in place, like the desktop sidebar: the pinned row
         // leaves the tree when the header folds and returns on unfold.
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("session-chat-veil").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("section-pinned").performClick()
         compose.waitUntil(timeoutMillis = 2_000) {
-            compose.onAllNodesWithTag("session-chat-veil").fetchSemanticsNodes().isEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isEmpty()
         }
         compose.onNodeWithTag("section-pinned").performClick()
         compose.waitUntil(timeoutMillis = 2_000) {
-            compose.onAllNodesWithTag("session-chat-veil").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
         }
 
         // Long-press → Open drills into the folder (reorder lives there).
@@ -167,12 +168,16 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onAllNodesWithContentDescription("Settings")[0].performClick()
+        // The tab cells expose their title as merged Text plus the
+        // `tab-<identifier>` tag (GlassTabBar), never a content description —
+        // the old `onAllNodesWithContentDescription("Settings")[0]` matched
+        // nothing ("Failed to inject touch input", run 38531061823).
+        compose.onNodeWithTag("tab-more").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isNotEmpty()
         }
         FlowSemantics.saveScreenshot("settings-tab.png")
-        compose.onAllNodesWithContentDescription("Sessions")[0].performClick()
+        compose.onNodeWithTag("tab-sessions").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
         }
@@ -187,8 +192,9 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
         }
-        for (back in listOf("Sessions", "Settings")) {
-            compose.onAllNodesWithContentDescription(back)[0].performClick()
+        // The tabs by their `tab-<identifier>` tags (see tabsAndSearch).
+        for (back in listOf("tab-sessions", "tab-more")) {
+            compose.onNodeWithTag(back).performClick()
             compose.waitForIdle()
             compose.onAllNodesWithContentDescription("Search")[0].performClick()
             compose.waitUntil(timeoutMillis = 5_000) {
@@ -270,9 +276,9 @@ class SessionFlowTest {
         compose.waitForIdle()
         device.pressBack() // pop to the sessions list
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("session-chat-deploy").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-deploy").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
@@ -361,7 +367,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-long").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-long")).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithContentDescription("More queue actions").fetchSemanticsNodes().isNotEmpty()
         }
@@ -588,9 +594,9 @@ class SessionFlowTest {
     @Test
     fun archiveWithUndo() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithTag("session-chat-deploy").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-deploy").performTouchInput { swipeLeft() }
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performTouchInput { swipeLeft() }
         compose.waitUntil(timeoutMillis = 3_000) {
             compose.onAllNodesWithText("Archive").fetchSemanticsNodes().isNotEmpty()
         }
@@ -601,7 +607,7 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("archive-undo.png")
         compose.onNodeWithTag("toast-action").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("session-chat-deploy").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
@@ -614,13 +620,13 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Expand").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onAllNodesWithContentDescription("Expand")[0].performClick()
+        onScreen("Expand").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Show details").fetchSemanticsNodes().isNotEmpty()
         }
         FlowSemantics.saveScreenshot("tools-expanded.png")
         // Details open inline under the row, like desktop.
-        compose.onAllNodesWithContentDescription("Show details")[0].performClick()
+        onScreen("Show details").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Hide details").fetchSemanticsNodes().isNotEmpty()
         }
@@ -641,7 +647,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Expand").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onAllNodesWithContentDescription("Expand")[0].performClick()
+        onScreen("Expand").performClick()
         compose.waitForIdle()
         FlowSemantics.saveScreenshot("tool-groups.png")
         val details = compose.onAllNodesWithContentDescription("Show details")
@@ -657,9 +663,9 @@ class SessionFlowTest {
         compose.waitForIdle()
         device.pressBack()
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("session-chat-long").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-long")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-long").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-long")).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
@@ -1021,6 +1027,12 @@ class SessionFlowTest {
 
         compose.onNodeWithTag("composer-input").performClick()
             .performTextInput("Add a dark mode toggle to settings")
+        // The first send runs the first-session notification ask
+        // (NotificationPermission.askAfterFirstSession): on API 33+ the
+        // system dialog pauses MainActivity and the compose waits below find
+        // no hierarchy (run 38531061823). Not this test's subject — granted
+        // up front, as NotificationFlowTest / RunWatchServiceTest do.
+        device.executeShellCommand("pm grant ${app.packageName} android.permission.POST_NOTIFICATIONS")
         compose.onNodeWithTag("composer-send").performClick()
 
         // "hands off into the new session"
@@ -1101,6 +1113,21 @@ class SessionFlowTest {
         name.startsWith("jumpToLatest") ||
             name.startsWith("scrollingUp") -> setOf(FixtureEngine.Main)
         else -> setOf(FixtureEngine.Main)
+    }
+
+    /**
+     * The last **displayed** node with [description]. The transcript
+     * composes rows in an overscan band beyond the viewport, so `[0]` of a
+     * content-description query can be a group above the visible window —
+     * a click injected there hits nothing (toolGroupExpandsAndShowsDetail,
+     * run 38531061823: no haptic, no expansion). The list is
+     * bottom-anchored, so the last on-screen match is the newest.
+     */
+    private fun onScreen(description: String): SemanticsNodeInteraction {
+        val nodes = compose.onAllNodesWithContentDescription(description)
+        val count = nodes.fetchSemanticsNodes().size
+        val index = (count - 1 downTo 0).firstOrNull { nodes[it].isDisplayed() } ?: (count - 1)
+        return nodes[index]
     }
 
     /** The verbatim iOS form (`SessionFlowTests.swift:215`). */

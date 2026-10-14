@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import sh.roboco.android.background.RunWatchController
 import sh.roboco.android.composer.CoreChipMenuCore
 import sh.roboco.android.composer.Drafts
@@ -195,9 +196,38 @@ class RobocoApplication : Application() {
         )
     }
 
+    /**
+     * android-app#30: true from [redeemLaunchPairs] until the redeemed
+     * engine is in the engine list (or nothing was redeemed). While it is
+     * up, an empty engine list reads as `Loading`, not the pairing root: a
+     * fresh install starts `Ready` with no engines, and the pairing root
+     * would make the deep-link hub drop the held `route` extra
+     * (`DeepLinkHub.showingPairingRoot` clears it) before the redeem lands.
+     */
+    private val launchPairGate = MutableStateFlow(false)
+
     /** android-app#30: redeem the `pair` extra's URLs (debug builds only —
      * `LaunchOptions.parse` drops the extra otherwise). */
-    fun redeemLaunchPairs(urls: List<String>) = launchPairRedeemer.redeem(urls)
+    fun redeemLaunchPairs(urls: List<String>) {
+        if (urls.isEmpty()) return
+        launchPairGate.value = true
+        launchPairRedeemer.redeem(urls) { redeemed ->
+            if (redeemed == 0) {
+                launchPairGate.value = false
+            } else {
+                // The engine list refreshes on the core's EnginesChanged
+                // event, which can trail pairEngine's return: keep the gate
+                // until the list shows an engine, bounded by the
+                // first-frame hold's budget.
+                applicationScope.launch {
+                    withTimeoutOrNull(LAUNCH_PAIR_GATE_MS) {
+                        coreStartup.engines.first { !it.isNullOrEmpty() }
+                    }
+                    launchPairGate.value = false
+                }
+            }
+        }
+    }
 
     /**
      * The phone-local per-chat draft store (ticket 84) — unsent composer
@@ -465,13 +495,17 @@ class RobocoApplication : Application() {
         // known, so a paired user never sees the pairing root flash.
         rootInput = when (val c = core) {
             is CoreStatus.Failed -> MutableStateFlow(RootInput.CoreFailed(c.reason))
-            is CoreStatus.Loaded -> combine(coreStartup.state, coreStartup.engines) { s, engines ->
+            is CoreStatus.Loaded -> combine(coreStartup.state, coreStartup.engines, launchPairGate) { s, engines, pairing ->
                 when (s) {
                     CoreStartState.Loading -> RootInput.Loading
                     is CoreStartState.Failed -> RootInput.CoreFailed(s.reason)
-                    CoreStartState.Ready ->
-                        engines?.let { RootInput.Ready(hasEngines = it.isNotEmpty()) }
-                            ?: RootInput.Loading
+                    CoreStartState.Ready -> when {
+                        engines == null -> RootInput.Loading
+                        // android-app#30: the launch `pair` extra is still
+                        // being redeemed — no pairing root (see launchPairGate).
+                        engines.isEmpty() && pairing -> RootInput.Loading
+                        else -> RootInput.Ready(hasEngines = engines.isNotEmpty())
+                    }
                 }
             }.distinctUntilChanged()
                 .stateIn(applicationScope, SharingStarted.Eagerly, RootInput.Loading)
@@ -632,3 +666,9 @@ private fun WorkspaceSnapshot?.allSessionIds(): List<String> {
         addAll(archived.map { it.id })
     }.distinct()
 }
+
+/**
+ * The launch-pair gate's bound (android-app#30): the first-frame hold's own
+ * budget for a `pair` launch (`MainActivity.PAIR_HOLD_TIMEOUT_MS`).
+ */
+private const val LAUNCH_PAIR_GATE_MS = 20_000L

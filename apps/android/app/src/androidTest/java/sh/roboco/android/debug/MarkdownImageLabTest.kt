@@ -43,6 +43,15 @@ class MarkdownImageLabTest {
     /** The lab's served image, verbatim from pr817's demo fixture. */
     private val served = "/workspace/calculator/5-plus-3.png"
 
+    /**
+     * The served tile's alt text. The lab's extras fixture (`a0`,
+     * `LAB_IMAGES_EXTRAS_FIXTURE`) reuses the same path for its First /
+     * Quoted / Linked / Logo / Cell tiles, so the reference alone matched
+     * whichever of those composed first ("Linked" on CI, run
+     * 38531061823) — the served tile is the reference **and** this label.
+     */
+    private val servedAlt = "Calculation result: 8"
+
     /** The missing image (outside the engine's path jail). */
     private val missing = "/tmp/calculator-result/missing.png"
 
@@ -58,10 +67,10 @@ class MarkdownImageLabTest {
     fun markdownImageLoadsAndOpensPreview() {
         Intents.init()
         try {
-            compose.waitUntil(10_000) { tileState(served) == "Image loaded" }
-            assertEquals("the alt text is the tile's label", "Calculation result: 8", tileLabel(served))
+            compose.waitUntil(10_000) { tileState(served, servedAlt) == "Image loaded" }
+            assertEquals("the alt text is the tile's label", servedAlt, tileLabel(served, servedAlt))
 
-            tile(served).performClick()
+            tile(served, servedAlt).performClick()
             compose.waitForIdle()
             compose.onNodeWithTag("image-preview").assertExists()
             assertEquals(
@@ -81,7 +90,7 @@ class MarkdownImageLabTest {
             // Close: back to the transcript, the tile still there.
             compose.onNodeWithTag("image-preview-close").performClick()
             compose.waitForIdle()
-            tile(served).assertExists()
+            tile(served, servedAlt).assertExists()
         } finally {
             Intents.release()
         }
@@ -114,22 +123,27 @@ class MarkdownImageLabTest {
             .putExtra("turns", 1)
             .putExtra("images", true)
 
-    /** The tile's matcher, by its `ImageTileReferenceKey`. */
-    private fun tileOf(reference: String) = SemanticsMatcher("transcript-image for $reference") {
-        it.config.getOrNull(ImageTileReferenceKey) == reference
-    }
+    /**
+     * The tile's matcher, by its `ImageTileReferenceKey` and, when given,
+     * its alt-text label (one path can back several tiles).
+     */
+    private fun tileOf(reference: String, label: String? = null) =
+        SemanticsMatcher("transcript-image for $reference${label?.let { " ($it)" } ?: ""}") {
+            it.config.getOrNull(ImageTileReferenceKey) == reference &&
+                (label == null || it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull() == label)
+        }
 
     /** The tile's interaction. */
-    private fun tile(reference: String) = compose.onNode(tileOf(reference))
+    private fun tile(reference: String, label: String? = null) = compose.onNode(tileOf(reference, label))
     /** The tile's a11y value (`stateDescription`), or null before it exists. */
-    private fun tileState(reference: String): String? =
-        compose.onAllNodes(tileOf(reference)).fetchSemanticsNodes().firstOrNull()
-            ?.config?.get(SemanticsProperties.StateDescription)
+    private fun tileState(reference: String, label: String? = null): String? =
+        compose.onAllNodes(tileOf(reference, label)).fetchSemanticsNodes().firstOrNull()
+            ?.config?.getOrNull(SemanticsProperties.StateDescription)
 
     /** The tile's a11y label (`contentDescription`). */
-    private fun tileLabel(reference: String): String? =
-        compose.onAllNodes(tileOf(reference)).fetchSemanticsNodes().firstOrNull()
-            ?.config?.get(SemanticsProperties.ContentDescription)?.firstOrNull()
+    private fun tileLabel(reference: String, label: String? = null): String? =
+        compose.onAllNodes(tileOf(reference, label)).fetchSemanticsNodes().firstOrNull()
+            ?.config?.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()
 
     /** The lab's activity, via the scenario (the FixtureRule pattern). */
     private fun ActivityScenarioRule<TranscriptLabActivity>.mountedLabActivity(): TranscriptLabActivity {

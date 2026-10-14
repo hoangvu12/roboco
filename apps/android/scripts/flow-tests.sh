@@ -94,15 +94,16 @@ done
 # 3. The suite. The @Tour tests (motion recordings) run in the tablet job
 #    (FLOW_INCLUDE_TOUR=1); the physical-device bench runs on a real
 #    device, never here.
-#    The runner's notAnnotation filter (comma-separated) keeps out what this
-#    device cannot run - an assumption failure would be reported as a
-#    failure here, not a skip: @PhysicalDeviceOnly always, and on the phone
-#    run @Tour plus @TabletOnly (the tablet job runs both).
-EXCLUDE="sh.roboco.android.flows.PhysicalDeviceOnly"
-if [[ "${FLOW_INCLUDE_TOUR:-0}" != "1" ]]; then
-  EXCLUDE="$EXCLUDE,sh.roboco.android.flows.Tour,sh.roboco.android.flows.TabletOnly"
+#    The device filters live in the app's RobocoTestRunner (an assumption
+#    failure would be reported as a failure here, not a skip): it drops
+#    @TabletOnly below 600 dp, @PhysicalDeviceOnly on an emulator, @Ignore
+#    rows, and @Tour unless flowIncludeTour=true. A comma-separated
+#    notAnnotation argument arrived cut at its first comma on CI, so only
+#    this single-value flag crosses the instrumentation boundary.
+TOUR_ARGS=()
+if [[ "${FLOW_INCLUDE_TOUR:-0}" == "1" ]]; then
+  TOUR_ARGS=("-Pandroid.testInstrumentationRunnerArguments.flowIncludeTour=true")
 fi
-TOUR_ARGS=("-Pandroid.testInstrumentationRunnerArguments.notAnnotation=$EXCLUDE")
 ./gradlew :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
