@@ -117,11 +117,21 @@ impl CoreClient {
         pairing_url: String,
         replace_engine_id: Option<String>,
     ) -> Result<PairedEngine, PairError> {
-        self.client
-            .pair_engine(&pairing_url, replace_engine_id)
+        // On the client runtime, like every other async export (`on_runtime`
+        // is typed for `ClientError`): UniFFI polls this future on the
+        // foreign executor, where the redeem's HTTP request, the dial and
+        // the tokio timers have no reactor and panic — surfacing in Kotlin
+        // as `InternalException` (the flow rig's every redeem failed so).
+        let client = self.client.clone();
+        match mc::runtime::shared()
+            .spawn(async move { client.pair_engine(&pairing_url, replace_engine_id).await })
             .await
-            .map(PairedEngine::from)
-            .map_err(PairError::from)
+        {
+            Ok(result) => result.map(PairedEngine::from).map_err(PairError::from),
+            Err(err) => Err(PairError::Failed {
+                message: format!("pairing task failed: {err}"),
+            }),
+        }
     }
 
     /// Every paired engine, in pairing order.
@@ -170,7 +180,12 @@ impl CoreClient {
     /// Pull-to-refresh: reconnect everything not connected, probe every
     /// connected feed; resolves within the refresh cap.
     pub async fn refresh(&self) {
-        self.client.refresh().await;
+        // On the client runtime: `refresh` tokio::spawns its waits, which
+        // panics on UniFFI's foreign executor (see `pair_engine`).
+        let client = self.client.clone();
+        let _ = mc::runtime::shared()
+            .spawn(async move { client.refresh().await })
+            .await;
     }
 
     /// The aggregate connectivity posture.
