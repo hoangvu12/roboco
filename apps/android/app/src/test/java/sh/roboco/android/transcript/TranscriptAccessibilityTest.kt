@@ -10,6 +10,7 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -486,22 +487,16 @@ class TranscriptAccessibilityTest {
                 )
             }
 
-            codeRow.performSemanticsAction(SemanticsActions.CustomActions) { acts ->
-                acts.first { it.label == "Copy" }.action()
-            }
+            runCustomAction(codeRow, "Copy")
             compose.waitForIdle()
             assertEquals(codeBlock, clipText())
             assertEquals("Roboco", clipboard().primaryClip!!.description.label.toString())
 
-            codeRow.performSemanticsAction(SemanticsActions.CustomActions) { acts ->
-                acts.first { it.label == "Copy Message" }.action()
-            }
+            runCustomAction(codeRow, "Copy Message")
             compose.waitForIdle()
             assertEquals(message, clipText())
 
-            codeRow.performSemanticsAction(SemanticsActions.CustomActions) { acts ->
-                acts.first { it.label == "Select Text" }.action()
-            }
+            runCustomAction(codeRow, "Select Text")
             compose.waitForIdle()
             assertEquals(listOf(message), selectTextCalls)
             assertEquals("no link was activated", 0, taps)
@@ -642,5 +637,16 @@ class TranscriptAccessibilityTest {
         const val DOCS = "https://example.com/docs"
         const val WIKI = "https://ja.wikipedia.org/wiki/x"
         const val TABLE = "https://en.wikipedia.org/wiki/Table"
+    }
+
+    /**
+     * Runs the node's custom action labelled [label]. CustomActions is a
+     * SemanticsPropertyKey<List<CustomAccessibilityAction>>, not an
+     * AccessibilityAction key, so performSemanticsAction does not apply: read
+     * the list off the node and invoke the matching action on the UI thread.
+     */
+    private fun runCustomAction(node: SemanticsNodeInteraction, label: String) {
+        val action = node.fetchSemanticsNode().config[SemanticsActions.CustomActions].first { it.label == label }
+        compose.runOnUiThread { action.action() }
     }
 }
