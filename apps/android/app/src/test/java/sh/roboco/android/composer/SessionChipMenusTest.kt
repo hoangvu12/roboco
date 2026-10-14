@@ -68,7 +68,6 @@ class SessionChipMenusTest {
         val setConfigs = mutableListOf<ChatConfig>()
 
         /** Ended `setSessionConfig` calls, failed or not (volatile: polled across threads). */
-        @Volatile
         @Volatile private var writeCount = 0
 
         override fun sessionRow(): SessionRow? {
