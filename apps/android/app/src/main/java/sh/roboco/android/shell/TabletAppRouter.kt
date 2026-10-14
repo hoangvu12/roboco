@@ -399,10 +399,16 @@ class TabletAppRouter(
     /**
      * Ticket 108's `SplitDetailColumn.showSession` (iOS `:180-183`): the
      * detail open stripped of `openSession`'s steps 1-5 — no
-     * `dismissPresented`, no same-id/pending early return, no
-     * `phone.clearPending()`. Just [resolve] with the same result handling.
+     * `dismissPresented`, no same-id/pending early return — plus the one
+     * step the ticket keeps from its expand sketch: [phone.clearPending],
+     * so a phone call queued while collapsed (stale by the time the
+     * widen's detail open runs) is dropped. Otherwise just [resolve] with
+     * the same result handling.
      */
-    fun showSessionInDetail(chatId: String) = resolve(chatId) { route -> applyOpened(chatId, route) }
+    fun showSessionInDetail(chatId: String) {
+        phone.clearPending()
+        resolve(chatId) { route -> applyOpened(chatId, route) }
+    }
 
     /**
      * Ticket 108's `SplitDetailColumn.clear` (iOS `:164`): pending opens

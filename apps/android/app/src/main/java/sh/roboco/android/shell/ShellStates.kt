@@ -171,7 +171,7 @@ fun ShellStateScope(kind: RootKind, content: @Composable () -> Unit) {
 /**
  * The test seam: [detailOverride] / [tabsOverride] replace
  * [TabletDetailColumn] / [MainTabsColumn] in the [CarryOver] when
- * non-null, so [ShellStateScopeTest] can record the transition without
+ * non-null, so `ShellStateScopeTest` can record the transition without
  * 106's real router driving the column.
  */
 @Composable
