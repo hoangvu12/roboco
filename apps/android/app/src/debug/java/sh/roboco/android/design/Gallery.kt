@@ -56,6 +56,7 @@ import sh.roboco.android.shell.ChromeVisibilityGallerySection
 import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
+import sh.roboco.android.pairing.QrScannerGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
 import sh.roboco.android.session.SessionNavGallerySection
 import sh.roboco.android.session.JumpToLatestGallerySection
@@ -674,6 +675,15 @@ object Gallery {
         // tile sizes — Loading/Loaded/Failed, compact and full, retry and
         // the unfetchable remote — over the Rust placeholder boxes.
         GallerySection("Image tile states", screenshotHeightDp = 1300) { ImageTileStatesGallerySection() },
+        // Ticket 138 (QR scanner): the forced-dark camera stage over the
+        // fake preview — the reticle, caption and the ✕ in the image
+        // viewer's placement, with the phase/foreign toggles (the real
+        // 2 s foreign timer), the denied state's Open Settings capsule and
+        // a Launch real scanner row that reports only the scan's length
+        // and parse verdict. Fill: the stage owns the full body.
+        GallerySection("QR scanner", GalleryLayout.Fill) {
+            QrScannerGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

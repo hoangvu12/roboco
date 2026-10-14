@@ -604,6 +604,20 @@ dependencies {
     // POM licence automatically.
     implementation(libs.reorderable)
 
+    // The QR scanner (ui-parity#138): CameraX (core + camera2 backend +
+    // lifecycle + view — `LifecycleCameraController`/`PreviewView`) and
+    // ZXing's plain core. Both Apache-2.0, ABI-free and Play-services-free
+    // (android-app#18's decision: ML Kit was rejected), so they land in the
+    // AboutLibraries JSON (101) automatically. Never ZXing's embedded
+    // Android artifact (it brings its own Activity and UI) and never
+    // camera-compose (a Material-free AndroidView hosts the PreviewView
+    // directly).
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.core)
+
     implementation(libs.kotlinx.coroutines.android)
     // Engine-credential storage (ticket 71): no-backup Preferences DataStore.
     // androidx.security:security-crypto is deliberately absent (deprecated

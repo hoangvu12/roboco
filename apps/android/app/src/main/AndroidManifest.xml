@@ -21,6 +21,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- The QR scanner (ui-parity #138). CAMERA implies the camera
+         features as required=true, which would hide the app from
+         camera-less devices; every one of them is optional here (the
+         Pair page hides its Scan row on FEATURE_CAMERA_ANY instead). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <!-- ui-parity #126: Custom Tabs provider visibility (Android 11+
          package visibility). Without this <queries> entry
          CustomTabsClient.getPackageName returns null on API 30+ and every
@@ -79,6 +87,17 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <!-- The QR scanner (ui-parity #138): a separate exported=false
+             activity, so CameraX, the permission dialog and the trip to
+             system Settings get a clean lifecycle; the result carries the
+             scanned URL back to the Pair page's launcher. configChanges
+             keeps the camera session alive across rotation (Compose
+             relayouts). -->
+        <activity
+            android:name=".pairing.QrScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Roboco.Scanner"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
         <!-- android-app#28: the run-watching foreground service (type
              dataSync; type decision table in the ticket). Runs only while a
              run is Working and notifications are on; never started from the

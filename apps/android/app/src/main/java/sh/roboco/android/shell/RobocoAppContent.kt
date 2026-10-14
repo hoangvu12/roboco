@@ -34,6 +34,7 @@ import sh.roboco.android.pairing.PairingRoot
 import sh.roboco.android.pairing.ProvidePairPage
 import sh.roboco.android.pairing.StorePairedEngineSink
 import sh.roboco.android.pairing.pairingRootStatus
+import sh.roboco.android.pairing.rememberQrScanRequest
 import sh.roboco.android.sessions.LocalRowActions
 
 /**
@@ -122,10 +123,14 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                                 // not be rebuilt mid-redeem).
                                 val backend = remember(client) { CoreClientPairingBackend(client) }
                                 val store = remember(app) { StorePairedEngineSink(app.engineStore, app.coreStartup) }
+                                // 138: the real scanner — the Pair page's
+                                // Scan QR row appears (72) whenever a
+                                // camera exists.
+                                val qrScan = rememberQrScanRequest()
                                 ProvidePairPage(
                                     backend = backend,
                                     store = store,
-                                    qrScan = null, // 138 lands the scanner
+                                    qrScan = qrScan,
                                 ) {
                                     // 139: the inbound pairing-link handler
                                     // (deep links and shares). Registered only
@@ -149,9 +154,9 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
  * [AppRoot] with the Pair page hook wired (72's step 8): the root
  * content, one body for both the launcher-present and
  * launcher-absent cases, with [pairPage] read **outside** the pairing
- * lambda. 138 replaces `qrScan = null`; 139 derives the root's status
- * line from [pairPage] (its snapshot-backed `current`/`isShowing`)
- * instead of the hoisted `mutableStateOf` nobody wrote.
+ * lambda. 138 wired the real `QrScanRequest` ([rememberQrScanRequest]);
+ * 139 derives the root's status line from [pairPage] (its
+ * snapshot-backed `current`/`isShowing`) via `pairingRootStatus(pairPage)`.
  */
 @Composable
 private fun AppRootWithPairing(
