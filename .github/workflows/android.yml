@@ -202,7 +202,9 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Core sizes", "", "$($fence)json", $sizes, $fence, ""
           }
       - name: Upload the debug APK
-        if: matrix.upload
+        # Not gated on the JVM tests: assembleDebug runs first in the same
+        # Gradle call, so a test failure still leaves an installable APK.
+        if: ${{ !cancelled() && matrix.upload }}
         uses: actions/upload-artifact@v4
         with:
           name: roboco-android-debug
