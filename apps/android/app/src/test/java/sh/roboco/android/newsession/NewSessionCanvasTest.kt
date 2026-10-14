@@ -391,13 +391,14 @@ class NewSessionCanvasTest {
 
         val d = density
         for (frame in 1..10) {
-            // 31's imePadding: the host shrinks and the canvas is told the
-            // same IME was consumed — the composer's page position rides
-            // the keyboard top, the wallpaper keeps the IME-less height.
+            // 31's imePadding: the host shrinks by the IME and the canvas
+            // is told the same IME was consumed (`bottom = 0`,
+            // `imeAbove = ime`) — the composer's page position rides the
+            // keyboard top, the wallpaper keeps the IME-less height.
             val ime = 336f * frame / 10f
             compose.runOnUiThread {
                 padState.value = ime.dp
-                insetsState.value = CanvasInsets(0f, 0f, 0f, ime, ime)
+                insetsState.value = CanvasInsets(0f, 0f, 0f, 0f, ime)
             }
             Snapshot.sendApplyNotifications()
             compose.mainClock.advanceTimeByFrame()
