@@ -21,7 +21,6 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.unit.isEmpty
 import androidx.compose.ui.unit.toIntSize
 import androidx.compose.ui.unit.toSize
 import kotlin.coroutines.cancellation.CancellationException
@@ -138,8 +137,10 @@ class HandoffCaptureState internal constructor(
         // 0. The guards — iOS's `guard let window`, in Compose form.
         val scene = sceneCoords?.takeIf { it.isAttached } ?: return null
         val composer = composerCoords?.takeIf { it.isAttached } ?: return null
-        if (scene.size.isEmpty() || composer.size.isEmpty()) return null
-        if (sceneLayer.size.isEmpty() || composerLayer.size.isEmpty()) return null
+        if (scene.size.width == 0 || scene.size.height == 0) return null
+        if (composer.size.width == 0 || composer.size.height == 0) return null
+        if (sceneLayer.size.width == 0 || sceneLayer.size.height == 0) return null
+        if (composerLayer.size.width == 0 || composerLayer.size.height == 0) return null
         if (textRect == null) return null
         try {
             // 1. The freeze: the pre-send page (composer and text
