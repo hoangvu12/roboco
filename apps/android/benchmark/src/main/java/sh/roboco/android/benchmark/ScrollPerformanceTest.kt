@@ -32,7 +32,7 @@ class ScrollPerformanceTest {
     val rule = MacrobenchmarkRule()
 
     /** The transcript host box, with Macrobenchmark's gesture margin. */
-    private fun MacrobenchmarkScope.list() =
+    private fun MacrobenchmarkScope.transcriptList() =
         checkNotNull(device.findObject(By.res("transcript"))) { "transcript host not found" }
             .also { it.setGestureMargin(device.displayWidth / 5) }
 
@@ -50,7 +50,7 @@ class ScrollPerformanceTest {
             awaitTranscript()
         },
     ) {
-        val list = list()
+        val list = transcriptList()
         list.fling(Direction.UP)
         list.fling(Direction.UP)
         list.fling(Direction.DOWN)
@@ -73,7 +73,7 @@ class ScrollPerformanceTest {
             SystemClock.sleep(1_500)
         },
     ) {
-        val list = list()
+        val list = transcriptList()
         // iOS `swipeDown(.slow)` then `swipeUp(.fast)`.
         list.swipe(Direction.DOWN, 0.6f, 1500)
         list.fling(Direction.DOWN)

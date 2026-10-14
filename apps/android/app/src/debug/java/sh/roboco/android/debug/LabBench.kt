@@ -8,6 +8,7 @@ import android.util.AtomicFile
 import android.util.Log
 import android.view.Display
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.absoluteOffset
@@ -23,14 +24,17 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.metrics.performance.FrameData
 import androidx.metrics.performance.FrameDataApi31
 import androidx.metrics.performance.JankStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalIsDark
 import sh.roboco.android.design.LocalTypeScale
+import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.transcript.TranscriptPerf
 import java.io.File
 import java.io.IOException
@@ -304,6 +308,29 @@ fun BenchResultLabel(json: String, modifier: Modifier = Modifier) {
                 ),
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+    }
+}
+
+// ------------------------------------------------------------ previews
+
+@Preview
+@Composable
+private fun BenchResultLabelLightPreview() {
+    BenchResultLabelPreviewBody(Appearance.Light)
+}
+
+@Preview
+@Composable
+private fun BenchResultLabelDarkPreview() {
+    BenchResultLabelPreviewBody(Appearance.Dark)
+}
+
+@Composable
+private fun BenchResultLabelPreviewBody(appearance: Appearance) {
+    RobocoTheme(appearance) {
+        Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+            BenchResultLabel(FIXTURE_JSON)
         }
     }
 }
