@@ -281,6 +281,9 @@ class SettingsScreenTest {
     private fun textExists(text: String): Boolean =
         compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
 
+    private fun nodeExists(tag: String): Boolean =
+        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+
     private fun row(id: String) = compose.onNodeWithTag(settingsTag(id))
 
     private fun switchNode(id: String) = compose.onNodeWithTag(toggleTag(id), useUnmergedTree = true)
@@ -445,7 +448,12 @@ class SettingsScreenTest {
         mount(defaultDeviceRouting = true)
         row(DevicesRowIds.engine("e1")).performClick()
         compose.waitUntil(5_000) { stack.top.route == EngineDetailRoute("e1") }
-        compose.waitUntil(5_000) { textExists("Engine e1") }
+        // 140's real page composes behind the push: its root is tagged
+        // `engine-detail` (the pushed screen reads the app's own engines
+        // flow, which has no fixture here — the scaffold alone shows,
+        // and the page never crashes on the empty flow).
+        compose.waitUntil(5_000) { nodeExists("engine-detail") }
+        assertEquals(2, stack.entries.size)
     }
 
     @Test

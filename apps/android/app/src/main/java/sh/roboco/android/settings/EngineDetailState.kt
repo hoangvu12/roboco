@@ -76,7 +76,12 @@ class EngineDetailState(
     private val requestPop: () -> Unit,
     /** Tickets 84/92's cleanup; the default no-op keeps tests light. */
     private val forgetDrafts: ForgetDrafts = ForgetDrafts { _, _ -> },
-    /** Read at Forget-confirm time, before any FFI call. */
+    /** Read at Forget-confirm time, before any FFI call. The default
+     * (a null snapshot, no engines left) exists for tests that wire a
+     * [forgetDrafts] fake without a context — production always passes
+     * the real provider (the live workspace snapshot and the engines-left
+     * count), so the "last engine → full reset" reading of `enginesLeft =
+     * 0` never fires by accident. */
     private val forgetContext: () -> ForgetDraftsContext = { ForgetDraftsContext(null, 0) },
     private val io: CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
 ) {

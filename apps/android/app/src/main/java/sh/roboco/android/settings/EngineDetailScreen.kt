@@ -64,9 +64,6 @@ import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import uniffi.roboco_core.EngineView
 
-/** The screen's log tag (the state's log seam uses the same string). */
-private const val EngineDetailLogTag = "EngineDetail"
-
 /**
  * The Engine detail page (android-ui-parity #140): the pushed page the
  * Settings "Devices" engine row opens (102's push, the route is
@@ -214,7 +211,7 @@ fun EngineDetailScreen(
         if (launcher != null) {
             launcher.openPairPage(prefill = null, replaceEngineId = engineId, over = enclosingSheet)
         } else {
-            Log.w(EngineDetailLogTag, "no PairPageLauncher")
+            Log.w("Roboco", "no PairPageLauncher")
         }
     }
     val onForget: () -> Unit = { shown?.let(state::onForget) }

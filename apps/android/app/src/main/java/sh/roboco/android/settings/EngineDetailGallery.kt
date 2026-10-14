@@ -78,42 +78,32 @@ private data class EngineDetailFixture(
  * The five fixtures, `EngineDetailUi`s built directly (UniFFI records
  * need Robolectric — the main-source previews must not construct them).
  * The ticket's fixed clock, 1 760 000 000 000 ms, is baked into the
- * precomputed relative times.
+ * precomputed relative times. Fixtures 2 and 5 derive from fixture 1
+ * (`copy`) so the shared fields cannot drift.
  */
+private val connectedGalleryUi = EngineDetailUi(
+    engineId = "e1",
+    title = "MacBook Pro",
+    status = "Connected",
+    connected = true,
+    address = "http://192.168.1.20:27655",
+    version = "v0.9.2",
+    platform = "macOS",
+    lastConnected = null,
+    deviceId = "3f9c2a7e-5b1d-4c8e-9a6f-0d2e4b7c1a95",
+    footer = null,
+    canRename = true,
+    showPairAgain = false,
+)
+
 private val engineDetailGalleryFixtures = listOf(
     EngineDetailFixture(
         label = "fixture \u00b7 connected \u2014 every row, success dot",
-        ui = EngineDetailUi(
-            engineId = "e1",
-            title = "MacBook Pro",
-            status = "Connected",
-            connected = true,
-            address = "http://192.168.1.20:27655",
-            version = "v0.9.2",
-            platform = "macOS",
-            lastConnected = null,
-            deviceId = "3f9c2a7e-5b1d-4c8e-9a6f-0d2e4b7c1a95",
-            footer = null,
-            canRename = true,
-            showPairAgain = false,
-        ),
+        ui = connectedGalleryUi,
     ),
     EngineDetailFixture(
         label = "copied \u2014 the Device ID value after a tap",
-        ui = EngineDetailUi(
-            engineId = "e1",
-            title = "MacBook Pro",
-            status = "Connected",
-            connected = true,
-            address = "http://192.168.1.20:27655",
-            version = "v0.9.2",
-            platform = "macOS",
-            lastConnected = null,
-            deviceId = "3f9c2a7e-5b1d-4c8e-9a6f-0d2e4b7c1a95",
-            footer = null,
-            canRename = true,
-            showPairAgain = false,
-        ),
+        ui = connectedGalleryUi,
         copied = true,
     ),
     EngineDetailFixture(
@@ -155,23 +145,13 @@ private val engineDetailGalleryFixtures = listOf(
     ),
     EngineDetailFixture(
         label = "notice \u2014 the newer-engine footer",
-        ui = EngineDetailUi(
-            engineId = "e1",
-            title = "MacBook Pro",
-            status = "Connected",
-            connected = true,
-            address = "http://192.168.1.20:27655",
+        ui = connectedGalleryUi.copy(
             version = "v0.10.0",
-            platform = "macOS",
-            lastConnected = null,
-            deviceId = "3f9c2a7e-5b1d-4c8e-9a6f-0d2e4b7c1a95",
             footer = EngineFooter(
                 "MacBook Pro runs Roboco 0.10.0, newer than this app (0.9.2). " +
                     "Everything should keep working; if something looks wrong, update the app.",
                 FooterTone.Notice,
             ),
-            canRename = true,
-            showPairAgain = false,
         ),
     ),
 )
