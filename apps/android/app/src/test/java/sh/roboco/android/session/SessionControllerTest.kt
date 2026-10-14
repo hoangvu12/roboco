@@ -384,7 +384,7 @@ class SessionControllerTest {
         advanceUntilIdle()
         // Only the detach ran on the way out; setViewAttached is never
         // gated (a local subscription switch, 85's rule).
-        assertEquals(listOf("setViewAttached(false)"), core.callLog.drop(3))
+        assertEquals(listOf("setViewAttached(false)"), core.callLog.drop(4))
 
         // Silent: no toast, no banner and no Log.w — the skip is not an
         // error, so the failures list stays empty.
@@ -401,14 +401,14 @@ class SessionControllerTest {
 
         controller.markSeen()
         advanceUntilIdle()
-        assertEquals(listOf("markSeen"), core.callLog.drop(3))
+        assertEquals(listOf("markSeen"), core.callLog.drop(4))
 
         controller.close()
         advanceUntilIdle()
         // Exactly ticket 51's order on the way out.
         assertEquals(
             listOf("markSeen", "setViewAttached(false)", "markSeen"),
-            core.callLog.drop(3),
+            core.callLog.drop(4),
         )
     }
 

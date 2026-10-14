@@ -170,7 +170,7 @@ internal class RailPaths(private val spec: RailSpec, private val density: Float)
         val mid = (spec.tops[i] + spec.rowMid) * density
         val bend = spec.bend * density
         p.moveTo(trunkX, mid - bend)
-        p.lineTo(trunkX, spec.tops[i] + spec.heights[i] * density)
+        p.lineTo(trunkX, (spec.tops[i] + spec.heights[i]) * density)
     }
 }
 

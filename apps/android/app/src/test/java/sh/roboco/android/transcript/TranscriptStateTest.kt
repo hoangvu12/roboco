@@ -25,6 +25,7 @@ import uniffi.roboco_core.FaceRole
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.LayoutListener
 import uniffi.roboco_core.NoHandle
+import uniffi.roboco_core.RowPlacement
 import uniffi.roboco_core.StyleDesc
 import uniffi.roboco_core.TextSystem
 import uniffi.roboco_core.TranscriptView
@@ -56,6 +57,10 @@ private class FakeFrame(
     override fun rowCount() = rows
 
     override fun totalHeight() = height
+
+    // 65's knownRows listener walks every row's placement on a frame with
+    // rows; the NoHandle binding would throw. No placements: no known keys.
+    override fun placement(index: UInt): RowPlacement? = null
 }
 
 /** Records the engine calls [TranscriptState] makes; `frame()` serves [next]. */
