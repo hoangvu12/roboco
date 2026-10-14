@@ -2,6 +2,7 @@ package sh.roboco.android.newsession
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
@@ -17,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import kotlinx.coroutines.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
 import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.ComposerBar
 import sh.roboco.android.composer.ComposerController
@@ -148,10 +150,19 @@ internal fun NewSessionScreenBody(
         true
     }
     NewSessionDraftEffect(ns, composer)
-    // 109: the chip strip's data (the menu map is `remember`ed so the
-    // effect's LaunchedEffect key stays stable — 113 and 114 add their
-    // provider maps as further arguments of this same call).
-    val chipMenus = remember { newSessionChipMenus() }
+    // 109: the chip strip's data. 113: the project / run-on menu map —
+    // the page's liveness guard (the iOS [weak self] of the browser's
+    // onCreated), 110's presenter seam, and the menu glue over 92's
+    // model, whose providers read the live model at tap time. 114 will
+    // add the checkout / model / effort map as a further argument of
+    // this same newSessionChipMenus call.
+    val alive = remember { AtomicBoolean(true) }
+    DisposableEffect(Unit) { onDispose { alive.set(false) } }
+    val newProjectPresenter = rememberNewProjectPresenter()
+    val projectMenus = remember(ns, newProjectPresenter) {
+        ProjectRunOnMenus(ns, newProjectPresenter, alive::get)
+    }
+    val chipMenus = remember(projectMenus) { newSessionChipMenus(projectMenus.providers()) }
     NewSessionChipsEffect(ns, composer, chipMenus, labels)
     val morph = rememberComposerMorphState(
         alwaysCard = true,
