@@ -7,6 +7,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -114,7 +115,9 @@ class NewSessionSendHandlerTest {
     private var page: NewSessionPage = RecordingPage(NewSessionDraft(projectId = "p1"), events)
 
     /** A handler over the shared fakes (and a creator with the injected IO lane). */
-    private fun handler(io: CoroutineDispatcher = StandardTestDispatcher(testScheduler)): NewSessionSendHandler =
+    // A TestScope extension: a default argument resolves where the function is
+    // declared, so a plain member could not see runTest's testScheduler.
+    private fun TestScope.handler(io: CoroutineDispatcher = StandardTestDispatcher(testScheduler)): NewSessionSendHandler =
         NewSessionSendHandler(
             page = page,
             creator = NewSessionCreator(

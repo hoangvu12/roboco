@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -530,7 +531,9 @@ class CopyCodeButtonTest {
     // ------------------------------------------------------------- accessibility
 
     private val hasCopyCodeLabel = SemanticsMatcher("labelled Copy code") { node: SemanticsNode ->
-        node.config[SemanticsProperties.ContentDescription] == listOf("Copy code")
+        // getOrNull: onAllNodes walks every node (the root first), and config[] throws
+        // "Key not present" on any node without a content description.
+        node.config.getOrNull(SemanticsProperties.ContentDescription) == listOf("Copy code")
     }
 
     @Test

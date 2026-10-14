@@ -184,10 +184,10 @@ class ImageTileTest {
         )
 
         // Populate the cache before composing (this does the one read).
-        runBlocking { assertNotNull(loader.load(ImageKey("e1", "a.png"), 780, reader)) }
+        runBlocking { assertNotNull(loader.load(ImageKey("e1", "/a.png"), 780, reader)) }
         reader.reads.set(0)
 
-        compose.setContent { Host { TestTile("a.png", actions) } }
+        compose.setContent { Host { TestTile("/a.png", actions) } }
 
         assertEquals("cache hit: loaded in the first frame", true, loaded())
         assertEquals("no animation on a hit", 1f, alpha(), 0.001f)
@@ -199,24 +199,24 @@ class ImageTileTest {
 
     @Test
     fun aLateResultForAnOldReferenceIsCachedButNeverShown() {
-        val reader = FakeReader(gateRefs = setOf("a.png"))
+        val reader = FakeReader(gateRefs = setOf("/a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
 
         // b.png is cached in advance (its read is not gated).
-        runBlocking { assertNotNull(loader.load(ImageKey("e1", "b.png"), 780, reader)) }
+        runBlocking { assertNotNull(loader.load(ImageKey("e1", "/b.png"), 780, reader)) }
 
-        var reference by mutableStateOf("a.png")
+        var reference by mutableStateOf("/a.png")
         compose.setContent { Host { TestTile(reference, actions) } }
         compose.waitForIdle() // a.png's read is in flight (gated)
         assertEquals(2, reader.reads.get())
         assertEquals(false, loaded())
 
         // Switch to the cached b.png: shows at once, no read.
-        compose.runOnIdle { reference = "b.png" }
+        compose.runOnIdle { reference = "/b.png" }
         compose.waitForIdle()
-        assertEquals("b.png", node().config[ImageTileReferenceKey])
+        assertEquals("/b.png", node().config[ImageTileReferenceKey])
         assertEquals(true, loaded())
         assertEquals(1f, alpha(), 0.001f)
         assertEquals(2, reader.reads.get())
@@ -224,9 +224,9 @@ class ImageTileTest {
         // a.png's read completes after the switch: it must be cached …
         reader.releaseAll()
         compose.waitForIdle()
-        assertNotNull(loader.cached(ImageKey("e1", "a.png"), 780))
+        assertNotNull(loader.cached(ImageKey("e1", "/a.png"), 780))
         // … but never shown: b.png stays on the tile.
-        assertEquals("b.png", node().config[ImageTileReferenceKey])
+        assertEquals("/b.png", node().config[ImageTileReferenceKey])
         assertEquals(true, loaded())
         assertEquals(1f, alpha(), 0.001f)
     }
@@ -235,7 +235,7 @@ class ImageTileTest {
 
     @Test
     fun aTapOpensOnlyALoadedTileWithItsWindowRect() {
-        val reader = FakeReader(gateRefs = setOf("a.png"))
+        val reader = FakeReader(gateRefs = setOf("/a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
         val opened = mutableListOf<Triple<String, Rect, ImageBitmap>>()
@@ -245,7 +245,7 @@ class ImageTileTest {
             openImage = { r, rect, bmp, _ -> opened.add(Triple(r, rect, bmp!!)) },
         )
 
-        compose.setContent { Host { TestTile("a.png", actions) } }
+        compose.setContent { Host { TestTile("/a.png", actions) } }
         compose.waitForIdle()
 
         // Not loaded yet: the tap retries (137), it never opens the viewer.
@@ -264,7 +264,7 @@ class ImageTileTest {
         assertEquals("openImage called exactly once", 1, opened.size)
 
         val (ref, rect, bmp) = opened.single()
-        assertEquals("a.png", ref)
+        assertEquals("/a.png", ref)
         assertSame("the shown bitmap is passed on", picture, bmp)
 
         // The rect equals the tile's unclipped window rect (±1 px): the
@@ -281,19 +281,19 @@ class ImageTileTest {
 
     @Test
     fun theNodeCarriesImageSemanticsAndClickInEveryState() {
-        val reader = FakeReader(gateRefs = setOf("a.png"))
+        val reader = FakeReader(gateRefs = setOf("/a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
 
-        compose.setContent { Host { TestTile("a.png", actions) } }
+        compose.setContent { Host { TestTile("/a.png", actions) } }
         compose.waitForIdle()
 
         val loading = node().config
         assertEquals(Role.Image, loading[SemanticsProperties.Role])
         assertEquals(LABEL, loading[SemanticsProperties.ContentDescription]?.firstOrNull())
         assertEquals("transcript-image", loading[SemanticsProperties.TestTag])
-        assertEquals("a.png", loading[ImageTileReferenceKey])
+        assertEquals("/a.png", loading[ImageTileReferenceKey])
         assertEquals(false, loading[ImageTileLoadedKey])
         assertEquals(ImageTileStatus.Loading, loading[ImageTileStatusKey])
         assertEquals(ImageTileCopy.Loading, loading[SemanticsProperties.StateDescription])
@@ -314,7 +314,7 @@ class ImageTileTest {
 
     @Test
     fun aFailedReadShowsTheFailedStateAndATapRetries() {
-        val reader = FakeReader(failRefs = setOf("a.png"))
+        val reader = FakeReader(failRefs = setOf("/a.png"))
         val loader = newLoader()
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
         val opened = AtomicInteger()
@@ -324,7 +324,7 @@ class ImageTileTest {
             openImage = { _, _, _, _ -> opened.incrementAndGet() },
         )
 
-        compose.setContent { Host { TestTile("a.png", actions) } }
+        compose.setContent { Host { TestTile("/a.png", actions) } }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(600) // nothing retries on its own
 
@@ -332,7 +332,7 @@ class ImageTileTest {
         assertEquals(0f, alpha(), 0.001f)
         assertEquals(ImageTileStatus.Failed, node().config[ImageTileStatusKey])
         assertEquals(1, reader.reads.get()) // one read, then the effect ended
-        assertNull(loader.cached(ImageKey("e1", "a.png"), 780))
+        assertNull(loader.cached(ImageKey("e1", "/a.png"), 780))
 
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
         compose.waitForIdle()
@@ -347,12 +347,12 @@ class ImageTileTest {
         val binding = TranscriptImageBinding(loader, { "" }, reader)
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
 
-        compose.setContent { Host { TestTile("a.png", actions) } }
+        compose.setContent { Host { TestTile("/a.png", actions) } }
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(600)
 
         assertEquals(ImageTileStatus.Failed, node().config[ImageTileStatusKey])
         assertEquals(0, reader.reads.get())
-        assertNull(loader.cached(ImageKey("", "a.png"), 780))
+        assertNull(loader.cached(ImageKey("", "/a.png"), 780))
     }
 }
