@@ -22,8 +22,10 @@ androidxTestRunner = "1.7.0"
 # 2026-10-12).
 androidxTestOrchestrator = "1.6.1"
 # UiDevice (pressHome, openNotification, the permission dialog) for
-# android-app#28's instrumented flow test.
-uiAutomator = "2.3.0"
+# android-app#28's instrumented flow test, shared by ui-parity #136's
+# macrobenchmark module. 2.4.0: the latest stable on Google Maven as of
+# 2026-10-12 (ticket 136's re-verification).
+uiAutomator = "2.4.0"
 jna = "5.19.1"
 junit = "4.13.2"
 # Squircle corners (SmoothRoundedShape): newest stable 1.x on maven.google.com
@@ -41,6 +43,12 @@ browser = "1.10.0"
 # on Compose runtime/animation/foundation only (no material3). Newest
 # stable on Maven Central, re-verified 2026-10-12.
 reorderable = "3.1.0"
+# JankStats, the lab bench's cross-check (ui-parity #136): 1.0.0 stable
+# on Google Maven as of 2026-10-12.
+androidxMetrics = "1.0.0"
+# Macrobenchmark (ui-parity #136's :benchmark module): 1.5.0 stable on
+# Google Maven as of 2026-10-12.
+androidxBenchmarkMacro = "1.5.0"
 # AboutLibraries Gradle plugin (ui-parity#101): JSON only, no library
 # artifacts. The newest stable that supports AGP 9 (plugin README,
 # re-verified 2026-10-12).
@@ -75,6 +83,12 @@ androidx-test-orchestrator = { group = "androidx.test", name = "orchestrator", v
 # The notification flow test (android-app#28): the system permission dialog,
 # pressHome and the notification shade. androidTest-only.
 androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "uiAutomator" }
+# JankStats, the lab bench's cross-check (ui-parity #136): debug and
+# benchmark build types only, never release.
+androidx-metrics-performance = { group = "androidx.metrics", name = "metrics-performance", version.ref = "androidxMetrics" }
+# Macrobenchmark, the device-only ScrollPerformanceTests port
+# (ui-parity #136's :benchmark module).
+androidx-benchmark-macro-junit4 = { group = "androidx.benchmark", name = "benchmark-macro-junit4", version.ref = "androidxBenchmarkMacro" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
@@ -84,6 +98,9 @@ roborazzi-junit-rule = { group = "io.github.takahirom.roborazzi", name = "robora
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+# The device-only macrobenchmark module (ui-parity #136): com.android.test
+# ships with AGP itself, so it reuses the pinned AGP version.
+android-test = { id = "com.android.test", version.ref = "agp" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 aboutlibraries-android = { id = "com.mikepenz.aboutlibraries.plugin.android", version.ref = "aboutlibraries" }

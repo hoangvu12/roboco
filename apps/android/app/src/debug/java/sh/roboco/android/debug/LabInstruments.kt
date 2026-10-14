@@ -43,7 +43,7 @@ import kotlinx.coroutines.flow.first
  *
  * Always composes [ReportDrawnWhen]: the lab reports fully drawn once the
  * first frame has rows — the `waitUntilResponsive` analogue
- * `StartupTimingMetric` reads as time-to-fully-drawn. Nothing here
+ * `StartupTimingMetric` reads as time-to-fully-drawn. Nothing here calls
  * haptics; nothing changes under reduced motion (a measurement script
  * must run identically with "Remove animations" on — `withFrameNanos`
  * and Choreographer callbacks are not scaled by `MotionDurationScale`).

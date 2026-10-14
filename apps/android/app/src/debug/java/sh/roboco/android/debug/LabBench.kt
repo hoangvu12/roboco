@@ -220,7 +220,7 @@ fun benchJson(idle: BenchResult, streaming: BenchResult, idlePerf: String, strea
  * (the caller fills the label). JankStats tracks the whole run and the
  * display-mode request is held while it runs.
  */
-suspend fun runLabBench(
+internal suspend fun runLabBench(
     activity: ComponentActivity,
     viewport: BenchScrollTarget,
     send: (String) -> Unit,

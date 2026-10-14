@@ -86,7 +86,7 @@ class HitchCounter {
  * and nothing else reads Compose state in the callback.
  */
 @Composable
-fun HitchMeter(state: TranscriptState, budget: FrameBudget, rate: RefreshRateRequest, modifier: Modifier = Modifier) {
+internal fun HitchMeter(state: TranscriptState, budget: FrameBudget, rate: RefreshRateRequest, modifier: Modifier = Modifier) {
     var text by remember { mutableStateOf("") }
     DisposableEffect(state, budget, rate) {
         var layoutMicros = 0uL
