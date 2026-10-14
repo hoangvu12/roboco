@@ -276,7 +276,7 @@ fun TranscriptIcon(
                 TranscriptIcons.fileIcon(context, source.name, dark)
             } ?: return
             Image(
-                image = bitmap,
+                bitmap = bitmap,
                 contentDescription = null,
                 modifier = modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit,
