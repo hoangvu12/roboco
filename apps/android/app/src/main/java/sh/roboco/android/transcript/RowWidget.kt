@@ -9,10 +9,13 @@ import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
 import sh.roboco.android.transcript.widgets.RailSpec
 import sh.roboco.android.transcript.widgets.ShimmerWidget
+import sh.roboco.android.transcript.widgets.SpinnerWidget
 import sh.roboco.android.transcript.widgets.ToolChevron
 import sh.roboco.android.transcript.widgets.ToolRail
+import sh.roboco.android.transcript.widgets.ToolStatusWidget
 import sh.roboco.android.transcript.widgets.ToolToggleTarget
 import sh.roboco.android.transcript.widgets.UploadRing
+import sh.roboco.android.transcript.widgets.WorkingIndicator
 import sh.roboco.android.transcript.widgets.isPendingReference
 import uniffi.roboco_core.Widget
 import uniffi.roboco_core.WidgetKind
@@ -49,10 +52,13 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
             onToggle = { ctx.state.toggleDetail(ctx.model.display.key, k.detail, k.open) },
         )
         is WidgetKind.Chevron -> ToolChevron(rowKey = ctx.model.display.key, expanded = k.expanded)
-        // ticket 123 (status glyphs)
-        is WidgetKind.ToolStatus -> Unit
-        WidgetKind.Spinner -> Unit
-        is WidgetKind.Working -> Unit
+        // ticket 123 (status glyphs): running beats failed; the Working /
+        // Writing flip reuses this slot (same `#working` row key), so the
+        // ticker's remember survives and the clock never restarts — no
+        // key() wrappers here.
+        is WidgetKind.ToolStatus -> ToolStatusWidget(k.running, k.failed)
+        WidgetKind.Spinner -> SpinnerWidget()
+        is WidgetKind.Working -> WorkingIndicator(k.sinceMs, k.streaming)
         // ticket 66 (+ 67's upload ring through `overlay`, 137 extends)
         is WidgetKind.Image -> ImageTile(
             reference = k.reference,

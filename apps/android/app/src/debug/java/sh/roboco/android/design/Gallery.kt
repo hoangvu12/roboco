@@ -92,6 +92,7 @@ import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 import sh.roboco.android.transcript.widgets.ShimmerGallerySection
+import sh.roboco.android.transcript.widgets.StatusWidgetsGallerySection
 import sh.roboco.android.transcript.widgets.ToolRailGallerySection
 
 /**
@@ -604,6 +605,10 @@ object Gallery {
         GallerySection("Session push/pop", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
             SessionNavGallerySection()
         },
+        // Ticket 123 (status widgets): the ToolStatus glyph, the subagent
+        // card's trailing spinner and the Working/Writing tail row — the
+        // fixture plus the live ticking row with its streaming toggle.
+        GallerySection("Status widgets") { StatusWidgetsGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
