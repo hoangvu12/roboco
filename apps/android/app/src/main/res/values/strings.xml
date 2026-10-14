@@ -32,9 +32,9 @@
 
     <!-- The QR scanner (android-ui-parity #138): the hint, foreign,
          denied and unavailable captions (qr_denied/qr_foreign/qr_hint are
-         android-app#18\'s wording verbatim; qr_unavailable is new — see the
-         ticket\'s Comments), the denied-state capsule and the ✕ label
-         (UIKit\'s .close, not ImageViewer\'s "Close image preview"). The
+         android-app#18's wording verbatim; qr_unavailable is new — see the
+         ticket's Comments), the denied-state capsule and the ✕ label
+         (UIKit's .close, not ImageViewer's "Close image preview"). The
          pane title reuses pair_scan. Apostrophes are ASCII, matching 72. -->
     <string name="qr_hint">Point the camera at a pairing QR code</string>
     <string name="qr_foreign">That QR code isn\'t a Roboco pairing link.</string>

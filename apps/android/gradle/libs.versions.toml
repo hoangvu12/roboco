@@ -44,12 +44,12 @@ reorderable = "3.1.0"
 # AboutLibraries Gradle plugin (ui-parity#101): JSON only, no library
 # artifacts. The newest stable that supports AGP 9 (plugin README,
 # re-verified 2026-10-12).
+aboutlibraries = "15.2.0"
 # The QR scanner (ui-parity#138): CameraX 1.5.1 (newest stable on
 # developer.android.com, re-verified 2026-10-14) + ZXing core, both
 # Apache-2.0, no Play services, no per-ABI model (android-app#18's pick).
 camerax = "1.5.1"
 zxing = "3.5.4"
-aboutlibraries = "15.2.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -69,8 +69,8 @@ androidx-camera-core = { module = "androidx.camera:camera-core", version.ref = "
 androidx-camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
 androidx-camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
-# The QR decoder itself (ui-parity#138): core only, never
-# zxing-android-embedded (that one brings its own Activity and UI).
+# The QR decoder itself (ui-parity#138): core only, never ZXing's
+# embedded Android artifact (that one brings its own Activity and UI).
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 haze-blur = { module = "dev.chrisbanes.haze:haze-blur", version.ref = "haze" }
 # Custom Tabs (ui-parity#89): PR chip "Open Pull Request" and 126's

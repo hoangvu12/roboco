@@ -152,11 +152,11 @@ fun QrScannerContent(
 private fun ReticleAndCaption(state: QrScannerUiState, onOpenSettings: () -> Unit, insets: WindowInsets) {
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
-    // The safe area's horizontal total, read in composition — the
-    // WindowInsets getters are @Composable, the measure lambda is not.
-    val safeHorizontal = remember(insets, density, layoutDirection) {
+    // The safe area's horizontal total, read in composition (a snapshot
+    // state read — insets changes recompose us; the measure lambda
+    // itself is not composable).
+    val safeHorizontal =
         insets.getLeft(density, layoutDirection) + insets.getRight(density, layoutDirection)
-    }
     val captionRes = when (state.phase) {
         ScannerPhase.Denied -> R.string.qr_denied
         ScannerPhase.Unavailable -> R.string.qr_unavailable
@@ -369,8 +369,6 @@ fun QrScannerGallerySection() {
     var foreign by remember { mutableStateOf(false) }
     var lastScan by remember { mutableStateOf<Pair<Int, Boolean>?>(null) }
     val qrScan = rememberQrScanRequest()
-    val palette = RobocoTheme.palette
-    val typeScale = LocalTypeScale.current
 
     // The real 2 s reset: one flash per sighting of a foreign payload.
     LaunchedEffect(foreign) {
@@ -381,6 +379,10 @@ fun QrScannerGallerySection() {
     }
 
     RobocoTheme(Appearance.Dark) {
+        // Read inside the forced-dark wrap: the readout's ink follows the
+        // stage, not the gallery's current appearance.
+        val palette = RobocoTheme.palette
+        val typeScale = LocalTypeScale.current
         Column(Modifier.fillMaxSize().background(Color.Black)) {
             Row(
                 Modifier.fillMaxWidth().padding(16.dp),

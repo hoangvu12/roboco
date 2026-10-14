@@ -35,6 +35,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -178,8 +179,10 @@ class QrScanActivity : ComponentActivity() {
         // The Settings return path: ON_RESUME re-checks the grant, but
         // never (re-)launches the request — a denied dialog resumes the
         // activity, and re-requesting would loop.
-        lifecycle.addObserver(LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) recheck()
+        lifecycle.addObserver(object : LifecycleEventObserver {
+            override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+                if (event == Lifecycle.Event.ON_RESUME) recheck()
+            }
         })
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
@@ -217,7 +220,7 @@ class QrScanActivity : ComponentActivity() {
     private fun bindCamera() {
         if (bound) return
         bound = true
-        val controller = controller
+        val controller = this.controller
         controller.setEnabledUseCases(CameraController.IMAGE_ANALYSIS)
         controller.imageAnalysisBackpressureStrategy = ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
         controller.imageAnalysisResolutionSelector = ResolutionSelector.Builder()
