@@ -364,6 +364,13 @@ aboutLibraries {
     collect {
         fetchRemoteLicense = false
         fetchRemoteFunding = false
+        // Licence overrides (aboutlibraries/licenses/<id>.json, the plugin's
+        // documented config layout; relative to this module): camera-core's
+        // POM declares a second licence for its bundled libyuv ("BSD License"
+        // -> README.chromium) that the plugin cannot map offline, so it got a
+        // hash id with no SPDX id and no text (AndroidLicenceTextsTest). The
+        // override maps it to BSD-3-Clause with the committed spdx text.
+        configPath = file("aboutlibraries")
     }
     export {
         excludeFields.addAll("developers", "funding")

@@ -12,7 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.runtime.withFrameNanos
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import kotlinx.coroutines.flow.collectLatest
 
 /**
@@ -87,8 +87,12 @@ internal fun GlyphClockDriver(clock: GlyphClock) {
             clock.frameNanos.longValue = it
             clock.framesTicked++
         }
+        // The INFINITE-animation frame: an endless loop must be cancellable
+        // by an InfiniteAnimationPolicy (ui-test cancels it under an
+        // auto-advancing clock, which otherwise never idles; accessibility
+        // tooling can stop it). No policy in the app: it ticks as before.
         snapshotFlow { clock.subscribers > 0 }.collectLatest { active ->
-            if (active) while (true) withFrameNanos(onFrame)
+            if (active) while (true) withInfiniteAnimationFrameNanos(onFrame)
         }
     }
 }

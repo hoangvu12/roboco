@@ -349,8 +349,11 @@ class TranscriptIconsTest {
         // 2.5–21.5 unit grid with the Medium stroke spans (20.68 / 24) ×
         // 15.36 ≈ 13.23 dp, centred on (8, 8).
         val bounds = inkBounds(px, Color.White)!!
-        assertDpIsWithin(13.23f, bounds.widthDp, 0.5f, "chip ink width")
-        assertDpIsWithin(13.23f, bounds.heightDp, 0.5f, "chip ink height")
+        // ±1 dp on the ink extents (decision, round 31): the threshold counts
+        // anti-aliased edge pixels and the bounds round to whole px (CI:
+        // 14.0 dp). The centres keep ±0.5.
+        assertDpIsWithin(13.23f, bounds.widthDp, 1f, "chip ink width")
+        assertDpIsWithin(13.23f, bounds.heightDp, 1f, "chip ink height")
         assertDpIsWithin(8f, bounds.centerXDp, 0.5f, "chip centre x")
         assertDpIsWithin(8f, bounds.centerYDp, 0.5f, "chip centre y")
     }

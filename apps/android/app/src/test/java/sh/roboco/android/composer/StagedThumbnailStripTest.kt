@@ -462,7 +462,10 @@ class StagedThumbnailStripTest {
         // rate (~0.44 px/ms -> ~7.4 px/frame), so the animation continued
         // from the interrupted value instead of snapping.
         val maxJump = cTrace.zipWithNext { a, b -> abs(b - a) }.max()
-        assertTrue("continues from the current offset (max jump $maxJump)", maxJump <= 12f)
+        // 16 px (decision, round 31): the ease's steepest frame is 13.6 px
+        // here (the second remove lands ~48 ms into the first slide, ~124 px
+        // left over 250 ms); a snap would jump ~120 px.
+        assertTrue("continues from the current offset (max jump $maxJump)", maxJump <= 16f)
         assertTrue("the first post-interruption frame continues from $before: ${cTrace.first()}",
             cTrace.first() in (before - 2f)..(before + 10f))
         assertEquals("settled at its final slot 0", 0f, cTrace.last(), 0.5f)
@@ -670,19 +673,25 @@ class StagedThumbnailStripTest {
         assertChannelNear("3 px inside the edge is the red image", px[3, 28], Color(0xFFFF0000))
     }
 
+    // xxhdpi (decision, round 31): at mdpi the cross's ~1.4 px stroke
+    // straddles a pixel boundary and never reaches full white (216 on CI);
+    // at 3 px/dp the stroke (~4.2 px) covers whole pixels, so the ≥ 240
+    // white check stands. Coordinates below are the mdpi ones × 3.
     @Test
+    @Config(sdk = [36], qualifiers = "w390dp-h400dp-xxhdpi")
     fun theRemoveButtonIsBlackOverRedWithAWhiteGlyph() {
         mountStrip(listOf(solidImage("a")))
         val px = tilePixels()
-        // 2 px inside the circle's left edge, at its mid-height (13):
+        val d = 3
+        // 2 dp inside the circle's left edge, at its mid-height (13 dp):
         // black @ 0.55 over red = (115, 0, 0).
-        assertChannelNear("the x fill over red", px[36, 13], Color(0xFF730000))
-        // The brightest pixel within 2 px of the x centre (43, 13) is the
-        // white cross (a ~1.4 px stroke at mdpi, so scan a 5 x 5 box).
+        assertChannelNear("the x fill over red", px[36 * d, 13 * d], Color(0xFF730000))
+        // The brightest pixel within 2 dp of the x centre (43, 13) dp is the
+        // white cross: scan that box in px.
         var brightest = 0
-        for (dy in -2..2) {
-            for (dx in -2..2) {
-                val argb = px[43 + dx, 13 + dy].toArgb()
+        for (dy in -2 * d..2 * d) {
+            for (dx in -2 * d..2 * d) {
+                val argb = px[43 * d + dx, 13 * d + dy].toArgb()
                 val min = minOf((argb shr 16) and 0xFF, (argb shr 8) and 0xFF, argb and 0xFF)
                 if (min > brightest) brightest = min
             }
