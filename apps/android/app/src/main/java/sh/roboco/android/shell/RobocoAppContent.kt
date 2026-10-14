@@ -202,12 +202,16 @@ private fun AppRootWithPairing(
                 // tablet router's collapsed delegation.
                 var phoneRouter by remember { mutableStateOf<AppRouter?>(null) }
                 // 27 step 4: the accessory's live summary off the one
-                // workspace feed (the owner reads it once; the flow
-                // coalesces by revision off the main thread).
-                val counts by rememberLiveCounts(app.workspaceFeed.snapshot)
+                // workspace feed (the flow coalesces by revision off the
+                // main thread). The state is NOT read here: a stable
+                // provider hands it to the accessory, so a counts change
+                // recomposes the accessory only, never this slot or the
+                // shell's measure-time subcomposition.
+                val counts = rememberLiveCounts(app.workspaceFeed.snapshot)
+                val liveCounts = remember(counts) { { counts.value } }
                 MainTabShell(
                     state = s.tabs,
-                    counts = counts,
+                    liveCounts = liveCounts,
                     presence = s.presence,
                     onRouter = { router -> phoneRouter = router; s.phoneSlot.attach(router) },
                 )

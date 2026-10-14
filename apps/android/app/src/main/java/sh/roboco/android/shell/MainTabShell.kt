@@ -126,11 +126,18 @@ import sh.roboco.android.design.glass.LocalHazeState
  * whole shell.
  *
  * The app root (35) shows this shell; its owner (`RobocoAppContent`) feeds
- * [counts] from the workspace feed through [rememberLiveCounts].
+ * [liveCounts] from the workspace feed through [rememberLiveCounts].
  *
  * @param state the tab state; defaults to [rememberMainTabState].
- * @param counts the accessory's live summary (the owner passes
- *   [rememberLiveCounts]; `LiveCounts()` draws no glyph and no summary).
+ * @param counts a fixed accessory summary (galleries, previews, tests);
+ *   `LiveCounts()` draws no glyph and no summary. Ignored when [liveCounts]
+ *   is set.
+ * @param liveCounts the live summary as a provider (production: the
+ *   [rememberLiveCounts] state). Read only inside the accessory slot, so a
+ *   counts change recomposes the accessory alone, never this shell or its
+ *   measure-time `BoxWithConstraints` subcomposition (a counts change mid
+ *   IME animation must not re-run the whole shell content inside a layout
+ *   pass). Pass a stable instance (`remember`).
  * @param searchState the Search tab's query holder; defaults to
  *   [rememberSearchTabState] (the app-scoped instance).
  * @param hooks the app root's [RouterHooks] (ticket 35 creates the one
@@ -165,6 +172,7 @@ fun MainTabShell(
     state: MainTabState = rememberMainTabState(),
     modifier: Modifier = Modifier,
     counts: LiveCounts = LiveCounts(),
+    liveCounts: (() -> LiveCounts)? = null,
     searchState: SearchTabState = rememberSearchTabState(),
     hooks: RouterHooks = LocalRouterHooks.current,
     sheetHost: SheetHostState? = null,
@@ -471,7 +479,9 @@ fun MainTabShell(
                                 },
                             ) {
                                 NewSessionAccessory(
-                                    counts = counts,
+                                    // The provider is read here, in this
+                                    // slot's own recompose scope.
+                                    counts = liveCounts?.invoke() ?: counts,
                                     onTap = accessoryTap,
                                     inline = minimize.minimized,
                                     labelAlpha = { 1f - minimize.progress.value.coerceIn(0f, 1f) },
