@@ -127,10 +127,14 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
                                 // not be rebuilt mid-redeem).
                                 val backend = remember(client) { CoreClientPairingBackend(client) }
                                 val store = remember(app) { StorePairedEngineSink(app.engineStore, app.coreStartup) }
+                                // 138: the real scanner — the Pair page's
+                                // Scan QR row appears (72) whenever a
+                                // camera exists.
+                                val qrScan = rememberQrScanRequest()
                                 ProvidePairPage(
                                     backend = backend,
                                     store = store,
-                                    qrScan = null, // 138 lands the scanner
+                                    qrScan = qrScan,
                                 ) {
                                     root(LocalPairPage.current)
                                 }

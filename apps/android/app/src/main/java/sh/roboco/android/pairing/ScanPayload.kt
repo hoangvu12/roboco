@@ -72,6 +72,12 @@ fun decodePairLink(link: String): String? {
 }
 
 /**
+ * The foreign caption's span — and [RejectDebouncer]'s window: one flash
+ * per sighting, reset after this long (android-app#18's 2 s).
+ */
+internal const val FOREIGN_CAPTION_MS = 2000L
+
+/**
  * One flash per continuous sighting of the same foreign payload (the
  * ticket's debounce reading, window 2000 ms — the same span as the foreign
  * caption): `shouldShow(payload, now)` is true when the payload differs
@@ -80,7 +86,7 @@ fun decodePairLink(link: String): String? {
  * never goes through this. One thread only (the analysis thread) — no
  * synchronization.
  */
-class RejectDebouncer(private val windowMs: Long = 2000) {
+class RejectDebouncer(private val windowMs: Long = FOREIGN_CAPTION_MS) {
 
     private var last: String? = null
     private var lastSeen = 0L

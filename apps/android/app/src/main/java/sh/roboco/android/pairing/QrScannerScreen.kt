@@ -373,7 +373,7 @@ fun QrScannerGallerySection() {
     // The real 2 s reset: one flash per sighting of a foreign payload.
     LaunchedEffect(foreign) {
         if (foreign) {
-            delay(2000)
+            delay(FOREIGN_CAPTION_MS)
             foreign = false
         }
     }

@@ -203,6 +203,9 @@ class QrScanActivity : ComponentActivity() {
     /** ON_RESUME: a return from Settings with the grant now on → Scanning. */
     private fun recheck() {
         if (phase != ScannerPhase.Denied && phase != ScannerPhase.Requesting) return
+        // `Requesting` with the ask not yet made means the dialog is still
+        // about to come up — nothing to re-check yet.
+        if (phase == ScannerPhase.Requesting && !asked) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -323,7 +326,7 @@ class QrScanActivity : ComponentActivity() {
         showForeign = true
         foreignJob?.cancel()
         foreignJob = lifecycleScope.launch {
-            delay(2000)
+            delay(FOREIGN_CAPTION_MS)
             showForeign = false
         }
     }
