@@ -35,6 +35,12 @@ import uniffi.roboco_core.layoutFixtureMarkdown
  * and reports line-count differences instead of asserting them; the hard
  * gate for run agreement is [TextDriftTest].
  *
+ * The URL and hard-hyphen strings (#3, #4, #10, #13) are an expected
+ * Android divergence (round 29 decision, tickets 115 and 15, like the
+ * curly quotes before): Minikin tailors URL and hyphen breaks, Rust keeps
+ * CoreText's UAX 14, and CoreText parity is the product target. They are
+ * scored separately and logged, never asserted; the 99 % covers the rest.
+ *
  * Ground truth runs at density 1: `StaticLayout.Builder` takes an Int
  * width, and `w × d` is fractional for common densities, which would
  * truncate up to 1 px and add false mismatches. Linear text makes
@@ -95,9 +101,28 @@ class LineBreakAccuracyTest {
             }
         }
 
+        // The expected Android divergence (decision, round 29 — tickets 115
+        // and 15): Minikin tailors URL and hard-hyphen breaks (whole URL
+        // token to the next line when an earlier word break exists; inside a
+        // URL, break before `/`, after `=`/`&`; never after a hard hyphen,
+        // with or without hyphenation), where Rust follows CoreText's UAX 14
+        // — and CoreText parity is the product target. Those strings are
+        // scored separately and reported, never asserted; any OTHER string's
+        // mismatch still counts against the 99 %. Guarded by content below,
+        // so a corpus reorder cannot silently exclude the wrong strings.
+        for (index in MINIKIN_URL_HYPHEN_CASES) {
+            val text = corpus[index]
+            assertTrue(
+                "excluded corpus string #$index must be a URL/hyphen case: ${text.take(48)}",
+                text.contains("://") || text.contains("roboco-text"),
+            )
+        }
+
         var cases = 0
         var exact = 0
         var lineDiff = 0
+        var excludedCases = 0
+        var excludedExact = 0
         val report = ArrayList<String>()
         // Diagnostics only (never asserted): mismatches per corpus string and
         // per face, so a run shows WHICH texts diverge — 12 samples cannot.
@@ -122,15 +147,17 @@ class LineBreakAccuracyTest {
                             .map { it.toInt() }
                         val androidStarts = staticLayoutStarts(text, paint, w)
                         cases++
+                        val excluded = index in MINIKIN_URL_HYPHEN_CASES
+                        if (excluded) excludedCases++
                         if (rust == androidStarts) {
-                            exact++
+                            if (excluded) excludedExact++ else exact++
                         } else {
                             // iOS counts height (line-count) diffs on mismatches
                             // only; here they are reported, never asserted.
-                            if (rust.size != androidStarts.size) lineDiff++
+                            if (rust.size != androidStarts.size && !excluded) lineDiff++
                             perText[index]++
                             perFace[face] = (perFace[face] ?: 0) + 1
-                            if (report.size < 12) {
+                            if (!excluded && report.size < 12) {
                                 report += "$face ${size}pt w=$w: rust $rust vs " +
                                     "android $androidStarts — ${text.take(48)}"
                             }
@@ -140,11 +167,18 @@ class LineBreakAccuracyTest {
             }
         }
 
-        val rate = exact.toDouble() / cases
-        val summary = "LINEBREAK ACCURACY exact=$exact/$cases " +
+        val scored = cases - excludedCases
+        val rate = exact.toDouble() / scored
+        val summary = "LINEBREAK ACCURACY exact=$exact/$scored " +
             "(${"%.2f".format(Locale.ROOT, rate * 100)}%) " +
-            "lineCountDiffs=$lineDiff locale=${TextAccuracy.localeTag()}"
+            "lineCountDiffs=$lineDiff locale=${TextAccuracy.localeTag()} " +
+            "(excluding the Minikin URL/hyphen strings $MINIKIN_URL_HYPHEN_CASES)"
         TextAccuracy.log(summary)
+        // Informational: how far Minikin's URL/hyphen tailoring is from Rust's.
+        TextAccuracy.log(
+            "LINEBREAK URL/HYPHEN (informational, not asserted) exact=$excludedExact/$excludedCases " +
+                "(${"%.2f".format(Locale.ROOT, excludedExact * 100.0 / excludedCases)}%)",
+        )
         report.forEach { TextAccuracy.log("  MISMATCH $it") }
         corpus.forEachIndexed { index, text ->
             if (perText[index] > 0) {
@@ -154,6 +188,16 @@ class LineBreakAccuracyTest {
         perFace.forEach { (face, n) -> TextAccuracy.log("  BY FACE $face $n") }
         assertEquals("the matrix must be 3 faces × 3 sizes × 28 widths × 14 strings", 3528, cases)
         assertTrue(summary, rate >= 0.99)
+    }
+
+    private companion object {
+        /**
+         * Corpus indices scored separately as the expected Android
+         * divergence (round 29): #3 the URL literal, #4 the hard-hyphen
+         * literal (`roboco-text`), #10 and #13 the fixture paragraphs with
+         * links. See the comment at their use.
+         */
+        val MINIKIN_URL_HYPHEN_CASES = setOf(3, 4, 10, 13)
     }
 
     /**
