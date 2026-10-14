@@ -44,6 +44,7 @@ import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.glass.Glass
 import sh.roboco.android.design.glass.GlassMenuHost
+import sh.roboco.android.session.ChromeInput
 import sh.roboco.android.session.SessionChipsFiller
 import sh.roboco.android.session.SessionController
 import sh.roboco.android.session.SessionEventHub
@@ -290,7 +291,7 @@ class SessionChipMenusUiTest {
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         menus.fill(
             SessionChrome(),
-            sh.roboco.android.session.ChromeInput(
+            ChromeInput(
                 chatId = core.chatId,
                 composer = chipMenuComposerState(deviceId = "device-1"),
                 row = core.rowResult,
@@ -387,7 +388,7 @@ class SessionChipMenusUiTest {
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         menus.fill(
             SessionChrome(),
-            sh.roboco.android.session.ChromeInput(
+            ChromeInput(
                 chatId = core.chatId,
                 composer = chipMenuComposerState(deviceId = "device-1"),
                 row = core.rowResult,
@@ -414,7 +415,7 @@ class SessionChipMenusUiTest {
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         menus.fill(
             SessionChrome(),
-            sh.roboco.android.session.ChromeInput(
+            ChromeInput(
                 chatId = core.chatId,
                 composer = chipMenuComposerState(deviceId = "device-1"),
                 row = core.rowResult,
@@ -477,7 +478,7 @@ class SessionChipMenusUiTest {
         val menus = SessionChipMenus(core, io = Dispatchers.Default)
         menus.fill(
             SessionChrome(),
-            sh.roboco.android.session.ChromeInput(
+            ChromeInput(
                 chatId = core.chatId,
                 composer = chipMenuComposerState(deviceId = "device-1"),
                 row = core.rowResult,
