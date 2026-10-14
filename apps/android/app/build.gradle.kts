@@ -568,12 +568,6 @@ dependencies {
     // Not a Material artifact; version shared with 126.
     implementation(libs.androidx.browser)
 
-    // Custom Tabs (ui-parity#126): the transcript's http(s) links open in
-    // the browser's in-app tab — the SFSafariViewController port, with the
-    // toolbar coloured Palette.background per app appearance. Tests read
-    // the builder extras, so it is on the unit-test classpath too.
-    implementation(libs.androidx.browser)
-
     // Pinned-folder drag-to-reorder (ui-parity#47): Compose-foundation
     // only (runtime, animation, foundation — no material3), Apache-2.0.
     // The library is picked up by the AboutLibraries JSON (101) from its

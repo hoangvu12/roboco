@@ -45,10 +45,6 @@ reorderable = "3.1.0"
 # artifacts. The newest stable that supports AGP 9 (plugin README,
 # re-verified 2026-10-12).
 aboutlibraries = "15.2.0"
-# Custom Tabs (ui-parity#126): http(s) transcript links open in the
-# browser's in-app Custom Tab, the SFSafariViewController port. Newest
-# stable on maven.google.com, re-verified 2026-10-12.
-browser = "1.10.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -69,7 +65,6 @@ haze-blur = { module = "dev.chrisbanes.haze:haze-blur", version.ref = "haze" }
 # transcript links — the same launcher and settings for both.
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
-androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
