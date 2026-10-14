@@ -283,7 +283,11 @@ class JumpToLatestButtonTest {
 
         applyRule()
         compose.onNodeWithTag(JumpToLatest.Tag).assertDoesNotExist()
-        assertEquals("a stale tap never reaches the under-box", 0, under)
+        // The second tap at the same spot cannot re-fire the button — it
+        // left the tree with the hide, so the tap falls through to the
+        // under-box instead: scrollToBottom ran exactly once.
+        tapTheButtonCentre()
+        assertEquals("the second tap falls through, not into the button", 1, under)
     }
 
     // ----------------------------------------------------- the nav alpha
