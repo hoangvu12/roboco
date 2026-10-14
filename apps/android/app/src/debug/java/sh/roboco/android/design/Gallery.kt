@@ -87,6 +87,7 @@ import sh.roboco.android.transcript.ScrollerFixturePage
 import sh.roboco.android.transcript.TextRunsSpecimen
 import sh.roboco.android.transcript.TranscriptHostGallerySection
 import sh.roboco.android.transcript.TranscriptLinksGallerySection
+import sh.roboco.android.transcript.widgets.CopyCodeGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
 
@@ -559,6 +560,10 @@ object Gallery {
         GallerySection("Session chip menus", GalleryLayout.Fill) {
             ChipMenuGallerySection()
         },
+        // Ticket 119 (code-block copy button): the code card's top-right
+        // corner cell — the static idle and copied fixtures, the live tap
+        // demo (the check holds 1.4 s) and the clipboard readout line.
+        GallerySection("Copy code") { CopyCodeGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

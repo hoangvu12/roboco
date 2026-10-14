@@ -3,6 +3,7 @@ package sh.roboco.android.transcript
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import sh.roboco.android.transcript.widgets.CopyCodeButton
 import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
 import sh.roboco.android.transcript.widgets.ToolChevron
@@ -28,8 +29,10 @@ import uniffi.roboco_core.WidgetKind
 @Composable
 internal fun RowWidget(ctx: RowContext, w: Widget) {
     when (val k = w.kind) {
-        // ticket 119 (copy-code button)
-        WidgetKind.CopyCode -> Unit
+        // ticket 119 (code-block copy): the clipboard write, the Light
+        // haptic and the 1400 ms checkmark swap live inside the button; a
+        // null payload copies the empty string, like iOS `w.payload ?? ""`.
+        WidgetKind.CopyCode -> CopyCodeButton(payload = w.payload ?: "")
         // ticket 120 (disclosure, tool toggle, chevron): three separate
         // widgets with separate rects — the chevron is never dimmed by a
         // disclosure press, and the toggles carry `open` as painted.
