@@ -103,6 +103,9 @@ object FolderHeaderTokens {
 
     /** The Use button's title for a missing typed path (web footer). */
     const val CreateAndAdd = "Create and add"
+
+    /** The `No folders match` line's offset below the list's top (the card's own top spacing is 110's 35). */
+    val NoMatchTop = 20.dp
 }
 
 /**

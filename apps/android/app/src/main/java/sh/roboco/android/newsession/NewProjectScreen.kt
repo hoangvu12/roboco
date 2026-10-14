@@ -95,9 +95,6 @@ object FolderBrowserTokens {
 
     /** `pr685:…:93` `contentInset.bottom = 160`, plus the navigation-bar inset (ticket 111's bottom bar). */
     val ListBottom = 160.dp
-
-    /** 112's `No folders match` line: 20 dp below the list top (the card's own top spacing is 35). */
-    val NoMatchTop = 20.dp
 }
 
 /**
@@ -336,7 +333,7 @@ private fun FolderList(controller: FolderBrowserController, nav: FolderNavState)
             .fillMaxSize()
             .testTag("folder-list"),
         contentPadding = PaddingValues(
-            top = if (noMatch) FolderBrowserTokens.NoMatchTop else FolderBrowserTokens.ListTop,
+            top = if (noMatch) FolderHeaderTokens.NoMatchTop else FolderBrowserTokens.ListTop,
             bottom = FolderBrowserTokens.ListBottom + navBottom,
         ),
     ) {

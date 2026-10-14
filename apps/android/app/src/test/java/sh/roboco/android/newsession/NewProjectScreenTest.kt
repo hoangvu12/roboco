@@ -285,6 +285,9 @@ class NewProjectScreenTest {
         present(controller)
 
         compose.onNodeWithTag("folder-engine").assertTextEquals("No paired engines yet.")
+        // 112: the locations block is absent with no paired engine.
+        compose.onNodeWithTag("folder-locations").assertDoesNotExist()
+        compose.onNodeWithTag("folder-search").assertDoesNotExist()
         compose.onNodeWithTag("folder-engine").performClick()
         compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
