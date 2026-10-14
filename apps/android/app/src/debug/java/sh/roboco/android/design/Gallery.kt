@@ -45,6 +45,7 @@ import sh.roboco.android.design.sheet.GlassSheetGallerySection
 import sh.roboco.android.newsession.FolderBrowserGallerySection
 import sh.roboco.android.newsession.FolderBottomBarGallerySection
 import sh.roboco.android.newsession.NewSessionCanvasGallerySection
+import sh.roboco.android.newsession.NewSessionChipsGallerySection
 import sh.roboco.android.sessions.ConnectionLineGallerySection
 import sh.roboco.android.newsession.FolderLocationsGallerySection
 import sh.roboco.android.sessions.FolderScreensGallerySection
@@ -629,6 +630,13 @@ object Gallery {
         // 412 dp-wide phone frame, like the Bottom stack section.
         GallerySection("Jump to latest", GalleryLayout.Fill, screenshotHeightDp = 480) {
             JumpToLatestGallerySection()
+        },
+        // Ticket 109 (new-session chips): the New Session composer's chip
+        // set — the project / host / branch / model / effort rows of
+        // fixtures A–E (order, titles, icons, the offline engine tint),
+        // built by newSessionChips over the hard-coded GalleryLabels.
+        GallerySection("New-session chips", screenshotHeightDp = 420) {
+            NewSessionChipsGallerySection()
         },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are

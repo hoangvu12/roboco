@@ -76,7 +76,11 @@ internal fun NewSessionScreenBody(
         true
     }
     NewSessionDraftEffect(ns, composer)
-    // 109 adds here: NewSessionChipsEffect(ns, composer, newSessionChipMenus(/* 113's and 114's provider maps */))
+    // 109: the chip strip's data (the menu map is `remember`ed so the
+    // effect's LaunchedEffect key stays stable — 113 and 114 add their
+    // provider maps as further arguments of this same call).
+    val chipMenus = remember { newSessionChipMenus() }
+    NewSessionChipsEffect(ns, composer, chipMenus)
     val morph = rememberComposerMorphState(
         alwaysCard = true,
         hasImages = { composer.images.isNotEmpty() },
