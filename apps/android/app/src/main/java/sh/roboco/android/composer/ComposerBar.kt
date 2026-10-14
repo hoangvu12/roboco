@@ -2,6 +2,7 @@ package sh.roboco.android.composer
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 
 /**
  * The public composer assembly (android-ui-parity #78, step 6) — the one
@@ -35,12 +36,29 @@ import androidx.compose.ui.Modifier
  * session), so a retained controller survives re-composition. The
  * surface's width comes from the caller (74's stack slot, 93's canvas);
  * the placeholder is 57's (it draws `controller.placeholder`).
+ *
+ * Ticket 94 added three pass-through parameters for the New Session
+ * canvas's handoff capture — `textHidden` and `onTextRect` forward to
+ * 57's [ComposerTextField], `chipsCanWrite` overrides the chips' write
+ * gate (59's [ChipStrip]) — all defaulted to today's behaviour, so the
+ * session composer is unchanged.
  */
 @Composable
 fun ComposerBar(
     controller: ComposerController,
     morph: ComposerMorphState,
     modifier: Modifier = Modifier,
+    /** 94: hide the text layer for the handoff capture — 57's `textHidden` (iOS `textView.alpha = 0`). */
+    textHidden: Boolean = false,
+    /** 94: the text rect in root px — 57's `onTextRect` (94's capture reads it). */
+    onTextRect: ((Rect) -> Unit)? = null,
+    /**
+     * 94: the `canWrite` the chips get (59's param). The session composer
+     * keeps the controller's value; the New Session canvas passes `true`
+     * so the project and host chips stay live while Send is gated on an
+     * offline engine (the user must be able to move off it).
+     */
+    chipsCanWrite: Boolean = controller.canWrite,
 ) {
     // 86: the mention card's state and the screen-side binding (the
     // observers, the host registration and the debounced search over
@@ -66,6 +84,8 @@ fun ComposerBar(
                 isCard = morph.isCard,
                 focusRequester = morph.focusRequester,
                 modifier = Modifier.composerInput(morph),
+                textHidden = textHidden,
+                onTextRect = onTextRect,
             )
         },
         attach = { ComposerAttachMenuButton(controller, morph) },
@@ -73,7 +93,7 @@ fun ComposerBar(
             ChipStrip(
                 chips = controller.chips,
                 chipMenus = controller.chipMenus,
-                canWrite = controller.canWrite,
+                canWrite = chipsCanWrite,
                 onChipTap = { controller.onChipTap(it) },
                 chipModifier = Modifier.composerControl(morph),
             )
