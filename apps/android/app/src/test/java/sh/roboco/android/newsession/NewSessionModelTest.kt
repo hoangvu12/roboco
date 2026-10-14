@@ -527,7 +527,7 @@ class NewSessionModelTest {
     @Test
     fun openShowsTheBuiltInCatalogBeforeTheFetchReturns() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", online = true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", online = true))))
             val page = newPage(newStore(), options)
             assertEquals(builtIn, page.model.models) // the same call, before the fetch runs
             advanceUntilIdle() // the fetch is out, still pending on its gate
@@ -539,7 +539,7 @@ class NewSessionModelTest {
     @Test
     fun fetchResultAppliesToThePageAndFillsTheCache() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", online = true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", online = true))))
             val page = newPage(newStore(), options)
             val m1 = listOf(ModelChoice("claude-code", "Claude Code", "m1", "M1", listOf("low")))
             page.catalog.complete("dev1", m1)
@@ -565,7 +565,7 @@ class NewSessionModelTest {
     @Test
     fun switchingDevicesKeepsTheCurrentListButStillFillsTheCache() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", true), host("dev2", true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", true), host("dev2", true))))
             val page = newPage(newStore(), options)
             assertEquals("dev1", page.model.deviceId)
             page.model.update { it.copy(hostId = "dev2") }
@@ -585,7 +585,7 @@ class NewSessionModelTest {
     @Test
     fun emptyFetchResultChangesNothingAndIsNotCached() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", online = true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", online = true))))
             val page = newPage(newStore(), options)
             page.catalog.complete("dev1", emptyList())
             advanceUntilIdle()
@@ -597,7 +597,7 @@ class NewSessionModelTest {
     @Test
     fun updateWithoutADeviceChangeFetchesNothingNew() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", online = true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", online = true))))
             val page = newPage(newStore(), options)
             page.model.update { it.copy(effort = "low") } // deviceId unchanged
             advanceUntilIdle()
@@ -619,7 +619,7 @@ class NewSessionModelTest {
     @Test
     fun disposingThePageStillFillsTheCache() {
         runTest {
-            val options = MutableStateFlow(options(hosts = listOf(host("dev1", online = true))))
+            val options = MutableStateFlow<NewSessionOptions?>(options(hosts = listOf(host("dev1", online = true))))
             val page = newPage(newStore(), options)
             page.model.dispose()
             val m1 = listOf(ModelChoice("claude-code", "Claude Code", "m1", "M1", listOf("low")))
@@ -655,7 +655,7 @@ class NewSessionModelTest {
     @Test
     fun partialForgetRunsTheStaleRuleOnTheNextOptionsChange() {
         runTest {
-            val options = MutableStateFlow(abOptions)
+            val options = MutableStateFlow<NewSessionOptions?>(abOptions)
             val f = newStore()
             val page = newPage(f, options)
             assertEquals("A", page.model.draft.projectId)
