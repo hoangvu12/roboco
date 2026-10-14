@@ -24,6 +24,15 @@ interface SessionCore {
     /** The session's scoped chat id (`SessionHandle.chatId()`). */
     val chatId: String
 
+    /**
+     * The owning engine's id (`SessionHandle.engineId()`), read once —
+     * it never changes. The engine half of the per-chat draft key
+     * (ticket 84: `DraftKey.Chat(engineId, chatId)`); exposed on the
+     * seam rather than parsing the `engine:v1:…` scoped id in Kotlin,
+     * which belongs to Rust.
+     */
+    val engineId: String
+
     /** `SessionHandle.composer()` — the composer-facing pull. */
     fun composer(): ComposerState
 
@@ -58,10 +67,10 @@ interface SessionCore {
 /**
  * The live [SessionCore] over one open session. Ticket 76 builds this
  * after `CoreClient.openSession(chatId)` succeeded, off main; sibling
- * adapters (78, 82, 83, 86, 89) use [client]/[handle] for their own
+ * adapters (78, 82, 83, 84, 86, 89) use [client]/[handle] for their own
  * calls. [engineId] is read once in the constructor — it never changes
  * — so the first `engine()` pull and every later one cost one FFI call
- * less.
+ * less, and 84's draft key reads it without another call.
  */
 class CoreSessionCore(
     val client: CoreClient,
@@ -69,7 +78,7 @@ class CoreSessionCore(
 ) : SessionCore {
     override val chatId: String = handle.chatId()
 
-    private val engineId: String = handle.engineId()
+    override val engineId: String = handle.engineId()
 
     override fun composer(): ComposerState = handle.composer()
 

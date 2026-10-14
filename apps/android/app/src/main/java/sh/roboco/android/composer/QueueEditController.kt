@@ -223,8 +223,8 @@ class QueueEditController(
     /**
      * The screen is leaving (ticket 24's `NavEntryEffect`). **Only a
      * flag** for the "acquired after leaving" case above — the
-     * cancel-on-leave itself is 84's (it calls [cancelEdit] before its
-     * save), never this.
+     * cancel-on-leave itself is 85's (its `leave()` calls [cancelEdit]
+     * through its adapter before 84's save), never this.
      */
     fun onScreenLeft() {
         onScreen = false

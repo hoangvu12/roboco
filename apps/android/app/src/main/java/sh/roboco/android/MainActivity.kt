@@ -13,6 +13,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import sh.roboco.android.core.WallpaperStore
+import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.design.GalleryLaunch
 import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.NotificationPrefs
@@ -114,7 +115,13 @@ class MainActivity : ComponentActivity() {
             handleIntent(intent)
         }
         setContent {
-            CompositionLocalProvider(LocalShortcutSink provides shortcutSink) {
+            CompositionLocalProvider(
+                LocalShortcutSink provides shortcutSink,
+                // Ticket 84: the app's one draft store, behind the seam the
+                // composer reads; previews and hosts without the app use
+                // the in-memory default.
+                LocalDrafts provides app.drafts,
+            ) {
                 RobocoAppContent(app, rootState)
             }
         }
