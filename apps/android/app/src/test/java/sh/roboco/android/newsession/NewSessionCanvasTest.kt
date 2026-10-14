@@ -836,6 +836,7 @@ class NewSessionCanvasTest {
                     onClose = {},
                     focusOnAppear = false,
                     fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                    labels = GalleryLabels,
                 )
             }
         }
@@ -855,6 +856,7 @@ class NewSessionCanvasTest {
                     onClose = {},
                     focusOnAppear = false,
                     fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                    labels = GalleryLabels,
                 )
             }
         }
@@ -877,6 +879,7 @@ class NewSessionCanvasTest {
                         onClose = {},
                         focusOnAppear = false,
                         fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                        labels = GalleryLabels,
                     )
                 }
                 BasicText(

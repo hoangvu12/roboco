@@ -82,6 +82,9 @@ internal fun NewSessionScreenBody(
     focusOnAppear: Boolean,
     fileSearch: NewSessionFileSearch,
     modifier: Modifier = Modifier,
+    // The chip title chain's labels: the core's catalog in the app; tests and
+    // previews pass GalleryLabels to stay FFI-free (FakeCatalog's intent).
+    labels: ChipLabels = CoreChipLabels,
 ) {
     val composer = rememberComposerController(initialText = ns.initialText)
 
@@ -149,7 +152,7 @@ internal fun NewSessionScreenBody(
     // effect's LaunchedEffect key stays stable — 113 and 114 add their
     // provider maps as further arguments of this same call).
     val chipMenus = remember { newSessionChipMenus() }
-    NewSessionChipsEffect(ns, composer, chipMenus)
+    NewSessionChipsEffect(ns, composer, chipMenus, labels)
     val morph = rememberComposerMorphState(
         alwaysCard = true,
         hasImages = { composer.images.isNotEmpty() },
