@@ -16,6 +16,7 @@ import sh.roboco.android.design.ToastHost
 import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.image.ImageViewerHost
 import sh.roboco.android.image.rememberImageViewerState
+import sh.roboco.android.newsession.HandoffOverlayHost
 
 /**
  * The foundation overlay host stack (android-ui-parity #35), mounted once
@@ -32,9 +33,9 @@ import sh.roboco.android.image.rememberImageViewerState
  * - `SheetHost` sits **outside** the root swap: the pairing root's Pair
  *   page (34/72) is presented through the same host, a sheet survives a
  *   width collapse (Phone ↔ Split), and 31's page-sheet recession scales
- *   the whole root, as iOS's window root view recedes. Ticket 95 later
- *   wraps the `SheetHost` line in its `HandoffOverlayHost`; ticket 72
- *   wraps the root content in `ProvidePairPage` inside it.
+ *   the whole root, as iOS's window root view recedes. Ticket 95 wraps
+ *   the `SheetHost` line in its `HandoffOverlayHost`; ticket 72 wraps
+ *   the root content in `ProvidePairPage` inside it.
  * - ticket 125's `ImageViewerHost` wraps `SheetHost` (inside
  *   `GlassMenuHost`, outside the sheet): the full-screen image viewer
  *   covers the session screen, the tab chrome and any sheet, while
@@ -77,8 +78,11 @@ fun RootHosts(
                             // above it (they are outside GlassMenuHost here).
                             val viewer = rememberImageViewerState()
                             ImageViewerHost(viewer) {
-                                SheetHost(sheets) { // 31: recession scales the roots
-                                    content()
+                                HandoffOverlayHost { // 95: above the app root and the (hidden) sheet,
+                                    // below menus, alerts and toasts — the handoff overlays
+                                    SheetHost(sheets) { // 31: recession scales the roots
+                                        content()
+                                    }
                                 }
                             }
                         }
