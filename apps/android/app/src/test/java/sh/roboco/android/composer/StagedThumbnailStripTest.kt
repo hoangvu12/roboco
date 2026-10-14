@@ -466,8 +466,15 @@ class StagedThumbnailStripTest {
         // here (the second remove lands ~48 ms into the first slide, ~124 px
         // left over 250 ms); a snap would jump ~120 px.
         assertTrue("continues from the current offset (max jump $maxJump)", maxJump <= 16f)
+        // The first post-interruption frame continues the slide (decision,
+        // round 35): the ease (0.42, 0, 0.58, 1) runs 128 → 64 over 250 ms —
+        // 123.2 at 48 ms (= `before`), 119.3 at 64, 114.3 at 80. The tile
+        // moves toward SMALLER x, and tapRemove's click itself advances one
+        // frame (64 ms), so the first step lands at 80 ms (CI: 114.0): the
+        // window is (before − 12)..before. The old (before − 2)..(before + 10)
+        // had the wrong sign and ignored the click's frame.
         assertTrue("the first post-interruption frame continues from $before: ${cTrace.first()}",
-            cTrace.first() in (before - 2f)..(before + 10f))
+            cTrace.first() in (before - 12f)..before)
         assertEquals("settled at its final slot 0", 0f, cTrace.last(), 0.5f)
     }
 

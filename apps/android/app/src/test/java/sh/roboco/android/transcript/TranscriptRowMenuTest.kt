@@ -307,7 +307,22 @@ class TranscriptRowMenuTest {
             a2.performTouchInput { longClick(center) }
             compose.waitForIdle()
             compose.onNodeWithTag("context-menu-overlay").assertDoesNotExist()
-            assertTrue("no haptic when the press starts on a control", feedback.haptics.isEmpty())
+            // The menu stays shut (no LongPress haptic), and the gesture is
+            // left alone, so the release is the control's own normal tap:
+            // `clickable` has no duration limit (foundation 1.12's
+            // ClickableNode.handleUpEvent → performClick on any up, like
+            // UIButton's touchUpInside after a hold), so the copy fires with
+            // its Light haptic and the "Code" clip. The old "no haptic at
+            // all" expectation counted that Light as a menu haptic.
+            assertTrue(
+                "no menu haptic when the press starts on a control: ${feedback.haptics}",
+                Haptic.LongPress !in feedback.haptics,
+            )
+            assertEquals("the release copied the code", listOf(Haptic.Light), feedback.haptics)
+            assertEquals("Code", clipLabel())
+            // The copy button consumed the up (ticket 65: controls keep their
+            // taps), so the row's tap observer saw none.
+            assertEquals(0, taps.get())
 
             // 20 dp from the row's left edge, mid-height: the row, not the
             // control — a2 is a single-block message, so Copy and Select
@@ -318,10 +333,10 @@ class TranscriptRowMenuTest {
             compose.onNodeWithTag("row-menu-copy").assertExists()
             compose.onNodeWithTag("row-menu-select-text").assertExists()
             compose.onNodeWithTag("row-menu-copy-message").assertDoesNotExist()
-            assertEquals(listOf(Haptic.LongPress), feedback.haptics)
-            // The control press's release was a normal tap; the menu
-            // press's release was swallowed.
-            assertEquals(1, taps.get())
+            assertEquals(listOf(Haptic.Light, Haptic.LongPress), feedback.haptics)
+            // The control press's release was the control's click (consumed,
+            // no row tap); the menu press's release was swallowed.
+            assertEquals(0, taps.get())
         } finally {
             state.close()
         }
