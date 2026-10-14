@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.roboco_core.ClientEvent
+import uniffi.roboco_core.Connectivity
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.CoreException
 import uniffi.roboco_core.EngineView
@@ -30,6 +31,9 @@ interface WorkspaceCore {
 
     /** Every paired engine, in pairing order. */
     fun engines(): List<EngineView>
+
+    /** The aggregate connectivity posture (ticket 50 reads it). */
+    fun connectivity(): Connectivity
 
     /** Sets a user section's engine-synced fold (optimistic overlay, background RPC). */
     @Throws(CoreException::class)
@@ -54,6 +58,8 @@ class CoreClientWorkspace(private val client: () -> CoreClient?) : WorkspaceCore
     override fun workspace(): WorkspaceSnapshot = live().workspace()
 
     override fun engines(): List<EngineView> = live().engines()
+
+    override fun connectivity(): Connectivity = live().connectivity()
 
     override fun setSectionCollapsed(sectionId: String, collapsed: Boolean) =
         live().setSectionCollapsed(sectionId, collapsed)
@@ -95,6 +101,10 @@ class WorkspaceFeed(
     /** Every paired engine; empty until the first read. */
     val engines: StateFlow<List<EngineView>> = _engines.asStateFlow()
 
+    private val _connectivity = MutableStateFlow<Connectivity?>(null)
+    /** The aggregate connectivity posture; null until the first read (ticket 50). */
+    val connectivity: StateFlow<Connectivity?> = _connectivity.asStateFlow()
+
     init {
         scope.launch(serial) {
             for (trigger in workspaceDirty) {
@@ -111,6 +121,13 @@ class WorkspaceFeed(
                 val c = core() ?: continue
                 val engineViews = try { c.engines() } catch (e: CoreException) { continue }
                 if (engineViews != _engines.value) _engines.value = engineViews
+                // Ticket 50: the aggregate connectivity posture, read on
+                // the same drain — `EnginesChanged` and
+                // `ConnectivityChanged` both trigger it, so the engines
+                // and the posture never disagree. Off the main thread,
+                // like the engines read above it.
+                val conn = try { c.connectivity() } catch (e: CoreException) { continue }
+                if (conn != _connectivity.value) _connectivity.value = conn
             }
         }
     }

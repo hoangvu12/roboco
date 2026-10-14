@@ -39,8 +39,9 @@ data class FrontPageUi(
     /** Per-id section metadata (kind, unsuffixed name, engine). */
     val meta: Map<String, FrontSectionMeta>,
     /**
-     * Section id → live value that replaces 41's row-derived one. Always
-     * empty here; ticket 50 fills it (Offline on offline `home:*` groups).
+     * Section id → live value that replaces 41's row-derived one:
+     * ticket 50 fills `Offline` on offline `home:*` groups. Empty while
+     * every engine is healthy.
      */
     val liveOverrides: Map<String, SectionLive> = emptyMap(),
 )
@@ -49,18 +50,22 @@ data class FrontPageUi(
  * The front page's model (ticket 40) — the `AppModel` front-page half:
  * it combines the workspace feed, the `groupByProject` preference and
  * the fold state into [ui], and routes the two front-page actions
- * (`toggleSection`, `collapseAll`) into [FoldState].
+ * (`toggleSection`, `collapseAll`) into [FoldState]. Ticket 50 adds
+ * [health]: the graced offline engine ids flow into
+ * [FrontPageUi.liveOverrides], so the header glyph and the connection
+ * line always agree.
  *
  * `null` until [Prefs] and [FoldState] have loaded from disk **and** a
  * first snapshot exists — no flash of expanded sections, none of Recent
  * before the groups. The section list itself is computed on [compute],
- * never the caller's thread, and nothing here calls the FFI: the feed
- * and the fold state own every call.
+ * never the caller's thread, and nothing here calls the FFI: the feed,
+ * the fold state and the health model own every call.
  */
 class FrontPageModel(
     private val feed: WorkspaceFeed,
     private val prefs: Prefs,
     private val fold: FoldState,
+    private val health: EngineHealthModel,
     scope: CoroutineScope,
     compute: CoroutineDispatcher = Dispatchers.Default,
 ) {
@@ -75,7 +80,8 @@ class FrontPageModel(
                 fold.state,
                 feed.engines.map { engineViews -> engineViews.associate { it.engineId to it.name } }
                     .distinctUntilChanged(),
-            ) { ws, groupByProject, f, engineNames ->
+                health.ui.map { it.offlineEngineIds }.distinctUntilChanged(),
+            ) { ws, groupByProject, f, engineNames, offlineEngines ->
                 val built = FrontPageSections.build(ws.front, groupByProject, engineNames)
                 val sectionsById = ws.front.sections.associateBy { it.id }
                 FrontPageUi(
@@ -88,6 +94,8 @@ class FrontPageModel(
                         fold.isCollapsedIn(f, id, sectionsById[id])
                     },
                     meta = built.meta,
+                    // Ticket 50: the graced offline engines' home groups.
+                    liveOverrides = FrontPageSections.offlineOverrides(built.meta, offlineEngines),
                 )
             },
         )

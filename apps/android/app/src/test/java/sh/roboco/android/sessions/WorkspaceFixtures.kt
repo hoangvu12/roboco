@@ -130,6 +130,7 @@ internal fun engine(
     engineId: String,
     name: String = engineId,
     state: EngineState = EngineState.Connected,
+    lastError: String? = null,
 ): EngineView = EngineView(
     engineId = engineId,
     name = name,
@@ -139,7 +140,7 @@ internal fun engine(
     platform = null,
     version = null,
     state = state,
-    lastError = null,
+    lastError = lastError,
     retryAtMs = null,
     lastConnectedMs = null,
     capabilities = emptyList(),
@@ -184,6 +185,18 @@ internal class FakeWorkspaceCore(
     /** The engine list `engines()` serves. */
     var engineList: List<EngineView> = emptyList()
 
+    /**
+     * The aggregate posture `connectivity()` serves (ticket 50). Built
+     * inline, not through the `connectivity()` fixture helper: inside
+     * this class that name resolves to the member and would recurse.
+     */
+    var connectivityValue: Connectivity = Connectivity(
+        state = ConnectivityState.CONNECTED,
+        retryAtMs = null,
+        lastFailure = null,
+        degradedChats = emptyList(),
+    )
+
     /** The threads every call ran on. */
     val callThreads = CopyOnWriteArrayList<Thread>()
 
@@ -208,6 +221,11 @@ internal class FakeWorkspaceCore(
         return engineList
     }
 
+    override fun connectivity(): Connectivity {
+        callThreads.add(Thread.currentThread())
+        return connectivityValue
+    }
+
     override fun setSectionCollapsed(sectionId: String, collapsed: Boolean) {
         callThreads.add(Thread.currentThread())
         setCalls.add(sectionId to collapsed)
@@ -229,14 +247,16 @@ internal class RecordingFeedback : Feedback {
 
 /**
  * Everything a model-level test needs — a fake core, the feed, the prefs,
- * the fold state and the model — over one DataStore file and test-scheduler
- * scopes, left to `runTest`'s teardown.
+ * the fold state, the engine-health model (ticket 50) and the front-page
+ * model — over one DataStore file and test-scheduler scopes, left to
+ * `runTest`'s teardown.
  */
 internal class FrontFixture(
     val core: FakeWorkspaceCore,
     val feed: WorkspaceFeed,
     val prefs: Prefs,
     val fold: FoldState,
+    val health: EngineHealthModel,
     val model: FrontPageModel,
 )
 
@@ -255,12 +275,21 @@ internal fun TestScope.newFrontFixture(
     val feed = WorkspaceFeed(core = { core }, scope = CoroutineScope(SupervisorJob() + io), io = io)
     val prefs = Prefs(prefsStore, prefsScope, io = io)
     val fold = FoldState(prefsStore, core, prefsScope, io = io)
+    // Ticket 50: the health model over the feed's own flows, on the test
+    // scheduler's virtual clock so a grace never waits real time.
+    val health = EngineHealthModel(
+        engines = feed.engines,
+        connectivity = feed.connectivity,
+        scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+        clock = { testScheduler.currentTime },
+    )
     val model = FrontPageModel(
         feed = feed,
         prefs = prefs,
         fold = fold,
+        health = health,
         scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
         compute = io,
     )
-    return FrontFixture(core, feed, prefs, fold, model)
+    return FrontFixture(core, feed, prefs, fold, health, model)
 }

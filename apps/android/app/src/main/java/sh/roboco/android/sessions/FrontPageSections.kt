@@ -102,6 +102,22 @@ object FrontPageSections {
         sections.filter { it.header != null && isCollapsed(it.id) }.mapTo(HashSet()) { it.id }
 
     /**
+     * The offline overrides for ticket 50's wifi-off rule: every `home:*`
+     * group whose single shared engine is in [offlineEngines] (the
+     * **graced** set, from `EngineHealthUi.offlineEngineIds` — never the
+     * raw `engineOnline`, so the header glyph and the connection line
+     * always agree and neither blinks on blips). The ids come straight
+     * from `build`'s [Built.meta], whose `engineId` is the single engine
+     * of the group's rows — a group spanning engines has none and is
+     * never overridden. [build] itself is unchanged: the map is applied
+     * by 41's builder (`liveOverrides[id] ?: sectionLive(vms)`, which
+     * keeps the count and the rows and only swaps the glyph).
+     */
+    fun offlineOverrides(meta: Map<String, FrontSectionMeta>, offlineEngines: Set<String>): Map<String, SectionLive> =
+        meta.filter { (id, m) -> id.startsWith("home:") && m.engineId != null && m.engineId in offlineEngines }
+            .mapValues { SectionLive.Offline }
+
+    /**
      * The ids Collapse All may fold, in order (ticket 46): `"pinned"` when
      * pins exist, every user section, and the groups only while grouping
      * is on. **Recent is never in the list** (`SessionListController.swift:419-421`).

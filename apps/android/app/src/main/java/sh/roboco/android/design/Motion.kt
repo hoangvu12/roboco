@@ -387,6 +387,20 @@ object Motion {
     /** Refresh-control settle: 0.46 s critically damped (stiffness ≈ 400). ui-parity#48 (chosen, not measured). */
     val RefreshSettle = IosSpring("refreshSettle", 0.4617, 1f)
 
+    // ------------------------------------------------ connection line (50)
+    // The Sessions front page's multi-engine connection line (the Roboco
+    // stand-in for the never-shipped offline banner). This is the one
+    // entrance iOS has no counterpart for, so the numbers are the Roboco
+    // desktop's `motion::fade_in` (`crates/ui/src/motion.rs:442-450`) over
+    // its `FADE_IN` (`crates/proto/src/motion.rs:215,289`) — the same 500 ms
+    // ease-out-expo entrance the web's `rb-fade-in` uses
+    // (`web/packages/app/src/styles/app.css:1836,4258-4263`); ui-parity#50
+    // is the consumer. Stays out of allSprings (04's table only).
+
+    /** Connection-line entrance: opacity 0 → 1 with a 4 dp rise, [ExpoOut]. Desktop `FADE_IN`. ui-parity#50. */
+    const val ConnectionLineInMs = 500
+    fun <T> connectionLineIn(): TweenSpec<T> = tween(ConnectionLineInMs, easing = ExpoOut)
+
     // ------------------------------------------------------ handoff timing set
 
     /** The full handoff timing set, normal or reduced. ios:Session/DraftHandoff.swift:59-131,162-174 */
