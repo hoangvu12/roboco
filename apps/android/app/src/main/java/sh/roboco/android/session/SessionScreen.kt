@@ -24,6 +24,7 @@ import sh.roboco.android.composer.QueueAction
 import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.QueuePanel
+import sh.roboco.android.pairing.LocalPairPage
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavEntryEffect
@@ -286,7 +287,19 @@ fun SessionScreen(
     } else {
         null
     }
-    val model = BottomStackModel.from(chrome, editing = queueEdit?.isEditing == true)
+    val editing = queueEdit?.isEditing == true
+    val model = BottomStackModel.from(chrome, editing = editing)
+
+    // 9.65 Ticket 73: the pill's banner filler (registered by 83 in 76's
+    //     BANNER slot). Its EngineParked tap re-pairs through 72's
+    //     launcher, captured here in composition.
+    val statusBanner = controller.filler<StatusBanner>()
+    val pairPage = LocalPairPage.current
+    SideEffect {
+        statusBanner?.openPairPage = pairPage?.let { launcher ->
+            { id: String -> launcher.openPairPage(prefill = null, replaceEngineId = id) }
+        }
+    }
 
     // 9.7 Ticket 83's screen flags: the lease tracks on-screen-ness for
     //     the "acquired after leaving" case only (a begin that resolves
@@ -347,7 +360,15 @@ fun SessionScreen(
                     }
                 }
             },
-            pill = {}, // 73
+            pill = {
+                // 73: the shown banner (83's editing overlay folded in); 74
+                // shows and hides the row from the same model.
+                StatusPillRow(
+                    shownBanner(chrome.banner, editing),
+                    onTap = { banner -> statusBanner?.onTap(banner) },
+                    tapEnabled = { banner -> bannerTapAction(banner, true) != BannerTap.None },
+                )
+            },
             queue = {
                 // 82 + 83: the queue card above the composer. Its ⋯ menu's
                 // Edit opens the queued-message edit lease (83,
