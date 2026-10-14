@@ -1,14 +1,19 @@
 package sh.roboco.android.flows
 
 import android.content.ClipboardManager
+import android.graphics.Point
+import android.os.SystemClock
+import android.provider.Settings
+import androidx.activity.BackEventCompat
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import android.os.SystemClock
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -34,8 +39,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Ignore
 import org.junit.Rule
@@ -358,34 +365,151 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("queue-after-return.png")
     }
 
-    /** `testCancelledSwipeBackKeepsStreaming` (:527): a partial edge swipe never detaches the session. */
+    /**
+     * `testCancelledSwipeBackKeepsStreaming` (:524-545): a half swipe-back
+     * (cancelled) never detaches the session — the reply keeps streaming
+     * to completion, and no "New session" accessory shows over the
+     * session. The gesture is dispatched through
+     * `OnBackPressedDispatcher` (deterministic); the finger-level variant
+     * is [cancelledSwipeBackKeepsStreaming_gesture].
+     */
     @Test
     fun cancelledSwipeBackKeepsStreaming() {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
+        val before = compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().size
+
         compose.onNodeWithTag("composer-input").performClick()
             .performTextInput("Summarize the launch post in three bullets.")
         compose.onNodeWithTag("composer-send").performClick()
+        // The turn is running before the gesture: the send button flipped
+        // to Stop (the slow fixture keeps the reply streaming for seconds).
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithContentDescription("Stop response").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Drag from the left edge a third of the way, slowly, hold, and
+        // release towards the edge: the predictive-back pop cancels.
+        val dispatcher = compose.activity.onBackPressedDispatcher
+        val halfHeight = compose.activity.window.decorView.height / 2f
+        compose.runOnUiThread {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(1f, halfHeight, 0f, BackEventCompat.EDGE_LEFT))
+        }
+        for (progress in floatArrayOf(0.1f, 0.2f, 0.3f)) {
+            SystemClock.sleep(50)
+            compose.runOnUiThread {
+                dispatcher.dispatchOnBackProgressed(
+                    BackEventCompat(40f, halfHeight, progress, BackEventCompat.EDGE_LEFT),
+                )
+            }
+        }
+        SystemClock.sleep(300) // the hold before the release
+        compose.runOnUiThread { dispatcher.dispatchOnBackCancelled() }
         compose.waitForIdle()
 
-        // Drag from the left edge a third of the way and let go: the
-        // predictive-back pop cancels (the release is before the commit
-        // threshold — `NavStackHost`'s PredictiveBackHandler).
+        assertTheCancelledSwipeKeptTheSessionStreaming(before)
+    }
+
+    /**
+     * The finger-level variant of [cancelledSwipeBackKeepsStreaming], on a
+     * device with gesture navigation: a real out-and-back edge drag (the
+     * system cancels a release that does not cross the commit threshold —
+     * a plain 30 % drag-and-release would commit on Android). `@Tour`:
+     * recorded, not in the PR emulator run.
+     */
+    @Test
+    @Tour
+    fun cancelledSwipeBackKeepsStreaming_gesture() {
+        assumeTrue(
+            "the finger variant needs gesture navigation",
+            Settings.Secure.getInt(compose.activity.contentResolver, "navigation_mode", 0) == 2,
+        )
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        val before = compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().size
+
+        compose.onNodeWithTag("composer-input").performClick()
+            .performTextInput("Summarize the launch post in three bullets.")
+        compose.onNodeWithTag("composer-send").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithContentDescription("Stop response").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        // Drag out to a third of the width, then back to the edge, so the
+        // release cancels (the iOS motion, adapted for Android's commit).
         val width = compose.activity.window.decorView.width
         val height = compose.activity.window.decorView.height
-        device.swipe((width * 0.01f).toInt(), height / 2, (width * 0.3f).toInt(), height / 2, 40)
+        device.swipe(
+            arrayOf(Point(1, height / 2), Point((0.3f * width).toInt(), height / 2), Point(4, height / 2)),
+            40,
+        )
         compose.waitForIdle()
 
-        // Still on the session, no accessory over it, and the reply keeps
-        // streaming to completion.
-        compose.onNodeWithTag("composer-input").assertExists()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isEmpty() ||
-                compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        assertTheCancelledSwipeKeptTheSessionStreaming(before)
+    }
+
+    /**
+     * The shared tail of the cancelled-swipe pair: still on the session,
+     * no accessory over it, the turn still running right after the cancel,
+     * a new markdown row within 20 s, the turn settled within 40 s, and the
+     * last markdown text changed after the cancel (129 exposes the text;
+     * until then only that comparison is skipped).
+     */
+    private fun assertTheCancelledSwipeKeptTheSessionStreaming(before: Int) {
+        // Still on the session, and no accessory over it (an empty list
+        // also passes — 30 does not place it over a session).
+        compose.onNodeWithTag("composer-input").assertIsDisplayed()
+        assertTrue(
+            "no New session accessory over the session",
+            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().none { it.isDisplayed() },
+        )
+        // The turn is still running right after the cancel.
+        assertTrue(
+            "the turn is still running after the cancelled swipe",
+            compose.onAllNodesWithContentDescription("Stop response").fetchSemanticsNodes().isNotEmpty(),
+        )
+        val afterCancel = lastMarkdownText()
+
+        // The reply keeps streaming: a new markdown row lands within 20 s.
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().size > before
         }
-        compose.waitUntil(timeoutMillis = 30_000) {
-            compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().isNotEmpty()
+        // Updates keep arriving to the end: the send button flips back and
+        // the reply's tail moved on after the cancel.
+        compose.waitUntil(timeoutMillis = 40_000) { sendLabel() == "Send message" }
+        val settled = lastMarkdownText()
+        if (afterCancel != null && settled != null) {
+            assertNotEquals("the reply's tail changed after the cancel", afterCancel, settled)
+        }
+    }
+
+    /**
+     * The last `row-markdown` node's text or content description — 129's
+     * a11y tree exposes one of them; `null` until it lands.
+     */
+    private fun lastMarkdownText(): String? {
+        val nodes = compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes()
+        if (nodes.isEmpty()) return null
+        val config = nodes.last().config
+        return when {
+            config.contains(SemanticsProperties.Text) -> config[SemanticsProperties.Text].firstOrNull()?.text
+            config.contains(SemanticsProperties.ContentDescription) ->
+                config[SemanticsProperties.ContentDescription].firstOrNull()
+            else -> null
+        }
+    }
+
+    /** The composer's send-button label: "Send message" or "Stop response". */
+    private fun sendLabel(): String? {
+        val nodes = compose.onAllNodesWithTag("composer-send").fetchSemanticsNodes()
+        if (nodes.isEmpty()) return null
+        val config = nodes[0].config
+        return if (config.contains(SemanticsProperties.ContentDescription)) {
+            config[SemanticsProperties.ContentDescription].firstOrNull()
+        } else {
+            null
         }
     }
 

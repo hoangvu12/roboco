@@ -53,6 +53,7 @@ import sh.roboco.android.shell.LargeTitleGallerySection
 import sh.roboco.android.pairing.PairingRootGallerySection
 import sh.roboco.android.pairing.PairPageGallerySection
 import sh.roboco.android.session.BottomStackGallerySection
+import sh.roboco.android.session.SessionNavGallerySection
 import sh.roboco.android.session.SessionHeaderGallerySection
 import sh.roboco.android.session.SessionOpenGallerySection
 import sh.roboco.android.session.StatusPillGallerySection
@@ -595,6 +596,14 @@ object Gallery {
         // on the fake RowActions and its call log. Fill: the section owns
         // the host pair and its column.
         GallerySection("Session ⋯ menu", screenshotHeightDp = 420) { SessionMenuGallerySection() },
+        // Ticket 85 (session push/pop choreography + nav lifecycle): a
+        // 402 × 874 framed NavStackHost pushing a demo session — the
+        // fake bottom stack and jump circle fading with the push/pop and
+        // the predictive back gesture — over a real SessionNavLifecycle on
+        // fakes, with the live phase/p/α readout and the lifecycle log.
+        GallerySection("Session push/pop", GalleryLayout.Scroll, screenshotHeightDp = 1200) {
+            SessionNavGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

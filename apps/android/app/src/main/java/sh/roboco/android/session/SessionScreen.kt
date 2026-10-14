@@ -137,6 +137,14 @@ fun SessionScreen(
     val entry = LocalNavEntry.current
     val transcript = state.transcript
 
+    // 1.5 Ticket 85: this screen's push/pop alpha pair. The route (76)
+    //    provides the real one around this composable; the `Static`
+    //    default keeps direct compositions (tests, previews) at 1 — the
+    //    pre-85 behaviour. A stable object read once in composition:
+    //    the multipliers themselves are snapshot reads for 74's placement
+    //    and 131's layer, never for recomposition.
+    val nav = LocalSessionNavAlpha.current
+
     // 2. Chrome, collected once and passed field by field (51).
     val chrome by controller.chrome.collectAsState()
 
@@ -524,10 +532,15 @@ fun SessionScreen(
                     SessionComposerSlot(composerBinding, shown, Modifier.arrivalComposerAnchor(state.arrival))
                 }
             },
-            jump = {}, // 131
-            // 77: the arrival channel (85 multiplies its push-pop factor
-            // in: nav.stackAlpha() * state.arrival.stackAlpha).
-            stackAlpha = { state.arrival.stackAlpha },
+            jump = {}, // 131: when it lands, `JumpToLatestButton(transcript.viewport, navAlpha = nav::jumpAlpha)` here — never a folded-in Animatable (that would restart its spring).
+            // 85 × 77: the stack's two alpha factors — the push/pop
+            // choreography (85's `LocalSessionNavAlpha`) multiplied by
+            // 77's arrival channel. 74 reads this only in placement
+            // (`placeWithLayer { alpha = stackAlpha() }`) and its
+            // derivedStateOf threshold, so a transition frame re-places,
+            // never recomposes. Never `Modifier.alpha` on the container
+            // (it also holds the transcript and the fade).
+            stackAlpha = { nav.stackAlpha() * state.arrival.stackAlpha },
             modifier = Modifier.fillMaxSize(),
         )
     }
