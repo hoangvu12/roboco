@@ -56,6 +56,7 @@ import sh.roboco.android.design.StatusGlyph
 import sh.roboco.android.design.StatusGlyphKind
 import sh.roboco.android.design.SymbolWeight
 import sh.roboco.android.design.TranscriptPalette
+import sh.roboco.android.design.color
 import sh.roboco.android.design.formatElapsed
 import sh.roboco.android.design.hairlineBorder
 import sh.roboco.android.design.uiStyle
