@@ -1,14 +1,20 @@
 package sh.roboco.android.session
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import sh.roboco.android.composer.CoreQueueEditPort
 import sh.roboco.android.composer.CoreQuestionPort
+import sh.roboco.android.composer.DraftKey
+import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.QueueActions
+import sh.roboco.android.composer.QueueEditController
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.SessionChipMenus
+import sh.roboco.android.composer.sessionDraftSaver
 import sh.roboco.android.shell.LocalNavEntry
+import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavRoute
 import sh.roboco.android.shell.SessionRoute
 import sh.roboco.android.transcript.AttachmentReader
@@ -110,28 +116,71 @@ class SessionScreenRoute internal constructor(
     /**
      * Teardown of a screen that **was** on screen (a committed pop, a
      * `popToRoot`, a `setRoutes` removal — through the NavEntry close
-     * safety net in [Content]): `controller.close()`
-     * (`setViewAttached(false)` + `markSeen`, tickets 51/85), then the
-     * transcript, only if it was already created. Main thread;
-     * idempotent (51's and 61's `close()` are). Ticket 85 replaces the
-     * safety net with its `lifecycle.release()`; keep exactly one.
+     * safety net in [Content]): 89's chip-menu dispose, then ticket 85's
+     * `lifecycle.release()` — `controller.close()` (`setViewAttached(false)`
+     * + `markSeen`, on 51's IO lane) then the transcript — the iOS
+     * `viewDidDisappear` sequence. Main thread; idempotent (51's, 61's
+     * and 85's `close()` are). Ticket 85 owns the wiring; keep exactly
+     * one retained closeable.
      */
     fun release() {
         // Ticket 89: the chip-menu loads resolve empty after this (the
         // in-flight writes still finish — never cancelled).
         controller.filler<SessionChipMenus>()?.dispose()
-        controller.close()
-        if (state.transcriptCreated) state.transcript.close()
+        val lifecycle = navLifecycle
+        if (lifecycle != null) {
+            // Ticket 85: detach + mark seen, then the layout engine.
+            lifecycle.release()
+        } else {
+            // Never composed (no lifecycle was retained): the pre-85
+            // teardown still holds.
+            controller.close()
+            if (state.transcriptCreated) state.transcript.close()
+        }
     }
+
+    /**
+     * Ticket 85's nav lifecycle for this route, retained on the Session
+     * nav entry by [Content] (null until the screen first composed —
+     * only then do the two adapters have something to reach).
+     */
+    private var navLifecycle: SessionNavLifecycle? = null
 
     @Composable
     override fun Content() {
-        // The NavEntry close safety net: any removal path (a committed
-        // pop, popToRoot, setRoutes — see NavEntry.close) closes the
-        // controller and the transcript exactly once, and it survives a
-        // host disposal (tab switches, configuration changes) because
-        // the entry's retained map does.
         val entry = LocalNavEntry.current
+        val stack = LocalNavStack.current
+
+        // Ticket 85: the nav lifecycle — retained per entry (it survives a
+        // tab host's disposal and a configuration change), created once.
+        // The two adapters reach 83's queue-edit controller (through 78's
+        // entry-retained binding — the gate is only set once the screen
+        // composed, hence the call-time lookup) and 84's entry-retained
+        // saver (the same retain key `SessionScreen` created it under),
+        // both at leave() time, never at composition time.
+        val drafts = LocalDrafts.current
+        val lifecycle = remember(entry) {
+            entry.retain(SessionNavLifecycleKey) {
+                SessionNavLifecycle(
+                    chatId = controller.chatId,
+                    controller = controller,
+                    transcript = state.transcript,
+                    edits = QueuedEditCanceller {
+                        (entry.sessionQueueEditGate(controller.chatId) as? QueueEditController)?.cancelEdit()
+                    },
+                    drafts = DraftSaver {
+                        entry.sessionDraftSaver(
+                            DraftKey.Chat(core.engineId, controller.chatId),
+                            drafts,
+                        ).saveNow()
+                    },
+                ).also { navLifecycle = it }
+            }
+        }
+
+        // The NavEntry close safety net: any removal path (a committed
+        // pop, popToRoot, setRoutes — see NavEntry.close) releases the
+        // session exactly once, through the lifecycle above.
         remember(entry) {
             entry.retain(CloseKey) {
                 object : AutoCloseable {
@@ -176,18 +225,28 @@ class SessionScreenRoute internal constructor(
                 entry.retain(QuestionsKey) { CoreQuestionPort(live.handle) }
             }
         }
-        SessionScreen(
-            controller,
-            state,
-            commands = commands,
-            attachments = attachments,
-            queueEditPort = queueEditPort,
-            queueActions = queueActions,
-            questionPort = questionPort,
-            // 84: the engine half of the draft key (the route's core has
-            // it; SessionScreen pairs it with the controller's chatId).
-            engineId = core.engineId,
-        )
+        // Ticket 85: the push/pop choreography (the stack and jump
+        // multipliers) and the will/did lifecycle wiring around the
+        // screen. The alpha travels through [LocalSessionNavAlpha], so
+        // the screen — and 131's jump button when it lands — reads it
+        // with no new parameter; the effects sit outside SessionScreen's
+        // own effects, so 84's dispose-time save runs before 85's leave.
+        val navAlpha = rememberSessionNavAlpha(stack, entry)
+        CompositionLocalProvider(LocalSessionNavAlpha provides navAlpha) {
+            SessionNavEffects(lifecycle, entry)
+            SessionScreen(
+                controller,
+                state,
+                commands = commands,
+                attachments = attachments,
+                queueEditPort = queueEditPort,
+                queueActions = queueActions,
+                questionPort = questionPort,
+                // 84: the engine half of the draft key (the route's core has
+                // it; SessionScreen pairs it with the controller's chatId).
+                engineId = core.engineId,
+            )
+        }
     }
 
     /**
@@ -218,6 +277,9 @@ class SessionScreenRoute internal constructor(
     }
 
     private object CloseKey
+
+    /** Ticket 85's nav-lifecycle retention key. */
+    private object SessionNavLifecycleKey
 
     /** 78's command-set retention key. */
     private object CommandsKey

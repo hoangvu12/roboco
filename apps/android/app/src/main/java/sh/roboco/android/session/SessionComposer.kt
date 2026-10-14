@@ -40,6 +40,7 @@ import sh.roboco.android.design.Alerts
 import sh.roboco.android.design.LocalAlerts
 import sh.roboco.android.design.LocalFeedback
 import sh.roboco.android.shell.LocalNavEntryOrNull
+import sh.roboco.android.shell.NavEntry
 import sh.roboco.android.transcript.RunwayHooks
 import uniffi.roboco_core.FileMatch
 
@@ -388,6 +389,18 @@ private val QueueEditControllerKey = "session-queue-edit"
 
 /** 83's entry-close key: disposes the controller with the session's other retained state. */
 private val QueueEditDisposeKey = "session-queue-edit-dispose"
+
+/**
+ * Ticket 85's read-only seam into 78's entry-retained binding: the live
+ * [QueuedEditGate] of [chatId] (83's `QueueEditController` once its wiring
+ * ran), or null when the binding or the edit lease was never created for
+ * this entry (no commands — a test fake core — or before the screen's
+ * first composition). The nav-leave path (`SessionNavLifecycle.leave()`)
+ * cancels an open queued edit through exactly this instance, at call
+ * time rather than composition time.
+ */
+internal fun NavEntry.sessionQueueEditGate(chatId: String): QueuedEditGate? =
+    retainedOrNull("session-composer-binding:$chatId")?.queueEdit
 
 /**
  * Ticket 83's [QueueEditController] in composition — the construction and

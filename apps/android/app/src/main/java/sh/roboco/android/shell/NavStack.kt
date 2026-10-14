@@ -154,6 +154,21 @@ class NavEntry internal constructor(val id: Long, val route: NavRoute) {
     }
 
     /**
+     * Read-only lookup of a retained object: the value [retain] stored
+     * under [key], or null when nothing was retained yet (no factory
+     * runs, nothing is created). Ticket 85's nav-leave adapters use it
+     * to reach 78's entry-retained composer binding at call time —
+     * after the screen composed it, long after the route's own
+     * composition created them.
+     */
+    @MainThread
+    internal fun <T : Any> retainedOrNull(key: Any): T? {
+        @Suppress("UNCHECKED_CAST")
+        val value = retained[key] as? T
+        return value
+    }
+
+    /**
      * Cancels [scope] and closes retained `AutoCloseable`s in reverse
      * creation order. Idempotent. Runs only after `didDisappear(removed =
      * true)` was delivered (or for close-only entries: setRoutes removals,
