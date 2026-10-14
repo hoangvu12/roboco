@@ -260,13 +260,20 @@ class SessionController private constructor(
      * the IO lane and in that order; then unregister from the hub and
      * stop refreshing. Idempotent; calls after it are ignored (no FFI,
      * no crash).
+     *
+     * Ticket 108: the IO job is registered with
+     * [SessionDetachFence.Default] under the chat id, so the next attach
+     * of the same chat (the 840 dp carry-over, which detaches the old
+     * copy before attaching the new one) can join it and keep the order
+     * on the shared warm handle. `job.complete()` does not cancel
+     * children, so the job always runs.
      */
     fun close() {
         if (!closed.compareAndSet(false, true)) return
         unregister?.invoke()
         unregister = null
         trigger.close()
-        scope.launch {
+        val closeJob = scope.launch {
             try {
                 core.setViewAttached(false)
                 // 79: the same silent skip as markSeen() on the way out.
@@ -280,6 +287,7 @@ class SessionController private constructor(
                 logFailure("close failed", t)
             }
         }
+        SessionDetachFence.Default.track(core.chatId, closeJob)
         // The pop also counts as "seen": the notification goes too.
         onSeen?.invoke(core.chatId)
         // Let the final calls run, then the scope ends: later launches

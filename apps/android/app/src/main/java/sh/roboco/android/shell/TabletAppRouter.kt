@@ -188,16 +188,23 @@ class TabletAppRouter(
      * `presence` argument of 32's [rememberPhoneAppRouter]) — iOS's
      * `tabBarController != nil` distinction (`SessionViewController.swift:309-310`):
      * only a session inside the **tab shell** reports a close.
+     *
+     * One implementation of the two rules (108): ticket 108's
+     * [CarryOverPresence] over this split's selection, instead of a
+     * second copy of the same logic.
      */
-    val tabPresence: SessionPresenceListener = object : SessionPresenceListener {
-        override fun sessionDidAppear(chatId: String) {
-            shell.currentChatId = chatId
-        }
+    val tabPresence: SessionPresenceListener = CarryOverPresence(
+        object : CarryOverSelection {
+            override var currentChatId: String?
+                get() = shell.currentChatId
+                set(v) {
+                    shell.currentChatId = v
+                }
 
-        override fun sessionDidClose(chatId: String) {
-            if (shell.isCollapsed && shell.currentChatId == chatId) shell.currentChatId = null
-        }
-    }
+            override val isCollapsed: Boolean
+                get() = shell.isCollapsed
+        },
+    )
 
     init {
         // Construction / restore: from the saved detail root (33). Runs
@@ -392,10 +399,16 @@ class TabletAppRouter(
     /**
      * Ticket 108's `SplitDetailColumn.showSession` (iOS `:180-183`): the
      * detail open stripped of `openSession`'s steps 1-5 — no
-     * `dismissPresented`, no same-id/pending early return, no
-     * `phone.clearPending()`. Just [resolve] with the same result handling.
+     * `dismissPresented`, no same-id/pending early return — plus the one
+     * step the ticket keeps from its expand sketch: [phone.clearPending],
+     * so a phone call queued while collapsed (stale by the time the
+     * widen's detail open runs) is dropped. Otherwise just [resolve] with
+     * the same result handling.
      */
-    fun showSessionInDetail(chatId: String) = resolve(chatId) { route -> applyOpened(chatId, route) }
+    fun showSessionInDetail(chatId: String) {
+        phone.clearPending()
+        resolve(chatId) { route -> applyOpened(chatId, route) }
+    }
 
     /**
      * Ticket 108's `SplitDetailColumn.clear` (iOS `:164`): pending opens

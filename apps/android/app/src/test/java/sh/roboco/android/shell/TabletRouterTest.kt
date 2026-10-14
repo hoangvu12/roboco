@@ -741,7 +741,38 @@ class TabletRouterTest {
     }
 
     @Test
-    fun clearDetail_discardsPending_keepsCurrentChatId() = runTest {
+    fun showSessionInDetail_resolvesWhileCollapsed_discards() = runTest {
+        val r = rig(testScheduler)
+        r.log.clear()
+        r.router.showSessionInDetail("c1")
+        // Narrowed again before the open resolves: the late route is
+        // discarded, nothing else — no session, no phone call, no toast,
+        // no error sequence (108's "stale results" contract; the next
+        // collapse owns the chat).
+        r.shell.collapsed = true
+        advanceUntilIdle()
+        assertEquals(listOf("discard(c1)"), r.log)
+        assertTrue(r.log.none { it.startsWith("phone.") || it.startsWith("toast(") })
+        // The open did run (the route was built off main, then discarded);
+        // nothing reached the column.
+        assertEquals(1, r.opens)
+    }
+
+    @Test
+    fun showSessionInDetail_null_showsOpenError() = runTest {
+        val r = rig(testScheduler)
+        r.log.clear()
+        // An unknown chat on expand (the carried id was archived while
+        // compact): the split's open-error recovery — and no leading
+        // animated dismissal (only openSession has one).
+        r.router.showSessionInDetail("missing1")
+        advanceUntilIdle()
+        assertEquals(errorTail, r.log)
+        assertNull(r.shell.currentChatId)
+    }
+
+    @Test
+    fun clearDetail_invalidatesPendingAndEmpties() = runTest {
         val r = rig(testScheduler)
         r.log.clear()
         r.router.sessionDidAppear("c3") // current=c3
@@ -752,6 +783,7 @@ class TabletRouterTest {
         advanceUntilIdle()
         assertEquals(listOf("current=c3", "dismissPresented(true)", "empty", "discard(c1)"), r.log)
         assertEquals("c3", r.shell.currentChatId)
+        assertFalse(r.shell.showsSession)
 
         // Already empty: nothing, not even a second "empty".
         r.router.clearDetail()
