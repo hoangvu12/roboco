@@ -32,16 +32,18 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The image tile loader (ticket 66): cache + hit rule, the engine-keyed
- * entries, in-flight de-duplication, failure semantics, the LRU replace
- * rule, `loadFull` outside the LRU, and the memory-trim levels — all with
- * a scripted [ImageDecode] and counting/gated fake readers on
+ * The image tile loader (ticket 66, hit/decode rules updated by 137 for
+ * the aspect-fit tile): cache + hit rule (**longer** side), the
+ * engine-keyed entries, in-flight de-duplication, failure semantics, the
+ * LRU replace rule (longer side), the fetchable short-circuit, loadFull
+ * outside the LRU, and the memory-trim levels — all with a scripted
+ * [ImageDecode] and counting/gated fake readers on
  * `StandardTestDispatcher`s sharing the test scheduler. The downsample
  * arithmetic runs the real [PlatformImageDecode] under Robolectric's
  * NATIVE graphics mode (PNG bytes in, `ALLOCATOR_SOFTWARE` bitmaps out),
  * pinning the integer ceil-division targets exactly (1200×800 at 780 →
- * 1170×780, at 228 → 342×228; 300×200 never upscaled; the 4096 long-side
- * cap for full loads).
+ * 780×520, at 228 → 228×152; 960×540 at 780 → 780×439; 300×200 never
+ * upscaled; the 4096 long-side cap for full loads).
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -132,15 +134,15 @@ class TranscriptImageLoaderTest {
     @Test
     fun aLoadCachesItsResultAndTheHitRuleServesIt() = runTest {
         val reader = FakeReader()
-        val loader = newLoader(ScriptedDecode(listOf(bmp(1170, 780))))
+        val loader = newLoader(ScriptedDecode(listOf(bmp(780, 520))))
         val k = ImageKey("e1", "pic.png")
 
         val image = loader.load(k, 780, reader)
         assertNotNull(image)
-        assertEquals(1170, image!!.width)
+        assertEquals(780, image!!.width)
         assertEquals(1, reader.reads.get())
 
-        // minSide 780 >= 780 → hit; >= 228 → hit; > 780 → miss (not full).
+        // maxSide 780 >= 780 → hit; >= 228 → hit; 781 → miss (not full).
         assertNotNull(loader.cached(k, 780))
         assertNotNull(loader.cached(k, 228))
         assertNull(loader.cached(k, 781))
@@ -166,7 +168,7 @@ class TranscriptImageLoaderTest {
         val reader = FakeReader()
         val decode = ScriptedDecode(
             listOf(
-                bmp(750, 500),            // load at 500: downsampled, minSide 500
+                bmp(750, 500),              // load at 500: downsampled, maxSide 750
                 bmp(1200, 800, full = true), // load at 800: full
             ),
         )
@@ -174,7 +176,7 @@ class TranscriptImageLoaderTest {
         val k = ImageKey("e1", "pic.png")
 
         assertNotNull(loader.load(k, 500, reader))
-        // 500 < 800 and not full → miss → a second read, a full decode.
+        // 750 < 800 and not full → miss → a second read, a full decode.
         assertNull(loader.cached(k, 800))
         assertNotNull(loader.load(k, 800, reader))
         assertEquals(2, reader.reads.get())
@@ -191,8 +193,8 @@ class TranscriptImageLoaderTest {
         val loader = newLoader(
             ScriptedDecode(
                 listOf(
-                    bmp(1170, 780),   // load at 780
-                    bmp(450, 300),    // load at 2000 (a miss: 780 < 2000)
+                    bmp(780, 520),   // load at 780 (maxSide 780)
+                    bmp(450, 300),   // load at 2000 (a miss: 780 < 2000)
                 ),
             ),
         )
@@ -207,7 +209,7 @@ class TranscriptImageLoaderTest {
         // … but the cache kept the larger entry and still serves it.
         val cached = loader.cached(k, 780)
         assertNotNull(cached)
-        assertEquals(1170, cached!!.width)
+        assertEquals(780, cached!!.width)
     }
 
     // ------------------------------------------------------------- engine key
@@ -279,7 +281,7 @@ class TranscriptImageLoaderTest {
     @Test
     fun aLoadSurvivesItsAwaiterAndStillFillsTheCache() = runTest {
         val reader = GatedReader()
-        // A 300 px short side: the hit rule serves it for sidePx 300 (a
+        // A 450 px long side: the hit rule serves it for sidePx 300 (a
         // 100×100 downsample would be a legitimate miss at 300).
         val loader = newLoader(ScriptedDecode(listOf(bmp(450, 300))))
         val k = ImageKey("e1", "a.png")
@@ -325,6 +327,28 @@ class TranscriptImageLoaderTest {
         // reads again (and fails again).
         assertNull(loader.load(k, 300, reader))
         assertEquals(2, reader.reads.get())
+    }
+
+    // ---------------------------------------------------- fetchable guard
+
+    @Test
+    fun unfetchableReferencesShortCircuitBeforeTheEngineIdOrReader() = runTest {
+        val reader = FakeReader()
+        val loader = newLoader(ScriptedDecode(listOf(bmp(100, 100))))
+        val engineIdReads = AtomicInteger()
+        val binding = TranscriptImageBinding(
+            loader,
+            { engineIdReads.incrementAndGet().toString() },
+            reader,
+        )
+
+        assertNull(binding.cached("https://example.com/a.png", 300))
+        assertNull(binding.load("https://example.com/a.png", 300))
+        assertNull(binding.loadFull("data:image/png;base64,xyz"))
+        assertNull(binding.loadFull("assets/shot.png"))
+        assertEquals("the engine id is never read", 0, engineIdReads.get())
+        assertEquals(0, reader.reads.get())
+        assertNull(loader.cached(ImageKey("1", "https://example.com/a.png"), 300))
     }
 
     // ------------------------------------------------------------- loadFull
@@ -425,15 +449,22 @@ class TranscriptImageLoaderTest {
         val decode = PlatformImageDecode(allocator = ImageDecoder.ALLOCATOR_SOFTWARE)
         val wide = pngBytes(1200, 800)
 
+        // 137: the tile is aspect-fit, so the LONGER side lands on sidePx.
         val at780 = decode.decode(wide, 780)
-        assertEquals(1170, at780.bitmap.width)
-        assertEquals(780, at780.bitmap.height)
+        assertEquals(780, at780.bitmap.width)
+        assertEquals(520, at780.bitmap.height) // ceil(800 · 780 / 1200)
         assertFalse(at780.full)
 
         val at228 = decode.decode(wide, 228)
-        assertEquals(342, at228.bitmap.width)
-        assertEquals(228, at228.bitmap.height)
+        assertEquals(228, at228.bitmap.width)
+        assertEquals(152, at228.bitmap.height) // ceil(800 · 228 / 1200)
         assertFalse(at228.full)
+
+        // The #817 demo size: ceil(540 · 780 / 960) = 439.
+        val demo = decode.decode(pngBytes(960, 540), 780)
+        assertEquals(780, demo.bitmap.width)
+        assertEquals(439, demo.bitmap.height)
+        assertFalse(demo.full)
 
         // A source smaller than the tile is never upscaled.
         val small = decode.decode(pngBytes(300, 200), 780)
