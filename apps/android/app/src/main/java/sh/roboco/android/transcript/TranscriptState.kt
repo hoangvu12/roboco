@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 import sh.roboco.android.core.TextEngine
+import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.transcript.widgets.ToolRailMemory
 import uniffi.roboco_core.LayoutFrame
 import uniffi.roboco_core.LayoutListener
@@ -62,7 +63,8 @@ interface RunwayHooks {
  * capture before the frame swap, restore after the runway height — so
  * the reading position survives content changes while not following.
  * Row motion and painting (62–67, 117, 132) belong to their tickets,
- * which read [frame] and register [FrameListener]s.
+ * which read [frame] and register [FrameListener]s — 132's [rowMotion] is
+ * the one exception: this class owns it so [apply] can feed it.
  *
  * Construct on the main thread (the production constructor checks it
  * before creating the Rust engine, which spawns the `roboco-layout`
@@ -243,6 +245,17 @@ class TranscriptState internal constructor(
     /** The ever-growing set of row keys ever laid out (new-row fade-in, ticket 65). */
     val knownRows = KnownRows()
 
+    /**
+     * The row motion (ticket 132): the S1–S4 fold/reveal selection and the
+     * additive per-key segment tracks that slide realized rows from their
+     * old placement to their new one (140 ms ease-out folds, 360 ms
+     * expo-out reveals). Fed by [apply] before the listeners — with the
+     * rows realized for the **old** frame — and read by the host's
+     * measure and place passes, the Tools-row clip and [RealizedRow]'s
+     * drawn geometry. Main thread only, like the rest of this class.
+     */
+    val rowMotion = RowMotion()
+
     init {
         // 121: the tool rail's quiet window — the **first** listener slot
         // (61's reconciler decision reserves it for this ticket, ahead of
@@ -283,11 +296,13 @@ class TranscriptState internal constructor(
      * the row a disclosure or tool toggle just flipped — its next height
      * change tweens with the desktop fold (140 ms ease-out). Written
      * **unconditionally** (under Reduce Motion too, as on iOS) before the
-     * engine call; ticket 132 consumes and clears it and turns this field
-     * into a delegate of its `RowMotion.pendingFold`, leaving the handlers
-     * below untouched. Main thread only.
+     * engine call by the handlers below; a delegate of [rowMotion]'s
+     * `pendingFold`, so the mark has one home and 132's selection is the
+     * only thing that clears it. Main thread only.
      */
-    var pendingFold: ULong? = null
+    var pendingFold: ULong?
+        get() = rowMotion.pendingFold
+        set(v) { rowMotion.pendingFold = v }
 
     /**
      * iOS `rowView(_:toggle:)` (`TranscriptListView.swift:563-567`) minus
@@ -463,7 +478,9 @@ class TranscriptState internal constructor(
      *    anchor (a plain offset shift that keeps a fling's momentum) —
      *    before the listeners, so 131's jump button and the lab meters
      *    see the final offset;
-     * 8. notify the listeners over a copy, so one can remove itself.
+     * 8. feed 132's row motion (after the restore, before the listeners —
+     *    `realized` still holds the rows composed for the old frame);
+     * 9. notify the listeners over a copy, so one can remove itself.
      * (Step 2 — the pull — lives in [applyLatest].)
      */
     @VisibleForTesting
@@ -505,8 +522,20 @@ class TranscriptState internal constructor(
             if (needsAnchor && anchor != null) {
                 ScrollAnchoring.restore(viewport, anchor, new.anchorRows())
             }
-            // 132 inserts rowMotion.onFrameApplied(...) here (after the
-            // restore), if it has landed.
+            // 132 (TLV:314, 331): the row motion is chosen here, after the
+            // swap and 130's restore and before the listeners, with the
+            // rows `realized` for the **old** frame (composition for `new`
+            // has not run yet, so the registry still holds the old band —
+            // iOS's `visible`). Only the row views animate: the offset, the
+            // content height and `maxOffset` above are already final, and
+            // the spring (68) keeps chasing the final `maxOffset` on every
+            // tick while rows tween beneath it.
+            rowMotion.onFrameApplied(
+                old?.lookup(),
+                new.lookup(),
+                realized.values.map { it.key to it.placement.kind },
+                ReduceMotion.isReduced,
+            )
             listeners.toList().forEach { it.onFrame(old, new) }
         } finally {
             TranscriptPerf.maxApplyMs = max(TranscriptPerf.maxApplyMs, (System.nanoTime() - t0) / 1e6)

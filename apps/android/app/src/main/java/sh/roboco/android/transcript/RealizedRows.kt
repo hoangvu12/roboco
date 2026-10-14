@@ -27,8 +27,11 @@ import kotlin.math.roundToInt
  * The scroll coordinate contract (shared with 68, 116, 126, 130, 132,
  * 134): `topPx = round(p.y·d) − round(offset·d)` — both terms rounded
  * separately so adjacent rows keep a constant integer gap while
- * scrolling. Only ticket 132's tween may replace this formula, and it then
- * owns [topPx].
+ * scrolling. Ticket 132 has landed and owns the formula's `p`: while a
+ * tween runs, [topPx] and [heightPx] read the row's **drawn** placement
+ * (its motion track), so hit-testing, link taps (126) and 129's
+ * accessibility frames agree with what is on screen; iOS hit-tests on
+ * the model frame instead (a ≤ 360 ms difference the ticket accepts).
  *
  * Main thread only.
  */
@@ -88,14 +91,16 @@ class RealizedRow internal constructor(
     internal var density: Float = 1f
 
     /**
-     * The row's top on screen, px: `round(p.y·d) − round(offset·d)`.
-     * [state.offset] is read here, never in composition or measure.
+     * The row's top on screen, px: `round(visualY·d) − round(offset·d)` —
+     * the **drawn** y while a 132 tween runs (`rowMotion.visualY`, the
+     * placement plus the live segments' remainder). [state.offset] is
+     * read here, never in composition or measure.
      */
     fun topPx(): Int =
-        (placement.y * density).roundToInt() - (state.offset * density).roundToInt()
+        (state.rowMotion.visualY(key, placement.y) * density).roundToInt() - (state.offset * density).roundToInt()
 
-    /** The row's height, px: `max(0, round(p.height·d))`. */
-    fun heightPx(): Int = max(0, (placement.height * density).roundToInt())
+    /** The row's height, px: `max(0, round(visualHeight·d))` — the drawn height while a 132 tween runs. */
+    fun heightPx(): Int = max(0, (state.rowMotion.visualHeight(key, placement.height) * density).roundToInt())
 
     /** The row's rect in window px (`null` data before the host is placed). */
     fun boundsInWindow(): Rect {
@@ -116,7 +121,13 @@ class RealizedRow internal constructor(
     }
 
     override fun onForgotten() {
-        if (state.realized[key] === this) state.realized.remove(key)
+        if (state.realized[key] === this) {
+            state.realized.remove(key)
+            // 132: the row left the band — its track is dropped (iOS
+            // `removeAllAnimations`, TLV:404-409); a re-entering row lands
+            // at its final placement.
+            state.rowMotion.drop(key)
+        }
     }
 
     override fun onAbandoned() = onForgotten()

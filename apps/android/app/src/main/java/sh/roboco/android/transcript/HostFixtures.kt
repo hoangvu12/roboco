@@ -29,3 +29,17 @@ val HostFixture = listOf(
  */
 val LongFixture: List<DebugEntry> =
     (1..20).flatMap { n -> HostFixture.map { it.copy(id = "${it.id}_$n") } }
+
+/**
+ * The row-motion fixture (ticket 132), shared by the gallery section and
+ * `RowMotionHostTest`: a 40-line pasted prompt — over the 8-line fold
+ * limit (`mob:layout/rows.rs:137-138`), so `u1` starts collapsed to 6
+ * lines with a "Show more" disclosure — the reply that slides down when
+ * it expands, and a short follow-up. Three rows; the text is the Rust
+ * test's (`mob:layout/tests.rs:146`).
+ */
+val MotionFixture = listOf(
+    DebugEntry("u1", true, (0 until 40).joinToString("\n") { "line $it of a long pasted prompt" }, false),
+    DebugEntry("a1", false, "This reply slides down when the prompt above expands.", false),
+    DebugEntry("u2", true, "Short follow-up.", false),
+)
