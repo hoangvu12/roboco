@@ -60,7 +60,7 @@ fun JumpToLatestGallerySection() {
             navAlpha = { JumpNavAlphaChoices[navStep] },
             motion = motion,
         )
-        Column(Modifier.height(200.dp)) {
+        Column(Modifier.fillMaxWidth().height(190.dp)) {
             JumpToggleRow("Visible", if (visible) "on" else "off") { visible = !visible }
             JumpToggleRow("Nav alpha", JumpNavAlphaChoices[navStep].toString()) {
                 navStep = (navStep + 1) % JumpNavAlphaChoices.size

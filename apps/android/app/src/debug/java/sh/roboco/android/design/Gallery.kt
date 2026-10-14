@@ -592,8 +592,11 @@ object Gallery {
         // Ticket 131 (jump to latest): the round glass ↓ above the bottom
         // stack — the visibility rule, the show/hide spring, the tap glide
         // and 85's pop-fade multiplier, over the stage fixture with live
-        // toggles and a motion readout.
-        GallerySection("Jump to latest") { JumpToLatestGallerySection() },
+        // toggles and a motion readout. Fill: the stage is a fixed
+        // 412 dp-wide phone frame, like the Bottom stack section.
+        GallerySection("Jump to latest", GalleryLayout.Fill, screenshotHeightDp = 480) {
+            JumpToLatestGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

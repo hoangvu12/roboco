@@ -17,6 +17,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -57,9 +58,7 @@ import sh.roboco.android.RobocoApplication
  * `KeyboardFlowTest` set the pattern). Unwired rows:
  * `testTappingLinkOpensIt` (ui-parity #126's link hit-test + Custom Tab
  * routing), `testImageUploadShowsRingOnThumbnail` (ui-parity #93's
- * clipboard-image paste path), `testJumpToLatestAfterScrollingUp` /
- * `testScrollingUpWhileStreamingStaysPut` (the `jump-to-latest` tag),
- * `testNewSessionFromAccessory`, `testNewSessionRemembersDraftWhenClosed`,
+ * clipboard-image paste path), `testNewSessionFromAccessory`, `testNewSessionRemembersDraftWhenClosed`,
  * `testNewSessionHeadlineStaysAboveComposer`,
  * `testEffortPickerInNewSession`, `testModelChipNamesAModelAtOnce`,
  * `testNewProjectFolderBrowser` and
@@ -67,9 +66,12 @@ import sh.roboco.android.RobocoApplication
  * sheet is still `NewSessionSheetPlaceholder`, ui-parity #92/#113).
  *
  * Route/engine per test (fixture §5): the `questionPanel*` test runs on
- * the `question` engine (`chat-ask`), the queue/scroll/cancelled-swipe
- * rows on the `slow` engine (`chat-long`), everything else on `main`
- * (`chat-deploy` / `chat-veil` / the front page).
+ * the `question` engine (`chat-ask`), the queue/cancelled-swipe rows on
+ * the `slow` engine (`chat-long`), the jump/scroll-up rows on `main`'s
+ * `chat-veil` — the fixture's own 30-turn big transcript (upstream's
+ * `-big`; the slow engine's `chat-long` seeds no history, so a
+ * 0.45 · height drag can never get 140 dp from the bottom there) — and
+ * everything else on `main` (`chat-deploy` / the front page).
  */
 @RunWith(AndroidJUnit4::class)
 class SessionFlowTest {
@@ -754,6 +756,87 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot(artifactName)
     }
 
+    // ── the jump-to-latest rows (131's button over 68's viewport) ──
+
+    /**
+     * `testJumpToLatestAfterScrollingUp` (:129): two fast swipes toward
+     * older content make the button exist (while hidden it is not in the
+     * semantics tree — UIKit's model alpha 0), and tapping it glides the
+     * transcript back to the tail.
+     */
+    @Test
+    fun jumpToLatestAfterScrollingUp() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        }
+        // Two fast swipes (XCUITest `swipeDown(velocity: .fast)` × 2): the
+        // first delta past touch slop hands control to the user (68's R5)
+        // and the release, far above the tail, never re-latches — the
+        // fling's momentum carries the list further up, away from it.
+        val transcript = compose.onNodeWithTag("transcript")
+        transcript.performTouchInput {
+            swipeDown(startY = height * 0.2f, endY = height * 0.8f, durationMillis = 200)
+        }
+        transcript.performTouchInput {
+            swipeDown(startY = height * 0.2f, endY = height * 0.8f, durationMillis = 200)
+        }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("jump-to-latest").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("scrolled-up.png")
+        // The tap glides the list back (68's R10: following resumes, the
+        // follow spring runs) while the button shrinks away.
+        compose.onNodeWithTag("jump-to-latest").performClick()
+        compose.waitForIdle()
+    }
+
+    /**
+     * `testScrollingUpWhileStreamingStaysPut` (:474): the regression — a
+     * drag that started at the tail re-latched follow at once, so the
+     * list sprang back to the bottom on release while streaming. A slow
+     * drag (0.3 → 0.75 height, holding at the end, iOS
+     * `press(forDuration:thenDragTo:withVelocity:.slow,
+     * thenHoldForDuration:)`), and the jump button must still be hittable
+     * 3 s later as the proof the view stayed put.
+     *
+     * On `main`'s `chat-veil` (30 turns of history — the drag needs
+     * content above the runway). `main`'s reply streams instantly (no
+     * `-longreply` pacing), so the "while streaming" window narrows to
+     * the send's own glide; the assertion is the same: no re-latch, no
+     * snap-back, the button stays.
+     */
+    @Test
+    fun scrollingUpWhileStreamingStaysPut() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick()
+            .performTextInput("Walk me through the veil")
+        compose.onNodeWithTag("composer-send").performClick()
+        SystemClock.sleep(2_000)
+
+        // A slow drag down 45 % of the height, the finger at rest at the
+        // end, so the release never flings and never re-latches (the drag
+        // ends 0.45 · height above the tail, far outside 68's 70 dp).
+        compose.onNodeWithTag("transcript").performTouchInput {
+            val from = Offset(width * 0.5f, height * 0.3f)
+            val to = Offset(width * 0.5f, height * 0.75f)
+            down(from)
+            advanceEventTime(50)
+            repeat(20) { step ->
+                moveTo(from + (to - from) * ((step + 1) / 20f))
+                advanceEventTime(50)
+            }
+            advanceEventTime(100)
+            up()
+        }
+        compose.waitForIdle()
+        SystemClock.sleep(3_000)
+
+        compose.onNodeWithTag("jump-to-latest").assertExists()
+        FlowSemantics.saveScreenshot("scrolled-up-streaming.png")
+    }
+
     // ── rows whose owning tickets have not landed (see the class docs) ──
 
     @Ignore("Needs ui-parity #126: the transcript link hit-test + Custom Tab routing (no 'transcript-link' semantics yet)")
@@ -763,14 +846,6 @@ class SessionFlowTest {
     @Ignore("Needs the clipboard-image staging of ui-parity #93's Paste Image path (a content-URI image on the clipboard, unreachable from the instrumentation API before that ticket's share flow)")
     @Test
     fun imageUploadShowsRingOnThumbnail() = fail("unwired: see the @Ignore reason")
-
-    @Ignore("Needs the 'jump-to-latest' test tag (the transcript bottom stack's owning ticket)")
-    @Test
-    fun jumpToLatestAfterScrollingUp() = fail("unwired: see the @Ignore reason")
-
-    @Ignore("Needs the 'jump-to-latest' test tag; the slow engine's chat-long transcript is the fixture")
-    @Test
-    fun scrollingUpWhileStreamingStaysPut() = fail("unwired: see the @Ignore reason")
 
     @Ignore("Needs the real New Session sheet (ui-parity #92/#113 replace NewSessionSheetPlaceholder)")
     @Test
@@ -812,8 +887,11 @@ class SessionFlowTest {
         name.startsWith("questionPanel") -> "chat:chat-ask"
         name.startsWith("toolGroupsRender") -> "chat:chat-veil"
         name.startsWith("queue") ||
-            name.startsWith("scrollingUp") ||
             name.startsWith("cancelledSwipeBack") -> "chat:chat-long"
+        // 131's jump rows: the 30-turn big transcript, not the slow
+        // engine's history-less chat (see the class docs).
+        name.startsWith("jumpToLatest") ||
+            name.startsWith("scrollingUp") -> "chat:chat-veil"
         name.startsWith("unknownChat") -> "chat:${unknownChatId().also { routeChatId = it }}"
         name.startsWith("forgottenEngine") -> "chat:${forgottenEngineChatId().also { routeChatId = it }}"
         // offlineEngine… (79) and everything else: the main engine's
@@ -826,8 +904,9 @@ class SessionFlowTest {
         name.startsWith("questionPanel") -> setOf(FixtureEngine.Question)
         name.startsWith("toolGroupsRender") -> setOf(FixtureEngine.Main, FixtureEngine.Slow)
         name.startsWith("queue") ||
-            name.startsWith("scrollingUp") ||
             name.startsWith("cancelledSwipeBack") -> setOf(FixtureEngine.Slow)
+        name.startsWith("jumpToLatest") ||
+            name.startsWith("scrollingUp") -> setOf(FixtureEngine.Main)
         else -> setOf(FixtureEngine.Main)
     }
 
