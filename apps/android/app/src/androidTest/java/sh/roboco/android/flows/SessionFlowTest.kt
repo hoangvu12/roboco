@@ -1,6 +1,9 @@
 package sh.roboco.android.flows
 
+import android.os.SystemClock
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.longClick
@@ -12,10 +15,13 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import androidx.compose.ui.unit.height
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import java.util.Base64
 import java.util.UUID
 import org.junit.Assert.assertEquals
@@ -381,22 +387,42 @@ class SessionFlowTest {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("composer-input").performClick().performTextInput("Half-written thought")
-        compose.waitForIdle()
 
-        // A plain tap on the transcript (a third down, centred).
-        val width = compose.activity.window.decorView.width
-        val height = compose.activity.window.decorView.height
-        device.click(width / 2, (height * 0.35f).toInt())
-        compose.waitForIdle()
-
-        // The composer rests as the capsule (no card toolbar chip), and
-        // the draft stays.
+        // The IME is up (≤ 3 s) and the composer is the focused card: a
+        // 1-line card is text 46 + toolbar 50 = 96 dp, so over 90 dp, and
+        // the card toolbar's model chip is live.
+        compose.waitUntil(timeoutMillis = 3_000) { imeVisible() }
         compose.waitUntil(timeoutMillis = 3_000) {
-            compose.onAllNodesWithTag("composer-chip-model").fetchSemanticsNodes().isEmpty()
+            compose.onAllNodesWithTag("composer-chip-model").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("composer-input").assertExists()
+        val cardHeight = compose.onNodeWithTag("session-composer").getBoundsInRoot().height.value
+        assertTrue("the composer is the card (was $cardHeight dp)", cardHeight > 90f)
+
+        // 81: the tap lands 8 dp in — inside the 18 dp row margin
+        // (`mob:layout/rows.rs:124`), where no link or control can be (the
+        // fixture replies contain links, so the centre iOS taps at is not
+        // safe) — at the iOS 0.35 height.
+        compose.onNodeWithTag("transcript").performTouchInput {
+            click(Offset(8.dp.toPx(), height * 0.35f))
+        }
+
+        // The IME goes down (≤ 3 s), the morph settles (iOS sleeps 1 s).
+        compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        SystemClock.sleep(1_000)
+        compose.waitForIdle()
+
+        // The capsule (one line: 50 dp) and the kept draft.
+        val capsuleHeight = compose.onNodeWithTag("session-composer").getBoundsInRoot().height.value
+        assertTrue("the composer rests as the capsule (was $capsuleHeight dp)", capsuleHeight < 90f)
+        compose.onNodeWithTag("composer-input")
+            .assertTextContains("Half-written", substring = true)
         FlowSemantics.saveScreenshot("composer-minimized.png")
     }
+
+    /** The IME's visibility through the window insets (81's probe). */
+    private fun imeVisible(): Boolean =
+        ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+            ?.isVisible(WindowInsetsCompat.Type.ime()) == true
 
     /** `testFileMentionSuggestions` (:265): "@lay" finds the fixture repo's layout files. */
     @Test

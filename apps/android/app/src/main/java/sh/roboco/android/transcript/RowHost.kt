@@ -174,13 +174,21 @@ internal fun rowTag(kind: RowKind): String = when (kind) {
  * of layout direction), filled by its owner's composable. The host is the
  * scroller's content box when `w.scroller` points at one (its content
  * coordinates), else the row (row coordinates).
+ *
+ * Ticket 81: the widget rect of a **control** kind carries the
+ * [transcriptControl] marker — the rect itself is the port of the iOS
+ * `UIControl` (its view's frame is the rect), so a tap whose down lands
+ * there claims the gesture and never dismisses the composer. Non-control
+ * kinds (image tiles, chevrons, painted glyphs, the rail, the shimmer)
+ * stay unmarked: their taps dismiss **and** do their own thing.
  */
 @Composable
 internal fun WidgetBox(ctx: RowContext, w: Widget) {
     Box(
         Modifier
             .absoluteOffset(w.x.dp, w.y.dp)
-            .size(max(w.w, 0f).dp, max(w.h, 0f).dp),
+            .size(max(w.w, 0f).dp, max(w.h, 0f).dp)
+            .then(if (w.kind.isTranscriptControl) Modifier.transcriptControl() else Modifier),
     ) {
         RowWidget(ctx, w)
     }

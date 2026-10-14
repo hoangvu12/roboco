@@ -559,6 +559,13 @@ object Gallery {
         GallerySection("Session chip menus", GalleryLayout.Fill) {
             ChipMenuGallerySection()
         },
+        // Ticket 81 (tap to dismiss the composer): the transcript's
+        // Initial-pass tap observer and the "this is a control" marker —
+        // a 300 dp scrolling transcript stand-in with a link, a marked
+        // control and 74-style blocker strip over the real morph's field.
+        GallerySection("Tap to dismiss composer", screenshotHeightDp = 420) {
+            TapDismissGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
