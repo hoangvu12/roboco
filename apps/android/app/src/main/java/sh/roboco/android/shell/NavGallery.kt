@@ -21,14 +21,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import sh.roboco.android.core.Face
-import sh.roboco.android.design.LocalTypeScale
+import androidx.compose.ui.unit.sp
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.hairlineBorder
 import sh.roboco.android.design.hairlineWidth
-import sh.roboco.android.design.uiStyle
 
 /**
  * The navigation gallery (ticket 24): demo routes, the demo screen, the fake
@@ -49,20 +48,20 @@ internal data class DemoRoute(val title: String, val hides: Boolean = false) : N
     override val paneTitle: String get() = title
 }
 
-/** The demo screen's title: SansSemibold, fixed 30. */
-@Composable
-private fun demoTitleStyle(color: Color): TextStyle =
-    uiStyle(Face.SansSemibold, LocalTypeScale.current.fixed(30f), color)
+// The demo styles stay on the platform font on purpose: it keeps the nav
+// goldens (NavDemoScreen in the nav/chrome/session push-pop captures) stable.
 
-/** The demo buttons: SansMedium, fixed 15. */
-@Composable
-private fun demoButtonStyle(color: Color): TextStyle =
-    uiStyle(Face.SansMedium, LocalTypeScale.current.fixed(15f), color)
+/** The demo screen's title (platform sans, 30 sp). */
+private fun demoTitleStyle(color: Color) =
+    TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 30.sp, color = color)
 
-/** The demo readouts: Mono, fixed 12. */
-@Composable
-private fun demoMonoStyle(color: Color): TextStyle =
-    uiStyle(Face.Mono, LocalTypeScale.current.fixed(12f), color)
+/** The demo buttons (platform sans, 15 sp). */
+private fun demoButtonStyle(color: Color) =
+    TextStyle(fontFamily = FontFamily.SansSerif, fontSize = 15.sp, color = color)
+
+/** The demo readouts (platform monospace, 12 sp). */
+private fun demoMonoStyle(color: Color) =
+    TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = color)
 
 /**
  * A demo screen: opaque `Palette.background` fill with a centred title
