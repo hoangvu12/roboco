@@ -89,6 +89,7 @@ import sh.roboco.android.transcript.TranscriptHostGallerySection
 import sh.roboco.android.transcript.TranscriptLinksGallerySection
 import sh.roboco.android.transcript.widgets.DisclosureGallerySection
 import sh.roboco.android.transcript.widgets.ImageTileGallerySection
+import sh.roboco.android.transcript.widgets.ToolRailGallerySection
 
 /**
  * How the gallery lays a section out inside the body (android-ui-parity #22).
@@ -551,6 +552,10 @@ object Gallery {
         GallerySection("Folder browser locations", screenshotHeightDp = 560) {
             FolderLocationsGallerySection()
         },
+        // Ticket 121 (tool rail): the activity rail's phased draw-in — the
+        // static three-row fixture plus the live Replay / Add row / Add 3
+        // demo over stand-in row content.
+        GallerySection("Tool rail") { ToolRailGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
