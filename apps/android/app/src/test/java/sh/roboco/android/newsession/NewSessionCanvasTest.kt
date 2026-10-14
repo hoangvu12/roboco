@@ -85,6 +85,7 @@ import sh.roboco.android.composer.rememberComposerMorphState
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.NoFeedback
 import sh.roboco.android.design.RobocoTheme
+import sh.roboco.android.design.glass.GlassMenuHost
 import uniffi.roboco_core.FileMatch
 
 /**
@@ -172,46 +173,55 @@ class NewSessionCanvasTest {
         padState.value = hostPad
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                val sizeModifier = if (width != null) {
-                    Modifier.width(width).fillMaxSize()
-                } else {
-                    Modifier.fillMaxSize()
-                }
-                Box(Modifier.then(sizeModifier).padding(bottom = padState.value)) {
-                    val controller = rememberComposerController()
-                    remember(controller) {
-                        controller.alwaysCard = true
-                        controller.placeholder = "Describe the task"
-                        true
-                    }
-                    val morph = rememberComposerMorphState(
-                        alwaysCard = true,
-                        hasImages = { controller.images.isNotEmpty() },
-                    )
-                    canvasMorph = morph
-                    val state = remember { NewSessionCanvasState() }
-                    canvasState = state
-                    NewSessionCanvas(
-                        harness = harnessState.value,
-                        embedded = false,
-                        onClose = { closeCount++ },
-                        onBackgroundTap = { morph.blur() },
-                        composer = {
-                            if (fakeRow) FakeMentionRow()
-                            if (realComposer) {
-                                ComposerBar(controller, morph, Modifier.testTag("new-session-composer"))
-                            } else {
-                                StandInComposer()
-                            }
-                        },
-                        state = state,
-                        insets = insetsState.value,
-                        wallpaper = { m, c -> FakeWallpaper(m, c) },
-                    )
-                }
+                // The real ComposerBar's attach button needs a GlassMenuHost
+                // above it (rememberGlassMenuState throws without one;
+                // production mounts it in RootHosts).
+                GlassMenuHost { SheetCanvasContent(width, realComposer, fakeRow) }
             }
         }
         compose.waitForIdle()
+    }
+
+    /** [mountSheetCanvas]'s content, inside the theme and the menu host. */
+    @Composable
+    private fun SheetCanvasContent(width: Dp?, realComposer: Boolean, fakeRow: Boolean) {
+        val sizeModifier = if (width != null) {
+            Modifier.width(width).fillMaxSize()
+        } else {
+            Modifier.fillMaxSize()
+        }
+        Box(Modifier.then(sizeModifier).padding(bottom = padState.value)) {
+            val controller = rememberComposerController()
+            remember(controller) {
+                controller.alwaysCard = true
+                controller.placeholder = "Describe the task"
+                true
+            }
+            val morph = rememberComposerMorphState(
+                alwaysCard = true,
+                hasImages = { controller.images.isNotEmpty() },
+            )
+            canvasMorph = morph
+            val state = remember { NewSessionCanvasState() }
+            canvasState = state
+            NewSessionCanvas(
+                harness = harnessState.value,
+                embedded = false,
+                onClose = { closeCount++ },
+                onBackgroundTap = { morph.blur() },
+                composer = {
+                    if (fakeRow) FakeMentionRow()
+                    if (realComposer) {
+                        ComposerBar(controller, morph, Modifier.testTag("new-session-composer"))
+                    } else {
+                        StandInComposer()
+                    }
+                },
+                state = state,
+                insets = insetsState.value,
+                wallpaper = { m, c -> FakeWallpaper(m, c) },
+            )
+        }
     }
 
     /** The ticket's stand-in composer: full width, 134 dp tall. */
@@ -407,6 +417,12 @@ class NewSessionCanvasTest {
             compose.waitForIdle()
 
             val composer = bounds("new-session-composer")
+            // Robolectric never draws the window on its own (no valid
+            // Surface: traversals measure and lay out, the draw is
+            // skipped), so the wallpaper's drawBehind only runs on a
+            // capture. Draw this frame's state once, then read what the
+            // draw-phase cutout read saw.
+            compose.onRoot().captureToImage()
             val cutout = recordedCutouts.lastOrNull()
             assertTrue("frame $frame recorded a cutout", cutout != null)
             assertPx("frame $frame cutout left", composer.left.value * d, cutout!!.left)
@@ -830,14 +846,16 @@ class NewSessionCanvasTest {
         val page = newPage(prompt = "Fix tests")
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                NewSessionScreenBody(
-                    ns = page.model,
-                    embedded = false,
-                    onClose = {},
-                    focusOnAppear = false,
-                    fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
-                    labels = GalleryLabels,
-                )
+                GlassMenuHost { // the page's ComposerBar opens menus (see mountSheetCanvas)
+                    NewSessionScreenBody(
+                        ns = page.model,
+                        embedded = false,
+                        onClose = {},
+                        focusOnAppear = false,
+                        fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                        labels = GalleryLabels,
+                    )
+                }
             }
         }
         compose.waitForIdle()
@@ -850,14 +868,16 @@ class NewSessionCanvasTest {
         val page = newPage(prompt = null)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                NewSessionScreenBody(
-                    ns = page.model,
-                    embedded = false,
-                    onClose = {},
-                    focusOnAppear = false,
-                    fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
-                    labels = GalleryLabels,
-                )
+                GlassMenuHost { // the page's ComposerBar opens menus (see mountSheetCanvas)
+                    NewSessionScreenBody(
+                        ns = page.model,
+                        embedded = false,
+                        onClose = {},
+                        focusOnAppear = false,
+                        fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                        labels = GalleryLabels,
+                    )
+                }
             }
         }
         compose.waitForIdle()
@@ -873,14 +893,16 @@ class NewSessionCanvasTest {
             RobocoTheme(Appearance.Light) {
                 var show by remember { mutableStateOf(true) }
                 if (show) {
-                    NewSessionScreenBody(
-                        ns = page.model,
-                        embedded = false,
-                        onClose = {},
-                        focusOnAppear = false,
-                        fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
-                        labels = GalleryLabels,
-                    )
+                    GlassMenuHost { // the page's ComposerBar opens menus (see mountSheetCanvas)
+                        NewSessionScreenBody(
+                            ns = page.model,
+                            embedded = false,
+                            onClose = {},
+                            focusOnAppear = false,
+                            fileSearch = NewSessionFileSearch { _, _, _ -> emptyList() },
+                            labels = GalleryLabels,
+                        )
+                    }
                 }
                 BasicText(
                     "Toggle",

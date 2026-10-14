@@ -216,7 +216,9 @@ class CheckoutModelEffortMenusTest {
         val threads = mutableListOf<String>()
         val refs = RefSource { p ->
             calls++
-            threads += Thread.currentThread().name
+            // Coroutine debug mode (on under -ea) renames the running
+            // thread "fake-io @coroutine#N"; the lane is the base name.
+            threads += Thread.currentThread().name.substringBefore(" @coroutine#")
             engine.refs(p)
         }
         val page = MenusPage(NewSessionDraft(projectId = "p1"), refSource = refs)

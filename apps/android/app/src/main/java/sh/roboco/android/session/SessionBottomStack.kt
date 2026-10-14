@@ -300,10 +300,13 @@ fun SessionBottomStack(
         val blockerPlaceable = subcompose(BottomStackTags.Blocker, blockerContent).first()
             .measure(Constraints.fixed(wPx, stackHeight.roundToInt().coerceAtLeast(0)))
 
-        val jumpPlaceable = subcompose(BottomStackTags.Jump, jumpContent).first().measure(Constraints())
+        // The jump slot is the caller's composable and may emit no node at
+        // all (a host without a jump button passes `{}`): an absent slot
+        // simply places nothing.
+        val jumpPlaceable = subcompose(BottomStackTags.Jump, jumpContent).firstOrNull()?.measure(Constraints())
         val jumpOrigin = BottomStackMetrics.jumpOrigin(
             windowWidth, safeR, stackTop,
-            jumpPlaceable.width.toFloat(), jumpPlaceable.height.toFloat(),
+            (jumpPlaceable?.width ?: 0).toFloat(), (jumpPlaceable?.height ?: 0).toFloat(),
             trailing = BottomStackMetrics.JumpTrailing.toPx(),
             above = BottomStackMetrics.JumpAbove.toPx(),
         )
@@ -352,7 +355,7 @@ fun SessionBottomStack(
                 y += extent
             }
 
-            jumpPlaceable.place(jumpOrigin.first.roundToInt(), jumpOrigin.second.roundToInt())
+            jumpPlaceable?.place(jumpOrigin.first.roundToInt(), jumpOrigin.second.roundToInt())
         }
     }
 }

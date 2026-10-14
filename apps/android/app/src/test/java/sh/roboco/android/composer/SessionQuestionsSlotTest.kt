@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -27,6 +28,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.DpRect
@@ -281,8 +283,10 @@ class SessionQuestionsSlotTest {
         compose.mainClock.advanceTimeBy(100) // mid-fade, both pages live
 
         // Page 1's row 0 — a tap during the fade must not touch page 2's
-        // state (nor replace page 1's own pick).
-        compose.onNodeWithText("Poll the doc host every 120ms").performClick()
+        // state (nor replace page 1's own pick). Fired as the outgoing
+        // row's own click action: a touch at its centre would hit page 2's
+        // option 0 drawn on top at the same spot (top-aligned pages).
+        compose.onNodeWithText("Poll the doc host every 120ms").performSemanticsAction(SemanticsActions.OnClick)
         compose.mainClock.advanceTimeByFrame()
 
         assertEquals(

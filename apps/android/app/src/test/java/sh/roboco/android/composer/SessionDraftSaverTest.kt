@@ -57,7 +57,7 @@ import sh.roboco.android.shell.NavStack
  *
  * Robolectric (android-app#13): [StagedImage] holds an [ImageBitmap],
  * and the effect test composes. `StandardTestDispatcher(testScheduler)`
- * is `io`; `backgroundScope` is the Drafts scope. The effect test runs
+ * is `io`; [foregroundAppScope] is the Drafts scope. The effect test runs
  * on `Dispatchers.Unconfined` for both, so every write lands
  * synchronously and the compose clock is the only timing source.
  */
@@ -76,7 +76,7 @@ class SessionDraftSaverTest {
 
     /** A loaded Drafts over the in-memory store (warm already ran). */
     private fun TestScope.loadedDrafts(store: FakePrefsStore): Drafts {
-        val drafts = Drafts(store, backgroundScope, StandardTestDispatcher(testScheduler))
+        val drafts = Drafts(store, foregroundAppScope(), StandardTestDispatcher(testScheduler))
         drafts.warm()
         advanceUntilIdle()
         assertTrue(drafts.isLoaded)
@@ -171,7 +171,7 @@ class SessionDraftSaverTest {
         val gate = CompletableDeferred<Unit>()
         val store = FakePrefsStore(mapOf("chat:E1:c1" to "kept"), gate)
         val io = StandardTestDispatcher(testScheduler)
-        val drafts = Drafts(store, backgroundScope, io)
+        val drafts = Drafts(store, foregroundAppScope(), io)
         drafts.warm()
         runCurrent() // the read is parked on the gate
         assertFalse(drafts.isLoaded)

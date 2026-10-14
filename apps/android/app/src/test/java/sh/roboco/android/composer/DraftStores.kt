@@ -5,9 +5,28 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+
+/**
+ * The app-scope stand-in of the draft-store tests (`RobocoApplication.appScope`):
+ * a **foreground** scope on the test scheduler.
+ *
+ * Not `backgroundScope`: `TestCoroutineScheduler.advanceUntilIdle()`
+ * returns as soon as no *foreground* event is queued, so a load or write
+ * launched on `backgroundScope` never runs under `advanceUntilIdle()`
+ * (only a `join`, a suspending read or `runCurrent()` drive it) — the
+ * stores' `warm()` and disk writes stayed queued and the assertions read
+ * an unloaded mirror and an empty disk. Not a child of the test job
+ * either, so a collector left suspended at the end cannot hold `runTest`.
+ */
+internal fun TestScope.foregroundAppScope(): CoroutineScope =
+    CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
 
 /**
  * The plain-JVM DataStore stand-in shared by the draft tests

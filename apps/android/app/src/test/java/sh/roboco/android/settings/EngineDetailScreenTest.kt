@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -369,15 +370,25 @@ class EngineDetailScreenTest {
         compose.onNodeWithTag("engine-detail-last-connected", useUnmergedTree = true).assertDoesNotExist()
     }
 
+    /**
+     * A FadingText value's frame — the capped, clipping node that carries
+     * the full text in its own semantics. In the unmerged tree its inner
+     * BasicText (unclipped, with GetTextLayoutResult) matches the same
+     * text, so the frame is the match without that action.
+     */
+    private fun fadingFrame(text: String) = compose.onNode(
+        hasText(text) and !SemanticsMatcher.keyIsDefined(SemanticsActions.GetTextLayoutResult),
+        useUnmergedTree = true,
+    )
+
     @Test
     fun theAddressValueIsCappedAtHalfTheCardAndFadesItsTail() {
         mount()
-        val address = compose.onNodeWithText("http://192.168.1.20:27655", useUnmergedTree = true)
-            .getUnclippedBoundsInRoot()
+        val address = fadingFrame("http://192.168.1.20:27655").getUnclippedBoundsInRoot()
         assertDp(address.right, 370.dp, "address value right edge")
         assertTrue("address width ${address.width} ≤ 185", address.width.value <= 185f)
         // FadingText keeps the full text in semantics and never adds "…".
-        val faded = compose.onNodeWithText("http://192.168.1.20:27655", useUnmergedTree = true)
+        val faded = fadingFrame("http://192.168.1.20:27655")
             .fetchSemanticsNode().config[SemanticsProperties.Text].single().text
         assertEquals("http://192.168.1.20:27655", faded)
         assertFalse("no ellipsis character", faded.contains("\u2026"))
@@ -460,7 +471,7 @@ class EngineDetailScreenTest {
             rowImage("engine-detail-footer").count(151, 151, 159) >= 3,
         )
         // The long URL fades its tail and never ellipsizes.
-        val url = compose.onNodeWithText("https://studio.tail1234.ts.net:27655", useUnmergedTree = true)
+        val url = fadingFrame("https://studio.tail1234.ts.net:27655")
             .fetchSemanticsNode().config[SemanticsProperties.Text].single().text
         assertEquals("https://studio.tail1234.ts.net:27655", url)
         assertFalse(url.contains("\u2026"))

@@ -34,6 +34,7 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.WallpaperHero
 import sh.roboco.android.design.WallpaperRender
 import sh.roboco.android.design.glass.Glass
+import sh.roboco.android.design.glass.GlassMenuHost
 import sh.roboco.android.design.wallpaperFixture
 
 /**
@@ -172,36 +173,41 @@ private fun goldenShot(
 ) {
     compose.setContent {
         RobocoTheme(appearance) {
-            Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
-                Box(
-                    Modifier
-                        .then(if (width != null) Modifier.width(width) else Modifier.fillMaxSize())
-                        .padding(bottom = imePad),
-                ) {
-                    val controller = rememberComposerController()
-                    remember(controller) { goldenComposerConfig(controller); true }
-                    val morph = rememberComposerMorphState(
-                        alwaysCard = true,
-                        hasImages = { controller.images.isNotEmpty() },
-                    )
-                    NewSessionCanvas(
-                        harness = harness,
-                        embedded = embedded,
-                        onClose = {},
-                        onBackgroundTap = { morph.blur() },
-                        composer = {
-                            ComposerBar(controller, morph, Modifier.testTag("new-session-composer"))
-                        },
-                        insets = insets,
-                        wallpaper = { m, c ->
-                            WallpaperHero(
-                                changeKey = Unit,
-                                load = { _ -> if (wallpaper) WallpaperRender(wallpaperFixture(), 1f) else null },
-                                modifier = m,
-                                cutout = c,
-                            )
-                        },
-                    )
+            // The real ComposerBar's attach button opens its menu through
+            // rememberGlassMenuState, which throws without a GlassMenuHost
+            // above (production: RootHosts mounts it above every sheet).
+            GlassMenuHost {
+                Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                    Box(
+                        Modifier
+                            .then(if (width != null) Modifier.width(width) else Modifier.fillMaxSize())
+                            .padding(bottom = imePad),
+                    ) {
+                        val controller = rememberComposerController()
+                        remember(controller) { goldenComposerConfig(controller); true }
+                        val morph = rememberComposerMorphState(
+                            alwaysCard = true,
+                            hasImages = { controller.images.isNotEmpty() },
+                        )
+                        NewSessionCanvas(
+                            harness = harness,
+                            embedded = embedded,
+                            onClose = {},
+                            onBackgroundTap = { morph.blur() },
+                            composer = {
+                                ComposerBar(controller, morph, Modifier.testTag("new-session-composer"))
+                            },
+                            insets = insets,
+                            wallpaper = { m, c ->
+                                WallpaperHero(
+                                    changeKey = Unit,
+                                    load = { _ -> if (wallpaper) WallpaperRender(wallpaperFixture(), 1f) else null },
+                                    modifier = m,
+                                    cutout = c,
+                                )
+                            },
+                        )
+                    }
                 }
             }
         }

@@ -19,11 +19,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
@@ -165,6 +167,18 @@ class WorkingIndicatorTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
+    }
+
+    /**
+     * Draws the root once. Under Robolectric a compose frame measures and
+     * lays out but never draws the view (no Choreographer traversal runs
+     * on the paused looper), so the label's draw-phase cache — where the
+     * probe is written — would never run; a capture draws the hierarchy,
+     * re-running only an invalidated cache.
+     */
+    private fun draw() {
+        compose.onRoot().captureToImage()
     }
 
     /** A test-side state write with the clock frozen (the repo's idiom). */
@@ -175,6 +189,7 @@ class WorkingIndicatorTest {
         }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
     }
 
     /** One second of virtual time, the fake clock moving with it. */
@@ -184,6 +199,7 @@ class WorkingIndicatorTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
     }
 
     /** A lifecycle move, drained so the repeatOnLifecycle relaunches. */
@@ -192,6 +208,7 @@ class WorkingIndicatorTest {
         compose.mainClock.advanceTimeBy(0)
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
     }
 
     // ------------------------------------------------------------- geometry
@@ -237,6 +254,7 @@ class WorkingIndicatorTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
         val glyph = compose.onNodeWithTag("transcript-working-glyph", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
         assertDp(0.dp, glyph.left, "glyph left")
@@ -330,6 +348,7 @@ class WorkingIndicatorTest {
         val builds = WorkingIndicatorProbe.labelBuilds
         compose.mainClock.advanceTimeBy(5_000)
         compose.waitForIdle()
+        draw()
         assertEquals("no ticker to run", builds, WorkingIndicatorProbe.labelBuilds)
         assertEquals("Working…", WorkingIndicatorProbe.lastLabel)
     }
@@ -367,6 +386,7 @@ class WorkingIndicatorTest {
         nowMs += 3_000
         compose.mainClock.advanceTimeBy(3_000)
         compose.waitForIdle()
+        draw()
         assertEquals("CREATED: no ticks", builds, WorkingIndicatorProbe.labelBuilds)
         // 4 s of wall time pass while stopped; STARTED resamples at once.
         nowMs += 1_000
@@ -393,6 +413,7 @@ class WorkingIndicatorTest {
         }
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
+        draw()
         val node = compose.onNodeWithTag("transcript-working").fetchSemanticsNode()
         assertNull("no ContentDescription (TRANSCRIPT-D1)", node.config.getOrNull(SemanticsProperties.ContentDescription))
         assertNull("no Text: the label is paint, not a text node", node.config.getOrNull(SemanticsProperties.Text))
@@ -491,6 +512,7 @@ class WorkingIndicatorTest {
         }
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
+        draw()
         // ToolStatus(false, true) → the failed xmark node, centred in the
         // 15.75-dp rect Rust placed at (18, 0): the icon box is 12 dp, so
         // its origin is 18 + 1.875 (± the px rounding).
@@ -505,8 +527,10 @@ class WorkingIndicatorTest {
         assertDp(18.dp, spin.left, "spinner left: the Rust rect x")
         assertDp(30.dp, spin.top, "spinner top: the Rust rect y")
         assertDp(15.75.dp, widthOf(spin), "spinner width")
-        // Working → the trailer row.
-        compose.onNodeWithTag("transcript-working").assertExists()
+        // Working → the trailer row. Unmerged: WidgetBox clears a non-control
+        // widget's subtree from the tree (129 / TRANSCRIPT-D1), so the tag
+        // exists in the unmerged tree alone.
+        compose.onNodeWithTag("transcript-working", useUnmergedTree = true).assertExists()
         val glyph = compose.onNodeWithTag("transcript-working-glyph", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
         assertDp(18.dp, glyph.left, "glyph left: rect x + 0")
@@ -537,7 +561,9 @@ class WorkingIndicatorTest {
         }
         compose.waitForIdle()
         settleFrame()
-        compose.onNodeWithTag("transcript-working").performTouchInput { click(center) }
+        // Unmerged: the clickable host merges its descendants, so the
+        // tag-only trailer node exists in the unmerged tree alone.
+        compose.onNodeWithTag("transcript-working", useUnmergedTree = true).performTouchInput { click(center) }
         compose.waitForIdle()
         assertEquals("the widget consumed nothing", 1, taps[0])
     }
@@ -564,6 +590,7 @@ class WorkingIndicatorTest {
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+        draw()
         assertEquals("Working…  1m 14s", WorkingIndicatorProbe.lastLabel)
         tick()
         assertEquals("the seconds still tick under reduce motion", "Working…  1m 15s", WorkingIndicatorProbe.lastLabel)

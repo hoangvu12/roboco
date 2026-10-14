@@ -13,6 +13,7 @@ import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -164,22 +165,29 @@ class TranscriptImageLoader(
     suspend fun load(key: ImageKey, sidePx: Int, reader: AttachmentReader): ImageBitmap? {
         cached(key, sidePx)?.let { return it }
         val pair = key to sidePx
-        val deferred = inflight.getOrPut(pair) {
-            scope.async {
-                try {
-                    val bytes = reader.read(key.engineDeviceId, key.reference)
-                    val decoded = withContext(decodeDispatcher) { decode.decode(bytes, sidePx) }
-                    store(key, decoded)
-                    decoded
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    null // read error or undecodable bytes: stay empty, no retry
-                } finally {
-                    inflight.remove(pair)
-                }
+        inflight[pair]?.let { return it.await()?.bitmap }
+        // LAZY, registered before it starts: on an eager dispatcher
+        // (Main.immediate, Unconfined) a read that fails or finishes
+        // without suspending would run its `finally` before a getOrPut
+        // stored the deferred, leaving a completed entry in the map that
+        // every later load (a retry) would join instead of reading again.
+        lateinit var fresh: Deferred<DecodedImage?>
+        fresh = scope.async(start = CoroutineStart.LAZY) {
+            try {
+                val bytes = reader.read(key.engineDeviceId, key.reference)
+                val decoded = withContext(decodeDispatcher) { decode.decode(bytes, sidePx) }
+                store(key, decoded)
+                decoded
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null // read error or undecodable bytes: stay empty, no retry
+            } finally {
+                // Only this load's own entry: a later load may own the key.
+                inflight.remove(pair, fresh)
             }
         }
+        val deferred = inflight.putIfAbsent(pair, fresh)?.also { fresh.cancel() } ?: fresh.also { it.start() }
         return deferred.await()?.bitmap
     }
 

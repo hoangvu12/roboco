@@ -70,34 +70,41 @@ class SessionChipMenusTest {
         /** Ended `setSessionConfig` calls, failed or not (volatile: polled across threads). */
         @Volatile private var writeCount = 0
 
+        /**
+         * The calling thread's name without kotlinx.coroutines' debug-mode
+         * suffix (`fake-io @coroutine#7`): the tests assert the lane, and the
+         * CI run's debug agent appended the coroutine id (r746).
+         */
+        private fun threadName(): String = Thread.currentThread().name.substringBefore(" @coroutine#")
+
         override fun sessionRow(): SessionRow? {
-            callLog += "sessionRow" to Thread.currentThread().name
+            callLog += "sessionRow" to threadName()
             return row
         }
 
         override fun sessionConfig(): ChatConfig? {
-            callLog += "sessionConfig" to Thread.currentThread().name
+            callLog += "sessionConfig" to threadName()
             return config
         }
 
         override suspend fun listModels(deviceId: String, harness: String): List<ModelInfo> {
-            callLog += "listModels($deviceId, $harness)" to Thread.currentThread().name
+            callLog += "listModels($deviceId, $harness)" to threadName()
             listModelsFailure?.let { throw it }
             return models
         }
 
         override fun fallbackModels(harness: String): List<ModelInfo> {
-            callLog += "fallbackModels($harness)" to Thread.currentThread().name
+            callLog += "fallbackModels($harness)" to threadName()
             return claudeFallbackModels()
         }
 
         override fun reasoningLabel(level: String): String {
-            callLog += "reasoningLabel($level)" to Thread.currentThread().name
+            callLog += "reasoningLabel($level)" to threadName()
             return kotlinReasoningLabel(level)
         }
 
         override suspend fun setSessionConfig(config: ChatConfig) {
-            callLog += "setSessionConfig" to Thread.currentThread().name
+            callLog += "setSessionConfig" to threadName()
             setConfigs += config
             setConfigGate?.await()
             writeCount++

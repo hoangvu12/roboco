@@ -83,11 +83,12 @@ class TextEngineTest {
     @Test
     fun monoCjkGoesThroughThePlatformMeasurer() {
         // GeistMono has no CJK glyphs, so Rust asks the platform for the
-        // run: the measurer's call counter moves. Only this test sends a
-        // CJK run through the shared engine's own measurer, so the memo
-        // cannot mask the call.
+        // run: the measurer's call counter moves. The memo is process-wide
+        // and Robolectric reuses sandboxes, so a CJK string another class
+        // already measured ("名称" was) never reaches the measurer (calls 0,
+        // r746): use characters no other test sends.
         AndroidMeasurer.Stats.reset()
-        val starts = debugLineStarts(TextEngine.shared, FaceRole.MONO, 13.5f, 1000f, "名称")
+        val starts = debugLineStarts(TextEngine.shared, FaceRole.MONO, 13.5f, 1000f, "齉龘")
         assertTrue(starts.isNotEmpty())
         assertTrue(
             "measurer calls was ${AndroidMeasurer.Stats.calls.get()}",

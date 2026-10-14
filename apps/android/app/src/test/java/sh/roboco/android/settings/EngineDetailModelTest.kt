@@ -82,8 +82,10 @@ class EngineDetailModelTest {
     @Test
     fun theShortIdEllipsisIsTheSingleCharacterU2026() {
         val id = shortId("3f9c2a7e-5b1d-4c8e-9a6f-0d2e4b7c1a95")
-        assertTrue("U+2026 expected in '$id'", id.endsWith("\u2026"))
-        assertFalse("three dots must never appear: '$id'", id.endsWith("..."))
+        // A middle truncation (8 + \u2026 + 4, as the test above pins): the
+        // ellipsis sits inside the id, not at its end.
+        assertTrue("U+2026 expected in '$id'", id.contains("\u2026"))
+        assertFalse("three dots must never appear: '$id'", id.contains("..."))
         assertEquals("exactly one ellipsis character", 1, id.count { it == '\u2026' })
         assertEquals("8 + 1 + 4 characters", 13, id.length)
     }

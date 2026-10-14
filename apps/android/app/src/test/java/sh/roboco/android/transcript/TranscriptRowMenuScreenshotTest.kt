@@ -26,6 +26,7 @@ import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ContextMenuHost
 import sh.roboco.android.design.LocalFeedback
 import sh.roboco.android.design.NoFeedback
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastHost
 import sh.roboco.android.design.glass.Glass
@@ -89,10 +90,16 @@ class TranscriptRowMenuScreenshotTest {
         try {
             compose.setContent {
                 RobocoTheme(appearance) {
-                    CompositionLocalProvider(LocalFeedback provides NoFeedback) {
-                        ToastHost {
-                            ContextMenuHost {
-                                TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                    // Frozen glyph clock: the Working row's trailer would
+                    // otherwise run the theme's endless withFrameNanos loop,
+                    // so the auto-advancing clock never idles (and the golden
+                    // stays byte-stable at cycle 0).
+                    ProvideGlyphClock(frozenAtNanos = 0L) {
+                        CompositionLocalProvider(LocalFeedback provides NoFeedback) {
+                            ToastHost {
+                                ContextMenuHost {
+                                    TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                                }
                             }
                         }
                     }

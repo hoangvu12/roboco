@@ -415,7 +415,12 @@ class SessionComposerBindingTest {
         val result = binding(controller, commands, banner = reporter, dismiss = dismiss)
             .onSend("keep me", listOf(image("i1")), DeliveryMode.Queue)
         assertEquals(SendResult.Kept, result)
-        assertEquals(listOf(failure), reporter.failures)
+        // Compared by type and message, not identity: rethrown out of
+        // withContext, kotlinx.coroutines' stack-trace recovery (debug mode,
+        // on under -ea) hands the catch a copy of the exception.
+        val reported = reporter.failures.single()
+        assertEquals(failure.javaClass, reported.javaClass)
+        assertEquals(failure.message, reported.message)
         assertEquals(0, reporter.successes)
         assertTrue(dismiss.isEmpty())
         assertEquals("keep me", controller.text)

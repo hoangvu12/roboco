@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -169,77 +170,84 @@ fun BottomStackSlotScope.SessionQuestionsSlot(
 
     QuestionCardGlass(visible = glassVisible, animate = animateGlass, modifier = modifier) {
         if (state.items.isEmpty()) return@QuestionCardGlass // nothing configured yet
-        AnimatedContent(
-            targetState = PageKey(state.generation, state.page),
-            modifier = Modifier
-                .onFocusChanged { panelFocused = it.hasFocus }
-                .testTag(QuestionPanelTags.PAGE)
-                .semantics { stateDescription = "page ${state.page + 1} of ${state.count}" },
-            transitionSpec = {
-                val content = if (initialState.generation != targetState.generation) {
-                    // A reset (or a pick) renders instantly, like UIKit's
-                    // plain render() — never a fade.
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    // UIView.transition(duration: 0.2, options:
-                    // [.transitionCrossDissolve, .allowUserInteraction]):
-                    // default curve easeInOut, both pages take touches.
-                    fadeIn(Motion.questionPage()) togetherWith fadeOut(Motion.questionPage())
-                }
-                // Both branches snap the size (AnimatedContent's default
-                // SizeTransform springs the height; iOS applies the new
-                // height in the next layout pass, unanimated).
-                content using SizeTransform(clip = true) { _, _ -> snap() }
-            },
-            contentAlignment = Alignment.TopStart,
-            label = "questionPage",
-        ) { key ->
-            val q = state.items.getOrNull(key.page) ?: return@AnimatedContent
-            val requester = remember { FocusRequester() }
-            if (!q.multiline) {
-                // Refocus after Done: the incoming page's Other field
-                // takes over so the IME stays up. The flag is set only
-                // when a non-multiline page follows an answered one, so
-                // the requester is always attached here.
-                LaunchedEffect(Unit) {
-                    if (refocusOther) {
-                        refocusOther = false
-                        requester.requestFocus()
+        // A reset (new generation) recreates the AnimatedContent: a fresh
+        // one composes and measures only the new first page in the same
+        // frame, while a target change on the old one would keep the old
+        // page and its height for one more frame (the Transition only
+        // advances — even a snap — on its next frame callback).
+        key(state.generation) {
+            AnimatedContent(
+                targetState = PageKey(state.generation, state.page),
+                modifier = Modifier
+                    .onFocusChanged { panelFocused = it.hasFocus }
+                    .testTag(QuestionPanelTags.PAGE)
+                    .semantics { stateDescription = "page ${state.page + 1} of ${state.count}" },
+                transitionSpec = {
+                    val content = if (initialState.generation != targetState.generation) {
+                        // A reset (or a pick) renders instantly, like UIKit's
+                        // plain render() — never a fade.
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        // UIView.transition(duration: 0.2, options:
+                        // [.transitionCrossDissolve, .allowUserInteraction]):
+                        // default curve easeInOut, both pages take touches.
+                        fadeIn(Motion.questionPage()) togetherWith fadeOut(Motion.questionPage())
+                    }
+                    // Both branches snap the size (AnimatedContent's default
+                    // SizeTransform springs the height; iOS applies the new
+                    // height in the next layout pass, unanimated).
+                    content using SizeTransform(clip = true) { _, _ -> snap() }
+                },
+                contentAlignment = Alignment.TopStart,
+                label = "questionPage",
+            ) { key ->
+                val q = state.items.getOrNull(key.page) ?: return@AnimatedContent
+                val requester = remember { FocusRequester() }
+                if (!q.multiline) {
+                    // Refocus after Done: the incoming page's Other field
+                    // takes over so the IME stays up. The flag is set only
+                    // when a non-multiline page follows an answered one, so
+                    // the requester is always attached here.
+                    LaunchedEffect(Unit) {
+                        if (refocusOther) {
+                            refocusOther = false
+                            requester.requestFocus()
+                        }
                     }
                 }
+                QuestionPageContent(
+                    model = QuestionPageModel(
+                        header = q.header,
+                        page = key.page,
+                        pageCount = state.count,
+                        question = q.text,
+                        options = q.options,
+                        picked = state.picked(q.id),
+                        multiSelect = q.multiSelect,
+                        multiline = q.multiline,
+                        customText = state.customText(q.id),
+                        // The live page gates on the full rule (answered plus
+                        // the canWrite gate on Submit); the outgoing page
+                        // greys out instead of showing the new page's state.
+                        canContinue = key.page == state.page && state.nextEnabled,
+                    ),
+                    actions = QuestionPageActions(
+                        onPick = { option -> state.pick(key.page, option) },
+                        onCustomChange = { text -> state.setCustom(key.page, text) },
+                        onOtherDone = {
+                            val next = state.items.getOrNull(key.page + 1)
+                            if (otherFocused && next != null && !next.multiline && state.nextEnabled) {
+                                refocusOther = true
+                            }
+                            state.otherDone(key.page)
+                        },
+                        onBack = { state.back() },
+                        onNext = { state.next() },
+                    ),
+                    otherFocusRequester = if (q.multiline) null else requester,
+                    onOtherFocusChanged = { otherFocused = it },
+                )
             }
-            QuestionPageContent(
-                model = QuestionPageModel(
-                    header = q.header,
-                    page = key.page,
-                    pageCount = state.count,
-                    question = q.text,
-                    options = q.options,
-                    picked = state.picked(q.id),
-                    multiSelect = q.multiSelect,
-                    multiline = q.multiline,
-                    customText = state.customText(q.id),
-                    // The live page gates on the full rule (answered plus
-                    // the canWrite gate on Submit); the outgoing page
-                    // greys out instead of showing the new page's state.
-                    canContinue = key.page == state.page && state.nextEnabled,
-                ),
-                actions = QuestionPageActions(
-                    onPick = { option -> state.pick(key.page, option) },
-                    onCustomChange = { text -> state.setCustom(key.page, text) },
-                    onOtherDone = {
-                        val next = state.items.getOrNull(key.page + 1)
-                        if (otherFocused && next != null && !next.multiline && state.nextEnabled) {
-                            refocusOther = true
-                        }
-                        state.otherDone(key.page)
-                    },
-                    onBack = { state.back() },
-                    onNext = { state.next() },
-                ),
-                otherFocusRequester = if (q.multiline) null else requester,
-                onOtherFocusChanged = { otherFocused = it },
-            )
         }
     }
 }

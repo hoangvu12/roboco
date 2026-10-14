@@ -443,6 +443,12 @@ class SessionNavEffectsTest {
         assertEquals(1, core.callLog.count { it == "setViewAttached(false)" })
         assertEquals(1, core.callLog.count { it == "markSeen" })
         assertTrue(transcript.isClosed)
+        // The entry closes in the host's sweep — a LaunchedEffect keyed on
+        // the cleared transition — and its content disposes on the
+        // recomposition after that, so on the frozen clock both need
+        // frames past `transition == null` (the programmatic-pop test,
+        // on autoAdvance, gets them from its waitForIdle).
+        compose.mainClock.advanceTimeUntil { session.isClosed && log.contains("dispose") }
         assertTrue(session.isClosed)
         assertEquals(1, stack.entries.size)
         // 24's order: the teardown is delivered by didDisappear(removed =

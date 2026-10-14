@@ -273,7 +273,8 @@ class NotificationSettingsTest {
         )
         // The kind rows carry no subtitle, `Kind.allCases` order, their own
         // switch value, and the ticket 06 icons.
-        assertEquals(listOf(null, null, null, null), rows.drop(1).map { it.subtitle })
+        // Three kind rows after drop(1), so three nulls.
+        assertEquals(listOf(null, null, null), rows.drop(1).map { it.subtitle })
         assertEquals(listOf(true, false, true), rows.drop(1).map { it.checked })
         assertEquals(
             listOf(RobocoIcons.CheckmarkCircle, RobocoIcons.QuestionmarkBubble, RobocoIcons.ExclamationmarkTriangle),
@@ -413,7 +414,8 @@ class NotificationSettingsTest {
         h.state.onPermissionResult(true)
         assertFalse(h.state.pendingOn)
         assertEquals(NotificationStatus.Granted, h.state.status)
-        assertTrue(h.state.rows.single().checked)
+        // Granted: the master plus the three kinds — the master is first.
+        assertTrue(h.state.rows.first().checked)
         assertEquals(4, h.state.rows.size)
         assertTrue(h.state.prefs.enabled)
         // The guard is free again: off then on requests a second time.
@@ -503,7 +505,8 @@ class NotificationSettingsTest {
         h.fakeStatus = NotificationStatus.Granted
         h.state.refreshStatus()
         assertEquals(NotificationStatus.Granted, h.state.status)
-        assertTrue(h.state.rows.single().checked)
+        // Four rows now — the master is the first.
+        assertTrue(h.state.rows.first().checked)
         assertEquals(4, h.state.rows.size)
 
         // Newly blocked: master off, kinds gone, denied subtitle.
@@ -952,7 +955,12 @@ class NotificationSettingsTest {
         assertRgb(on, 24, 42, 91, 67, 232, 3, "ON track at (8, 14) dp")
         assertRgb(on, 127, 42, 255, 255, 255, 2, "ON thumb centre")
 
-        mountFake(NotificationStatus.NotDetermined)
+        // One setContent per test: turn the master off through the store
+        // (the section's collector follows it) instead of a second mount.
+        // enabled = false reads as off exactly like NotDetermined does.
+        compose.runOnUiThread { prefs().enabled = false }
+        compose.waitForIdle()
+        switchNode(NotificationCopy.MasterId).assertIsOff()
         val off = switchImage(NotificationCopy.MasterId)
         // The system switch grey #C6C6CA (0x787880 @ 0.42 on white).
         assertRgb(off, 165, 42, 198, 198, 202, 3, "OFF track at (55, 14) dp")

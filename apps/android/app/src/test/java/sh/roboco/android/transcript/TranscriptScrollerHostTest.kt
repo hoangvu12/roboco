@@ -211,8 +211,13 @@ class TranscriptScrollerHostTest {
             assertTrue("the scroller did not scroll: $scrollerOffset", scrollerOffset > 0f)
 
             // Phase 2: the tall fixture (65's LongFixture: 120 more rows).
-            // The follow spring settles during waitForIdle; then the offset
-            // is pinned to 0 so c1 is the top row.
+            // Follow released first: a following host would spring to the
+            // new tail, c1 would leave the realized band and come back with
+            // a fresh scroller at 0 (rows forget their scroll offsets when
+            // they leave the band, by design). Not following, the apply
+            // keeps c1 anchored at the top; the offset is then pinned to 0
+            // so c1 is the top row.
+            compose.runOnIdle { state.viewport.releaseFollow() }
             resend(state, listOf(codeEntry(201)) + LongFixture) { state.frame?.rowCount() == 121u }
             compose.runOnIdle { state.viewport.setOffset(0f) }
             compose.waitForIdle()

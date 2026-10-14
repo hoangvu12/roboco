@@ -23,6 +23,7 @@ import org.junit.Test
 import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.FakePrefsStore
 import sh.roboco.android.composer.StagedImage
+import sh.roboco.android.composer.foregroundAppScope
 
 /**
  * [NewSessionModel] + [normalize] (android-ui-parity #92) — the page
@@ -40,7 +41,7 @@ import sh.roboco.android.composer.StagedImage
  * device, disposal), and the engine-forget rules for an open page.
  *
  * `runTest` with `StandardTestDispatcher(testScheduler)` as `io` and
- * `main`; `backgroundScope` as the app-scope stand-in; the page scope is
+ * `main`; [foregroundAppScope] as the app-scope stand-in; the page scope is
  * a child of it, so a collector left pending at the test's end cannot
  * fail it. [ModelCatalogCache] is cleared before every test
  * (process-static).
@@ -174,11 +175,11 @@ class NewSessionModelTest {
         codec: FakeCodec = FakeCodec(),
     ): StoreFixture {
         val data = FakePrefsStore(disk?.let { mapOf("newSessionDraft" to it) } ?: emptyMap(), gate)
-        val drafts = Drafts(FakePrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
+        val drafts = Drafts(FakePrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
         val store = NewSessionDraftStore(
             data,
             drafts,
-            backgroundScope,
+            foregroundAppScope(),
             StandardTestDispatcher(testScheduler),
             launchHarness = { null },
             codec = codec,
@@ -198,8 +199,11 @@ class NewSessionModelTest {
             advanceUntilIdle()
         }
         val catalog = FakeCatalog(builtIn)
+        // A foreground app scope, not `backgroundScope`: advanceUntilIdle()
+        // never runs background-only work (see foregroundAppScope).
+        val appScope = foregroundAppScope()
         val pageScope = CoroutineScope(
-            backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext.job),
+            appScope.coroutineContext + SupervisorJob(appScope.coroutineContext.job),
         )
         val model = NewSessionModel(
             prompt = prompt,
@@ -207,7 +211,7 @@ class NewSessionModelTest {
             options = options,
             catalog = catalog,
             pageScope = pageScope,
-            appScope = backgroundScope,
+            appScope = appScope,
             io = StandardTestDispatcher(testScheduler),
             main = StandardTestDispatcher(testScheduler),
         )

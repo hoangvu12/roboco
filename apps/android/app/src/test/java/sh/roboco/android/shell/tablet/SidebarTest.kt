@@ -604,8 +604,11 @@ class SidebarTest {
     @Test
     fun aHeaderLongPressOpenPushesTheFolderInsideTheSidebar() {
         mount()
-        // Scroll first: the back-pop must return to this position.
-        scrollBy(80f)
+        // Scroll first: the back-pop must return to this position. 60, not
+        // 80: past the large title (firstIndex > 0, c = 52) but short of
+        // tucking the 40 dp header under the pinned search band (68 … 120)
+        // — at 80 its centre (112) sat under the band, which took the press.
+        scrollBy(60f)
         val firstIndex = state.listState.firstVisibleItemIndex
         assertTrue(firstIndex > 0)
 
@@ -663,7 +666,9 @@ class SidebarTest {
         writeOnUi { state.focusSearch() }
         // The pop was not animated: within one frame the stack is at the
         // root with no transition left, and no 500 ms push/pop frames ran.
-        compose.mainClock.advanceTimeBy(32)
+        // Exactly one frame: advanceTimeBy(32) runs two, and the second is
+        // already the field's withFrameNanos that consumes the request.
+        compose.mainClock.advanceTimeByFrame()
         assertEquals(1, state.stack.entries.size)
         assertNull(state.stack.transition)
         assertTrue(state.pendingFocus)

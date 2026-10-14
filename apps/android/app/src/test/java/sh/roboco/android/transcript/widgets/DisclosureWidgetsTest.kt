@@ -632,7 +632,9 @@ class DisclosureWidgetsTest {
         val state = newState(RecordingEngine())
         host { WidgetRow(state, 55uL) }
         compose.waitForIdle()
-        val b = compose.onNodeWithTag("transcript-tool-chevron").getUnclippedBoundsInRoot()
+        // Unmerged: WidgetBox clears a non-control widget's subtree (129),
+        // so the chevron's tag exists in the unmerged tree alone.
+        val b = compose.onNodeWithTag("transcript-tool-chevron", useUnmergedTree = true).getUnclippedBoundsInRoot()
         assertDp(24.1875.dp, b.left, "chevron left")
         assertDp(6.75.dp, b.top, "chevron top")
         assertDp(15.75.dp, widthOf(b), "chevron width")

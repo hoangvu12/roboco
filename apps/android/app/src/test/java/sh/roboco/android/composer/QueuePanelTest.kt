@@ -24,6 +24,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertHasClickAction
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -238,13 +239,13 @@ class QueuePanelTest {
     }
 
     /** The ink bounding box of [target] within [map], or null when no pixel is near. */
-    private fun inkBounds(map: PixelMap, target: Color, tolerance: Int = 12): Rect? {
+    private fun inkBounds(map: PixelMap, target: Color, tolerance: Int = 12, untilX: Int = map.width): Rect? {
         var minX = Int.MAX_VALUE
         var minY = Int.MAX_VALUE
         var maxX = Int.MIN_VALUE
         var maxY = Int.MIN_VALUE
         for (y in 0 until map.height) {
-            for (x in 0 until map.width) {
+            for (x in 0 until minOf(untilX, map.width)) {
                 if (isNear(map[x, y], target, tolerance)) {
                     if (x < minX) minX = x
                     if (y < minY) minY = y
@@ -321,7 +322,10 @@ class QueuePanelTest {
     fun theClockGlyphIsCentredAt20Point5Dp() {
         place(items = QueuePanelFixtures.F2L)
         val rowPx = pixels("queue-row-0")
-        val ink = inkBounds(rowPx, Palette.Light.tertiary)
+        // Only the columns before the label (x < 35 dp) are probed: the
+        // anti-aliased edges of the label and button glyphs pass through
+        // greys near tertiary and would stretch the box across the row.
+        val ink = inkBounds(rowPx, Palette.Light.tertiary, untilX = (35f * density).toInt())
             ?: error("no tertiary ink in row 0 (the clock glyph)")
         val centreDp = ink.center.x / density
         assertEquals("the clock ink centres at x = 20.5 dp", 20.5f, centreDp, 0.5f)
@@ -448,7 +452,10 @@ class QueuePanelTest {
         assertEquals(40f, row0.heightDp(), px)
         assertEquals(40f, row1.heightDp(), px)
         assertEquals("the row pitch is untouched", 40f, row1.top.value - row0.top.value, px)
-        compose.onNodeWithText("Then add a TL;DR.", useUnmergedTree = true).assertExists()
+        // Matched by the row's tag: in the unmerged tree FadingText's inner
+        // BasicText carries the same text as its clearAndSetSemantics node,
+        // so a text matcher finds two nodes.
+        compose.onNodeWithTag("queue-row-text-0").assertTextEquals("Then add a TL;DR.")
     }
 
     // -------------------------------------------------------------- glass

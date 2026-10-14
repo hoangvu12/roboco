@@ -19,12 +19,12 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -223,10 +223,13 @@ class FolderBrowserBottomBarTest {
     fun theNewFolderContentIsCentredInTheFullWidthTapArea() {
         present(specs()[0], Appearance.Light)
         val button = bounds("new-folder")
-        val title = compose.onNodeWithText("New Folder…", useUnmergedTree = true).getBoundsInRoot()
+        // The content is the icon + 8 dp + title row (UIButton centres
+        // image and title together); the title alone sits (icon + gap) / 2
+        // right of centre, so measure the row.
+        val content = compose.onNodeWithTag("new-folder-content", useUnmergedTree = true).getBoundsInRoot()
         val buttonCentre = (button.left.value + button.right.value) / 2f
-        val titleCentre = (title.left.value + title.right.value) / 2f
-        assertEquals("the content centres in the tap area", buttonCentre, titleCentre, 1.5f)
+        val contentCentre = (content.left.value + content.right.value) / 2f
+        assertEquals("the content centres in the tap area", buttonCentre, contentCentre, 1.5f)
     }
 
     @Test
@@ -322,8 +325,12 @@ class FolderBrowserBottomBarTest {
         compose.waitForIdle()
         val use = bounds("use-folder")
         val newFolder = bounds("new-folder")
-        val gapCentre: Dp = (newFolder.bottom + use.top) / 2f
-        compose.onRoot().performTouchInput { click(Offset(center.x, gapCentre.toPx())) }
+        // Not the gap's centre: Compose extends a sub-48 dp pointer target
+        // to the 48 dp minimum touch size, so the ~36 dp New Folder button
+        // owns up to (48 − 34) / 2 = 7 dp of the 8 dp gap below it. Tap the
+        // gap's last half dp, above the 50 dp Use capsule (never extended).
+        val gapPoint: Dp = use.top - 0.5.dp
+        compose.onRoot().performTouchInput { click(Offset(center.x, gapPoint.toPx())) }
         compose.waitForIdle()
         assertEquals("the stack consumes no touches outside its children", 1, behindTaps)
 

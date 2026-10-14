@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -161,6 +162,32 @@ class ImageTileTest {
 
     private fun loaded(): Boolean = tiles().firstOrNull()?.config?.get(ImageTileLoadedKey) == true
 
+    /**
+     * Frozen clock for every test that keeps a tile in Loading across a
+     * wait: the Loading overlay's `ActivitySpinner` loops on
+     * `withFrameMillis` forever, so an auto-advancing clock never sees
+     * Compose idle (AppNotIdleException). Frames are stepped by hand.
+     */
+    private fun freezeClock() {
+        compose.mainClock.autoAdvance = false
+    }
+
+    /** Advances frozen frames (flushing outside writes first) until [condition] holds. */
+    private fun driveFrames(condition: () -> Boolean) {
+        repeat(300) {
+            if (condition()) return
+            Snapshot.sendApplyNotifications()
+            compose.mainClock.advanceTimeByFrame()
+        }
+        error("condition not met within 300 frames")
+    }
+
+    /** A few frozen frames: lets a tap's recomposition and restarted effect run out. */
+    private fun frames(n: Int = 4) = repeat(n) {
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
+    }
+
     // ------------------------------------------------------------ the radius
 
     @Test
@@ -208,14 +235,15 @@ class ImageTileTest {
         runBlocking { assertNotNull(loader.load(ImageKey("e1", "/b.png"), 780, reader)) }
 
         var reference by mutableStateOf("/a.png")
+        freezeClock()
         compose.setContent { Host { TestTile(reference, actions) } }
-        compose.waitForIdle() // a.png's read is in flight (gated)
+        driveFrames { reader.reads.get() == 2 } // a.png's read is in flight (gated)
         assertEquals(2, reader.reads.get())
         assertEquals(false, loaded())
 
         // Switch to the cached b.png: shows at once, no read.
         compose.runOnIdle { reference = "/b.png" }
-        compose.waitForIdle()
+        driveFrames { tiles().firstOrNull()?.config?.get(ImageTileReferenceKey) == "/b.png" }
         assertEquals("/b.png", node().config[ImageTileReferenceKey])
         assertEquals(true, loaded())
         assertEquals(1f, alpha(), 0.001f)
@@ -223,7 +251,7 @@ class ImageTileTest {
 
         // a.png's read completes after the switch: it must be cached …
         reader.releaseAll()
-        compose.waitForIdle()
+        frames()
         assertNotNull(loader.cached(ImageKey("e1", "/a.png"), 780))
         // … but never shown: b.png stays on the tile.
         assertEquals("/b.png", node().config[ImageTileReferenceKey])
@@ -245,22 +273,23 @@ class ImageTileTest {
             openImage = { r, rect, bmp, _ -> opened.add(Triple(r, rect, bmp!!)) },
         )
 
+        freezeClock()
         compose.setContent { Host { TestTile("/a.png", actions) } }
-        compose.waitForIdle()
+        driveFrames { reader.reads.get() == 1 }
 
         // Not loaded yet: the tap retries (137), it never opens the viewer.
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
-        compose.waitForIdle()
+        frames()
         assertTrue("no viewer while Loading", opened.isEmpty())
         assertEquals("the retry joined the in-flight read", 1, reader.reads.get())
 
         reader.releaseAll()
-        compose.waitForIdle() // the load lands, instantly at alpha 1
+        driveFrames { loaded() } // the load lands, instantly at alpha 1
         assertEquals(true, loaded())
         assertEquals(1f, alpha(), 0.001f)
 
         compose.onNodeWithTag("transcript-image").performTouchInput { click(center) }
-        compose.waitForIdle()
+        frames()
         assertEquals("openImage called exactly once", 1, opened.size)
 
         val (ref, rect, bmp) = opened.single()
@@ -286,8 +315,9 @@ class ImageTileTest {
         val binding = TranscriptImageBinding(loader, { "e1" }, reader)
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
 
+        freezeClock()
         compose.setContent { Host { TestTile("/a.png", actions) } }
-        compose.waitForIdle()
+        driveFrames { reader.reads.get() == 1 }
 
         val loading = node().config
         assertEquals(Role.Image, loading[SemanticsProperties.Role])
@@ -300,7 +330,7 @@ class ImageTileTest {
         assertNotNull("137: the click action exists while Loading (it retries)", loading.getOrNull(SemanticsActions.OnClick))
 
         reader.releaseAll()
-        compose.waitForIdle()
+        driveFrames { loaded() }
 
         val loadedConfig = node().config
         assertEquals(true, loadedConfig[ImageTileLoadedKey])

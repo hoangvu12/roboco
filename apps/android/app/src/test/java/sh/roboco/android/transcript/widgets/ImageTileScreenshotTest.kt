@@ -83,6 +83,10 @@ class ImageTileScreenshotTest {
     }
 
     private fun shot(appearance: Appearance, loaded: Boolean, file: String) {
+        // The placeholder never loads, so its Loading spinner loops on
+        // withFrameMillis forever: an auto-advancing clock never idles.
+        // Frozen, the spinner sits at step 0 (as ImageTileStatesScreenshotTest).
+        if (!loaded) compose.mainClock.autoAdvance = false
         compose.setContent {
             RobocoTheme(appearance) {
                 Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {

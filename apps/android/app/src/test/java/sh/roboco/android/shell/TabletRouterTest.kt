@@ -350,7 +350,10 @@ class TabletRouterTest {
         r.router.openSession("c1")
         advanceUntilIdle()
         assertEquals(listOf("dismissPresented(true)", "dismissPresented(true)", "discard(c2)"), r.log)
-        assertEquals(1, r.opens)
+        // c1's first open plus c2's: c2's route was built (off main) before
+        // it was discarded — `discard(c2)` above is that route's — so the
+        // factory ran twice; the same-id tap on c1 adds no third call.
+        assertEquals(2, r.opens)
         assertTrue(r.log.none { it.startsWith("session(c2)") })
     }
 

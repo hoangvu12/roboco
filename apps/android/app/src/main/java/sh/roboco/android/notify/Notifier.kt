@@ -107,6 +107,9 @@ class Notifier(private val context: Context) {
                 NotificationManager.IMPORTANCE_LOW,
             )
             channel.description = "Shown while an agent run is active"
+            // Quiet: a new channel defaults to the system notification
+            // sound, which a user raising the importance would then hear.
+            channel.setSound(null, null)
             manager.createNotificationChannel(channel)
         }
     }

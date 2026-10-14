@@ -177,15 +177,17 @@ internal fun SidebarToolbarContent(
         modifier
             .fillMaxWidth()
             .height(SidebarToolbarDefaults.ItemSize)
+            // Test-only fade readout; snapshot reads here are observed by
+            // the semantics tree, so it tracks the transition per frame.
+            // Before the insets: the tagged node is the full-width row (a
+            // semantics node takes the bounds at its place in the chain).
+            .semantics { this[SidebarToolbarAlphaKey] = visibility() }
+            .testTag("sidebar-toolbar")
             // The leading safe-drawing inset (a landscape display cutout)
             // inside the slot; the trailing margin is plain padding.
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Start))
             .padding(horizontal = SidebarToolbarDefaults.SideMargin)
-            .graphicsLayer { alpha = visibility() }
-            // Test-only fade readout; snapshot reads here are observed by
-            // the semantics tree, so it tracks the transition per frame.
-            .semantics { this[SidebarToolbarAlphaKey] = visibility() }
-            .testTag("sidebar-toolbar"),
+            .graphicsLayer { alpha = visibility() },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         GlassButtonGroup(

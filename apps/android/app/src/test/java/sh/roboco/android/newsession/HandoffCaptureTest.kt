@@ -1,5 +1,7 @@
 package sh.roboco.android.newsession
 
+import android.graphics.Bitmap
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,6 +32,7 @@ import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.TextStyle
@@ -91,6 +94,7 @@ class HandoffCaptureTest {
     private var state: HandoffCaptureState? = null
     private var scope: CoroutineScope? = null
     private var screenLayer: GraphicsLayer? = null
+    private var hostView: View? = null
     private var result: CapturedDraftHandoff? = null
     private var captureDone = false
 
@@ -105,6 +109,7 @@ class HandoffCaptureTest {
         state = null
         scope = null
         screenLayer = null
+        hostView = null
         result = null
         captureDone = false
         screens.clear()
@@ -123,6 +128,8 @@ class HandoffCaptureTest {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 val density = LocalDensity.current
+                val view = LocalView.current
+                hostView = view
                 val scene = rememberGraphicsLayer()
                 val composerLayer = rememberGraphicsLayer()
                 val screen = rememberGraphicsLayer()
@@ -136,6 +143,11 @@ class HandoffCaptureTest {
                             // re-recorded the layers), then the screen read.
                             withFrameNanos {}
                             withFrameNanos {}
+                            // Robolectric frames measure and lay out but
+                            // never draw the window, so the layers would
+                            // keep their old recordings: draw once here,
+                            // as a device frame would have.
+                            drawOnce(view)
                             val shot = screenLayer?.toImageBitmap()?.toPixelMap()
                             if (shot != null) screens += shot
                         },
@@ -212,7 +224,12 @@ class HandoffCaptureTest {
     private fun runCapture() {
         val s = checkNotNull(state) { "mount first" }
         val sc = checkNotNull(scope) { "mount first" }
+        val view = checkNotNull(hostView) { "mount first" }
         compose.runOnIdle {
+            // The page as the user sees it before the send: Robolectric
+            // never drew it (layout only), so the layers are still empty
+            // and capture's zero-size guard would return null.
+            drawOnce(view)
             sc.launch {
                 // A bounded capture: an unsupported host fails the test
                 // with a null result instead of hanging it.
@@ -221,6 +238,20 @@ class HandoffCaptureTest {
             }
         }
         compose.waitUntil(timeoutMillis = 10_000) { captureDone }
+    }
+
+    /**
+     * One draw pass of the whole window into a throwaway software bitmap —
+     * the device's draw pass, which Robolectric never runs on its own (its
+     * traversals stop after layout). The `drawWithContent` blocks record
+     * the scene, composer and screen layers exactly as a frame would.
+     */
+    private fun drawOnce(view: View) {
+        val root = view.rootView
+        if (root.width == 0 || root.height == 0) return
+        val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+        root.draw(android.graphics.Canvas(bitmap))
+        bitmap.recycle()
     }
 
     // ── the capture's geometry and bitmaps ─────────────────────────────

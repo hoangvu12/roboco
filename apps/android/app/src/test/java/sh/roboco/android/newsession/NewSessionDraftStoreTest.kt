@@ -31,6 +31,7 @@ import sh.roboco.android.composer.DraftKey
 import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.FakePrefsStore
 import sh.roboco.android.composer.StagedImage
+import sh.roboco.android.composer.foregroundAppScope
 import sh.roboco.android.core.testPrefsStore
 
 /**
@@ -54,8 +55,9 @@ import sh.roboco.android.core.testPrefsStore
  *
  * Robolectric (`org.json` for the codec and the disk assertions,
  * `@Config(sdk = [36])`); `StandardTestDispatcher(testScheduler)` serves
- * as `io`, `backgroundScope` as the app-scope stand-in — the same shape
- * as ticket 84's `DraftsTest`. A second store over a second **file**
+ * as `io`, [foregroundAppScope] as the app-scope stand-in (never
+ * `backgroundScope`: `advanceUntilIdle()` does not run background-only
+ * work) — the same shape as ticket 84's `DraftsTest`. A second store over a second **file**
  * backs the `Drafts` instance.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -82,7 +84,7 @@ class NewSessionDraftStoreTest {
     private fun TestScope.newStore(launchHarness: () -> String? = { null }): Fixture {
         val drafts = Drafts(
             testPrefsStore(scope(), File(tmp.root, "drafts.preferences_pb")),
-            backgroundScope,
+            foregroundAppScope(),
             StandardTestDispatcher(testScheduler),
         )
         val dataStoreScope = scope()
@@ -91,7 +93,7 @@ class NewSessionDraftStoreTest {
             NewSessionDraftStore(
                 dataStore,
                 drafts,
-                backgroundScope,
+                foregroundAppScope(),
                 StandardTestDispatcher(testScheduler),
                 launchHarness,
             ),
@@ -101,7 +103,7 @@ class NewSessionDraftStoreTest {
         )
     }
 
-    /** A cancellable child scope of [TestScope.backgroundScope] on the test scheduler. */
+    /** A cancellable scope on the test scheduler. */
     private fun TestScope.scope(): CoroutineScope =
         CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
 
@@ -115,7 +117,7 @@ class NewSessionDraftStoreTest {
             NewSessionDraftStore(
                 dataStore,
                 f.drafts,
-                backgroundScope,
+                foregroundAppScope(),
                 StandardTestDispatcher(testScheduler),
                 launchHarness,
             ),
@@ -207,11 +209,11 @@ class NewSessionDraftStoreTest {
         runTest {
             val gate = CompletableDeferred<Unit>()
             val data = FakePrefsStore(mapOf("newSessionDraft" to """{"projectId":"B"}"""), gate)
-            val drafts = Drafts(FakePrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
+            val drafts = Drafts(FakePrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
             val store = NewSessionDraftStore(
                 data,
                 drafts,
-                backgroundScope,
+                foregroundAppScope(),
                 StandardTestDispatcher(testScheduler),
                 launchHarness = { "mock" },
             )
@@ -231,8 +233,8 @@ class NewSessionDraftStoreTest {
         runTest {
             val gate = CompletableDeferred<Unit>()
             val data = FakePrefsStore(mapOf("newSessionDraft" to """{"projectId":"disk"}"""), gate)
-            val drafts = Drafts(FakePrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
-            val store = NewSessionDraftStore(data, drafts, backgroundScope, StandardTestDispatcher(testScheduler))
+            val drafts = Drafts(FakePrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
+            val store = NewSessionDraftStore(data, drafts, foregroundAppScope(), StandardTestDispatcher(testScheduler))
             store.warm()
             store.lastDraft = NewSessionDraft(projectId = "user")
             gate.complete(Unit)
@@ -247,8 +249,8 @@ class NewSessionDraftStoreTest {
     fun unreadableStoredValueResetsTheDraft() {
         runTest {
             val data = FakePrefsStore(mapOf("newSessionDraft" to "garbage"))
-            val drafts = Drafts(FakePrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
-            val store = NewSessionDraftStore(data, drafts, backgroundScope, StandardTestDispatcher(testScheduler))
+            val drafts = Drafts(FakePrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
+            val store = NewSessionDraftStore(data, drafts, foregroundAppScope(), StandardTestDispatcher(testScheduler))
             store.warm()
             advanceUntilIdle()
             assertEquals(NewSessionDraft(), store.lastDraft)

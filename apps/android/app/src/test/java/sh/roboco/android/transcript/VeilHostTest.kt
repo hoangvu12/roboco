@@ -26,6 +26,7 @@ import org.robolectric.shadows.ShadowChoreographer
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.ReduceMotion
 import sh.roboco.android.design.RobocoTheme
 import uniffi.roboco_core.DebugEntry
@@ -95,8 +96,13 @@ class VeilHostTest {
     private fun host(state: TranscriptState) {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
-                    TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                // Frozen glyph clock: a Working row's trailer would otherwise
+                // run the theme's endless withFrameNanos loop, and the
+                // auto-advancing clock of the first waitForIdle never idles.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    Box(Modifier.fillMaxSize().background(RobocoTheme.palette.background)) {
+                        TranscriptHost(state, TranscriptActions(), Modifier.fillMaxSize())
+                    }
                 }
             }
         }

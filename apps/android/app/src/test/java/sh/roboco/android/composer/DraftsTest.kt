@@ -53,7 +53,7 @@ import sh.roboco.android.core.testPrefsStore
  * - the `new-session` literal key and engine-scoped chat keys.
  *
  * `StandardTestDispatcher(testScheduler)` serves as `io` and the
- * store scopes' dispatcher; `backgroundScope` is the Drafts scope (the
+ * store scopes' dispatcher; [foregroundAppScope] is the Drafts scope (the
  * app-scope stand-in). The log seam (`draftsLogW`) is swapped because
  * the stub `android.util.Log` throws outside Robolectric.
  */
@@ -87,7 +87,7 @@ class DraftsTest {
     private fun TestScope.newDrafts(): Fixture {
         val storeScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val store = testPrefsStore(storeScope, storeFile())
-        return Fixture(store, storeScope, Drafts(store, backgroundScope, StandardTestDispatcher(testScheduler)))
+        return Fixture(store, storeScope, Drafts(store, foregroundAppScope(), StandardTestDispatcher(testScheduler)))
     }
 
     /** A process restart: new DataStore + new Drafts over the same file, in a new scope. */
@@ -202,7 +202,7 @@ class DraftsTest {
     fun aSaveIssuedBeforeTheLoadCompletesSurvivesTheLoad() = runTest {
         val gate = CompletableDeferred<Unit>()
         val store = FakePrefsStore(mapOf("chat:e1:c1" to "old"), gate)
-        val drafts = Drafts(store, backgroundScope, StandardTestDispatcher(testScheduler))
+        val drafts = Drafts(store, foregroundAppScope(), StandardTestDispatcher(testScheduler))
         drafts.warm()
         runCurrent() // the read is now parked on the gate
         assertFalse(drafts.isLoaded)
@@ -287,7 +287,7 @@ class DraftsTest {
 
     @Test
     fun anUnreadableStoreIsLoggedAndTreatedAsEmpty() = runTest {
-        val drafts = Drafts(ThrowingPrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
+        val drafts = Drafts(ThrowingPrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
         drafts.warm()
         advanceUntilIdle()
         assertTrue(drafts.isLoaded)
@@ -298,7 +298,7 @@ class DraftsTest {
 
     @Test
     fun aWriteFailureIsLoggedContentFreeAndTheMirrorKeepsTheText() = runTest {
-        val drafts = Drafts(WriteFailingPrefsStore(), backgroundScope, StandardTestDispatcher(testScheduler))
+        val drafts = Drafts(WriteFailingPrefsStore(), foregroundAppScope(), StandardTestDispatcher(testScheduler))
         drafts.warm()
         advanceUntilIdle()
         val key = DraftKey.Chat("e1", "c1")

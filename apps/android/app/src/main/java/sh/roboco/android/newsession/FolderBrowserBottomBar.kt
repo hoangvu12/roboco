@@ -183,9 +183,11 @@ private fun NewFolderButton(enabled: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Row(
-            Modifier.graphicsLayer {
-                alpha = if (pressed && enabled) FolderBottomBarTokens.PressAlpha else 1f
-            },
+            Modifier
+                .graphicsLayer {
+                    alpha = if (pressed && enabled) FolderBottomBarTokens.PressAlpha else 1f
+                }
+                .testTag("new-folder-content"),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Decorative glyph: the button's own text is the label.

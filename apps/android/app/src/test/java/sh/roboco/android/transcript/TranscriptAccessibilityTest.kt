@@ -39,6 +39,7 @@ import sh.roboco.android.core.TextEngine
 import sh.roboco.android.core.UniffiSandbox
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.ContextMenuHost
+import sh.roboco.android.design.ProvideGlyphClock
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.ToastHost
 import uniffi.roboco_core.DebugEntry
@@ -139,9 +140,14 @@ class TranscriptAccessibilityTest {
     private fun host(state: TranscriptState, pinTop: Boolean = true) {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
-                ToastHost {
-                    ContextMenuHost {
-                        TranscriptHost(state, actions, Modifier.fillMaxSize())
+                // Frozen glyph clock: the fixture's Working row subscribes the
+                // trailer glyph to the theme's endless withFrameNanos loop, and
+                // an auto-advancing test clock never sees Compose idle.
+                ProvideGlyphClock(frozenAtNanos = 0L) {
+                    ToastHost {
+                        ContextMenuHost {
+                            TranscriptHost(state, actions, Modifier.fillMaxSize())
+                        }
                     }
                 }
             }

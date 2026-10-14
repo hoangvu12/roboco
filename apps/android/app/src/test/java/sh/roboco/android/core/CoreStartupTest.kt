@@ -25,6 +25,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -75,6 +76,14 @@ class CoreStartupTest {
 
     private val context: Context
         get() = ApplicationProvider.getApplicationContext()
+
+    /**
+     * The real core's `onEvent` callbacks (the revoked park's
+     * EnginesChanged) must reach this sandbox's handle map, not the last
+     * sandbox to initialize the bindings — see [UniffiSandbox].
+     */
+    @Before
+    fun claimCallbacks() = UniffiSandbox.claimCallbacks()
 
     private class Fixture(
         val store: PairedEngineStore,

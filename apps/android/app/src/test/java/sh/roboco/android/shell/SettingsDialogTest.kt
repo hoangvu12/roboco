@@ -9,6 +9,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
@@ -221,6 +222,9 @@ class SettingsDialogTest {
         // draw-only): the sidebar reappears at exactly x = 0, 360 dp wide,
         // once the card is gone — the golden pins the during state.
         compose.runOnUiThread { state.dismiss(animated = false) }
+        // Idle first so the write reaches the recomposer, then one frame
+        // recomposes (instantDismissRemovesTheCardInTheSameFrame's order).
+        compose.waitForIdle()
         frame()
         val sidebarAfter = compose.onNodeWithTag("fake-sidebar").getBoundsInRoot()
         assertEquals(sidebarBefore.left, sidebarAfter.left)
@@ -344,8 +348,10 @@ class SettingsDialogTest {
         // The Done circle is the root's only. (25's back circle belongs to a
         // route screen's own LargeTitleScaffold; this fixture's NavDemoScreen
         // draws none, so it is not asserted here - LargeTitleScaffoldTest
-        // covers it.)
-        compose.onNodeWithTag("settings-done").assertDoesNotExist()
+        // covers it.) The covered root stays composed but unplaced, and the
+        // test semantics tree keeps unplaced nodes (TalkBack's does not):
+        // the root's Done is not on screen rather than absent.
+        compose.onNodeWithTag("settings-done").assertIsNotDisplayed()
     }
 
     @Test
@@ -506,6 +512,9 @@ class SettingsDialogTest {
         // The card is up: the split's semantics are cleared, so the
         // keyboard state is checked once the card is gone again.
         compose.runOnUiThread { state.dismiss(animated = false) }
+        // Idle first so the write reaches the recomposer, then one frame
+        // recomposes (instantDismissRemovesTheCardInTheSameFrame's order).
+        compose.waitForIdle()
         frame()
         compose.onNodeWithTag("split-field").assertIsNotFocused()
     }

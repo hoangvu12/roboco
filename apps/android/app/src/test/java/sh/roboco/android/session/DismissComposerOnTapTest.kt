@@ -301,7 +301,10 @@ class DismissComposerOnTapTest {
     @Test
     fun aSwipeAcrossTheTranscriptScrollsItAndNeverDismisses() {
         mountGeneric()
-        compose.onNodeWithTag("t-transcript").performTouchInput { swipeUp() }
+        // Starts at the centre: the default swipeUp starts at the bottom
+        // edge, inside the 88 dp stack strip, whose blocker occludes the
+        // transcript (aTapInTheStackGap… pins exactly that).
+        compose.onNodeWithTag("t-transcript").performTouchInput { swipeUp(startY = centerY, endY = top) }
         compose.waitForIdle()
         assertTrue("the transcript scrolled", scroll.value > 0)
         assertEquals("a drag never dismisses", 0, dismissals)
