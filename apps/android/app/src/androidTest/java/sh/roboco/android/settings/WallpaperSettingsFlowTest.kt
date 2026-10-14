@@ -1,6 +1,5 @@
 package sh.roboco.android.settings
 
-import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
@@ -11,7 +10,6 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
-import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -20,6 +18,8 @@ import org.junit.Rule
 import org.junit.Test
 import sh.roboco.android.MainActivity
 import sh.roboco.android.core.WallpaperStore
+import sh.roboco.android.flows.FixtureRule
+import sh.roboco.android.flows.mountedActivity
 
 /**
  * The instrumented port of `testWallpaperSettings`
@@ -33,14 +33,19 @@ import sh.roboco.android.core.WallpaperStore
  * extras: `wallpaper` → `WallpaperStore.set(File)`, `wallpaper-effect`
  * → `setEffect("halftone")`, `route = more` → the Settings tab) and 103
  * (`settings-screen`) merged, and a debuggable build (the extras are
- * debug-only, ticket 36). Until 36/103 land this test times out at the
- * first wait — that is the tracked state, not a regression. CI-only: no
- * emulator runs in the worker slots or locally.
+ * debug-only, ticket 36). CI-only: no emulator runs in the worker slots
+ * or locally.
  *
- * The compose rule wraps an [ActivityScenarioRule] built with the launch
- * intent (the public, deprecated-but-supported [AndroidComposeTestRule]
- * constructor — the only way to hand the rule a pre-built intent); only
- * the compose rule is a JUnit rule, so the scenario is applied exactly
+ * android-app#30: the launch goes through the flow rig's [FixtureRule]
+ * (the `main` engine paired via the debug `pair` extra — the Settings
+ * tab only exists behind a shell, and the shell only with a paired
+ * engine), carrying the wallpaper extras through [FixtureRule]'s
+ * `extrasFor`.
+ *
+ * The compose rule wraps the [FixtureRule] (the public,
+ * deprecated-but-supported [AndroidComposeTestRule] constructor — the
+ * only way to hand the rule a launch built from a generated file); only
+ * the compose rule is a JUnit rule, so the launch is applied exactly
  * once.
  */
 @RunWith(AndroidJUnit4::class)
@@ -58,30 +63,26 @@ class WallpaperSettingsFlowTest {
     }
 
     /** Launched at rule application, after the field initializers ran (so the PNG exists). */
-    private val scenario = ActivityScenarioRule<MainActivity>(
-        Intent(
-            InstrumentationRegistry.getInstrumentation().targetContext,
-            MainActivity::class.java,
-        )
-            .putExtra("wallpaper", wallpaperFile.absolutePath)
-            .putExtra("wallpaper-effect", "halftone")
-            .putExtra("route", "more"),
+    private val scenario = FixtureRule(
+        routeFor = { "more" },
+        extrasFor = {
+            mapOf(
+                "wallpaper" to wallpaperFile.absolutePath,
+                "wallpaper-effect" to "halftone",
+            )
+        },
     )
-
-    @Suppress("DEPRECATION")
-    @get:Rule
-    val compose: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity> =
-        AndroidComposeTestRule(scenario) { rule ->
-            var activity: MainActivity? = null
-            rule.scenario.onActivity { activity = it }
-            checkNotNull(activity) { "Activity was not set in the ActivityScenarioRule" }
-        }
 
     init {
         // A store left over from an earlier instrumented test in the same
         // process must not win over the launch extra (applied after this).
         WallpaperStore.resetForTest()
     }
+
+    @Suppress("DEPRECATION")
+    @get:Rule
+    val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
+        AndroidComposeTestRule(scenario) { rule -> rule.mountedActivity() }
 
     @Test
     fun wallpaperSettingsFlow() {

@@ -41,6 +41,7 @@ import sh.roboco.android.notify.NotificationPolicy
 import sh.roboco.android.notify.NotificationPrefs
 import sh.roboco.android.notify.Notifier
 import sh.roboco.android.pairing.KeystoreSecretCipher
+import sh.roboco.android.pairing.LaunchPairRedeemer
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.session.ChromeFillerRegistry
 import sh.roboco.android.session.CoreSessionOpener
@@ -161,6 +162,23 @@ class RobocoApplication : Application() {
 
     /** Keystore-encrypted credentials + DataStore metadata (ticket 71). */
     val engineStore by lazy { PairedEngineStore(engineDataStore, KeystoreSecretCipher(this)) }
+
+    /**
+     * The debug `pair` launch extra's redemption (android-app#30): pairs
+     * the flow rig's minted URLs through the live client before the shell
+     * is drawn. No-op for an empty list (every non-rig launch).
+     */
+    private val launchPairRedeemer by lazy {
+        LaunchPairRedeemer(
+            client = ::clientOrNull,
+            store = engineStore,
+            scope = applicationScope,
+        )
+    }
+
+    /** android-app#30: redeem the `pair` extra's URLs (debug builds only —
+     * `LaunchOptions.parse` drops the extra otherwise). */
+    fun redeemLaunchPairs(urls: List<String>) = launchPairRedeemer.redeem(urls)
 
     /**
      * The startup pipeline (71's `onClientReady` hook wired by ticket 35:

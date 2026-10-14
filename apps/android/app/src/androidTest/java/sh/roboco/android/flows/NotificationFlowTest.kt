@@ -1,17 +1,23 @@
 package sh.roboco.android.flows
 
+import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import sh.roboco.android.notify.NotificationPrefs
+import sh.roboco.android.MainActivity
 import sh.roboco.android.RobocoApplication
+import sh.roboco.android.notify.NotificationPrefs
 
 /**
  * The notification flow (android-app#28, CI-only — no emulator in the
@@ -20,22 +26,31 @@ import sh.roboco.android.RobocoApplication
  * local — the edge and APNs are gone, so the notification comes from the
  * phone's own driver:
  *
- * 1. a slow engine is paired and connected (adb reverse to
- *    `roboco-engine --example android_fixture`, ticket 30's flow rig —
- *    **that rig is this test's prerequisite**);
- * 2. notifications are on (the pref) and the permission granted via
- *    UiAutomator's `Allow`;
- * 3. a prompt is sent, then `pressHome()`;
- * 4. `openNotification()`, wait for "Run finished", tap it, and the chat's
- *    transcript is shown (tickets 75/76's session screen — until they
- *    land, this test stops at the notification itself, the tracked
- *    state, like ui-parity#97's forward-looking flow test).
+ * 1. the **slow** fixture engine is paired through the rig
+ *    ([FixtureRule] mints a fresh pairing URL; `chat-long` streams a
+ *    paced reply — long enough to background the app first);
+ * 2. notifications are on (the pref) and the permission granted (the
+ *    system `Allow` dialog, or `pm grant` when the dialog cannot show);
+ * 3. a prompt is sent from the session screen, then `pressHome()`;
+ * 4. `openNotification()`, wait for "Run finished", tap it, and the chat
+ *    is open again (the `transcript` root on top).
  *
  * Run: `./gradlew :app:connectedDebugAndroidTest
  * -Pandroid.testInstrumentationRunnerArguments.class=sh.roboco.android.flows.NotificationFlowTest`.
  */
 @RunWith(AndroidJUnit4::class)
 class NotificationFlowTest {
+
+    /** The slow engine (a paced run that outlives the trip to the home screen). */
+    private val launch = FixtureRule(
+        routeFor = { "chat:chat-long" },
+        enginesFor = { setOf(FixtureEngine.Slow) },
+    )
+
+    @Suppress("DEPRECATION")
+    @get:Rule
+    val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
+        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
 
     private val device: UiDevice
         get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
@@ -46,11 +61,10 @@ class NotificationFlowTest {
 
     @Before
     fun setUp() {
-        // Ticket 30's rig must have paired a slow fixture engine before
-        // this test (adb reverse + a first-run pairing); a fresh emulator
-        // without it has nothing to notify about — skip, don't fail.
-        assumeTrue(
-            "the flow rig's paired engine is missing (start android_fixture first)",
+        // The rig mints and pairs the slow engine before this runs; a
+        // missing engine means the rig itself broke — fail loudly.
+        assertTrue(
+            "the flow rig's redeemed engine never appeared (start the android_fixture engines)",
             app.clientOrNull()?.engines().orEmpty().isNotEmpty(),
         )
         // Notifications on: the master + every kind.
@@ -63,15 +77,30 @@ class NotificationFlowTest {
 
     @Test
     fun notificationTapOpensTheSession() {
+        // Send the prompt from the session screen (the run the
+        // notification reports), while the app is front.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick()
+            .performTextInput("Write a long reply please.")
+        compose.onNodeWithTag("composer-send").performClick()
+
         // Grant through the system dialog (the first-session ask path, or
-        // the Settings toggle — either way the OS dialog is the same).
+        // the Settings toggle — either way the OS dialog is the same);
+        // `pm grant` when the dialog is not offered (already twice-denied).
         if (!granted()) {
             device.findObject(By.text("Allow"))?.click()
         }
-        assumeTrue("POST_NOTIFICATIONS was not granted", granted())
-        // Send a prompt (tickets 94/76's create path; until then the rig
-        // drives the engine side). Then leave the app: no banner while
-        // the app is front (the foreground gate).
+        if (!granted()) {
+            device.executeShellCommand(
+                "pm grant ${app.packageName} android.permission.POST_NOTIFICATIONS",
+            )
+        }
+        assertTrue("POST_NOTIFICATIONS was not granted", granted())
+
+        // Then leave the app: no banner while the app is front (the
+        // foreground gate).
         device.pressHome()
         // The slow run finishes; the notification appears.
         device.openNotification()
@@ -83,9 +112,11 @@ class NotificationFlowTest {
         assertTrue("the Done notification never appeared", appeared == true)
         // Tap it: the chat opens (cold or warm — the hub holds the link).
         device.findObject(By.text("Run finished")).click()
-        // The session screen (ticket 75/76's root). Until those land, the
-        // launch itself is the observable part: the app is front again.
         device.wait(Until.hasObject(By.pkg(app.packageName)), 10_000)
+        // The session screen is on top again (75/76's root).
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     private fun granted(): Boolean =
