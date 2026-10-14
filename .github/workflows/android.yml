@@ -67,6 +67,14 @@ on:
         description: 'Record the Roborazzi goldens (android-screenshots) and upload them as android-goldens'
         type: boolean
         default: false
+      perf_apk:
+        # An installable release-speed APK for hand testing smoothness: the
+        # `benchmark` build type (R8, mobile-dist core, profileable, signed
+        # with the runner's debug key). Uninstall a debug APK first — the
+        # debug keys differ per runner.
+        description: 'Also build the benchmark APK (release speed, debug-signed) and upload it as roboco-android-benchmark'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -85,6 +93,60 @@ env:
   CARGO_ENCODED_RUSTFLAGS: 
 
 jobs:
+  android-benchmark-apk:
+    # workflow_dispatch with perf_apk only. Its first runs also prove the R8
+    # keep rules for the benchmark variant (review-concerns: unverified).
+    if: ${{ inputs.perf_apk && !inputs.record_goldens }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add the Android Rust target
+        run: rustup target add aarch64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-benchmark
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        shell: pwsh
+        run: |
+          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
+          if (-not $installed) {
+            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+        working-directory: .
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install Android SDK pieces
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
+          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the benchmark APK
+        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a :app:assembleBenchmark
+      - name: Upload the benchmark APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-benchmark
+          path: apps/android/app/build/outputs/apk/benchmark/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
   android:
     # A `record_goldens` dispatch runs android-screenshots only (it builds
     # the host core itself); everything else is skipped to keep it cheap.
