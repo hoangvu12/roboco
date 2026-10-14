@@ -22,6 +22,7 @@ import sh.roboco.android.design.LocalActionSheet
 import sh.roboco.android.design.LocalAlerts
 import sh.roboco.android.design.LocalToaster
 import sh.roboco.android.design.Toaster
+import sh.roboco.android.newsession.NewSessionScreen
 
 /**
  * The real [PhoneShell] (android-ui-parity #32): one adapter over the
@@ -64,15 +65,20 @@ internal class PhoneShellAdapter(
 
     override fun presentNewSession(prompt: String?, onCreated: (chatId: String, handoff: DraftHandoff?) -> Unit) {
         // `MainTabController.swift:136-148`: New Session in a page sheet at
-        // the large detent, grabber visible. Ticket 93's
-        // `NewSessionScreen(prompt = prompt, embedded = false, onCreated = onCreated)`
-        // replaces the placeholder page; until it lands, 31's placeholder
-        // stands in and the prompt/onCreated have no screen to reach.
+        // the large detent, grabber visible. The sheet's `imePadding`
+        // shrinks the canvas's constraints; the canvas measures the rest
+        // (the wallpaper keeps the IME-less page height through its
+        // `onConsumedWindowInsetsChanged` read).
         sheetHost?.present(
             key = "new-session",
             style = SheetStyle.Page(grabber = true),
         ) {
-            NewSessionSheetPlaceholder(this)
+            NewSessionScreen(
+                prompt = prompt,
+                embedded = false,
+                onCreated = onCreated,
+                onClose = { dismiss(animated = true) },
+            )
         }
     }
 

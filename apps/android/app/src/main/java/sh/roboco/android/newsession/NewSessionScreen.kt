@@ -1,0 +1,185 @@
+package sh.roboco.android.newsession
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.awaitFrame
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.CancellationException
+import sh.roboco.android.composer.ComposerBar
+import sh.roboco.android.composer.ComposerController
+import sh.roboco.android.composer.SendResult
+import sh.roboco.android.composer.StagedImage
+import sh.roboco.android.composer.rememberComposerController
+import sh.roboco.android.composer.rememberComposerMorphState
+import sh.roboco.android.shell.DraftHandoff
+
+/**
+ * The New Session page (android-ui-parity #93) — the port of
+ * `NewSessionViewController` (`ios:Session/NewSessionViewController.swift`),
+ * a composer-first canvas: "tap, type, send".
+ *
+ * Phone: the content of 31's large-detent page sheet (32 presents it — the
+ * ✕ is the sheet bar's). Tablet (106): embedded in the detail column with
+ * `embedded = true`, no ✕, and the caller's one-shot [focusOnAppear].
+ *
+ * This entry builds 92's page model over the app's single graph; everything
+ * after that lives in [NewSessionScreenBody] so tests can drive the real
+ * page over a fake model (the built-in catalog is FFI — a fake catalog
+ * keeps the JVM honest, as in 92's model tests).
+ *
+ * [onCreated] is 94's: it fires after create + first send. Until then the
+ * [bindNewSessionComposer] stub keeps every send `Kept`.
+ */
+@Composable
+fun NewSessionScreen(
+    prompt: String?,
+    embedded: Boolean,
+    onCreated: (chatId: String, handoff: DraftHandoff?) -> Unit,
+    onClose: () -> Unit = {},
+    /** iOS `!embedded`; 106 passes its one-shot flag (launch false, ⌘N true). */
+    focusOnAppear: Boolean = !embedded,
+    /** The `@file` search seam; tests pass a fake. */
+    fileSearch: NewSessionFileSearch = rememberCoreFileSearch(),
+    modifier: Modifier = Modifier,
+) {
+    val ns = rememberNewSessionModel(prompt)
+    NewSessionScreenBody(ns, embedded, onClose, focusOnAppear, fileSearch, modifier)
+}
+
+/**
+ * The page over a built model: the composer (created with 92's
+ * `initialText` and seeded with its `initialImages` **before the first
+ * frame**, like iOS's `init`), 92's remember-on-close/background effect,
+ * the morph pinned to the card (`alwaysCard`), the focus-on-appear wait and
+ * the canvas.
+ */
+@Composable
+internal fun NewSessionScreenBody(
+    ns: NewSessionModel,
+    embedded: Boolean,
+    onClose: () -> Unit,
+    focusOnAppear: Boolean,
+    fileSearch: NewSessionFileSearch,
+    modifier: Modifier = Modifier,
+) {
+    val composer = rememberComposerController(initialText = ns.initialText)
+    remember(composer) {
+        // Runs once, before the first frame (iOS sets these in `init` and
+        // `viewDidLoad`).
+        bindNewSessionComposer(composer, project = { ns.project }, ns.initialImages, fileSearch)
+        true
+    }
+    NewSessionDraftEffect(ns, composer)
+    // 109 adds here: NewSessionChipsEffect(ns, composer, newSessionChipMenus(/* 113's and 114's provider maps */))
+    val morph = rememberComposerMorphState(
+        alwaysCard = true,
+        hasImages = { composer.images.isNotEmpty() },
+        hideSuggestions = { composer.hideSuggestions() },
+    )
+    val keyboard = LocalSoftwareKeyboardController.current
+    val canvasState = remember { NewSessionCanvasState() }
+    NewSessionFocusOnAppear(focusOnAppear, embedded, canvasState) { morph.focus() }
+    NewSessionCanvas(
+        harness = ns.draft.harness,
+        embedded = embedded,
+        onClose = onClose,
+        onBackgroundTap = { morph.blur(); keyboard?.hide() },
+        // 94: add its capture modifiers to this ComposerBar modifier when
+        // it wires onSend + onCreated.
+        composer = { ComposerBar(composer, morph, Modifier.testTag("new-session-composer")) },
+        state = canvasState,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The canvas's composer configuration — the `viewDidLoad` block
+ * (`NewSessionViewController.swift:145-165`) as one idempotent bind, so
+ * the screen's `remember(composer)` and the tests share the exact rules:
+ *
+ * - `chipsAlwaysVisible` (always a card here), the placeholder, the seed
+ *   images;
+ * - `onChipTap = { _, _ in }`: chips open their own menus (109/113/114);
+ * - `attachMenu` stays **null**: 87's `ComposerAttachMenuButton` inside the
+ *   shared `ComposerBar` already builds the menu per open with
+ *   `limit = 8 − images.size`;
+ * - `mentionSearch` is **always** set — `AppModel.searchFiles` with the
+ *   project read **at call time** (`self.project`, `:236`), `chatId = null`,
+ *   and errors read as no matches (the `try?` of `AppModel.swift:607-610`).
+ *   Cancellation still propagates: 86 uses it to drop stale queries;
+ * - the `Kept` send stub 94 replaces.
+ */
+internal fun bindNewSessionComposer(
+    composer: ComposerController,
+    project: () -> ProjectOption?,
+    initialImages: List<StagedImage>,
+    fileSearch: NewSessionFileSearch,
+) {
+    composer.alwaysCard = true
+    composer.placeholder = "Describe the task"
+    composer.images = initialImages
+    composer.onChipTap = {}
+    composer.mentionSearch = { q ->
+        try {
+            project()?.let { p -> fileSearch.search(p.device, p.id, q) } ?: emptyList()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+    if (composer.onSend == null) composer.onSend = { _, _, _ -> SendResult.Kept }
+}
+
+/**
+ * Focus on appear (`viewDidAppear`, `:215-217`): the sheet waits for the
+ * present motion to settle (Compose has no appear callback tied to the
+ * transition — 31 slides the page with `Modifier.offset`, so
+ * `positionInWindow` stops moving), the embedded column takes the keyboard
+ * on the first frame. One-shot per screen instance — a plain
+ * `LaunchedEffect(Unit)`, never re-run on recomposition, harness change or
+ * a stacked sheet's return.
+ */
+@Composable
+internal fun NewSessionFocusOnAppear(
+    focusOnAppear: Boolean,
+    embedded: Boolean,
+    state: NewSessionCanvasState,
+    focus: () -> Unit,
+) {
+    LaunchedEffect(Unit) {
+        if (!focusOnAppear) return@LaunchedEffect
+        if (embedded) awaitFrame() else awaitPlacementSettled { state.pageCoordinates }
+        focus()
+    }
+}
+
+/**
+ * Returns once the page's window position is non-null and unchanged for
+ * two consecutive frames, or after [SettleTimeoutNanos] (a never-settling
+ * host). `withFrameNanos` ticks on every vsync, so the two still frames
+ * arrive after the sheet's spring rests.
+ */
+internal suspend fun awaitPlacementSettled(coords: () -> LayoutCoordinates?) {
+    var last: Float? = null
+    var stable = 0
+    var started = -1L
+    while (true) {
+        val now = withFrameNanos { it }
+        if (started < 0L) started = now
+        val y = coords()?.takeIf { it.isAttached }?.positionInWindow()?.y
+        if (y != null && y == last && ++stable >= 2) return
+        if (y != last) stable = 0
+        last = y
+        if (now - started > SettleTimeoutNanos) return
+    }
+}
+
+/** The settle cap: 1000 ms of frames, against a never-settling host. */
+private const val SettleTimeoutNanos = 1_000_000_000L
