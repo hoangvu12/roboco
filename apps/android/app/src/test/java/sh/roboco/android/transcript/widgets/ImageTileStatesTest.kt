@@ -164,6 +164,13 @@ class ImageTileStatesTest {
 
     private fun node() = compose.onNodeWithTag("transcript-image").fetchSemanticsNode()
 
+    /** All tile nodes — empty before the first composition, safe to poll. */
+    private fun tiles() = compose.onAllNodesWithTag("transcript-image").fetchSemanticsNodes()
+
+    /** The first tile's status, or null before it exists (safe to poll). */
+    private fun statusOrNull(): ImageTileStatus? =
+        tiles().firstOrNull()?.config?.get(ImageTileStatusKey)
+
     /** Advances frozen frames until [condition] holds (5 s of frames). */
     private fun driveFrames(condition: () -> Boolean) {
         repeat(300) {
@@ -301,11 +308,11 @@ class ImageTileStatesTest {
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
 
         compose.setContent { Host { TestTile("a.png", actions) } }
-        driveFrames { node().config[ImageTileStatusKey] == ImageTileStatus.Loading }
+        driveFrames { statusOrNull() == ImageTileStatus.Loading }
         assertEquals(1, reader.reads.get())
 
         reader.releaseAll()
-        driveFrames { node().config[ImageTileStatusKey] == ImageTileStatus.Loaded }
+        driveFrames { statusOrNull() == ImageTileStatus.Loaded }
         // The frame the load lands in shows the picture fully opaque:
         // 137 removed 66's 200 ms tween (pr817 dropped the 0.2 s
         // cross-dissolve), and no number of further frames changes it.

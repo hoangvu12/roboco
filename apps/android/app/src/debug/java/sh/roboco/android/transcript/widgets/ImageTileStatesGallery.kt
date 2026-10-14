@@ -30,13 +30,11 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import java.io.IOException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import sh.roboco.android.core.Face
-import sh.roboco.android.debug.labFixturePng
 import sh.roboco.android.debug.labGradientBitmap
+import sh.roboco.android.debug.serveLabFixture
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalGalleryCapture
 import sh.roboco.android.design.LocalTypeScale
@@ -139,14 +137,14 @@ private const val FAILED_THUMB = "/gallery/states/failed-thumb.png"
 private fun ImageTileStatesStage(chip: Color, actions: TranscriptActions) {
     Box(Modifier.requiredSize(StatesStageWidth, StatesStageHeight)) {
         // Row 1: three 260 dp tiles stacked at x = 18, 10 dp apart.
-        StatesTileSlot(chip, 18, 0, LOADING_LANDSCAPE, "Loading", actions)
-        StatesTileSlot(chip, 18, 270, LOADED_LANDSCAPE, "Landscape", actions)
-        StatesTileSlot(chip, 18, 540, FAILED_LANDSCAPE, "Failed", actions)
+        StatesTileSlot(chip, 18, 0, 260, LOADING_LANDSCAPE, "Loading", actions)
+        StatesTileSlot(chip, 18, 270, 260, LOADED_LANDSCAPE, "Landscape", actions)
+        StatesTileSlot(chip, 18, 540, 260, FAILED_LANDSCAPE, "Failed", actions)
         // Row 2: three 76 dp thumbnails right-aligned (6 dp gaps), the
         // gap to row 1 is 20 dp (800 + 20 = 820).
-        StatesTileSlot(chip, 299, 820, LOADING_THUMB, "Loading", actions)
-        StatesTileSlot(chip, 217, 820, LOADED_THUMB, "Portrait", actions)
-        StatesTileSlot(chip, 135, 820, FAILED_THUMB, "Failed", actions)
+        StatesTileSlot(chip, 299, 820, 76, LOADING_THUMB, "Loading", actions)
+        StatesTileSlot(chip, 217, 820, 76, LOADED_THUMB, "Portrait", actions)
+        StatesTileSlot(chip, 135, 820, 76, FAILED_THUMB, "Failed", actions)
     }
 }
 
@@ -214,14 +212,8 @@ private class StatesReader : AttachmentReader {
     override suspend fun read(engineDeviceId: String, reference: String): ByteArray {
         return when {
             reference == LOADING_LANDSCAPE || reference == LOADING_THUMB -> awaitCancellation()
-            reference == LOADED_LANDSCAPE -> {
-                delay(600)
-                withContext(Dispatchers.Default) { labFixturePng(960, 540) }
-            }
-            reference == LOADED_THUMB -> {
-                delay(600)
-                withContext(Dispatchers.Default) { labFixturePng(540, 960) }
-            }
+            reference == LOADED_LANDSCAPE -> serveLabFixture(600, 960, 540)
+            reference == LOADED_THUMB -> serveLabFixture(600, 540, 960)
             else -> throw IOException("no attachment at $reference")
         }
     }
@@ -266,8 +258,7 @@ private class RetrySucceedsReader : CountingReader() {
             delay(300)
             throw IOException("no attachment at $reference")
         }
-        delay(600)
-        return withContext(Dispatchers.Default) { labFixturePng(960, 540) }
+        return serveLabFixture(600, 960, 540)
     }
 }
 
@@ -275,8 +266,7 @@ private class RetrySucceedsReader : CountingReader() {
 private class SlowReader : CountingReader() {
     override suspend fun read(engineDeviceId: String, reference: String): ByteArray {
         reads++
-        delay(3000)
-        return withContext(Dispatchers.Default) { labFixturePng(960, 540) }
+        return serveLabFixture(3000, 960, 540)
     }
 }
 

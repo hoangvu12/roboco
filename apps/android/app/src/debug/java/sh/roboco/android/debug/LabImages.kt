@@ -177,6 +177,15 @@ fun labFixturePng(w: Int, h: Int): ByteArray = labPngCache.getOrPut(w to h) {
 }
 
 /**
+ * One lab-style read: [delayMs], then the gradient PNG built off main —
+ * the shared shape of [LabImageReader] and the states gallery's readers.
+ */
+internal suspend fun serveLabFixture(delayMs: Long, w: Int, h: Int): ByteArray {
+    delay(delayMs)
+    return withContext(Dispatchers.Default) { labFixturePng(w, h) }
+}
+
+/**
  * The lab's image attachment source (ticket 137, `--ez images true`): the
  * deterministic stand-in for `readAttachment` — the two workspace PNGs
  * after 600 ms, `IOException` for anything else after 300 ms (the engine
@@ -199,14 +208,8 @@ object LabImageReader : AttachmentReader {
     override suspend fun read(engineDeviceId: String, reference: String): ByteArray {
         readsByRef.getOrPut(reference) { AtomicInteger() }.incrementAndGet()
         return when (reference) {
-            LAB_LANDSCAPE -> {
-                delay(600)
-                withContext(Dispatchers.Default) { labFixturePng(960, 540) }
-            }
-            LAB_PORTRAIT -> {
-                delay(600)
-                withContext(Dispatchers.Default) { labFixturePng(540, 960) }
-            }
+            LAB_LANDSCAPE -> serveLabFixture(600, 960, 540)
+            LAB_PORTRAIT -> serveLabFixture(600, 540, 960)
             else -> {
                 delay(300)
                 throw IOException("NotFound: $reference")

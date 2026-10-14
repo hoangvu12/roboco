@@ -66,7 +66,8 @@ import uniffi.roboco_core.ColorRole
  *
  * Live controls (foundation only, no Material):
  *  - **Reload** empties the loader's LRU and re-keys the tiles, so the
- *    next 600 ms read replays the 200 ms cross-fade;
+ *    next 600 ms read replays the load (137: the swap is instant, no
+ *    cross-fade any more);
  *  - **Fail one** makes the first thumbnail's read throw — it stays a
  *    placeholder, the others still load;
  *  - **Swap references** flips the 260 tile between two references while

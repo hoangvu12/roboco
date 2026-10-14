@@ -68,6 +68,10 @@ class ImageTileStatesScreenshotTest {
             }
         }
         compose.waitForIdle()
+        // Let the Failed tile's effect land (its null load) without moving
+        // the spinner off step 0: 80 ms of frames is < the 125 ms step.
+        compose.mainClock.advanceTimeBy(80)
+        compose.waitForIdle()
         compose.onRoot().captureRoboImage(file)
     }
 }

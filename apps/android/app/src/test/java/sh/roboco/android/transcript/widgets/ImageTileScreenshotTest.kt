@@ -30,8 +30,9 @@ import sh.roboco.android.design.RobocoTheme
  * the three 76 dp thumbnails at x = 135/217/299 (6 dp gaps, right-aligned
  * to the 337 pt column end) with 12 pt corners; the 260 dp image row at
  * x = 18, y = 100 with 14 pt corners; the 1200 × 800 fixture picture
- * aspect-filled (centred, cropped left and right); and the
- * #E7E7EB / #1C1C20 placeholders when nothing is loaded.
+ * aspect-**fit** (137: centred, letterboxed top and bottom) on the
+ * `Palette.elevated` tile background; and the #E7E7EB / #1C1C20
+ * placeholders when nothing is loaded.
  *
  * Rasterisation is host-dependent: record on the Ubuntu CI runner, like
  * every golden here.
