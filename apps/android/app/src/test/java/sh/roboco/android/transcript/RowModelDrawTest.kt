@@ -216,10 +216,11 @@ class RowModelDrawTest {
  * A [Canvas] that records the ops [RowModel.draw] makes: boxes, text runs
  * (by their start index, −1 for the overload without one) and float
  * [Canvas.clipRect]s (`clip:<left>:<right>`). The draw-order contract is
- * asserted from this list, never from pixels. `internal` (not `private`)
- * so ticket 118's [VeilTest] can subclass it with layer and restore events.
+ * asserted from this list, never from pixels. `internal open` (not
+ * `private`) so ticket 118's [VeilTest] can subclass it with layer and
+ * restore events.
  */
-internal class RecordingCanvas(bitmap: Bitmap) : Canvas(bitmap) {
+internal open class RecordingCanvas(bitmap: Bitmap) : Canvas(bitmap) {
 
     val ops = ArrayList<String>()
 

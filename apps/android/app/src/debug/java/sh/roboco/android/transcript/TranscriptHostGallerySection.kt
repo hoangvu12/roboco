@@ -105,9 +105,9 @@ fun TranscriptHostGallerySection() {
                                 val next = words.subList(i, minOf(words.size, i + step))
                                     .joinToString(" ")
                                 i += step
-                                val last = entries.last()
-                                val grown = last.copy(
-                                    text = last.text + (if (last.text.isEmpty()) "" else " ") + next,
+                                val lastEntry = entries.last()
+                                val grown = lastEntry.copy(
+                                    text = lastEntry.text + (if (lastEntry.text.isEmpty()) "" else " ") + next,
                                     streaming = i < words.size,
                                 )
                                 entries = entries.toMutableList().also { it[it.lastIndex] = grown }

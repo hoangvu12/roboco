@@ -50,6 +50,7 @@ internal class Veil(private val durationNanos: Long = Motion.VeilMs * 1_000_000L
     /** Live chunks, sorted by `from`, disjoint (tests read this). */
     val chunks: List<Chunk> get() = list
 
+    /** Whether any chunk is still fading (the host frame loop's condition). */
     val hasChunks: Boolean get() = list.isNotEmpty()
 
     /**
@@ -139,12 +140,12 @@ internal class Veil(private val durationNanos: Long = Motion.VeilMs * 1_000_000L
     fun draw(canvas: Canvas, model: RowModel, density: Float, palette: IntArray, fonts: StyleFonts, now: Long) {
         if (model !== last) grow(model, animate = false)
 
-        // Live: unstarted, or not yet 220 ms old. Expired-but-unticked
-        // chunks (the loop's last frame) are settled text, drawn opaque.
+        // Live: unstarted (alpha 0, waiting for its clock) or not yet
+        // 220 ms old. Expired-but-unticked chunks (the loop's last frame)
+        // are settled text, drawn opaque.
         var anyLive = false
         for (i in list.indices) {
-            val c = list[i]
-            if (c.started == UNSTARTED || now - c.started < durationNanos) {
+            if (isLive(list[i], now)) {
                 anyLive = true
                 break
             }
@@ -162,7 +163,7 @@ internal class Veil(private val durationNanos: Long = Motion.VeilMs * 1_000_000L
         var cursor = 0
         for (i in list.indices) {
             val c = list[i]
-            if (c.started != UNSTARTED && now - c.started >= durationNanos) continue
+            if (!isLive(c, now)) continue
             if (c.from > cursor) model.draw(0, canvas, density, palette, fonts, RowModel.Pass.Range(cursor, c.from))
             if (c.to > cursor) cursor = c.to
         }
@@ -172,7 +173,7 @@ internal class Veil(private val durationNanos: Long = Motion.VeilMs * 1_000_000L
         val runs = model.runsByLayer[0]
         for (i in list.indices) {
             val c = list[i]
-            if (c.started != UNSTARTED && now - c.started >= durationNanos) continue
+            if (!isLive(c, now)) continue
             val a = alphaInt(c, now)
             if (a == 0) continue // unstarted or the first eased frame: nothing visible
             if (a == 255) { // eased to full but not expired: plain, no layer
@@ -228,4 +229,14 @@ internal class Veil(private val durationNanos: Long = Motion.VeilMs * 1_000_000L
         /** [Chunk.started] while the chunk waits for its first frame tick. */
         const val UNSTARTED = Long.MIN_VALUE
     }
+
+    /**
+     * A chunk is live while it is unstarted (it paints at alpha 0 until
+     * the frame loop stamps its clock) or less than [durationNanos] old
+     * at [now]; an expired chunk that [tick] has not dropped yet is
+     * settled text. Checked before `now - started` so an unstarted
+     * chunk never overflows the subtraction.
+     */
+    private fun isLive(c: Chunk, now: Long): Boolean =
+        c.started == UNSTARTED || now - c.started < durationNanos
 }
