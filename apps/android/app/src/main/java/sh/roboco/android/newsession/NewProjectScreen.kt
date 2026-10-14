@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -96,19 +98,31 @@ object FolderBrowserTokens {
 }
 
 /**
- * The New Project page: the nav bar, then the folder list filling the rest
- * of the page down to the physical bottom, with 111's bottom bar
- * (status / New Folder… / Use) overlaid on it. The create callback and
- * the dismissal live in [actions] (111's `onCreated` and `dismissSheet`);
- * while a write runs, [sheet]'s `dismissBlocked` keeps it up.
+ * The New Project page: the nav bar, then 112's locations rail and
+ * search/typed-path field (only when an engine is selected), then the
+ * folder list filling the rest of the page down to the physical bottom,
+ * with 111's bottom bar (status / New Folder… / Use) overlaid on it. The
+ * create callback and the dismissal live in [actions] (111's `onCreated`
+ * and `dismissSheet`); while a write runs, [sheet]'s `dismissBlocked`
+ * keeps it up.
+ *
+ * 112's [nav] owns the field's and the rail's state; its typed-path state
+ * overrides the status label and the Use button (111's own values apply
+ * in `Idle`/`Failed`), and row taps browse through it so the query
+ * clears.
  */
 @Composable
 fun NewProjectScreen(
     sheet: PageSheetScope,
     controller: FolderBrowserController,
     actions: FolderBrowserActions,
+    nav: FolderNavState,
     modifier: Modifier = Modifier,
 ) {
+    // 112: row taps navigate (clearing the query and the typed-path
+    // state) instead of loading directly; the tap guard and the path
+    // arithmetic stay in the controller.
+    SideEffect { controller.onNavigate = nav::navigate }
     Column(
         modifier
             .fillMaxSize()
@@ -120,18 +134,34 @@ fun NewProjectScreen(
             onClose = { sheet.dismiss(animated = true) },
         )
         // 112 inserts the locations rail and the path field here.
+        LaunchedEffect(controller.engine?.id, controller.engine?.online) {
+            nav.onDevice(controller.engine?.id, controller.engine?.online == true)
+        }
+        if (controller.engine != null) {
+            FolderLocationsHeader(
+                chips = nav.chips,
+                selected = nav.selectedChip,
+                query = nav.query,
+                enabled = !actions.submitting,
+                onPickLocation = nav::onPickLocation,
+                onQueryChange = nav::onQueryChange,
+                onGo = nav::onGo,
+            )
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            FolderList(controller)
+            FolderList(controller, nav)
             // 111's bottom stack, overlaid bottom-centre on the list (no
             // background — rows scroll underneath; 110's 160 dp bottom
-            // content padding keeps the last row reachable).
+            // content padding keeps the last row reachable). 112's
+            // typed-path state overrides the status and the Use button;
+            // `null` keeps 111's own values.
             FolderBrowserBottomBar(
-                status = controller.status,
-                useTitle = actions.useTitle,
-                useEnabled = actions.canAct || actions.creatingProject,
+                status = nav.statusOverride ?: controller.status,
+                useTitle = nav.useOverride?.title ?: actions.useTitle,
+                useEnabled = (nav.useOverride?.enabled ?: actions.canAct) || actions.creatingProject,
                 useBusy = actions.creatingProject,
                 newFolderEnabled = actions.canAct,
-                onUse = actions::createProject,
+                onUse = nav.useOverride?.onClick ?: actions::createProject,
                 onNewFolder = { actions.promptForFolder() },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
@@ -270,6 +300,12 @@ internal fun engineMenu(controller: FolderBrowserController): Menu = Menu(
  * directory, 35 dp of top padding and 160 dp + the navigation-bar inset
  * of bottom padding so the last rows scroll clear of 111's bottom bar.
  *
+ * 112: the rows come from `nav.rows` — plain text filters them
+ * (prefix-first), `..` hides while a plain filter is active (it stays for
+ * a path-shaped query, which never filters), and a non-blank plain query
+ * with no survivor shows the centred `No folders match` line instead of
+ * the card, 20 dp below the list top.
+ *
  * The section key carries the listing serial, so every new listing gives
  * every row a new key: the LazyColumn keeps the old first-visible index
  * and offset, clamped to the new item count — UIKit's content-offset
@@ -277,29 +313,58 @@ internal fun engineMenu(controller: FolderBrowserController): Menu = Menu(
  * `scrollToItem(0)`; no `Modifier.animateItem()`.
  */
 @Composable
-private fun FolderList(controller: FolderBrowserController) {
+private fun FolderList(controller: FolderBrowserController, nav: FolderNavState) {
     val listState = rememberLazyListState()
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val listing = controller.listing
+    val rows = listing?.let { nav.rows(it.entries, { entry -> entry.name }, { entry -> entry.isDir }) }
+    val noMatch = rows?.noMatch == true
+    val items: List<FolderRow> = if (listing == null || rows == null) {
+        controller.rows
+    } else {
+        buildList {
+            if (controller.listingHasParent && rows.parentAllowed) add(FolderRow.Parent)
+            for (entry in rows.folders) add(FolderRow.Folder(entry.name, entry.isRepo))
+        }
+    }
     LazyColumn(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
             .testTag("folder-list"),
         contentPadding = PaddingValues(
-            top = FolderBrowserTokens.ListTop,
+            top = if (noMatch) FolderHeaderTokens.NoMatchTop else FolderBrowserTokens.ListTop,
             bottom = FolderBrowserTokens.ListBottom + navBottom,
         ),
     ) {
-        val serial = controller.listingSerial
-        groupedSection(
-            key = "folders-$serial",
-            header = null,
-            items = controller.rows,
-            itemKey = { it.key },
-        ) { row, position ->
-            FolderRowView(row, position) { controller.tap(row) }
+        if (noMatch) {
+            item(key = "folder-no-match") { NoFoldersMatchLine() }
+        } else {
+            val serial = controller.listingSerial
+            groupedSection(
+                key = "folders-$serial",
+                header = null,
+                items = items,
+                itemKey = { it.key },
+            ) { row, position ->
+                FolderRowView(row, position) { controller.tap(row) }
+            }
         }
     }
+}
+
+/** 112: the filtered list's empty state — Geist Regular 13, `secondary`, centred. */
+@Composable
+private fun NoFoldersMatchLine() {
+    val palette = RobocoTheme.palette
+    val ts = LocalTypeScale.current
+    BasicText(
+        FolderHeaderTokens.NoMatch,
+        Modifier
+            .fillMaxWidth()
+            .testTag("folder-no-match"),
+        style = uiStyle(Face.Sans, ts.fixed(13f), palette.secondary).copy(textAlign = TextAlign.Center),
+    )
 }
 
 /**
@@ -382,5 +447,7 @@ internal fun PageSheetScope.NewProjectSheetBody(onCreated: (String) -> Unit) {
         onCreated = onCreated,
         dismissSheet = { dismiss(animated = true) },
     )
-    NewProjectScreen(sheet = this, controller = controller, actions = actions)
+    val calls = remember { CoreFolderCalls({ app.clientOrNull() }, writeApi, FfiHostPaths) }
+    val nav = rememberFolderNavState(controller, actions, calls)
+    NewProjectScreen(sheet = this, controller = controller, actions = actions, nav = nav)
 }
