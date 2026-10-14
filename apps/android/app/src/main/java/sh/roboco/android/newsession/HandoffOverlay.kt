@@ -19,7 +19,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawOutline
@@ -46,7 +45,6 @@ import sh.roboco.android.core.Face
 import sh.roboco.android.design.HandoffTimings
 import sh.roboco.android.design.LocalPalette
 import sh.roboco.android.design.LocalTypeScale
-import sh.roboco.android.design.Motion
 import sh.roboco.android.design.SmoothRoundedShape
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.shell.HandoffAnimator
