@@ -224,7 +224,15 @@ fun WorkingIndicator(
                 val left = WorkingIndicatorDefaults.LabelX.toPx()
                 val top = (size.height - textLayout.size.height) / 2f
                 WorkingIndicatorProbe.lastLabelTopLeftPx = Offset(left, top)
-                WorkingIndicatorProbe.lastLabelFontSizePx = style.fontSize.toPx()
+                // The size the label was laid out at: through the measurer's
+                // density (the composition's LocalDensity), not this
+                // CacheDrawScope's — that one only carries density/fontScale
+                // floats and re-derives the platform's non-linear sp curve,
+                // so under a custom LocalDensity (a linear font-scale
+                // override) it reports a size the text never used
+                // (13.5 sp at 1.5 → 21.0 via the 1.5 table, vs the drawn 20.25).
+                WorkingIndicatorProbe.lastLabelFontSizePx =
+                    with(textLayout.layoutInput.density) { style.fontSize.toPx() }
 
                 onDrawWithContent {
                     drawContent() // the trailer glyph child

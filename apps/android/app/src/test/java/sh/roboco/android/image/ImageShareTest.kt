@@ -19,6 +19,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -54,6 +55,17 @@ class ImageShareTest {
 
     @Test
     fun shareSendsThePngThroughTheFileProviderWithAGrantAndAClip() = runBlocking {
+        // androidx.core's FileProvider matches a file to its root with
+        // `canonicalPath.startsWith(rootPath + '/')` (SimplePathStrategy.
+        // belongsToRoot, a hard-coded '/'). On a Windows host the canonical
+        // paths use '\', so getUriForFile throws "Failed to find configured
+        // root", writePng returns null and no chooser starts. A host-JVM
+        // limit only (Android paths always use '/'): run on POSIX hosts.
+        assumeTrue(
+            "skipped on a Windows host: androidx.core FileProvider (SimplePathStrategy.belongsToRoot) " +
+                "hard-codes '/' when matching a file to its root; runs on POSIX hosts (ubuntu CI)",
+            File.separatorChar == '/',
+        )
         // An Activity context, as the app passes LocalContext (the chooser
         // needs no NEW_TASK from one).
         val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()

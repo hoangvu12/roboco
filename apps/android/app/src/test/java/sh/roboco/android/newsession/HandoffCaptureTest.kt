@@ -163,7 +163,9 @@ class HandoffCaptureTest {
                         Modifier
                             .fillMaxSize()
                             .drawWithContent {
-                                screen.record(this, layoutDirection, size.toIntSize()) {
+                                // DrawScope's record, as production: the read
+                                // below replays it outside the draw pass.
+                                screen.record(size.toIntSize()) {
                                     this@drawWithContent.drawContent()
                                 }
                                 drawLayer(screen)

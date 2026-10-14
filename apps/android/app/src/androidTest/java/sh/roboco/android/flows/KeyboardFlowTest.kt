@@ -75,6 +75,18 @@ class KeyboardFlowTest {
         // half, so the release closes it.
         device.swipe(x, (windowH * 0.4f).toInt(), x, windowH - imeBottom / 4, 40)
         compose.waitUntil(timeoutMillis = 1_000) { !imeVisible() }
+        // The platform reports the IME hidden as soon as the settle finishes
+        // the controller; the collapse comes several hops later: the insets
+        // dispatch (a view traversal) reaches Compose's isImeVisible, the
+        // InteractiveImeDismiss.active flip and 56's blur effect clear the
+        // focus, and a recomposition strips the chips (isCard false). The
+        // test's idle sync does not wait for a pending traversal, so on the
+        // ~1 frame/s CI main thread the assert ran before the blur (run on
+        // 4d59594c: the card's chip still at t = 2210 px). Wait for the
+        // capsule itself.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("composer-chip-model").fetchSemanticsNodes().isEmpty()
+        }
         compose.onNodeWithTag("composer-chip-model").assertDoesNotExist() // the capsule
 
         // Refocus, then a drag ending three quarters in: above half, so
