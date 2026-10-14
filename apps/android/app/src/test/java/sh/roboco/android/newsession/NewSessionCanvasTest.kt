@@ -526,6 +526,23 @@ class NewSessionCanvasTest {
         assertFalse("the orange is gone", hasColor("new-session-mark", ClaudeOrange))
     }
 
+    // ── the card morph ───────────────────────────────────────────────
+
+    /**
+     * `chipsAlwaysVisible` (always a card) starts the morph at 1 — no
+     * capsule-to-card animation ever runs on this page.
+     */
+    @Test
+    fun theCardMorphStartsSettledAtOneOnTheFirstFrame() {
+        compose.mainClock.autoAdvance = false
+        mountSheetCanvas()
+        Snapshot.sendApplyNotifications()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        assertTrue("chipsAlwaysVisible", canvasMorph!!.alwaysCard)
+        assertEquals(1f, compose.runOnUiThread { canvasMorph!!.progress }, 1e-3f)
+    }
+
     // ── tap to dismiss ──────────────────────────────────────────────────
 
     @Test

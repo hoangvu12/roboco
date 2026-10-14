@@ -70,7 +70,7 @@ class NewSessionLayoutTest {
     // ── the wallpaper ────────────────────────────────────────────────────
 
     @Test
-    fun wallpaperHeightIs72PercentOfTheImelessPageHeightCappedAt760() {
+    fun wallpaperHeightIs72PercentOfTheImeLessPageHeightCappedAt760() {
         eq(617.04f, NewSessionLayout.wallpaperHeight(857f))
         eq(760f, NewSessionLayout.wallpaperHeight(1200f))
         // The tablet column: 0.72 × 800.
