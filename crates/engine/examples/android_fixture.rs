@@ -57,7 +57,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use roboco_doc::SessionCommandPayload;
 use roboco_engine::{EngineCore, EngineListener, EngineProfile, HarnessId, pairing, smoke_registry};
-use roboco_proto::{RunRequest, SandboxLevel};
+use roboco_proto::{ReasoningLevel, RunRequest, SandboxLevel};
 use roboco_rpc::{RpcReply, RpcService, methods};
 
 /// The mock-harness env knobs per profile (§5 of the ticket): `main`
@@ -74,7 +74,12 @@ const PROFILE_ENV: &[(&str, &[(&str, &str)])] = &[
             ("ROBOCO_MOCK_THINKING", "1"),
         ],
     ),
-    ("slow", &[("ROBOCO_MOCK_DELAY_MS", "150"), ("ROBOCO_MOCK_REPEAT", "4")]),
+    // 12 repeats × the 7-event script + Done ≈ 85 events × 150 ms ≈ 12.8 s.
+    // At 4 (≈ 4.4 s) the reply ended before the emulator finished injecting
+    // a back-swipe or typing a queued message (cancelledSwipeBack…_gesture,
+    // queueWhileWorking, run 38531061823); 12.8 s still fits the tests'
+    // 20 s / 40 s / 60 s completion waits.
+    ("slow", &[("ROBOCO_MOCK_DELAY_MS", "150"), ("ROBOCO_MOCK_REPEAT", "12")]),
     ("question", &[("ROBOCO_MOCK_QUESTION", "1")]),
 ];
 
@@ -501,8 +506,13 @@ fn seed_request(repo: &Path, chat: &SeedChat) -> RunRequest {
     RunRequest {
         prompt: "Seed the fixture transcript".into(),
         harness: None,
-        model: None,
-        reasoning: None,
+        // chat-deploy carries a model + effort (the Claude-mirroring mock
+        // model, efforts Low…XHigh): the session's effort chip only shows
+        // for a chat whose config names a reasoning level, and the engine
+        // backfills that config from the first run's request — with
+        // `None` here effortPickerInSession never found `composer-chip-effort`.
+        model: (chat.id == "chat-deploy").then(|| "mock-fable-5".to_string()),
+        reasoning: (chat.id == "chat-deploy").then_some(ReasoningLevel::High),
         model_options: Default::default(),
         cwd: chat
             .cwd

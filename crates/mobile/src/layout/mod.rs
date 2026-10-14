@@ -92,7 +92,12 @@ pub struct FaceData {
 /// Registered faces + fallback measurer, shared by every transcript.
 #[derive(uniffi::Object)]
 pub struct TextSystem {
-    faces: Vec<(FaceRole, Arc<Vec<u8>>)>,
+    /// Leaked once here: every `Typography` (one per transcript engine, one
+    /// per `debug_line_starts` call) registers these slices without copying.
+    /// `FontBook::add_face` leaked a fresh copy of every face per book — the
+    /// line-break accuracy matrix grew ~1.6 MB per case until the
+    /// lowmemorykiller took the process (android-app#30, run 38531061823).
+    faces: Vec<(FaceRole, &'static [u8])>,
     measurer: Option<Arc<dyn PlatformMeasurer>>,
 }
 
@@ -101,7 +106,13 @@ impl TextSystem {
     #[uniffi::constructor]
     pub fn new(faces: Vec<FaceData>, measurer: Option<Arc<dyn PlatformMeasurer>>) -> Arc<Self> {
         Arc::new(Self {
-            faces: faces.into_iter().map(|f| (f.role, Arc::new(f.bytes))).collect(),
+            faces: faces
+                .into_iter()
+                .map(|f| {
+                    let bytes: &'static [u8] = Box::leak(f.bytes.into_boxed_slice());
+                    (f.role, bytes)
+                })
+                .collect(),
             measurer,
         })
     }

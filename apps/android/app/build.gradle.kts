@@ -385,7 +385,10 @@ android {
         targetSdk = 36 // compile 37; target stays 36 for local-network permission
         versionCode = appVersionCode
         versionName = appVersionName
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // android-app#30: AndroidJUnitRunner + the in-process device filters
+        // (@TabletOnly / @PhysicalDeviceOnly / @Tour / @Ignore) — see
+        // RobocoTestRunner for why not a comma-separated `notAnnotation`.
+        testInstrumentationRunner = "sh.roboco.android.RobocoTestRunner"
         // android-app#30: the flow suite's isolation — each instrumented
         // test runs in its own process with wiped app data, so every test
         // starts unpaired and clean (the rig re-pairs via the `pair`

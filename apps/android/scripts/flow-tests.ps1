@@ -81,12 +81,13 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   }
 
-  # 3. The suite (the @Tour recordings and the device bench run elsewhere).
+  # 3. The suite. The device filters (@Tour, @TabletOnly, @PhysicalDeviceOnly,
+  #    @Ignore) live in the app's RobocoTestRunner: a comma-separated
+  #    notAnnotation argument arrived cut at its first comma on CI.
   .\gradlew.bat :app:connectedDebugAndroidTest `
     "-Pandroid.testInstrumentationRunnerArguments.fixtureMain=http://127.0.0.1:$MainControl" `
     "-Pandroid.testInstrumentationRunnerArguments.fixtureSlow=http://127.0.0.1:$SlowControl" `
-    "-Pandroid.testInstrumentationRunnerArguments.fixtureQuestion=http://127.0.0.1:$QuestionControl" `
-    "-Pandroid.testInstrumentationRunnerArguments.notAnnotation=sh.roboco.android.flows.Tour,sh.roboco.android.flows.TabletOnly,sh.roboco.android.flows.PhysicalDeviceOnly"
+    "-Pandroid.testInstrumentationRunnerArguments.fixtureQuestion=http://127.0.0.1:$QuestionControl"
   exit $LASTEXITCODE
 }
 finally {

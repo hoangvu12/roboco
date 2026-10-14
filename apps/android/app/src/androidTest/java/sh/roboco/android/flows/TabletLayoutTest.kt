@@ -61,7 +61,7 @@ class TabletLayoutTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
         }
-        val row = compose.onNodeWithTag("session-chat-veil")
+        val row = compose.onNode(FlowSemantics.sessionRow("chat-veil"))
         row.performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
@@ -73,7 +73,7 @@ class TabletLayoutTest {
         )
         portrait()
         // Another session replaces it in the main column.
-        compose.onNodeWithTag("session-chat-deploy").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("Wrangler deploy hygiene").fetchSemanticsNodes().isNotEmpty()
         }
@@ -90,7 +90,7 @@ class TabletLayoutTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("session-chat-deploy").performClick()
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Wrangler deploy hygiene").fetchSemanticsNodes().isNotEmpty()
         }

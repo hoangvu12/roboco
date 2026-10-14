@@ -2,8 +2,10 @@ package sh.roboco.android.flows
 
 import android.graphics.Bitmap
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.test.platform.app.InstrumentationRegistry
+import sh.roboco.android.shell.ScopedIds
 
 /**
  * Shared semantics matchers and artefact helpers for the instrumented
@@ -28,6 +30,25 @@ object FlowSemantics {
 
     /** [startsWith] over "You: " — the optimistic echo + settled user rows. */
     fun userEcho(): SemanticsMatcher = startsWith("You: ")
+
+    /**
+     * A session row by the engine's **raw** chat id. `SessionRow` tags
+     * `session-<vm.id>`, and on a paired phone `vm.id` is the scoped id
+     * (`engine:v1:…`, `merge_engine` in `crates/mobile-client/src/workspace/view.rs`)
+     * — so `onNodeWithTag("session-chat-veil")` never matches a live
+     * engine's row (the Robolectric fixtures hand-build raw ids, which is
+     * why they do). This decodes the tag's id with [ScopedIds.rawId].
+     */
+    fun sessionRow(rawChatId: String): SemanticsMatcher =
+        SemanticsMatcher("session row for raw chat id '$rawChatId'") { node ->
+            val tag = node.config.getOrNull(SemanticsProperties.TestTag)
+            if (tag == null || !tag.startsWith("session-")) {
+                false
+            } else {
+                val id = tag.removePrefix("session-")
+                id == rawChatId || ScopedIds.rawId(id) == rawChatId
+            }
+        }
 
     /**
      * Writes a PNG artefact into the app's external files dir, where the
