@@ -1,5 +1,6 @@
 package sh.roboco.android.design.glass
 
+import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -8,7 +9,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -27,7 +27,10 @@ import kotlin.math.sin
  * It rotates in **8 discrete steps per 1000 ms** — `step =
  * (frameTimeMs / 125) % 8` — with the head spoke at full alpha and each
  * spoke behind it (counter-rotation order) 0.1 dimmer, floored at 0.3.
- * The per-frame loop is driven by [withFrameMillis]: with a frozen test
+ * The per-frame loop is driven by [withInfiniteAnimationFrameMillis] (an
+ * endless loop must be cancellable by an InfiniteAnimationPolicy: ui-test
+ * cancels it under an auto-advancing clock, which otherwise never idles;
+ * no policy in the app, so it spins as before): with a frozen test
  * clock (Roborazzi, `mainClock.autoAdvance = false`) no frame ever arrives
  * and the spinner sits at step 0, so goldens stay deterministic; in the
  * gallery and on a device it spins. It keeps rotating under Reduce Motion,
@@ -38,7 +41,7 @@ internal fun ActivitySpinner(ink: Color, modifier: Modifier = Modifier.size(20.d
     var step by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
-            val frameTimeMs = withFrameMillis { it }
+            val frameTimeMs = withInfiniteAnimationFrameMillis { it }
             step = ((frameTimeMs / 125) % 8).toInt()
         }
     }

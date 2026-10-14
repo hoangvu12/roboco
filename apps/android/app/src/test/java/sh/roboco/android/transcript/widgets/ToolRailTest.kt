@@ -204,7 +204,9 @@ class ToolRailTest {
         // The last row has no continuation: nothing extends below its branch.
         assertNull(paths.continuation(2))
         // The branch: quad ≈ 10.957 dp + line 10.6875 dp = 21.644 dp ± 0.05.
-        assertEquals(21.644f * 3f, paths.length(RailPart.Branch, 0), 0.15f)
+        // ±0.25 px (decision, round 31): PathMeasure flattens the quad into
+        // segments and comes out ~0.21 px short of the analytic length.
+        assertEquals(21.644f * 3f, paths.length(RailPart.Branch, 0), 0.25f)
     }
 
     // ------------------------------------------------ the covers (draw order)

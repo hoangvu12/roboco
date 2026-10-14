@@ -179,10 +179,8 @@ class JumpToLatestButtonTest {
     // ------------------------------------------------------- the motion
 
     /**
-     * The show spring at 96 ms of clock time: mid-flight (the ticket's
-     * 0.58 ± 0.05, widened to the table's p at 64–96 ms = 0.53–0.78 for
-     * the one-to-two-frame launch phase), then settled at 1 after 600 ms
-     * more.
+     * The show spring at 96 ms of its own play time: mid-flight (the
+     * ticket's 0.58 ± 0.05), then settled at 1 after 600 ms more.
      */
     @Test
     fun theShowSpringIsMidFlightAt96msAndSettlesToOne() {
@@ -190,11 +188,25 @@ class JumpToLatestButtonTest {
         var visible by mutableStateOf(false)
         host { TapThroughFixture(visible, underTaps = {}, motion = motion) }
 
+        // Sample at 96 ms of the SPRING's play time, not of clock time after
+        // applyRule() (decision, round 31): applyRule's three fixed frames
+        // could already run part of the spring, so p was read ~144 ms in
+        // (0.864 on CI). Step single frames from the write until the spring
+        // is running (`isRunning` flips when animateTo launches), then one
+        // frame is its play time 0 (its first withFrameNanos), then 96 ms.
         visible = true
-        applyRule()
+        Snapshot.sendApplyNotifications()
+        var launchFrames = 0
+        while (!motion.progress.isRunning) {
+            compose.mainClock.advanceTimeByFrame()
+            assertTrue("the show spring never started", ++launchFrames <= 5)
+        }
+        compose.mainClock.advanceTimeByFrame() // the spring's first frame: play time 0
         compose.mainClock.advanceTimeBy(96)
         val p = motion.progress.value
-        assertTrue("mid-flight at 96 ms (was $p)", p in 0.52f..0.80f)
+        // The ticket's 0.58 ± 0.05 (analytic IosSpring(0.35, 0.80) at 96 ms
+        // ≈ 0.582) — no launch-phase widening now that the sample is exact.
+        assertTrue("mid-flight at 96 ms of play (was $p)", p in 0.53f..0.63f)
         assertTrue(motion.progress.isRunning)
         assertTrue(motion.target)
 

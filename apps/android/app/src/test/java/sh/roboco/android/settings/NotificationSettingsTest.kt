@@ -690,10 +690,13 @@ class NotificationSettingsTest {
         compose.onNodeWithTag("alert").assertExists()
         compose.onNodeWithText("Notifications are off").assertExists()
         compose.onNodeWithText("Allow notifications for Roboco in Android settings.").assertExists()
-        // Cancel on the leading side, Open Settings on the trailing side.
+        // Stacked (decision, round 31: the stacking rule mirrors iOS): on the
+        // 320 dp card "Open Settings" is wider than the 108 dp side-by-side
+        // label limit (AlertRules.sideBySideLabelMaxDp), so the buttons stack
+        // with the cancel action last — Open Settings above Not Now.
         val notNow = compose.onNodeWithText("Not Now").getUnclippedBoundsInRoot()
         val open = compose.onNodeWithText("Open Settings").getUnclippedBoundsInRoot()
-        assertTrue("Not Now leads: $notNow vs $open", notNow.right <= open.left)
+        assertTrue("Open Settings stacks above Not Now: $open vs $notNow", open.bottom <= notNow.top)
         assertTrue("the pref is unchanged while Denied", prefs().enabled)
         switchNode(NotificationCopy.MasterId).assertIsOn()
         assertEquals("no request while Denied", 0, registry.requestCodes.size)

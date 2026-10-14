@@ -266,10 +266,10 @@ class NewSessionCanvasTest {
     private fun bounds(tag: String): DpRect = compose.onNodeWithTag(tag).getBoundsInRoot()
 
     /** dp comparison at ±1 px (the ticket's tolerance). */
-    private fun assertDp(what: String, expected: Float, actual: Dp) {
+    private fun assertDp(what: String, expected: Float, actual: Dp, tolerancePx: Float = 1f) {
         val e = expected * density
         val a = actual.value * density
-        assertTrue("$what: $actual vs ${expected}dp (±1 px)", abs(e - a) <= 1f)
+        assertTrue("$what: $actual vs ${expected}dp (±$tolerancePx px)", abs(e - a) <= tolerancePx)
     }
 
     private fun assertPx(what: String, expected: Float, actual: Float) {
@@ -522,7 +522,9 @@ class NewSessionCanvasTest {
         assertEquals(2, textLayout("new-session-headline").lineCount)
         // The hero column is 34 + 14 + 2 × 28.6 dp tall.
         val hero = bounds("new-session-hero")
-        assertDp("two-line hero height", 105.2f, hero.bottom - hero.top)
+        // ±2 px (decision, round 31): each 28.6 dp line rounds to whole px
+        // (85.8 → 85 at 3 px/dp), so two lines can land 1.6 px short.
+        assertDp("two-line hero height", 105.2f, hero.bottom - hero.top, tolerancePx = 2f)
     }
 
     // ── the mark ────────────────────────────────────────────────────────
