@@ -5,16 +5,23 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import sh.roboco.android.design.LocalBottomChrome
+import sh.roboco.android.design.glass.LocalHazeState
 import sh.roboco.android.sessions.LocalSessionListOpener
 import sh.roboco.android.sessions.SessionListOpener
 import sh.roboco.android.sessions.SessionsScreen
@@ -28,7 +35,7 @@ import sh.roboco.android.shell.ShellRouteContent
 /**
  * Ticket 33's sidebar slot content (android-ui-parity #105) — the port of
  * iOS `SidebarViewController` (`ios:Shell/SplitRootController.swift:194-298`)
- * without its toolbar:
+ * with 107's bottom toolbar filling its slot:
  *
  * - the phone's Sessions front page (46) inside a **sidebar-owned
  *   [NavStack]** — folder pages (Pinned, a section, Archived) push inside
@@ -53,7 +60,12 @@ import sh.roboco.android.shell.ShellRouteContent
  * (UIKit cross-fades `toolbarItems` in place; a toolbar inside the root
  * entry would slide away on push). It receives the sidebar's [NavStack]
  * instance — 107's options menu must bind the sidebar stack, and
- * `LocalNavStack` is not provided outside the host. Empty until 107 lands.
+ * `LocalNavStack` is not provided outside the host — composed inside a
+ * full-width, [SidebarChromeMetrics.ToolbarHeight]-high placement whose
+ * bottom sits `barBottom` above the window bottom, and sampling the host
+ * through [LocalHazeState] (the slot's glass blurs the list scrolling
+ * under it; the toolbar is a sibling **after** the `hazeSource`, never
+ * inside the source it samples — 07's rule).
  *
  * `shown` is 33's target visibility: `active = shown` turns the stack's
  * predictive-back handler off while the sidebar is hidden, so system back
@@ -69,8 +81,8 @@ import sh.roboco.android.shell.ShellRouteContent
  *   `openSession` replaces the detail column.
  * @param topInset the status-bar inset; tests pass 24 dp explicitly
  *   because Robolectric reports no insets.
- * @param toolbar 107's `SidebarToolbar` overlay; a placeholder capsule in
- *   the gallery until 107 lands.
+ * @param toolbar 107's `SidebarToolbar` overlay — the bottom toolbar's
+ *   `[gear ⋯] · +` row; the placeholder is gone since 107 landed.
  */
 @Composable
 fun Sidebar(
@@ -95,27 +107,47 @@ fun Sidebar(
         }
     }
     val insets = rememberSidebarBottomInsets()
+    // 107: the haze state the toolbar's capsule blurs — the host (the
+    // list, the search field, the pushed folders) is its one source,
+    // exactly like 26's tab bar around the tab content.
+    val toolbarHaze = rememberHazeState()
     CompositionLocalProvider(
         LocalSessionListOpener provides opener,
         LocalBottomChrome provides insets,
     ) {
         Box(modifier.fillMaxSize().testTag("sidebar")) {
-            // No bottomChrome here: the tablet sidebar passes no chrome
-            // (24 §Bottom chrome) — 107 wraps the host in its own
-            // hazeSource, which is why the toolbar stays a sibling below.
-            NavStackHost(
-                stack = state.stack,
-                active = shown,
-                modifier = Modifier.fillMaxSize(),
-            ) { entry ->
-                when (entry.route) {
-                    SidebarRootRoute -> SidebarRoot(state, currentChatId, topInset)
-                    // 45's folder pages — nothing else is ever pushed here.
-                    else -> ShellRouteContent(entry.route)
+            // The host is the one hazeSource of the toolbar's state; the
+            // toolbar itself composes after it, outside the source it
+            // samples. The tablet sidebar passes no bottomChrome to the
+            // host (24 §Bottom chrome).
+            Box(Modifier.fillMaxSize().hazeSource(toolbarHaze)) {
+                NavStackHost(
+                    stack = state.stack,
+                    active = shown,
+                    modifier = Modifier.fillMaxSize(),
+                ) { entry ->
+                    when (entry.route) {
+                        SidebarRootRoute -> SidebarRoot(state, currentChatId, topInset)
+                        // 45's folder pages — nothing else is ever pushed here.
+                        else -> ShellRouteContent(entry.route)
+                    }
                 }
             }
-            // 107 draws, places and fades it over the host.
-            toolbar(state.stack)
+            // 107's toolbar slot: full-width, SidebarChromeMetrics.ToolbarHeight
+            // high, its bottom barBottom above the window bottom — the
+            // placement is this ticket's (105's single source), the toolbar
+            // adds no offset of its own.
+            CompositionLocalProvider(LocalHazeState provides toolbarHaze) {
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(bottom = insets.barBottom)
+                        .height(SidebarChromeMetrics.ToolbarHeight),
+                ) {
+                    toolbar(state.stack)
+                }
+            }
         }
     }
 }

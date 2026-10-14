@@ -234,12 +234,15 @@ private fun AppRootWithPairing(
                     shell = tablet,
                     sidebar = { shown ->
                         // 105: the sidebar pane (its rows read
-                        // `tablet.currentChatId` for the highlight); 107's
-                        // toolbar slot stays empty until it lands.
+                        // `tablet.currentChatId` for the highlight);
+                        // 107: the bottom toolbar fills the slot — gear
+                        // (Settings), ⋯ (the options menu bound to the
+                        // sidebar's own stack) and the accent +.
                         Sidebar(
                             state = sidebarState,
                             currentChatId = tablet.currentChatId,
                             shown = shown,
+                            toolbar = { stack -> SidebarToolbar(stack) },
                         )
                     },
                     // 106: the pane renders the router's persistent detail

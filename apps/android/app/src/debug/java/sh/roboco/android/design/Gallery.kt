@@ -88,6 +88,7 @@ import sh.roboco.android.shell.NewSessionAccessoryGallerySection
 import sh.roboco.android.shell.PageSheetGallerySection
 import sh.roboco.android.shell.SettingsDialogGallerySection
 import sh.roboco.android.shell.TabBarGallerySection
+import sh.roboco.android.shell.SidebarToolbarGallerySection
 import sh.roboco.android.shell.tablet.SidebarGallerySection
 import sh.roboco.android.sheets.TextSheetsGallerySection
 import sh.roboco.android.image.ImageViewerGallerySection
@@ -715,6 +716,14 @@ object Gallery {
         // bubble flight over the fake chat, driven by the Play capsule
         // (and the Force reduce motion toggle).
         GallerySection("Handoff", GalleryLayout.Fill, 852) { HandoffGallerySection() },
+        // Ticket 107 (tablet sidebar bottom toolbar): the `[gear ⋯]` glass
+        // capsule and the accent `+` in 360 × 200 dp frames — at rest, the
+        // 0.5 folder-push fade, the ellipsis held pressed (glassPress), the
+        // ⋯ menu opened from the ellipsis (46's rows over a recorder, inside
+        // a GlassMenuHost) and RTL.
+        GallerySection("Sidebar toolbar", GalleryLayout.Scroll, screenshotHeightDp = 900) {
+            SidebarToolbarGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

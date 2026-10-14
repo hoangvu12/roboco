@@ -28,13 +28,14 @@ import sh.roboco.android.shell.NavStack
 data object SidebarRootRoute : NavRoute
 
 /**
- * The sidebar's bottom-chrome numbers (105 §Geometry) — a mirror of ticket
- * 107's toolbar geometry, held here **only** so the list's bottom padding
- * is right before 107 lands: the toolbar row is 44 dp tall and its bottom
+ * The sidebar's bottom-chrome numbers (107 §Geometry): a mirror of the
+ * toolbar geometry, held here **only** so the list's bottom padding is
+ * right before 107 lands: the toolbar row is 44 dp tall and its bottom
  * sits 12 dp above the navigation-bar inset, so the list reserves
  * `n + 12 + 44` (UIKit's `adjustedContentInset.bottom`, no extra gap).
- * Once 107 lands, [rememberSidebarBottomInsets] should call
- * `SidebarToolbarDefaults.reservedBottom()` so there is one source.
+ * 107 landed with these as the single source: its toolbar fills the slot
+ * and adds no offset of its own — a retune edits this object and
+ * [rememberSidebarBottomInsets], never a second number in 107's files.
  */
 object SidebarChromeMetrics {
 
