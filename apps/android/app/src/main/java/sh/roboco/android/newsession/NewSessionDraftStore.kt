@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import sh.roboco.android.composer.DEFAULT_HARNESS
 import sh.roboco.android.composer.DraftKey
 import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.StagedImage
@@ -201,7 +202,7 @@ class NewSessionDraftStore(
                 forgottenIds.addAll(deviceIds)
                 resetEpochValue++
             }
-            lastDraft = NewSessionDraft(harness = launchHarness() ?: "claude-code")
+            lastDraft = NewSessionDraft(harness = launchHarness() ?: DEFAULT_HARNESS)
             text = ""
             images = emptyList()
             ModelCatalogCache.clear()

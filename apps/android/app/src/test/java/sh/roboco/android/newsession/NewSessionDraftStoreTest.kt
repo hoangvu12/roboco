@@ -24,6 +24,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.rules.TemporaryFolder
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import sh.roboco.android.composer.DraftKey
@@ -343,9 +344,9 @@ class NewSessionDraftStoreTest {
             val f = newStore()
             f.store.lastDraft = NewSessionDraft(projectId = "A", hostId = "H1")
             advanceUntilIdle()
-            val before = snapshotOf(
-                projects = listOf(projectView("A", engineId = "E1", deviceId = "H1")),
-                devices = listOf(deviceView("H1", engineId = "E1", executionHost = true)),
+            val before = recordSnapshot(
+                projects = listOf(recordProject("A", engineId = "E1", deviceId = "H1")),
+                devices = listOf(recordDevice("H1", engineId = "E1", executionHost = true)),
             )
             f.store.forgetEngine("E1", before, enginesLeft = 1)
             advanceUntilIdle()
@@ -354,61 +355,4 @@ class NewSessionDraftStoreTest {
             assertNull(stored.hostId)
         }
     }
-
-    // ── fixtures ────────────────────────────────────────────────────────
-
-    private fun snapshotOf(
-        projects: List<uniffi.roboco_core.ProjectView>,
-        devices: List<uniffi.roboco_core.DeviceView>,
-    ): uniffi.roboco_core.WorkspaceSnapshot = uniffi.roboco_core.WorkspaceSnapshot(
-        revision = 1uL,
-        computedAtMs = 0L,
-        pinsReady = true,
-        synced = true,
-        front = uniffi.roboco_core.FrontPage(
-            pinned = emptyList(),
-            sections = emptyList(),
-            recent = emptyList(),
-            groups = emptyList(),
-        ),
-        projects = projects,
-        projectless = emptyList(),
-        pullRequests = uniffi.roboco_core.PullRequestGroups(emptyList(), emptyList(), emptyList()),
-        archived = emptyList(),
-        devices = devices,
-    )
-
-    private fun projectView(id: String, engineId: String, deviceId: String): uniffi.roboco_core.ProjectView =
-        uniffi.roboco_core.ProjectView(
-            id = id,
-            engineId = engineId,
-            name = id,
-            path = "/$id",
-            colorIndex = 0u,
-            deviceId = deviceId,
-            deviceName = null,
-            deviceOnline = true,
-            gitDetected = true,
-            createdAtMs = 0L,
-            groupKey = "repo:$id",
-            groupName = id,
-            indicator = uniffi.roboco_core.ChatIndicator.IDLE,
-            unseenCount = 0u,
-            sessions = emptyList(),
-        )
-
-    private fun deviceView(id: String, engineId: String, executionHost: Boolean): uniffi.roboco_core.DeviceView =
-        uniffi.roboco_core.DeviceView(
-            id = id,
-            engineId = engineId,
-            name = id,
-            platform = "windows",
-            online = true,
-            lastSeenMs = null,
-            version = null,
-            capabilities = emptyList(),
-            isExecutionHost = executionHost,
-            isSelf = false,
-            sessionCount = 0u,
-        )
 }

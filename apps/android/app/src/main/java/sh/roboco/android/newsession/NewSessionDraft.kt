@@ -3,6 +3,7 @@ package sh.roboco.android.newsession
 import android.util.Log
 import org.json.JSONException
 import org.json.JSONObject
+import sh.roboco.android.composer.DEFAULT_HARNESS
 
 /**
  * What a new session will be created with (android-ui-parity #92) — the
@@ -24,7 +25,7 @@ data class NewSessionDraft(
     val hostId: String? = null,
     val branch: String? = null,
     val worktree: Boolean = false,
-    val harness: String = "claude-code",
+    val harness: String = DEFAULT_HARNESS,
     val model: String? = null,
     val effort: String? = null,
 ) {
@@ -99,7 +100,7 @@ object NewSessionDraftJson : NewSessionDraftCodec {
                 hostId = string("hostId"),
                 branch = string("branch"),
                 worktree = o.optBoolean("worktree", false),
-                harness = string("harness") ?: "claude-code",
+                harness = string("harness") ?: DEFAULT_HARNESS,
                 model = string("model"),
                 effort = string("effort"),
             )

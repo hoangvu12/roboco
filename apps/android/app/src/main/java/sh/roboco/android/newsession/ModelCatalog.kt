@@ -4,6 +4,8 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.CoreException
+import uniffi.roboco_core.HarnessInfo
+import uniffi.roboco_core.ModelInfo
 import uniffi.roboco_core.fallbackHarnesses
 import uniffi.roboco_core.fallbackModels
 
@@ -32,6 +34,10 @@ interface ModelCatalogSource {
     suspend fun fetch(deviceId: String): List<ModelChoice>
 }
 
+/** One `HarnessInfo` × `ModelInfo` row of the pickers. */
+private fun choice(h: HarnessInfo, m: ModelInfo): ModelChoice =
+    ModelChoice(harness = h.id, harnessLabel = h.label, id = m.id, label = m.label, efforts = m.reasoningLevels)
+
 /**
  * The live [ModelCatalogSource] over the process's client, resolved at
  * call time (ticket 71's `RobocoApplication.clientOrNull()`): `null`
@@ -52,11 +58,7 @@ class CoreModelCatalogSource(
     private val builtInCache: List<ModelChoice> by lazy {
         fallbackHarnesses()
             .filter { it.offered }
-            .flatMap { h ->
-                fallbackModels(h.id).map { m ->
-                    ModelChoice(harness = h.id, harnessLabel = h.label, id = m.id, label = m.label, efforts = m.reasoningLevels)
-                }
-            }
+            .flatMap { h -> fallbackModels(h.id).map { m -> choice(h, m) } }
     }
 
     override fun builtIn(): List<ModelChoice> = builtInCache
@@ -68,9 +70,7 @@ class CoreModelCatalogSource(
             val out = ArrayList<ModelChoice>(harnesses.size * 4)
             for (h in harnesses) {
                 if (!h.offered) continue
-                for (m in c.listModels(deviceId, h.id)) {
-                    out += ModelChoice(harness = h.id, harnessLabel = h.label, id = m.id, label = m.label, efforts = m.reasoningLevels)
-                }
+                for (m in c.listModels(deviceId, h.id)) out += choice(h, m)
             }
             out
         } catch (cancelled: CancellationException) {

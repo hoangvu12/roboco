@@ -3,12 +3,6 @@ package sh.roboco.android.newsession
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.roboco_core.ChatIndicator
-import uniffi.roboco_core.DeviceView
-import uniffi.roboco_core.FrontPage
-import uniffi.roboco_core.ProjectView
-import uniffi.roboco_core.PullRequestGroups
-import uniffi.roboco_core.WorkspaceSnapshot
 
 /**
  * [toNewSessionOptions] (android-ui-parity #92) — the Options table:
@@ -19,81 +13,20 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * phone never — `isExecutionHost` is false for it).
  *
  * Plain JUnit, like ticket 40's workspace tests: the generated UniFFI
- * records are data classes whose construction touches no JNA.
+ * records are data classes whose construction touches no JNA (the
+ * fixtures live in `RecordFixtures.kt`, shared with the store tests).
  */
 class NewSessionOptionsTest {
 
-    private fun project(
-        id: String,
-        engineId: String = "E1",
-        deviceId: String = "dev1",
-        deviceName: String? = null,
-        online: Boolean = true,
-        git: Boolean = true,
-        groupKey: String = "repo:$id",
-        groupName: String = "group $id",
-        colorIndex: UInt = 0u,
-    ) = ProjectView(
-        id = id,
-        engineId = engineId,
-        name = "Project $id",
-        path = "C:\\repo\\$id",
-        colorIndex = colorIndex,
-        deviceId = deviceId,
-        deviceName = deviceName,
-        deviceOnline = online,
-        gitDetected = git,
-        createdAtMs = 5L,
-        groupKey = groupKey,
-        groupName = groupName,
-        indicator = ChatIndicator.IDLE,
-        unseenCount = 2u,
-        sessions = emptyList(),
-    )
-
-    private fun device(
-        id: String,
-        engineId: String = "E1",
-        name: String = "Device $id",
-        executionHost: Boolean = true,
-        online: Boolean = true,
-    ) = DeviceView(
-        id = id,
-        engineId = engineId,
-        name = name,
-        platform = "windows",
-        online = online,
-        lastSeenMs = null,
-        version = null,
-        capabilities = emptyList(),
-        isExecutionHost = executionHost,
-        isSelf = false,
-        sessionCount = 0u,
-    )
-
-    private fun snapshotOf(projects: List<ProjectView>, devices: List<DeviceView>) = WorkspaceSnapshot(
-        revision = 7uL,
-        computedAtMs = 0L,
-        pinsReady = true,
-        synced = true,
-        front = FrontPage(pinned = emptyList(), sections = emptyList(), recent = emptyList(), groups = emptyList()),
-        projects = projects,
-        projectless = emptyList(),
-        pullRequests = PullRequestGroups(open = emptyList(), merged = emptyList(), closed = emptyList()),
-        archived = emptyList(),
-        devices = devices,
-    )
-
     @Test
     fun projectsMapInSnapshotOrderWithEveryField() {
-        val s = snapshotOf(
+        val o = recordSnapshot(
             projects = listOf(
-                project("a", deviceId = "dev1", deviceName = "Studio", groupKey = "repo:r", groupName = "r", colorIndex = 3u),
-                project("b", deviceId = "dev2", deviceName = null, online = false, git = false),
+                recordProject("a", deviceId = "dev1", deviceName = "Studio", groupKey = "repo:r", groupName = "r", colorIndex = 3u),
+                recordProject("b", deviceId = "dev2", deviceName = null, online = false, git = false),
             ),
-            devices = listOf(device("dev1", name = "Studio"), device("dev2", name = "MBP")),
-        )
-        val o = s.toNewSessionOptions()
+            devices = listOf(recordDevice("dev1", name = "Studio"), recordDevice("dev2", name = "MBP")),
+        ).toNewSessionOptions()
         assertEquals(listOf("a", "b"), o.projects.map { it.id })
         val a = o.projects[0]
         assertEquals("Project a", a.name)
@@ -115,14 +48,14 @@ class NewSessionOptionsTest {
     @Test
     fun missingDeviceNameFallsBackToTheSnapshotDeviceOrUnknown() {
         // Known id, no engine-provided name → the snapshot's device name.
-        val known = snapshotOf(
-            projects = listOf(project("a", deviceId = "devX", deviceName = null)),
-            devices = listOf(device("devX", name = "Engine machine")),
+        val known = recordSnapshot(
+            projects = listOf(recordProject("a", deviceId = "devX", deviceName = null)),
+            devices = listOf(recordDevice("devX", name = "Engine machine")),
         ).toNewSessionOptions()
         assertEquals("Engine machine", known.projects[0].deviceName)
         // Unknown device id → the iOS literal fallback.
-        val unknown = snapshotOf(
-            projects = listOf(project("a", deviceId = "gone", deviceName = null)),
+        val unknown = recordSnapshot(
+            projects = listOf(recordProject("a", deviceId = "gone", deviceName = null)),
             devices = emptyList(),
         ).toNewSessionOptions()
         assertEquals("Unknown device", unknown.projects[0].deviceName)
@@ -130,12 +63,12 @@ class NewSessionOptionsTest {
 
     @Test
     fun hostsAreTheExecutionDevicesInSnapshotOrder() {
-        val o = snapshotOf(
+        val o = recordSnapshot(
             projects = emptyList(),
             devices = listOf(
-                device("dev1", name = "mac studio", executionHost = true, online = true),
-                device("dev2", engineId = "E2", name = "hetzner-01", executionHost = true, online = false),
-                device("phone", engineId = "E3", name = "This phone", executionHost = false, online = true),
+                recordDevice("dev1", name = "mac studio", executionHost = true, online = true),
+                recordDevice("dev2", engineId = "E2", name = "hetzner-01", executionHost = true, online = false),
+                recordDevice("phone", engineId = "E3", name = "This phone", executionHost = false, online = true),
             ),
         ).toNewSessionOptions()
         assertEquals(listOf("dev1", "dev2"), o.hosts.map { it.id })
