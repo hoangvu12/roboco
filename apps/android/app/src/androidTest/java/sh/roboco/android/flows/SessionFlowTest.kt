@@ -1,5 +1,6 @@
 package sh.roboco.android.flows
 
+import android.content.ClipboardManager
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -670,9 +671,28 @@ class SessionFlowTest {
             compose.onNodeWithTag("composer-send").assertIsNotEnabled()
             compose.onNodeWithTag("composer-send").performClick()
             compose.waitForIdle()
-            // TODO(ticket 80): assert ⋯ rows gated (79 step 9.7): the
-            // pin/archive menu rows disabled, Copy Transcript enabled —
-            // the ⋯ menu lands with 80, which is blocked by 79.
+            // Ticket 80 (79's step 9.7): the ⋯ menu's rows are gated —
+            // Pin and Archive read the engine and are inert, Copy
+            // Transcript reads only the cached frame and stays live, and
+            // the copy really lands on the clipboard.
+            compose.onNodeWithTag("session-more").performClick()
+            compose.waitUntil(timeoutMillis = 5_000) {
+                compose.onAllNodesWithTag("glass-menu").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("session-menu-pin").assertIsNotEnabled()
+            compose.onNodeWithTag("session-menu-archive").assertIsNotEnabled()
+            compose.onNodeWithTag("session-menu-copy").assertIsEnabled()
+            compose.onNodeWithTag("session-menu-copy").performClick()
+            val clipboard = app.getSystemService(ClipboardManager::class.java)
+            compose.waitUntil(timeoutMillis = 5_000) {
+                val clip = clipboard?.primaryClip
+                clip != null && clip.itemCount > 0 &&
+                    clip.description.label?.toString() == "Transcript" &&
+                    clip.getItemAt(0).coerceToText(app).isNotBlank()
+            }
+            compose.waitUntil(timeoutMillis = 2_000) {
+                compose.onAllNodesWithTag("glass-menu").fetchSemanticsNodes().isEmpty()
+            }
             assertEquals(
                 "the draft stays while offline",
                 "draft kept offline",

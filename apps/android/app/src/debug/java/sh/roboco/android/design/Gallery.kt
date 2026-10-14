@@ -588,6 +588,13 @@ object Gallery {
         // t = 1/3 under capture, hidden by Force reduce motion) plus the
         // frozen phase table from t = 0 to 0.8333.
         GallerySection("Shimmer") { ShimmerGallerySection() },
+        // Ticket 80 (session ⋯ menu): the header's pull-down — the three
+        // rows (Pin/Unpin, Copy Transcript, Archive) over the striped
+        // backdrop inside the section's own GlassMenuHost and ToastHost,
+        // with live Pinned / Can write toggles, the Ok/Offline mode switch
+        // on the fake RowActions and its call log. Fill: the section owns
+        // the host pair and its column.
+        GallerySection("Session ⋯ menu", screenshotHeightDp = 420) { SessionMenuGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
