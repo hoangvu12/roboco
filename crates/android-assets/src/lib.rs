@@ -330,7 +330,7 @@ pub fn generate(repo: &Path, res_out: &Path, assets_out: &Path) -> anyhow::Resul
     }
 
     // 2. VectorDrawables from the extra icons (tab glyphs, the Roboco
-    //    glyph): no raster output — the app tints these at use.
+    //    bow): no raster output — the app tints these at use.
     for file in sorted_svgs(&layout::extra_icons(repo))? {
         let out = drawable_dir.join(format!("{}.xml", snake_name(&file.stem)));
         convert_vector_drawable(&file.path, &out)

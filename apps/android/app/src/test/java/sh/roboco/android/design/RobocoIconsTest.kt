@@ -285,7 +285,7 @@ class RobocoIconsTest {
             RobocoIcons.Command to R.drawable.zi_command,
             RobocoIcons.TabChat to R.drawable.zi_tab_chat,
             RobocoIcons.TabSettings to R.drawable.zi_tab_settings,
-            RobocoIcons.RobocoGlyph to R.drawable.zi_roboco_glyph,
+            RobocoIcons.RobocoBow to R.drawable.zi_roboco_bow, // android-next #03: replaced RobocoGlyph
             RobocoIcons.WifiOff to R.drawable.zi_wifi_off,
             RobocoIcons.Home to R.drawable.zi_home,
             RobocoIcons.HardDrive to R.drawable.zi_hard_drive,
