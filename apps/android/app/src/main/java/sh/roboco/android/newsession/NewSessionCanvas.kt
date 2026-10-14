@@ -200,7 +200,9 @@ internal fun NewSessionCanvas(
                     contents = listOf(backdrop, hero, composerSlot),
                     modifier = Modifier.fillMaxSize(),
                     measurePolicy = { measurables, constraints ->
-                        val (backdropM, heroM, compM) = measurables
+                        // Multi-content Layout: one List<Measurable> per slot, each
+                        // slot a single root.
+                        val (backdropM, heroM, compM) = measurables.map { it.single() }
 
                         // 1. The insets, px: fixed (tests/previews) or live.
                         val topPx: Float

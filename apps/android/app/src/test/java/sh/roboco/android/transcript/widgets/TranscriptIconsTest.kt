@@ -17,8 +17,10 @@ import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
@@ -416,7 +418,7 @@ class TranscriptIconsTest {
         // anywhere in the tree (the host tag itself carries none).
         assertTrue(
             "the widget must not expose a content description",
-            compose.onAllNodes(hasContentDescription()).fetchSemanticsNodes().isEmpty(),
+            compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ContentDescription)).fetchSemanticsNodes().isEmpty(),
         )
         // A real touch on the widget's bounds (its centre) reaches the
         // parent's pointerInput: the widget consumes nothing. The tap runs

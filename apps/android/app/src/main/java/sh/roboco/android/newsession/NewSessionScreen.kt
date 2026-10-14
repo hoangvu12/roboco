@@ -2,7 +2,6 @@ package sh.roboco.android.newsession
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.awaitFrame
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -155,7 +154,7 @@ internal fun NewSessionFocusOnAppear(
 ) {
     LaunchedEffect(Unit) {
         if (!focusOnAppear) return@LaunchedEffect
-        if (embedded) awaitFrame() else awaitPlacementSettled { state.pageCoordinates }
+        if (embedded) withFrameNanos { } else awaitPlacementSettled { state.pageCoordinates }
         focus()
     }
 }
