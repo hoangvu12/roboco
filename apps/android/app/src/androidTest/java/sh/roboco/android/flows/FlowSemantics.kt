@@ -1,9 +1,14 @@
 package sh.roboco.android.flows
 
 import android.graphics.Bitmap
+import android.os.SystemClock
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.platform.app.InstrumentationRegistry
 import sh.roboco.android.shell.ScopedIds
 
@@ -67,5 +72,26 @@ object FlowSemantics {
         } finally {
             bitmap.recycle()
         }
+    }
+}
+
+/**
+ * Waits for [matcher] in the transcript, paging toward OLDER rows through
+ * the host's accessibility `scrollBy` (TranscriptSemantics: a negative y
+ * moves toward the top) while it is not composed. The `main` engine
+ * streams its ~20-row reply at once, so a just-sent prompt can leave the
+ * realized band (viewport + 700 dp overscan) before a plain wait polls it
+ * (run 38552405016). The page (300 dp) is below the overscan, so no row
+ * is skipped.
+ */
+fun AndroidComposeTestRule<*, *>.awaitTranscriptNode(matcher: SemanticsMatcher, timeoutMillis: Long = 15_000) {
+    val deadline = SystemClock.uptimeMillis() + timeoutMillis
+    val page = 300f * density.density
+    while (onAllNodes(matcher).fetchSemanticsNodes().isEmpty()) {
+        if (SystemClock.uptimeMillis() > deadline) {
+            throw AssertionError("no transcript node: ${matcher.description}")
+        }
+        onNodeWithTag("transcript").performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, -page) }
+        waitForIdle()
     }
 }

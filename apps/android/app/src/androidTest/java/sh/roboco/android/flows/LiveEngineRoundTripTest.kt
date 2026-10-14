@@ -93,10 +93,10 @@ class LiveEngineRoundTripTest {
         }
         compose.onNodeWithTag("composer-input").performTextInput("hello from the phone")
         compose.onNodeWithTag("composer-send").performClick()
-        compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodes(FlowSemantics.startsWith("You: hello from the phone"))
-                .fetchSemanticsNodes().isNotEmpty()
-        }
+        // `main`'s instant ~20-row reply can push the prompt out of the
+        // realized band before a plain wait polls it (run 38552405016):
+        // page back to it.
+        compose.awaitTranscriptNode(FlowSemantics.startsWith("You: hello from the phone"))
         compose.waitUntil(timeoutMillis = 60_000) {
             compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().isNotEmpty()
         }

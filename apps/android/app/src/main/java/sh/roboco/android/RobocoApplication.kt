@@ -627,9 +627,10 @@ class RobocoApplication : Application() {
 
     /**
      * Re-derive the run-watching service's `notificationsOn` gate (the
-     * master pref + the live permission status).
+     * master pref + the live permission status). Also called by
+     * MainActivity when the permission dialog returns.
      */
-    private fun refreshNotificationsOn() {
+    internal fun refreshNotificationsOn() {
         runWatch.onNotificationsOn(
             NotificationPolicy.masterOn(
                 notificationPrefs.state.value,

@@ -1,6 +1,7 @@
 package sh.roboco.android.settings
 
 import android.graphics.Bitmap
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasScrollAction
@@ -10,6 +11,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -108,7 +110,11 @@ class WallpaperSettingsFlowTest {
         // iOS scrolls the row above 70 % of the window, clear of the
         // bottom chrome, then taps it.
         settingsList.performScrollToNode(hasTestTag("settings-wallpaper:remove"))
-        compose.onNodeWithText("Remove Wallpaper").performClick()
+        // The semantics action, not a touch: performScrollToNode only brings
+        // the row inside the list, whose bounds run under the glass bottom
+        // chrome — the injected tap landed on a field there (the IME showed,
+        // run 38552405016). Removal itself is instant (no confirmation).
+        compose.onNodeWithText("Remove Wallpaper").performSemanticsAction(SemanticsActions.OnClick)
 
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithText("Choose Wallpaper\u2026").fetchSemanticsNodes().isNotEmpty()

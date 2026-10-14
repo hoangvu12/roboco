@@ -74,12 +74,14 @@ const PROFILE_ENV: &[(&str, &[(&str, &str)])] = &[
             ("ROBOCO_MOCK_THINKING", "1"),
         ],
     ),
-    // 12 repeats × the 7-event script + Done ≈ 85 events × 150 ms ≈ 12.8 s.
-    // At 4 (≈ 4.4 s) the reply ended before the emulator finished injecting
-    // a back-swipe or typing a queued message (cancelledSwipeBack…_gesture,
-    // queueWhileWorking, run 38531061823); 12.8 s still fits the tests'
-    // 20 s / 40 s / 60 s completion waits.
-    ("slow", &[("ROBOCO_MOCK_DELAY_MS", "150"), ("ROBOCO_MOCK_REPEAT", "12")]),
+    // 24 repeats × the 7-event script + Done ≈ 169 events × 150 ms ≈ 25.6 s.
+    // At 4 (≈ 4.4 s, run 38531061823) and 12 (≈ 12.8 s, run 38552405016)
+    // the reply ended before the emulator finished injecting a back-swipe
+    // or queueing two messages (queueWhileWorking took 20.6 s: each queue
+    // dismisses the IME and the next click re-shows it). 25.6 s still fits
+    // the tests' 40 s / 60 s completion waits; the slow-engine tests wait
+    // for the previous test's turn to end before sending (awaitSlowEngineIdle).
+    ("slow", &[("ROBOCO_MOCK_DELAY_MS", "150"), ("ROBOCO_MOCK_REPEAT", "24")]),
     ("question", &[("ROBOCO_MOCK_QUESTION", "1")]),
 ];
 
@@ -130,7 +132,7 @@ async fn run(port: u16, control_port: u16, profile: String) {
         .unwrap();
     let control = TcpListener::bind(format!("127.0.0.1:{control_port}")).unwrap();
 
-    seed(&service, &repo, &profile).await;
+    let chats = seed(&service, &repo, &profile).await;
 
     // Seeding has settled: announce readiness (stdout is line-buffered, so
     // the runner sees the line as soon as it is printed).
@@ -158,6 +160,8 @@ async fn run(port: u16, control_port: u16, profile: String) {
         dir.path().to_path_buf(),
         remote_slot,
         handle,
+        repo.clone(),
+        chats,
     );
 
     std::future::pending::<()>().await;
@@ -378,15 +382,29 @@ fn seed_chats(profile: &str, repo: &Path) -> Vec<SeedChat> {
             last_message_offset_ms: 600_000,
             created_offset_ms: 86_400_000,
         }],
-        _ => vec![SeedChat {
-            id: "chat-ask",
-            title: "Pick a tone",
-            cwd: Some(repo.to_path_buf()),
-            turns: 0,
-            archived: false,
-            last_message_offset_ms: 600_000,
-            created_offset_ms: 86_400_000,
-        }],
+        _ => vec![
+            SeedChat {
+                id: "chat-ask",
+                title: "Pick a tone",
+                cwd: Some(repo.to_path_buf()),
+                turns: 0,
+                archived: false,
+                last_message_offset_ms: 600_000,
+                created_offset_ms: 86_400_000,
+            },
+            // sendGlidesPromptToTopWithRunway: this profile's reply is one
+            // line and then waits for input, so the runway below the glided
+            // prompt holds (main's instant ~20-row reply retires it at once).
+            SeedChat {
+                id: "chat-runway",
+                title: "Runway",
+                cwd: Some(repo.to_path_buf()),
+                turns: 0,
+                archived: false,
+                last_message_offset_ms: 600_000,
+                created_offset_ms: 86_400_000,
+            },
+        ],
     }
 }
 
@@ -408,7 +426,9 @@ fn clone_repo(repo: &Path) -> PathBuf {
     dest
 }
 
-async fn seed(service: &Arc<dyn RpcService>, repo: &Path, profile: &str) {
+/// Seeds the profile and returns its chats (the control endpoint's `/run` reuses them:
+/// `seed_chats` itself must run once — the slow profile clones the repo).
+async fn seed(service: &Arc<dyn RpcService>, repo: &Path, profile: &str) -> Vec<SeedChat> {
     let device = local_device(service).await;
     let chats = seed_chats(profile, repo);
 
@@ -498,6 +518,7 @@ async fn seed(service: &Arc<dyn RpcService>, repo: &Path, profile: &str) {
             wait_entries(service, chat.id, expected).await;
         }
     }
+    chats
 }
 
 /// A [RunRequest] for one seed turn: the mock harness ignores the prompt's
@@ -607,6 +628,8 @@ fn spawn_control_endpoint(
     data_dir: PathBuf,
     remote_slot: Arc<std::sync::Mutex<Option<EngineListener>>>,
     handle: tokio::runtime::Handle,
+    repo: PathBuf,
+    chats: Vec<SeedChat>,
 ) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -651,6 +674,32 @@ fn spawn_control_endpoint(
                         *remote_slot.lock().unwrap() = Some(remote);
                     }
                     serde_json::json!({ "ok": true }).to_string()
+                }
+                // A run started by the ENGINE side, not the phone: the core never
+                // posts "Run finished" for the phone's own send (notify.rs
+                // `send_pending`, ticket 28), so the notification flow needs a run
+                // the phone did not start. Same QueueCommand path as the seed.
+                ("GET", p) if p.starts_with("/run?chat=") => {
+                    let id = &p["/run?chat=".len()..];
+                    let Some(chat) = chats.iter().find(|c| c.id == id) else {
+                        respond(&mut stream, 404, "{\"error\":\"unknown chat\"}");
+                        continue;
+                    };
+                    let command = serde_json::to_value(SessionCommandPayload::Run {
+                        request: seed_request(&repo, chat),
+                        message_id: format!("control-{}-{}", chat.id, now_ms()),
+                    })
+                    .unwrap();
+                    match handle.block_on(service.handle(
+                        methods::QUEUE_COMMAND,
+                        serde_json::json!({"chatId": chat.id, "command": command}),
+                    )) {
+                        Ok(RpcReply::Value(value)) => value.to_string(),
+                        _ => {
+                            respond(&mut stream, 400, "{\"error\":\"QueueCommand failed\"}");
+                            continue;
+                        }
+                    }
                 }
                 _ => {
                     respond(&mut stream, 404, "{\"error\":\"not found\"}");

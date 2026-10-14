@@ -157,6 +157,15 @@ class FixtureRule(
     }
 
     /**
+     * Starts a run on [chatId] from the ENGINE side (`GET /run?chat=`, the
+     * fixture's QueueCommand path) — a run this phone did not send, which
+     * the notification flow needs: the core never posts "Run finished" for
+     * the phone's own send (crates/mobile-client/src/notify.rs).
+     */
+    fun run(controlUrl: String, chatId: String): Boolean =
+        fetch("${controlUrl.trim().trimEnd('/')}/run?chat=$chatId") != null
+
+    /**
      * `GET /mint`, returning the body. Runs on the IO dispatcher: the rule
      * evaluates on the instrumentation main thread, and a mint that blocks
      * there would trip the network-on-main guard before anything is up.

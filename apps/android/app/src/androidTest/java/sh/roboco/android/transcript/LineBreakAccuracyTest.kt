@@ -99,6 +99,10 @@ class LineBreakAccuracyTest {
         var exact = 0
         var lineDiff = 0
         val report = ArrayList<String>()
+        // Diagnostics only (never asserted): mismatches per corpus string and
+        // per face, so a run shows WHICH texts diverge — 12 samples cannot.
+        val perText = IntArray(corpus.size)
+        val perFace = HashMap<FaceRole, Int>()
         for (face in faces) {
             for (size in sizes) {
                 val paint = paints.getValue(face to size)
@@ -124,6 +128,8 @@ class LineBreakAccuracyTest {
                             // iOS counts height (line-count) diffs on mismatches
                             // only; here they are reported, never asserted.
                             if (rust.size != androidStarts.size) lineDiff++
+                            perText[index]++
+                            perFace[face] = (perFace[face] ?: 0) + 1
                             if (report.size < 12) {
                                 report += "$face ${size}pt w=$w: rust $rust vs " +
                                     "android $androidStarts — ${text.take(48)}"
@@ -140,6 +146,12 @@ class LineBreakAccuracyTest {
             "lineCountDiffs=$lineDiff locale=${TextAccuracy.localeTag()}"
         TextAccuracy.log(summary)
         report.forEach { TextAccuracy.log("  MISMATCH $it") }
+        corpus.forEachIndexed { index, text ->
+            if (perText[index] > 0) {
+                TextAccuracy.log("  BY TEXT #$index ${perText[index]}/${cases / corpus.size} — ${text.take(48)}")
+            }
+        }
+        perFace.forEach { (face, n) -> TextAccuracy.log("  BY FACE $face $n") }
         assertEquals("the matrix must be 3 faces × 3 sizes × 28 widths × 14 strings", 3528, cases)
         assertTrue(summary, rate >= 0.99)
     }
