@@ -19,7 +19,12 @@ import org.junit.Test
  * The ticket's metric table, seeded from the three light-mode
  * post-rewrite captures — deliberately few and tolerant; G2's human
  * sign-off carries the rest. Every UI ticket's acceptance cites its
- * rows here.
+ * rows here. The rows that need per-element detection the goldens
+ * cannot give blind (icon/text leading, the toggle's 62×27 dp block
+ * against a golden whose notifications are off, the harness-mark
+ * geometry, the accessory capsule, the bubble radius) are carried by
+ * `parity/CHECKLIST.md` (S-04, S-05, SL-03, SL-07, TR-01) until their
+ * goldens exist.
  *
  * Until the goldens are recorded (the CI recording pass), the setup
  * assertion fails naming the golden — the gate arming, not flakiness.
@@ -54,6 +59,21 @@ class IosParityMetricsTest {
         val right = golden.rightInsetOf()
         assertDp("card left inset", left, expectedDp = 16, toleranceDp = 1)
         assertDp("card right inset", right, expectedDp = 16, toleranceDp = 1)
+    }
+
+    @Test
+    fun settingsRowHeights() {
+        // 51 / 67 / 83 dp (± 2): rows are delimited by full-width
+        // hairlines inside a card; the heights measured between them.
+        val golden = golden("settings/settings_screen_top_light.png")
+        val heights = golden.settingsRowHeightsDp()
+        assertTrue("no settings rows measured (hairlines not found)", heights.isNotEmpty())
+        for (expected in listOf(51, 67, 83)) {
+            assertTrue(
+                "no row measures $expected dp ± 2 (measured $heights)",
+                heights.any { kotlin.math.abs(it - expected) <= 2f },
+            )
+        }
     }
 
     @Test
@@ -183,6 +203,48 @@ private class GoldenImage(image: BufferedImage) {
         }
         check(insets.isNotEmpty()) { "no card found in the middle band" }
         return insets.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+    }
+
+    /**
+     * The settings rows' heights in dp: rows are the stretches between
+     * full-width hairlines (or background) inside a card — a hairline y
+     * has almost no card-fill pixels and is not the page background.
+     */
+    fun settingsRowHeightsDp(): List<Float> {
+        val bucket = histogram()
+        val background = bucket.mostCommon(0)
+        val card = bucket.mostCommon(1)
+        val left = leftInsetOf(cardish = true)
+        val right = width - rightInsetOf()
+        if (right <= left) return emptyList()
+        val x0 = left + 12
+        val x1 = right - 12
+        val rowStates = mutableListOf<Boolean>() // true = content row
+        val rowStarts = mutableListOf<Int>()
+        for (y in 0 until height) {
+            var fill = 0
+            var other = 0
+            for (x in x0 until x1 step 3) {
+                val rgb = rgb(x, y)
+                if (colorDelta(rgb, card) <= 3.0) fill++ else other++
+            }
+            val isBackground = other > 0 &&
+                (x0 until x1 step 3).all { x -> colorDelta(rgb(x, y), background) <= 8.0 }
+            val content = fill > 0 && !isBackground
+            if (rowStates.isEmpty() || rowStates.last() != content) {
+                rowStates.add(content)
+                rowStarts.add(y)
+            }
+        }
+        return rowStates.indices
+            .filter { rowStates[it] }
+            .mapNotNull { i ->
+                val start = rowStarts[i]
+                val end = rowStarts.getOrNull(i + 1) ?: height
+                val px = end - start
+                // Ignore hairlines themselves (< 2 dp) and non-row bands.
+                if (px in 6..(300 * 3)) px / 3f else null
+            }
     }
 
     /** Pixels within [delta] of [rgbTarget] (the accent probes). */

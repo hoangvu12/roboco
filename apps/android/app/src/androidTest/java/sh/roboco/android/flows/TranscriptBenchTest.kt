@@ -4,12 +4,11 @@ import android.content.Intent
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.json.JSONObject
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
 import sh.roboco.android.debug.TranscriptLabActivity
 import java.io.File
 
@@ -63,7 +62,10 @@ class TranscriptBenchTest {
         assertTrue("the bench must report at least one phase", phases.length() > 0)
         for (i in 0 until phases.length()) {
             val phase = phases.getJSONObject(i)
-            assertNotNull("phase ${i} must be named", phase.optString("name"))
+            assertTrue(
+                "phase $i must be named",
+                phase.optString("name").isNotBlank(),
+            )
             val hitch = phase.optDouble("hitchRatioMsPerS")
             assertTrue(
                 "phase ${phase.optString("name")}: hitchRatioMsPerS must be < 5 " +

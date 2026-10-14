@@ -42,7 +42,8 @@ import sh.roboco.android.RobocoApplication
  * place and CI runs everything that can pass (the pre-rig
  * `KeyboardFlowTest` set the pattern). Unwired rows:
  * `testTappingLinkOpensIt` (ui-parity #126's link hit-test + Custom Tab
- * routing), `testJumpToLatestAfterScrollingUp` /
+ * routing), `testImageUploadShowsRingOnThumbnail` (ui-parity #93's
+ * clipboard-image paste path), `testJumpToLatestAfterScrollingUp` /
  * `testScrollingUpWhileStreamingStaysPut` (the `jump-to-latest` tag),
  * `testNewSessionFromAccessory`, `testNewSessionRemembersDraftWhenClosed`,
  * `testNewSessionHeadlineStaysAboveComposer`,
@@ -456,6 +457,50 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("tool-detail.png")
     }
 
+    /**
+     * `testToolGroupsRenderLikeDesktop` (:494): the static expanded view
+     * on `chat-veil`, then a live streaming run screenshotted over time
+     * on the slow engine's `chat-long` — both engines paired.
+     */
+    @Test
+    fun toolGroupsRenderLikeDesktop() {
+        // Static: file badges, inline stats/diff detail, thoughts.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("transcript").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithContentDescription("Expand").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onAllNodesWithContentDescription("Expand")[0].performClick()
+        compose.waitForIdle()
+        FlowSemantics.saveScreenshot("tool-groups.png")
+        val details = compose.onAllNodesWithContentDescription("Show details")
+        if (details.fetchSemanticsNodes().isNotEmpty()) {
+            details[0].performClick()
+            compose.waitForIdle()
+            FlowSemantics.saveScreenshot("tool-row-detail.png")
+        }
+
+        // Live: a streaming run on the slow engine's chat, screenshotted
+        // as the group streams in (the mock's paced events).
+        device.pressBack()
+        compose.waitForIdle()
+        device.pressBack()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("session-chat-long").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("session-chat-long").performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick().performTextInput("Refactor the layout pass")
+        compose.onNodeWithTag("composer-send").performClick()
+        for (k in 0 until 6) {
+            Thread.sleep(1_000) // the live window the iOS test samples
+            FlowSemantics.saveScreenshot("live-tools-$k.png")
+        }
+    }
+
     /** `testEffortPickerInSession` (:360): the effort chip's menu, twice. */
     @Test
     fun effortPickerInSession() {
@@ -606,6 +651,10 @@ class SessionFlowTest {
     @Test
     fun tappingLinkOpensIt() = fail("unwired: see the @Ignore reason")
 
+    @Ignore("Needs the clipboard-image staging of ui-parity #93's Paste Image path (a content-URI image on the clipboard, unreachable from the instrumentation API before that ticket's share flow)")
+    @Test
+    fun imageUploadShowsRingOnThumbnail() = fail("unwired: see the @Ignore reason")
+
     @Ignore("Needs the 'jump-to-latest' test tag (the transcript bottom stack's owning ticket)")
     @Test
     fun jumpToLatestAfterScrollingUp() = fail("unwired: see the @Ignore reason")
@@ -652,6 +701,7 @@ class SessionFlowTest {
             name.startsWith("pullToRefresh") ||
             name.startsWith("archiveWithUndo") -> null
         name.startsWith("questionPanel") -> "chat:chat-ask"
+        name.startsWith("toolGroupsRender") -> "chat:chat-veil"
         name.startsWith("queue") ||
             name.startsWith("scrollingUp") ||
             name.startsWith("cancelledSwipeBack") -> "chat:chat-long"
@@ -663,6 +713,7 @@ class SessionFlowTest {
     /** The engines to pair per test method (§5 profiles). */
     private fun enginesFor(name: String): Set<FixtureEngine> = when {
         name.startsWith("questionPanel") -> setOf(FixtureEngine.Question)
+        name.startsWith("toolGroupsRender") -> setOf(FixtureEngine.Main, FixtureEngine.Slow)
         name.startsWith("queue") ||
             name.startsWith("scrollingUp") ||
             name.startsWith("cancelledSwipeBack") -> setOf(FixtureEngine.Slow)
