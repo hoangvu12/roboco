@@ -710,6 +710,11 @@ object Gallery {
         // 1.5 s fake ref load) over the shared GalleryBackdrop. Fill: the
         // live demo owns its GlassMenuHost.
         GallerySection("New-session menus", GalleryLayout.Fill) { CheckoutModelEffortMenusGallerySection() },
+        // Ticket 95 (draft handoff animation): the window-level overlay
+        // host playing the captured pictures — the dissolve, glide and
+        // bubble flight over the fake chat, driven by the Play capsule
+        // (and the Force reduce motion toggle).
+        GallerySection("Handoff", GalleryLayout.Fill, 852) { HandoffGallerySection() },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket
