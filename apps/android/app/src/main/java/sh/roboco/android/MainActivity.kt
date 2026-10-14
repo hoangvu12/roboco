@@ -173,6 +173,9 @@ class MainActivity : ComponentActivity() {
             granted,
             shouldShowRequestPermissionRationale(NotificationPermission.PERMISSION),
         )
+        // The run watch's notifications-on gate: an Allow here must reach it
+        // now, not on the next foreground edge.
+        (application as RobocoApplication).refreshNotificationsOn()
     }
 
     override fun onNewIntent(intent: Intent) {

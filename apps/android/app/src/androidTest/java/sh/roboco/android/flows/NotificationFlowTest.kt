@@ -1,10 +1,8 @@
 package sh.roboco.android.flows
 
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -29,9 +27,11 @@ import sh.roboco.android.notify.NotificationPrefs
  * 1. the **slow** fixture engine is paired through the rig
  *    ([FixtureRule] mints a fresh pairing URL; `chat-long` streams a
  *    paced reply — long enough to background the app first);
- * 2. notifications are on (the pref) and the permission granted (the
- *    system `Allow` dialog, or `pm grant` when the dialog cannot show);
- * 3. a prompt is sent from the session screen, then `pressHome()`;
+ * 2. notifications are on (the pref) and the permission granted
+ *    (`pm grant`);
+ * 3. a run is started from the engine side (the fixture's `/run` — the
+ *    core never notifies Done for the phone's own send), then
+ *    `pressHome()`;
  * 4. `openNotification()`, wait for "Run finished", tap it, and the chat
  *    is open again (the `transcript` root on top).
  *
@@ -77,27 +77,28 @@ class NotificationFlowTest {
 
     @Test
     fun notificationTapOpensTheSession() {
-        // Send the prompt from the session screen (the run the
-        // notification reports), while the app is front.
+        // The chat is open and its state loaded.
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("composer-input").performClick()
-            .performTextInput("Write a long reply please.")
-        compose.onNodeWithTag("composer-send").performClick()
-
-        // Grant through the system dialog (the first-session ask path, or
-        // the Settings toggle — either way the OS dialog is the same);
-        // `pm grant` when the dialog is not offered (already twice-denied).
-        if (!granted()) {
-            device.findObject(By.text("Allow"))?.click()
-        }
-        if (!granted()) {
-            device.executeShellCommand(
-                "pm grant ${app.packageName} android.permission.POST_NOTIFICATIONS",
-            )
-        }
+        // Granted up front: this test is about the notification, not the
+        // first-session ask (whose system dialog would pause the activity).
+        device.executeShellCommand(
+            "pm grant ${app.packageName} android.permission.POST_NOTIFICATIONS",
+        )
         assertTrue("POST_NOTIFICATIONS was not granted", granted())
+
+        // The run comes from the ENGINE side (the fixture's `/run`), not a
+        // phone send: by design the core never posts "Run finished" for the
+        // phone's own send (crates/mobile-client/src/notify.rs
+        // `send_pending`, ticket 28's acceptance rule) — the old phone-send
+        // version could never pass (run 38552405016). Started while the app
+        // is front, so the run watch picks it up before Home.
+        val control = checkNotNull(launch.controlUrl(FixtureEngine.Slow)) { "the slow engine's control URL" }
+        assertTrue("the fixture's /run failed", launch.run(control, "chat-long"))
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithContentDescription("Stop response").fetchSemanticsNodes().isNotEmpty()
+        }
 
         // Then leave the app: no banner while the app is front (the
         // foreground gate).

@@ -1,5 +1,7 @@
 package sh.roboco.android.debug
 
+import android.app.Activity
+import android.app.Instrumentation
 import android.content.Intent
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -81,7 +83,13 @@ class MarkdownImageLabTest {
             )
             compose.onNodeWithTag("image-preview-close").assertExists()
 
-            // Share: the system chooser (125's ImageShare) fires.
+            // Share: the system chooser (125's ImageShare) fires. Stubbed:
+            // Intents.init only records, so the real chooser covered the lab
+            // (paused, stopped, destroyed) and the close below found no
+            // compose hierarchy (run 38552405016). A stubbed intent is still
+            // recorded, so `intended` sees it.
+            Intents.intending(hasAction(Intent.ACTION_CHOOSER))
+                .respondWith(Instrumentation.ActivityResult(Activity.RESULT_OK, null))
             compose.onNodeWithTag("image-preview-share").performClick()
             compose.waitUntil(10_000) {
                 runCatching { Intents.intended(hasAction(Intent.ACTION_CHOOSER)) }.isSuccess

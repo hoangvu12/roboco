@@ -138,6 +138,13 @@ class NotificationCenter(
                         fromThisDevice = run.fromThisDevice,
                     )
                 }
+                // The notifications-on gate is otherwise re-read only on a
+                // foreground edge or a pref change — a permission granted
+                // while the app is open (the first-session dialog's Allow,
+                // or settings) never reached the controller, so the run
+                // watch never started for the run that followed. Re-derive
+                // it with every activity update, before the controller acts.
+                controller.onNotificationsOn(NotificationPolicy.masterOn(prefs.state.value, status()))
                 controller.onRunActivity(working, activity.awaiting.toInt())
             } catch (error: Throwable) {
                 log("run-activity update failed", error)

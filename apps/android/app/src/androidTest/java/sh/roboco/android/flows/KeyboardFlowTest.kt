@@ -82,7 +82,11 @@ class KeyboardFlowTest {
         compose.onNodeWithTag("composer-input").performClick()
         compose.waitUntil(timeoutMillis = 3_000) { imeVisible() }
         device.swipe(x, (windowH * 0.4f).toInt(), x, windowH - 3 * imeBottom / 4, 40)
-        compose.waitUntil(timeoutMillis = 1_000) { imeVisible() }
+        // The spring back (Motion.ImeSettle) runs on the compose clock; on the
+        // CI emulator the main thread ran ~1 frame/s, so a 1 s wait ended
+        // mid-settle (run 38552405016). Let the clock cover the settle first.
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitUntil(timeoutMillis = 5_000) { imeVisible() }
         compose.onNodeWithTag("composer-chip-model").assertExists() // still the card
 
         // 3. The tap-to-dismiss guard (`testTapOutsideMinimizesComposer`,

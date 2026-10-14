@@ -5,6 +5,7 @@ import android.graphics.Point
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.BackEventCompat
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
@@ -242,11 +244,12 @@ class SessionFlowTest {
         compose.onNodeWithTag("composer-input").performClick()
             .performTextInput("Summarize the launch post in three bullets.")
         compose.onNodeWithTag("composer-send").performClick()
-        // Optimistic echo appears immediately, then the host streams a reply.
-        compose.waitUntil(timeoutMillis = 3_000) {
-            compose.onAllNodes(FlowSemantics.startsWith("You: Summarize the launch post"))
-                .fetchSemanticsNodes().isNotEmpty()
-        }
+        // Sending puts the keyboard away (the send landed), then the echo.
+        // `main` streams its ~20-row reply at once, so the prompt can leave
+        // the realized band before the wait polls (run 38552405016): page
+        // back to it instead of waiting for it to be composed at the tail.
+        compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        compose.awaitTranscriptNode(FlowSemantics.startsWith("You: Summarize the launch post"))
         FlowSemantics.saveScreenshot("streaming.png")
         // The host's reply lands after the echo and the turn settles.
         compose.waitUntil(timeoutMillis = 30_000) {
@@ -305,6 +308,16 @@ class SessionFlowTest {
         }
         FlowSemantics.saveScreenshot("question.png")
         compose.onNodeWithTag("question-option-0").performClick()
+        // The mock asks TWO questions (crates/harness/src/mock.rs
+        // question_script): page 1 single-select auto-advances, page 2 is
+        // multi-select and needs a pick + Submit before the composer
+        // returns (the iOS demo asked one).
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithText("Which suites should gate the merge?").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithTag("question-option-0").fetchSemanticsNodes().size == 1
+        }
+        compose.onNodeWithTag("question-option-0").performClick()
+        compose.onNodeWithTag("question-next").performClick()
         // The composer returns after answering.
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
@@ -317,6 +330,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
+        awaitSlowEngineIdle()
         compose.onNodeWithTag("composer-input").performClick().performTextInput("Write a long reply please.")
         compose.onNodeWithTag("composer-send").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
@@ -350,6 +364,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
+        awaitSlowEngineIdle()
         compose.onNodeWithTag("composer-input").performClick().performTextInput("Write a long reply please.")
         compose.onNodeWithTag("composer-send").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
@@ -360,10 +375,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("More queue actions").fetchSemanticsNodes().isNotEmpty()
         }
-        // Dismiss the IME first, then pop the session.
-        device.pressBack()
-        compose.waitForIdle()
-        device.pressBack()
+        popSessionToList()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
         }
@@ -387,6 +399,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
+        awaitSlowEngineIdle()
         val before = compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().size
 
         compose.onNodeWithTag("composer-input").performClick()
@@ -437,6 +450,7 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
+        awaitSlowEngineIdle()
         val before = compose.onAllNodesWithTag("row-markdown").fetchSemanticsNodes().size
 
         compose.onNodeWithTag("composer-input").performClick()
@@ -574,13 +588,18 @@ class SessionFlowTest {
         ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
             ?.isVisible(WindowInsetsCompat.Type.ime()) == true
 
-    /** `testFileMentionSuggestions` (:265): "@lay" finds the fixture repo's layout files. */
+    /**
+     * `testFileMentionSuggestions` (:265). "@mod", not iOS's "@lay": the
+     * engine ranks the `src/layout` FOLDER first for "lay" (picking it
+     * inserted "@layout ", run 38552405016); "mod" matches only
+     * `src/layout/mod.rs` in the fixture repo.
+     */
     @Test
     fun fileMentionSuggestions() {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("composer-input").performClick().performTextInput("Look at @lay")
+        compose.onNodeWithTag("composer-input").performClick().performTextInput("Look at @mod")
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("mention-0").fetchSemanticsNodes().isNotEmpty()
         }
@@ -596,11 +615,17 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performTouchInput { swipeLeft() }
-        compose.waitUntil(timeoutMillis = 3_000) {
-            compose.onAllNodesWithText("Archive").fetchSemanticsNodes().isNotEmpty()
+        // A 35 % drag settles the row open (SwipeMath); a full-width
+        // swipeLeft() armed the full swipe and committed on release, and the
+        // panes are icon-only (contentDescription, tag `swipe-action-*`) —
+        // `onAllNodesWithText("Archive")` could never match.
+        compose.onNode(FlowSemantics.sessionRow("chat-deploy")).performTouchInput {
+            swipeLeft(startX = right - 1f, endX = right - width * 0.35f, durationMillis = 400)
         }
-        compose.onAllNodesWithText("Archive")[0].performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("swipe-action-archive").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("swipe-action-archive").performClick()
         compose.waitUntil(timeoutMillis = 3_000) {
             compose.onAllNodesWithTag("toast-action").fetchSemanticsNodes().isNotEmpty()
         }
@@ -620,13 +645,16 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Expand").fetchSemanticsNodes().isNotEmpty()
         }
-        onScreen("Expand").performClick()
+        // The semantics action, not a touch: the transcript draws under the
+        // header and the bottom stack, so a displayed node can sit under the
+        // chrome and an injected tap lands there (no haptic, no expansion).
+        onScreen("Expand").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Show details").fetchSemanticsNodes().isNotEmpty()
         }
         FlowSemantics.saveScreenshot("tools-expanded.png")
         // Details open inline under the row, like desktop.
-        onScreen("Show details").performClick()
+        onScreen("Show details").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Hide details").fetchSemanticsNodes().isNotEmpty()
         }
@@ -647,21 +675,19 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithContentDescription("Expand").fetchSemanticsNodes().isNotEmpty()
         }
-        onScreen("Expand").performClick()
+        onScreen("Expand").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         FlowSemantics.saveScreenshot("tool-groups.png")
         val details = compose.onAllNodesWithContentDescription("Show details")
         if (details.fetchSemanticsNodes().isNotEmpty()) {
-            details[0].performClick()
+            onScreen("Show details").performSemanticsAction(SemanticsActions.OnClick)
             compose.waitForIdle()
             FlowSemantics.saveScreenshot("tool-row-detail.png")
         }
 
         // Live: a streaming run on the slow engine's chat, screenshotted
         // as the group streams in (the mock's paced events).
-        device.pressBack()
-        compose.waitForIdle()
-        device.pressBack()
+        popSessionToList()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodes(FlowSemantics.sessionRow("chat-long")).fetchSemanticsNodes().isNotEmpty()
         }
@@ -746,7 +772,13 @@ class SessionFlowTest {
         }
     }
 
-    /** `testSendGlidesPromptToTopWithRunway` (:653): the prompt glides to the top of the transcript. */
+    /**
+     * `testSendGlidesPromptToTopWithRunway` (:653): the prompt glides to the
+     * top of the transcript. On the `question` engine's `chat-runway`: its
+     * reply is one line and then waits for input, so the runway holds —
+     * `main` streams a reply taller than the viewport at once, which
+     * retires the runway on the first frame (run 38552405016).
+     */
     @Test
     fun sendGlidesPromptToTopWithRunway() {
         compose.waitUntil(timeoutMillis = 10_000) {
@@ -1041,10 +1073,9 @@ class SessionFlowTest {
         }
         // Sending puts the keyboard away.
         compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodes(FlowSemantics.startsWith("You: Add a dark mode toggle"))
-                .fetchSemanticsNodes().isNotEmpty()
-        }
+        // `main`'s instant ~20-row reply can push the prompt out of the
+        // realized band: page back to it (see sendEchoesAndStreamsReply).
+        compose.awaitTranscriptNode(FlowSemantics.startsWith("You: Add a dark mode toggle"))
         // The handoff ends with the sheet gone and the message in the
         // transcript (iOS sleeps 1 s before asserting no Close).
         SystemClock.sleep(1_000)
@@ -1090,6 +1121,7 @@ class SessionFlowTest {
             name.startsWith("archiveWithUndo") ||
             name.startsWith("newSessionFromAccessory") -> null
         name.startsWith("questionPanel") -> "chat:chat-ask"
+        name.startsWith("sendGlides") -> "chat:chat-runway"
         name.startsWith("toolGroupsRender") -> "chat:chat-veil"
         name.startsWith("queue") ||
             name.startsWith("cancelledSwipeBack") -> "chat:chat-long"
@@ -1106,13 +1138,39 @@ class SessionFlowTest {
 
     /** The engines to pair per test method (§5 profiles). */
     private fun enginesFor(name: String): Set<FixtureEngine> = when {
-        name.startsWith("questionPanel") -> setOf(FixtureEngine.Question)
+        name.startsWith("questionPanel") || name.startsWith("sendGlides") -> setOf(FixtureEngine.Question)
         name.startsWith("toolGroupsRender") -> setOf(FixtureEngine.Main, FixtureEngine.Slow)
         name.startsWith("queue") ||
             name.startsWith("cancelledSwipeBack") -> setOf(FixtureEngine.Slow)
         name.startsWith("jumpToLatest") ||
             name.startsWith("scrollingUp") -> setOf(FixtureEngine.Main)
         else -> setOf(FixtureEngine.Main)
+    }
+
+    /**
+     * Pops the session to the list: Back for the IME only when it is up.
+     * The old blind `pressBack(); pressBack()` assumed the keyboard was
+     * showing — it was not (the queue hides it; toolGroupsRender never
+     * shows it), so the second Back finished MainActivity ("No compose
+     * hierarchies found", run 38552405016).
+     */
+    private fun popSessionToList() {
+        if (imeVisible()) {
+            device.pressBack()
+            compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        }
+        device.pressBack()
+    }
+
+    /**
+     * The slow engine is shared across tests and its paced reply (~25 s)
+     * can outlive the previous test: start only once nothing is running
+     * (no "Stop response"), so a test's own send starts a fresh turn.
+     */
+    private fun awaitSlowEngineIdle() {
+        compose.waitUntil(timeoutMillis = 60_000) {
+            compose.onAllNodesWithContentDescription("Stop response").fetchSemanticsNodes().isEmpty()
+        }
     }
 
     /**
