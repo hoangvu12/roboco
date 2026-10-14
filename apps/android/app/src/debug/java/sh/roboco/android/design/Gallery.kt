@@ -72,6 +72,7 @@ import sh.roboco.android.sessions.SwipeRowGallerySection
 import sh.roboco.android.settings.WallpaperRowsGallerySection
 import sh.roboco.android.settings.AboutGallerySection
 import sh.roboco.android.settings.DevicesRowsGallerySection
+import sh.roboco.android.settings.EngineDetailGallerySection
 import sh.roboco.android.settings.AppearanceGallerySection
 import sh.roboco.android.settings.NotificationRowsGallerySection
 import sh.roboco.android.settings.SettingsScreenGallerySection
@@ -653,6 +654,15 @@ object Gallery {
         // (static fixtures; the live ones are the lab's `meter`/`bench`
         // launch extras).
         GallerySection("Lab meters") { LabMetersGallerySection() },
+        // Ticket 140 (Engine detail page): the pushed page's three cards
+        // for the five fixtures — connected (every row, success dot),
+        // copied, revoked (greyed Rename…, Pair again, error footer,
+        // fading tailnet URL), incompatible (Update required, no Pair
+        // again) and the newer-engine notice — built from EngineDetailUi
+        // directly (no core, no FFI), clicks no-ops.
+        GallerySection("Engine detail", screenshotHeightDp = 3200) {
+            EngineDetailGallerySection()
+        },
         // Later registrations, one line per ticket. The owner ticket's own
         // registration line wins if it differs (names and shot heights are
         // theirs to choose); if the composable already exists when its ticket

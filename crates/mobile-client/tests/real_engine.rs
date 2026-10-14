@@ -853,7 +853,9 @@ async fn rename_engine_reaches_the_engine() {
 }
 
 /// `revoke_own_session` revokes this device's session on the engine
-/// (best-effort): the session shows up revoked in the engine's store.
+/// (best-effort): the session shows up revoked in the engine's store and
+/// in its `GetRemoteAccess` snapshot, and a fresh authenticated connect
+/// with the old credential is refused (ui-parity #140's Rust acceptance).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn revoke_own_session_reaches_the_engine() {
     let engine_dir = tempfile::tempdir().unwrap();
@@ -880,6 +882,33 @@ async fn revoke_own_session_reaches_the_engine() {
             .iter()
             .any(|session| session.id == record.session_id && session.revoked_at.is_some()),
         "the engine revoked this device's session"
+    );
+    // The engine's own view of it (the `GetRemoteAccess` snapshot the
+    // settings page shows): the same session, with `revokedAt` set.
+    let handle = client.engine_handle(&record.engine_id).unwrap();
+    let snapshot = handle
+        .call(roboco_rpc::methods::GET_REMOTE_ACCESS, serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(
+        snapshot["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| {
+                session["id"] == record.session_id.as_str() && !session["revokedAt"].is_null()
+            }),
+        "the remote access snapshot shows the session revoked: {snapshot}"
+    );
+    // The revoked credential can no longer open a fresh authenticated
+    // connection (an already-open socket keeps working until its next
+    // dial — the ticket's note).
+    let ws_url = record.base_url.replacen("http", "ws", 1);
+    assert!(
+        roboco_rpc::connect_ws_authenticated(&ws_url, &record.credential)
+            .await
+            .is_err(),
+        "a fresh connect with the revoked credential must fail"
     );
     client.shutdown();
     drop(listener);
