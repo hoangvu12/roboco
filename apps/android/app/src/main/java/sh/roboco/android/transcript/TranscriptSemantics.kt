@@ -21,6 +21,7 @@ import androidx.compose.ui.semantics.CollectionItemInfo
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.ScrollAxisRange
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.collectionInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.isTraversalGroup
@@ -81,7 +82,21 @@ import kotlin.math.sign
  * chip, the full string for `mailto:`/`roboco-file:`/scheme-less URLs.
  */
 internal fun linkLabel(url: String): String =
-    Uri.parse(url).encodedHost?.takeIf { it.isNotEmpty() } ?: url
+    encodedHostOf(Uri.parse(url).encodedAuthority)?.takeIf { it.isNotEmpty() } ?: url
+
+/**
+ * The host part of an encoded authority (`user@host:port`): android.net.Uri
+ * has no `encodedHost`, so strip the userinfo and the port by hand,
+ * keeping an IPv6 literal's brackets.
+ */
+private fun encodedHostOf(authority: String?): String? {
+    val hostPort = authority?.substringAfterLast('@') ?: return null
+    return if (hostPort.startsWith("[")) {
+        hostPort.substringBefore(']') + "]"
+    } else {
+        hostPort.substringBefore(':')
+    }
+}
 
 /**
  * The row text node's label (`RowView.swift:142-149`): `"You: "` plus the
