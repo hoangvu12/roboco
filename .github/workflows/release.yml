@@ -346,9 +346,10 @@ jobs:
             if [ "$signed" = "true" ]; then
               certs="$($bt/apksigner verify --print-certs "$src" 2>&1)" || {
                 echo "::error::apksigner verify failed for $src"; echo "$certs"; exit 1; }
-              # "Signer #1 certificate …" (v1/v2) or "Signer (minSdkVersion=…) certificate …"
-              # (v3 signers in newer build-tools): take the first SHA-256 digest line.
-              digest="$(echo "$certs" | grep -E '^Signer .*certificate SHA-256 digest:' | head -1 | sed 's/^.*digest: *//' | tr 'A-F' 'a-f' || true)"
+              # The label varies by build-tools: "Signer #1 certificate …",
+              # "Signer (minSdkVersion=…) certificate …" or "V2 Signer: certificate …"
+              # (build-tools 36 on v0.10.0). Take the first SHA-256 digest line.
+              digest="$(echo "$certs" | grep -E 'Signer.*certificate SHA-256 digest:' | head -1 | sed 's/^.*digest: *//' | tr 'A-F' 'a-f' || true)"
               if [ -z "$digest" ]; then
                 echo "::error::$src has no signer certificate digest in apksigner output:"; echo "$certs"; exit 1
               fi
