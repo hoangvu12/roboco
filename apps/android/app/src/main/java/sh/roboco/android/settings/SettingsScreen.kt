@@ -19,6 +19,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.flow.StateFlow
 import sh.roboco.android.RobocoApplication
+import sh.roboco.android.accounts.agentAccountsSection
 import sh.roboco.android.design.LocalBottomChrome
 import sh.roboco.android.shell.LargeTitleScaffold
 import sh.roboco.android.shell.LocalNavStack
@@ -28,9 +29,10 @@ import sh.roboco.android.shell.TitleMode
 /**
  * The Settings screen (android-ui-parity #103): the Compose port of
  * `MoreViewController` — a thin assembly. [LargeTitleScaffold]'s large
- * "Settings" title (25) over one `LazyColumn` that stacks the six section
- * emitters, in this order: **Devices (102), Notifications (99),
- * Appearance (96), Wallpaper (97), Sessions (100), About (101)**.
+ * "Settings" title (25) over one `LazyColumn` that stacks the seven
+ * section emitters, in this order: **Agent Accounts (android-next#05),
+ * Devices (102), Notifications (99), Appearance (96), Wallpaper (97),
+ * Sessions (100), About (101)**.
  * Every row's look is ticket 70's; every row's behaviour is its section
  * ticket's; this screen owns only:
  *
@@ -76,13 +78,15 @@ object SettingsScreenTokens {
 }
 
 /**
- * The six sections, in display order = declaration order (iOS
- * `MoreViewController.swift:183-220`, minus Account/Voice/Sign-Out, plus
- * Roboco's About in the Sign-Out slot). The [key]s are the
- * `groupedSection` keys — they must stay unique across the screen (70
- * prefixes them `grouped:<key>:…`).
+ * The sections, in display order = declaration order (iOS
+ * `MoreViewController.swift:183-220` minus Account/Voice/Sign-Out, plus
+ * Roboco's About in the Sign-Out slot; android-next#05 adds Agent
+ * Accounts where PR #578 put Provider Accounts — ahead of the
+ * computers). The [key]s are the `groupedSection` keys — they must stay
+ * unique across the screen (70 prefixes them `grouped:<key>:…`).
  */
 enum class SettingsSection(val key: String) {
+    AgentAccounts("agent-accounts"),
     Devices("devices"),
     Notifications("notifications"),
     Appearance("appearance"),
@@ -107,11 +111,15 @@ private val SettingsDeviceIdPrefix = DevicesRowIds.engine("")
 /**
  * Pure: maps a row id (the part after `settings-`) to its section; null
  * for an unknown id. The prefixes are the section tickets' row ids:
+ * `agent-account:`/`agent-accounts:` (android-next#05),
  * `engine:`/`device:` rows and `DevicesRowIds.Pair` (102), `notify:` (99),
  * `appearance:` (96), `wallpaper:` (97), 100's two rows, `about:` (101).
  * `account`, `voice` and `signout` (the dropped iOS sections) map to null.
  */
 fun settingsSectionFor(id: String): SettingsSection? = when {
+    id.startsWith("agent-account:") || id.startsWith("agent-accounts:") ->
+        SettingsSection.AgentAccounts
+
     id.startsWith(SettingsEngineIdPrefix) ||
         id.startsWith(SettingsDeviceIdPrefix) ||
         id == DevicesRowIds.Pair -> SettingsSection.Devices
@@ -167,6 +175,8 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     topInset: Dp = Dp.Unspecified,
     trailing: @Composable RowScope.() -> Unit = {},
+    accounts: sh.roboco.android.accounts.AgentAccountsSectionState =
+        sh.roboco.android.accounts.rememberAgentAccountsSectionState(),
     devices: DevicesSectionState = rememberDevicesSectionState(),
     notifications: NotificationSectionState = rememberNotificationSectionState(),
     appearance: AppearanceSectionState = rememberAppearanceSectionState(),
@@ -192,6 +202,7 @@ fun SettingsScreen(
     val nav = LocalNavStack.current
     val sessionsStrings = sessionsSettingsStrings()
     SettingsScreenContent(listState, modifier, topInset, trailing) {
+        agentAccountsSection(accounts)
         devicesSection(devices)
         notificationSection(notifications)
         appearanceSection(appearance)

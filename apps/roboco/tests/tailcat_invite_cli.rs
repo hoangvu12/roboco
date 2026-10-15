@@ -405,6 +405,67 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
         "a healthy route must be reused rather than spawning another adapter"
     );
 
+    // As `pairing create`: plain --json keeps the old shape (no qrSvg, though
+    // the engine now sends one), --qr --json carries the invite's QR SVG,
+    // and text --qr prints the half-block QR under the invite line.
+    assert!(
+        first.get("qrSvg").is_none(),
+        "qrSvg only with --qr: {first}"
+    );
+    let with_qr = successful_invite(
+        &run_invite(
+            &data_dir,
+            Some(&fake_adapter),
+            Some(&adapter_pids_path),
+            Some(&adapter_args_path),
+            &["--ttl-seconds", "47", "--qr", "--json"],
+        ),
+        47,
+    );
+    let qr_svg = with_qr["qrSvg"].as_str().expect("qrSvg with --qr");
+    assert!(
+        qr_svg.contains("shape-rendering=\"crispEdges\""),
+        "{qr_svg}"
+    );
+    let text = run_invite(
+        &data_dir,
+        Some(&fake_adapter),
+        Some(&adapter_pids_path),
+        Some(&adapter_args_path),
+        &["--ttl-seconds", "47", "--qr"],
+    );
+    assert!(
+        text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    let mut lines = stdout.lines();
+    assert!(
+        lines
+            .next()
+            .is_some_and(|line| line.starts_with(INVITE_PREFIX)),
+        "invite line first: {stdout}"
+    );
+    let qr_lines: Vec<&str> = lines
+        .take_while(|line| !line.starts_with("Expires at"))
+        .collect();
+    assert!(
+        qr_lines.len() > 8,
+        "a terminal QR under the invite: {stdout}"
+    );
+    assert!(
+        qr_lines
+            .iter()
+            .all(|line| line.chars().all(|ch| matches!(ch, '█' | '▀' | '▄' | ' '))),
+        "only half-block glyphs: {stdout}"
+    );
+    assert_eq!(
+        adapter_pids(&adapter_pids_path).len(),
+        1,
+        "the --qr mints reuse the same healthy route"
+    );
+
     // A route address that was once ready is not enough: after its adapter dies,
     // the next CLI call must obtain fresh readiness before minting another invite.
     kill_fake_adapter(first_pids[0]);

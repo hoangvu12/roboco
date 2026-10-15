@@ -102,6 +102,21 @@ interface ChipMenuPlatform {
     fun copyLink(url: String)
 }
 
+/**
+ * android-next #05: the account half of the context chip's menu —
+ * [augmentContextCard] appends the Account section (the login in use
+ * and every usage window with percent and written-out reset moment),
+ * the session harness's other logins to switch to, and "Accounts &
+ * Usage…" to #01's context-window details card, or returns the card
+ * unchanged without account data. Implemented by the accounts
+ * package's `SessionAccountUsage`; held by [SessionChipMenus.accounts]
+ * so the plain context card stays the default (tests, previews).
+ */
+interface ContextCardAccounts {
+    /** [card] with the account rows appended, or [card] unchanged. */
+    fun augmentContextCard(card: Menu): Menu
+}
+
 /** The deferred-cache key: the selection (tap time) plus the engine device. */
 private data class MenuKey(
     val chipId: String,
@@ -149,6 +164,14 @@ class SessionChipMenus(
      */
     @Volatile
     var onSettingResult: (Throwable?) -> Unit = {}
+
+    /**
+     * android-next #05: the context chip's account half, set by the
+     * session screen's wiring (this route's `SessionAccountUsage`).
+     * `null` (tests, previews) keeps the plain context card of #01.
+     */
+    @Volatile
+    var accounts: ContextCardAccounts? = null
 
     /** The write lane: never cancelled — an in-flight write always finishes, like iOS's synchronous call. */
     private val writeScope = CoroutineScope(SupervisorJob() + io)
@@ -204,11 +227,16 @@ class SessionChipMenus(
      * (`model` / `effort` get one hoisted deferred; `pr` two rows;
      * `branch` / anything else `null`). android-next #01: `context` opens
      * the read-only details card from the composer's usage — it needs no
-     * row, so it is answered before iOS's row guard.
+     * row, so it is answered before iOS's row guard — and android-next
+     * #05 folds the account rows into it through [accounts]: the plain
+     * card without account data.
      */
     fun menu(chipId: String, platform: ChipMenuPlatform): Menu? {
         val s = snapshot ?: return null
-        if (chipId == SessionChipIds.Context) return s.context?.let { contextUsageCard(it, locale()) }
+        if (chipId == SessionChipIds.Context) {
+            val card = s.context?.let { contextUsageCard(it, locale()) } ?: return null
+            return accounts?.augmentContextCard(card) ?: card
+        }
         val row = s.row ?: return null // iOS: guard let row
         val sel = sessionSelection(s.config, row)
         val harness = sel?.harness ?: DEFAULT_HARNESS
@@ -388,6 +416,9 @@ const val PR_OPEN_ROW = "Open Pull Request"
 
 /** The PR menu's second row. */
 const val PR_COPY_ROW = "Copy Link"
+
+/** The ⋯ menu's Account & Usage row (android-next#05). */
+const val ACCOUNT_USAGE_ROW = "Account & Usage"
 
 // ── the pure rules (unit-tested on the plain JVM) ──────────────────────────
 

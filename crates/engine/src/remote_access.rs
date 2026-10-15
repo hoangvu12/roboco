@@ -422,7 +422,18 @@ impl RemoteAccessController {
         let address = state.tailcat_address.as_deref().ok_or_else(|| anyhow::anyhow!("Tailcat route is unavailable"))?;
         let code = crate::pairing::PairingStore::open(&self.directory)?.create_code("", ttl_seconds)?;
         let invite = crate::tailcat::TailcatInvite::new(address, &code.credential, code.expires_at)?;
-        Ok(serde_json::json!({"id": code.id, "url": invite.encode()?, "expiresAt": code.expires_at}))
+        let url = invite.encode()?;
+        // The same encoder as `create_link`, so the desktop card shows the
+        // invite as a scannable QR (Android's scanner accepts
+        // `roboco-tailcat:`). A real invite is ~450 bytes (QR version 16-17
+        // at level M); the fallible form keeps an oversized custom-DERP
+        // address (grammar max 4096) from panicking the handler: null there.
+        Ok(serde_json::json!({
+            "id": code.id,
+            "qrSvg": qr::try_qr_svg(&url),
+            "url": url,
+            "expiresAt": code.expires_at,
+        }))
     }
 
     pub async fn create_link(&self) -> anyhow::Result<serde_json::Value> {

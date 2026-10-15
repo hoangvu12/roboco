@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import sh.roboco.android.accounts.AgentAccountsRoute
+import sh.roboco.android.accounts.AgentAccountsScreen
 import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.EngineDetailScreen
 import sh.roboco.android.settings.LicensesRoute
@@ -90,6 +92,10 @@ fun ShellRouteContent(route: NavRoute) {
         // Devices row's push lands on. 104's tablet Settings dialog routes
         // pushes through this same table.
         is EngineDetailRoute -> EngineDetailScreen(route.engineId)
+        // android-next #05: the Accounts & Usage page — the Settings →
+        // Agent Accounts row, the usage chip's "Accounts & Usage…" row
+        // and the session ⋯ menu's "Account & Usage" push it.
+        is AgentAccountsRoute -> AgentAccountsScreen(route)
         else -> Unit
     }
 }

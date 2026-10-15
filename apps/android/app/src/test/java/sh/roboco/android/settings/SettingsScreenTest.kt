@@ -343,7 +343,7 @@ class SettingsScreenTest {
 
     @Test
     @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
-    fun rowsAppearInSettingsSectionOrderAndAllSixSectionsArePresent() {
+    fun rowsAppearInSettingsSectionOrderAndAllSevenSectionsArePresent() {
         mount()
 
         val rows = settingsRows()
@@ -360,7 +360,7 @@ class SettingsScreenTest {
             last = ordinal
         }
         assertEquals(
-            "all six sections are on screen",
+            "all seven sections are on screen",
             SettingsSection.entries.toSet(),
             rows.map { settingsSectionFor(it.first) }.toSet(),
         )
@@ -368,13 +368,13 @@ class SettingsScreenTest {
 
     @Test
     @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
-    fun headersReadDevicesNotificationsAppearanceWallpaperSessionsAbout() {
+    fun headersReadAgentAccountsDevicesNotificationsAppearanceWallpaperSessionsAbout() {
         mount()
         val headings = compose.onAllNodes(headingMatcher).fetchSemanticsNodes()
             .map { node ->
                 node.config.getOrNull(SemanticsProperties.Text)?.joinToString(separator = "") { it.text } ?: ""
             }
-        val expected = listOf("Devices", "Notifications", "Appearance", "Wallpaper", "Sessions", "About")
+        val expected = listOf("Agent Accounts", "Devices", "Notifications", "Appearance", "Wallpaper", "Sessions", "About")
         var searchFrom = 0
         for (header in expected) {
             val local = headings.subList(searchFrom, headings.size).indexOf(header)

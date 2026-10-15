@@ -54,6 +54,8 @@ import sh.roboco.android.transcript.firstUserBubbleInRoot
 import sh.roboco.android.transcript.rememberLinkRouter
 import sh.roboco.android.transcript.transcriptBottomInset
 import sh.roboco.android.transcript.widgets.imageTileRadius
+import sh.roboco.android.accounts.SessionAccountUsage
+import sh.roboco.android.design.LocalToaster
 
 /**
  * The Session screen (android-ui-parity #75) — the composition that stacks
@@ -415,23 +417,47 @@ fun SessionScreen(
     //     `binding.apply(chrome)` (SideEffects run in composition order),
     //     so its closing re-apply is what puts the providers on the
     //     composer's first frame; the map's lambdas themselves run only
-    //     at tap time (ticket 59), never during composition. The
-    //     provider reads only the controller-refresh snapshot — no FFI
-    //     on main; the loads and writes hop to IO inside
-    //     [SessionChipMenus].
+    //     at tap time (ticket 59), never during composition. The provider
+    //     reads only the controller-refresh snapshot — no FFI on main;
+    //     the loads and writes hop to IO inside [SessionChipMenus].
+    //     android-next #05: this route's usage filler is handed to 89 as
+    //     the context chip's account half (the tint filler and the menu
+    //     rows), and its open action + toast are injected here where the
+    //     nav stack and the app toaster live.
     composerBinding?.let { binding ->
         val chipMenus = remember(controller) { controller.filler<SessionChipMenus>() }
+        val usage = remember(controller) { controller.filler<SessionAccountUsage>() }
         val banner = remember(controller) { controller.filler<StatusBanner>() }
         val platform = rememberChipMenuPlatform()
+        val usageStack = LocalNavStack.current
+        val usageEntry = LocalNavEntry.current
+        val usageToaster = LocalToaster.current
         SideEffect {
             chipMenus?.let { menus ->
                 menus.onSettingResult = { t ->
                     if (t == null) banner?.noteSettingSucceeded() else banner?.noteSettingFailed(t)
                 }
+                // android-next #05: fold the account rows into the context
+                // chip's menu (the plain context card without accounts).
+                menus.accounts = usage
                 // iOS render :488-491: the provider map is rebuilt on
                 // every chrome change (the chips it decorates are).
                 binding.chipMenus = { chips ->
                     chips.associate { chip -> chip.id to { menus.menu(chip.id, platform) } }
+                }
+            }
+            usage?.let { model ->
+                model.toaster = usageToaster
+                model.onOpenAccounts = {
+                    if (usageStack.top.id == usageEntry.id) {
+                        usageStack.push(
+                            sh.roboco.android.accounts.AgentAccountsRoute(
+                                deviceId = controller.hostDeviceId.ifEmpty { null },
+                                focusHarness = controller.harness,
+                            ),
+                            animated = true,
+                        )
+                    }
                 }
             }
             binding.apply(chrome)

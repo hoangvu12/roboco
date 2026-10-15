@@ -30,10 +30,29 @@ pub fn qr_svg(text: &str) -> String {
         .build()
 }
 
+/// [`qr_svg`] for inputs whose length is not bounded far below QR capacity:
+/// `None` instead of a panic when the text does not fit a version-40 code at
+/// level M (2331 bytes). Tailcat invites embed an address the grammar allows
+/// up to 4096 bytes, so the engine mints their QR through this; real
+/// invites are ~450 bytes.
+pub fn try_qr_svg(text: &str) -> Option<String> {
+    QrCode::with_error_correction_level(text, EcLevel::M)
+        .ok()
+        .map(|code| code.render::<svg::Color>().module_dimensions(1, 1).build())
+}
+
 /// Unicode half-block rendering for terminals (one glyph per two modules).
 /// Print it with `println!`; it already ends without a trailing newline.
 pub fn qr_terminal(text: &str) -> String {
     encode(text).render::<unicode::Dense1x2>().build()
+}
+
+/// [`qr_terminal`]'s fallible twin, for the same unbounded inputs as
+/// [`try_qr_svg`].
+pub fn try_qr_terminal(text: &str) -> Option<String> {
+    QrCode::with_error_correction_level(text, EcLevel::M)
+        .ok()
+        .map(|code| code.render::<unicode::Dense1x2>().build())
 }
 
 #[cfg(test)]
@@ -78,6 +97,58 @@ mod tests {
         assert_eq!(content, URL);
         // rqrr reports the format-info level: 0 = M, 1 = L, 2 = H, 3 = Q.
         assert_eq!(meta.ecc_level, 0, "error correction level M");
+    }
+
+    /// A Tailcat invite the size the engine really mints: a one-node region
+    /// address (`tc` + base64url of ~170 bytes of CBOR, as Tailscale's
+    /// tailcat DERP map yields) and a 43-char pair code. It is ~450 bytes,
+    /// QR version 16–17 at M; it must round-trip through `try_qr_svg`.
+    #[test]
+    fn a_realistic_tailcat_invite_round_trips_through_try_qr_svg() {
+        let address = format!("tc{}", "AbCd-_09".repeat(29));
+        let token = "6S7FneJLTGEoQRtEwMWFVw8CwsVXtLyAioSpQRh8Y5D";
+        let invite = crate::tailcat::TailcatInvite::new(&address, token, 1_760_000_000_000)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert!(
+            (400..520).contains(&invite.len()),
+            "invite is {} bytes",
+            invite.len()
+        );
+        let svg = try_qr_svg(&invite).expect("a realistic invite fits a QR");
+        let (size, modules) = svg_modules(&svg);
+        // Versions 16–17 are 81–85 modules, plus the 2 × 4 quiet zone.
+        assert!((89..=93).contains(&size), "module grid {size}");
+        // Decode at 4 px per module, as a camera sees a screen.
+        let scale = 4;
+        let side = (size * scale) as u32;
+        let mut image = image::GrayImage::new(side, side);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let (x, y) = (x as usize / scale, y as usize / scale);
+            *pixel = image::Luma([if modules[y][x] { 0 } else { 255 }]);
+        }
+        let mut prepared = rqrr::PreparedImage::prepare(image);
+        let grids = prepared.detect_grids();
+        assert_eq!(grids.len(), 1, "exactly one QR code in the SVG");
+        let (meta, content) = grids[0].decode().expect("decodes");
+        assert_eq!(content, invite);
+        assert_eq!(meta.ecc_level, 0, "error correction level M");
+    }
+
+    /// The grammar allows a 4096-byte address; such an invite fits no QR at
+    /// M, and the fallible encoders say so instead of panicking.
+    #[test]
+    fn an_oversized_invite_yields_no_qr_instead_of_a_panic() {
+        let address = format!("tc{}", "A".repeat(crate::tailcat::MAX_ADDRESS_BYTES - 2));
+        let invite = crate::tailcat::TailcatInvite::new(&address, "code", 1)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert!(invite.len() > 2331);
+        assert!(try_qr_svg(&invite).is_none());
+        assert!(try_qr_terminal(&invite).is_none());
+        assert!(try_qr_svg(URL).is_some(), "short input still encodes");
     }
 
     #[test]
