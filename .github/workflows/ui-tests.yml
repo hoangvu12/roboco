@@ -94,11 +94,18 @@ jobs:
             echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
           } >> "$GITHUB_ENV"
       - name: Mobile core tests
+        # android-next#02: tailcat's own diagnostics (test-only sink) from the
+        # host library and the engine's adapter go to stderr for the
+        # Tailcat end-to-end test; nothing else in this run logs with it.
+        env:
+          ROBOCO_TAILCAT_TEST_LOG: '1'
         run: cargo test --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-mobile-client
       - name: Tailcat end-to-end (verbose)
         # Already part of the run above; repeated alone with output so a
         # failure shows the adapter and tunnel logs.
         if: failure()
+        env:
+          ROBOCO_TAILCAT_TEST_LOG: '1'
         run: cargo test --locked -p roboco-mobile-client --test tailcat_engine -- --nocapture
       - name: Mobile grammar subset tests
         # android-app#10: the Android core links the middle grammar set

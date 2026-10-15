@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -30,6 +31,21 @@ import (
 
 // ApplicationPort is the only remote TCP port exposed by this adapter.
 const ApplicationPort uint16 = 7332
+
+// testLogEnv opts a TEST run into tailcat's diagnostics on stderr. Nothing
+// ships with it set: the desktop, the CLI and Android always discard them
+// (an Android c-shared library even starts with an empty Go environment).
+// The lines can name relay endpoints and node keys, so never set it in
+// production.
+const testLogEnv = "ROBOCO_TAILCAT_TEST_LOG"
+
+// debugLogf is tailcat's log sink: logger.Discard unless testLogEnv=1.
+var debugLogf logger.Logf = func() logger.Logf {
+	if os.Getenv(testLogEnv) == "1" {
+		return log.New(os.Stderr, "tailcat["+fmt.Sprint(os.Getpid())+"]: ", log.LstdFlags|log.Lmicroseconds).Printf
+	}
+	return logger.Discard
+}()
 
 const stateVersion = 1
 
@@ -177,7 +193,7 @@ func connectClient(address, listenAddress string, state *stateFile, derpMap stri
 			Server:     tailcat.Addr(address),
 			Key:        state.PrivateKey,
 			DERPMapURL: derpMap,
-			Logf:       logger.Discard,
+			Logf:       debugLogf,
 		}
 	}
 	cl := newTC()
@@ -212,7 +228,14 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	dial := func(tc *tailcat.Client) (net.Conn, error) {
 		attempt, cancel := context.WithTimeout(ctx, tunnelDialTimeout)
 		defer cancel()
-		return tc.DialTCPPort(attempt, ApplicationPort)
+		started := time.Now()
+		conn, err := tc.DialTCPPort(attempt, ApplicationPort)
+		if err != nil {
+			debugLogf("adapter: tunnel dial %p failed after %v: %v", tc, time.Since(started), err)
+		} else {
+			debugLogf("adapter: tunnel dial %p ok after %v", tc, time.Since(started))
+		}
+		return conn, err
 	}
 	conn, err := dial(tc)
 	if err == nil || ctx.Err() != nil {
@@ -226,6 +249,9 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		_ = tc.Close()
 		c.tc = c.newTC()
 		c.lastReset = time.Now()
+		debugLogf("adapter: reset tailcat client %p -> %p", tc, c.tc)
+	} else {
+		debugLogf("adapter: no reset (current %p, since last reset %v)", c.tc, time.Since(c.lastReset))
 	}
 	tc = c.tc
 	c.mu.Unlock()
@@ -249,7 +275,7 @@ func startServer(target, statePath, derpMap string, regionID int, region *tailcf
 		Key:          state.PrivateKey,
 		PresharedKey: state.PresharedKey,
 		DERPMapURL:   derpMap,
-		Logf:         logger.Discard,
+		Logf:         debugLogf,
 	}
 	switch {
 	case region != nil:
@@ -286,7 +312,13 @@ func startServer(target, statePath, derpMap string, regionID int, region *tailcf
 
 	p := newProxy(ln, func(ctx context.Context) (net.Conn, error) {
 		var d net.Dialer
-		return d.DialContext(ctx, "tcp4", target)
+		conn, err := d.DialContext(ctx, "tcp4", target)
+		if err != nil {
+			debugLogf("adapter: server target dial failed: %v", err)
+		} else {
+			debugLogf("adapter: server accepted a tunnel connection")
+		}
+		return conn, err
 	})
 	p.start()
 	return &Server{proxy: p, tc: srv, address: string(srv.TailcatAddr())}, nil
