@@ -17,8 +17,9 @@
 //!   remote devices' workspace session rows
 //! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
 //!   setChatArchived, deleteChat, renameDevice, markChatSeen)
-//! - `EngineInfo` → `{deviceId, workspaceScope}` — this runtime's fixed identity
-//!   and data boundary (never forwarded)
+//! - `EngineInfo` → `{deviceId, workspaceScope, cursorSdkVersion, capabilities,
+//!   version, protocolVersion, minClientProtocolVersion}` — this runtime's fixed
+//!   identity and compatibility handshake (never forwarded)
 //! - `LocalDevice` → `{deviceId}` — legacy engine identity (never forwarded)
 //! - Repos (§3.5): `ListRepos`, `AddRepo {path}`, `CloneRepo {url}`,
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
@@ -760,12 +761,11 @@ impl EngineRpc {
         agent_accounts: AgentAccounts,
         workspace_scope: WorkspaceScope,
     ) -> Self {
-        let engine_info = EngineInfo {
-            device_id: doc_host.device_id().to_string(),
+        let engine_info = EngineInfo::current(
+            doc_host.device_id().to_string(),
             workspace_scope,
-            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
-            capabilities: roboco_proto::capabilities::current(),
-        };
+            Some(roboco_harness::CursorHarness::sdk_version().into()),
+        );
         Self {
             remote_access: Default::default(),
             sessions,
@@ -1128,14 +1128,30 @@ where
     .boxed()
 }
 
+/// Options parsed from the raw `WatchDocMessages` params. Older engines
+/// ignore unknown params, and older clients send none — the default is
+/// byte-for-byte today's stream.
+#[derive(Default)]
+struct DocMessagesOptions {
+    /// Attach engine-computed `digests` to every frame of this stream.
+    digests: bool,
+    /// Try to resume from the client's held copy (implies `digests`).
+    resume: Option<roboco_doc::TranscriptResume>,
+}
+
 /// The transcript watch as delta frames (`roboco_doc::transcript_delta`): a
 /// full `reset` first, then only changed entries per commit — the whole-Vec
 /// serialization here was the per-tick cost that scaled with transcript size.
+/// With `digests`/`resume` opted in, frames additionally carry engine-computed
+/// entry digests and the first frame may be a catch-up delta instead of a reset
+/// (`roboco_doc::transcript_resume`).
 fn doc_messages_stream(
     rx: watch::Receiver<crate::doc_host::TranscriptSnapshot>,
     doc: std::sync::Arc<roboco_doc::SessionDoc>,
+    opts: DocMessagesOptions,
 ) -> BoxStream<'static, serde_json::Value> {
     use roboco_doc::transcript_delta::{TranscriptFrame, diff_transcript};
+    use roboco_doc::transcript_resume::{entry_digests, frame_digests, resume_frame};
     futures::stream::unfold(
         (
             rx,
@@ -1143,8 +1159,16 @@ fn doc_messages_stream(
             doc,
             None,
             roboco_doc::TranscriptBaseline::default(),
+            opts,
         ),
-        |(mut rx, mut prev, doc, mut previous_usage, mut opening_baseline)| async move {
+        |(
+            mut rx,
+            mut prev,
+            doc,
+            mut previous_usage,
+            mut opening_baseline,
+            opts,
+        )| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
@@ -1152,9 +1176,34 @@ fn doc_messages_stream(
                 // Watchers retain the immutable published snapshot. Each
                 // connection used to deep-copy the entire transcript here.
                 let current = rx.borrow_and_update().clone();
-                let frame = match prev.as_ref() {
-                    None => TranscriptFrame::reset(&current.entries),
-                    Some(prev) => diff_transcript(&prev.entries, &current.entries),
+                let first = prev.is_none();
+                // The first frame of an opted-in stream needs digests for
+                // every entry (a resume summary needs them to match, a plain
+                // digest stream to attach). Hash off the async workers once:
+                // a 7.6 MB transcript is ~20–40 ms of SHA-256.
+                let mut first_digests: Option<Vec<String>> = None;
+                let mut resume: Option<TranscriptFrame> = None;
+                if first && (opts.digests || opts.resume.is_some()) {
+                    let entries = current.entries.clone();
+                    first_digests =
+                        tokio::task::spawn_blocking(move || entry_digests(&entries)).await.ok();
+                    if first_digests.is_none() {
+                        // The closure is panic-free; if the join still fails,
+                        // degrade: an empty digest list never matches a
+                        // non-empty prefix, so the client gets a reset.
+                        tracing::warn!("transcript digest hashing failed");
+                    }
+                }
+                if first
+                    && let Some(summary) = opts.resume.as_ref()
+                    && let Some(digests) = first_digests.as_deref()
+                {
+                    resume = resume_frame(summary, &current.entries, digests);
+                }
+                let frame = match (resume, prev.as_ref()) {
+                    (Some(frame), _) => frame,
+                    (None, None) => TranscriptFrame::reset(&current.entries),
+                    (None, Some(prev)) => diff_transcript(&prev.entries, &current.entries),
                 };
                 let replay_baseline = match prev.as_ref() {
                     None => {
@@ -1185,7 +1234,9 @@ fn doc_messages_stream(
                     }
                     _ => None,
                 };
-                prev = Some(current);
+                // A resume catch-up delta is history by definition: the first
+                // frame keeps carrying the opening cutoff either way.
+                prev = Some(current.clone());
                 // No-op commits (a second watcher attaching, command-only
                 // changes) produce empty deltas — skip the frame entirely.
                 let usage = doc.context_usage();
@@ -1193,13 +1244,19 @@ fn doc_messages_stream(
                     continue;
                 }
                 previous_usage = usage;
+                let digests = if opts.digests {
+                    Some(frame_digests(&frame, &current.entries, first_digests.as_deref()))
+                } else {
+                    None
+                };
                 let value = serde_json::to_value(roboco_doc::TranscriptUpdate {
                     frame,
                     context_usage: usage,
                     replay_baseline,
+                    digests,
                 })
                 .ok()?;
-                return Some((value, (rx, prev, doc, previous_usage, opening_baseline)));
+                return Some((value, (rx, prev, doc, previous_usage, opening_baseline, opts)));
             }
         },
     )
@@ -1211,6 +1268,7 @@ fn doc_messages_stream(
 async fn opening_doc_messages_stream(
     host: crate::doc_host::DocHost,
     chat_id: String,
+    digests: bool,
 ) -> Result<BoxStream<'static, serde_json::Value>, RpcError> {
     let (handle, preview) = tokio::task::spawn_blocking(move || {
         let handle = host.open(&chat_id)?;
@@ -1219,6 +1277,7 @@ async fn opening_doc_messages_stream(
             frame: roboco_doc::TranscriptFrame::reset(&entries),
             context_usage: handle.doc().context_usage(),
             replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
+            digests: None,
         })
         .map_err(|e| crate::EngineError::Other(e.to_string()))?;
         preview["historyPending"] = serde_json::Value::Bool(true);
@@ -1233,7 +1292,14 @@ async fn opening_doc_messages_stream(
     let full = futures::stream::once(async move {
         match tokio::task::spawn_blocking(move || (handle.watch_messages(), handle.doc_arc())).await
         {
-            Ok((rx, doc)) => doc_messages_stream(rx, doc),
+            Ok((rx, doc)) => doc_messages_stream(
+                rx,
+                doc,
+                DocMessagesOptions {
+                    digests,
+                    resume: None,
+                },
+            ),
             Err(error) => {
                 tracing::warn!(%error, "transcript opening failed");
                 futures::stream::empty().boxed()
@@ -1555,19 +1621,44 @@ impl RpcService for EngineRpc {
                     .get("openingTail")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                // `digests` and `resume` are additive params: engines that
+                // predate them ignore them, and clients that predate them
+                // send neither.
+                let digests_param = params
+                    .get("digests")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let resume_param = params.get("resume").filter(|v| !v.is_null()).cloned();
+                let resume = resume_param.as_ref().and_then(|value| {
+                    serde_json::from_value::<roboco_doc::TranscriptResume>(value.clone()).ok()
+                });
+                if resume_param.is_some() && resume.is_none() {
+                    // A bad cache must never block a transcript: degrade to a
+                    // plain digests stream; the reset rebuilds the client.
+                    tracing::debug!("watch doc messages: ignoring malformed resume");
+                }
+                let opts = DocMessagesOptions {
+                    // A resume implies digests; a malformed resume still
+                    // behaves as `digests: true` without resume.
+                    digests: digests_param || resume.is_some() || resume_param.is_some(),
+                    resume,
+                };
                 let p: ChatParams = parse_params(params)?;
                 // An open transcript keeps its chat's checkout diff live (and
                 // discardable) even when the chat is archived; the guard lives
                 // exactly as long as the stream.
                 let interest = self.diff_sync.retain_chat(&p.chat_id);
-                let stream = if opening_tail {
-                    opening_doc_messages_stream(self.doc_host.clone(), p.chat_id).await?
+                // `resume` takes precedence over `openingTail`: the client
+                // already has content painted from its cache.
+                let stream = if opening_tail && opts.resume.is_none() {
+                    opening_doc_messages_stream(self.doc_host.clone(), p.chat_id, opts.digests)
+                        .await?
                 } else {
                     let handle = self
                         .doc_host
                         .open(&p.chat_id)
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
-                    doc_messages_stream(handle.watch_messages(), handle.doc_arc())
+                    doc_messages_stream(handle.watch_messages(), handle.doc_arc(), opts)
                 };
                 Ok(RpcReply::Stream(
                     stream
@@ -3245,7 +3336,7 @@ mod tests {
         locked_rx.recv().unwrap();
         let opening = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            opening_doc_messages_stream(host.clone(), "whale".into()),
+            opening_doc_messages_stream(host.clone(), "whale".into(), false),
         )
         .await;
         release_tx.send(()).unwrap();
@@ -3405,7 +3496,7 @@ mod context_usage_tests {
             },
         );
         let handle = host.open("replay-chat").unwrap();
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         let first: roboco_doc::TranscriptUpdate =
             serde_json::from_value(stream.next().await.unwrap()).unwrap();
         assert!(first.replay_baseline.unwrap().entries.is_empty());
@@ -3511,7 +3602,7 @@ mod context_usage_tests {
             update.replay_baseline.is_none(),
             "live updates must not resend the history watermark"
         );
-        let mut reopened = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut reopened = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         let opening: roboco_doc::TranscriptUpdate =
             serde_json::from_value(reopened.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -3535,7 +3626,7 @@ mod context_usage_tests {
             },
         );
         let handle = host.open("interleaved").unwrap();
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         stream.next().await.unwrap();
         let source = roboco_doc::SessionDoc::init("interleaved").unwrap();
         let snapshot = source.export_snapshot().unwrap();
@@ -3644,7 +3735,7 @@ mod context_usage_tests {
         });
         // Cached content exists before the first watcher and never enters
         // the changed-parts tracker. It may not have been painted yet.
-        let mut first = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut first = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         let opening: roboco_doc::TranscriptUpdate =
             serde_json::from_value(first.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -3668,7 +3759,7 @@ mod context_usage_tests {
         assert!(update.replay_baseline.is_none());
         // A later subscriber sees a longer historical prefix, but must not
         // change the first subscriber's ongoing live animation.
-        let mut second = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut second = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         let opening: roboco_doc::TranscriptUpdate =
             serde_json::from_value(second.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -3735,7 +3826,7 @@ mod context_usage_tests {
             id: "body".into(),
             text: text.into(),
         };
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         stream.next().await.unwrap();
         writer.sync(&[part("live")]).unwrap();
         let snapshot = source.export_snapshot().unwrap();
@@ -3749,7 +3840,7 @@ mod context_usage_tests {
                 .unwrap();
         drop(stream);
         // No unwatched commit clears provenance before the new attach.
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc());
+        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), DocMessagesOptions::default());
         stream.next().await.unwrap();
         writer.sync(&[part("live plus recovered")]).unwrap();
         let snapshot = source.export_snapshot().unwrap();
@@ -3786,7 +3877,7 @@ mod context_usage_tests {
             .import(&host.export_snapshot().unwrap())
             .unwrap();
         let (tx, rx) = watch::channel(crate::doc_host::TranscriptSnapshot::default());
-        let mut stream = doc_messages_stream(rx, remote.clone());
+        let mut stream = doc_messages_stream(rx, remote.clone(), DocMessagesOptions::default());
         let first = stream.next().await.unwrap();
         assert_eq!(first["contextUsage"]["tokens"], 42000);
         assert!(first.get("reset").is_some());
@@ -3808,7 +3899,7 @@ mod context_usage_tests {
             .unwrap();
         assert_eq!(update["contextUsage"]["tokens"], 0);
         assert_eq!(update["contextUsage"]["window"], 200000);
-        let mut reconnect = doc_messages_stream(tx.subscribe(), remote.clone());
+        let mut reconnect = doc_messages_stream(tx.subscribe(), remote.clone(), DocMessagesOptions::default());
         assert_eq!(
             reconnect.next().await.unwrap()["contextUsage"],
             update["contextUsage"]

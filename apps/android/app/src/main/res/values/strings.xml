@@ -1,0 +1,135 @@
+<resources>
+    <string name="app_name">Roboco</string>
+
+    <!-- The pairing root (android-ui-parity #34): the iOS SignIn layout with
+         Roboco's copy (web app-shell.tsx Welcome strings, "browser"→"phone"). -->
+    <string name="pairing_root_title" translatable="false">Roboco</string>
+    <string name="pairing_root_tagline">This phone has no paired engine yet.</string>
+    <string name="pairing_root_pair">Pair an engine</string>
+    <string name="pairing_root_redeeming">Redeeming the pairing link…</string>
+
+    <!-- The Pair page (android-ui-parity #72): the web pair page's copy
+         ("browser"→"phone"; the placeholder and hint carry the web's
+         Tailcat half again since android-next#02 — the phone redeems
+         roboco-tailcat: invites through its own in-process Tailcat
+         tunnel), the hint and cleartext note from android-app#18, the
+         error sentences from the web's pairing-errors.ts plus the three
+         Tailcat failures. Ellipses are U+2026, the em dash U+2014, "→"
+         U+2192, "·" U+00B7; apostrophes are ASCII. -->
+    <string name="pair_title">Pair this phone</string>
+    <string name="pair_section">Pairing link</string>
+    <string name="pair_placeholder" translatable="false">https://…/pair#token=… or roboco-tailcat:…</string>
+    <string name="pair_paste">Paste</string>
+    <string name="pair_scan">Scan QR code</string>
+    <string name="pair_hint">Paste a pairing link or a roboco-tailcat: invite from any engine. Create one on that computer under Settings → Remote access.</string>
+    <string name="pair_target">Engine at %1$s</string>
+    <string name="pair_target_tailcat">Engine over Tailcat · invite expires in %1$s</string>
+    <string name="pair_cleartext">This link uses http://, so pairing and your session aren\'t encrypted. Use a trusted network or your own tunnel.</string>
+    <string name="pair_submit">Pair engine</string>
+    <string name="pair_submitting">Pairing…</string>
+    <string name="pair_submitting_tailcat">Connecting through Tailcat…</string>
+    <string name="pair_error_refused">That pairing link did not work — it may have expired or already have been used.</string>
+    <string name="pair_error_unreachable">Could not reach that engine. Check the URL and that the engine is running.</string>
+    <string name="pair_error_tailcat_expired">That Tailcat invite has expired. Run roboco engine tailcat invite again.</string>
+    <string name="pair_error_tailcat_unreachable">Could not reach that engine over Tailcat. Check that it is running and online.</string>
+    <string name="pair_error_tailcat_unavailable">Tailcat isn\'t available in this build.</string>
+    <string name="pair_error_failed">Pairing failed.</string>
+    <string name="pair_error_store">Couldn\'t save the engine\'s credential on this phone.</string>
+
+    <!-- The QR scanner (android-ui-parity #138): the hint, foreign,
+         denied and unavailable captions (qr_denied/qr_foreign/qr_hint are
+         android-app#18's wording verbatim; qr_unavailable is new — see the
+         ticket's Comments), the denied-state capsule and the ✕ label
+         (UIKit's .close, not ImageViewer's "Close image preview"). The
+         pane title reuses pair_scan. Apostrophes are ASCII, matching 72. -->
+    <string name="qr_hint">Point the camera at a pairing QR code</string>
+    <string name="qr_foreign">That QR code isn\'t a Roboco pairing link.</string>
+    <string name="qr_denied">Camera access is off. Allow it in Settings to scan, or paste the link instead.</string>
+    <string name="qr_open_settings">Open Settings</string>
+    <string name="qr_unavailable">The camera isn\'t available right now. Paste the link instead.</string>
+    <string name="qr_close">Close</string>
+
+    <!-- Hardware keyboard shortcuts (android-ui-parity #33), verbatim from
+         ios:Shell/SplitRootController.swift:53-67: the system shortcut
+         helper (Meta+/) group label and the three command titles. -->
+    <string name="shortcut_group" translatable="false">Roboco</string>
+    <string name="shortcut_new_session" translatable="false">New Session</string>
+    <string name="shortcut_search" translatable="false">Search</string>
+    <string name="shortcut_toggle_sidebar" translatable="false">Toggle Sidebar</string>
+
+    <!-- The tablet sidebar's bottom toolbar (android-ui-parity #107), verbatim
+         from ios:Shell/SplitRootController.swift:239-252. Note the lower-case
+         "s" in "New session": the bar item's accessibility label, not the
+         Ctrl+N shortcut's "New Session" above. -->
+    <string name="sidebar_settings" translatable="false">Settings</string>
+    <string name="sidebar_options" translatable="false">Options</string>
+    <string name="sidebar_new_session" translatable="false">New session</string>
+
+    <!-- Row swipe actions and the row's context menu (android-ui-parity #44),
+         verbatim from ios:Threads/SessionListController.swift:228-296 — the
+         swipe a11y labels double as the menu titles. U+2026 in the … entries. -->
+    <string name="swipe_pin" translatable="false">Pin</string>
+    <string name="swipe_unpin" translatable="false">Unpin</string>
+    <string name="swipe_archive" translatable="false">Archive</string>
+    <string name="swipe_move" translatable="false">Move</string>
+    <string name="swipe_unarchive" translatable="false">Unarchive</string>
+    <string name="menu_move_to_section" translatable="false">Move to Section</string>
+    <string name="menu_no_section" translatable="false">No Section</string>
+    <string name="menu_new_section" translatable="false">New Section…</string>
+    <string name="menu_rename" translatable="false">Rename…</string>
+    <!-- The Settings "Sessions" section (android-ui-parity #100), verbatim
+         from ios:Shell/MoreViewController.swift:212-215. `group_by_project`
+         is owned by this ticket only: ticket 46's ⋯ menu writes its labels
+         as Kotlin literals, so the copy is identical but not shared. -->
+    <string name="settings_sessions_header" translatable="false">Sessions</string>
+    <string name="group_by_project" translatable="false">Group by Project</string>
+    <string name="settings_group_by_project_subtitle" translatable="false">Sessions outside your sections, under their project</string>
+    <string name="settings_archived_sessions" translatable="false">Archived Sessions</string>
+
+    <!-- In-app updates (android-next#04): the approved mockup's copy
+         (updates.png panels A–F). The launch alert (A), the in-place
+         download state (B), the one-time install-permission ask (C), the
+         About rows (D/E/F), and the short check-failure reasons. Copy uses
+         "Roboco"; the ellipsis is U+2026, the middle dot U+00B7;
+         apostrophes are ASCII. -->
+    <string name="update_alert_title">Update Available</string>
+    <string name="update_alert_message">Roboco %1$s is available. You have %2$s.</string>
+    <string name="update_alert_engine_nudge">Update Roboco on your computer too.</string>
+    <string name="update_alert_update">Update</string>
+    <string name="update_alert_later">Later</string>
+    <string name="update_downloading_title">Updating Roboco</string>
+    <string name="update_downloading_message">Downloading %1$s…</string>
+    <string name="update_progress_of_mb">%1$s of %2$s MB</string>
+    <string name="update_downloading_cancel">Cancel</string>
+    <string name="update_failed_title">Update Failed</string>
+    <string name="update_failed_retry">Try Again</string>
+    <string name="update_failed_not_now">Not Now</string>
+    <string name="update_failed_network">The download didn\'t finish. Check your connection and try again.</string>
+    <string name="update_failed_storage">Roboco couldn\'t write the download. Check free space and try again.</string>
+    <string name="update_failed_checksum">The download didn\'t match its published checksum, so it was discarded. Try again.</string>
+    <string name="update_failed_signer">The update is signed by a different key than this install, so it can\'t replace it. Install it from the releases page instead.</string>
+    <string name="update_failed_install">Roboco couldn\'t be updated. %1$s</string>
+    <string name="update_failed_install_bare">Roboco couldn\'t be updated.</string>
+    <string name="update_permission_title">Allow Roboco to Install Updates</string>
+    <string name="update_permission_message">Android asks once. Turn on \"Allow from this source\" for Roboco, then come back.</string>
+    <string name="update_permission_open">Open Settings</string>
+    <string name="update_permission_not_now">Not Now</string>
+    <string name="update_row_update_title">Update to Roboco %1$s</string>
+    <string name="update_row_size_date">%1$s MB · Released %2$s</string>
+    <string name="update_row_size">%1$s MB</string>
+    <string name="update_row_released">Released %1$s</string>
+    <string name="update_row_check_title">Check for Updates</string>
+    <string name="update_row_checking">Checking…</string>
+    <string name="update_row_up_to_date">Roboco is up to date</string>
+    <string name="update_row_up_to_date_at">Roboco is up to date · checked %1$s</string>
+    <string name="update_row_error">Couldn\'t check: %1$s</string>
+    <string name="update_row_github_title">Roboco %1$s on GitHub</string>
+    <string name="update_row_github_subtitle">Debug build: install the release APK manually</string>
+    <string name="update_checked_just_now">just now</string>
+    <string name="update_checked_minutes_ago">%1$d min ago</string>
+    <string name="update_checked_hours_ago">%1$d h ago</string>
+    <string name="update_checked_yesterday">yesterday</string>
+    <string name="update_reason_offline">offline</string>
+    <string name="update_reason_not_found">not found</string>
+    <string name="update_reason_no_manifest">no manifest</string>
+</resources>

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Custom Tabs (ui-parity#89 and #126): package visibility for
+         CustomTabsClient.getPackageName on API 30+. Without it the PR chip's
+         "Open Pull Request" and every transcript web link fall back to the
+         plain VIEW intent / the external browser. -->
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Haptics (parity #05): required by Vibrator.vibrate. Normal permission, no prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Notifications + the run-watching foreground service (android-app#28).
+         POST_NOTIFICATIONS is the API 33+ runtime permission (31–32 have none);
+         POST_PROMOTED_NOTIFICATIONS is the API 36 Live Update permission
+         (normal, no prompt). Exactly the ticket's list — no RECEIVE_BOOT_COMPLETED,
+         no FCM/GMS. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- The QR scanner (ui-parity #138). CAMERA implies the camera
+         features as required=true, which would hide the app from
+         camera-less devices; every one of them is optional here (the
+         Pair page hides its Scan row on FEATURE_CAMERA_ANY instead). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- In-app updates (android-next#04): lets the app request package
+         installs (the PackageInstaller session path). The user still
+         confirms the install itself, and the one-time "install unknown
+         apps" grant is asked in-app first (the approved panel C). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <application
+        android:name=".RobocoApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
+        android:theme="@style/Theme.Roboco">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- roboco:// deep links (ticket 36). No autoVerify: custom
+                 scheme. One filter: scheme × the five hosts, any path. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="roboco" />
+                <data android:host="chat" />
+                <data android:host="new" />
+                <data android:host="settings" />
+                <data android:host="search" />
+                <data android:host="pair" />
+            </intent-filter>
+        </activity>
+        <!-- Share target for pairing links (ticket 139). No UI: forwards
+             into the app's own task (see PairShareActivity). -->
+        <activity
+            android:name=".pairing.PairShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+        <!-- The QR scanner (ui-parity #138): a separate exported=false
+             activity, so CameraX, the permission dialog and the trip to
+             system Settings get a clean lifecycle; the result carries the
+             scanned URL back to the Pair page's launcher. configChanges
+             keeps the camera session alive across rotation (Compose
+             relayouts). -->
+        <activity
+            android:name=".pairing.QrScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Roboco.Scanner"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
+        <!-- android-app#28: the run-watching foreground service (type
+             dataSync; type decision table in the ticket). Runs only while a
+             run is Working and notifications are on; never started from the
+             background, never at boot. -->
+        <service
+            android:name=".background.RunWatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <!-- android-next#04: the PackageInstaller status receiver. No
+             intent filter and exported=false — the only way in is the
+             explicit mutable PendingIntent ApkInstaller hands to
+             Session.commit, so nothing else can reach it. -->
+        <receiver
+            android:name=".update.ApkInstallReceiver"
+            android:exported="false" />
+        <!-- android-ui-parity #87: the attach menu's camera capture file. No
+             uses-permission CAMERA and no uses-feature camera here: the
+             permission is 138's to declare, and a required feature would
+             hide the app from camera-less devices. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RemoteAccessSnapshot } from "@roboco/proto";
+import type { PairingLink, RemoteAccessSnapshot } from "@roboco/proto";
 import type { EngineClient } from "@roboco/engine-client";
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
@@ -8,6 +8,7 @@ import { SettingsEnginePage } from "../components/settings-engine-page";
 import {
   createPairingLink,
   getRemoteAccess,
+  pairingQr,
   revokePairingSession,
   sessionIsSelf,
   sessionRows,
@@ -17,13 +18,14 @@ import {
 /**
  * Remote access settings (desktop settings/remote_access.rs parity): the
  * "Allow remote connections" toggle, the pairing-link mint with copy, and
- * the paired-session list with per-row Revoke; the row that is this
- * browser's own Session (id === session.engine.sessionId) carries the
- * "This browser" badge — the desktop has no self-session (its loopback
- * client is credential-free). Every mutation is followed
- * by a fresh GetRemoteAccess so the page always lands on engine truth;
- * failures render in the strip. Revocation gates the session's next
- * handshake server-side — live connections are not torn down.
+ * the paired-session list with per-row Revoke; the minted link carries the
+ * engine's QR SVG, shown on a white tile beside the URL (dimmed once the
+ * link expires). The row that is this browser's own Session
+ * (id === session.engine.sessionId) carries the "This browser" badge —
+ * the desktop has no self-session (its loopback client is credential-free).
+ * Every mutation is followed by a fresh GetRemoteAccess so the page always
+ * lands on engine truth; failures render in the strip. Revocation gates the
+ * session's next handshake server-side — live connections are not torn down.
  */
 /**
  * The page body lives under `SettingsEnginePage`: a settings-engine switch
@@ -42,7 +44,7 @@ function RemoteAccessSettingsPageBody() {
   const session = useEngineSession();
   const client = session?.client ?? null;
   const [snapshot, setSnapshot] = useState<RemoteAccessSnapshot | null>(null);
-  const [linkUrl, setLinkUrl] = useState<string | null>(null);
+  const [link, setLink] = useState<PairingLink | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -73,7 +75,7 @@ function RemoteAccessSettingsPageBody() {
   // Mount load (the engine switch's full reset rides the remount).
   useEffect(() => {
     setSnapshot(null);
-    setLinkUrl(null);
+    setLink(null);
     setError(null);
     void request(async (engine) => {
       setSnapshot(await getRemoteAccess(engine));
@@ -82,6 +84,8 @@ function RemoteAccessSettingsPageBody() {
 
   const enabled = snapshot?.status.enabled ?? false;
   const shownError = error ?? snapshot?.status.error ?? null;
+  // The engine's QR SVG, ready for an <img> tile; null on older engines.
+  const qr = link !== null ? pairingQr(link, now) : null;
 
   function refresh() {
     void request(async (engine) => {
@@ -98,8 +102,7 @@ function RemoteAccessSettingsPageBody() {
 
   function mintLink() {
     void request(async (engine) => {
-      const link = await createPairingLink(engine);
-      setLinkUrl(link.url);
+      setLink(await createPairingLink(engine));
       setSnapshot(await getRemoteAccess(engine));
     });
   }
@@ -112,11 +115,11 @@ function RemoteAccessSettingsPageBody() {
   }
 
   async function copyLink() {
-    if (linkUrl === null) {
+    if (link === null) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(linkUrl);
+      await navigator.clipboard.writeText(link.url);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -163,7 +166,7 @@ function RemoteAccessSettingsPageBody() {
         </p>
       )}
 
-      {(enabled || linkUrl !== null) && (
+      {(enabled || link !== null) && (
         <>
           <div className="settings-section-header">
             <h2>Pairing link</h2>
@@ -174,11 +177,17 @@ function RemoteAccessSettingsPageBody() {
             )}
           </div>
           <section className="settings-card">
-            {linkUrl !== null ? (
+            {link !== null ? (
               <div className="settings-row">
+                {qr !== null && (
+                  <div className={`pairing-qr-tile${qr.expired ? " pairing-qr-expired" : ""}`}>
+                    <img alt="Pairing QR code" src={qr.src} width={176} height={176} />
+                  </div>
+                )}
                 <div className="settings-row-main">
-                  <span className="settings-row-title mono settings-url">{linkUrl}</span>
+                  <span className="settings-row-title mono settings-url">{link.url}</span>
                   <span className="settings-row-meta">Use once within five minutes.</span>
+                  {qr !== null && <span className="settings-row-meta">{qr.caption}</span>}
                 </div>
                 <button type="button" className="btn btn-ghost" onClick={() => void copyLink()}>
                   {copied ? "Copied" : "Copy"}

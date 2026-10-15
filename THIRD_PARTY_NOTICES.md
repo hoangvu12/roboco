@@ -33,6 +33,10 @@ The complete pinned Go dependency list, licenses and patent notices shipped with
 Linux and Windows packages are under `licenses/tailcat/` (source:
 `adapters/roboco-tailcat/licenses/bundle/`).
 
+The Android APKs also bundle the adapter, built in-process as
+`libroboco_tailcat.so` (`adapters/roboco-tailcat/capi`, android-next#02);
+the app's Licenses screen carries the same Go dependency notices.
+
 
 ## Symbols
 
@@ -158,3 +162,92 @@ Attribution is retained in the pinned Zui dependency’s `NOTICE`.
 Parakeet TDT 0.6B v3 model weights are by NVIDIA under CC BY 4.0. The optional download uses Ivan Stupakov's INT8 ONNX conversion, pinned to revision `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`, with per-file SHA-256 verification. Original: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3. Conversion: https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx. License: https://creativecommons.org/licenses/by/4.0/.
 
 Native runtime dependencies: parakeet-rs 0.3.8 (MIT OR Apache-2.0), ort/ort-sys 2.0.0-rc.13 (MIT OR Apache-2.0), ONNX Runtime 1.28.0 (MIT), cpal 0.17.3 (Apache-2.0), and rubato 0.16.2 (MIT). See `crates/voice/NOTICE.md` for exact conversion provenance, changes, runtime/platform limitations and supported languages. Models are not included in the application bundle.
+
+## Android app
+
+The Android client (`apps/android`) bundles the components below in its
+release APKs. The repository `LICENSE` and this notices file ship inside
+every APK under `assets/licenses/` (android-app#31), so a sideloaded APK
+carries its own distribution terms.
+
+| Component | Version | License | Source |
+| --- | --- | --- | --- |
+| JNA | 5.19.1 | Apache-2.0 (the Apache-2.0 option of its Apache-2.0/LGPL-2.1 dual license) | https://github.com/java-native-access/jna |
+| AndroidX Core (core-ktx) | 1.19.1 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/core |
+| AndroidX Activity (activity-compose) | 1.13.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/activity |
+| AndroidX Lifecycle | 2.11.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/lifecycle |
+| Jetpack Compose (BOM: ui, foundation, runtime) | 2026.09.00 | Apache-2.0 | https://developer.android.com/jetpack/compose/bom |
+| Kotlin standard library | 2.4.21 | Apache-2.0 | https://github.com/JetBrains/kotlin |
+| kotlinx-coroutines | 1.11.0 | Apache-2.0 | https://github.com/Kotlin/kotlinx.coroutines |
+| AndroidX DataStore (datastore-preferences) | 1.2.1 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/datastore |
+| AndroidX Browser (Custom Tabs) | 1.10.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/browser |
+| AndroidX Graphics Shapes | 1.1.0 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/graphics |
+| CameraX (camera-core, camera2, lifecycle, view) | 1.5.1 | Apache-2.0 | https://developer.android.com/jetpack/androidx/releases/camera |
+| ZXing core | 3.5.4 | Apache-2.0 | https://github.com/zxing/zxing |
+| Haze (haze-blur, haze, haze-utils) | 2.0.1 | Apache-2.0 | https://github.com/chrisbanes/haze |
+| Reorderable | 3.1.0 | Apache-2.0 | https://github.com/Calvin-LL/Reorderable |
+| UniFFI runtime (compiled into `libroboco_mobile.so`) | 0.32.2 | MPL-2.0 | https://crates.io/crates/uniffi |
+| Geist typefaces | 12 bundled faces | OFL-1.1 | `assets/licenses/Geist-OFL.txt` in the APK; https://github.com/vercel/geist-font |
+| vscode-symbols icon set | bundled | MIT | `assets/licenses/vscode-symbols-LICENSE.txt` in the APK; https://github.com/miguelsolorio/vscode-symbols |
+
+Rust crates compiled into `libroboco_mobile.so` (the mobile core and the
+tree-sitter grammars it carries) are pinned in `Cargo.lock`, as in the
+tables above. The UniFFI-generated Kotlin bindings (`uniffi.roboco_core`)
+are Roboco source code.
+
+Debug-only artifacts (Compose UI tooling, `metrics-performance`, the test
+manifest) are not packaged in release APKs.
+
+### ICU4X segmentation data (Unicode-3.0)
+
+`libroboco_mobile.so` compiles in ICU4X's line and word segmentation data
+(`icu_segmenter` / `icu_segmenter_data` 2.3.0, https://github.com/unicode-org/icu4x)
+for the transcript's text layout. Its copyright and permission notice:
+
+> UNICODE LICENSE V3
+>
+> COPYRIGHT AND PERMISSION NOTICE
+>
+> Copyright © 2020-2024 Unicode, Inc.
+>
+> NOTICE TO USER: Carefully read the following legal agreement. BY
+> DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+> SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+> TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+> DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a
+> copy of data files and any associated documentation (the "Data Files") or
+> software and any associated documentation (the "Software") to deal in the
+> Data Files or Software without restriction, including without limitation
+> the rights to use, copy, modify, merge, publish, distribute, and/or sell
+> copies of the Data Files or Software, and to permit persons to whom the
+> Data Files or Software are furnished to do so, provided that either (a)
+> this copyright and permission notice appear with all copies of the Data
+> Files or Software, or (b) this copyright and permission notice appear in
+> associated Documentation.
+>
+> THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+> KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+> MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+> THIRD PARTY RIGHTS.
+>
+> IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+> BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+> OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+> WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+> ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+> FILES OR SOFTWARE.
+>
+> Except as contained in this notice, the name of a copyright holder shall
+> not be used in advertising or otherwise to promote the sale, use or other
+> dealings in these Data Files or Software without prior written
+> authorization of the copyright holder.
+>
+> SPDX-License-Identifier: Unicode-3.0
+>
+> —
+>
+> Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
+> ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+

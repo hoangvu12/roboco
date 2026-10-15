@@ -7,8 +7,8 @@ import { MemoryEngineCache, type CachedRows, type EngineCacheStore } from "./eng
 import { encodeScopedId } from "./scoped-id";
 
 /**
- * The multi-engine registry — the port of `engine_registry.rs::EngineRegistry`
- * (`crates/ui/src/engine_registry.rs`). Owns one supervised `EngineClient`
+ * The multi-engine registry — the port of `registry.rs::EngineRegistry`
+ * (`crates/engine-client/src/registry.rs`). Owns one supervised `EngineClient`
  * (with its own `ReconnectBackoff`) plus one `EngineWatchCache` per paired
  * engine, drives all of them concurrently, and exposes a merged snapshot the
  * sidebar/composer read without knowing which engine owns which row: rows
@@ -25,7 +25,7 @@ import { encodeScopedId } from "./scoped-id";
  * entries (task-cancel → flush → delete, mirroring the desktop's ordering).
  */
 
-/** `EngineConnectionState` (`engine_registry.rs:64-69`). */
+/** `EngineConnectionState` (`registry.rs`). */
 export type EngineConnectionState = "connected" | "reconnecting" | "off";
 
 /** One paired engine's registry row (`EngineSnapshot`). */
@@ -190,7 +190,7 @@ export class EngineRegistry {
    * Stop supervising one engine: abort its connection, dispose its watches,
    * flush every pending cache write, THEN delete its cache entries. The
    * ordering is load-bearing — an in-flight save must never recreate the
-   * entry being removed (`forget` in engine_registry.rs:534-558).
+   * entry being removed (`forget` in `crates/engine-client/src/registry.rs`).
    */
   async forget(key: string): Promise<void> {
     await this.#forget(key);
@@ -273,7 +273,7 @@ export class EngineRegistry {
     };
     this.#entries.set(config.key, entry);
     // Seed the offline cache BEFORE the first dial so the last-known rows
-    // render while the connection establishes (engine_registry.rs:395-404).
+    // render while the connection establishes (registry.rs).
     void this.#seed(entry)
       .catch(() => {})
       .finally(() => {
@@ -493,7 +493,7 @@ function stableRowset<T>(
 }
 
 /**
- * `RegistrySnapshot::projected()` (`engine_registry.rs:96-146`): scope every
+ * `RegistrySnapshot::projected()` (`registry.rs`): scope every
  * row's ids via `encodeScopedId(engine.key, id)` and concatenate across
  * engines, so rows from every paired engine land in one flat list. Device
  * timestamps are dropped for non-connected engines — a stale cached

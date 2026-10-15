@@ -88,3 +88,37 @@ the app update itself in place. The GitHub Release also ships `install.ps1`
 (`scripts/install-windows.ps1`, the one-liner installer) for the same layout,
 without the uninstall entry and `roboco://` registration. CI runs
 `scripts/test-windows-installer.ps1` against the setup on every Windows build.
+
+## Android
+
+`.github/workflows/release.yml` builds the Android release APKs on a `v*`
+tag (ubuntu runner): R8 + resource shrinking with the JNA/UniFFI keep rules
+(`apps/android/app/proguard-rules.pro`), the stripped `mobile-dist` Rust
+profile from ticket 10, ABI splits, and the release keystore from GitHub
+secrets (see `docs/reference/android-development.md` → Release signing).
+
+Artifacts under `target/package/`, published on the GitHub Release:
+
+| File | Content |
+|---|---|
+| `roboco-<version>-android-arm64-v8a.apk` | release, signed, arm64 only (all current phones) |
+| `roboco-<version>-android-x86_64.apk` | release, signed, x86_64 (emulators, x86 Chromebooks and tablets) |
+| `roboco-<version>-android-mapping.txt` | the R8 mapping (release asset, staged outside `dist/`, so it gets no `manifest.json` entry) |
+
+The APKs land in `dist/` before publishing, so `manifest.json` carries a
+sha256 per APK — one verified source of truth for sideloaders; desktop
+updaters ignore the unknown names. CI gates each APK: package name,
+`tag == versionName`, exactly one ABI, `zipalign -c -P 16`, a stripped
+`libroboco_mobile.so` with 16 KB `LOAD` alignment, the signer SHA-256 pin,
+and the size budget. The budget (APK file size, which is compressed):
+**arm64-v8a ≤ 26,214,400 (25 MiB)**, **x86_64 ≤ 31,457,280 (30 MiB)** —
+an estimate based on #621's ~18 MB arm64 APK plus the x86_64 core. Record
+the first real sizes here and tighten the budget to roughly +20 % of them.
+
+`workflow_dispatch` runs the same job with no signing secrets and produces
+`…-unsigned.apk` workflow artifacts; nothing is published. Pushes to `main`
+get an unsigned x86_64 `assembleRelease` R8 smoke in `android.yml`.
+
+No universal APK (it would double the download for every phone), and no
+Play Store / AAB / Play App Signing: the app ships as signed APKs on the
+GitHub Release only (ADR 0009).

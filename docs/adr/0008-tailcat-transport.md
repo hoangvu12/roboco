@@ -37,3 +37,9 @@ a live route before minting. It starts a background engine when necessary.
   `ROBOCO_TAILCAT_DERP_MAP`) points a fleet at a relay it owns.
 - A route that cannot come up disables remote access instead of leaving an
   unpublishable listener behind.
+- Clients: the desktop, the browser (through the loopback forwarder) and
+  **Android**. The phone redeems an invite through its own in-process
+  Tailcat tunnel (`libroboco_tailcat.so`, ADR 0009), stores the address and
+  its own client identity Keystore-encrypted (never in plain metadata), and
+  rebuilds the route on every reconnect: after app restarts, failed dials
+  and network changes.

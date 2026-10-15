@@ -1,6 +1,6 @@
 # Roboco — fork workflow
 
-Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. The wasimysaid Kratos line lives separately in `../Kratos`.
+Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. It also ships a native Android client on a shared Rust mobile core ([ADR 0009](docs/adr/0009-android-client.md)). The wasimysaid Kratos line lives separately in `../Kratos`.
 
 ## Remotes
 
@@ -22,8 +22,12 @@ Rename mapping for retained code:
 - `ZERON_*` env vars -> `ROBOCO_*`
 - `CURSOR_SDK_SHIM_EXECUTABLE` -> `ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE` (upstream ships it unprefixed; docs/research stays verbatim)
 - `sh.zeron.*` bundle ids -> `sh.roboco.*`, `zeron://` links -> `roboco://`
+- `sh.zeron.android` -> `sh.roboco.android`. UniFFI namespace `zeron_core` -> `roboco_core` (Kotlin package `uniffi.roboco_core`); library `libzeron_mobile.so` -> `libroboco_mobile.so`
+- `Zeron*` Kotlin/Swift type names (`ZeronApplication`, `ZeronTheme`, `ZeronIcons`, …) -> `Roboco*`
+- `zeron-file:` mention links -> `roboco-file:` (`crates/proto/src/file_mentions.rs`)
+- `-PzeronSkipCore` -> `-ProbocoSkipCore`; `ZERON_ANDROID_ABIS` -> `ROBOCO_ANDROID_ABIS`
 
-Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS.
+Preserve the engine-local pairing architecture; upstream ports must not restore edge, WorkOS, sync rooms, or iOS (Swift, Xcode, Apple CI). Upstream iOS *behaviour* and the mobile crates (`crates/mobile`, `crates/text`, `crates/markdown`) may be carried into the Android app (`apps/android/`) as [ADR 0009](docs/adr/0009-android-client.md) describes.
 
 ## PRing to zeron
 
@@ -56,8 +60,11 @@ Still zeron-branded on purpose:
 - `zeronsh` org references and PR/issue links
 - `docs/research/` — historical research notes
 - `ZERON_GPU_STATS` — env var owned by the zui fork, not this repo
+- Upstream paths quoted in `.scratch/android-app/` tickets (`apps/ios/Zeron/…`, `ZeronUITests`, `uniffi.zeron_core`): read them with `git show`. They are references, not names to reproduce.
 
-## CI (Windows + Linux only)
+## CI (Windows + Linux runners)
+
+Android builds and tests run on these runners ([ADR 0009](docs/adr/0009-android-client.md)); there are no macOS jobs.
 
 - `windows.yml` — Windows tests (PR + push)
 - `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions, linux browser)
@@ -65,8 +72,9 @@ Still zeron-branded on purpose:
 - `web-codegen.yml` — ubuntu: `wiregen --check` wire-type freshness gate + `pnpm -r build` typecheck of `web/`
 - `theme-artifact.yml` — web theme artifact freshness gate (`roboco-theme-export --check`) + `@roboco/theme` typecheck
 - `web-engine-client.yml` — ubuntu: `@roboco/engine-client` vitest suites (codec, scripted fake server, conformance against the real `web_conformance` engine example)
-- `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip → GitHub Release with `manifest.json` (updater checksums). No macOS/iOS/R2.
-- Keep CI focused on Roboco engine/app builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports.
+- `android.yml` — ubuntu + windows: Android debug APK (`apps/android`, cargo-ndk core) + JVM unit tests; on pushes to main, an unsigned x86_64 `assembleRelease` R8 smoke (the signed APKs come from `release.yml`). Plus three android-app#30 jobs: `android-screenshots` (ubuntu, non-blocking until goldens are committed: the capturing tests + parity tests in Roborazzi verify mode + `parityReport`, the iOS parity gate — the `android-parity` artifact uploads on every run), `android-emulator` (ubuntu + KVM, API 36 pixel_7: the instrumented flow suite against the `android_fixture` engines via `apps/android/scripts/flow-tests.sh`) and `android-emulator-tablet` (pushes to main + dispatch only: the tablet split shell and the `@Tour` motion recordings).
+- `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip + signed Android APKs (arm64-v8a, x86_64) → GitHub Release with `manifest.json` (updater checksums, APKs included; R8 mapping attached outside the manifest). No macOS/iOS/R2/Play.
+- Keep CI focused on Roboco engine, desktop and Android builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports. Android has no Play Store, Firebase or other Google-services deployment.
 
 ## Naming conventions
 
@@ -75,6 +83,10 @@ Like zeron/Zeron: lowercase `roboco` for repo, crates, binary, package names, en
 ## Windows development
 
 See `docs/reference/windows-development.md`. Env vars use the `ROBOCO_` prefix (e.g. `ROBOCO_DATA_DIR`). Builds run through sccache automatically; when creating a worktree, add its root to `basedirs` in `%APPDATA%\Mozilla\sccache\config\config` and restart the server (`sccache --stop-server; sccache --start-server`) or dependency cache hits drop sharply.
+
+## Android development
+
+See `docs/reference/android-development.md`. The app builds from Windows and Linux hosts with no bash on the build path: `cd apps/android && ./gradlew :app:assembleDebug :app:testDebugUnitTest`. The sccache note above applies unchanged — the Android core builds into the same workspace `target/`.
 
 ## Agent skills
 

@@ -1,0 +1,7 @@
+<resources>
+    <color name="launch_background">#EDEDED</color>
+    <color name="accent">#5B43E8</color>
+    <!-- android-next #03: the launcher artwork's ribbon blue (its lit
+         ribbon samples around #495991), the notification accent. -->
+    <color name="brand_ribbon">#4B4F9E</color>
+</resources>

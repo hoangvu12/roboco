@@ -5,32 +5,103 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Grammar crates are optional so mobile cores can link a measured subset
+# (android-app#10): every `lang-*` feature below switches on exactly one
+# grammar, `all-languages` (the default) keeps the desktop set identical,
+# and `mobile-languages` is the Android "middle set". Sizes are
+# text+data+bss per grammar for one ABI, measured 2026-10-12 (see ticket
+# android-app#10); the registry in `src/lib.rs` references every grammar, so
+# the linker cannot drop an unused one.
+[features]
+default = ["all-languages"]
+all-languages = [
+    "mobile-languages",
+    "lang-c-sharp",
+    "lang-sql",
+    "lang-ruby",
+    "lang-php",
+]
+# The "middle set": everything except C#, SQL, Ruby and PHP — keeps Kotlin,
+# Swift and C++ for code fences at ~18.9 MB per ABI instead of 30.2. Fences
+# in the dropped languages stay monospaced and copyable, just uncoloured
+# (`configuration` reports `UnknownLanguage`).
+mobile-languages = [
+    "lang-rust",
+    "lang-javascript",
+    "lang-typescript",
+    "lang-python",
+    "lang-go",
+    "lang-json",
+    "lang-bash",
+    "lang-toml",
+    "lang-markdown",
+    "lang-html",
+    "lang-css",
+    "lang-yaml",
+    "lang-c",
+    "lang-cpp",
+    "lang-java",
+    "lang-kotlin",
+    "lang-swift",
+    "lang-lua",
+    "lang-dockerfile",
+    "lang-nix",
+    "lang-make",
+]
+lang-rust = ["dep:tree-sitter-rust"]
+lang-javascript = ["dep:tree-sitter-javascript"]
+# Composite grammars follow the query composition in `src/lib.rs`:
+# TypeScript prepends the JavaScript query, C++ prepends the C query.
+lang-typescript = ["dep:tree-sitter-typescript", "lang-javascript"]
+lang-python = ["dep:tree-sitter-python"]
+lang-go = ["dep:tree-sitter-go"]
+lang-json = ["dep:tree-sitter-json"]
+lang-bash = ["dep:tree-sitter-bash"]
+lang-toml = ["dep:tree-sitter-toml-ng"]
+lang-markdown = ["dep:tree-sitter-md"]
+lang-html = ["dep:tree-sitter-html"]
+lang-css = ["dep:tree-sitter-css"]
+lang-yaml = ["dep:tree-sitter-yaml"]
+lang-c = ["dep:tree-sitter-c"]
+lang-cpp = ["dep:tree-sitter-cpp", "lang-c"]
+lang-c-sharp = ["dep:tree-sitter-c-sharp"]
+lang-java = ["dep:tree-sitter-java"]
+lang-kotlin = ["dep:tree-sitter-kotlin-ng"]
+lang-swift = ["dep:tree-sitter-swift"]
+lang-ruby = ["dep:tree-sitter-ruby"]
+lang-php = ["dep:tree-sitter-php"]
+lang-sql = ["dep:tree-sitter-sequel"]
+lang-lua = ["dep:tree-sitter-lua"]
+lang-dockerfile = ["dep:tree-sitter-containerfile"]
+lang-nix = ["dep:tree-sitter-nix"]
+lang-make = ["dep:tree-sitter-make"]
+
 [dependencies]
 thiserror.workspace = true
 tree-sitter = "=0.26.11"
 tree-sitter-highlight = "=0.26.11"
-tree-sitter-rust = "=0.24.2"
-tree-sitter-javascript = "=0.25.0"
-tree-sitter-typescript = "=0.23.2"
-tree-sitter-python = "=0.25.0"
-tree-sitter-go = "=0.25.0"
-tree-sitter-json = "=0.24.8"
-tree-sitter-bash = "=0.25.1"
-tree-sitter-toml-ng = "=0.7.0"
-tree-sitter-md = "=0.5.3"
-tree-sitter-html = "=0.23.2"
-tree-sitter-css = "=0.25.0"
-tree-sitter-yaml = "=0.7.2"
-tree-sitter-c = "=0.24.2"
-tree-sitter-cpp = "=0.23.4"
-tree-sitter-c-sharp = "=0.23.5"
-tree-sitter-java = "=0.23.5"
-tree-sitter-kotlin-ng = "=1.1.0"
-tree-sitter-swift = "=0.7.3"
-tree-sitter-ruby = "=0.23.1"
-tree-sitter-php = "=0.24.2"
-tree-sitter-sequel = "=0.3.11"
-tree-sitter-lua = "=0.5.0"
-tree-sitter-nix = "=0.3.0"
-tree-sitter-make = "=1.1.1"
-tree-sitter-containerfile = "=0.9.2"
+tree-sitter-rust = { version = "=0.24.2", optional = true }
+tree-sitter-javascript = { version = "=0.25.0", optional = true }
+tree-sitter-typescript = { version = "=0.23.2", optional = true }
+tree-sitter-python = { version = "=0.25.0", optional = true }
+tree-sitter-go = { version = "=0.25.0", optional = true }
+tree-sitter-json = { version = "=0.24.8", optional = true }
+tree-sitter-bash = { version = "=0.25.1", optional = true }
+tree-sitter-toml-ng = { version = "=0.7.0", optional = true }
+tree-sitter-md = { version = "=0.5.3", optional = true }
+tree-sitter-html = { version = "=0.23.2", optional = true }
+tree-sitter-css = { version = "=0.25.0", optional = true }
+tree-sitter-yaml = { version = "=0.7.2", optional = true }
+tree-sitter-c = { version = "=0.24.2", optional = true }
+tree-sitter-cpp = { version = "=0.23.4", optional = true }
+tree-sitter-c-sharp = { version = "=0.23.5", optional = true }
+tree-sitter-java = { version = "=0.23.5", optional = true }
+tree-sitter-kotlin-ng = { version = "=1.1.0", optional = true }
+tree-sitter-swift = { version = "=0.7.3", optional = true }
+tree-sitter-ruby = { version = "=0.23.1", optional = true }
+tree-sitter-php = { version = "=0.24.2", optional = true }
+tree-sitter-sequel = { version = "=0.3.11", optional = true }
+tree-sitter-lua = { version = "=0.5.0", optional = true }
+tree-sitter-nix = { version = "=0.3.0", optional = true }
+tree-sitter-make = { version = "=1.1.1", optional = true }
+tree-sitter-containerfile = { version = "=0.9.2", optional = true }

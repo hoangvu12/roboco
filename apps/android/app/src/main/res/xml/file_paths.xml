@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- android-ui-parity #87: the attach menu's camera captures land in the
+     cache under camera/ and are handed to the camera app through the
+     FileProvider as a copy-in/cache URI. android-ui-parity #125 adds the
+     image viewer's shared PNGs under shared/ (pruned after an hour). -->
+<paths>
+    <cache-path name="camera" path="camera/" />
+    <cache-path name="shared" path="shared/" />
+</paths>

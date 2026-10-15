@@ -29,6 +29,10 @@ pub enum PairingCommand {
         label: String,
         #[arg(long, default_value_t = DEFAULT_TTL_SECONDS)]
         ttl_seconds: u64,
+        /// Print the pairing URL as a terminal QR code under the URL line
+        /// (and add `qrSvg` to `--json` output).
+        #[arg(long)]
+        qr: bool,
         #[arg(long)]
         json: bool,
     },
@@ -159,6 +163,7 @@ pub fn run(command: EngineCommand, data_dir: &std::path::Path) -> anyhow::Result
             base_url,
             label,
             ttl_seconds,
+            qr,
             json,
         } => {
             // Validate the address before issuing a credential.
@@ -166,12 +171,26 @@ pub fn run(command: EngineCommand, data_dir: &std::path::Path) -> anyhow::Result
             let code = store.create_code(&label, ttl_seconds)?;
             let url = pairing_url(&base_url, &code.credential)?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({"id":code.id,"url":url,"expiresAt":code.expires_at})
-                );
+                // `qrSvg` joins only on --qr, so existing JSON consumers see
+                // byte-identical output without it.
+                if qr {
+                    println!(
+                        "{}",
+                        serde_json::json!({"id":code.id,"url":url,"expiresAt":code.expires_at,"qrSvg":roboco_proto::qr::qr_svg(&url)})
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        serde_json::json!({"id":code.id,"url":url,"expiresAt":code.expires_at})
+                    );
+                }
             } else {
                 println!("{url}");
+                // The half-block QR scans from the terminal itself — phone
+                // cameras read it straight off the screen.
+                if qr {
+                    println!("{}", roboco_proto::qr::qr_terminal(&url));
+                }
                 println!(
                     "Expires at {} (Unix milliseconds). Use this link once to pair a client.",
                     code.expires_at

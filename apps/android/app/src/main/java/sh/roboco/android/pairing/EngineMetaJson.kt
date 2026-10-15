@@ -1,0 +1,145 @@
+package sh.roboco.android.pairing
+
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+import uniffi.roboco_core.EngineTransport
+import uniffi.roboco_core.PairedEngine
+
+/**
+ * How a stored engine is dialed (android-next#02). The metadata says only
+ * which kind; a Tailcat engine's address and client identity are secrets
+ * and live encrypted under `tc:<engineId>`, never here.
+ */
+internal enum class TransportKind(val wire: String) {
+    DIRECT("direct"),
+    TAILCAT("tailcat"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): TransportKind? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
+ * The non-secret half of a paired-engine record, JSON-encoded as the
+ * `engines` preference (pairing order). Only [PairedEngine.credential] —
+ * and, for a Tailcat engine, its address and client state — are secret
+ * and encrypted; keeping this metadata readable is what lets a lost
+ * Keystore key degrade to "Session revoked / Pair again" instead of a
+ * vanished engine (spec W8). For a Tailcat engine [baseUrl] is the
+ * non-secret `tailcat:<8 hex>` fingerprint.
+ */
+internal data class EngineMeta(
+    val engineId: String,
+    val baseUrl: String,
+    val sessionId: String,
+    val label: String,
+    val pairedAtMs: Long,
+    val deviceId: String?,
+    val name: String?,
+    val transport: TransportKind = TransportKind.DIRECT,
+) {
+    fun toPaired(credential: String, transport: EngineTransport): PairedEngine = PairedEngine(
+        engineId = engineId,
+        baseUrl = baseUrl,
+        credential = credential,
+        sessionId = sessionId,
+        label = label,
+        pairedAtMs = pairedAtMs,
+        deviceId = deviceId,
+        name = name,
+        transport = transport,
+    )
+}
+
+internal fun PairedEngine.meta(): EngineMeta = EngineMeta(
+    engineId = engineId,
+    baseUrl = baseUrl,
+    sessionId = sessionId,
+    label = label,
+    pairedAtMs = pairedAtMs,
+    deviceId = deviceId,
+    name = name,
+    transport = if (transport is EngineTransport.Tailcat) TransportKind.TAILCAT else TransportKind.DIRECT,
+)
+
+/**
+ * Codec for the `engines` preference: a JSON array of [EngineMeta]
+ * objects. Decoding is lenient — a missing required key, a wrong type or
+ * a duplicate `engineId` skips just that element (the first of a
+ * duplicate wins); unknown keys are ignored. `decode` returns `null`
+ * when the text is not a JSON array at all, which the store logs and
+ * replaces on its next write.
+ */
+internal object EngineMetaJson {
+
+    private const val TAG = "Roboco"
+
+    fun encode(metas: List<EngineMeta>): String {
+        val array = JSONArray()
+        for (meta in metas) {
+            val element = JSONObject()
+                .put("engineId", meta.engineId)
+                .put("baseUrl", meta.baseUrl)
+                .put("sessionId", meta.sessionId)
+                .put("label", meta.label)
+                .put("pairedAtMs", meta.pairedAtMs)
+                .put("transport", meta.transport.wire)
+            meta.deviceId?.let { element.put("deviceId", it) }
+            meta.name?.let { element.put("name", it) }
+            array.put(element)
+        }
+        return array.toString()
+    }
+
+    /** `null` = not a JSON array; otherwise the readable elements, in order. */
+    fun decode(text: String): List<EngineMeta>? {
+        val array = try {
+            JSONArray(text)
+        } catch (_: JSONException) {
+            return null
+        }
+        val metas = ArrayList<EngineMeta>(array.length())
+        val seen = HashSet<String>()
+        for (index in 0 until array.length()) {
+            val meta = (array.opt(index) as? JSONObject)?.let(::readMeta)
+            if (meta == null) {
+                Log.w(TAG, "paired engine entry unreadable index=$index")
+                continue
+            }
+            if (seen.add(meta.engineId)) {
+                metas.add(meta)
+            }
+        }
+        return metas
+    }
+
+    private fun readMeta(element: JSONObject): EngineMeta? = try {
+        EngineMeta(
+            engineId = string(element, "engineId"),
+            baseUrl = string(element, "baseUrl"),
+            sessionId = string(element, "sessionId"),
+            label = string(element, "label"),
+            pairedAtMs = element.getLong("pairedAtMs"),
+            deviceId = optional(element, "deviceId"),
+            name = optional(element, "name"),
+            // Records written before android-next#02 have no transport:
+            // they are direct. An unknown kind (a newer app's) skips the
+            // element rather than dial it the wrong way.
+            transport = optional(element, "transport")
+                ?.let { TransportKind.fromWire(it) ?: throw JSONException("unknown transport") }
+                ?: TransportKind.DIRECT,
+        )
+    } catch (_: JSONException) {
+        null
+    }
+
+    /** `getString` coerces any value (`{}` included); only a real string is accepted. */
+    private fun string(element: JSONObject, key: String): String =
+        element.get(key) as? String ?: throw JSONException("$key is not a string")
+
+    private fun optional(element: JSONObject, key: String): String? =
+        if (element.has(key) && !element.isNull(key)) string(element, key) else null
+}

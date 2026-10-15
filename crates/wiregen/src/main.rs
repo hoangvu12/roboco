@@ -271,6 +271,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_doc::QueuedMessage,
         roboco_doc::QueueDeliveryGate,
         roboco_doc::TranscriptUpdate,
+        roboco_doc::TranscriptResume,
+        roboco_doc::TranscriptResumeEntry,
         roboco_doc::TranscriptBaseline,
         roboco_doc::TranscriptFrame,
         roboco_doc::TranscriptUpsert,
@@ -336,6 +338,14 @@ fn constants_ts() -> String {
         "export const HARNESS_UPDATES_V1 = {:?};\n",
         capabilities::HARNESS_UPDATES_V1
     ));
+    out.push_str(&format!(
+        "export const WEB_CLIENT = {:?};\n",
+        capabilities::WEB_CLIENT
+    ));
+    out.push_str(&format!(
+        "export const TRANSCRIPT_RESUME_V1 = {:?};\n",
+        capabilities::TRANSCRIPT_RESUME_V1
+    ));
     out.push_str("\n/** Every capability this build of the engine advertises. */\n");
     let current: Vec<String> = capabilities::CURRENT
         .iter()
@@ -344,6 +354,16 @@ fn constants_ts() -> String {
     out.push_str(&format!(
         "export const CAPABILITIES_CURRENT: readonly string[] = [{}];\n",
         current.join(", ")
+    ));
+    out.push_str(&format!(
+        "\n/** Wire protocol generation this engine speaks; absent on older engines means 1. */\n\
+         export const PROTOCOL_VERSION = {};\n",
+        roboco_proto::PROTOCOL_VERSION
+    ));
+    out.push_str(&format!(
+        "\n/** Oldest client protocol generation this engine still serves. */\n\
+         export const MIN_CLIENT_PROTOCOL_VERSION = {};\n",
+        roboco_proto::MIN_CLIENT_PROTOCOL_VERSION
     ));
     out.push_str(&format!(
         "\nexport const PREVIEW_PROXY_PORT = {};\n",

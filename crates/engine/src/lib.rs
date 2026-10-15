@@ -5,7 +5,7 @@
 //! sessions + docs + commands + minimal IPC. Terminals, repos/diffs, uploads, auth,
 //! agent accounts, and the device-room host land in later milestones.
 
-use std::io::Write;
+use std::io::{IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -458,12 +458,11 @@ impl Engine {
         workspace_scope: WorkspaceScope,
     ) -> Result<EngineInfo, EngineError> {
         std::fs::create_dir_all(&config.data_dir)?;
-        Ok(EngineInfo {
-            device_id: load_or_create_device_id(&config.data_dir)?,
+        Ok(EngineInfo::current(
+            load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
-            cursor_sdk_version: Some(roboco_harness::CursorHarness::sdk_version().into()),
-            capabilities: roboco_proto::capabilities::current(),
-        })
+            Some(roboco_harness::CursorHarness::sdk_version().into()),
+        ))
     }
 
     /// Open the resolved local profile and start its services.
@@ -579,6 +578,11 @@ impl Engine {
                         println!("Tailcat invite: {url}");
                     } else {
                         println!("Pairing URL: {url}");
+                    }
+                    // The half-block QR is for humans at a terminal; pipes and
+                    // service logs keep the plain URL line only.
+                    if std::io::stdout().is_terminal() {
+                        println!("{}", roboco_proto::qr::qr_terminal(url));
                     }
                 }
                 Err(error) => tracing::warn!(%error, "pairing URL unavailable; configure --pairing-base-url"),

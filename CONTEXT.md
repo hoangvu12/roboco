@@ -22,6 +22,22 @@ _Avoid_: Cloud, sync
 The engine-served Roboco client that runs in a browser at the engine's own remote access URL. Pairs like any other client and holds its session credential in browser storage, scoped to the engine's origin.
 _Avoid_: Web app (when it means this), hosted app
 
+**Android app**:
+The native Roboco client for Android phones and tablets. Pairs with each engine like any other client and keeps only a disposable per-engine cache; its look follows upstream's iPhone app.
+_Avoid_: Mobile app (when it means this app specifically), phone client
+
+**Mobile core**:
+The Rust library inside the Android app (`roboco-mobile` with `roboco-text` and `roboco-markdown`): it lays transcripts out into display lists and holds the engine connections, while Kotlin paints and handles gestures.
+_Avoid_: SDK, backend, bridge (when it means the core)
+
+**Capability**:
+A feature string an engine advertises in `EngineInfo.capabilities`; clients gate optional features on capabilities, never on version numbers.
+_Avoid_: Feature flag, version check
+
+**Protocol version**:
+The wire protocol generation an engine speaks; it changes only for an incompatible wire change, which ADR 0005 makes a last resort.
+_Avoid_: API version, app version (that is `version`)
+
 ## Chats
 
 **Chat**:

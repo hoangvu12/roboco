@@ -1,6 +1,6 @@
 /**
  * Reconnect backoff, mirroring the desktop engine registry's supervise loop
- * (crates/ui/src/engine_registry.rs): start at `initialMs`, double per retry,
+ * (crates/engine-client/src/registry.rs): start at `initialMs`, double per retry,
  * cap at `maxMs`, add uniform jitter up to `jitterMs` (the desktop derives it
  * from one UUID byte — 0..=255ms), and reset to `initialMs` after a
  * connection that lived at least `resetAfterMs`.

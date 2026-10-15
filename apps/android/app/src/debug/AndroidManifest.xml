@@ -1,0 +1,30 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- The debug-only design gallery (android-ui-parity #22). No intent
+             filter, so it gets no launcher icon; exported because
+             `adb shell am start -n` runs as the shell uid and cannot start a
+             non-exported activity. Release builds merge no such activity:
+             this manifest (and the class) exist only in src/debug. -->
+        <activity
+            android:name=".design.DesignGalleryActivity"
+            android:exported="true"
+            android:label="Design Gallery"
+            android:windowSoftInputMode="adjustResize" />
+        <!-- The debug-only Transcript Lab (android-ui-parity #135), the -lab
+             port: the real transcript over the Rust fixture, no engine, no
+             shell. Same rules as the gallery above — exported for
+             `adb shell am start -n`, no intent filter, so no launcher icon;
+             release builds merge no such activity. adjustResize plus
+             edge-to-edge is required for WindowInsets.ime to animate per
+             frame (ticket 74's pitfall); the configChanges list keeps the
+             activity (and a live stream) alive through rotation and
+             dark-mode changes, while fontScale/density changes reach the
+             host through recomposition without recreating the engine. -->
+        <activity
+            android:name=".debug.TranscriptLabActivity"
+            android:exported="true"
+            android:label="Transcript Lab"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale" />
+    </application>
+</manifest>

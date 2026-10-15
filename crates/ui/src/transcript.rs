@@ -10020,6 +10020,7 @@ mod tests {
                     state
                         .receive_transcript_update(
                             roboco_doc::TranscriptUpdate {
+                                digests: None,
                                 frame,
                                 replay_baseline,
                                 context_usage: None,
@@ -10136,6 +10137,7 @@ mod tests {
                 frame: roboco_doc::TranscriptFrame::reset(&original),
                 context_usage: None,
                 replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&original)),
+                digests: None,
             })
             .unwrap();
         let mut changed = original.clone();
@@ -10148,6 +10150,7 @@ mod tests {
                 frame: roboco_doc::diff_transcript(&original, &changed),
                 context_usage: None,
                 replay_baseline: None,
+                digests: None,
             })
             .unwrap();
         assert!(Arc::ptr_eq(&first.rows["b"], &next.rows["b"]));
@@ -10171,6 +10174,7 @@ mod tests {
                 replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
                 frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
                 context_usage: None,
+                digests: None,
             };
             let start = Instant::now();
             let prepared = TranscriptPreparation::default().prepare(&update).unwrap();
@@ -10252,6 +10256,7 @@ mod tests {
                     state
                         .receive_opening_transcript_update(
                             roboco_doc::TranscriptUpdate {
+                                digests: None,
                                 frame: roboco_doc::TranscriptFrame::reset(entries),
                                 replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
                                     entries,
@@ -10308,6 +10313,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame: roboco_doc::diff_transcript(&full, &live),
                             replay_baseline: None,
                             context_usage: None,
@@ -10348,6 +10354,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame,
                             context_usage: None,
                             replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
@@ -10361,6 +10368,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame: roboco_doc::diff_transcript(&history, &live),
                             context_usage: None,
                             replay_baseline: None,
@@ -10396,6 +10404,7 @@ mod tests {
                     state
                         .receive_transcript_update(
                             roboco_doc::TranscriptUpdate {
+                                digests: None,
                                 frame,
                                 replay_baseline: baseline,
                                 context_usage: None,
@@ -10453,6 +10462,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame: roboco_doc::TranscriptFrame::reset(&[]),
                             context_usage: None,
                             replay_baseline: Some(Default::default()),
@@ -10471,6 +10481,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame: roboco_doc::diff_transcript(&[], &live),
                             context_usage: None,
                             replay_baseline: None,
@@ -10505,6 +10516,7 @@ mod tests {
                 state
                     .receive_transcript_update(
                         roboco_doc::TranscriptUpdate {
+                            digests: None,
                             frame,
                             context_usage: None,
                             replay_baseline: None,
@@ -13098,6 +13110,7 @@ mod tests {
                         state
                             .receive_transcript_update(
                                 roboco_doc::TranscriptUpdate {
+                                    digests: None,
                                     frame: roboco_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
@@ -13126,6 +13139,7 @@ mod tests {
                         state
                             .receive_transcript_update(
                                 roboco_doc::TranscriptUpdate {
+                                    digests: None,
                                     frame: roboco_doc::diff_transcript(&history, &next),
                                     context_usage: None,
                                     // The RPC must retain its opening cutoff when
@@ -13181,6 +13195,7 @@ mod tests {
                         state
                             .receive_transcript_update(
                                 roboco_doc::TranscriptUpdate {
+                                    digests: None,
                                     frame: roboco_doc::TranscriptFrame::reset(&history),
                                     context_usage: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
@@ -13193,6 +13208,7 @@ mod tests {
                         state
                             .receive_transcript_update(
                                 roboco_doc::TranscriptUpdate {
+                                    digests: None,
                                     frame: roboco_doc::diff_transcript(&history, &live),
                                     context_usage: None,
                                     replay_baseline: None,
@@ -13243,6 +13259,7 @@ mod tests {
                         state
                             .receive_transcript_update(
                                 roboco_doc::TranscriptUpdate {
+                                    digests: None,
                                     frame: roboco_doc::diff_transcript(&live, &next),
                                     context_usage: None,
                                     replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(
@@ -13350,6 +13367,7 @@ mod tests {
                             state
                                 .receive_transcript_update(
                                     roboco_doc::TranscriptUpdate {
+                                        digests: None,
                                         frame,
                                         context_usage: None,
                                         replay_baseline: Some(

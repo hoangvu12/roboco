@@ -88,3 +88,60 @@ async fn second_process_mints_lists_and_revokes_against_running_engine() {
     remote.stop().await;
     core.shutdown().await;
 }
+
+#[test]
+fn pairing_create_qr_prints_under_the_url_and_plain_output_stays_byte_stable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Without --qr the output is exactly what it always was: the URL line
+    // and the expiry line.
+    let plain = String::from_utf8(
+        cli(dir.path(), &["create", "--base-url", "http://127.0.0.1:27655"]).stdout,
+    )
+    .unwrap();
+    let lines: Vec<&str> = plain.lines().collect();
+    assert_eq!(lines.len(), 2, "two lines, nothing more: {plain:?}");
+    assert!(lines[0].starts_with("http://127.0.0.1:27655/pair#token="));
+    assert!(lines[1].starts_with("Expires at "));
+    assert!(lines[1].ends_with("Use this link once to pair a client."));
+
+    // With --qr the terminal QR sits between the URL and the expiry line.
+    let with_qr = String::from_utf8(
+        cli(dir.path(), &["create", "--base-url", "http://127.0.0.1:27655", "--qr"]).stdout,
+    )
+    .unwrap();
+    let lines: Vec<&str> = with_qr.lines().collect();
+    assert!(lines[0].starts_with("http://127.0.0.1:27655/pair#token="));
+    let qr_lines = &lines[1..lines.len() - 1];
+    assert!(qr_lines.len() > 8, "a glyph row per two modules: {with_qr:?}");
+    assert!(
+        qr_lines
+            .iter()
+            .all(|line| line.chars().all(|ch| matches!(ch, '█' | '▀' | '▄' | ' '))),
+        "half-block QR only: {with_qr:?}"
+    );
+    assert!(lines[lines.len() - 1].starts_with("Expires at "));
+}
+
+#[test]
+fn pairing_create_json_gains_qrsvg_only_with_qr() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain: Value = serde_json::from_slice(
+        &cli(dir.path(), &["create", "--base-url", "http://127.0.0.1:27655", "--json"]).stdout,
+    )
+    .unwrap();
+    let mut keys: Vec<&str> = plain.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["expiresAt", "id", "url"], "JSON stays stable without --qr");
+
+    let with_qr: Value = serde_json::from_slice(
+        &cli(
+            dir.path(),
+            &["create", "--base-url", "http://127.0.0.1:27655", "--json", "--qr"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    let qr_svg = with_qr["qrSvg"].as_str().expect("qrSvg with --qr");
+    assert!(qr_svg.contains("shape-rendering=\"crispEdges\""));
+    assert!(qr_svg.contains("<svg"));
+}

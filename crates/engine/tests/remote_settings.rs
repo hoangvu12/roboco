@@ -84,6 +84,10 @@ async fn settings_toggle_pairing_and_revocation_control_live_listener() {
         .call(methods::CREATE_PAIRING_LINK, json!({}))
         .await
         .unwrap();
+    // Every minted link carries its QR (ticket 32): the surfaces render the
+    // engine's SVG instead of re-encoding, so a client never needs a QR lib.
+    let qr_svg = link["qrSvg"].as_str().expect("qrSvg on a minted link");
+    assert!(qr_svg.contains("shape-rendering=\"crispEdges\""), "{qr_svg}");
     let url = reqwest::Url::parse(link["url"].as_str().unwrap()).unwrap();
     let credential = url.fragment().unwrap().strip_prefix("token=").unwrap();
     let grant: Value = http

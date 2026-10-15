@@ -1,0 +1,16 @@
+[package]
+name = "roboco-xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Repo maintenance tasks run through `cargo xtask` (.cargo/config.toml alias).
+# Gradle's plain `Exec` task and humans call the same entry point from either
+# Windows or Linux (android-app#10), so this crate stays close to std-only:
+# `anyhow`, plus `serde_json` for `android-licenses` (android-ui-parity #101,
+# a light, noted exception — it is already in `Cargo.lock` and parsing
+# `cargo metadata` by hand is error-prone). No clap, no path-specific deps.
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
