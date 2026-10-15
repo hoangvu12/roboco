@@ -77,7 +77,7 @@ class GeneratedAssetsTest {
 
     @Test
     fun vectorDrawablesExist() {
-        for (name in listOf("zi_tab_chat.xml", "zi_tab_settings.xml", "zi_plus.xml", "zi_roboco_glyph.xml")) {
+        for (name in listOf("zi_tab_chat.xml", "zi_tab_settings.xml", "zi_plus.xml", "zi_roboco_bow.xml")) {
             val xml = generatedRes.resolve("drawable").resolve(name)
             assertTrue("$name missing from the generated res", xml.isFile)
             val text = xml.readText()

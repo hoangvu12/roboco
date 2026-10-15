@@ -116,13 +116,15 @@ class PairingRootTest {
     fun topStackIsCentredOnTheWindowEightyAboveItsCentre() {
         host(PairingRootStatus.None)
         val logo = bounds("pairing-root-logo")
-        // A 44 × 44 box, horizontally centred (x 174.5…218.5).
-        assertEquals(44f, logo.widthDp(), 1f)
-        assertEquals(44f, logo.heightDp(), 1f)
+        // android-next #03 replaced the 44 dp glyph with the 64 dp artwork
+        // tile (user decision), so the expected box and stack grow by 20:
+        // a 64 × 64 tile, horizontally centred (x 164.5…228.5).
+        assertEquals(64f, logo.widthDp(), 1f)
+        assertEquals(64f, logo.heightDp(), 1f)
         assertEquals(196.5f, logo.centreXDp(), 1f)
-        // Top ≈ 278.85 = (852 − 134.3) / 2 − 80: the whole 134.3 dp stack
-        // (44 + 12 + 44.2 + 12 + 22.1, one-line tagline).
-        assertEquals(278.85f, logo.top.value, 1f)
+        // Top ≈ 268.85 = (852 − 154.3) / 2 − 80: the whole 154.3 dp stack
+        // (64 + 12 + 44.2 + 12 + 22.1, one-line tagline).
+        assertEquals(268.85f, logo.top.value, 1f)
         // The stack's centre Y is 346 = 852 / 2 − 80 — measured from the
         // mark's top to the tagline's bottom, on the FULL window.
         val tagline = textBounds("This phone has no paired engine yet.")
@@ -164,8 +166,9 @@ class PairingRootTest {
         host(PairingRootStatus.None, insets = WindowInsets(top = 0.dp, bottom = 0.dp))
         val logo = bounds("pairing-root-logo")
         // The top stack is centred on the window, not the safe area: it
-        // does not move when the insets go to zero.
-        assertEquals(278.85f, logo.top.value, 1f)
+        // does not move when the insets go to zero. (268.85 since
+        // android-next #03's 64 dp tile; was 278.85 with the 44 dp glyph.)
+        assertEquals(268.85f, logo.top.value, 1f)
         assertEquals(346f, (logo.top.value + textBounds("This phone has no paired engine yet.").bottom.value) / 2f, 1f)
         // Only the bottom stack consumes insets: the capsule's bottom
         // becomes 852 − 24.
@@ -274,9 +277,10 @@ class PairingRootTest {
             Role.Button,
             compose.onNodeWithTag("pair-engine").fetchSemanticsNode().config[SemanticsProperties.Role],
         )
-        // An iOS UIImageView is not an accessibility element: no label.
+        // android-next #03: the artwork tile is labelled "Roboco" (the
+        // ticket's acceptance), no longer a decorative unlabelled glyph.
         val logo = compose.onNodeWithTag("pairing-root-logo").fetchSemanticsNode()
-        assertNull(logo.config.getOrNull(SemanticsProperties.ContentDescription))
+        assertEquals(listOf("Roboco"), logo.config.getOrNull(SemanticsProperties.ContentDescription))
         // Android-only: TalkBack announces a redeem error politely.
         assertEquals(
             LiveRegionMode.Polite,

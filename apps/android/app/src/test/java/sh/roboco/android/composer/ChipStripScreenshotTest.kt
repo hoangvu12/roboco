@@ -36,8 +36,9 @@ import kotlin.math.abs
  * and verified by `verifyRoborazziDebug`:
  *
  *  - the whole "Composer chips" gallery section in light and dark, on a
- *    400 × 1500 dp mdpi window (the section is ~1300 dp tall; its
- *    registration line sets `screenshotHeightDp = 1400`);
+ *    400 × 1700 dp mdpi window (the section is ~1465 dp tall since
+ *    android-next #01 added two context cards — was 1500 for ~1300; its
+ *    registration line sets `screenshotHeightDp = 1600`);
  *  - the ticket's pixel checks: fixture B strip 1 on a plain white box in
  *    light — the untinted fill over white and the `PrOpen` tone wash over
  *    white are exact blends, and the PR chip's darkest pixel is the title
@@ -87,13 +88,13 @@ class ChipStripScreenshotTest {
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w400dp-h1500dp-mdpi")
+    @Config(sdk = [36], qualifiers = "w400dp-h1700dp-mdpi")
     fun galleryLight() {
         sectionShot(Appearance.Light, "composer/composer_chips_light.png")
     }
 
     @Test
-    @Config(sdk = [36], qualifiers = "w400dp-h1500dp-mdpi")
+    @Config(sdk = [36], qualifiers = "w400dp-h1700dp-mdpi")
     fun galleryDark() {
         sectionShot(Appearance.Dark, "composer/composer_chips_dark.png")
     }

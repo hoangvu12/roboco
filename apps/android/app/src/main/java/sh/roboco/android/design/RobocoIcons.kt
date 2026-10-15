@@ -316,8 +316,12 @@ object RobocoIcons {
     /** The settings tab glyph (24 dp asset from #13, `IconInBox(24.dp)`). */
     val TabSettings = RobocoIcon.Vector(R.drawable.zi_tab_settings)
 
-    /** The Roboco monogram — Pair page, status-bar icon (tickets 34, 72). */
-    val RobocoGlyph = RobocoIcon.Vector(R.drawable.zi_roboco_glyph)
+    /**
+     * The Roboco ribbon bow (android-next #03) — the notification small
+     * icon and the themed launcher icon's monochrome layer; listed here for
+     * the icons gallery. The Pair page shows the launcher artwork instead.
+     */
+    val RobocoBow = RobocoIcon.Vector(R.drawable.zi_roboco_bow)
 
     /** Offline engines (ticket 50). */
     val WifiOff = RobocoIcon.Vector(R.drawable.zi_wifi_off)
@@ -426,7 +430,7 @@ object RobocoIcons {
         // Roboco extras.
         RegistryEntry("TabChat", emptyList(), TabChat),
         RegistryEntry("TabSettings", emptyList(), TabSettings),
-        RegistryEntry("RobocoGlyph", emptyList(), RobocoGlyph),
+        RegistryEntry("RobocoBow", emptyList(), RobocoBow),
         RegistryEntry("WifiOff", emptyList(), WifiOff),
         RegistryEntry("Home", emptyList(), Home),
         RegistryEntry("HardDrive", emptyList(), HardDrive),

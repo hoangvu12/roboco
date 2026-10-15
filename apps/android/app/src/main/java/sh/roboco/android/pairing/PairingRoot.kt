@@ -1,6 +1,7 @@
 package sh.roboco.android.pairing
 
 import android.content.res.Configuration
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -21,8 +23,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -34,12 +39,10 @@ import androidx.compose.ui.unit.dp
 import sh.roboco.android.R
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.Appearance
-import sh.roboco.android.design.IconInBox
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.Palette
-import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
-import sh.roboco.android.design.SymbolWeight
+import sh.roboco.android.design.rememberSmoothRoundedShape
 import sh.roboco.android.design.glass.ProminentGlassButton
 import sh.roboco.android.design.glass.ProminentGlassButtonDefaults
 import sh.roboco.android.design.uiStyle
@@ -100,9 +103,9 @@ internal fun pairingRootStatusLine(
  * (`ios:Shell/SignInViewController.swift:36-89`) and swaps the content:
  *
  * - a top stack centred on the **whole window** (not the safe area) and
- *   lifted 80 dp above the window centre (`:83-84`): the Roboco glyph
- *   (44 dp box), the title "Roboco" and the tagline, 12 dp apart
- *   (`:71-74`);
+ *   lifted 80 dp above the window centre (`:83-84`): the launcher
+ *   artwork in a 64 dp rounded tile (android-next #03), the title
+ *   "Roboco" and the tagline, 12 dp apart (`:71-74`);
  * - a bottom stack pinned 24 dp above the safe area's bottom edge and 24 dp
  *   inside its side edges (`:85-87`), 12 dp between the status line and the
  *   full-width "Pair an engine" capsule (ticket 08's
@@ -155,17 +158,18 @@ fun PairingRoot(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // SF `sparkle` cannot ship (ticket 06); the web Welcome shows
-            // the Roboco logo at 44 here, so the mark is the monochrome
-            // glyph in a 44 dp box. Decorative, like a UIImageView: no
-            // content description.
-            IconInBox(
-                RobocoIcons.RobocoGlyph,
-                tint = palette.text,
-                box = 44.dp,
-                weight = SymbolWeight.Light,
-                modifier = Modifier.testTag("pairing-root-logo"),
-                contentDescription = null,
+            // android-next #03 (user decision 2026-10-15, reversing ticket
+            // 34's tinted glyph): the launcher artwork itself, untinted,
+            // in a 64 dp app-icon tile with continuous corners (the iOS
+            // icon ratio, 0.2237 × 64 ≈ 14.3 dp), like desktop and web.
+            Image(
+                painter = painterResource(R.mipmap.ic_launcher_art),
+                contentDescription = stringResource(R.string.pairing_root_title),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(PairingRootLogoSize)
+                    .clip(rememberSmoothRoundedShape(PairingRootLogoCorner))
+                    .testTag("pairing-root-logo"),
             )
             BasicText(
                 stringResource(R.string.pairing_root_title),
@@ -220,6 +224,12 @@ fun PairingRoot(
         }
     }
 }
+
+/** The artwork tile's side (android-next #03: 64, within the ticket's 64–72). */
+internal val PairingRootLogoSize = 64.dp
+
+/** The tile's continuous corner: the iOS app-icon ratio, 0.2237 × 64. */
+internal val PairingRootLogoCorner = 14.3.dp
 
 // ---------------------------------------------------------------------------
 // Previews — the ticket's iPhone frame: 393 × 852, safe insets 59/34

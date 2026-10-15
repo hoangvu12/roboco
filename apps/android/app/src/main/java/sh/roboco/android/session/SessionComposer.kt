@@ -223,7 +223,8 @@ class SessionComposerBinding internal constructor(
      * and the upload progress into the transcript. Snapshot writes of
      * equal values are no-ops, so re-applying the whole mapping is cheap.
      * `onChipTap` is **not** set (iOS never sets it in a session —
-     * branch/context taps stay inert).
+     * branch taps stay inert; android-next #01's context chip opens its
+     * card through the menu map, not `onChipTap`).
      */
     internal fun apply(chrome: SessionChrome) {
         applyChrome(

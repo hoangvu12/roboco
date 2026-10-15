@@ -6,7 +6,7 @@ import sh.roboco.android.composer.ComposerChip
 import uniffi.roboco_core.ComposerState
 import uniffi.roboco_core.PullRequestState
 import uniffi.roboco_core.SessionRow
-import kotlin.math.roundToInt
+import java.util.Locale
 
 /**
  * The composer's context chips (android-ui-parity #78) — the port of
@@ -30,7 +30,7 @@ object SessionChipIds {
     /** `row.branch` — shown only when there is no PR. */
     const val Branch = "branch"
 
-    /** `composer.contextUsage` — shown from 50 % of the window. */
+    /** `composer.contextUsage` — shown whenever usage is reported (android-next #01). */
     const val Context = "context"
 }
 
@@ -102,14 +102,19 @@ data class ChipSource(
  * - **pr** — the bare number (no `#`), the PR-state tint, the 12 dp PR
  *   glyph; a PR **replaces** the branch chip;
  * - **branch** — only without a PR, and only when non-empty;
- * - **context** — `tokens / window` only from `fraction >= 0.5`, the
- *   percentage rounded **half away from zero** ([roundToInt], never
- *   `kotlin.math.round`, which rounds half to even), the warning symbol
- *   and tint from `fraction >= 0.85` — the **unrounded** fraction, so
- *   `845 / 1000` shows `85% context` with the calm glyph. Fractions above
- *   1 are not clamped (`120% context`).
+ * - **context** — android-next #01 supersedes iOS's `fraction >= 0.5`
+ *   gate: [contextReading] / [contextChip] show it at any fraction (0 %
+ *   included), `N tokens` without a window, and hide it only with no
+ *   token count. The percentage rounds **half away from zero**, the
+ *   warning symbol and tint come from the **unrounded** `fraction >= 0.85`
+ *   (`845 / 1000` shows `85% context` calm), and fractions above 1 are not
+ *   clamped (`120% context`). [locale] groups the a11y label's numbers.
  */
-fun sessionChips(s: ChipSource, reasoningLabel: (String) -> String): List<ComposerChip> = buildList {
+fun sessionChips(
+    s: ChipSource,
+    locale: Locale = Locale.getDefault(),
+    reasoningLabel: (String) -> String,
+): List<ComposerChip> = buildList {
     (s.modelLabel ?: s.harnessLabel)?.let { title ->
         val h = s.harness ?: "claude-code"
         add(
@@ -149,21 +154,8 @@ fun sessionChips(s: ChipSource, reasoningLabel: (String) -> String): List<Compos
             )
         }
     }
-    val t = s.tokens
-    val w = s.window
-    if (t != null && w != null && w > 0uL) {
-        val f = t.toDouble() / w.toDouble()
-        if (f >= 0.5) {
-            add(
-                ComposerChip(
-                    id = SessionChipIds.Context,
-                    title = "${(f * 100).roundToInt()}% context",
-                    symbol = if (f >= 0.85) "exclamationmark.circle" else "circle.lefthalf.filled",
-                    tint = if (f >= 0.85) ChipTint.Warning else null,
-                ),
-            )
-        }
-    }
+    // android-next #01: always shown once usage is reported (no 50 % gate).
+    contextReading(s.tokens, s.window)?.let { add(contextChip(it, locale)) }
 }
 
 /**
@@ -180,7 +172,9 @@ fun sessionChips(s: ChipSource, reasoningLabel: (String) -> String): List<Compos
  */
 class SessionChipsFiller(
     private val reasoningLabel: (String) -> String = { uniffi.roboco_core.reasoningLabel(it) },
+    /** Read per refresh, so a locale change regroups the context label on the next chrome. */
+    private val locale: () -> Locale = { Locale.getDefault() },
 ) : ChromeFiller {
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome =
-        chrome.copy(chips = sessionChips(ChipSource.from(input.row, input.composer), reasoningLabel))
+        chrome.copy(chips = sessionChips(ChipSource.from(input.row, input.composer), locale(), reasoningLabel))
 }

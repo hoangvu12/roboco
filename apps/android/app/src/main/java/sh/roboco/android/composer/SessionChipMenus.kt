@@ -1,5 +1,6 @@
 package sh.roboco.android.composer
 
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -17,10 +18,13 @@ import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.session.ChromeFiller
 import sh.roboco.android.session.ChromeInput
+import sh.roboco.android.session.ContextReading
 import sh.roboco.android.session.CoreSessionCore
 import sh.roboco.android.session.SessionChrome
 import sh.roboco.android.session.SessionChipIds
 import sh.roboco.android.session.SessionCore
+import sh.roboco.android.session.contextReading
+import sh.roboco.android.session.contextUsageCard
 import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ModelInfo
 import uniffi.roboco_core.SandboxLevel
@@ -134,6 +138,8 @@ private data class MenuKey(
 class SessionChipMenus(
     private val core: ChipMenuCore,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** The context card's number grouping, read at tap time. */
+    private val locale: () -> Locale = { Locale.getDefault() },
 ) : ChromeFiller {
 
     /**
@@ -163,7 +169,13 @@ class SessionChipMenus(
     @Volatile
     private var invalidate: () -> Unit = {}
 
-    private data class Snapshot(val row: SessionRow?, val config: ChatConfig?, val deviceId: String)
+    private data class Snapshot(
+        val row: SessionRow?,
+        val config: ChatConfig?,
+        val deviceId: String,
+        /** android-next #01: the context card's numbers (`ComposerState.contextUsage`). */
+        val context: ContextReading?,
+    )
 
     override fun bind(invalidate: () -> Unit) {
         this.invalidate = invalidate
@@ -175,7 +187,13 @@ class SessionChipMenus(
      * ticket 78 already filled. No FFI: everything comes from [input].
      */
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
-        snapshot = Snapshot(row = input.row, config = input.config, deviceId = input.composer.host.deviceId)
+        val usage = input.composer.contextUsage
+        snapshot = Snapshot(
+            row = input.row,
+            config = input.config,
+            deviceId = input.composer.host.deviceId,
+            context = contextReading(usage?.tokens, usage?.window),
+        )
         return chrome
     }
 
@@ -184,10 +202,13 @@ class SessionChipMenus(
      * at tap time by ticket 59's strip. No FFI, no snapshot state writes:
      * it reads [snapshot] and builds the [Menu] per the ticket's table
      * (`model` / `effort` get one hoisted deferred; `pr` two rows;
-     * `branch` / `context` / anything else `null`).
+     * `branch` / anything else `null`). android-next #01: `context` opens
+     * the read-only details card from the composer's usage — it needs no
+     * row, so it is answered before iOS's row guard.
      */
     fun menu(chipId: String, platform: ChipMenuPlatform): Menu? {
         val s = snapshot ?: return null
+        if (chipId == SessionChipIds.Context) return s.context?.let { contextUsageCard(it, locale()) }
         val row = s.row ?: return null // iOS: guard let row
         val sel = sessionSelection(s.config, row)
         val harness = sel?.harness ?: DEFAULT_HARNESS

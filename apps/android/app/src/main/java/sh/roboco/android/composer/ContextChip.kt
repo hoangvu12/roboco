@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -204,6 +205,7 @@ fun ComposerChip.leading(): ChipLeading? = when (val i = icon) {
  * @param iconGap icon → title gap (5 for the PR chip, 6 otherwise)
  * @param hasMenu only changes the a11y click label to "Show menu"
  * @param colors paint override; `null` → [chipColors] of [tint] and [enabled]
+ * @param a11yLabel the merged node's content description; `null` = the title is read
  */
 @Composable
 fun ContextChip(
@@ -217,6 +219,7 @@ fun ContextChip(
     iconGap: Dp = ChipTokens.IconGap,
     hasMenu: Boolean = false,
     colors: ChipColors? = null,
+    a11yLabel: String? = null,
 ) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
@@ -245,7 +248,10 @@ fun ContextChip(
                 role = Role.Button,
                 onClickLabel = if (hasMenu) "Show menu" else null,
             ) { if (enabled) onClick() }
-            .semantics(mergeDescendants = true) { if (!enabled) disabled() }
+            .semantics(mergeDescendants = true) {
+                if (!enabled) disabled()
+                a11yLabel?.let { contentDescription = it }
+            }
             .padding(horizontal = ChipTokens.PadH, vertical = ChipTokens.PadV),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -292,6 +298,7 @@ fun ContextChip(
         mono = pr,
         iconGap = if (pr) ChipTokens.PrIconGap else ChipTokens.IconGap,
         hasMenu = hasMenu,
+        a11yLabel = chip.contentDescription,
     )
 }
 

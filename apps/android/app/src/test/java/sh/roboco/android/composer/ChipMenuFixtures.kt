@@ -3,6 +3,7 @@ package sh.roboco.android.composer
 import uniffi.roboco_core.ChatIndicator
 import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ComposerState
+import uniffi.roboco_core.ContextUsage
 import uniffi.roboco_core.HostCapabilities
 import uniffi.roboco_core.HostInfo
 import uniffi.roboco_core.LiveStatus
@@ -150,6 +151,7 @@ fun kotlinReasoningLabel(level: String): String = when (level) {
 fun chipMenuComposerState(
     deviceId: String = "device-1",
     chatId: String = "chat-a",
+    contextUsage: ContextUsage? = null,
 ): ComposerState = ComposerState(
     chatId = chatId,
     revision = 1uL,
@@ -184,7 +186,7 @@ fun chipMenuComposerState(
     openInput = null,
     queueError = null,
     lastSubmittedMessageId = null,
-    contextUsage = null,
+    contextUsage = contextUsage,
 )
 
 /**

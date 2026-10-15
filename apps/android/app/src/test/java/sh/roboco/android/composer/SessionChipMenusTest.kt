@@ -1,5 +1,6 @@
 package sh.roboco.android.composer
 
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -21,6 +22,7 @@ import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.session.ChromeInput
 import sh.roboco.android.session.SessionChrome
 import uniffi.roboco_core.ChatConfig
+import uniffi.roboco_core.ContextUsage
 import uniffi.roboco_core.ModelInfo
 import uniffi.roboco_core.ModelOption
 import uniffi.roboco_core.SandboxLevel
@@ -160,12 +162,13 @@ class SessionChipMenusTest {
         menus: SessionChipMenus,
         core: FakeChipMenuCore,
         deviceId: String = "device-1",
+        contextUsage: ContextUsage? = null,
     ) {
         menus.fill(
             SessionChrome(),
             ChromeInput(
                 chatId = "chat-a",
-                composer = chipMenuComposerState(deviceId = deviceId),
+                composer = chipMenuComposerState(deviceId = deviceId, contextUsage = contextUsage),
                 row = core.row,
                 engine = null,
                 config = core.config,
@@ -317,6 +320,8 @@ class SessionChipMenusTest {
         assertTrue(core.callLog.isEmpty())
     }
 
+    // android-next #01: `context` now has a menu (the details card), but
+    // only once usage is reported — this fill has none, so it stays null.
     @Test
     fun branchContextAndUnknownChipsHaveNoMenu() {
         val core = FakeChipMenuCore(row = chipMenuSessionRow(branch = "main"), config = chatConfig())
@@ -327,6 +332,33 @@ class SessionChipMenusTest {
         assertNull(menus.menu("context", platform))
         assertNull(menus.menu("anything-else", platform))
         assertTrue(core.callLog.isEmpty())
+    }
+
+    @Test
+    fun theContextChipOpensTheDetailsCardWithoutACoreCall() {
+        val core = FakeChipMenuCore(row = chipMenuSessionRow(branch = "main"), config = chatConfig())
+        val menus = SessionChipMenus(core, io = fakeIo(), locale = { Locale.US })
+        fill(menus, core, contextUsage = ContextUsage(tokens = 5_417uL, window = 1_048_576uL))
+        val card = menus.menu("context", RecordingPlatform())
+        assertNotNull(card)
+        assertEquals("Context window", card!!.title)
+        val rows = card.children.map { it as MenuItem }
+        assertEquals(listOf("5,417 / 1,048,576 tokens", "1,043,159 tokens remaining"), rows.map { it.title })
+        assertEquals("1% used", rows[0].subtitle)
+        assertTrue("read-only rows", rows.all { it.informational })
+        assertTrue("menu() makes no core call", core.callLog.isEmpty())
+    }
+
+    @Test
+    fun theContextCardNeedsNoRow() {
+        // The usage lives on the composer, not the workspace row, so the
+        // card skips iOS's `guard let row` that the other chips keep.
+        val core = FakeChipMenuCore(row = null, config = null)
+        val menus = SessionChipMenus(core, io = fakeIo(), locale = { Locale.US })
+        fill(menus, core, contextUsage = ContextUsage(tokens = 48_210uL, window = null))
+        val rows = menus.menu("context", RecordingPlatform())!!.children.map { it as MenuItem }
+        assertEquals(listOf("48,210 tokens used", "Context limit not reported"), rows.map { it.title })
+        assertNull("the other chips still need the row", menus.menu("model", RecordingPlatform()))
     }
 
     @Test

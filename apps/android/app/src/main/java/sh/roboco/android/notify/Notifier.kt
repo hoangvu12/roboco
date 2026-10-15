@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -13,6 +15,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import sh.roboco.android.MainActivity
 import sh.roboco.android.R
 
@@ -132,7 +135,7 @@ class Notifier(private val context: Context) {
         val text = kind.title
         val tag = chatTag(engineId, chatId)
         val notification = NotificationCompat.Builder(context, channelId(kind))
-            .setSmallIcon(SMALL_ICON)
+            .brand()
             // The core applies the fallback already; a blank title from any
             // other caller still reads "New session" (NotifierTest).
             .setContentTitle(chatTitle.ifBlank { "New session" })
@@ -168,7 +171,7 @@ class Notifier(private val context: Context) {
             NotifyCopy.LinkLostOffline
         }
         val notification = NotificationCompat.Builder(context, channelId(NotificationKind.Failed))
-            .setSmallIcon(SMALL_ICON)
+            .brand()
             .setContentTitle(NotifyCopy.LinkLostTitle)
             .setContentText(text)
             .setSubText(engineName)
@@ -219,7 +222,7 @@ class Notifier(private val context: Context) {
     /** `onTimeout`: background updates are paused until the app opens. */
     fun postBudgetExhausted() {
         val notification = NotificationCompat.Builder(context, runsChannelId())
-            .setSmallIcon(SMALL_ICON)
+            .brand()
             .setContentTitle(NotifyCopy.BudgetTitle)
             .setContentText(NotifyCopy.BudgetText)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -245,7 +248,7 @@ class Notifier(private val context: Context) {
      */
     fun buildOngoing(content: OngoingContent, onDeleteDismissed: PendingIntent?) =
         NotificationCompat.Builder(context, runsChannelId())
-            .setSmallIcon(SMALL_ICON)
+            .brand()
             .setContentTitle(content.title)
             .setContentText(content.text)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
@@ -278,6 +281,29 @@ class Notifier(private val context: Context) {
             .build()
 
     // ── internals ────────────────────────────────────────────────────────
+
+    /**
+     * android-next #03's branding, on every builder: the ribbon-bow small
+     * icon (status bar and shade), the ribbon blue accent and the launcher
+     * artwork as the large icon (expanded notification).
+     */
+    private fun NotificationCompat.Builder.brand(): NotificationCompat.Builder =
+        setSmallIcon(SMALL_ICON)
+            .setColor(ContextCompat.getColor(context, R.color.brand_ribbon))
+            .apply { largeIcon?.let { setLargeIcon(it) } }
+
+    /**
+     * The launcher artwork, decoded once per [Notifier] (the density bucket's
+     * `ic_launcher_art`); `null` if it cannot be decoded, and the
+     * notification simply goes without a large icon.
+     */
+    private val largeIcon: Bitmap? by lazy {
+        try {
+            BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher_art)
+        } catch (_: RuntimeException) {
+            null
+        }
+    }
 
     private fun notify(tag: String, notification: Notification) {
         try {
@@ -341,7 +367,7 @@ class Notifier(private val context: Context) {
         const val CHANNEL_VERSION = 1
         const val NOTIFICATION_ID = 1
         const val BUDGET_TAG = "budget"
-        val SMALL_ICON = R.drawable.zi_roboco_glyph
+        val SMALL_ICON = R.drawable.zi_roboco_bow
     }
 }
 
