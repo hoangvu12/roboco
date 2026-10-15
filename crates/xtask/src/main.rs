@@ -1,6 +1,6 @@
 //! `cargo xtask` — repo maintenance tasks.
 //!
-//! Two tasks: `android-core` (android-app#10), the single entry point
+//! Two Android tasks: `android-core` (android-app#10), the single entry point
 //! that builds the mobile core for Android and generates its UniFFI Kotlin
 //! bindings from **both Windows and Linux hosts**; and `android-licenses`
 //! (android-ui-parity #101), the Rust core's licence data for the Android
@@ -16,7 +16,12 @@
 //!                         [--skip-host] [--skip-ndk] [--skip-tailcat] [--check]
 //!
 //! cargo xtask android-licenses --out FILE [--languages mobile|all]
+//!
+//! cargo xtask tailcat-adapter [--release]
 //! ```
+//!
+//! `tailcat-adapter` builds the desktop Tailcat adapter beside a source
+//! build's `roboco` executable (see `desktop_tailcat`).
 //!
 //! Outputs (all under `target/`, git-ignored — generated bindings are never
 //! committed): `<out>/kotlin/uniffi/roboco_core/roboco_core.kt`,
@@ -27,6 +32,7 @@
 
 mod android_licenses;
 mod args;
+mod desktop_tailcat;
 mod elf;
 mod kotlin;
 mod ndk;
@@ -50,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     match argv.first().map(String::as_str) {
         Some("android-core") => android_core(&argv[1..]),
         Some("android-licenses") => android_licenses::run(&argv[1..]),
+        Some("tailcat-adapter") => desktop_tailcat::run(&argv[1..]),
         Some(other) => bail!("unknown task {other:?}\n{}", args::USAGE),
         None => bail!("{}", args::USAGE),
     }

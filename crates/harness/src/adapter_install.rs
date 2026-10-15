@@ -66,7 +66,7 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// `$ROBOCO_DATA_DIR/adapters`. Windows defaults to
 /// `%LOCALAPPDATA%/Roboco/adapters` (or `%USERPROFILE%/AppData/Local/...`);
 /// Unix keeps `~/.roboco/adapters`.
-pub(crate) fn adapters_root() -> Option<PathBuf> {
+pub fn adapters_root() -> Option<PathBuf> {
     adapters_root_with(
         &|key| std::env::var_os(key),
         crate::executable::Platform::current(),

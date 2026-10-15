@@ -60,8 +60,33 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'web build failed' }
         } finally { Pop-Location }
     }
-    cargo build --release --locked -p roboco
-    if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+    # The Tailcat adapter is embedded in roboco.exe (crates/engine/build.rs),
+    # not shipped beside it: in-app updates replace roboco.exe only, and the
+    # portable .exe is that file alone. Built outside target/package so the
+    # release upload never publishes it as an arch-ambiguous loose asset.
+    $hostTriple = (& rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
+    $targetArch = switch -Wildcard ($hostTriple) {
+        'x86_64-pc-windows-*' { 'x86_64' }
+        'aarch64-pc-windows-*' { 'aarch64' }
+        default { throw "Unsupported Windows Rust host: $hostTriple" }
+    }
+    $goArch = if ($targetArch -eq 'aarch64') { 'arm64' } else { 'amd64' }
+    $adapterDir = Join-Path $root "target/tailcat/$targetArch"
+    New-Item -ItemType Directory -Force -Path $adapterDir | Out-Null
+    $adapter = Join-Path $adapterDir 'roboco-tailcat.exe'
+    Push-Location (Join-Path $root 'adapters/roboco-tailcat')
+    try {
+        $env:CGO_ENABLED = '0'
+        $env:GOOS = 'windows'
+        $env:GOARCH = $goArch
+        & go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
+        if ($LASTEXITCODE -ne 0) { throw 'Tailcat adapter build failed' }
+    } finally { Pop-Location }
+    $env:ROBOCO_TAILCAT_EMBED = $adapter
+    try {
+        cargo build --release --locked -p roboco
+        if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+    } finally { Remove-Item Env:ROBOCO_TAILCAT_EMBED }
     # Explicit pipes also work for the GUI-subsystem executable in CI. A
     # PowerShell collection match does not populate the scalar $Matches map.
     $probe = [Diagnostics.ProcessStartInfo]::new()
@@ -87,22 +112,15 @@ try {
     } finally { $process.Dispose() }
     $out = Join-Path $root 'target/package'
     New-Item -ItemType Directory -Force -Path $out | Out-Null
+    # Older packaging left the adapter here, where the release upload's *.exe
+    # glob picked it up.
+    Remove-Item -LiteralPath (Join-Path $out 'roboco-tailcat.exe') -Force -ErrorAction SilentlyContinue
     $arch = Get-WindowsPackageArch $probe.FileName
-    $goArch = if ($arch -eq 'aarch64') { 'arm64' } else { 'amd64' }
-    $adapter = Join-Path $out 'roboco-tailcat.exe'
-    Push-Location (Join-Path $root 'adapters/roboco-tailcat')
-    try {
-        $env:CGO_ENABLED = '0'
-        $env:GOOS = 'windows'
-        $env:GOARCH = $goArch
-        & go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
-        if ($LASTEXITCODE -ne 0) { throw 'Tailcat adapter build failed' }
-    } finally { Pop-Location }
+    if ($arch -ne $targetArch) { throw "roboco.exe is $arch but the embedded Tailcat adapter is $targetArch" }
     $stage = Join-Path $out "roboco-$version-windows-$arch"
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath './target/release/roboco.exe' -Destination (Join-Path $stage 'roboco.exe')
-    Copy-Item -LiteralPath $adapter -Destination (Join-Path $stage 'roboco-tailcat.exe')
     @{ releases_url = $ReleasesUrl } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $stage 'roboco-update.json')
     Copy-Item -LiteralPath 'LICENSE','THIRD_PARTY_NOTICES.md' -Destination $stage
     $licenses = Join-Path $stage 'licenses/fonts'

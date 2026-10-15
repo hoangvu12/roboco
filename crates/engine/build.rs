@@ -19,6 +19,7 @@ use std::{
 };
 
 fn main() {
+    embed_tailcat_adapter();
     println!("cargo:rerun-if-env-changed=ROBOCO_WEB_DIST");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -62,6 +63,32 @@ fn main() {
         copied_from.display(),
         staged.display()
     );
+}
+
+/// `ROBOCO_TAILCAT_EMBED=<absolute path>` bakes that `roboco-tailcat` build
+/// into the engine (`src/tailcat.rs` extracts it on first use). Windows
+/// release packaging sets it: in-app updates replace only `roboco.exe`, so a
+/// companion file beside it went missing or stale. Unset, nothing is embedded
+/// and the adapter is looked up beside the executable as before.
+fn embed_tailcat_adapter() {
+    println!("cargo:rerun-if-env-changed=ROBOCO_TAILCAT_EMBED");
+    println!("cargo:rustc-check-cfg=cfg(roboco_tailcat_embedded)");
+    let Some(adapter) = env::var_os("ROBOCO_TAILCAT_EMBED").filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let adapter = PathBuf::from(adapter);
+    assert!(
+        adapter.is_absolute() && adapter.is_file(),
+        "ROBOCO_TAILCAT_EMBED must be the absolute path of a built roboco-tailcat, not {}",
+        adapter.display()
+    );
+    println!("cargo:rerun-if-changed={}", adapter.display());
+    println!(
+        "cargo:rustc-env=ROBOCO_TAILCAT_EMBED_FILE={}",
+        adapter.display()
+    );
+    println!("cargo:rustc-cfg=roboco_tailcat_embedded");
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<usize> {

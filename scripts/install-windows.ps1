@@ -94,9 +94,7 @@ try {
         throw 'The archive did not contain roboco.exe.'
     }
 
-    if (-not (Test-Path -LiteralPath (Join-Path $stage 'roboco-tailcat.exe'))) {
-        throw 'The archive did not contain roboco-tailcat.exe.'
-    }
+    # roboco.exe embeds the Tailcat adapter; only its licences ship beside it.
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'licenses/tailcat/DEPENDENCIES.txt'))) {
         throw 'The archive did not contain Tailcat licenses.'
     }

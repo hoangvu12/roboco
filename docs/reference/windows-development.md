@@ -59,6 +59,7 @@ Check hit rates with `sccache --show-stats`.
 | --- | --- |
 | Application data | `%LOCALAPPDATA%\Roboco`, falling back to `%USERPROFILE%\AppData\Local\Roboco`. Override with `ROBOCO_DATA_DIR`. |
 | Managed adapters | `ROBOCO_ADAPTERS_DIR`, then `ROBOCO_DATA_DIR/adapters`, then the default application's `adapters` directory. |
+| Tailcat adapter | Release `roboco.exe` embeds it and unpacks it to `<managed adapters>\roboco-tailcat\<build>\`. Source builds look beside their executable: `cargo xtask tailcat-adapter [--release]` puts it there. `ROBOCO_TAILCAT_ADAPTER` overrides both. |
 | Provider credentials | Keep their provider-owned locations; changing Roboco's data root does not migrate them. |
 | `CODEX_EXECUTABLE` | Executable override. `.exe` (and `.com`) launch directly; `.cmd`/`.bat` shims launch through a wrapped `cmd.exe` with literal, individually escaped arguments. The override must exist on disk. |
 
