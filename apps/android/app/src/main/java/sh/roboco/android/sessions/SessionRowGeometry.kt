@@ -34,6 +34,8 @@ data class SessionRowFrames(
     val metaSlot: RectDp,
     /** The background rect: the row bounds inset 8 left/right, 1 top/bottom. */
     val highlight: RectDp,
+    /** android-next #06: the "● N" running-agents pill; null when none shows. */
+    val agents: RectDp? = null,
 )
 
 /**
@@ -77,12 +79,33 @@ object SessionRowGeometry {
     /** `sizeThatFits(CGSize(width: 140, height: 40))`'s cap (a safety bound). */
     const val WORD_MAX_WIDTH = 140f
 
+    /** android-next #06's pill: `(18k).rounded()` high (upstream #899's `SessionCell`). */
+    const val AGENTS_HEIGHT = 18f
+
+    /** The pill's text padding: `sizeThatFits(…).width + 12`. */
+    const val AGENTS_PADDING = 12f
+
+    /** The pill's overlap into the title gap (`trailing + 4 − w`). */
+    const val AGENTS_OVERLAP = 4f
+
+    /** The title's gap before the pill (`trailing = agents.minX − 8`). */
+    const val AGENTS_GAP = 8f
+
+    /**
+     * @param agentsTextWidth android-next #06: the "● N" text's single-line
+     *   width (dp, unrounded); 0 = no pill. The pill leads the status glyph
+     *   and word, never replaces them (upstream #899's `SessionCell`): it is
+     *   `ceil(text) + 12` wide and `R(18k)` high, centred on the title line,
+     *   its right edge 4 dp into the title's 10 dp gap, and the title ends
+     *   8 dp before it.
+     */
     fun frames(
         width: Float,
         factor: Float,
         titleFace: Face,
         wordWidth: Float,
         hasGlyph: Boolean,
+        agentsTextWidth: Float = 0f,
     ): SessionRowFrames {
         val r = ::roundHalfAway
         val titleY = r(10f * factor)
@@ -108,7 +131,15 @@ object SessionRowGeometry {
         } else {
             null
         }
-        val trailing = (glyph?.x ?: wordX) - TITLE_GAP
+        var trailing = (glyph?.x ?: wordX) - TITLE_GAP
+        val agents = if (agentsTextWidth > 0f) {
+            val h = r(AGENTS_HEIGHT * factor)
+            val w = ceil(agentsTextWidth) + AGENTS_PADDING
+            RectDp(trailing + AGENTS_OVERLAP - w, titleY + (titleH - h) / 2f, w, h)
+        } else {
+            null
+        }
+        if (agents != null) trailing = agents.x - AGENTS_GAP
         return SessionRowFrames(
             height = height,
             mark = RectDp(MARGIN, markY, MARK_SIDE, MARK_SIDE),
@@ -117,6 +148,7 @@ object SessionRowGeometry {
             glyph = glyph,
             metaSlot = RectDp(TEXT_X, metaY, max(0f, width - MARGIN - TEXT_X), metaH),
             highlight = RectDp(8f, 1f, max(0f, width - 16f), max(0f, height - 2f)),
+            agents = agents,
         )
     }
 }
