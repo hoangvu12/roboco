@@ -530,7 +530,9 @@ class SessionComposerBindingTest {
             core = core,
             hub = SessionEventHub(post = { it.run() }),
             fillers = listOf(
-                SessionChipsFiller { level -> level.replaceFirstChar(Char::uppercase) },
+                // Named: since android-next #01 the filler's last parameter is
+                // `locale: () -> Locale`, so a trailing lambda would bind there.
+                SessionChipsFiller(reasoningLabel = { level -> level.replaceFirstChar(Char::uppercase) }),
                 banner,
             ),
             io = StandardTestDispatcher(testScheduler),
