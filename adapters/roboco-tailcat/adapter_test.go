@@ -196,7 +196,7 @@ func TestClientStateDecodeFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, err := decodeClientState(string(valid))
-	if err != nil || again.PrivateKey != created.PrivateKey {
+	if err != nil || !again.PrivateKey.Equal(created.PrivateKey) {
 		t.Fatalf("valid state did not round-trip: %v", err)
 	}
 	server, err := json.Marshal(&stateFile{Version: stateVersion, Role: "server", PrivateKey: key.NewNode(), PresharedKey: tailcat.NewPresharedKey()})
