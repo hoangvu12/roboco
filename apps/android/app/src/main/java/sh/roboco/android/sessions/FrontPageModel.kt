@@ -101,6 +101,17 @@ class FrontPageModel(
         )
     }
         .flowOn(compute)
+        // Not a no-op (round 53): `stateIn` fuses with a directly preceding
+        // `flowOn` and runs its sharing coroutine in the flowOn context, so
+        // the StateFlow was written on a Dispatchers.Default worker. A
+        // composition collecting it could then be resumed on that worker
+        // (compose-ui-test resumes effect coroutines inline), recompose and
+        // lay out there while main was mid-measure: "performMeasureAndLayout
+        // called during measure layout" (CI 9307a945, NotificationFlowTest).
+        // This non-channel operator breaks the fusion: the build stays on
+        // [compute], the StateFlow is written on [scope]'s dispatcher (main),
+        // and equal values were already conflated by the StateFlow.
+        .distinctUntilChanged()
         .stateIn(scope, SharingStarted.Eagerly, null)
 
     init {

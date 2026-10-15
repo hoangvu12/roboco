@@ -151,8 +151,20 @@ class EngineMetaJsonTest {
 
         EngineMetaJson.decode(JSONArray().put(missingLabel).toString())
 
-        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
-        assertEquals(listOf("paired engine entry unreadable index=0"), logged)
+        // Round 53: ShadowLog is process-global and shares the "Roboco" tag
+        // with other components (CI 9307a945 caught a background
+        // "setNetworkOnline(false)" between clear() and here), so the exact
+        // match is scoped to this codec's own lines...
+        val logs = ShadowLog.getLogs().toList()
+        val codecLines = logs.mapNotNull { it.msg }.filter { it.startsWith("paired engine") }
+        assertEquals(listOf("paired engine entry unreadable index=0"), codecLines)
+        // ...and the privacy half holds for every captured line, whoever wrote it.
+        for (secret in listOf(metaA.engineId, metaA.baseUrl)) {
+            assertTrue(
+                "a log line leaks the record ($secret)",
+                logs.none { it.msg?.contains(secret) == true },
+            )
+        }
     }
 
     @Test

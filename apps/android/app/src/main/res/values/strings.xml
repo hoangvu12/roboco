@@ -99,7 +99,7 @@
     <string name="update_alert_later">Later</string>
     <string name="update_downloading_title">Updating Roboco</string>
     <string name="update_downloading_message">Downloading %1$s…</string>
-    <string name="update_progress_of_mb">%1$s of %2$s</string>
+    <string name="update_progress_of_mb">%1$s of %2$s MB</string>
     <string name="update_downloading_cancel">Cancel</string>
     <string name="update_failed_title">Update Failed</string>
     <string name="update_failed_retry">Try Again</string>

@@ -107,7 +107,9 @@ fn names_skip_rules_and_counts() {
         "assets/icons/fileicon-files-angular-directive-dark.png",
         "assets/icons/fileicon-folders-folder-actions-dark.png",
     ] {
-        let path = out.path().join(expected.replace('/', "\\"));
+        // `/` separates components on every OS (Windows accepts it too);
+        // the old `\\` rewrite made the path one bogus file name on Linux.
+        let path = out.path().join(expected);
         assert!(path.is_file(), "missing {}", expected);
     }
 
