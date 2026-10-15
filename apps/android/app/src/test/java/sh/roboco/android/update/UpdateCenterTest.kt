@@ -348,7 +348,7 @@ class UpdateCenterTest {
         // Nothing reached the signer or the installer.
         assertNull(verifier.verified)
         val dir = File(context.cacheDir, "updates")
-        assertEquals(emptyList<File>(), dir.listFiles()?.toList() ?: emptyList())
+        assertEquals(emptyList<File>(), dir.listFiles()?.toList().orEmpty())
     }
 
     @Test
@@ -372,7 +372,7 @@ class UpdateCenterTest {
         assertTrue("the signer gate ran", verifier.verified != null)
         assertTrue("nothing was installed", installer.installed.isEmpty())
         val dir = File(context.cacheDir, "updates")
-        assertEquals(emptyList<File>(), dir.listFiles()?.toList() ?: emptyList())
+        assertEquals(emptyList<File>(), dir.listFiles()?.toList().orEmpty())
     }
 
     @Test
