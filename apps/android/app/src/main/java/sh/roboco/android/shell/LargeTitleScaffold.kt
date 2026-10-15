@@ -357,8 +357,15 @@ fun LargeTitleScaffold(
     // bottom edge at 874 dp) re-issued the same scroll forever (round 45).
     LaunchedEffect(listState, effectiveMode) {
         if (!hasLargeTitle) return@LaunchedEffect
-        // Set by a drag's start (a fling always follows one), cleared when
-        // its scroll ends: main-thread only, both collectors run here.
+        // Set by a drag's start (a fling always follows one), cleared only
+        // once that drag has SETTLED — the snap ran to completion, or a
+        // scroll end found nothing to snap. Not on the first scroll end: a
+        // release ends the drag's scroll block, then onDragStopped launches
+        // the fling as a second one (even at zero velocity), whose
+        // UserInput priority cancels a snap started in between; the flag
+        // must survive for the fling's end to snap (round 48: clearing it at
+        // the first end stopped every drag from snapping). Main-thread
+        // only; both collectors run here.
         var dragged = false
         launch {
             listState.interactionSource.interactions.collect { interaction ->
@@ -371,15 +378,23 @@ fun LargeTitleScaffold(
             .filter { !it }
             .collect {
                 if (!dragged) return@collect
-                dragged = false
                 val c = collapseDp()
-                val target = LargeTitleMetrics.snapTarget(c) ?: return@collect
+                val target = LargeTitleMetrics.snapTarget(c)
+                if (target == null) {
+                    // Settled at 0, at L or past the title: nothing to snap.
+                    dragged = false
+                    return@collect
+                }
                 try {
                     listState.animateScrollBy(
                         with(density) { (target - c).dp.toPx() },
                         Motion.LargeTitleSnap.spec(),
                     )
+                    dragged = false
                 } catch (e: CancellationException) {
+                    // `dragged` stays set: the fling (or a new drag) that
+                    // interrupted the snap ends with another scroll end,
+                    // which snaps from wherever it left c.
                     // A finger touching down mid-snap cancels
                     // animateScrollBy (MutationInterruptedException); without
                     // this catch the collect itself would end and every

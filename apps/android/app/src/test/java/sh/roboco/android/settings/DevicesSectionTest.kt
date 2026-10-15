@@ -347,12 +347,20 @@ class DevicesSectionTest {
         )
     }
 
+    /**
+     * The dot's centre column in the engine row image (image-local, 3 px/dp):
+     * card-relative 370 − 19 − 7 − 12 − 4 = 328 dp = 984 px since android-next
+     * round 46 (the chevron lays out at its 7 dp width). The old 971 px
+     * (339.7 dp) fell just left of the moved dot's 972…996 px span (round 48).
+     */
+    private val DOT_CENTRE_PX = 984
+
     @Test
     fun theDotInksSuccessInLight() {
         mount(Appearance.Light)
         // success #15803D = (21, 128, 61), ±8 per channel at the core.
         val px = rowImage("settings-device:e1")
-        assertTrue("light dot centre", matches(px[971, px.height / 2], 21, 128, 61, 8))
+        assertTrue("light dot centre", matches(px[DOT_CENTRE_PX, px.height / 2], 21, 128, 61, 8))
     }
 
     @Test
@@ -360,7 +368,7 @@ class DevicesSectionTest {
         mount(Appearance.Dark)
         // success #34D399 = (52, 211, 153) over elevated #111113.
         val px = rowImage("settings-device:e1")
-        assertTrue("dark dot centre", matches(px[971, px.height / 2], 52, 211, 153, 8))
+        assertTrue("dark dot centre", matches(px[DOT_CENTRE_PX, px.height / 2], 52, 211, 153, 8))
     }
 
     @Test
@@ -390,13 +398,13 @@ class DevicesSectionTest {
         }
         // tertiary #97979F = (151, 151, 159), no fade, no colour tween.
         var px = rowImage("settings-device:e1")
-        assertTrue("tertiary dot at once", matches(px[971, px.height / 2], 151, 151, 159, 8))
+        assertTrue("tertiary dot at once", matches(px[DOT_CENTRE_PX, px.height / 2], 151, 151, 159, 8))
 
         // Ten more frames: the ink never moves (no animation of its own).
         repeat(10) { compose.mainClock.advanceTimeByFrame() }
         compose.waitForIdle()
         px = rowImage("settings-device:e1")
-        assertTrue("tertiary dot stays", matches(px[971, px.height / 2], 151, 151, 159, 8))
+        assertTrue("tertiary dot stays", matches(px[DOT_CENTRE_PX, px.height / 2], 151, 151, 159, 8))
     }
 
     @Test
