@@ -31,6 +31,12 @@ Devices page paste box learns Tailcat exists: placeholder and hint mention
   whenever remote access is enabled and let errors explain, rather than gating
   on transport state the snapshot does not carry.
 
+- 2026-10-15 (fixer, for orchestrator 6): merged `origin/feat/android-app` (PR #19, b1ab5de19's pairing QR) into this branch; `remote_access.rs` resolved keeping both features. The invite card now matches the pairing link card: QR tile (`tailcat-qr`, same 176 px white tile), "Scan with the Roboco app on your phone." / "Expired. Create a new Tailcat invite." caption, dimming and a wake-up at expiry.
+  - This reverses the ticket's "No engine or proto changes": the engine's `CreateTailcatInvite` reply gains `qrSvg` (same encoder as `create_link`, through a new fallible `roboco_proto::qr::try_qr_svg`, so a grammar-maximum 4096-byte address yields `null` instead of panicking the handler). The page reads it with `#[serde(default)]`: older engines show text + Copy only.
+  - CLI: `roboco engine tailcat invite --qr` prints the terminal QR (`try_qr_terminal`) and keeps `qrSvg` in `--json`; plain `--json` drops it, as `pairing create` does.
+  - QR size: a real invite (one-node Tailscale region address ≈ 229–248 chars + 43-char code) is ≈ 446–471 bytes → version 16–17 at M, 89–93 modules with the quiet zone → **1.9–2.0 px per module at 176 px** (logical px; 2× on HiDPI). Borderline on a 100 %-scaled screen; proposed fix (not applied): an invite-only tile of ≈ 248 px (≈ 2.7 px/module).
+  - Tests (not run here; CI): `remote_access` GPUI `tailcat_invite_card_shows_the_engine_qr_and_drops_it_at_expiry_and_on_old_engines` + `invite_caption_swaps_at_expiry`; proto `a_realistic_tailcat_invite_round_trips_through_try_qr_svg` (rqrr decode at level M) + `an_oversized_invite_yields_no_qr_instead_of_a_panic`; `tailcat_invite_cli` asserts `qrSvg` only with `--qr` and the half-block terminal QR.
+
 ## Implementation and validation
 
 The Remote access page's "Pairing link" section header now carries both minting

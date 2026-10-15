@@ -56,6 +56,10 @@ pub enum TailcatCommand {
     Invite {
         #[arg(long, default_value_t = DEFAULT_TTL_SECONDS)]
         ttl_seconds: u64,
+        /// Print the invite as a terminal QR code under the invite line
+        /// (and keep `qrSvg` in `--json` output).
+        #[arg(long)]
+        qr: bool,
         #[arg(long)]
         json: bool,
     },
@@ -99,13 +103,42 @@ fn tailcat(command: TailcatCommand, data_dir: &std::path::Path) -> anyhow::Resul
             }
             Ok(())
         }
-        TailcatCommand::Invite { ttl_seconds, json } => {
-            let invite = crate::tailcat_setup::invite(data_dir, ttl_seconds)?;
-            let url = invite["url"].as_str().context("engine returned no Tailcat invite")?;
+        TailcatCommand::Invite {
+            ttl_seconds,
+            qr,
+            json,
+        } => {
+            let mut invite = crate::tailcat_setup::invite(data_dir, ttl_seconds)?;
+            let url = invite["url"]
+                .as_str()
+                .context("engine returned no Tailcat invite")?
+                .to_owned();
             if json {
+                // As `pairing create`: `qrSvg` appears only with --qr, so
+                // existing JSON consumers keep the old shape. The engine sends
+                // it from this release on; an older engine sends none, so
+                // --qr encodes it here instead.
+                if let Some(fields) = invite.as_object_mut() {
+                    if !qr {
+                        fields.remove("qrSvg");
+                    } else if !fields.contains_key("qrSvg") {
+                        fields.insert("qrSvg".into(), roboco_proto::qr::try_qr_svg(&url).into());
+                    }
+                }
                 println!("{invite}");
             } else {
                 println!("{url}");
+                // The half-block QR scans from the terminal itself. An invite
+                // too long for any QR (an oversized custom address) prints
+                // none; the invite line above still pastes.
+                if qr {
+                    match roboco_proto::qr::try_qr_terminal(&url) {
+                        Some(code) => println!("{code}"),
+                        None => {
+                            eprintln!("This invite is too long for a QR code; paste it instead.")
+                        }
+                    }
+                }
                 println!(
                     "Expires at {} (Unix milliseconds). Paste it where a pairing link goes.",
                     invite["expiresAt"]
