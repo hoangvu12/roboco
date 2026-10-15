@@ -99,10 +99,28 @@ fn write_claude_login(home: &std::path::Path, email: &str, uuid: &str, token: &s
     .expect("claude creds");
 }
 
+/// The paired engine's scoped device id, once the derived workspace
+/// lists it (the workspace store re-derives after the link comes up).
+async fn engine_device_id(client: &Client) -> String {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(device) = client.workspace().execution_devices().first() {
+                return device.id.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the engine device never listed")
+}
+
 /// One engine, one paired client, and the paired engine's scoped device
 /// id — the shape the platform passes to the accounts calls.
 struct AccountsRig {
     _engine_dir: tempfile::TempDir,
+    /// The client's data dir: kept alive with the client (its cache
+    /// writes land here).
+    _data_dir: tempfile::TempDir,
     core: roboco_engine::EngineCore,
     listener: Option<roboco_engine::EngineListener>,
     client: Arc<Client>,
@@ -123,15 +141,10 @@ impl AccountsRig {
             view.state == EngineState::Connected
         })
         .await;
-        let device_id = client
-            .workspace()
-            .execution_devices()
-            .first()
-            .expect("the rig's engine device")
-            .id
-            .clone();
+        let device_id = engine_device_id(&client).await;
         Self {
             _engine_dir: engine_dir,
+            _data_dir: data_dir,
             core,
             listener: Some(listener),
             client,
@@ -360,13 +373,7 @@ async fn a_forced_list_through_a_frozen_link_hits_the_deadline() {
             view.state == EngineState::Connected
         })
         .await;
-        let device_id = client
-            .workspace()
-            .execution_devices()
-            .first()
-            .expect("the engine device")
-            .id
-            .clone();
+        let device_id = engine_device_id(&client).await;
 
         proxy.pause();
         let started = std::time::Instant::now();

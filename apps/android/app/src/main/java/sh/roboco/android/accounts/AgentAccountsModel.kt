@@ -182,7 +182,7 @@ class AgentAccountsModel(
 
     /** The newest probe's wording, for the page's about footer. */
     val updatedText: String?
-        get() = snapshot?.let { updatedText(it, nowMs()) }
+        get() = snapshot?.let { sh.roboco.android.accounts.updatedText(it, nowMs()) }
 
     /**
      * Opens the page on `device`: the core's cached snapshot paints at

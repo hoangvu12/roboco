@@ -76,7 +76,7 @@ class AccountsFormatTest {
     fun percentRoundsHalfAwayFromZeroAndClamps() {
         assertEquals("42%", usagePercent(0.42f))
         assertEquals("88%", usagePercent(0.875f))
-        assertEquals("120%", usagePercent(1.2f))
+        assertEquals("100%", usagePercent(1.2f))
         assertEquals("0%", usagePercent(-0.1f))
     }
 

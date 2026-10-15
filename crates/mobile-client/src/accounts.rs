@@ -18,6 +18,7 @@
 //! rule the FFI re-exports so every surface classifies identically.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use roboco_proto::AgentAccountsSnapshot;
@@ -65,7 +66,7 @@ pub fn usage_level(used_fraction: f32) -> UsageLevel {
 /// device id, raw engine id — shares one entry).
 #[derive(Default)]
 pub(crate) struct AccountsState {
-    pub(crate) snapshots: HashMap<String, AgentAccountsSnapshot>,
+    pub(crate) snapshots: Mutex<HashMap<String, AgentAccountsSnapshot>>,
 }
 
 impl crate::Client {

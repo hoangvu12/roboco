@@ -23,10 +23,10 @@ import uniffi.roboco_core.CoreException
 // ── usage levels (the desktop thresholds) ──────────────────────────────────
 
 /** Amber at 80 % of a window (`crates/ui/src/settings/accounts.rs`). */
-const val USAGE_WARN_FRACTION = 0.80
+const val USAGE_WARN_FRACTION = 0.80f
 
 /** Red at 95 % of a window. */
-const val USAGE_CRITICAL_FRACTION = 0.95
+const val USAGE_CRITICAL_FRACTION = 0.95f
 
 /** How full a usage window reads. Pure classification, like the core's. */
 enum class UsageLevel { Normal, Warning, Critical }

@@ -201,7 +201,7 @@ class AgentAccountsSectionState internal constructor(
 
     /** The newest probe's wording, for the section's footer. */
     val updatedText: String?
-        get() = snapshot?.let { updatedText(it, nowMs()) }
+        get() = snapshot?.let { sh.roboco.android.accounts.updatedText(it, nowMs()) }
 
     /** The section's device id (the click's subject). */
     internal val deviceId: String? get() = device()?.id

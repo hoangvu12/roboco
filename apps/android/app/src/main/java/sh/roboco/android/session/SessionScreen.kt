@@ -422,6 +422,11 @@ fun SessionScreen(
                 // android-next #05: fold the account rows into the context
                 // chip's menu (the plain context card without accounts).
                 menus.accounts = usage
+                // iOS render :488-491: the provider map is rebuilt on
+                // every chrome change (the chips it decorates are).
+                binding.chipMenus = { chips ->
+                    chips.associate { chip -> chip.id to { menus.menu(chip.id, platform) } }
+                }
             }
             usage?.let { model ->
                 model.toaster = usageToaster
@@ -435,13 +440,6 @@ fun SessionScreen(
                             animated = true,
                         )
                     }
-                }
-            }
-            // iOS render :488-491: the provider map is rebuilt on
-            // every chrome change (the chips it decorates are).
-            binding.chipMenus = { chips ->
-                chips.associate { chip ->
-                    chip.id to { chipMenus?.menu(chip.id, platform) }
                 }
             }
             binding.apply(chrome)

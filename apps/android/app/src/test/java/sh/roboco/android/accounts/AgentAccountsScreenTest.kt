@@ -1,8 +1,8 @@
 package sh.roboco.android.accounts
 
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.Snapshot
-import androidx.compose.ui.test.SemanticsActions
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -215,6 +215,9 @@ class AgentAccountsScreenTest {
         stack = NavStack(TestRoot)
         stack.push(route, animated = false)
         val pushed = stack.entries.last()
+        // One scope for the whole test: a fresh one per recomposition
+        // would re-key the page's remembered model.
+        val workScope = CoroutineScope(Dispatchers.Main.immediate)
         compose.setContent {
             RobocoTheme(Appearance.Light) {
                 CompositionLocalProvider(
@@ -231,7 +234,7 @@ class AgentAccountsScreenTest {
                                     route = entry.route as AgentAccountsRoute,
                                     core = core,
                                     workspace = workspace,
-                                    workScope = CoroutineScope(Dispatchers.Main.immediate),
+                                    workScope = workScope,
                                     io = Dispatchers.Main.immediate,
                                     nowMs = { 1_760_000_000_000L },
                                 )
