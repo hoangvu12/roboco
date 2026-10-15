@@ -563,12 +563,21 @@ tasks.withType<Test>().configureEach {
     // default short form is just "IllegalStateException at X.kt:32". Record
     // run 38595804909 failed 12 captures that way: no message, and on the
     // record path nothing else was uploaded.
+    // STARTED too (round 51): a hung test then shows as the last STARTED
+    // line in the job log. Run 88b067d0's testDebugUnitTest hung for
+    // 73 min with no output at all, so nothing named the hanging test.
     testLogging {
-        events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
+        events(
+            org.gradle.api.tasks.testing.logging.TestLogEvent.STARTED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED,
+        )
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         showCauses = true
         showStackTraces = true
     }
+    // Safety net (round 51): a hang fails the task after 45 min instead of
+    // eating the whole 90-min CI job.
+    timeout.set(java.time.Duration.ofMinutes(45))
     // android-app#30's parity gate (G2–G4) is armed against goldens that
     // are not recorded yet, so it fails until the first sign-off. It runs
     // only when asked (-ProbocoParity: the android-screenshots CI job), not

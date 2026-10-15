@@ -32,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -177,6 +178,9 @@ fun largeTitleDefaultTopInset(): Dp =
     LocalLargeTitleHostInsets.current
         ?.let { host -> with(LocalDensity.current) { host.getTop(this).toDp() } }
         ?: WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
+/** Snaps per touch before the settle loop gives up (round 51: provably finite). */
+private const val MaxSnapAttempts = 5
 
 /** The `__large_title` item key — screen keys never start with `__`. */
 private const val LargeTitleItemKey = "__large_title"
@@ -397,7 +401,25 @@ fun LargeTitleScaffold(
                 // conflated to `false`, equal to the last emitted value, and
                 // distinctUntilChanged drops it (CI 9863226e: "snap cancelled
                 // at c=20.0", then nothing).
+                //
+                // Provably finite (round 51; CI 88b067d0 hung for 73 min):
+                // at most [MaxSnapAttempts] snaps per touch, and every retry
+                // first suspends for a frame. When nothing is scrolling,
+                // `first { !it }` returns without suspending, so a snap that
+                // is refused at once (a higher-priority mutator holding the
+                // list) would otherwise spin on the main thread without
+                // yielding. A retry does not wait for a NEW scroll to be
+                // observed: the release's zero-velocity fling can start and
+                // end before this catch runs, and that is exactly the case
+                // that must re-snap.
+                var attempts = 0
                 while (snapGate.userScroll) {
+                    if (attempts == MaxSnapAttempts) {
+                        LargeTitleSnapDiagnostics.log("snap gave up after $attempts attempts at c=${collapseDp()}")
+                        snapGate.userScroll = false
+                        break
+                    }
+                    attempts++
                     val c = collapseDp()
                     val target = LargeTitleMetrics.snapTarget(c)
                     if (target == null) {
@@ -423,6 +445,8 @@ fun LargeTitleScaffold(
                         coroutineContext.ensureActive()
                         LargeTitleSnapDiagnostics.log("snap cancelled at c=${collapseDp()}")
                         snapshotFlow { listState.isScrollInProgress }.first { !it }
+                        // Always suspend between attempts (see above).
+                        withFrameNanos { }
                         LargeTitleSnapDiagnostics.log("interrupting scroll ended at c=${collapseDp()}")
                     }
                 }
