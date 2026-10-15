@@ -405,7 +405,7 @@ class SessionsSettingsSectionTest {
     fun theArchivedChevronBoxCentreSitsAt3635() {
         mount()
         // UIKit tertiaryLabel over white ≈ (196, 196, 199). Box centre =
-        // 370 − 14.7 − 15.6/2 = 347.5 dp from the card edge → 1042.5 image
+        // 370 − 19 − 7/2 = 347.5 (round 46: the chevron lays out at its 7 dp width; the centre is unchanged) dp from the card edge → 1042.5 image
         // px (± 1.5 dp), the GroupedListTest probe.
         val row2 = rowImage(settingsTag("archived"))
         val centroid = centroidX(row2, 40..115, 990..1080, 196, 196, 199, 14)

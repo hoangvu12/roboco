@@ -69,7 +69,7 @@ import uniffi.roboco_core.PairingTarget
  *
  *  - geometry on the ticket's `w402dp` phone at xxhdpi (1 dp = 3 px), font
  *    scale 1: the 67.7 dp engine row, the 52 dp pair row, the dot's
- *    centre at screen x 339.7 and the chevron box centre at x 363.5, the
+ *    centre at screen x 344.0 (round 46) and the chevron box centre at x 363.5, the
  *    separator under the engine row only — all the ticket 70 measurements
  *    at this section's call sites;
  *  - the dot's ink: `success` `#15803D` light / `#34D399` dark when
@@ -293,9 +293,12 @@ class DevicesSectionTest {
     fun theDotAndChevronCentresMatchTheTicketGeometry() {
         mount()
         // Image-local px: the row image starts at the card's left edge
-        // (screen x 16 dp); 1 dp = 3 px. The dot's centre is screen
-        // x 339.7 dp = 971.1 px, the chevron box centre screen x 363.5
-        // dp = 1042.5 px.
+        // (screen x 16 dp); 1 dp = 3 px. The chevron box centre is screen
+        // x 363.5 dp = 1042.5 px. The dot sits 12 dp before the chevron's
+        // layout box, which is the chevron's 7 dp width since android-next
+        // round 46 (UIKit's disclosure accessory hugs the glyph), not the
+        // 15.6 dp symbol square: card-relative 370 − 19 − 7 − 12 − 4 = 328,
+        // screen x 344.0 dp = 984.0 px (was 339.7 dp = 971.1 px).
         val px = rowImage("settings-device:e1")
         val midY = px.height / 2
 
@@ -319,8 +322,8 @@ class DevicesSectionTest {
         assertTrue("no dot ink found", left >= 0)
         val dotCentre = (left + right) / 2f
         assertTrue(
-            "dot centre $dotCentre px, expected ~971.1 (screen 339.7 dp)",
-            abs(dotCentre - 971.1f) <= 4.5f,
+            "dot centre $dotCentre px, expected ~984.0 (screen 344.0 dp)",
+            abs(dotCentre - 984.0f) <= 4.5f,
         )
 
         // The chevron: UIKit tertiaryLabel over white ≈ (196, 196, 199),

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -123,8 +124,21 @@ object GroupedListTokens {
     /** Gap between two accessories in the trailing group (interpretation; UIKit's is unstated). */
     val AccessoryGap = 12.dp
 
-    /** Disclosure end padding: box 15.6, ink centre 22.5 from the card edge. */
-    val ChevronEnd = 14.7.dp
+    /**
+     * The disclosure accessory's layout width: UIKit's
+     * `.disclosureIndicator()` is an image view that hugs the chevron (ink
+     * 7 × 12.2 pt on `2-settings.png`), so [TextToAccessory] is measured from
+     * the chevron itself. The glyph still draws in its SF `13 × 1.2` = 15.6 dp
+     * box, centred on this width and overhanging it on both sides (empty
+     * space only). Reserving the whole 15.6 dp square (ticket 70's first cut)
+     * narrowed the text column by 4.3 dp to 271.7 dp at a 402 dp window, and
+     * "Shown behind new chats and the sessions list" (273.1 dp of Geist 13,
+     * kerned) wrapped where iOS keeps it on one line (android-next round 46).
+     */
+    val DisclosureWidth = 7.dp
+
+    /** Disclosure end padding: ink centre 22.5 from the card edge, 22.5 − 7 / 2. */
+    val ChevronEnd = 19.dp
 
     /** Checkmark end padding: box 20.4, ink centre 28.5 from the card edge. */
     val CheckEnd = 18.3.dp
@@ -745,7 +759,17 @@ private fun Accessory(accessory: GroupedAccessory, maxValueWidth: Dp) {
     val ts = LocalTypeScale.current
     when (accessory) {
         GroupedAccessory.Disclosure ->
-            Icon(RobocoIcons.ChevronRight, GroupedListTokens.systemTertiaryLabel(), 13f, SymbolWeight.Semibold)
+            // Lays out at the chevron's own width (UIKit's accessory frame),
+            // the 15.6 dp symbol box centred on it and drawn unclipped.
+            Icon(
+                RobocoIcons.ChevronRight,
+                GroupedListTokens.systemTertiaryLabel(),
+                13f,
+                SymbolWeight.Semibold,
+                modifier = Modifier
+                    .width(GroupedListTokens.DisclosureWidth)
+                    .wrapContentWidth(unbounded = true),
+            )
 
         is GroupedAccessory.Check ->
             Icon(RobocoIcons.Checkmark, palette.accent, 17f, SymbolWeight.Semibold)
