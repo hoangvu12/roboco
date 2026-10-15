@@ -631,6 +631,7 @@ pub struct SessionRow {
     /// Agents running under this chat right now — running subagents of
     /// its open transcript plus its working side chats (upstream #899's
     /// "● N" pill). Counts only while a session is open.
+    #[uniffi(default = 0)]
     pub running_subagents: u32,
     pub last_activity_ms: i64,
     /// `now` / `34m` / `4h` / `2d` at derive time.
@@ -1199,6 +1200,7 @@ pub struct NewSession {
     /// A side chat of this chat (upstream #899): runs in its parent's
     /// checkout and host (`target`, `cwd` and `branch` ignored), and
     /// lists under the parent.
+    #[uniffi(default = None)]
     pub parent_chat_id: Option<String>,
 }
 

@@ -801,19 +801,12 @@ impl RowBuilder {
                         let (label, detail) = roboco_proto::view::tool_chip_content(call);
                         // A spawn card whose doc exists is a link (upstream
                         // #899): tapping opens the subagent's transcript.
-                        // Computed before `detail` is shadowed by the
-                        // prepared text below, and only for agent cards.
+                        // Only for agent cards; titled like the client's
+                        // subagent rows (the desktop's tab title).
                         let link = match (agents, subagent_ref) {
                             (true, Some(doc_id)) => Some(SubagentLink {
                                 doc_id: doc_id.clone(),
-                                title: detail
-                                    .trim()
-                                    .lines()
-                                    .next()
-                                    .map(str::trim)
-                                    .filter(|t| !t.is_empty())
-                                    .unwrap_or("Subagent")
-                                    .to_owned(),
+                                title: roboco_mobile_client::subagent_title(call),
                                 frozen: matches!(
                                     subagent_status,
                                     Some(SubagentStatus::Done | SubagentStatus::Failed)
