@@ -104,7 +104,8 @@ pub struct DevicesPage {
 impl DevicesPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
-        let pairing = cx.new(|cx| ComposerInput::new("Paste a pairing URL", cx));
+        let pairing =
+            cx.new(|cx| ComposerInput::new("Paste a pairing URL or roboco-tailcat:… invite", cx));
         let pairing_events = cx.subscribe(&pairing, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.pair(cx);
@@ -490,25 +491,23 @@ impl Render for DevicesPage {
                             .role(gpui::Role::Button)
                             .aria_label(format!("Copy device ID {}", device.id))
                             .focus_visible(|s| s.border_2().border_color(theme.accent))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_id(copy_id.clone(), cx);
-                            })),
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.copy_id(copy_id.clone(), cx);
+                                },
+                            )),
                         )
                         .when_some(forget_key, |actions, key| {
                             actions.child(
-                                widgets::text_action(
-                                    &theme,
-                                    widgets::ActionTone::Quiet,
-                                    "Forget",
-                                )
-                                .id(("engine-forget", ix))
-                                .text_color(theme.danger)
-                                .tab_index(0)
-                                .role(gpui::Role::Button)
-                                .focus_visible(|s| s.border_2().border_color(theme.accent))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.forget(key.clone(), cx)),
-                                ),
+                                widgets::text_action(&theme, widgets::ActionTone::Quiet, "Forget")
+                                    .id(("engine-forget", ix))
+                                    .text_color(theme.danger)
+                                    .tab_index(0)
+                                    .role(gpui::Role::Button)
+                                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.forget(key.clone(), cx)
+                                    })),
                             )
                         })
                         .child(
@@ -538,9 +537,7 @@ impl Render for DevicesPage {
                     div()
                         .text_size(crate::typography::ui_rems(13.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(
-                            "Pair another device to see it here.",
-                        )),
+                        .child(SharedString::from("Pair another device to see it here.")),
                 ),
             )
         } else {
@@ -667,7 +664,7 @@ impl Render for DevicesPage {
                                                 .text_size(crate::typography::ui_rems(11.0))
                                                 .text_color(theme.text_muted)
                                                 .child(SharedString::from(
-                                                    "Create a pairing link in the engine's Remote access settings, then paste it here.",
+                                                    "Create a pairing link or roboco-tailcat:… invite in the engine's Remote access settings, then paste it here.",
                                                 )),
                                         ),
                                         ),
@@ -727,7 +724,10 @@ mod tests {
         use crate::engine_registry::EngineConnectionState::*;
         // Engine-backed rows report the registry connection, whatever the
         // last-seen window says.
-        assert_eq!(presence_dot(Some(&Connected), false), PresenceDot::Connected);
+        assert_eq!(
+            presence_dot(Some(&Connected), false),
+            PresenceDot::Connected
+        );
         assert_eq!(
             presence_dot(Some(&Reconnecting), false),
             PresenceDot::Reconnecting

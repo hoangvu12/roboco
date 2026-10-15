@@ -13,18 +13,38 @@ use std::sync::Arc;
 /// version 6–8 code scans from across a desk.
 const PAIRING_QR_SIZE: f32 = 176.0;
 
+/// An invite is QR version 16–17 (89–93 modules): 248 px keeps ~2.7 px per module.
+const INVITE_QR_SIZE: f32 = 248.0;
+
+/// The `CreateTailcatInvite` reply (`{id, url, expiresAt, qrSvg}`); the page
+/// keeps what its card needs. Like a pairing link, the invite is single-use
+/// and never logged. `qr_svg` is `None` against engines that predate the
+/// invite QR, and the card then shows no tile (the invite and Copy stay).
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TailcatInviteLink {
+    url: String,
+    expires_at: i64,
+    #[serde(default)]
+    qr_svg: Option<String>,
+}
+
 pub struct RemoteAccessPage {
     state: Entity<AppState>,
     snapshot: Option<RemoteAccessSnapshot>,
     /// The minted pairing link; `qr_svg` is `None` against older engines, and
     /// the page then shows no QR (the URL and Copy stay as they are).
     link: Option<PairingLink>,
+    /// The minted Tailcat invite, shown with the same QR card.
+    invite: Option<TailcatInviteLink>,
     error: Option<String>,
     busy: bool,
     task: Option<Task<()>>,
     /// Wakes the page once the shown link expires, so the QR dims and the
     /// caption swaps without waiting for the next interaction.
     expiry_task: Option<Task<()>>,
+    /// The same wake-up for the shown Tailcat invite.
+    invite_expiry_task: Option<Task<()>>,
 }
 
 impl RemoteAccessPage {
@@ -33,10 +53,12 @@ impl RemoteAccessPage {
             state,
             snapshot: None,
             link: None,
+            invite: None,
             error: None,
             busy: false,
             task: None,
             expiry_task: None,
+            invite_expiry_task: None,
         };
         page.request(methods::GET_REMOTE_ACCESS, json!({}), cx);
         page
@@ -75,6 +97,12 @@ impl RemoteAccessPage {
                             Err(error) => page.error = Some(error.to_string()),
                         }
                     }
+                    Ok(value) if method == methods::CREATE_TAILCAT_INVITE => {
+                        match serde_json::from_value::<TailcatInviteLink>(value) {
+                            Ok(invite) => page.show_invite(invite, cx),
+                            Err(error) => page.error = Some(error.to_string()),
+                        }
+                    }
                     Err(error) => page.error = Some(error.to_string()),
                     _ => {}
                 }
@@ -96,23 +124,41 @@ impl RemoteAccessPage {
     /// rasterized into the asset cache and scheduling the one wake-up that
     /// dims it the moment it expires.
     fn show_link(&mut self, link: PairingLink, cx: &mut Context<Self>) {
+        let expires_at = link.expires_at;
         if let Some(old) = self.link.replace(link) {
-            if let Some(svg) = old.qr_svg {
-                let image =
-                    Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
-                cx.defer(move |cx| ImageSource::Image(image).evict(None, cx));
-            }
+            evict_qr(old.qr_svg, cx);
         }
-        let remaining = (self.link.as_ref().map(|link| link.expires_at).unwrap_or(0)
-            - chrono::Utc::now().timestamp_millis())
-            .max(0) as u64;
-        self.expiry_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(remaining + 500))
-                .await;
-            this.update(cx, |_, cx| cx.notify()).ok();
-        }));
+        self.expiry_task = Some(wake_at_expiry(expires_at, cx));
     }
+
+    /// The Tailcat invite's twin of [`Self::show_link`].
+    fn show_invite(&mut self, invite: TailcatInviteLink, cx: &mut Context<Self>) {
+        let expires_at = invite.expires_at;
+        if let Some(old) = self.invite.replace(invite) {
+            evict_qr(old.qr_svg, cx);
+        }
+        self.invite_expiry_task = Some(wake_at_expiry(expires_at, cx));
+    }
+}
+
+/// Drop a replaced QR from the asset cache it was rasterized into.
+fn evict_qr(svg: Option<String>, cx: &mut Context<RemoteAccessPage>) {
+    if let Some(svg) = svg {
+        let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.into_bytes()));
+        cx.defer(move |cx| ImageSource::Image(image).evict(None, cx));
+    }
+}
+
+/// One wake-up just past `expires_at`, so the shown QR dims and its caption
+/// swaps without waiting for the next interaction.
+fn wake_at_expiry(expires_at: i64, cx: &mut Context<RemoteAccessPage>) -> Task<()> {
+    let remaining = (expires_at - chrono::Utc::now().timestamp_millis()).max(0) as u64;
+    cx.spawn(async move |this, cx| {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(remaining + 500))
+            .await;
+        this.update(cx, |_, cx| cx.notify()).ok();
+    })
 }
 
 /// A shown link is expired the moment its deadline passes: the QR dims so
@@ -130,23 +176,38 @@ fn pairing_caption(expired: bool) -> &'static str {
     }
 }
 
+/// The caption under the Tailcat invite's meta line.
+fn invite_caption(expired: bool) -> &'static str {
+    if expired {
+        "Expired. Create a new Tailcat invite."
+    } else {
+        "Scan with the Roboco app on your phone."
+    }
+}
+
 /// The pairing QR on its white tile: radius 12, padding 10. The white is
 /// deliberate, not theming — scanners need dark on light, and the SVG
 /// carries its own quiet zone.
 fn pairing_qr_tile(svg: &str, expired: bool) -> AnyElement {
-    let image = Arc::new(Image::from_bytes(
-        ImageFormat::Svg,
-        svg.as_bytes().to_vec(),
-    ));
+    qr_tile("pairing-qr", svg, PAIRING_QR_SIZE, expired)
+}
+
+/// The Tailcat invite's QR on the same tile.
+fn invite_qr_tile(svg: &str, expired: bool) -> AnyElement {
+    qr_tile("tailcat-qr", svg, INVITE_QR_SIZE, expired)
+}
+
+fn qr_tile(id: &'static str, svg: &str, size: f32, expired: bool) -> AnyElement {
+    let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec()));
     div()
-        .id("pairing-qr")
-        .debug_selector(|| "pairing-qr".into())
+        .id(id)
+        .debug_selector(move || id.into())
         .flex_none()
         .p(px(10.0))
         .rounded(px(12.0))
         .bg(gpui::white())
         .when(expired, |tile| tile.opacity(0.3))
-        .child(img(image).size(px(PAIRING_QR_SIZE)))
+        .child(img(image).size(px(size)))
         .into_any_element()
 }
 
@@ -186,17 +247,45 @@ impl Render for RemoteAccessPage {
             page = page.child(widgets::error_strip(&theme, error));
         }
         let link = self.link.clone();
-        if enabled || link.is_some() {
+        let invite = self.invite.clone();
+        if enabled || link.is_some() || invite.is_some() {
+            // Both minting actions share the busy-gate in `request`, so a
+            // second click while one is in flight is ignored, never stacked.
             let create = enabled.then(|| {
-                widgets::ghost_action(&theme)
-                    .id("create-pairing-link")
-                    .child(crate::icons::icon(crate::icons::PLUS)
-                        .size(px(14.0))
-                        .text_color(theme.text_muted))
-                    .child(SharedString::from("Create pairing link"))
-                    .on_click(cx.listener(|page, _, _, cx| {
-                        page.request(methods::CREATE_PAIRING_LINK, json!({}), cx)
-                    }))
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        widgets::ghost_action(&theme)
+                            .id("create-pairing-link")
+                            .child(
+                                crate::icons::icon(crate::icons::PLUS)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Create pairing link"))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.request(methods::CREATE_PAIRING_LINK, json!({}), cx)
+                            })),
+                    )
+                    .child(
+                        widgets::ghost_action(&theme)
+                            .id("create-tailcat-invite")
+                            .child(
+                                crate::icons::icon(crate::icons::PLUS)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Create Tailcat invite"))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.request(
+                                    methods::CREATE_TAILCAT_INVITE,
+                                    json!({"ttlSeconds": 300}),
+                                    cx,
+                                )
+                            })),
+                    )
                     .into_any_element()
             });
             page = page.child(widgets::section_header(&theme, "Pairing link", create));
@@ -209,7 +298,9 @@ impl Render for RemoteAccessPage {
                     widgets::section_card(&theme).child(
                         widgets::card_row(&theme, true)
                             .when_some(
-                                link.qr_svg.as_deref().map(|svg| pairing_qr_tile(svg, expired)),
+                                link.qr_svg
+                                    .as_deref()
+                                    .map(|svg| pairing_qr_tile(svg, expired)),
                                 |row, qr| row.child(qr),
                             )
                             .child(
@@ -217,24 +308,42 @@ impl Render for RemoteAccessPage {
                                     .flex_1()
                                     .min_w_0()
                                     .child(widgets::url_fragment(&theme, url))
-                                    .child(widgets::meta_line(&theme, vec![div()
-                                        .child(SharedString::from("Use once within five minutes."))
-                                        .into_any_element()]))
+                                    .child(widgets::meta_line(
+                                        &theme,
+                                        vec![
+                                            div()
+                                                .child(SharedString::from(
+                                                    "Use once within five minutes.",
+                                                ))
+                                                .into_any_element(),
+                                        ],
+                                    ))
                                     .when(has_qr, |column| {
-                                        column.child(widgets::meta_line(&theme, vec![div()
-                                            .child(SharedString::from(pairing_caption(expired)))
-                                            .into_any_element()]))
+                                        column.child(widgets::meta_line(
+                                            &theme,
+                                            vec![
+                                                div()
+                                                    .child(SharedString::from(pairing_caption(
+                                                        expired,
+                                                    )))
+                                                    .into_any_element(),
+                                            ],
+                                        ))
                                     }),
                             )
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("copy-pairing-link")
-                                    .child(crate::icons::icon(crate::icons::COPY)
-                                        .size(px(14.0))
-                                        .text_color(theme.text_muted))
+                                    .child(
+                                        crate::icons::icon(crate::icons::COPY)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
                                     .child(SharedString::from("Copy"))
                                     .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ))
                                     })),
                             ),
                     ),
@@ -250,6 +359,69 @@ impl Render for RemoteAccessPage {
                             .child(SharedString::from(
                                 "No link yet. Create one and paste it on the other device under Settings → Devices.",
                             )),
+                    ),
+                );
+            }
+            if let Some(invite) = invite {
+                // Same card as the pairing link, QR tile and expiry included;
+                // the invite string lives only here and on the clipboard,
+                // never in a log.
+                let expired = link_expired(invite.expires_at);
+                let has_qr = invite.qr_svg.is_some();
+                let copy = invite.url.clone();
+                page = page.child(
+                    widgets::section_card(&theme).child(
+                        widgets::card_row(&theme, true)
+                            .when_some(
+                                invite
+                                    .qr_svg
+                                    .as_deref()
+                                    .map(|svg| invite_qr_tile(svg, expired)),
+                                |row, qr| row.child(qr),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(widgets::url_fragment(&theme, invite.url))
+                                    .child(widgets::meta_line(
+                                        &theme,
+                                        vec![
+                                            div()
+                                                .child(SharedString::from(
+                                                    "Use once within five minutes.",
+                                                ))
+                                                .into_any_element(),
+                                        ],
+                                    ))
+                                    .when(has_qr, |column| {
+                                        column.child(widgets::meta_line(
+                                            &theme,
+                                            vec![
+                                                div()
+                                                    .child(SharedString::from(invite_caption(
+                                                        expired,
+                                                    )))
+                                                    .into_any_element(),
+                                            ],
+                                        ))
+                                    }),
+                            )
+                            .child(
+                                widgets::ghost_action(&theme)
+                                    .id("copy-tailcat-invite")
+                                    .child(
+                                        crate::icons::icon(crate::icons::COPY)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Copy"))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ))
+                                    })),
+                            ),
                     ),
                 );
             }
@@ -337,10 +509,7 @@ mod tests {
             pairing_caption(false),
             "Scan with the Roboco app on your phone."
         );
-        assert_eq!(
-            pairing_caption(true),
-            "Expired. Create a new pairing link."
-        );
+        assert_eq!(pairing_caption(true), "Expired. Create a new pairing link.");
     }
 
     #[test]
@@ -422,7 +591,10 @@ mod tests {
             "GetRemoteAccess"
         );
         draw(cx);
-        assert!(cx.debug_bounds("pairing-qr").is_none(), "no link minted yet");
+        assert!(
+            cx.debug_bounds("pairing-qr").is_none(),
+            "no link minted yet"
+        );
 
         // A fresh link carries the engine's QR: the tile sits in the card.
         let fresh_url = "http://127.0.0.1:27655/pair#token=fresh";
@@ -444,7 +616,9 @@ mod tests {
             "GetRemoteAccess"
         );
         draw(cx);
-        let qr = cx.debug_bounds("pairing-qr").expect("QR tile beside the URL");
+        let qr = cx
+            .debug_bounds("pairing-qr")
+            .expect("QR tile beside the URL");
         assert_eq!(qr.size.width, px(PAIRING_QR_SIZE + 20.0));
         assert_eq!(qr.size.height, px(PAIRING_QR_SIZE + 20.0));
         page.update(cx, |page, _| {
@@ -452,8 +626,10 @@ mod tests {
             assert_eq!(link.url, fresh_url);
             assert!(link.qr_svg.is_some());
             assert!(!link_expired(link.expires_at));
-            assert_eq!(pairing_caption(link_expired(link.expires_at)),
-                "Scan with the Roboco app on your phone.");
+            assert_eq!(
+                pairing_caption(link_expired(link.expires_at)),
+                "Scan with the Roboco app on your phone."
+            );
         });
 
         // An expired link keeps the tile (dimmed at paint time) and swaps the
@@ -470,7 +646,10 @@ mod tests {
         reply_to_next_request(&runtime, cx, &mut requests, &replies, expired);
         reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot.clone());
         draw(cx);
-        assert!(cx.debug_bounds("pairing-qr").is_some(), "tile stays, dimmed");
+        assert!(
+            cx.debug_bounds("pairing-qr").is_some(),
+            "tile stays, dimmed"
+        );
         page.update(cx, |page, _| {
             let link = page.link.as_ref().expect("expired link shown");
             assert!(link_expired(link.expires_at));
@@ -482,7 +661,8 @@ mod tests {
 
         // An older engine mints no qrSvg: the URL row stays, the QR goes.
         let bare_url = "http://127.0.0.1:27655/pair#token=bare";
-        let bare = json!({"url": bare_url, "expiresAt": chrono::Utc::now().timestamp_millis() + 300_000});
+        let bare =
+            json!({"url": bare_url, "expiresAt": chrono::Utc::now().timestamp_millis() + 300_000});
         page.update(cx, |page, cx| {
             page.request(methods::CREATE_PAIRING_LINK, json!({}), cx)
         });
@@ -497,6 +677,159 @@ mod tests {
             let link = page.link.as_ref().expect("link still shown");
             assert_eq!(link.url, bare_url);
             assert!(link.qr_svg.is_none());
+        });
+    }
+
+    #[test]
+    fn invite_caption_swaps_at_expiry() {
+        assert_eq!(
+            invite_caption(false),
+            "Scan with the Roboco app on your phone."
+        );
+        assert_eq!(
+            invite_caption(true),
+            "Expired. Create a new Tailcat invite."
+        );
+    }
+
+    #[gpui::test]
+    fn tailcat_invite_card_shows_the_engine_qr_and_drops_it_at_expiry_and_on_old_engines(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(16);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(16);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                roboco_rpc::RpcClient::new(out, inbound),
+            ));
+        });
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let (page, cx) = cx.add_window_view(|_, cx| RemoteAccessPage::new(state, cx));
+        let snapshot = json!({
+            "status": {"enabled": true, "configuredEnabled": true,
+                       "address": "127.0.0.1:27655", "source": "test", "error": null},
+            "sessions": []
+        });
+        assert_eq!(
+            reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot.clone()),
+            "GetRemoteAccess"
+        );
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tailcat-qr").is_none(),
+            "no invite minted yet"
+        );
+
+        // A fresh invite carries the engine's QR: its tile sits in the invite
+        // card, and the pairing link's tile stays absent.
+        let fresh_url = "roboco-tailcat:fresh";
+        let fresh = json!({
+            "id": "code-1",
+            "url": fresh_url,
+            "expiresAt": chrono::Utc::now().timestamp_millis() + 300_000,
+            "qrSvg": roboco_proto::qr::qr_svg(fresh_url),
+        });
+        page.update(cx, |page, cx| {
+            page.request(
+                methods::CREATE_TAILCAT_INVITE,
+                json!({"ttlSeconds": 300}),
+                cx,
+            )
+        });
+        assert_eq!(
+            reply_to_next_request(&runtime, cx, &mut requests, &replies, fresh),
+            "CreateTailcatInvite"
+        );
+        assert_eq!(
+            reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot.clone()),
+            "GetRemoteAccess"
+        );
+        draw(cx);
+        let qr = cx
+            .debug_bounds("tailcat-qr")
+            .expect("QR tile beside the invite");
+        assert_eq!(qr.size.width, px(INVITE_QR_SIZE + 20.0));
+        assert_eq!(qr.size.height, px(INVITE_QR_SIZE + 20.0));
+        assert!(
+            cx.debug_bounds("pairing-qr").is_none(),
+            "no pairing link minted"
+        );
+        page.update(cx, |page, _| {
+            let invite = page.invite.as_ref().expect("invite shown");
+            assert_eq!(invite.url, fresh_url);
+            assert!(invite.qr_svg.is_some());
+            assert_eq!(
+                invite_caption(link_expired(invite.expires_at)),
+                "Scan with the Roboco app on your phone."
+            );
+        });
+
+        // An expired invite keeps the tile (dimmed at paint time) and swaps
+        // the caption.
+        let expired_url = "roboco-tailcat:stale";
+        let expired = json!({
+            "id": "code-2",
+            "url": expired_url,
+            "expiresAt": chrono::Utc::now().timestamp_millis() - 1,
+            "qrSvg": roboco_proto::qr::qr_svg(expired_url),
+        });
+        page.update(cx, |page, cx| {
+            page.request(
+                methods::CREATE_TAILCAT_INVITE,
+                json!({"ttlSeconds": 300}),
+                cx,
+            )
+        });
+        reply_to_next_request(&runtime, cx, &mut requests, &replies, expired);
+        reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot.clone());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tailcat-qr").is_some(),
+            "tile stays, dimmed"
+        );
+        page.update(cx, |page, _| {
+            let invite = page.invite.as_ref().expect("expired invite shown");
+            assert_eq!(
+                invite_caption(link_expired(invite.expires_at)),
+                "Expired. Create a new Tailcat invite."
+            );
+        });
+
+        // An engine from before the invite QR replies `{id, url, expiresAt}`:
+        // the invite and Copy stay, the tile goes.
+        let bare_url = "roboco-tailcat:bare";
+        let bare = json!({
+            "id": "code-3",
+            "url": bare_url,
+            "expiresAt": chrono::Utc::now().timestamp_millis() + 300_000,
+        });
+        page.update(cx, |page, cx| {
+            page.request(
+                methods::CREATE_TAILCAT_INVITE,
+                json!({"ttlSeconds": 300}),
+                cx,
+            )
+        });
+        reply_to_next_request(&runtime, cx, &mut requests, &replies, bare);
+        reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot.clone());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("tailcat-qr").is_none(),
+            "no QR against an engine without qrSvg"
+        );
+        page.update(cx, |page, _| {
+            let invite = page.invite.as_ref().expect("invite still shown");
+            assert_eq!(invite.url, bare_url);
+            assert!(invite.qr_svg.is_none());
         });
     }
 }
