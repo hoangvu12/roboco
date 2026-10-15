@@ -589,12 +589,12 @@ class RobocoApplication : Application() {
         chromeFillers.register(ChromeFillerRegistry.CHIP_MENUS) { sessionCore ->
             SessionChipMenus(CoreChipMenuCore.of(sessionCore))
         }
-        // android-next#05 (the plan-usage chip): the near-limit usage
-        // chip that leads the composer's chips, its menu (windows,
-        // switches, the Accounts & Usage page) and the after-turn
-        // re-probe — slot 22, after the menus. The loads and switches
-        // run on the filler's own IO scope; the chip itself derives from
-        // its snapshot, never FFI in fill.
+        // android-next#05 (plan usage, folded into the context chip):
+        // the worse-of tint over #01's context chip and the context
+        // menu's account half (the login in use, its windows, the other
+        // logins, "Accounts & Usage…") — slot 22, after the menus. The
+        // loads and switches run on the filler's own IO scope; fill
+        // touches no FFI.
         chromeFillers.register(ChromeFillerRegistry.USAGE_CHIP) { _ ->
             SessionAccountUsage(CoreAccountsCore(client = ::clientOrNull))
         }

@@ -399,14 +399,13 @@ fun SessionScreen(
     //     `binding.apply(chrome)` (SideEffects run in composition order),
     //     so its closing re-apply is what puts the providers on the
     //     composer's first frame; the map's lambdas themselves run only
-    //     at tap time (ticket 59), never during composition. The
-    //     provider reads only the controller-refresh snapshot — no FFI
-    //     on main; the loads and writes hop to IO inside
-    //     [SessionChipMenus].
-    //     android-next #05: the usage chip's menu comes from the usage
-    //     filler (windows, switches, the Accounts & Usage page), and its
-    //     open action + toast are injected here where the nav stack and
-    //     the app toaster live.
+    //     at tap time (ticket 59), never during composition. The provider
+    //     reads only the controller-refresh snapshot — no FFI on main;
+    //     the loads and writes hop to IO inside [SessionChipMenus].
+    //     android-next #05: this route's usage filler is handed to 89 as
+    //     the context chip's account half (the tint filler and the menu
+    //     rows), and its open action + toast are injected here where the
+    //     nav stack and the app toaster live.
     composerBinding?.let { binding ->
         val chipMenus = remember(controller) { controller.filler<SessionChipMenus>() }
         val usage = remember(controller) { controller.filler<SessionAccountUsage>() }
@@ -420,6 +419,9 @@ fun SessionScreen(
                 menus.onSettingResult = { t ->
                     if (t == null) banner?.noteSettingSucceeded() else banner?.noteSettingFailed(t)
                 }
+                // android-next #05: fold the account rows into the context
+                // chip's menu (the plain context card without accounts).
+                menus.accounts = usage
             }
             usage?.let { model ->
                 model.toaster = usageToaster
@@ -439,7 +441,7 @@ fun SessionScreen(
             // every chrome change (the chips it decorates are).
             binding.chipMenus = { chips ->
                 chips.associate { chip ->
-                    chip.id to { usage?.menu(chip.id) ?: chipMenus?.menu(chip.id, platform) }
+                    chip.id to { chipMenus?.menu(chip.id, platform) }
                 }
             }
             binding.apply(chrome)

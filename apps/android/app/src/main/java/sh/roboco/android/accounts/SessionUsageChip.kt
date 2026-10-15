@@ -9,43 +9,55 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.roboco.android.composer.ChipTint
-import sh.roboco.android.composer.ComposerChip
 import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.Toaster
 import sh.roboco.android.design.glass.Menu
 import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
+import sh.roboco.android.design.glass.MenuSection
+import sh.roboco.android.composer.ContextCardAccounts
 import sh.roboco.android.session.ChromeFiller
 import sh.roboco.android.session.ChromeInput
+import sh.roboco.android.session.CONTEXT_WARNING_SYMBOL
+import sh.roboco.android.session.SessionChipIds
 import sh.roboco.android.session.SessionChrome
 import uniffi.roboco_core.AgentAccount
 import uniffi.roboco_core.AgentAccountsSnapshot
 
 /**
- * The composer's usage chip (android-next#05) — the port of PR #578's
- * plan-usage half of `CoreSessionSource`: when the session agent's login
- * is at ≥ 80 % of any window, the chips **lead** with an amber (≥ 95 %:
- * red) `<Window> NN%` chip. Its menu lists the windows with their reset
- * times, the other logins of that group (with their usage) to switch to,
- * and "Accounts & Usage…".
+ * The composer's plan usage (android-next#05) — the port of PR #578's
+ * `refreshUsage` half of `CoreSessionSource`, folded into android-next
+ * #01's context chip (user decision, 2026-10-15: no separate usage
+ * chip). This filler owns the account side only:
+ *
+ * - the **tint**: the context chip keeps its context reading ("12%
+ *   context" / tokens); its tint becomes the **worse** of the context
+ *   reading (#01's ≥ 85 % amber) and the plan usage of the session
+ *   harness's live login (amber ≥ 80 %, red ≥ 95 % — the desktop
+ *   thresholds), with the warning glyph when either warns;
+ * - the **menu's account half**: [augmentContextCard] appends the
+ *   Account section (the login in use and every window with percent and
+ *   written-out reset), the harness's other logins to switch to, and
+ *   "Accounts & Usage…" to #01's context-window details card.
  *
  * Refresh policy (iOS's `refreshUsage`): the host's last probe when a
  * session opens (the core's snapshot cache may already answer), a fresh
  * probe after turns end (usage moves with them), at most every 2 minutes.
- * An engine too old for the accounts RPCs hides the chip for the session
- * — no error spam: the filler stops asking after the first `Unsupported`.
+ * An engine too old for the accounts RPCs stops asking after the first
+ * `Unsupported` (no error spam): the chip keeps #01's behaviour, the
+ * menu stays the plain context card.
  *
- * Threading (the #609 rules): [fill] runs on the controller's IO lane and
- * touches no FFI — the chip derives from the filler's own snapshot; the
- * loads and the switch run on the filler's own IO scope; [menu] runs on
- * main at tap time and makes zero core calls.
+ * Threading (the #609 rules): [fill] runs on the controller's IO lane
+ * and touches no FFI — the tint derives from the filler's own snapshot;
+ * the loads and the switch run on the filler's own IO scope; the menu
+ * augmentation runs on main at tap time and makes zero core calls.
  */
 class SessionAccountUsage(
     private val core: AccountsCore,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val harnessLabel: (harness: String) -> String = { uniffi.roboco_core.harnessLabel(it) },
-) : ChromeFiller {
+) : ChromeFiller, ContextCardAccounts {
 
     /**
      * Set by the session screen's wiring: opens the Accounts & Usage page
@@ -63,7 +75,7 @@ class SessionAccountUsage(
 
     private val closed = AtomicBoolean(false)
 
-    /** The host's accounts as of the last load (the chip's source). */
+    /** The host's accounts as of the last load (the tint's and menu's source). */
     @Volatile
     private var snapshot: AgentAccountsSnapshot? = null
 
@@ -99,9 +111,11 @@ class SessionAccountUsage(
     }
 
     /**
-     * Stores the refresh inputs, prepends the usage chip when the active
-     * login is at ≥ 80 % of any window, and asks for the loads the policy
-     * allows. No FFI: the snapshot is the filler's own.
+     * Stores the refresh inputs, asks for the loads the policy allows,
+     * and re-tints the context chip when the plan usage is the worse
+     * reading. No FFI: the snapshot is the filler's own; the context chip
+     * itself is rebuilt by #01's filler on every refresh, so the override
+     * never goes stale.
      */
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
         val deviceId = input.composer.host.deviceId
@@ -116,82 +130,111 @@ class SessionAccountUsage(
         val turnEnded = lastRunning && !running
         lastRunning = running
         maybeLoad(turnEnded)
-        val chip = usageChip()
-        return if (chip == null) {
-            chrome
-        } else {
-            chrome.copy(chips = listOf(chip) + chrome.chips)
-        }
+        return tintContextChip(chrome)
     }
 
     /**
-     * The near-limit chip: `<Window> NN%` (PR #578's wording — "Session
-     * 88%"), amber from 80 %, red from 95 % with the warning glyph; leads
-     * the chips (inserted at 0, where the next message is written).
-     * `null` below the threshold, with no snapshot, or for a harness the
-     * host did not name an active login for.
+     * The plan-usage level of the session harness's live login's binding
+     * window (the desktop thresholds), or `null` without data (no
+     * snapshot, no harness, no active login, no windows).
      */
-    internal fun usageChip(): ComposerChip? {
+    internal fun planLevel(): UsageLevel? {
         val snapshot = snapshot ?: return null
         val harness = harness ?: return null
         val active = activeAccountOf(snapshot, harness) ?: return null
         val top = topWindowOf(active) ?: return null
-        val fraction = clampedFraction(top.usedFraction)
-        if (usageLevelOf(fraction) == UsageLevel.Normal) return null
-        val critical = usageLevelOf(fraction) == UsageLevel.Critical
-        return ComposerChip(
-            id = SessionUsageChipIds.Usage,
-            title = "${top.label} ${usagePercent(fraction)}",
-            symbol = if (critical) USAGE_CRITICAL_SYMBOL else USAGE_SYMBOL,
-            tint = if (critical) ChipTint.Critical else ChipTint.Warning,
+        return usageLevelOf(clampedFraction(top.usedFraction))
+    }
+
+    /**
+     * The worse-of tint: the plan usage's level over the context chip
+     * #01 built this refresh. Amber at the plan's warning (the context's
+     * own ≥ 85 % amber is already on the chip — the plan only ever
+     * **worsens** it), red at the plan's critical, the warning glyph with
+     * either. The chip untouched below the threshold (a calm plan leaves
+     * whatever #01 decided).
+     */
+    private fun tintContextChip(chrome: SessionChrome): SessionChrome {
+        val plan = planLevel() ?: return chrome
+        if (plan == UsageLevel.Normal) return chrome
+        val tint = if (plan == UsageLevel.Critical) ChipTint.Critical else ChipTint.Warning
+        return chrome.copy(
+            chips = chrome.chips.map { chip ->
+                if (chip.id == SessionChipIds.Context) {
+                    chip.copy(tint = tint, symbol = CONTEXT_WARNING_SYMBOL)
+                } else {
+                    chip
+                }
+            },
         )
     }
 
     /**
-     * Ticket 59's `ChipMenuProvider` body for the usage chip, called on
-     * main at tap time. The windows (read-only, with the written-out
-     * reset times), the other logins of the group to switch to (with
-     * their own usage), and "Accounts & Usage…". `null` without a
-     * snapshot (the strip falls back to `onChipTap`, a no-op in a
-     * session).
+     * The context chip's menu, account half (ticket 89's `menu("context")`
+     * calls this on main at tap time): the **Account** section — the login
+     * in use and every usage window with its percent and written-out
+     * reset moment (read-only rows, #01's informational style) — then the
+     * harness's other logins, each with its fullest window, tap to switch
+     * (optimistic, toast), then "Accounts & Usage…" opening the page
+     * scoped to this harness and computer. Without account data (an old
+     * engine, offline, or a harness with no accounts) the card is
+     * returned unchanged: #01's context-window details card alone.
      */
-    fun menu(chipId: String): Menu? {
-        if (chipId != SessionUsageChipIds.Usage) return null
-        val snapshot = snapshot ?: return null
-        val harness = harness ?: return null
-        val active = activeAccountOf(snapshot, harness) ?: return null
+    override fun augmentContextCard(card: Menu): Menu {
+        val snapshot = snapshot ?: return card
+        val harness = harness ?: return card
+        val active = activeAccountOf(snapshot, harness) ?: return card
         val now = nowMs()
-        val windows = active.usageWindows.map { window ->
-            MenuItem(
-                title = "${window.label} ${usagePercent(window.usedFraction)}",
-                subtitle = resetText(window.resetsAtMs, now),
-                icon = MenuIcon.Symbol(RobocoIcons.Gauge),
-                informational = true,
-                testTag = "usage-menu-window-${window.label}",
-            ) {},
-        }
-        val switches = otherAccountsOf(snapshot, active)
-            .filter { it.switchable }
-            .map { account ->
-                MenuItem(
-                    title = "Switch to ${accountTitle(account)}",
-                    subtitle = topWindowOf(account)?.let { "${it.label} ${usagePercent(it.usedFraction)}" }
-                        ?: account.planLabel,
-                    icon = MenuIcon.Symbol(RobocoIcons.ArrowUpArrowDown),
-                    testTag = "usage-menu-switch-${account.id}",
-                ) { switchTo(account) }
-            }
-        val open = MenuItem(
-            title = AccountsCopy.OpenPage,
-            icon = MenuIcon.Symbol(RobocoIcons.Desktopcomputer),
-            testTag = "usage-menu-open",
-        ) { onOpenAccounts() }
-        return Menu(
-            title = "${harnessLabel(active.harness)} \u00B7 ${accountTitle(active)}",
+        return card.copy(
             children = buildList {
-                if (windows.isNotEmpty()) addAll(windows)
-                addAll(switches)
-                add(open)
+                addAll(card.children)
+                add(
+                    MenuSection(
+                        title = ACCOUNT_SECTION_TITLE,
+                        inline = true,
+                        children = buildList {
+                            add(
+                                MenuItem(
+                                    title = accountTitle(active),
+                                    subtitle = AccountsCopy.InUse,
+                                    informational = true,
+                                    testTag = "context-menu-account",
+                                ) {},
+                            )
+                            for (window in active.usageWindows) {
+                                add(
+                                    MenuItem(
+                                        title = "${window.label} ${usagePercent(window.usedFraction)}",
+                                        subtitle = resetText(window.resetsAtMs, now),
+                                        informational = true,
+                                        testTag = "context-menu-window-${window.label}",
+                                    ) {},
+                                )
+                            }
+                        },
+                    ),
+                )
+                // The other logins of the active account's single-choice
+                // group, with their fullest window; tap to switch.
+                for (account in otherAccountsOf(snapshot, active).filter { it.switchable }) {
+                    add(
+                        MenuItem(
+                            title = "Switch to ${accountTitle(account)}",
+                            subtitle = topWindowOf(account)
+                                ?.let { "${it.label} ${usagePercent(it.usedFraction)}" }
+                                ?: account.planLabel,
+                            icon = MenuIcon.Symbol(RobocoIcons.ArrowUpArrowDown),
+                            testTag = "context-menu-switch-${account.id}",
+                        ) { switchTo(account) },
+                    )
+                }
+                add(
+                    MenuItem(
+                        title = AccountsCopy.OpenPage,
+                        icon = MenuIcon.Symbol(RobocoIcons.Desktopcomputer),
+                        testTag = "context-menu-open",
+                    ) { onOpenAccounts() },
+                )
             },
         )
     }
@@ -238,19 +281,20 @@ class SessionAccountUsage(
                 throw cancelled
             } catch (t: Throwable) {
                 if (isUnsupportedEngine(t)) {
-                    // Hide the chip for this engine, and never ask again.
+                    // Stop asking: the chip keeps #01's behaviour and the
+                    // menu stays the plain context card.
                     unsupported = true
                 }
-                // Any other failure stays silent: the chip is hidden until
-                // the next policy window, like iOS's `try?`.
+                // Any other failure stays silent: nothing is tinted or
+                // appended until the next policy window, like iOS's `try?`.
             }
         }
     }
 
     /**
-     * One switch from the chip menu: optimistic rows, the engine's reply
-     * replaces them, a failure restores and toasts (PR #578's chip-menu
-     * actions — "Couldn't switch accounts", no alert).
+     * One switch from the context chip's menu: optimistic rows, the
+     * engine's reply replaces them, a failure restores and toasts (PR
+     * #578's chip-menu actions — "Couldn't switch accounts", no alert).
      */
     private fun switchTo(account: AgentAccount) {
         val host = hostDevice
@@ -285,20 +329,8 @@ class SessionAccountUsage(
     }
 }
 
-/**
- * The chip id — the contract with ticket 59's strip, ticket 89's provider
- * map and the test tags `composer-chip-usage`.
- */
-object SessionUsageChipIds {
-    /** The plan-usage chip (`Session 88%`). */
-    const val Usage = "usage"
-}
-
-/** The usage chip's calm glyph (iOS's `gauge.with.dots.needle.67percent`). */
-const val USAGE_SYMBOL = "gauge.with.dots.needle.67percent"
-
-/** The usage chip's glyph at the critical level (iOS's `exclamationmark.circle`). */
-const val USAGE_CRITICAL_SYMBOL = "exclamationmark.circle"
+/** The context chip menu's Account section header. */
+const val ACCOUNT_SECTION_TITLE = "Account"
 
 /** A forced probe at most this often (iOS `refreshUsage`'s 120 s). */
 const val FORCED_MIN_INTERVAL_MS = 120_000L

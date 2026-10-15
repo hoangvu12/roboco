@@ -6,11 +6,16 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import sh.roboco.android.composer.ChipTint
 import sh.roboco.android.design.Toaster
 import sh.roboco.android.design.glass.MenuItem
+import sh.roboco.android.design.glass.MenuSection
+import sh.roboco.android.session.CONTEXT_WARNING_SYMBOL
+import sh.roboco.android.session.SessionChipIds
 import sh.roboco.android.session.SessionChrome
+import sh.roboco.android.session.contextChip
 import uniffi.roboco_core.AgentAccount
 import uniffi.roboco_core.AgentAccountsSnapshot
 import uniffi.roboco_core.AgentUsageWindow
@@ -24,17 +29,19 @@ import uniffi.roboco_core.RoomState
 import uniffi.roboco_core.SessionRow
 
 /**
- * The composer's usage chip (android-next#05) on the plain JVM:
- * [SessionAccountUsage] over a recording [AccountsCore] fake — the chip
- * appears (and **leads**) at ≥ 80 % with the amber/red tint and glyphs,
- * stays hidden below the threshold and for an engine too old for the
- * accounts RPCs, the after-turn re-probe respects the 2-minute throttle,
- * and the menu lists the windows, the other logins and the page row,
- * switching optimistically with its toast (or the failure toast).
+ * The composer's plan usage (android-next#05), folded into android-next
+ * #01's context chip (user decision 2026-10-15: no separate usage chip),
+ * on the plain JVM: [SessionAccountUsage] over a recording [AccountsCore]
+ * fake — the worse-of tint (the context chip's own amber stays, the plan
+ * adds amber/red with the warning glyph), the menu's account half
+ * ([SessionAccountUsage.augmentContextCard]: the Account section, the
+ * other logins to switch to, "Accounts & Usage…"), the after-turn
+ * re-probe's 2-minute throttle and the unsupported-engine rule (the
+ * plain context card, no error spam).
  *
- * The `ChromeInput`s are the fixture records (they construct without
- * JNA); the loads run on `Dispatchers.Unconfined`, so every fill's asks
- * answer within it — `advanceUntilIdle` is only belt.
+ * The `ChromeInput`s and the context chips are fixture records (they
+ * construct without JNA); the loads run on `Dispatchers.Unconfined`, so
+ * every fill's asks answer within it.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionUsageChipTest {
@@ -187,6 +194,12 @@ class SessionUsageChipTest {
         config = null,
     )
 
+    /** A chrome carrying the context chip #01's filler would have built. */
+    private fun contextChrome(tokens: ULong, window: ULong?): SessionChrome {
+        val reading = sh.roboco.android.session.contextReading(tokens, window)!!
+        return SessionChrome(chips = listOf(contextChip(reading)))
+    }
+
     private fun filler(core: FakeAccountsCore) = SessionAccountUsage(
         core = core,
         io = Dispatchers.Unconfined,
@@ -194,10 +207,10 @@ class SessionUsageChipTest {
         harnessLabel = { harness -> mapOf("claude-code" to "Claude Code")[harness] ?: harness },
     ).also { it.bind {} }
 
-    // ------------------------------------------------------------ the chip
+    // ------------------------------------------------------- the tint
 
     @Test
-    fun theChipLeadsAtTheWarningLevelAndHidesBelowIt() = runTest {
+    fun aWarningPlanTintsTheCalmContextChipAmberWithTheWarningGlyph() = runTest {
         val core = FakeAccountsCore()
         core.answer = AgentAccountsSnapshot(
             accounts = listOf(
@@ -206,30 +219,21 @@ class SessionUsageChipTest {
             warnings = emptyList(),
         )
         val filler = filler(core)
-        // The first fill asks the plain list (the load answers within it).
-        var chrome = filler.fill(SessionChrome(), input(running = true))
+        val chrome = filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
+        // The fill asked the plain list (the load answers within it).
         assertEquals(listOf("list:false"), core.calls)
-        chrome = filler.fill(chrome, input(running = true))
+        // No chip was added — the context chip keeps its context reading,
+        // re-tinted amber with the warning glyph.
+        assertEquals(1, chrome.chips.size)
         val chip = chrome.chips.single()
-        assertEquals(SessionUsageChipIds.Usage, chip.id)
-        assertEquals("Session 88%", chip.title)
-        assertEquals(USAGE_SYMBOL, chip.symbol)
+        assertEquals(SessionChipIds.Context, chip.id)
+        assertEquals("11% context", chip.title)
         assertEquals(ChipTint.Warning, chip.tint)
-
-        // Below the threshold the chip disappears after the next probe
-        // (a turn's end forces one).
-        core.answer = AgentAccountsSnapshot(
-            accounts = listOf(account("alice", active = true, windows = listOf(window("Session", 0.42f)))),
-            warnings = emptyList(),
-        )
-        chrome = filler.fill(chrome, input(running = false))
-        advanceUntilIdle()
-        chrome = filler.fill(chrome, input(running = false))
-        assertNull("no chip under 80 %", chrome.chips.firstOrNull { it.id == SessionUsageChipIds.Usage })
+        assertEquals(CONTEXT_WARNING_SYMBOL, chip.symbol)
     }
 
     @Test
-    fun theChipTurnsRedWithTheWarningGlyphAtTheCriticalLevel() = runTest {
+    fun aCriticalPlanTintsTheChipRed() = runTest {
         val core = FakeAccountsCore()
         core.answer = AgentAccountsSnapshot(
             accounts = listOf(
@@ -238,14 +242,52 @@ class SessionUsageChipTest {
             warnings = emptyList(),
         )
         val filler = filler(core)
-        var chrome = filler.fill(SessionChrome(), input())
-        chrome = filler.fill(chrome, input())
-        val chip = chrome.chips.first { it.id == SessionUsageChipIds.Usage }
-        assertEquals("Week 97%", chip.title)
-        assertEquals(USAGE_CRITICAL_SYMBOL, chip.symbol)
-        assertEquals(ChipTint.Critical, chip.tint)
-        assertEquals(0, chrome.chips.indexOf(chip))
+        val chrome = filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
+        assertEquals(ChipTint.Critical, chrome.chips.single().tint)
+        assertEquals(CONTEXT_WARNING_SYMBOL, chrome.chips.single().symbol)
+        assertEquals("11% context", chrome.chips.single().title)
     }
+
+    @Test
+    fun aCalmPlanLeavesTheChipExactlyAs01BuiltIt() = runTest {
+        val core = FakeAccountsCore()
+        core.answer = AgentAccountsSnapshot(
+            accounts = listOf(
+                account("alice", active = true, windows = listOf(window("Session", 0.42f))),
+            ),
+            warnings = emptyList(),
+        )
+        val filler = filler(core)
+        val before = contextChrome(120_000uL, 1_048_576uL)
+        val chrome = filler.fill(before, input())
+        // The calm plan leaves #01's calm chip (and an already-amber
+        // context reading keeps its own amber — the plan only worsens).
+        assertEquals(before.chips.single().tint, chrome.chips.single().tint)
+        assertEquals(before.chips.single().symbol, chrome.chips.single().symbol)
+        val warned = contextChrome(943_713uL, 1_048_576uL) // 90 % context: #01's own amber
+        val chrome2 = filler.fill(warned, input())
+        assertEquals(ChipTint.Warning, chrome2.chips.single().tint)
+        assertEquals(CONTEXT_WARNING_SYMBOL, chrome2.chips.single().symbol)
+    }
+
+    @Test
+    fun noSnapshotOrAnOldEngineLeavesTheChipUntouched() = runTest {
+        val core = FakeAccountsCore()
+        core.throwOnList = CoreException.Unsupported("The engine does not support this method")
+        val filler = filler(core)
+        val before = contextChrome(120_000uL, 1_048_576uL)
+        var chrome = filler.fill(before, input())
+        advanceUntilIdle()
+        chrome = filler.fill(chrome, input())
+        chrome = filler.fill(chrome, input(running = true))
+        chrome = filler.fill(chrome, input(running = false))
+        advanceUntilIdle()
+        assertEquals("no second ask after Unsupported", listOf("list:false"), core.calls)
+        assertEquals(before.chips.single().tint, chrome.chips.single().tint)
+        assertEquals(before.chips.single().symbol, chrome.chips.single().symbol)
+    }
+
+    // ------------------------------------------------ the loads' policy
 
     @Test
     fun theFirstRefreshAsksPlainAndATurnEndForcesWithinTheThrottle() = runTest {
@@ -255,7 +297,7 @@ class SessionUsageChipTest {
             warnings = emptyList(),
         )
         val filler = filler(core)
-        var chrome = filler.fill(SessionChrome(), input(running = true))
+        var chrome = filler.fill(contextChrome(120_000uL, 1_048_576uL), input(running = true))
         assertEquals(listOf("list:false"), core.calls)
         // A turn still running: no second ask.
         chrome = filler.fill(chrome, input(running = true))
@@ -269,26 +311,10 @@ class SessionUsageChipTest {
         assertEquals(listOf("list:false", "list:true"), core.calls)
     }
 
-    @Test
-    fun anUnsupportedEngineHidesTheChipAndNeverAsksAgain() = runTest {
-        val core = FakeAccountsCore()
-        core.throwOnList = CoreException.Unsupported("The engine does not support this method")
-        val filler = filler(core)
-        var chrome = filler.fill(SessionChrome(), input())
-        advanceUntilIdle()
-        assertEquals(listOf("list:false"), core.calls)
-        chrome = filler.fill(chrome, input())
-        chrome = filler.fill(chrome, input(running = true))
-        chrome = filler.fill(chrome, input(running = false))
-        advanceUntilIdle()
-        assertEquals("no second ask after Unsupported", listOf("list:false"), core.calls)
-        assertNull("no chip for an old engine", chrome.chips.firstOrNull { it.id == SessionUsageChipIds.Usage })
-    }
-
-    // ------------------------------------------------------------ the menu
+    // ------------------------------------------------ the menu's account half
 
     @Test
-    fun theMenuListsWindowsSwitchesAndThePageRow() = runTest {
+    fun theCardIsAugmentedWithTheAccountSectionSwitchesAndThePageRow() = runTest {
         val core = FakeAccountsCore()
         val active = account(
             "alice",
@@ -305,29 +331,56 @@ class SessionUsageChipTest {
             warnings = emptyList(),
         )
         val filler = filler(core)
-        filler.fill(SessionChrome(), input())
+        filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
         advanceUntilIdle()
-        filler.fill(SessionChrome(), input())
 
-        assertNull("other ids have no usage menu", filler.menu("model"))
-        val menu = filler.menu(SessionUsageChipIds.Usage)!!
-        assertEquals("Claude Code \u00B7 alice@example.com", menu.title)
-        val rows = menu.children.filterIsInstance<MenuItem>()
-        assertEquals(4, rows.size)
-        // The two windows, read-only, with the written-out reset moment.
-        assertEquals("Session 88%", rows[0].title)
-        assertEquals("Resets in 2h", rows[0].subtitle)
-        assertEquals("Week 20%", rows[1].title)
-        assertNull(rows[1].subtitle)
-        assertEquals(true, rows[0].informational)
-        assertEquals("usage-menu-window-Session", rows[0].testTag)
-        // Only the switchable other login of the group.
-        assertEquals("Switch to bob@example.com", rows[2].title)
-        assertEquals("Session 10%", rows[2].subtitle)
-        assertEquals("usage-menu-switch-bob", rows[2].testTag)
-        // The page row.
-        assertEquals("Accounts & Usage\u2026", rows[3].title)
-        assertEquals("usage-menu-open", rows[3].testTag)
+        val card = sh.roboco.android.session.contextUsageCard(
+            sh.roboco.android.session.contextReading(120_000uL, 1_048_576uL)!!,
+        )
+        val augmented = filler.augmentContextCard(card)
+        // #01's two context rows first, unchanged.
+        assertEquals(card.children[0], augmented.children[0])
+        assertEquals(card.children[1], augmented.children[1])
+        // The Account section: the login in use, then every window.
+        val section = augmented.children[2] as MenuSection
+        assertEquals(ACCOUNT_SECTION_TITLE, section.title)
+        assertTrue(section.inline)
+        val sectionRows = section.children.filterIsInstance<MenuItem>()
+        assertEquals("alice@example.com", sectionRows[0].title)
+        assertEquals("In use", sectionRows[0].subtitle)
+        assertTrue(sectionRows[0].informational)
+        assertEquals("Session 88%", sectionRows[1].title)
+        assertEquals("Resets in 2h", sectionRows[1].subtitle)
+        assertEquals("Week 20%", sectionRows[2].title)
+        assertNull(sectionRows[2].subtitle)
+        // Only the switchable other login of the group, with its fullest
+        // window; then the page row.
+        val rows = augmented.children.filterIsInstance<MenuItem>()
+        val switch = rows.first { it.title.startsWith("Switch to") }
+        assertEquals("Switch to bob@example.com", switch.title)
+        assertEquals("Session 10%", switch.subtitle)
+        assertEquals("context-menu-switch-bob", switch.testTag)
+        val open = rows.first { it.testTag == "context-menu-open" }
+        assertEquals("Accounts & Usage\u2026", open.title)
+    }
+
+    @Test
+    fun withoutAccountDataTheCardIsExactly01s() = runTest {
+        val core = FakeAccountsCore()
+        core.answer = AgentAccountsSnapshot(
+            accounts = listOf(account("other-harness", harness = "codex", active = true)),
+            warnings = emptyList(),
+        )
+        val filler = filler(core)
+        filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
+        advanceUntilIdle()
+        val card = sh.roboco.android.session.contextUsageCard(
+            sh.roboco.android.session.contextReading(120_000uL, 1_048_576uL)!!,
+        )
+        // A harness with no accounts: the plain card.
+        assertEquals(card, filler.augmentContextCard(card))
+        // So does a filler that never loaded.
+        assertEquals(card, filler(FakeAccountsCore()).augmentContextCard(card))
     }
 
     @Test
@@ -344,16 +397,19 @@ class SessionUsageChipTest {
         filler.toaster = toaster
         var opened = 0
         filler.onOpenAccounts = { opened++ }
-        filler.fill(SessionChrome(), input())
+        filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
         advanceUntilIdle()
-        filler.fill(SessionChrome(), input())
 
-        val menu = filler.menu(SessionUsageChipIds.Usage)!!
+        val card = filler.augmentContextCard(
+            sh.roboco.android.session.contextUsageCard(
+                sh.roboco.android.session.contextReading(120_000uL, 1_048_576uL)!!,
+            ),
+        )
         // The open row runs the injected handler.
-        (menu.rows().first { it.testTag == "usage-menu-open" }.action)()
+        (card.rows().first { it.testTag == "context-menu-open" }.action)()
         assertEquals(1, opened)
         // The switch row switches and toasts.
-        (menu.rows().first { it.testTag == "usage-menu-switch-bob" }.action)()
+        (card.rows().first { it.testTag == "context-menu-switch-bob" }.action)()
         advanceUntilIdle()
         assertEquals(listOf("activate:bob"), core.calls.filter { it.startsWith("activate") })
         assertEquals(
@@ -374,22 +430,22 @@ class SessionUsageChipTest {
         val toaster = FakeToaster()
         val filler = filler(core)
         filler.toaster = toaster
-        filler.fill(SessionChrome(), input())
+        filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
         advanceUntilIdle()
-        filler.fill(SessionChrome(), input())
 
-        // The engine refuses the switch: the snapshot is restored (the
-        // chip stays honest) and the failure toast shows.
+        // The engine refuses the switch: the failure toast shows and the
+        // tint still reads the pre-switch login.
         core.throwOnActivate = CoreException.HostException("no")
-        val menu = filler.menu(SessionUsageChipIds.Usage)!!
-        (menu.rows().first { it.testTag == "usage-menu-switch-bob" }.action)()
+        val card = filler.augmentContextCard(
+            sh.roboco.android.session.contextUsageCard(
+                sh.roboco.android.session.contextReading(120_000uL, 1_048_576uL)!!,
+            ),
+        )
+        (card.rows().first { it.testTag == "context-menu-switch-bob" }.action)()
         advanceUntilIdle()
         assertEquals(listOf(AccountsCopy.SwitchFailedToast), toaster.toasts)
-        assertEquals(
-            "the chip still reads the pre-switch login",
-            "Session 90%",
-            filler.usageChip()?.title,
-        )
+        val afterFailure = filler.fill(contextChrome(120_000uL, 1_048_576uL), input())
+        assertEquals(ChipTint.Warning, afterFailure.chips.single().tint)
     }
 }
 
