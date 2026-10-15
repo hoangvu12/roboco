@@ -24,6 +24,10 @@ QUESTION_PORT=27703
 MAIN_CONTROL=27711
 SLOW_CONTROL=27712
 QUESTION_CONTROL=27713
+# android-next#02: the Tailcat smoke's fixture. Its ENGINE port is never
+# adb-reversed — the device reaches it only over Tailcat.
+TAILCAT_PORT=27704
+TAILCAT_CONTROL=27714
 
 FIXTURE_BIN="$ROOT/target/debug/examples/android_fixture"
 ARTIFACTS="app/build/flow-artifacts"
@@ -67,9 +71,38 @@ MAIN_PID=$(start_fixture main "$MAIN_PORT" "$MAIN_CONTROL")
 SLOW_PID=$(start_fixture slow "$SLOW_PORT" "$SLOW_CONTROL")
 QUESTION_PID=$(start_fixture question "$QUESTION_PORT" "$QUESTION_CONTROL")
 
+# android-next#02: the Tailcat smoke, only when the Go pieces were built
+# (CI's emulator job builds the adapter and the local DERP relay and
+# exports ROBOCO_TAILCAT_ADAPTER / ROBOCO_TAILCAT_TESTDERP). The relay is
+# all on 127.0.0.1; its DERP port is TCP, so adb reverse brings it to the
+# device, which then reaches the engine through the WireGuard tunnel.
+TESTDERP_PID=""
+TAILCAT_PID=""
+DERP_PORT=""
+if [[ -x "${ROBOCO_TAILCAT_ADAPTER:-}" && -x "${ROBOCO_TAILCAT_TESTDERP:-}" ]]; then
+  "$ROBOCO_TAILCAT_TESTDERP" --until-killed >"$ARTIFACTS/testderp.log" 2>"$ARTIFACTS/testderp.err" &
+  TESTDERP_PID=$!
+  deadline=$((SECONDS + 30))
+  until grep -q '"derpMap"' "$ARTIFACTS/testderp.log" 2>/dev/null; do
+    if (( SECONDS >= deadline )); then
+      echo "flow-tests: the local DERP relay did not start:" >&2
+      cat "$ARTIFACTS/testderp.err" >&2
+      exit 3
+    fi
+    sleep 1
+  done
+  DERP_MAP=$(sed -n 's/.*"derpMap":"\([^"]*\)".*/\1/p' "$ARTIFACTS/testderp.log" | head -1)
+  DERP_PORT=$(sed -n 's/.*"derpPort":\([0-9]*\).*/\1/p' "$ARTIFACTS/testderp.log" | head -1)
+  "$FIXTURE_BIN" --profile main --port "$TAILCAT_PORT" --control-port "$TAILCAT_CONTROL" \
+    --tailcat-derp-map "$DERP_MAP" >"$ARTIFACTS/fixture-tailcat.log" 2>&1 &
+  TAILCAT_PID=$!
+else
+  echo "flow-tests: no Tailcat pieces (ROBOCO_TAILCAT_ADAPTER / ROBOCO_TAILCAT_TESTDERP); the Tailcat smoke skips"
+fi
+
 cleanup() {
-  for pid in "$MAIN_PID" "$SLOW_PID" "$QUESTION_PID"; do
-    kill "$pid" 2>/dev/null || true
+  for pid in "$MAIN_PID" "$SLOW_PID" "$QUESTION_PID" "$TAILCAT_PID" "$TESTDERP_PID"; do
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
   # Give the processes a beat to exit, then harvest regardless.
   sleep 1
@@ -84,12 +117,23 @@ trap cleanup EXIT
 wait_for_fixture "$ARTIFACTS/fixture-main.log" main || exit 3
 wait_for_fixture "$ARTIFACTS/fixture-slow.log" slow || exit 3
 wait_for_fixture "$ARTIFACTS/fixture-question.log" question || exit 3
+if [[ -n "$TAILCAT_PID" ]]; then
+  wait_for_fixture "$ARTIFACTS/fixture-tailcat.log" tailcat || exit 3
+fi
 
 # 2. Device-side 127.0.0.1:<port> reaches the host through adb reverse
 #    (cleartext loopback is allowed by ticket 13's network-security-config).
 for port in "$MAIN_PORT" "$SLOW_PORT" "$QUESTION_PORT" "$MAIN_CONTROL" "$SLOW_CONTROL" "$QUESTION_CONTROL"; do
   adb reverse "tcp:$port" "tcp:$port"
 done
+# The Tailcat fixture: its control port and the DERP relay — NOT its
+# engine port ($TAILCAT_PORT stays host-only).
+TAILCAT_ARGS=()
+if [[ -n "$TAILCAT_PID" ]]; then
+  adb reverse "tcp:$TAILCAT_CONTROL" "tcp:$TAILCAT_CONTROL"
+  adb reverse "tcp:$DERP_PORT" "tcp:$DERP_PORT"
+  TAILCAT_ARGS=("-Pandroid.testInstrumentationRunnerArguments.fixtureTailcat=http://127.0.0.1:$TAILCAT_CONTROL")
+fi
 
 # 3. The suite. The @Tour tests (motion recordings) run in the tablet job
 #    (FLOW_INCLUDE_TOUR=1); the physical-device bench runs on a real
@@ -108,6 +152,7 @@ fi
   -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureQuestion="http://127.0.0.1:$QUESTION_CONTROL" \
+  "${TAILCAT_ARGS[@]}" \
   "${TOUR_ARGS[@]}"
 status=$?
 

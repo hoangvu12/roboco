@@ -32,6 +32,12 @@ enum class FixtureEngine(val arg: String) {
     Slow("fixtureSlow"),
     /** A run that asks the user questions (the QuestionPanel). */
     Question("fixtureQuestion"),
+    /**
+     * android-next#02: a `main`-profile engine published over Tailcat
+     * (local DERP relay); its engine port is not reachable from the device.
+     * Present only when the rig built the Go pieces.
+     */
+    Tailcat("fixtureTailcat"),
 }
 
 /**
@@ -184,6 +190,16 @@ class FixtureRule(
         val base = controlUrl.trim().trimEnd('/')
         val body = fetch("$base/mint") ?: return null
         return runCatching { JSONObject(body).getString("pairUrl") }.getOrNull()
+    }
+
+    /**
+     * Mints a fresh `roboco-tailcat:` invite (`GET /mint-tailcat`,
+     * android-next#02) from the [FixtureEngine.Tailcat] control URL.
+     */
+    fun mintTailcat(controlUrl: String): String? {
+        val base = controlUrl.trim().trimEnd('/')
+        val body = fetch("$base/mint-tailcat") ?: return null
+        return runCatching { JSONObject(body).getString("invite") }.getOrNull()
     }
 
     /**

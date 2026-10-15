@@ -266,6 +266,13 @@ class EngineDetailModelTest {
     }
 
     @Test
+    fun aReconnectingTailcatEngineSaysSo() {
+        val view = engineView(id = "e1", name = "n", state = EngineState.Reconnecting, baseUrl = "tailcat:3f9a12bc")
+        assertEquals("Reconnecting over Tailcat…", engineDetailUi(view.copy(tailcat = true), now).status)
+        assertEquals("Reconnecting…", engineDetailUi(view, now).status)
+    }
+
+    @Test
     fun aTailcatEnginesAddressIsItsFingerprint() {
         val ui = engineDetailUi(
             engineView(id = "e1", name = "n", state = EngineState.Connected, host = "tailcat:3f9a12bc", baseUrl = "tailcat:3f9a12bc"),
