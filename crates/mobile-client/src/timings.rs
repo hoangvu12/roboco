@@ -79,6 +79,11 @@ pub struct Timings {
     /// The workspace store's re-derive tick: refreshes time labels and
     /// the 45 s staleness edge (ticket 07).
     pub workspace_tick: Duration,
+    /// A forced agent-accounts list's deadline (android-next#05, PR
+    /// #578's relay route): the engine probes every saved login's usage
+    /// concurrently (~8 s per provider call), so the caller is cut loose
+    /// after this rather than pinning on a hung probe.
+    pub accounts_forced_deadline: Duration,
     /// The notification driver (ticket 28).
     pub notify: NotifyTimings,
 }
@@ -100,6 +105,7 @@ impl Default for Timings {
             refresh_cap: Duration::from_secs(3),
             undelivered_grace: Duration::from_secs(120),
             workspace_tick: Duration::from_secs(1),
+            accounts_forced_deadline: Duration::from_secs(45),
             notify: NotifyTimings::default(),
         }
     }

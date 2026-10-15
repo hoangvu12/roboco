@@ -83,6 +83,14 @@ where
             Err(_) => continue, // Re-check the pause flag each second.
             Ok(Err(_)) | Ok(Ok(0)) => return,
             Ok(Ok(n)) => {
+                // A read already in flight when the pause began must not
+                // leak through: hold its bytes until resumed. Without this
+                // the first chunk each way after `pause()` still crossed.
+                while *paused.borrow_and_update() {
+                    if paused.changed().await.is_err() {
+                        return;
+                    }
+                }
                 if to.write_all(&buf[..n]).await.is_err() {
                     return;
                 }

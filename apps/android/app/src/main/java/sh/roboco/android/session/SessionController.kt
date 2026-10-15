@@ -138,6 +138,16 @@ class SessionController private constructor(
     var pinned: Boolean = false
         private set
 
+    /**
+     * `SessionRow.harness` as of the last refresh — the session agent's
+     * wire harness id. android-next#05's ⋯ menu and usage chip read it
+     * on main; no lock needed — a stale read only until the next
+     * refresh.
+     */
+    @Volatile
+    var harness: String? = null
+        private set
+
     private val closed = AtomicBoolean(false)
 
     /** The view [attach] bound; a second attach of the same instance is a no-op. Cleared again when the attach FFI failed, so a retry is possible. */
@@ -325,6 +335,7 @@ class SessionController private constructor(
             val engine = core.engine()
             hostDeviceId = c.host.deviceId
             pinned = row?.pinned == true
+            harness = row?.harness
             // Ticket 89: the local config beside the row — the menus'
             // deferred loads re-read it at load time (#664), so it rides
             // along on every refresh.

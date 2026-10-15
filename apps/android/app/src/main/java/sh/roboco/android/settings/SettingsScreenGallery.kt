@@ -91,10 +91,12 @@ private data object SettingsGalleryRoot : NavRoute {
 }
 
 /**
- * The fixture: the six section emitters in 103's order, inside
- * `SettingsScreenContent(topInset = 24.dp)` (Robolectric and the preview
- * have no real status bar). The notification fixture is 99's pure builder
- * (`notificationRows` over the fixed snapshot), like 99's own gallery.
+ * The fixture: the seven section emitters in 103's order (Agent Accounts
+ * first, android-next#05), inside `SettingsScreenContent(topInset =
+ * 24.dp)` (Robolectric and the preview have no real status bar). The
+ * notification fixture is 99's pure builder (`notificationRows` over the
+ * fixed snapshot), like 99's own gallery; the accounts fixture is the
+ * same shape (the pure row builder over a fixed snapshot).
  */
 @Composable
 private fun SettingsScreenGalleryContent(listState: LazyListState, live: Boolean) {
@@ -116,6 +118,7 @@ private fun SettingsScreenGalleryContent(listState: LazyListState, live: Boolean
     val wallpaper = if (live) rememberGalleryWallpaperSectionState() else null
     val sessionsStrings = sessionsSettingsStrings()
     SettingsScreenContent(listState, topInset = 24.dp) {
+        galleryAgentAccountsSection()
         devicesSection(devices)
         notificationRowsSection(
             rows = notificationRows(
@@ -135,6 +138,107 @@ private fun SettingsScreenGalleryContent(listState: LazyListState, live: Boolean
         aboutSection(about)
     }
 }
+
+/**
+ * The fixture's Agent Accounts section (android-next#05): the pure row
+ * builder over a fixed snapshot — Claude Code with two logins (the
+ * Session 42 % / Week 8 % meters) and Codex at 91 % (the amber mini
+ * meter). Static like the wallpaper stand-in: no core, no loads.
+ */
+private fun LazyListScope.galleryAgentAccountsSection() {
+    val rows = sh.roboco.android.accounts.agentAccountsRows(
+        deviceId = "device-e1",
+        deviceName = "MacBook Pro",
+        snapshot = galleryAccountsSnapshot(),
+        loadMessage = null,
+        unsupported = false,
+        // No core call: the IDE preview has no JNA host (the wallpaper
+        // stand-in's rule).
+        harnessLabel = { harness ->
+            mapOf("claude-code" to "Claude Code", "codex" to "Codex")[harness] ?: harness
+        },
+    ) ?: return
+    groupedSection(
+        key = "agent-accounts",
+        header = sh.roboco.android.accounts.AgentAccountsSectionCopy.Header,
+        items = rows,
+        itemKey = { it.id },
+        footer = sh.roboco.android.accounts.AccountsCopy.planUsageOn("MacBook Pro") +
+            " Usage updated just now.",
+    ) { spec, position ->
+        sh.roboco.android.accounts.AgentAccountsRow(spec, position, onClick = {})
+    }
+}
+
+/** The section's fixture snapshot — pure records, no FFI. */
+private fun galleryAccountsSnapshot(): uniffi.roboco_core.AgentAccountsSnapshot =
+    uniffi.roboco_core.AgentAccountsSnapshot(
+        accounts = listOf(
+            uniffi.roboco_core.AgentAccount(
+                id = "alice-slot",
+                harness = "claude-code",
+                email = "alice@example.com",
+                planLabel = "Max 20\u00d7",
+                active = true,
+                usageWindows = listOf(
+                    uniffi.roboco_core.AgentUsageWindow(
+                        label = "Session",
+                        usedFraction = 0.42f,
+                        resetsAtMs = null,
+                    ),
+                    uniffi.roboco_core.AgentUsageWindow(
+                        label = "Week",
+                        usedFraction = 0.08f,
+                        resetsAtMs = null,
+                    ),
+                ),
+                usageFetchedAtMs = null,
+                usageError = null,
+                displayName = null,
+                organization = "Test Org",
+                apiKey = false,
+                switchable = true,
+                provider = null,
+            ),
+            uniffi.roboco_core.AgentAccount(
+                id = "bob-slot",
+                harness = "claude-code",
+                email = "bob@example.com",
+                planLabel = "Pro",
+                active = false,
+                usageWindows = emptyList(),
+                usageFetchedAtMs = null,
+                usageError = null,
+                displayName = null,
+                organization = null,
+                apiKey = false,
+                switchable = true,
+                provider = null,
+            ),
+            uniffi.roboco_core.AgentAccount(
+                id = "codex-slot",
+                harness = "codex",
+                email = "dev@example.com",
+                planLabel = "Plus",
+                active = true,
+                usageWindows = listOf(
+                    uniffi.roboco_core.AgentUsageWindow(
+                        label = "Session",
+                        usedFraction = 0.91f,
+                        resetsAtMs = null,
+                    ),
+                ),
+                usageFetchedAtMs = null,
+                usageError = null,
+                displayName = null,
+                organization = null,
+                apiKey = false,
+                switchable = true,
+                provider = null,
+            ),
+        ),
+        warnings = emptyList(),
+    )
 
 /**
  * The wallpaper section over a gallery-local fake store (like 97's live

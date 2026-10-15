@@ -11,6 +11,7 @@ import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.composer.QueueEditController
 import sh.roboco.android.composer.QueueEditPort
+import sh.roboco.android.accounts.SessionAccountUsage
 import sh.roboco.android.composer.SessionChipMenus
 import sh.roboco.android.composer.sessionDraftSaver
 import sh.roboco.android.shell.LocalNavEntry
@@ -125,8 +126,10 @@ class SessionScreenRoute internal constructor(
      */
     fun release() {
         // Ticket 89: the chip-menu loads resolve empty after this (the
-        // in-flight writes still finish — never cancelled).
+        // in-flight writes still finish — never cancelled). android-next
+        // #05: same rule for the usage chip's loads.
         controller.filler<SessionChipMenus>()?.dispose()
+        controller.filler<SessionAccountUsage>()?.dispose()
         val lifecycle = navLifecycle
         if (lifecycle != null) {
             // Ticket 85: detach + mark seen, then the layout engine.
@@ -276,6 +279,7 @@ class SessionScreenRoute internal constructor(
     override fun discard() {
         // Ticket 89: same rule as release — later loads resolve empty.
         controller.filler<SessionChipMenus>()?.dispose()
+        controller.filler<SessionAccountUsage>()?.dispose()
         controller.dispose()
         if (state.transcriptCreated) state.transcript.close()
     }

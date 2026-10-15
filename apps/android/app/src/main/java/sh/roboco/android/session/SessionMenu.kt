@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.roboco.android.composer.ACCOUNT_USAGE_ROW
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.LocalToaster
 import sh.roboco.android.design.RobocoIcons
@@ -66,13 +67,17 @@ import uniffi.roboco_core.LayoutFrame
 
 /**
  * Pure: the ⋯ menu for one open. iOS `SessionViewController.sessionMenu()`
- * — no `Menu` title, one group, no separators, three rows in order.
+ * (PR #578 adds the fourth row) — no `Menu` title, one group, no
+ * separators, four rows in order:
  *
  * - row 1: "Pin" (SF `pin`) / "Unpin" (SF `pin.slash`) by [pinned],
  *   `app.setPinned(chatId, !pinned)`;
  * - row 2: "Copy Transcript" (SF `doc.on.doc`), never disabled — it reads
  *   only the local transcript;
- * - row 3: "Archive" (SF `archivebox`), destructive, disabled with Pin
+ * - row 3: "Account & Usage" (android-next#05, PR #578's SF
+ *   `gauge.with.dots.needle.33percent` — the app's `Gauge` glyph), never
+ *   disabled — it only reads cached state and pushes a page;
+ * - row 4: "Archive" (SF `archivebox`), destructive, disabled with Pin
  *   while the engine is offline (79's `canWrite`).
  *
  * Keep it pure: no `@Composable`, no state reads. [rememberSessionMenu]
@@ -83,6 +88,7 @@ fun sessionMenu(
     canWrite: Boolean,
     onSetPinned: (Boolean) -> Unit,
     onCopyTranscript: () -> Unit,
+    onShowAccounts: () -> Unit,
     onArchive: () -> Unit,
 ): Menu = Menu(
     title = null,
@@ -99,6 +105,12 @@ fun sessionMenu(
             icon = MenuIcon.Symbol(RobocoIcons.DocOnDoc),
             testTag = "session-menu-copy",
             action = onCopyTranscript,
+        ),
+        MenuItem(
+            title = ACCOUNT_USAGE_ROW,
+            icon = MenuIcon.Symbol(RobocoIcons.Gauge),
+            testTag = "session-menu-accounts",
+            action = onShowAccounts,
         ),
         MenuItem(
             title = "Archive",
@@ -124,7 +136,9 @@ fun sessionMenu(
  * app-scoped [LocalToaster] (14) — both outlive this screen, so the
  * "Archived · Undo" toast still works after the pop. Copy runs in the
  * composition scope: if the screen leaves mid-copy the copy is cancelled
- * (acceptable — the menu is closed and the user is gone).
+ * (acceptable — the menu is closed and the user is gone). android-next
+ * #05's "Account & Usage" pushes the Accounts & Usage page scoped to
+ * this session's harness and computer (PR #578's `showAccounts`).
  *
  * Requires [sh.roboco.android.shell.LocalNavStack] /
  * [sh.roboco.android.shell.LocalNavEntry] (any screen inside a
@@ -148,6 +162,20 @@ fun rememberSessionMenu(
     return remember(controller, transcript, menuState, actions, router, nav, entry, toaster) {
         val open: (Rect) -> Unit = { anchor: Rect ->
             val chatId = controller.chatId
+            // android-next #05: the session's harness and computer scope
+            // the Accounts & Usage page (a mid-transition guard like the
+            // Devices section's).
+            val showAccounts = {
+                if (nav.top.id == entry.id) {
+                    nav.push(
+                        sh.roboco.android.accounts.AgentAccountsRoute(
+                            deviceId = controller.hostDeviceId.ifEmpty { null },
+                            focusHarness = controller.harness,
+                        ),
+                        animated = true,
+                    )
+                }
+            }
             val menu = sessionMenu(
                 pinned = controller.pinned,
                 canWrite = controller.chrome.value.canWrite,
@@ -159,6 +187,7 @@ fun rememberSessionMenu(
                         copyTranscript(transcript, clipboard, toaster)
                     }
                 },
+                onShowAccounts = showAccounts,
                 onArchive = {
                     actions.archive(chatId) { outcome ->
                         if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) {
@@ -282,6 +311,7 @@ private fun SessionMenuOpenPreview(pinned: Boolean, canWrite: Boolean) {
                     canWrite = canWrite,
                     onSetPinned = {},
                     onCopyTranscript = {},
+                    onShowAccounts = {},
                     onArchive = {},
                 ).children,
                 { null },

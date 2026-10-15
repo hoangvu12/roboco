@@ -9,14 +9,17 @@
 //! the client through [`CoreClient::client`], never over FFI.
 //!
 //! `workspace.rs` carries the workspace reads/mutations and the catalog
-//! label helpers (ticket 07).
+//! label helpers (ticket 07); `accounts.rs` the agent-accounts records,
+//! calls and usage levels (android-next#05).
 
+mod accounts;
 mod new_session;
 mod notify;
 mod session;
 mod types;
 mod workspace;
 
+pub use accounts::*;
 pub use new_session::*;
 pub use notify::*;
 pub use session::*;
