@@ -1103,7 +1103,7 @@ mod tests {
             model: Some("haiku".into()),
             spawned_at_ms: 1_000,
         };
-        let info: SubagentInfo = row.into();
+        let info: SubagentInfo = row.clone().into();
         assert_eq!(info.doc_id, "engine:v1:chat--sub--s1");
         assert_eq!(info.title, "Audit grapheme handling");
         assert_eq!(info.state, SubagentState::Running);
