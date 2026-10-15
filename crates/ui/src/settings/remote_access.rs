@@ -13,6 +13,9 @@ use std::sync::Arc;
 /// version 6–8 code scans from across a desk.
 const PAIRING_QR_SIZE: f32 = 176.0;
 
+/// An invite is QR version 16–17 (89–93 modules): 248 px keeps ~2.7 px per module.
+const INVITE_QR_SIZE: f32 = 248.0;
+
 /// The `CreateTailcatInvite` reply (`{id, url, expiresAt, qrSvg}`); the page
 /// keeps what its card needs. Like a pairing link, the invite is single-use
 /// and never logged. `qr_svg` is `None` against engines that predate the
@@ -186,15 +189,15 @@ fn invite_caption(expired: bool) -> &'static str {
 /// deliberate, not theming — scanners need dark on light, and the SVG
 /// carries its own quiet zone.
 fn pairing_qr_tile(svg: &str, expired: bool) -> AnyElement {
-    qr_tile("pairing-qr", svg, expired)
+    qr_tile("pairing-qr", svg, PAIRING_QR_SIZE, expired)
 }
 
 /// The Tailcat invite's QR on the same tile.
 fn invite_qr_tile(svg: &str, expired: bool) -> AnyElement {
-    qr_tile("tailcat-qr", svg, expired)
+    qr_tile("tailcat-qr", svg, INVITE_QR_SIZE, expired)
 }
 
-fn qr_tile(id: &'static str, svg: &str, expired: bool) -> AnyElement {
+fn qr_tile(id: &'static str, svg: &str, size: f32, expired: bool) -> AnyElement {
     let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec()));
     div()
         .id(id)
@@ -204,7 +207,7 @@ fn qr_tile(id: &'static str, svg: &str, expired: bool) -> AnyElement {
         .rounded(px(12.0))
         .bg(gpui::white())
         .when(expired, |tile| tile.opacity(0.3))
-        .child(img(image).size(px(PAIRING_QR_SIZE)))
+        .child(img(image).size(px(size)))
         .into_any_element()
 }
 
@@ -754,8 +757,8 @@ mod tests {
         let qr = cx
             .debug_bounds("tailcat-qr")
             .expect("QR tile beside the invite");
-        assert_eq!(qr.size.width, px(PAIRING_QR_SIZE + 20.0));
-        assert_eq!(qr.size.height, px(PAIRING_QR_SIZE + 20.0));
+        assert_eq!(qr.size.width, px(INVITE_QR_SIZE + 20.0));
+        assert_eq!(qr.size.height, px(INVITE_QR_SIZE + 20.0));
         assert!(
             cx.debug_bounds("pairing-qr").is_none(),
             "no pairing link minted"
