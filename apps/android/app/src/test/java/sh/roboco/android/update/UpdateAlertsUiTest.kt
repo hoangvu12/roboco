@@ -174,6 +174,10 @@ class UpdateAlertsUiTest {
         show(launchAlert())
 
         compose.onNodeWithTag("alert-primary").performClick()
+        // Round 52: the morph (updateCurrent) is synchronous, but this test's
+        // clock is paused (mount), and recomposition only runs on a frame:
+        // waitForIdle alone never drew the new content.
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
 
         // One card, the same presentation — never a second alert.
