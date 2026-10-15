@@ -103,6 +103,7 @@ class SessionMenuScreenshotTest {
                                             canWrite = canWrite,
                                             onSetPinned = {},
                                             onCopyTranscript = {},
+                                                                                        onShowAccounts = {},
                                             onArchive = {},
                                         ),
                                     )

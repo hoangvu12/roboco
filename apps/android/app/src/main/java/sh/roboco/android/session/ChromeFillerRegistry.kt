@@ -51,6 +51,10 @@ class ChromeFillerRegistry {
         /** Ticket 89 (chip menu state): right after the chips it decorates. */
         const val CHIP_MENUS = 21
 
+        /** android-next#05 (the plan-usage chip): after the chip menus it
+         * leads — the usage chip is prepended to whatever 78 built. */
+        const val USAGE_CHIP = 22
+
         /** Ticket 73 (banner). */
         const val BANNER = 30
 

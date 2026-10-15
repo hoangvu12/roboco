@@ -273,13 +273,15 @@ class SessionMenuTest {
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
+                        onShowAccounts = {},
             onArchive = {},
         )
         assertNull("no menu title, as UIMenu(children:)", menu.title)
-        assertEquals(3, menu.children.size)
+        assertEquals(4, menu.children.size)
         val pin = menu.children[0] as MenuItem
         val copy = menu.children[1] as MenuItem
-        val archive = menu.children[2] as MenuItem
+        val accounts = menu.children[2] as MenuItem
+        val archive = menu.children[3] as MenuItem
 
         assertEquals("Pin", pin.title)
         assertEquals(RobocoIcons.Pin, (pin.icon as MenuIcon.Symbol).icon)
@@ -293,14 +295,24 @@ class SessionMenuTest {
         assertFalse(copy.destructive)
         assertFalse(copy.disabled)
 
+        assertEquals("Account & Usage", accounts.title)
+        assertEquals(RobocoIcons.Gauge, (accounts.icon as MenuIcon.Symbol).icon)
+        assertFalse(accounts.destructive)
+        assertFalse("cached reads only", accounts.disabled)
+
         assertEquals("Archive", archive.title)
         assertEquals(RobocoIcons.Archivebox, (archive.icon as MenuIcon.Symbol).icon)
         assertTrue(archive.destructive)
         assertFalse(archive.disabled)
 
         assertEquals(
-            listOf("session-menu-pin", "session-menu-copy", "session-menu-archive"),
-            listOf(pin.testTag, copy.testTag, archive.testTag),
+            listOf(
+                "session-menu-pin",
+                "session-menu-copy",
+                "session-menu-accounts",
+                "session-menu-archive",
+            ),
+            listOf(pin.testTag, copy.testTag, accounts.testTag, archive.testTag),
         )
     }
 
@@ -311,6 +323,7 @@ class SessionMenuTest {
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
+                        onShowAccounts = {},
             onArchive = {},
         )
         val unpin = menu.children[0] as MenuItem
@@ -325,32 +338,45 @@ class SessionMenuTest {
             canWrite = false,
             onSetPinned = {},
             onCopyTranscript = {},
+                        onShowAccounts = {},
             onArchive = {},
         )
         assertTrue("Pin disabled while read-only", (menu.children[0] as MenuItem).disabled)
         assertFalse("Copy Transcript reads local state only", (menu.children[1] as MenuItem).disabled)
-        assertTrue("Archive disabled while read-only", (menu.children[2] as MenuItem).disabled)
+        assertFalse("Account & Usage is never disabled", (menu.children[2] as MenuItem).disabled)
+        assertTrue("Archive disabled while read-only", (menu.children[3] as MenuItem).disabled)
+    }
+
+    @Test
+    fun theAccountsRowRunsItsHandler() {
+        var shown = 0
+        val menu = sessionMenu(false, true, {}, {}, { shown++ }, {})
+        (menu.children[2] as MenuItem).action()
+        assertEquals(1, shown)
     }
 
     @Test
     fun thePinActionInvertsThePinnedState() {
         val pins = mutableListOf<Boolean>()
         var copies = 0
+        var accounts = 0
         var archives = 0
-        val unpinned = sessionMenu(false, true, { pins += it }, { copies++ }, { archives++ })
+        val unpinned = sessionMenu(false, true, { pins += it }, { copies++ }, { accounts++ }, { archives++ })
         (unpinned.children[0] as MenuItem).action()
         assertEquals(listOf(true), pins)
         assertEquals(0, copies)
         assertEquals(0, archives)
 
         pins.clear()
-        val pinned = sessionMenu(true, true, { pins += it }, { copies++ }, { archives++ })
+        val pinned = sessionMenu(true, true, { pins += it }, { copies++ }, { accounts++ }, { archives++ })
         (pinned.children[0] as MenuItem).action()
         assertEquals(listOf(false), pins)
 
         (pinned.children[1] as MenuItem).action()
         assertEquals(1, copies)
         (pinned.children[2] as MenuItem).action()
+        assertEquals(1, accounts)
+        (pinned.children[3] as MenuItem).action()
         assertEquals(1, archives)
     }
 

@@ -94,6 +94,9 @@ enum class ChipTint {
     PrClosed,
     Warning,
     Accent,
+
+    /** android-next#05: the plan-usage chip at the critical level (≥ 95 %) — `Palette.danger`. */
+    Critical,
 }
 
 /**

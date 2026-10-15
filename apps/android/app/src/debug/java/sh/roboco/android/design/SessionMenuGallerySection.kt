@@ -161,6 +161,7 @@ fun SessionMenuGallerySection() {
                                                 copyTranscript(transcript, clipboard, toaster)
                                             }
                                         },
+                                        onShowAccounts = {},
                                         onArchive = {
                                             actions.archive("c1") { outcome ->
                                                 // 80's leave: only a

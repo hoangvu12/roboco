@@ -18,9 +18,10 @@ class SettingsSectionTest {
     // ------------------------------------------------------- the order
 
     @Test
-    fun entriesAreTheSixSectionsInDisplayOrder() {
+    fun entriesAreTheSevenSectionsInDisplayOrder() {
         assertEquals(
             listOf(
+                SettingsSection.AgentAccounts,
                 SettingsSection.Devices,
                 SettingsSection.Notifications,
                 SettingsSection.Appearance,
@@ -38,6 +39,7 @@ class SettingsSectionTest {
         // (102 devices, 99 notifications, 96 appearance, 97 wallpaper,
         // 100 sessions, 101 about) — unique, or the LazyColumn crashes on
         // a duplicate key.
+        assertEquals("agent-accounts", SettingsSection.AgentAccounts.key)
         assertEquals("devices", SettingsSection.Devices.key)
         assertEquals("notifications", SettingsSection.Notifications.key)
         assertEquals("appearance", SettingsSection.Appearance.key)
@@ -51,6 +53,20 @@ class SettingsSectionTest {
     }
 
     // ------------------------------------------------- the id → section map
+
+    @Test
+    fun agentAccountRowsMapToAgentAccounts() {
+        // android-next#05: the harness rows and the four meta rows.
+        assertEquals(SettingsSection.AgentAccounts, settingsSectionFor("agent-account:claude-code"))
+        assertEquals(SettingsSection.AgentAccounts, settingsSectionFor("agent-accounts:none"))
+        assertEquals(SettingsSection.AgentAccounts, settingsSectionFor("agent-accounts:loading"))
+        assertEquals(SettingsSection.AgentAccounts, settingsSectionFor("agent-accounts:error"))
+        assertEquals(SettingsSection.AgentAccounts, settingsSectionFor("agent-accounts:empty"))
+        // The dropped iOS sections stay null, and a bare prefix is not a
+        // row of this section.
+        assertNull(settingsSectionFor("account"))
+        assertNull(settingsSectionFor("agent-account"))
+    }
 
     @Test
     fun engineAndPairRowsMapToDevices() {

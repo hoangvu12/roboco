@@ -83,6 +83,16 @@ data class LiftHighlight(
 
         /** `SessionCell.swift:269-271`: inset 8/2, radius 12, pressed fill. */
         val SectionHeader = LiftHighlight(8.dp, 2.dp, 12.dp, LiftFill.Pressed)
+
+        /** A Settings grouped card (android-next#05): the card inset and
+         * radius of `GroupedListTokens`, pressed fill — the accounts
+         * page's login rows. */
+        val GroupedCard = LiftHighlight(
+            GroupedListTokens.CardInset,
+            0.dp,
+            GroupedListTokens.CornerRadius,
+            LiftFill.Pressed,
+        )
     }
 }
 

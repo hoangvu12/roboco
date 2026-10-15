@@ -211,3 +211,57 @@ impl From<mc::UsageLevel> for UsageLevel {
 pub fn usage_level(used_fraction: f32) -> UsageLevel {
     mc::usage_level(used_fraction).into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_levels_match_the_desktop_thresholds() {
+        assert_eq!(usage_level(0.0), UsageLevel::Normal);
+        assert_eq!(usage_level(0.79), UsageLevel::Normal);
+        assert_eq!(usage_level(0.80), UsageLevel::Warning);
+        assert_eq!(usage_level(0.94), UsageLevel::Warning);
+        assert_eq!(usage_level(0.95), UsageLevel::Critical);
+    }
+
+    #[test]
+    fn snapshots_convert_harnesses_windows_and_auth_kinds() {
+        let snapshot: roboco_proto::AgentAccountsSnapshot = serde_json::from_value(
+            serde_json::json!({
+                "accounts": [{
+                    "id": "slot-1",
+                    "harness": "claude-code",
+                    "email": "alice@example.com",
+                    "planLabel": "Max 20x",
+                    "active": true,
+                    "usageWindows": [{
+                        "label": "Session",
+                        "usedFraction": 1.4,
+                        "resetsAt": "2026-01-01T00:00:00Z",
+                    }],
+                    "usageFetchedAt": 123,
+                    "usageError": null,
+                    "displayName": null,
+                    "organization": "Org",
+                    "authKind": "api-key",
+                    "switchable": true,
+                    "provider": null,
+                }],
+                "warnings": [{"harness": "codex", "message": "m"}],
+            }),
+        )
+        .unwrap();
+        let converted: AgentAccountsSnapshot = snapshot.into();
+        let account = &converted.accounts[0];
+        assert_eq!(account.harness, "claude-code");
+        assert_eq!(account.email.as_deref(), Some("alice@example.com"));
+        assert!(account.api_key, "api-key auth kind");
+        assert_eq!(account.usage_windows[0].label, "Session");
+        assert_eq!(account.usage_windows[0].used_fraction, 1.0, "clamped");
+        assert!(account.usage_windows[0].resets_at_ms.is_some());
+        assert_eq!(account.usage_fetched_at_ms, Some(123));
+        assert_eq!(converted.warnings[0].harness, "codex");
+        assert_eq!(converted.warnings[0].message, "m");
+    }
+}

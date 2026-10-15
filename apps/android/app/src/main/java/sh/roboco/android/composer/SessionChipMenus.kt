@@ -389,6 +389,9 @@ const val PR_OPEN_ROW = "Open Pull Request"
 /** The PR menu's second row. */
 const val PR_COPY_ROW = "Copy Link"
 
+/** The ⋯ menu's Account & Usage row (android-next#05). */
+const val ACCOUNT_USAGE_ROW = "Account & Usage"
+
 // ── the pure rules (unit-tested on the plain JVM) ──────────────────────────
 
 /**

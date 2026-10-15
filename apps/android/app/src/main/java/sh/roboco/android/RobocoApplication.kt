@@ -19,6 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import sh.roboco.android.background.RunWatchController
 import sh.roboco.android.composer.CoreChipMenuCore
+import sh.roboco.android.accounts.CoreAccountsCore
+import sh.roboco.android.accounts.SessionAccountUsage
 import sh.roboco.android.composer.Drafts
 import sh.roboco.android.composer.QueueChromeFiller
 import sh.roboco.android.composer.SessionChipMenus
@@ -586,6 +588,15 @@ class RobocoApplication : Application() {
         // inside it (never on main, the #609 trap).
         chromeFillers.register(ChromeFillerRegistry.CHIP_MENUS) { sessionCore ->
             SessionChipMenus(CoreChipMenuCore.of(sessionCore))
+        }
+        // android-next#05 (the plan-usage chip): the near-limit usage
+        // chip that leads the composer's chips, its menu (windows,
+        // switches, the Accounts & Usage page) and the after-turn
+        // re-probe — slot 22, after the menus. The loads and switches
+        // run on the filler's own IO scope; the chip itself derives from
+        // its snapshot, never FFI in fill.
+        chromeFillers.register(ChromeFillerRegistry.USAGE_CHIP) { _ ->
+            SessionAccountUsage(CoreAccountsCore(client = ::clientOrNull))
         }
         // Ticket 82 (queue panel): the queue mapping into
         // `SessionChrome.queue` — gate labels, `visibleText`, order —

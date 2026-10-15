@@ -150,7 +150,7 @@ object ChipTokens {
 fun resolveChipTint(palette: Palette, tint: ChipTint): Color = when (tint) {
     ChipTint.PrOpen -> palette.success
     ChipTint.PrMerged, ChipTint.Accent -> palette.accent
-    ChipTint.PrClosed -> palette.danger
+    ChipTint.PrClosed, ChipTint.Critical -> palette.danger
     ChipTint.PrDraft -> palette.secondary
     ChipTint.Warning -> palette.warning
 }
