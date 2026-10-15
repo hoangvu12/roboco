@@ -267,13 +267,13 @@ class SessionMenuTest {
     // ------------------------------------------------- the pure builder
 
     @Test
-    fun unpinnedWritableMenuIsThreeRowsInOrderWithNoTitle() {
+    fun unpinnedWritableMenuIsFourRowsInOrderWithNoTitle() {
         val menu = sessionMenu(
             pinned = false,
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
-                        onShowAccounts = {},
+            onShowAccounts = {},
             onArchive = {},
         )
         assertNull("no menu title, as UIMenu(children:)", menu.title)
@@ -323,7 +323,7 @@ class SessionMenuTest {
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
-                        onShowAccounts = {},
+            onShowAccounts = {},
             onArchive = {},
         )
         val unpin = menu.children[0] as MenuItem
@@ -338,7 +338,7 @@ class SessionMenuTest {
             canWrite = false,
             onSetPinned = {},
             onCopyTranscript = {},
-                        onShowAccounts = {},
+            onShowAccounts = {},
             onArchive = {},
         )
         assertTrue("Pin disabled while read-only", (menu.children[0] as MenuItem).disabled)

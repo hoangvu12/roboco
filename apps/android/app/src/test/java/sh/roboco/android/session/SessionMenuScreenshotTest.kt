@@ -43,14 +43,16 @@ import sh.roboco.android.design.glass.rememberGlassMenuState
  * (`Glass.forceFallback = true`, the golden convention).
  *
  * The three fixtures:
- * - `session_menu_light_unpinned` — "Pin", all three enabled;
+ * - `session_menu_light_unpinned` — "Pin", all rows enabled (the fourth,
+ *   android-next #05's "Account & Usage", never disabled);
  * - `session_menu_dark_pinned` — "Unpin" with the slash icon, enabled;
  * - `session_menu_light_readonly` — Pin and Archive disabled (grey
  *   titles, full-ink icons; Copy Transcript enabled).
  *
  * The panel's bounds are pinned here too, on the worked example: a 412 dp
- * window with the ⋯ at (352, 24)–(396, 68) puts the 250 × 146 dp panel at
- * x 146 → 396 and y 24 → 170 (±1 px).
+ * window with the ⋯ at (352, 24)–(396, 68) puts the 250 × 188 dp panel at
+ * x 146 → 396 and y 24 → 212 (±1 px) — four rows (Pin, Copy Transcript,
+ * Account & Usage, Archive) at 42 dp + the 10 dp panel paddings.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -103,7 +105,7 @@ class SessionMenuScreenshotTest {
                                             canWrite = canWrite,
                                             onSetPinned = {},
                                             onCopyTranscript = {},
-                                                                                        onShowAccounts = {},
+                                            onShowAccounts = {},
                                             onArchive = {},
                                         ),
                                     )
@@ -123,13 +125,13 @@ class SessionMenuScreenshotTest {
         compose.mainClock.advanceTimeBy(1000)
         frame()
 
-        // The worked example: the panel sits at x 146 → 396, y 24 → 170,
+        // The worked example: the panel sits at x 146 → 396, y 24 → 212,
         // its trailing edge shared with the ⋯ circle's (396).
         val panel = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
         assertEquals(dpPx(146), panel.positionInRoot.x, 1f)
         assertEquals(dpPx(396), panel.positionInRoot.x + panel.size.width, 1f)
         assertEquals(dpPx(24), panel.positionInRoot.y, 1f)
-        assertEquals(dpPx(170), panel.positionInRoot.y + panel.size.height, 1f)
+        assertEquals(dpPx(212), panel.positionInRoot.y + panel.size.height, 1f)
         val more = compose.onNodeWithTag("session-more").fetchSemanticsNode()
         assertEquals(
             "the panel's trailing edge matches the ⋯ circle's",
