@@ -13,6 +13,9 @@
 //! tab, Search, folders, Archived and Settings render, and routes the
 //! workspace mutations (archive, rename, mark seen, pins, sections) to
 //! the owning engine; [`catalog`] holds the static harness/model labels;
+//! [`accounts`] wraps the engine's agent (provider) accounts — the
+//! logins in use and their plan-usage windows — with the paint-at-once
+//! snapshot cache (android-next#05);
 //! [`new_session`] creates chats (ticket 09) with the optimistic pending
 //! overlay; [`projects`] browses folders, drives and refs and creates
 //! projects; [`host_paths`] speaks the engine's own path style.
