@@ -525,6 +525,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
+      # android-next#02: the Tailcat smoke (TailcatPairingFlowTest) — the
+      # desktop adapter the fixture publishes through and the local DERP
+      # relay; flow-tests.sh starts both when these are exported.
+      - name: Build the Tailcat smoke pieces (adapter, local DERP relay)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out"
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
       # AVD snapshot cache (the runner's README recipe): cold boots cost
       # minutes on every run otherwise.
       - uses: actions/cache@v4

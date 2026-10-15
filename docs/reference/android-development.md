@@ -242,6 +242,18 @@ host (ticket 18).
 - **`cargo-ndk is missing`**: `cargo install cargo-ndk --version 4.1.2 --locked`.
 - **`go is missing`** from the xtask: install Go, or build without Tailcat
   (`-ProbocoSkipTailcat` / `ROBOCO_ANDROID_TAILCAT=0`).
+- **"Tailcat isn't available in this build"** when pairing a
+  `roboco-tailcat:` invite: the APK carries no `lib/<abi>/libroboco_tailcat.so`
+  (built with `--skip-tailcat`, or a stale `jniLibs` from such a build), or
+  the library failed to load — `adb logcat -s Roboco` shows why. Rebuild
+  without the skip flag (and without `-ProbocoSkipCore`). Direct engines
+  are unaffected. The library is only extracted to `nativeLibraryDir`
+  because `useLegacyPackaging = true`; the core dlopens it by that path.
+- **Tailcat smoke locally**: `apps/android/scripts/flow-tests.sh` runs
+  `TailcatPairingFlowTest` when `ROBOCO_TAILCAT_ADAPTER` and
+  `ROBOCO_TAILCAT_TESTDERP` point at builds of
+  `adapters/roboco-tailcat/cmd/roboco-tailcat` and
+  `cmd/roboco-tailcat-testderp`; otherwise it skips.
 - **`UnsatisfiedLinkError` or a UniFFI checksum mismatch** at startup (or in
   `CoreLoadTest`): stale `jniLibs` — the APK's core does not match the
   generated bindings. Rebuild without `-ProbocoSkipCore`.

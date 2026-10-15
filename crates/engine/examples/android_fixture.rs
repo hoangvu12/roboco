@@ -27,6 +27,13 @@
 //!   mid-session, so the offline flow tests can kill the engine's
 //!   WebSockets without restarting the process (see
 //!   [spawn_control_endpoint]).
+//! - **Tailcat** (android-next#02, optional): `--tailcat-derp-map <url>`
+//!   also publishes the listener through the desktop adapter
+//!   (`roboco_engine::tailcat::TailcatServer`, `ROBOCO_TAILCAT_ADAPTER`)
+//!   against a local DERP map (`roboco-tailcat-testderp`), and
+//!   `GET /mint-tailcat` returns `{"invite": "roboco-tailcat:…"}`. The
+//!   emulator's Tailcat smoke pairs with that invite while the engine port
+//!   itself is not reachable from the device.
 //!
 //! The mock harness's demo knobs (`ROBOCO_MOCK_*`) are process-global env
 //! read at run time (`crates/harness/src/mock.rs`); the example sets them
@@ -100,7 +107,7 @@ fn main() {
     // CLI + env before the runtime: the mock knobs must be set while the
     // process is still single-threaded (std::env::set_var is unsafe to
     // race against getenv on live threads; the tokio workers would be).
-    let (port, control_port, profile) = parse_args();
+    let (port, control_port, profile, tailcat_derp_map) = parse_args();
     apply_profile_env(&profile);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -109,11 +116,11 @@ fn main() {
         .build()
         .expect("build the fixture runtime");
     runtime.block_on(async move {
-        run(port, control_port, profile).await;
+        run(port, control_port, profile, tailcat_derp_map).await;
     });
 }
 
-async fn run(port: u16, control_port: u16, profile: String) {
+async fn run(port: u16, control_port: u16, profile: String, tailcat_derp_map: Option<String>) {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_fixture_repo(dir.path());
 
@@ -134,6 +141,24 @@ async fn run(port: u16, control_port: u16, profile: String) {
 
     let chats = seed(&service, &repo, &profile).await;
 
+    // android-next#02: publish the listener over Tailcat too. Blocking
+    // (the adapter's readiness line); the server lives as long as the
+    // process.
+    let tailcat = match tailcat_derp_map {
+        Some(derp_map) => {
+            let data_dir = dir.path().to_path_buf();
+            let server = tokio::task::spawn_blocking(move || {
+                roboco_engine::tailcat::TailcatServer::start(&data_dir, bind_addr, Some(&derp_map))
+            })
+            .await
+            .expect("tailcat serve task")
+            .expect("android_fixture: start the Tailcat adapter (ROBOCO_TAILCAT_ADAPTER)");
+            Some(server)
+        }
+        None => None,
+    };
+    let tailcat_address = tailcat.as_ref().map(|server| server.address().to_owned());
+
     // Seeding has settled: announce readiness (stdout is line-buffered, so
     // the runner sees the line as soon as it is printed).
     println!(
@@ -143,6 +168,7 @@ async fn run(port: u16, control_port: u16, profile: String) {
             "endpoint": format!("http://{}", remote.address),
             "control": format!("http://127.0.0.1:{control_port}"),
             "deviceId": core.device_id,
+            "tailcat": tailcat_address.is_some(),
         })
     );
 
@@ -162,22 +188,26 @@ async fn run(port: u16, control_port: u16, profile: String) {
         handle,
         repo.clone(),
         chats,
+        tailcat_address,
     );
 
     std::future::pending::<()>().await;
     #[allow(unreachable_code)]
     {
+        drop(tailcat);
         core.shutdown().await;
     }
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────────
 
-/// `android_fixture --port <p> --control-port <c> --profile <name>`.
-fn parse_args() -> (u16, u16, String) {
+/// `android_fixture --port <p> --control-port <c> --profile <name>
+/// [--tailcat-derp-map <url>]`.
+fn parse_args() -> (u16, u16, String, Option<String>) {
     let mut port: Option<u16> = None;
     let mut control_port: Option<u16> = None;
     let mut profile = "main".to_string();
+    let mut tailcat_derp_map: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -190,6 +220,7 @@ fn parse_args() -> (u16, u16, String) {
                 control_port = Some(value().parse().expect("--control-port must be a number"))
             }
             "--profile" => profile = value(),
+            "--tailcat-derp-map" => tailcat_derp_map = Some(value()),
             other => panic!("android_fixture: unknown argument {other}"),
         }
     }
@@ -200,7 +231,7 @@ fn parse_args() -> (u16, u16, String) {
             "android_fixture: unknown profile {profile} (main | slow | question)"
         );
     }
-    (port, control_port, profile)
+    (port, control_port, profile, tailcat_derp_map)
 }
 
 /// Sets the mock-harness env knobs for [profile] (see [PROFILE_ENV]). The
@@ -630,6 +661,7 @@ fn spawn_control_endpoint(
     handle: tokio::runtime::Handle,
     repo: PathBuf,
     chats: Vec<SeedChat>,
+    tailcat_address: Option<String>,
 ) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -650,6 +682,27 @@ fn spawn_control_endpoint(
                     "pairUrl": mint_pair_url(&data_dir, bind_addr.port()),
                 })
                 .to_string(),
+                // android-next#02: a fresh single-use code wrapped in a
+                // Tailcat invite (404 without --tailcat-derp-map).
+                ("GET", "/mint-tailcat") => {
+                    let Some(address) = tailcat_address.as_deref() else {
+                        respond(&mut stream, 404, "{\"error\":\"tailcat is off\"}");
+                        continue;
+                    };
+                    let code = pairing::PairingStore::open(&data_dir)
+                        .expect("open PairingStore")
+                        .create_code("android-flow", MINT_TTL_SECONDS)
+                        .expect("mint pairing code");
+                    let invite = roboco_engine::tailcat::TailcatInvite::new(
+                        address,
+                        &code.credential,
+                        code.expires_at,
+                    )
+                    .expect("tailcat invite")
+                    .encode()
+                    .expect("encode the invite");
+                    serde_json::json!({ "invite": invite }).to_string()
+                }
                 ("GET", "/listener/stop") => {
                     // Idempotent: a second stop finds the slot empty. Only
                     // this thread locks the slot, so holding the guard

@@ -3,8 +3,11 @@
 // (android-next#02: the mobile core's host test pairs and reconnects through
 // it). Test-only: never shipped.
 //
-// It prints one JSON line, {"derpMap":"http://127.0.0.1:<port>/derpmap.json"},
-// then serves until stdin reaches EOF, so the parent test owns its lifetime.
+// It prints one JSON line, {"derpMap":"http://127.0.0.1:<port>/derpmap.json",
+// "derpPort":<tcp port>}, then serves until stdin reaches EOF, so the parent
+// test owns its lifetime — or, with --until-killed, until it is killed (a
+// shell runner's background job has /dev/null as stdin). The DERP port is
+// TCP, so the Android emulator reaches it through `adb reverse`.
 // The pieces mirror tstest/integration.RunDERPAndSTUN, which needs a
 // testing.TB and so cannot run as a program.
 package main
@@ -13,6 +16,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +42,8 @@ func main() {
 }
 
 func run() error {
+	untilKilled := flag.Bool("until-killed", false, "serve until killed instead of until stdin EOF")
+	flag.Parse()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -95,13 +101,17 @@ func run() error {
 		}))
 	}()
 
-	ready, err := json.Marshal(map[string]string{
-		"derpMap": "http://" + mapListener.Addr().String() + "/derpmap.json",
+	ready, err := json.Marshal(map[string]any{
+		"derpMap":  "http://" + mapListener.Addr().String() + "/derpmap.json",
+		"derpPort": derpListener.Addr().(*net.TCPAddr).Port,
 	})
 	if err != nil {
 		return err
 	}
 	fmt.Println(string(ready))
+	if *untilKilled {
+		select {}
+	}
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	return nil
 }

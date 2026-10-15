@@ -235,7 +235,12 @@ fun engineDetailUi(view: EngineView, nowMs: Long): EngineDetailUi {
     return EngineDetailUi(
         engineId = view.engineId,
         title = view.name.trim().ifEmpty { view.host },
-        status = engineStatusValue(view.state, view.lastError),
+        // android-next#02: say which route is being retried.
+        status = if (view.tailcat && view.state is EngineState.Reconnecting) {
+            "Reconnecting over Tailcat…"
+        } else {
+            engineStatusValue(view.state, view.lastError)
+        },
         connected = connected,
         // android-next#02: a Tailcat engine shows its fingerprint, never
         // the secret address (its baseUrl is already `tailcat:<8 hex>`).
