@@ -295,6 +295,9 @@ val syncLicenses = tasks.register<LicensesSync>("syncRobocoLicenses") {
     spdxFiles.setFrom(
         fileTree(repoRootDir.resolve("apps/android/licenses/spdx")) { include("*.txt") },
     )
+    // android-next#02: the Go Tailcat transport's licences.
+    goBundleDir.set(repoRootDir.resolve("adapters/roboco-tailcat/licenses/bundle"))
+    goLicenseFiles.setFrom(repoRootDir.resolve("adapters/roboco-tailcat/LICENSE.kratos"))
     assetsDir.set(licensesDir)
 }
 
@@ -508,6 +511,9 @@ android {
             // Sideloaded APKs are downloaded from GitHub without store-side
             // compression; extracting the .so at install keeps the APK small.
             // 16 KB compatibility comes from ticket 10's ELF alignment.
+            // android-next#02 also relies on it: the core dlopens
+            // libroboco_tailcat.so by absolute path under nativeLibraryDir,
+            // which holds the file only when libraries are extracted.
             useLegacyPackaging = true
         }
     }

@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.ParkReason
+import sh.roboco.android.pairing.tailcatAddressLabel
 
 /**
  * The Engine detail page's pure model (android-ui-parity #140): the copy
@@ -236,7 +237,9 @@ fun engineDetailUi(view: EngineView, nowMs: Long): EngineDetailUi {
         title = view.name.trim().ifEmpty { view.host },
         status = engineStatusValue(view.state, view.lastError),
         connected = connected,
-        address = view.baseUrl,
+        // android-next#02: a Tailcat engine shows its fingerprint, never
+        // the secret address (its baseUrl is already `tailcat:<8 hex>`).
+        address = tailcatAddressLabel(view.baseUrl) ?: view.baseUrl,
         version = version?.let { "v$it" },
         platform = platform?.let { platformLabel(it) },
         lastConnected = if (connected) null else view.lastConnectedMs?.let { formatLastConnected(it, nowMs) },

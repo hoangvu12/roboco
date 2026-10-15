@@ -3,6 +3,7 @@
 
 mod handle;
 pub(crate) mod link;
+pub(crate) mod route;
 
 pub(crate) use handle::rpc_error_to_client_error;
 pub use handle::{EngineHandle, FeedItem, FeedWatch, TranscriptConnection};
@@ -14,6 +15,54 @@ use roboco_engine_client::cache::CachedRows;
 use roboco_proto::{EngineInfo, SidebarStateSnapshot};
 use std::sync::Arc;
 
+/// How an engine is reached (android-next#02).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum EngineTransport {
+    /// `base_url` is dialed directly (LAN, or an operator tunnel).
+    #[default]
+    Direct,
+    /// Through an in-process Tailcat tunnel. Both fields are secrets: the
+    /// address embeds the engine's pre-shared key, the state this phone's
+    /// private key. The platform stores them encrypted, never in plain
+    /// metadata.
+    Tailcat {
+        address: String,
+        client_state: String,
+    },
+}
+
+impl EngineTransport {
+    pub fn kind(&self) -> TransportKind {
+        match self {
+            EngineTransport::Direct => TransportKind::Direct,
+            EngineTransport::Tailcat { .. } => TransportKind::Tailcat,
+        }
+    }
+}
+
+impl std::fmt::Debug for EngineTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the derived Debug would print both secrets.
+        match self {
+            EngineTransport::Direct => f.write_str("Direct"),
+            EngineTransport::Tailcat { address, .. } => f
+                .debug_struct("Tailcat")
+                .field("address", &crate::tailcat::describe(address))
+                .field("client_state", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
+/// The secret-free half of [`EngineTransport`], for views and the pair
+/// confirm UI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TransportKind {
+    #[default]
+    Direct,
+    Tailcat,
+}
+
 /// A paired engine's durable record. `credential` is the secret: Rust keeps
 /// it in memory only — the platform owns its encrypted storage and hands it
 /// back on every `CoreClient::new`. `engine_id` is a client-minted UUID v4
@@ -22,7 +71,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct PairedEngine {
     pub engine_id: String,
-    /// `http(s)://host[:port][/prefix]`, no trailing slash.
+    /// `http(s)://host[:port][/prefix]`, no trailing slash — or, for a
+    /// Tailcat engine, the non-secret display handle `tailcat:<8 hex>`
+    /// (never the address; the route lives in `transport`).
     pub base_url: String,
     /// The never-expiring session secret.
     pub credential: String,
@@ -35,6 +86,9 @@ pub struct PairedEngine {
     pub device_id: Option<String>,
     /// Last known engine device name, for offline display.
     pub name: Option<String>,
+    /// How this engine is dialed. Records stored before Tailcat existed
+    /// are `Direct`.
+    pub transport: EngineTransport,
 }
 
 impl std::fmt::Debug for PairedEngine {
@@ -49,14 +103,8 @@ impl std::fmt::Debug for PairedEngine {
             .field("paired_at_ms", &self.paired_at_ms)
             .field("device_id", &self.device_id)
             .field("name", &self.name)
+            .field("transport", &self.transport)
             .finish()
-    }
-}
-
-impl PairedEngine {
-    /// The WebSocket endpoint this engine dials.
-    pub fn endpoint(&self) -> String {
-        crate::pairing::websocket_endpoint(&self.base_url)
     }
 }
 
@@ -111,6 +159,8 @@ pub struct EngineView {
     /// `host[:port]` of the base URL.
     pub host: String,
     pub base_url: String,
+    /// Direct or Tailcat ("Reconnecting over Tailcat").
+    pub transport: TransportKind,
     pub device_id: Option<String>,
     pub platform: Option<String>,
     pub version: Option<String>,
@@ -195,6 +245,8 @@ pub(crate) struct LiveClient {
 pub(crate) struct EngineEntry {
     /// `engine_id` also appears here (the `EngineKey` string).
     pub paired: PairedEngine,
+    /// Where every dial goes (android-next#02). Replaced on re-pair.
+    pub route: std::sync::Arc<route::Route>,
     pub state: EngineState,
     pub last_error: Option<String>,
     pub retry_at_ms: Option<i64>,
@@ -317,9 +369,26 @@ mod tests {
             paired_at_ms: 1,
             device_id: Some("d1".into()),
             name: None,
+            transport: EngineTransport::Tailcat {
+                address: "tcSECRET-ADDRESS".into(),
+                client_state: "SECRET-STATE".into(),
+            },
         };
         let printed = format!("{record:?}");
-        assert!(!printed.contains("SECRET-CREDENTIAL"));
+        assert!(!printed.contains("SECRET"), "{printed}");
         assert!(printed.contains("[redacted]"));
+    }
+
+    #[test]
+    fn debug_of_a_transport_redacts_both_secrets() {
+        let transport = EngineTransport::Tailcat {
+            address: "tcSECRET-ADDRESS".into(),
+            client_state: "SECRET-STATE".into(),
+        };
+        let printed = format!("{transport:?}");
+        assert!(!printed.contains("SECRET"), "{printed}");
+        assert_eq!(transport.kind(), TransportKind::Tailcat);
+        assert_eq!(format!("{:?}", EngineTransport::default()), "Direct");
+        assert_eq!(EngineTransport::default().kind(), TransportKind::Direct);
     }
 }

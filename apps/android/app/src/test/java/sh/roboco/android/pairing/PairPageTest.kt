@@ -231,6 +231,31 @@ class PairPageTest {
         compose.onNodeWithTag("pair-cleartext").assertExists()
     }
 
+    @Test
+    fun aTailcatInviteShowsItsExpiryAndNoCleartextNote() {
+        hostPage()
+        compose.onNodeWithTag("pair-url").performTextInput("roboco-tailcat:abc")
+        awaitTag("pair-target")
+        compose.onNodeWithText("Engine over Tailcat \u00B7 invite expires in 5 min").assertExists()
+        compose.onNodeWithTag("pair-cleartext").assertDoesNotExist()
+    }
+
+    @Test
+    fun theBusyCapsuleSaysConnectingThroughTailcatForAnInvite() {
+        val gate = CompletableDeferred<PairedEngine>()
+        backend.pairImpl = { _, _ -> gate.await() }
+        hostPage(prefill = "roboco-tailcat:abc")
+        awaitTag("pair-target")
+
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("pair-submit").performTouchInput { click(center) }
+        frame()
+
+        compose.onNodeWithText("Connecting through Tailcat\u2026").assertExists()
+        gate.complete(newEngine())
+        settle()
+    }
+
     // --------------------------------------------------------------- paste
 
     @Test
@@ -448,7 +473,7 @@ class PairPageTest {
         // The footer text: x 32 … 361 (the tag sits on 70's padded Box,
         // the text is its own node inside it, so the measured node is the
         // text itself).
-        val hint = compose.onNodeWithText("Paste a pairing link from any engine", substring = true)
+        val hint = compose.onNodeWithText("Paste a pairing link or a roboco-tailcat: invite", substring = true)
             .getBoundsInRoot()
         assertEquals(32f, hint.left.value, 0.5f)
         assertTrue("footer right edge: ${hint.right.value}", hint.right.value <= 361.5f)
@@ -550,6 +575,15 @@ class PairPageTest {
  * owns the real parser's tests.
  */
 internal fun StandInParse(input: String): PairingTarget? {
+    // android-next#02: a Tailcat invite, valid for five more minutes.
+    if (input.trim().startsWith("roboco-tailcat:")) {
+        return PairingTarget(
+            baseUrl = "tailcat:3f9a12bc",
+            host = "Tailcat",
+            tailcat = true,
+            expiresAtMs = System.currentTimeMillis() + 300_000,
+        )
+    }
     val match = Regex("^(https?)://([^/?#@]+)(/.*)?/pair#token=[A-Za-z0-9_-]+$")
         .matchEntire(input.trim()) ?: return null
     val scheme = match.groupValues[1]

@@ -62,6 +62,9 @@ with `roboco daemon install` separately if you need boot persistence.
 On another **native desktop**, paste the invite into **Settings → Devices**.
 The desktop owns its Tailcat connection; no `connect` command is required.
 
+On **Android**, scan or paste the invite on the Pair page. The app keeps its
+own Tailcat connection and reconnects after restarts and network changes.
+
 For the **browser**, run this on the machine running the browser:
 
 ```sh

@@ -93,6 +93,7 @@ impl Rig {
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
                 show_mock_harness: true,
+                native_lib_dir: None,
             },
             Vec::new(),
             Arc::new(NullListener),

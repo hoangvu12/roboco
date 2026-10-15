@@ -9,24 +9,30 @@
     <string name="pairing_root_redeeming">Redeeming the pairing link…</string>
 
     <!-- The Pair page (android-ui-parity #72): the web pair page's copy
-         ("browser"→"phone", the label and placeholder drop their Tailcat
-         half — Rust refuses those with TailcatUnsupported), the hint and
-         cleartext note from android-app#18, the error sentences from the
-         web's pairing-errors.ts. Ellipses are U+2026, the em dash U+2014,
-         "→" U+2192; apostrophes are ASCII. -->
+         ("browser"→"phone"; the placeholder and hint carry the web's
+         Tailcat half again since android-next#02 — the phone redeems
+         roboco-tailcat: invites through its own in-process Tailcat
+         tunnel), the hint and cleartext note from android-app#18, the
+         error sentences from the web's pairing-errors.ts plus the three
+         Tailcat failures. Ellipses are U+2026, the em dash U+2014, "→"
+         U+2192, "·" U+00B7; apostrophes are ASCII. -->
     <string name="pair_title">Pair this phone</string>
     <string name="pair_section">Pairing link</string>
-    <string name="pair_placeholder" translatable="false">https://…/pair#token=…</string>
+    <string name="pair_placeholder" translatable="false">https://…/pair#token=… or roboco-tailcat:…</string>
     <string name="pair_paste">Paste</string>
     <string name="pair_scan">Scan QR code</string>
-    <string name="pair_hint">Paste a pairing link from any engine. Create one on that computer under Settings → Remote access.</string>
+    <string name="pair_hint">Paste a pairing link or a roboco-tailcat: invite from any engine. Create one on that computer under Settings → Remote access.</string>
     <string name="pair_target">Engine at %1$s</string>
+    <string name="pair_target_tailcat">Engine over Tailcat · invite expires in %1$s</string>
     <string name="pair_cleartext">This link uses http://, so pairing and your session aren\'t encrypted. Use a trusted network or your own tunnel.</string>
     <string name="pair_submit">Pair engine</string>
     <string name="pair_submitting">Pairing…</string>
+    <string name="pair_submitting_tailcat">Connecting through Tailcat…</string>
     <string name="pair_error_refused">That pairing link did not work — it may have expired or already have been used.</string>
     <string name="pair_error_unreachable">Could not reach that engine. Check the URL and that the engine is running.</string>
-    <string name="pair_error_tailcat">Tailcat invites aren\'t supported on Android yet. Create a pairing link on the engine instead.</string>
+    <string name="pair_error_tailcat_expired">That Tailcat invite has expired. Run roboco engine tailcat invite again.</string>
+    <string name="pair_error_tailcat_unreachable">Could not reach that engine over Tailcat. Check that it is running and online.</string>
+    <string name="pair_error_tailcat_unavailable">Tailcat isn\'t available in this build.</string>
     <string name="pair_error_failed">Pairing failed.</string>
     <string name="pair_error_store">Couldn\'t save the engine\'s credential on this phone.</string>
 

@@ -26,6 +26,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
+import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 import java.io.File
 import java.util.Base64
@@ -441,6 +442,157 @@ class PairedEngineStoreTest {
         assertEquals(emptySet<String>(), fixture.prefNames())
         assertFalse(fixture.store.has(engineA.engineId))
         assertEquals(emptyList<PairedEngine>(), fixture.store.load())
+    }
+
+    // android-next#02: Tailcat records ------------------------------------
+
+    private fun tcKey(engineId: String) = stringPreferencesKey("tc:$engineId")
+
+    @Test
+    fun aTailcatRecordRoundTripsThroughARestart() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(engineA)
+        fixture.store.upsert(tailcat)
+
+        val restarted = restart(fixture, cipher)
+
+        assertEquals(listOf(engineA, tailcat), restarted.store.load())
+        assertTrue(tcKey(tailcat.engineId).name in restarted.prefNames())
+        assertFalse("a direct engine has no tc: key", tcKey(engineA.engineId).name in restarted.prefNames())
+    }
+
+    @Test
+    fun aRecordStoredBeforeTailcatLoadsAsDirect() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(engineA)
+        // Strip the transport key, as a pre-android-next#02 build wrote it.
+        fixture.dataStore.edit { prefs ->
+            val array = JSONArray(prefs[stringPreferencesKey("engines")]!!)
+            array.getJSONObject(0).remove("transport")
+            prefs[stringPreferencesKey("engines")] = array.toString()
+        }
+
+        val restarted = restart(fixture, cipher)
+
+        assertEquals(listOf(engineA), restarted.store.load())
+        assertEquals(EngineTransport.Direct, restarted.store.load().single().transport)
+    }
+
+    @Test
+    fun noTailcatSecretIsWrittenAtRestOrInTheMetadata() = runTest {
+        val fixture = newStore()
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+        val route = tailcat.transport as EngineTransport.Tailcat
+
+        val engines = fixture.dataStore.data.first()[stringPreferencesKey("engines")]!!
+        assertFalse("the address is in the metadata", engines.contains(route.address))
+        val needles = listOf(route.address, route.clientState, "SECRET").map { it.toByteArray(Charsets.UTF_8) }
+        for (file in tmpFolder.root.walkBottomUp().filter { it.isFile }) {
+            val bytes = file.readBytes()
+            for (needle in needles) {
+                assertTrue("$file holds a Tailcat secret in the clear", bytes.indexOf(needle) < 0)
+            }
+        }
+    }
+
+    @Test
+    fun aCredentialBlobNeverDecryptsAsATailcatRoute() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+        // Swap the credential blob into the tc: slot: the distinct AAD refuses it.
+        val credBlob = fixture.credValue(tailcat.engineId)!!
+        fixture.dataStore.edit { it[tcKey(tailcat.engineId)] = credBlob }
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load().single()
+
+        assertEquals("", loaded.credential)
+        assertEquals(EngineTransport.Tailcat(address = "", clientState = ""), loaded.transport)
+    }
+
+    @Test
+    fun aLostTailcatBlobParksTheEngineInsteadOfDialingWithoutAnAddress() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+        fixture.dataStore.edit { it.remove(tcKey(tailcat.engineId)) }
+        ShadowLog.clear()
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load().single()
+
+        assertEquals(tailcat.engineId, loaded.engineId)
+        assertEquals("", loaded.credential)
+        assertEquals(EngineTransport.Tailcat(address = "", clientState = ""), loaded.transport)
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue(logged.none { it.contains("SECRET") })
+    }
+
+    @Test
+    fun aLostKeyDegradesATailcatEngineToAnEmptyCredential() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        fixture.store.upsert(newTailcatEngine())
+        cipher.rotateKey()
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load().single()
+
+        assertEquals("", loaded.credential)
+        assertEquals(EngineTransport.Tailcat(address = "", clientState = ""), loaded.transport)
+    }
+
+    @Test
+    fun repairingATailcatEngineAsDirectDropsItsRoute() = runTest {
+        val fixture = newStore()
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+
+        fixture.store.upsert(
+            tailcat.copy(baseUrl = "http://10.0.2.2:27655", transport = EngineTransport.Direct),
+        )
+
+        assertFalse(tcKey(tailcat.engineId).name in fixture.prefNames())
+        assertEquals(EngineTransport.Direct, fixture.store.load().single().transport)
+    }
+
+    @Test
+    fun orphanTailcatKeysDisappearOnTheNextWriteAndWithRemove() = runTest {
+        val fixture = newStore()
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+        fixture.dataStore.edit { it[tcKey("orphan-id")] = Base64.getEncoder().encodeToString(ByteArray(28)) }
+
+        fixture.store.upsert(engineA)
+        assertFalse(tcKey("orphan-id").name in fixture.prefNames())
+
+        fixture.store.remove(tailcat.engineId)
+        assertFalse(tcKey(tailcat.engineId).name in fixture.prefNames())
+        assertEquals(listOf(engineA), fixture.store.load())
+    }
+
+    @Test
+    fun noLogLineEverContainsATailcatSecret() = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        ShadowLog.clear()
+        val tailcat = newTailcatEngine()
+        fixture.store.upsert(tailcat)
+        val restarted = restart(fixture, cipher)
+        restarted.store.load()
+        cipher.rotateKey()
+        restarted.store.load()
+        restarted.store.remove(tailcat.engineId)
+
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue("a log leaked a Tailcat secret: $logged", logged.none { it.contains("SECRET") })
     }
 
     private suspend fun writeOrphan(fixture: Fixture) {

@@ -358,6 +358,7 @@ async fn an_empty_credential_parks_without_dialing() {
         paired_at_ms: 0,
         device_id: Some("some-engine".into()),
         name: None,
+        transport: Default::default(),
     };
     let recorder = Arc::new(Recorder::default());
     let client = test_client(data_dir.path(), vec![record], recorder);

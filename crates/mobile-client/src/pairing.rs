@@ -10,20 +10,37 @@
 //! This module is the Rust twin of the web client's `web/packages/app/src/lib/pairing.ts`
 //! and the desktop's
 //! `crates/engine-client/src/registry.rs` parser (identical rules).
+//!
+//! A `roboco-tailcat:` invite (android-next#02) decodes through
+//! `roboco_proto::tailcat` — the one grammar the engine mints with — and
+//! redeems through a loopback Tailcat tunnel the route opens.
 
+use crate::engines::route::{Route, TailcatRoute};
+use crate::engines::{EngineTransport, TransportKind};
+use crate::tailcat::{INVITE_PREFIX, TailcatError, TailcatInvite, TunnelOpener};
 use roboco_proto::PairedSession;
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// An invite this close to its expiry (or this far past it, by the phone's
+/// clock) is still tried: the engine re-checks on redeem, and a phone clock
+/// running fast must not refuse a valid invite.
+pub const TAILCAT_EXPIRY_GRACE_MS: i64 = 30_000;
 
 /// The minimum a pairing link must carry, for the confirm UI. The token is
 /// deliberately not part of this value: the FFI layer shows it to Kotlin,
 /// and a confirm screen must never receive the secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairingTarget {
-    /// `http(s)://host[:port][/prefix]`, no trailing slash, no fragment.
+    /// `http(s)://host[:port][/prefix]`, no trailing slash, no fragment —
+    /// or `tailcat:<8 hex>` for a Tailcat invite (never the address).
     pub base_url: String,
-    /// `host[:port]`, for the confirm UI.
+    /// `host[:port]`, for the confirm UI; `Tailcat` for an invite.
     pub host: String,
+    pub transport: TransportKind,
+    /// When a Tailcat invite's pairing code expires (epoch ms).
+    pub expires_at_ms: Option<i64>,
 }
 
 /// Why a pairing attempt failed. Ticket 18 maps each variant to the web's
@@ -32,9 +49,16 @@ pub struct PairingTarget {
 pub enum PairError {
     #[error("invalid pairing URL: {message}")]
     InvalidUrl { message: String },
-    /// `roboco-tailcat:` invites are out of scope on mobile (spec D9).
-    #[error("tailcat pairing is not supported on this device")]
-    TailcatUnsupported,
+    /// The Tailcat invite's pairing code has expired (phone clock, with
+    /// [`TAILCAT_EXPIRY_GRACE_MS`] of slack).
+    #[error("that tailcat invite has expired")]
+    TailcatExpired,
+    /// `libroboco_tailcat` is missing from this build or failed to load.
+    #[error("tailcat is not available: {message}")]
+    TailcatUnavailable { message: String },
+    /// The tunnel did not come up (no route, engine offline, DERP blocked).
+    #[error("could not reach the engine over tailcat: {message}")]
+    TailcatUnreachable { message: String },
     /// The engine answered 401: the code was expired, already used or
     /// unknown.
     #[error("pairing link refused")]
@@ -56,6 +80,35 @@ impl PairError {
     }
 }
 
+impl From<TailcatError> for PairError {
+    fn from(error: TailcatError) -> Self {
+        match error {
+            TailcatError::Unavailable(message) => PairError::TailcatUnavailable { message },
+            TailcatError::Unreachable(message) => PairError::TailcatUnreachable { message },
+        }
+    }
+}
+
+/// What an input parses to (crate-internal: both carry the secret code).
+enum Parsed {
+    Direct(ParsedPairing),
+    Tailcat(TailcatInvite),
+}
+
+/// Split any pairing input: a `roboco-tailcat:` invite or a pairing link.
+fn parse_any(input: &str, now_ms: i64) -> Result<Parsed, PairError> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with(INVITE_PREFIX) {
+        return parse(trimmed).map(Parsed::Direct);
+    }
+    // The decoder's messages describe shape only, never the address.
+    let invite = TailcatInvite::decode(trimmed).map_err(|error| PairError::invalid(error.to_string()))?;
+    if invite.expired(now_ms - TAILCAT_EXPIRY_GRACE_MS) {
+        return Err(PairError::TailcatExpired);
+    }
+    Ok(Parsed::Tailcat(invite))
+}
+
 /// A parsed pairing link, token included (crate-internal only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedPairing {
@@ -70,9 +123,6 @@ struct ParsedPairing {
 /// `token=` + `[A-Za-z0-9_-]+`, and a path ending in `/pair`.
 fn parse(input: &str) -> Result<ParsedPairing, PairError> {
     let trimmed = input.trim();
-    if trimmed.starts_with("roboco-tailcat:") {
-        return Err(PairError::TailcatUnsupported);
-    }
     let mut url = reqwest::Url::parse(trimmed).map_err(|_| PairError::invalid("not a URL"))?;
     let host = match url.host_str() {
         Some(host) => host.to_owned(),
@@ -125,12 +175,27 @@ fn parse(input: &str) -> Result<ParsedPairing, PairError> {
     })
 }
 
-/// Parse a pairing link for the confirm UI. The token never leaves this
-/// crate through this function.
+/// Parse a pairing link or a Tailcat invite for the confirm UI. Neither the
+/// token nor the Tailcat address leaves this crate through this function.
 pub fn parse_pairing_url(input: &str) -> Result<PairingTarget, PairError> {
-    parse(input).map(|parsed| PairingTarget {
-        base_url: parsed.base_url,
-        host: parsed.host,
+    parse_pairing_url_at(input, crate::engines::now_ms())
+}
+
+/// [parse_pairing_url] against an explicit clock (tests).
+pub fn parse_pairing_url_at(input: &str, now_ms: i64) -> Result<PairingTarget, PairError> {
+    Ok(match parse_any(input, now_ms)? {
+        Parsed::Direct(parsed) => PairingTarget {
+            base_url: parsed.base_url,
+            host: parsed.host,
+            transport: TransportKind::Direct,
+            expires_at_ms: None,
+        },
+        Parsed::Tailcat(invite) => PairingTarget {
+            base_url: crate::tailcat::display_handle(&invite.address),
+            host: "Tailcat".into(),
+            transport: TransportKind::Tailcat,
+            expires_at_ms: Some(invite.expires_at),
+        },
     })
 }
 
@@ -237,13 +302,16 @@ async fn redeem(base_url: &str, code: &str, label: &str) -> Result<Grant, PairEr
     })
 }
 
-/// One completed pairing: the stored record's raw material.
+/// One completed pairing: the stored record's raw material, plus the live
+/// route the first dial reuses (a Tailcat pairing hands its open tunnel
+/// on, so the first connect does not handshake twice).
 #[derive(Clone)]
 pub(crate) struct Redeemed {
     pub session: PairedSession,
     pub credential: String,
     pub base_url: String,
-    pub endpoint: String,
+    pub transport: EngineTransport,
+    pub route: Arc<Route>,
 }
 
 impl std::fmt::Debug for Redeemed {
@@ -253,26 +321,58 @@ impl std::fmt::Debug for Redeemed {
             .field("session", &self.session)
             .field("credential", &"[redacted]")
             .field("base_url", &self.base_url)
-            .field("endpoint", &self.endpoint)
+            .field("transport", &self.transport)
             .finish()
     }
 }
 
-/// Parse, redeem, and compute the endpoint. The caller dials.
+/// Parse and redeem; for a Tailcat invite, open the tunnel first and redeem
+/// through it. The caller dials through the returned route.
 pub(crate) async fn redeem_pairing(
     pairing_url: &str,
     device_name: &str,
+    opener: &Arc<dyn TunnelOpener>,
 ) -> Result<Redeemed, PairError> {
-    let parsed = parse(pairing_url)?;
     let label = sanitize_label(device_name);
-    let grant = redeem(&parsed.base_url, &parsed.code, &label).await?;
-    let endpoint = websocket_endpoint(&parsed.base_url);
-    Ok(Redeemed {
-        session: grant.session,
-        credential: grant.credential,
-        base_url: parsed.base_url,
-        endpoint,
-    })
+    match parse_any(pairing_url, crate::engines::now_ms())? {
+        Parsed::Direct(parsed) => {
+            let grant = redeem(&parsed.base_url, &parsed.code, &label).await?;
+            let route = Route::for_record(&parsed.base_url, &EngineTransport::Direct, opener);
+            Ok(Redeemed {
+                session: grant.session,
+                credential: grant.credential,
+                base_url: parsed.base_url,
+                transport: EngineTransport::Direct,
+                route,
+            })
+        }
+        Parsed::Tailcat(invite) => {
+            tracing::info!(
+                address = %crate::tailcat::describe(&invite.address),
+                "pairing over Tailcat"
+            );
+            // An empty identity: the library generates this phone's key,
+            // which the record then keeps for every reconnect.
+            let route = Arc::new(Route::Tailcat(TailcatRoute::new(
+                invite.address.clone(),
+                String::new(),
+                opener.clone(),
+            )));
+            let base = route.http_base().await?;
+            let grant = redeem(&base, &invite.token, &label).await?;
+            let transport = EngineTransport::Tailcat {
+                address: invite.address.clone(),
+                client_state: route.client_state().unwrap_or_default(),
+            };
+            Ok(Redeemed {
+                session: grant.session,
+                credential: grant.credential,
+                base_url: crate::tailcat::display_handle(&invite.address),
+                transport,
+                route,
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -313,12 +413,91 @@ mod tests {
         ));
     }
 
+    const NOW: i64 = 1_800_000_000_000;
+    const ADDRESS: &str = "tcSECRETaddress0123456789_-SECRET";
+    const TOKEN: &str = "SECRETtoken-123";
+
+    fn invite(expires_at: i64) -> String {
+        TailcatInvite::new(ADDRESS, TOKEN, expires_at)
+            .unwrap()
+            .encode()
+            .unwrap()
+    }
+
     #[test]
-    fn tailcat_invites_are_refused_before_url_parsing() {
+    fn a_tailcat_invite_parses_to_a_secret_free_target() {
+        let target = parse_pairing_url_at(&format!("  {}\n", invite(NOW + 300_000)), NOW).unwrap();
+        assert_eq!(target.transport, TransportKind::Tailcat);
+        assert_eq!(target.host, "Tailcat");
+        assert_eq!(target.base_url, crate::tailcat::display_handle(ADDRESS));
+        assert_eq!(target.expires_at_ms, Some(NOW + 300_000));
+        let printed = format!("{target:?}");
+        assert!(!printed.contains("SECRET"), "{printed}");
+        // A pairing link stays Direct with no expiry.
+        let link = parse_pairing_url_at("http://h:1/pair#token=abc", NOW).unwrap();
+        assert_eq!(link.transport, TransportKind::Direct);
+        assert_eq!(link.expires_at_ms, None);
+    }
+
+    #[test]
+    fn tailcat_expiry_allows_thirty_seconds_of_clock_skew() {
+        // Within the grace: still tried (the engine decides).
+        assert!(parse_pairing_url_at(&invite(NOW - TAILCAT_EXPIRY_GRACE_MS + 1), NOW).is_ok());
+        // Past the grace: expired.
         assert_eq!(
-            parse_pairing_url("roboco-tailcat:invite-xyz"),
-            Err(PairError::TailcatUnsupported)
+            parse_pairing_url_at(&invite(NOW - TAILCAT_EXPIRY_GRACE_MS), NOW),
+            Err(PairError::TailcatExpired)
         );
+        assert_eq!(
+            parse_pairing_url_at(&invite(NOW - 3_600_000), NOW),
+            Err(PairError::TailcatExpired)
+        );
+    }
+
+    #[test]
+    fn junk_tailcat_invites_are_invalid_and_never_echo_their_input() {
+        for junk in [
+            "roboco-tailcat:",
+            "roboco-tailcat:SECRET!!",
+            "roboco-tailcat:eyJhIjoxfQ",
+            "roboco-tailcat:invite-xyz-SECRET",
+        ] {
+            match parse_pairing_url_at(junk, NOW) {
+                Err(PairError::InvalidUrl { message }) => {
+                    assert!(!message.contains("SECRET"), "{junk:?} -> {message}")
+                }
+                other => panic!("{junk:?} gave {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tailcat_errors_map_to_pair_errors() {
+        assert_eq!(
+            PairError::from(TailcatError::Unavailable("missing".into())),
+            PairError::TailcatUnavailable {
+                message: "missing".into()
+            }
+        );
+        assert_eq!(
+            PairError::from(TailcatError::Unreachable("down".into())),
+            PairError::TailcatUnreachable {
+                message: "down".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_library_a_tailcat_pairing_is_unavailable() {
+        let opener: Arc<dyn TunnelOpener> =
+            Arc::new(crate::tailcat::LibraryOpener::new(None, None));
+        let far_future = crate::engines::now_ms() + 3_600_000;
+        match redeem_pairing(&invite(far_future), "Pixel", &opener).await {
+            Err(PairError::TailcatUnavailable { message }) => {
+                assert!(!message.contains("SECRET"), "{message}")
+            }
+            other => panic!("expected TailcatUnavailable, got {:?}", other.err()),
+        }
     }
 
     #[test]

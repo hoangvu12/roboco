@@ -4,8 +4,9 @@
 //!
 //! This is the Rust twin of `@roboco/engine-client` (web). The desktop UI
 //! links it through `roboco-ui`; the Android mobile core links it directly.
-//! No GPUI crate and (outside the Tailcat pairing shim that lives in
-//! `roboco-ui`) no `roboco-engine` dependency may appear in its tree.
+//! No GPUI crate and no `roboco-engine` dependency may appear in its tree.
+//! The desktop's Tailcat pairing shim lives in `roboco-ui`; the phone's
+//! Tailcat route lives in `roboco-mobile-client` (android-next#02).
 
 pub mod cache;
 pub mod registry;
@@ -110,8 +111,9 @@ pub struct ResolvedPairing {
 }
 
 /// Claims non-URL pairing inputs (e.g. `roboco-tailcat:` invites) for the
-/// registry. Implementations live where their machinery lives: the Tailcat
-/// resolver is desktop-only and stays in `roboco-ui`.
+/// registry. Implementations live where their machinery lives: the desktop's
+/// Tailcat resolver stays in `roboco-ui`; the phone pairs and reconnects
+/// over Tailcat through its own route in `roboco-mobile-client`.
 pub trait PairingResolver: Send + Sync {
     /// Some(..) when this resolver owns `input`; None lets the next resolver /
     /// the URL parser try.

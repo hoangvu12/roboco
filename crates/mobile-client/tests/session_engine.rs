@@ -1070,6 +1070,7 @@ impl Rig {
                 paired_at_ms: 0,
                 device_id: view.device_id,
                 name: None,
+                transport: Default::default(),
             })
             .unwrap()
     }

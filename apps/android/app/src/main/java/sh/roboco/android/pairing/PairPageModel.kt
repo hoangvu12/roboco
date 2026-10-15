@@ -89,16 +89,19 @@ interface PairedEngineSink {
 /**
  * Maps a redeem failure to the error line (the web's
  * `describeRedeemError`, `web/packages/app/src/lib/pairing-errors.ts:10-28`,
- * with the tailcat refusal added): the three fixed sentences, the parse
- * reason verbatim, and `pair_error_failed` for everything else —
- * `Failed`, `Storage` and any non-[PairException]. The store-failure
+ * plus the three Tailcat failures of android-next#02): the fixed
+ * sentences, the parse reason verbatim, and `pair_error_failed` for
+ * everything else — `Failed`, `Storage` and any non-[PairException]. The
+ * Tailcat reasons are never shown (fixed copy only). The store-failure
  * copy is **not** produced here; `submit` emits it directly.
  */
 fun describePairError(e: Throwable): PairMessage = when (e) {
     is PairException.Refused -> PairMessage.Res(R.string.pair_error_refused)
     is PairException.Unreachable -> PairMessage.Res(R.string.pair_error_unreachable)
     is PairException.InvalidUrl -> PairMessage.Verbatim(e.reason)
-    is PairException.TailcatUnsupported -> PairMessage.Res(R.string.pair_error_tailcat)
+    is PairException.TailcatExpired -> PairMessage.Res(R.string.pair_error_tailcat_expired)
+    is PairException.TailcatUnreachable -> PairMessage.Res(R.string.pair_error_tailcat_unreachable)
+    is PairException.TailcatUnavailable -> PairMessage.Res(R.string.pair_error_tailcat_unavailable)
     else -> PairMessage.Res(R.string.pair_error_failed)
 }
 

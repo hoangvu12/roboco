@@ -22,6 +22,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONException
+import org.json.JSONObject
+import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 
 /**
@@ -35,6 +38,14 @@ import uniffi.roboco_core.PairedEngine
  * engine id by AAD. Only the credential is encrypted: a lost key yields
  * `credential == ""` → `Parked{Revoked}` → "Pair again", never a
  * vanished engine and never a crash.
+ *
+ * A Tailcat engine (android-next#02) also has `tc:<engineId>` =
+ * Base64(AES-GCM(JSON `{"address","clientState"}`)) under the same key with
+ * its own AAD (`…v1:tailcat:<engineId>`), so a credential blob can never be
+ * swapped in for it. Its metadata says only `"transport":"tailcat"`. If
+ * that blob is missing or undecryptable, the engine loads with an empty
+ * credential (it parks; "Pair again") — it is never dialed without its
+ * address.
  *
  * All suspend calls run on [io] and are serialized by one mutex, which
  * also covers `pendingPins` and the encrypt-then-edit pair. Metadata is
@@ -86,7 +97,20 @@ class PairedEngineStore(
                     }
                     else -> decryptCredential(blob, meta.engineId)
                 }
-                meta.toPaired(credential)
+                when (meta.transport) {
+                    TransportKind.DIRECT -> meta.toPaired(credential, EngineTransport.Direct)
+                    TransportKind.TAILCAT -> {
+                        val route = prefs[tailcatKey(meta.engineId)]
+                            ?.let { decryptTailcat(it, meta.engineId) }
+                        if (route == null) {
+                            Log.w(TAG, "engine tailcat route unreadable engine=${meta.engineId}")
+                            // No address: park as revoked ("Pair again").
+                            meta.toPaired("", EngineTransport.Tailcat(address = "", clientState = ""))
+                        } else {
+                            meta.toPaired(credential, route)
+                        }
+                    }
+                }
             }
         }
     }
@@ -112,6 +136,20 @@ class PairedEngineStore(
             } catch (error: Exception) {
                 throw CredentialStoreException(error)
             }
+            val tailcat = engine.transport as? EngineTransport.Tailcat
+            val tailcatBase64: String? = tailcat?.let { route ->
+                val json = JSONObject()
+                    .put("address", route.address)
+                    .put("clientState", route.clientState)
+                    .toString()
+                try {
+                    Base64.getEncoder().encodeToString(
+                        cipher.encrypt(json.toByteArray(Charsets.UTF_8), tailcatAad(engine.engineId)),
+                    )
+                } catch (error: Exception) {
+                    throw CredentialStoreException(error)
+                }
+            }
             val stored = mergePendingPin(engine)
             val base64 = Base64.getEncoder().encodeToString(blob)
             val meta = stored.meta()
@@ -123,6 +161,12 @@ class PairedEngineStore(
                     if (index >= 0) metas[index] = meta else metas.add(meta)
                     rewrite(prefs, metas)
                     prefs[credKey(stored.engineId)] = base64
+                    // A re-pair may switch Tailcat → direct: drop the old route.
+                    if (tailcatBase64 != null) {
+                        prefs[tailcatKey(stored.engineId)] = tailcatBase64
+                    } else {
+                        prefs.remove(tailcatKey(stored.engineId))
+                    }
                     writtenIds = metas.mapTo(HashSet()) { it.engineId }
                 }
             } catch (error: IOException) {
@@ -232,12 +276,26 @@ class PairedEngineStore(
             ""
         }
 
-    /** Writes the metadata list and drops `cred:` keys with no entry left. */
+    /** The `tc:` blob → the route, or `null` when it does not decrypt or parse. */
+    private fun decryptTailcat(base64: String, engineId: String): EngineTransport.Tailcat? =
+        try {
+            val blob = Base64.getDecoder().decode(base64)
+            val json = JSONObject(String(cipher.decrypt(blob, tailcatAad(engineId)), Charsets.UTF_8))
+            val address = json.get("address") as? String ?: throw JSONException("address")
+            val clientState = json.get("clientState") as? String ?: throw JSONException("clientState")
+            if (address.isEmpty()) null else EngineTransport.Tailcat(address = address, clientState = clientState)
+        } catch (error: Exception) {
+            Log.w(TAG, "engine tailcat route unreadable engine=$engineId cause=${error.javaClass.simpleName}")
+            null
+        }
+
+    /** Writes the metadata list and drops `cred:`/`tc:` keys with no entry left. */
     private fun rewrite(prefs: MutablePreferences, metas: List<EngineMeta>) {
         prefs[ENGINES] = EngineMetaJson.encode(metas)
         val liveIds = metas.mapTo(HashSet()) { it.engineId }
         for (name in prefs.asMap().keys.map { it.name }) {
-            if (name.startsWith(CRED_PREFIX) && name.substring(CRED_PREFIX.length) !in liveIds) {
+            val prefix = SECRET_PREFIXES.firstOrNull { name.startsWith(it) } ?: continue
+            if (name.substring(prefix.length) !in liveIds) {
                 prefs.remove(stringPreferencesKey(name))
             }
         }
@@ -255,9 +313,15 @@ class PairedEngineStore(
 
     private fun credKey(engineId: String) = stringPreferencesKey("$CRED_PREFIX$engineId")
 
+    private fun tailcatKey(engineId: String) = stringPreferencesKey("$TAILCAT_PREFIX$engineId")
+
     /** Must stay equal to `KeystoreSecretCipher.ALIAS` (the ticket reuses the alias here). */
     private fun aad(engineId: String): ByteArray =
         "roboco.engine-credentials.v1:$engineId".toByteArray(Charsets.UTF_8)
+
+    /** Distinct from [aad]: a `cred:` blob never decrypts as a `tc:` one. */
+    private fun tailcatAad(engineId: String): ByteArray =
+        "roboco.engine-credentials.v1:tailcat:$engineId".toByteArray(Charsets.UTF_8)
 
     companion object {
         /** Required by `PreferenceDataStoreFactory`. */
@@ -265,6 +329,8 @@ class PairedEngineStore(
 
         private const val TAG = "Roboco"
         private const val CRED_PREFIX = "cred:"
+        private const val TAILCAT_PREFIX = "tc:"
+        private val SECRET_PREFIXES = listOf(CRED_PREFIX, TAILCAT_PREFIX)
         private val ENGINES = stringPreferencesKey("engines")
 
         /**

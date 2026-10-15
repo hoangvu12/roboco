@@ -128,6 +128,9 @@ class CoreStartup(
                     platform = "android",
                     appVersion = BuildConfig.VERSION_NAME,
                     showMockHarness = BuildConfig.DEBUG,
+                    // android-next#02: libroboco_tailcat.so, dlopen'ed by
+                    // the core on the first Tailcat dial.
+                    nativeLibDir = context.applicationInfo.nativeLibraryDir,
                 )
                 // 3. Never log `engines`; the constructor never dials.
                 val client = try {

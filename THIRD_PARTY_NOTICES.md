@@ -33,6 +33,10 @@ The complete pinned Go dependency list, licenses and patent notices shipped with
 Linux and Windows packages are under `licenses/tailcat/` (source:
 `adapters/roboco-tailcat/licenses/bundle/`).
 
+The Android APKs also bundle the adapter, built in-process as
+`libroboco_tailcat.so` (`adapters/roboco-tailcat/capi`, android-next#02);
+the app's Licenses screen carries the same Go dependency notices.
+
 
 ## Symbols
 

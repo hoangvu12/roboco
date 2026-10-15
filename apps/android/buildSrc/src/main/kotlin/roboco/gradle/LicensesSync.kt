@@ -3,6 +3,7 @@ package roboco.gradle
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
@@ -40,6 +41,21 @@ abstract class LicensesSync : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NAME_ONLY)
     abstract val spdxFiles: ConfigurableFileCollection
 
+    /**
+     * The Tailcat adapter's Go licence bundle
+     * (`adapters/roboco-tailcat/licenses/bundle`: `DEPENDENCIES.txt`,
+     * `go/`, `modules/`), staged under `licenses/go/` with its layout kept
+     * — the APK ships `libroboco_tailcat.so` (android-next#02).
+     */
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val goBundleDir: DirectoryProperty
+
+    /** Extra Go-side licences staged flat beside the bundle (`LICENSE.kratos`). */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val goLicenseFiles: ConfigurableFileCollection
+
     /** The generated assets root; notices land in `licenses/`, SPDX texts in `licenses/spdx/`. */
     @get:OutputDirectory
     abstract val assetsDir: DirectoryProperty
@@ -62,6 +78,13 @@ abstract class LicensesSync : DefaultTask() {
             for (file in spdxSources) {
                 file.copyTo(spdx.resolve(file.name), overwrite = true)
             }
+        }
+        // Same reset rule for the Go bundle: nothing stale survives.
+        val go = licenses.resolve("go")
+        go.deleteRecursively()
+        goBundleDir.get().asFile.copyRecursively(go, overwrite = true)
+        for (file in goLicenseFiles) {
+            file.copyTo(go.resolve(file.name), overwrite = true)
         }
     }
 }

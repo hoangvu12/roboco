@@ -37,6 +37,7 @@ pub mod pairing;
 pub mod projects;
 pub mod runtime;
 pub mod session;
+pub mod tailcat;
 pub mod timings;
 pub mod workspace;
 
@@ -59,7 +60,8 @@ use tokio_util::sync::CancellationToken;
 
 pub use engines::{
     Connectivity, ConnectivityState, EngineDiagnostics, EngineHandle, EngineSnapshot, EngineState,
-    EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason, TranscriptConnection,
+    EngineTransport, EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason,
+    TranscriptConnection, TransportKind,
 };
 pub use events::{ClientEvent, ClientListener};
 pub use notify::{NotifyListener, RunActivity, RunRef, SessionEvent};
@@ -106,6 +108,10 @@ pub struct ClientConfig {
     /// Offer the mock harness in catalogs (debug builds and tests set it;
     /// the mock is a test rig, never a production picker entry).
     pub show_mock_harness: bool,
+    /// Where `libroboco_tailcat` lives (Android:
+    /// `applicationInfo.nativeLibraryDir`; host tests: the xtask's host
+    /// directory). `None`: Tailcat is unavailable (android-next#02).
+    pub native_lib_dir: Option<PathBuf>,
 }
 
 /// The client error surface. `HostUnavailable` = the engine is not
@@ -173,6 +179,9 @@ pub(crate) struct ClientInner {
     /// The notification driver (ticket 28): baselines, link watches and
     /// the send ledger; silent until a listener is installed.
     pub(crate) notify: Arc<notify::NotifyHub>,
+    /// Opens Tailcat tunnels (android-next#02): the library opener in
+    /// production, a fake in route tests.
+    tailcat: Arc<dyn tailcat::TunnelOpener>,
 }
 
 /// The mobile client. Cheap to clone. Create once per app run with the
@@ -203,6 +212,22 @@ impl Client {
         listener: Arc<dyn ClientListener>,
         timings: Timings,
     ) -> Result<Arc<Self>, ClientError> {
+        let opener: Arc<dyn tailcat::TunnelOpener> = Arc::new(tailcat::LibraryOpener::new(
+            config.native_lib_dir.clone(),
+            None,
+        ));
+        Self::new_with_opener(config, engines, listener, timings, opener)
+    }
+
+    /// Test seam: a custom Tailcat tunnel opener (no Go library needed).
+    #[doc(hidden)]
+    pub fn new_with_opener(
+        config: ClientConfig,
+        engines: Vec<PairedEngine>,
+        listener: Arc<dyn ClientListener>,
+        timings: Timings,
+        opener: Arc<dyn tailcat::TunnelOpener>,
+    ) -> Result<Arc<Self>, ClientError> {
         std::fs::create_dir_all(&config.data_dir).map_err(|error| ClientError::Storage {
             message: error.to_string(),
         })?;
@@ -228,7 +253,9 @@ impl Client {
                 crate::runtime::shared()
                     .spawn_blocking(move || crate::cache::prune_transcripts(&cache, &engine_id));
             }
-            entries.push(pending_entry(paired, handle, rows, sidebar));
+            let route =
+                engines::route::Route::for_record(&paired.base_url, &paired.transport, &opener);
+            entries.push(pending_entry(paired, route, handle, rows, sidebar));
         }
         // Built before the literal: `timings` moves into its field below.
         let notify = notify::NotifyHub::new(timings.notify.clone());
@@ -254,6 +281,7 @@ impl Client {
                 attachments::ATTACHMENT_CACHE_BUDGET,
             )),
             notify,
+            tailcat: opener,
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
         let _ = inner.workspace.set(workspace);
@@ -283,18 +311,23 @@ impl Client {
         pairing_url: &str,
         replace_engine_id: Option<String>,
     ) -> Result<PairedEngine, PairError> {
-        let redeemed = pairing::redeem_pairing(pairing_url, &self.inner.config.device_name).await?;
-        let label = pairing::sanitize_label(&self.inner.config.device_name);
-        // Dial and pin. A failed dial still returns the record: the
-        // credential is already minted and single-use codes cannot be
-        // re-redeemed; the engine shows `Reconnecting` and the first
-        // successful connect pins it.
-        let (initial_feed, device_id) = match roboco_rpc::connect_ws_authenticated(
-            &redeemed.endpoint,
-            &redeemed.credential,
+        let redeemed = pairing::redeem_pairing(
+            pairing_url,
+            &self.inner.config.device_name,
+            &self.inner.tailcat,
         )
-        .await
-        {
+        .await?;
+        let label = pairing::sanitize_label(&self.inner.config.device_name);
+        // Dial and pin — through the redeemed route, so a Tailcat pairing
+        // reuses the tunnel it redeemed through. A failed dial still
+        // returns the record: the credential is already minted and
+        // single-use codes cannot be re-redeemed; the engine shows
+        // `Reconnecting` and the first successful connect pins it.
+        let first_dial = engines::route::DialTarget {
+            route: redeemed.route.clone(),
+            credential: redeemed.credential.clone(),
+        };
+        let (initial_feed, device_id) = match first_dial.connect().await {
             Ok(client) => {
                 let client = Arc::new(client);
                 let info: Option<EngineInfo> = match tokio::time::timeout(
@@ -353,7 +386,12 @@ impl Client {
                     let engine_id = entry.paired.engine_id.clone();
                     // Replace the pairing material; the engine id (and so
                     // every scoped chat id and the cache directory) stays.
+                    // A re-pair may switch Direct <-> Tailcat: the old
+                    // route (and any tunnel) goes.
                     entry.paired.base_url = redeemed.base_url.clone();
+                    entry.paired.transport = redeemed.transport.clone();
+                    let old_route = std::mem::replace(&mut entry.route, redeemed.route.clone());
+                    old_route.invalidate();
                     entry.paired.credential = redeemed.credential.clone();
                     entry.paired.session_id = redeemed.session.id.clone();
                     entry.paired.label = label.clone();
@@ -405,6 +443,7 @@ impl Client {
                     paired_at_ms: engines::now_ms(),
                     device_id: device_id.clone(),
                     name: None,
+                    transport: redeemed.transport.clone(),
                 };
                 let handle = EngineCacheHandle::new(
                     record.engine_id.clone(),
@@ -415,6 +454,7 @@ impl Client {
                 let mut state = lock(&self.inner.engines);
                 state.entries.push(pending_entry(
                     record.clone(),
+                    redeemed.route.clone(),
                     handle,
                     CachedRows::default(),
                     None,
@@ -467,6 +507,7 @@ impl Client {
         };
         removed.cancel.cancel();
         removed.task.abort();
+        removed.route.invalidate();
         let _ = removed.task.await;
         // No new write can register once the engine task is cancelled;
         // joining the drained writes keeps an in-flight save from
@@ -644,7 +685,12 @@ impl Client {
     /// cancelled, and no dial attempts run. `true` resets the backoff and
     /// dials every engine now.
     pub fn set_network_online(&self, online: bool) {
-        self.inner.network.send_replace(online);
+        let was_online = self.inner.network.send_replace(online);
+        if online && !was_online {
+            // Back from offline: the interface may have changed under the
+            // Tailcat tunnels (android-next#02).
+            self.drop_tailcat_tunnels();
+        }
         if online {
             let state = lock(&self.inner.engines);
             for entry in &state.entries {
@@ -660,6 +706,26 @@ impl Client {
             }
         }
         publish(&self.inner);
+    }
+
+    /// The OS default network changed (another `Network`, or its link
+    /// properties): drop every Tailcat tunnel so the next dial binds the new
+    /// interface, and dial those engines now. Android's netmon only polls
+    /// every 10 minutes, so it may not notice by itself. Direct engines are
+    /// untouched.
+    pub fn set_network_changed(&self) {
+        self.drop_tailcat_tunnels();
+        let state = lock(&self.inner.engines);
+        for entry in state.entries.iter().filter(|entry| entry.route.is_tailcat()) {
+            let _ = entry.command_tx.send(EngineCommand::DialNow);
+        }
+    }
+
+    fn drop_tailcat_tunnels(&self) {
+        let state = lock(&self.inner.engines);
+        for entry in &state.entries {
+            entry.route.invalidate();
+        }
     }
 
     /// The app is foreground: probe every connected feed immediately (this
@@ -712,6 +778,7 @@ impl Client {
         for entry in &state.entries {
             entry.cancel.cancel();
             entry.task.abort();
+            entry.route.invalidate();
         }
     }
 
@@ -896,6 +963,7 @@ fn finished_task() -> tokio::task::JoinHandle<()> {
 /// before `start_supervision` fills in the real ones.
 fn pending_entry(
     paired: PairedEngine,
+    route: Arc<engines::route::Route>,
     cache: EngineCacheHandle,
     rows: CachedRows,
     sidebar: Option<roboco_proto::SidebarStateSnapshot>,
@@ -905,6 +973,7 @@ fn pending_entry(
     let (command_tx, _command_rx) = mpsc::unbounded_channel();
     EngineEntry {
         paired,
+        route,
         state: EngineState::Connecting,
         last_error: None,
         retry_at_ms: None,
@@ -1043,6 +1112,7 @@ pub(crate) fn engine_view(entry: &EngineEntry) -> EngineView {
         name,
         host,
         base_url: entry.paired.base_url.clone(),
+        transport: entry.paired.transport.kind(),
         device_id: entry.paired.device_id.clone(),
         platform: engine_device.map(|device| device.platform.clone()),
         version,
@@ -1160,6 +1230,7 @@ mod tests {
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
                 show_mock_harness: true,
+                native_lib_dir: None,
             },
             Vec::new(),
             Arc::new(Recorder(seen)),
@@ -1170,6 +1241,102 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         // No engines → no events (not even an initial ConnectivityChanged).
         assert!(events.lock().unwrap().is_empty());
+        client.shutdown();
+    }
+
+    /// An opener whose tunnels never come up (android-next#02).
+    struct DeadOpener(std::sync::atomic::AtomicUsize);
+
+    impl tailcat::TunnelOpener for DeadOpener {
+        fn open(
+            &self,
+            _address: &str,
+            _client_state: &str,
+        ) -> Result<tailcat::OpenedTunnel, tailcat::TailcatError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(tailcat::TailcatError::Unreachable(
+                "Tailcat client startup failed".into(),
+            ))
+        }
+    }
+
+    fn tailcat_record(credential: &str) -> PairedEngine {
+        PairedEngine {
+            engine_id: "e-tailcat".into(),
+            base_url: tailcat::display_handle("tcSECRETaddress"),
+            credential: credential.into(),
+            session_id: "s".into(),
+            label: "Pixel 9".into(),
+            paired_at_ms: 0,
+            device_id: None,
+            name: None,
+            transport: EngineTransport::Tailcat {
+                address: "tcSECRETaddress".into(),
+                client_state: "state".into(),
+            },
+        }
+    }
+
+    fn tailcat_client(
+        dir: &std::path::Path,
+        record: PairedEngine,
+        opener: Arc<DeadOpener>,
+    ) -> Arc<Client> {
+        Client::new_with_opener(
+            ClientConfig {
+                data_dir: dir.to_owned(),
+                device_name: "Pixel 9".into(),
+                platform: "android".into(),
+                app_version: "0.9.2".into(),
+                show_mock_harness: true,
+                native_lib_dir: None,
+            },
+            vec![record],
+            Arc::new(NullListener),
+            Timings::default(),
+            opener,
+        )
+        .unwrap()
+    }
+
+    fn wait_for_engine(client: &Client, done: impl Fn(&EngineView) -> bool) -> EngineView {
+        for _ in 0..100 {
+            if let Some(view) = client.engines().into_iter().find(|view| done(view)) {
+                return view;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("engine never reached the state: {:?}", client.engines());
+    }
+
+    #[test]
+    fn a_tailcat_route_error_reconnects_and_never_parks() {
+        let dir = tempfile::tempdir().unwrap();
+        let opener = Arc::new(DeadOpener(Default::default()));
+        let client = tailcat_client(dir.path(), tailcat_record("credential"), opener.clone());
+        let view = wait_for_engine(&client, |view| view.state == EngineState::Reconnecting);
+        assert!(!matches!(view.state, EngineState::Parked { .. }));
+        assert_eq!(view.transport, TransportKind::Tailcat);
+        let error = view.last_error.unwrap_or_default();
+        assert!(error.contains("Tailcat"), "{error}");
+        assert!(!error.contains("SECRET"), "{error}");
+        assert!(!view.base_url.contains("SECRET"));
+        assert!(opener.0.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        client.shutdown();
+    }
+
+    #[test]
+    fn a_tailcat_record_without_its_credential_parks_without_opening() {
+        let dir = tempfile::tempdir().unwrap();
+        let opener = Arc::new(DeadOpener(Default::default()));
+        let client = tailcat_client(dir.path(), tailcat_record(""), opener.clone());
+        wait_for_engine(&client, |view| {
+            view.state
+                == EngineState::Parked {
+                    reason: ParkReason::Revoked,
+                }
+        });
+        assert_eq!(opener.0.load(std::sync::atomic::Ordering::SeqCst), 0);
         client.shutdown();
     }
 }

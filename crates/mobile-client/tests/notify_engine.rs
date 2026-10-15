@@ -263,6 +263,7 @@ async fn notify_rig() -> Rig {
             platform: "android".into(),
             app_version: env!("CARGO_PKG_VERSION").into(),
             show_mock_harness: true,
+            native_lib_dir: None,
         },
         Vec::new(),
         Arc::new(NullListener),

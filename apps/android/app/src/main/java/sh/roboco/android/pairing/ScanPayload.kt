@@ -15,9 +15,9 @@ sealed interface ScanVerdict {
     data object Foreign : ScanVerdict
 
     /**
-     * A pairing URL (or a Tailcat invite, which the Pair page refuses with
-     * its own sentence) or an unwrapped `roboco://pair#url=…` — accept,
-     * close, auto-submit.
+     * A pairing URL, a Tailcat invite (redeemed through the in-process
+     * Tailcat tunnel, android-next#02) or an unwrapped
+     * `roboco://pair#url=…` — accept, close, auto-submit.
      */
     data class Pairing(val url: String) : ScanVerdict
 }
@@ -34,8 +34,9 @@ sealed interface ScanVerdict {
  * 2b. any `isWhitespace()`/`isISOControl()` char after the trim/unwrap →
  *    [ScanVerdict.Foreign] (a hidden newline must not fill the field);
  * 3. starts with `roboco-tailcat:` (case-sensitive, Rust's
- *    `INVITE_PREFIX`, `crates/engine/src/tailcat.rs:41`) →
- *    [ScanVerdict.Pairing] — the Pair page shows its Tailcat refusal;
+ *    `INVITE_PREFIX`, `crates/proto/src/tailcat.rs`) →
+ *    [ScanVerdict.Pairing] — the Pair page pairs it over Tailcat
+ *    (android-next#02);
  * 4. [isPairingUrl] (ticket 72's `PairingBackend.parse` != null) →
  *    [ScanVerdict.Pairing];
  * 5. otherwise → [ScanVerdict.Foreign].

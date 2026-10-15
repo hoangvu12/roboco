@@ -326,4 +326,47 @@ class LicensesParseTest {
             parseRustCrates(json).map { it.id },
         )
     }
+
+    // android-next#02: the Tailcat transport's Go bundle ------------------
+
+    @Test
+    fun goDependenciesBecomeOneEntryPerModuleWithTheirTexts() {
+        val table = listOf(
+            "module\tversion\tlicense_files",
+            "github.com/tailscale/tailcat\tv0.6.1\tmodules/028-tailcat-LICENSE.txt",
+            "golang.org/x/net\tv0.59.0\tmodules/037-net-LICENSE.txt,modules/037-net-PATENTS.txt",
+            "example.com/missing\tv1.0.0\tmodules/999-missing-LICENSE.txt",
+            "Go standard library/runtime\tgo1.27.1\tgo/LICENSE.txt,go/PATENTS.txt",
+            "",
+        ).joinToString("\n")
+        val files = mapOf(
+            "modules/028-tailcat-LICENSE.txt" to "BSD-3 tailcat",
+            "modules/037-net-LICENSE.txt" to "BSD-3 x/net",
+            "modules/037-net-PATENTS.txt" to "patents x/net",
+            "go/LICENSE.txt" to "BSD-3 Go",
+            "go/PATENTS.txt" to "patents Go",
+        )
+
+        val entries = parseGoDependencies(table) { files[it] }
+
+        assertEquals(
+            listOf(
+                "go:github.com/tailscale/tailcat",
+                "go:golang.org/x/net",
+                "go:example.com/missing",
+                "go:Go standard library/runtime",
+            ),
+            entries.map { it.id },
+        )
+        assertEquals(listOf("BSD-3 x/net", "patents x/net"), entries[1].texts)
+        assertEquals("v0.59.0 \u00B7 See license file", entries[1].subtitle)
+        assertEquals(listOf("No license text is bundled for this module."), entries[2].texts)
+        assertEquals(listOf("BSD-3 Go", "patents Go"), entries[3].texts)
+    }
+
+    @Test
+    fun aMalformedGoTableYieldsNoEntries() {
+        assertTrue(parseGoDependencies("not a table") { null }.isEmpty())
+        assertTrue(parseGoDependencies("module\tversion\tlicense_files\n") { null }.isEmpty())
+    }
 }

@@ -18,7 +18,11 @@
 //! - **spare** — at most one pre-authenticated idle connection per engine
 //!   while the app is foreground; handed out first, then refilled. Closed
 //!   on background.
+//!
+//! Every dial resolves its endpoint through the engine's [`Route`](super::route::Route)
+//! (android-next#02): direct, or a loopback Tailcat tunnel opened on demand.
 
+use super::route::DialTarget;
 use super::{EngineEntry, EngineState, FEED_STREAMS, LiveClient, ParkReason, display_name};
 use crate::cache::EngineCacheHandle;
 use crate::clock::SessionClock;
@@ -171,8 +175,7 @@ async fn run(mut ctx: EngineCtx) {
             prior => {
                 let _ = prior; // A closed pair-time client: dial fresh.
                 let target = entry_pair(&ctx);
-                let dial =
-                    roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential);
+                let dial = target.connect();
                 tokio::select! {
                     _ = ctx.cancel.cancelled() => return,
                     _ = wait_offline(&ctx.network) => { continue; }
@@ -194,6 +197,12 @@ async fn run(mut ctx: EngineCtx) {
         let info = match identity(&feed, &timings).await {
             Ok(info) => info,
             Err(err) => {
+                if err == IDENTITY_TIMEOUT {
+                    // A tunnel that connects but never answers: rebuild it.
+                    if let Some(route) = entry_field(&ctx, |entry| entry.route.clone()) {
+                        route.invalidate();
+                    }
+                }
                 drop_with_retry(&mut ctx, &mut backoff, err).await;
                 continue;
             }
@@ -961,6 +970,9 @@ async fn wait_offline(network: &watch::Receiver<bool>) {
     }
 }
 
+/// The identity error a silent engine (or a dead tunnel) produces.
+const IDENTITY_TIMEOUT: &str = "Engine identity timed out";
+
 async fn identity(feed: &Arc<RpcClient>, timings: &Timings) -> Result<EngineInfo, String> {
     match tokio::time::timeout(
         timings.identity_timeout,
@@ -970,7 +982,7 @@ async fn identity(feed: &Arc<RpcClient>, timings: &Timings) -> Result<EngineInfo
     {
         Ok(Ok(info)) => Ok(info),
         Ok(Err(err)) => Err(err.to_string()),
-        Err(_) => Err("Engine identity timed out".into()),
+        Err(_) => Err(IDENTITY_TIMEOUT.into()),
     }
 }
 
@@ -1012,10 +1024,7 @@ fn verdict_for(ctx: &EngineCtx, info: &EngineInfo) -> VersionVerdict {
 
 /// Dial an auxiliary connection (calls, spares).
 async fn dial_aux(ctx: &EngineCtx) -> Result<Arc<RpcClient>, RpcError> {
-    let target = entry_pair(ctx);
-    roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential)
-        .await
-        .map(Arc::new)
+    entry_pair(ctx).connect().await.map(Arc::new)
 }
 
 /// Subscribe the constant feed watch set. Acks within `subscribe_timeout`
@@ -1081,9 +1090,7 @@ fn spawn_calls_dial(ctx: &EngineCtx, generation: u64) {
     let command_tx = command_tx_of(ctx);
     let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
-        let result = roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential)
-            .await
-            .map(Arc::new);
+        let result = target.connect().await.map(Arc::new);
         let _ = command_tx.send(EngineCommand::CallsResult { generation, result });
     });
 }
@@ -1097,7 +1104,7 @@ fn maybe_refill_spare(ctx: &EngineCtx) {
     let command_tx = command_tx_of(ctx);
     let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
-        match roboco_rpc::connect_ws_authenticated(&target.endpoint, &target.credential).await {
+        match target.connect().await {
             Ok(client) => {
                 let _ = command_tx.send(EngineCommand::StoreSpare(Arc::new(client)));
             }
@@ -1125,17 +1132,11 @@ fn command_tx_of(ctx: &EngineCtx) -> CommandSender {
     .unwrap_or_else(|| mpsc::unbounded_channel().0)
 }
 
-/// What an auxiliary dial needs — the engine's WebSocket endpoint and its
-/// credential — handed around as one thing.
-#[derive(Clone, Default)]
-pub(crate) struct DialTarget {
-    pub endpoint: String,
-    pub credential: String,
-}
-
+/// The engine's route and credential, read fresh for every dial (a re-pair
+/// swaps both).
 fn entry_pair(ctx: &EngineCtx) -> DialTarget {
     entry_field(ctx, |entry| DialTarget {
-        endpoint: entry.paired.endpoint(),
+        route: entry.route.clone(),
         credential: entry.paired.credential.clone(),
     })
     .unwrap_or_default()
@@ -1150,12 +1151,7 @@ fn spawn_aux_dial(
     reply: oneshot::Sender<Result<Arc<RpcClient>, ClientError>>,
 ) {
     crate::runtime::shared().spawn(async move {
-        let result = match roboco_rpc::connect_ws_authenticated(
-            &target.endpoint,
-            &target.credential,
-        )
-        .await
-        {
+        let result = match target.connect().await {
             Ok(client) => Ok(Arc::new(client)),
             Err(err) => {
                 if roboco_rpc::is_auth_refused(&err) {

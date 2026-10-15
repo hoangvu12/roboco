@@ -31,6 +31,10 @@ chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
+# The Tailcat transport (android-next#02): libroboco_tailcat is dlopen'ed on
+# the first Tailcat dial; sha2 derives the non-secret display handle.
+libloading = "0.8"
+sha2.workspace = true
 
 [dev-dependencies]
 roboco-engine.workspace = true

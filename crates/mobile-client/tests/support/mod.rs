@@ -194,6 +194,7 @@ pub fn test_config(data_dir: &Path) -> ClientConfig {
         app_version: env!("CARGO_PKG_VERSION").into(),
         // Tests drive mock engines: the mock harness is offered.
         show_mock_harness: true,
+        native_lib_dir: None,
     }
 }
 
