@@ -621,7 +621,8 @@ mod tests {
     /// `\r\n` → `\n` and trailing whitespace trimmed.
     #[test]
     fn licence_text_normalisation() {
-        assert_eq!(normalise_licence_text("MIT\r\n\r\n"), "MIT\n");
+        assert_eq!(normalise_licence_text("MIT\r\n\r\n"), "MIT");
+        assert_eq!(normalise_licence_text("A\r\nB\r\n"), "A\nB");
         assert_eq!(normalise_licence_text(" MIT \n\n"), " MIT");
         assert_eq!(normalise_licence_text(""), "");
     }
