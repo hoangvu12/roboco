@@ -50,6 +50,14 @@ abstract class AndroidCoreBuild : DefaultTask() {
     @get:Input
     abstract val ndkHome: Property<String>
 
+    /**
+     * Whether `libroboco_tailcat.so` (the Go Tailcat transport, android-next#02)
+     * is built into every ABI. Off: `--skip-tailcat`, and the core reports
+     * Tailcat as unavailable at pair time.
+     */
+    @get:Input
+    abstract val tailcat: Property<Boolean>
+
     /** `-ProbocoSkipCore`: skip while all outputs exist (never when missing). */
     @get:Input
     abstract val skipIfOutputsExist: Property<Boolean>
@@ -58,7 +66,7 @@ abstract class AndroidCoreBuild : DefaultTask() {
     @get:Internal
     abstract val repoRoot: DirectoryProperty
 
-    /** The workspace manifest, lock, `.cargo` config and the core's crates. */
+    /** The workspace manifest, lock, `.cargo` config, the core's crates and the Tailcat adapter. */
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.NAME_ONLY)
     abstract val sources: ConfigurableFileCollection
@@ -67,7 +75,7 @@ abstract class AndroidCoreBuild : DefaultTask() {
     @get:OutputDirectory
     abstract val kotlinDir: DirectoryProperty
 
-    /** `jniLibs/<abi>/libroboco_mobile.so` for the APK. */
+    /** `jniLibs/<abi>/libroboco_mobile.so` (and `libroboco_tailcat.so`) for the APK. */
     @get:OutputDirectory
     abstract val jniLibsDir: DirectoryProperty
 
@@ -89,7 +97,10 @@ abstract class AndroidCoreBuild : DefaultTask() {
             host.resolve("libroboco_mobile.so").isFile
         if (!hostLibrary) return false
         val jniLibs = jniLibsDir.get().asFile
-        return abis.get().all { abi -> jniLibs.resolve("$abi/libroboco_mobile.so").isFile }
+        return abis.get().all { abi ->
+            jniLibs.resolve("$abi/libroboco_mobile.so").isFile &&
+                (!tailcat.get() || jniLibs.resolve("$abi/libroboco_tailcat.so").isFile)
+        }
     }
 
     @TaskAction
@@ -109,6 +120,7 @@ abstract class AndroidCoreBuild : DefaultTask() {
                 "--languages",
                 languages.get(),
                 "--check",
+                *(if (tailcat.get()) emptyArray<String>() else arrayOf("--skip-tailcat")),
             )
             // Pin the NDK AGP resolved, not "the highest installed".
             environment("ANDROID_NDK_HOME", ndkHome.get())

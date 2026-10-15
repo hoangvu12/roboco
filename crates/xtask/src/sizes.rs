@@ -1,5 +1,6 @@
 //! `<out>/sizes.json` — the measured Android-core sizes the ticket records
-//! in the PR and CI uploads as an artifact.
+//! in the PR and CI uploads as an artifact: one entry per ABI and library
+//! (the core, and the Tailcat transport when it was built).
 //!
 //! The JSON is emitted by hand rather than through serde: the xtask stays
 //! std-only plus `anyhow`, and every string here comes from a fixed
@@ -9,10 +10,12 @@
 use crate::args::{Languages, Profile};
 use crate::elf::ElfInfo;
 
-/// One ABI's measured library.
+/// One measured library of one ABI: the core (`libroboco_mobile.so`) or
+/// the Tailcat transport (`libroboco_tailcat.so`, android-next#02).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AbiSizes {
     pub abi: String,
+    pub library: String,
     pub file_size: u64,
     pub text: u64,
     pub data: u64,
@@ -26,9 +29,10 @@ pub struct AbiSizes {
 }
 
 impl AbiSizes {
-    pub fn from_file(abi: &str, file_size: u64, info: &ElfInfo) -> Self {
+    pub fn from_file(abi: &str, library: &str, file_size: u64, info: &ElfInfo) -> Self {
         Self {
             abi: abi.to_owned(),
+            library: library.to_owned(),
             file_size,
             text: info.text,
             data: info.data,
@@ -46,8 +50,8 @@ pub struct SizesReport {
     pub profile: Profile,
     pub languages: Languages,
     pub abis: Vec<AbiSizes>,
-    /// The arm64-v8a `loro` total — the §5 measurement target; `None` when
-    /// no arm64 library was measured or its symbol table was stripped.
+    /// The arm64-v8a core's `loro` total — the §5 measurement target; `None`
+    /// when no arm64 core was measured or its symbol table was stripped.
     pub loro_symbol_bytes: Option<u64>,
 }
 
@@ -55,9 +59,11 @@ impl SizesReport {
     pub fn new(profile: Profile, languages: Languages, mut abis: Vec<AbiSizes>) -> Self {
         let loro_symbol_bytes = abis
             .iter()
-            .find(|abi| abi.abi == "arm64-v8a")
+            .find(|abi| abi.abi == "arm64-v8a" && abi.library == CORE_LIBRARY)
             .and_then(|abi| abi.loro_symbol_bytes);
-        abis.sort_by(|left, right| left.abi.cmp(&right.abi));
+        abis.sort_by(|left, right| {
+            (&left.abi, &left.library).cmp(&(&right.abi, &right.library))
+        });
         Self {
             profile,
             languages,
@@ -86,6 +92,10 @@ impl SizesReport {
         for (index, abi) in self.abis.iter().enumerate() {
             json.push_str("    {\n");
             json.push_str(&format!("      \"abi\": {},\n", json_string(&abi.abi)));
+            json.push_str(&format!(
+                "      \"library\": {},\n",
+                json_string(&abi.library)
+            ));
             json.push_str(&format!("      \"file_size\": {},\n", abi.file_size));
             json.push_str(&format!(
                 "      \"text\": {}, \"data\": {}, \"bss\": {},\n",
@@ -113,10 +123,11 @@ impl SizesReport {
     pub fn summary(&self) -> String {
         let mut table = format!(
             "android-core sizes: profile={} languages={}\n\
-             {:<12} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}\n",
+             {:<12} {:<22} {:>10} {:>10} {:>10} {:>10} {:>8} {:>12}\n",
             self.profile.as_str(),
             self.languages.as_str(),
             "abi",
+            "library",
             "file (MB)",
             "text (MB)",
             "data (MB)",
@@ -126,8 +137,9 @@ impl SizesReport {
         );
         for abi in &self.abis {
             table.push_str(&format!(
-                "{:<12} {:>10.1} {:>10.1} {:>10.1} {:>10.1} {:>8} {:>12}\n",
+                "{:<12} {:<22} {:>10.1} {:>10.1} {:>10.1} {:>10.1} {:>8} {:>12}\n",
                 abi.abi,
+                abi.library,
                 abi.file_size as f64 / 1e6,
                 abi.text as f64 / 1e6,
                 abi.data as f64 / 1e6,
@@ -142,6 +154,9 @@ impl SizesReport {
         table
     }
 }
+
+/// The core library's file name; the `loro` total is the core's alone.
+const CORE_LIBRARY: &str = "libroboco_mobile.so";
 
 fn json_string(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
@@ -186,13 +201,23 @@ mod tests {
             vec![
                 AbiSizes::from_file(
                     "x86_64",
+                    "libroboco_mobile.so",
                     20_000_000,
                     &ElfInfo {
                         loro_symbol_bytes: None,
                         ..info.clone()
                     },
                 ),
-                AbiSizes::from_file("arm64-v8a", 21_000_000, &info),
+                AbiSizes::from_file(
+                    "arm64-v8a",
+                    "libroboco_tailcat.so",
+                    9_000_000,
+                    &ElfInfo {
+                        loro_symbol_bytes: Some(0),
+                        ..info.clone()
+                    },
+                ),
+                AbiSizes::from_file("arm64-v8a", "libroboco_mobile.so", 21_000_000, &info),
             ],
         )
     }
@@ -201,7 +226,11 @@ mod tests {
     fn abis_are_sorted_and_the_arm64_loro_total_is_promoted() {
         let report = sample();
         assert_eq!(report.abis[0].abi, "arm64-v8a");
-        assert_eq!(report.abis[1].abi, "x86_64");
+        assert_eq!(report.abis[0].library, "libroboco_mobile.so");
+        assert_eq!(report.abis[1].abi, "arm64-v8a");
+        assert_eq!(report.abis[1].library, "libroboco_tailcat.so");
+        assert_eq!(report.abis[2].abi, "x86_64");
+        // The core's total, never the Tailcat library's.
         assert_eq!(report.loro_symbol_bytes, Some(900_000));
     }
 
@@ -214,6 +243,8 @@ mod tests {
         assert!(first.contains("\"languages\": \"mobile\""));
         assert!(first.contains("\"loro_symbol_bytes\": 900000"));
         assert!(first.contains("\"abi\": \"arm64-v8a\""));
+        assert!(first.contains("\"library\": \"libroboco_tailcat.so\""));
+        assert!(first.contains("\"file_size\": 9000000"));
         assert!(first.contains("\"min_load_alignment\": 16384"));
         assert!(first.contains("\"loro_symbol_bytes\": null"));
         assert!(!first.contains("target"), "no absolute paths in sizes.json");
@@ -224,6 +255,7 @@ mod tests {
         let summary = sample().summary();
         assert!(summary.contains("arm64-v8a"));
         assert!(summary.contains("x86_64"));
+        assert!(summary.contains("libroboco_tailcat.so"));
         assert!(summary.contains("profile=mobile-dist"));
         assert!(summary.contains("0x4000"));
     }

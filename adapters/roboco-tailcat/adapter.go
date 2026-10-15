@@ -1,8 +1,10 @@
 // Package tailcatnative exposes Roboco's narrow native Tailcat transport.
 //
 // It intentionally provides only one fixed Tailcat application port backed by
-// one exact IPv4 loopback target. It is suitable for gomobile binding and does
-// not install a VPN, execute commands, or expose a general-purpose forwarder.
+// one exact IPv4 loopback target. It does not install a VPN, execute
+// commands, or expose a general-purpose forwarder. The desktop drives it as
+// the roboco-tailcat subprocess; Android loads it in-process through the C
+// ABI in ./capi (libroboco_tailcat.so).
 package tailcatnative
 
 import (
@@ -113,6 +115,46 @@ func StartServerCLI(target, statePath, derpMap string, regionID int) (*Server, e
 	return startServer(target, statePath, derpMap, regionID, nil)
 }
 
+// StartClientState is StartClient with the identity held by the caller
+// instead of a file: the Android app keeps it Keystore-encrypted. An empty
+// stateJSON generates a new client key. The returned state is the identity
+// to store (unchanged when one was passed in); it is a secret like the
+// address. The listener is always 127.0.0.1 on an OS-selected port.
+func StartClientState(address, stateJSON, derpMap string) (*Client, string, error) {
+	if _, err := tailcat.ParseAddr(tailcat.Addr(address)); err != nil {
+		return nil, "", errors.New("invalid Tailcat address")
+	}
+	state, err := decodeClientState(stateJSON)
+	if err != nil {
+		return nil, "", fmt.Errorf("client identity: %w", err)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return nil, "", errors.New("client identity: could not encode state")
+	}
+	c, err := connectClient(address, "127.0.0.1:0", state, derpMap)
+	if err != nil {
+		return nil, "", err
+	}
+	return c, string(encoded), nil
+}
+
+// decodeClientState parses a caller-held client identity, or creates one
+// when stateJSON is empty. Errors never echo the input.
+func decodeClientState(stateJSON string) (*stateFile, error) {
+	if stateJSON == "" {
+		return &stateFile{Version: stateVersion, Role: "client", PrivateKey: key.NewNode()}, nil
+	}
+	var state stateFile
+	if err := json.Unmarshal([]byte(stateJSON), &state); err != nil {
+		return nil, errors.New("state is corrupt")
+	}
+	if err := validateState(&state, "client"); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
 func startClient(address, listenAddress, statePath, derpMap string) (*Client, error) {
 	if _, err := tailcat.ParseAddr(tailcat.Addr(address)); err != nil {
 		return nil, errors.New("invalid Tailcat address")
@@ -124,6 +166,12 @@ func startClient(address, listenAddress, statePath, derpMap string) (*Client, er
 	if err != nil {
 		return nil, fmt.Errorf("client identity: %w", err)
 	}
+	return connectClient(address, listenAddress, state, derpMap)
+}
+
+// connectClient is the shared body of the file-backed and caller-held
+// client paths: address and listener are already validated.
+func connectClient(address, listenAddress string, state *stateFile, derpMap string) (*Client, error) {
 	newTC := func() *tailcat.Client {
 		return &tailcat.Client{
 			Server:     tailcat.Addr(address),

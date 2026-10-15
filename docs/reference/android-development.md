@@ -14,6 +14,7 @@ Gradle properties and layout.
 | NDK | 28.2.13676358 | r28+ aligns ELF to 16 KB by default; `ndkVersion` is pinned in `app/build.gradle.kts` |
 | Rust | stable (`rust-toolchain.toml`) | targets `aarch64`/`x86_64-linux-android` |
 | cargo-ndk | 4.1.2 | `cargo xtask android-core` calls it |
+| Go | the `go` line of `adapters/roboco-tailcat/go.mod` (1.27.1) | builds `libroboco_tailcat.so`, the Tailcat transport, with the NDK clang as the cgo compiler; `GOTOOLCHAIN=auto` (the default) fetches the pinned version |
 | Gradle | 9.6.0 (wrapper) | AGP 9.4.1, Kotlin 2.4.21, Compose BOM 2026.09.00 |
 
 ## Windows setup
@@ -30,6 +31,7 @@ $sdk = "$env:ANDROID_HOME\cmdline-tools\latest\bin"
     "emulator" "system-images;android-36;google_apis;x86_64"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --version 4.1.2 --locked
+winget install GoLang.Go     # any recent Go; GOTOOLCHAIN=auto fetches go.mod's version
 # Emulator acceleration: Windows Hypervisor Platform (admin, then reboot). AEHD is sunset
 # 2026-12-31; HAXM is unused since emulator 36.2. WHPX coexists with Hyper-V/WSL2.
 Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All
@@ -46,8 +48,14 @@ so the AGENTS.md sccache note applies unchanged (add new worktree roots to
 ## Linux setup
 
 Same list without the winget/HypervisorPlatform parts: JDK 17 + 21, the SDK
-pieces through `sdkmanager`, the Rust targets, cargo-ndk. KVM instead of
-WHPX for the emulator.
+pieces through `sdkmanager`, the Rust targets, cargo-ndk, Go (from
+go.dev/dl or the distribution). KVM instead of WHPX for the emulator.
+
+`libroboco_tailcat.so` (android-next#02) is built by the same
+`cargo xtask android-core` step: `go build -buildmode=c-shared` of
+`adapters/roboco-tailcat/capi` per ABI, 16 KB-aligned and checked like the
+core. `--skip-tailcat` on the xtask, `-ProbocoSkipTailcat` on Gradle or
+`ROBOCO_ANDROID_TAILCAT=0` builds without it.
 
 ## Build, install, run
 
@@ -232,6 +240,8 @@ host (ticket 18).
   install `ndk;28.2.13676358` under `$ANDROID_HOME/ndk`. Gradle passes the
   AGP-resolved NDK directory automatically.
 - **`cargo-ndk is missing`**: `cargo install cargo-ndk --version 4.1.2 --locked`.
+- **`go is missing`** from the xtask: install Go, or build without Tailcat
+  (`-ProbocoSkipTailcat` / `ROBOCO_ANDROID_TAILCAT=0`).
 - **`UnsatisfiedLinkError` or a UniFFI checksum mismatch** at startup (or in
   `CoreLoadTest`): stale `jniLibs` — the APK's core does not match the
   generated bindings. Rebuild without `-ProbocoSkipCore`.

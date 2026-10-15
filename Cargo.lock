@@ -8411,6 +8411,7 @@ dependencies = [
 name = "roboco-proto"
 version = "0.9.2"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "image",
  "pulldown-cmark",

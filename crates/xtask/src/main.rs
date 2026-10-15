@@ -13,14 +13,16 @@
 //!                         [--abis arm64-v8a,x86_64]     default $ROBOCO_ANDROID_ABIS or both
 //!                         [--profile mobile|mobile-dist] default mobile
 //!                         [--languages mobile|all]       default mobile
-//!                         [--skip-host] [--skip-ndk] [--check]
+//!                         [--skip-host] [--skip-ndk] [--skip-tailcat] [--check]
 //!
 //! cargo xtask android-licenses --out FILE [--languages mobile|all]
 //! ```
 //!
 //! Outputs (all under `target/`, git-ignored — generated bindings are never
 //! committed): `<out>/kotlin/uniffi/roboco_core/roboco_core.kt`,
-//! `<out>/jniLibs/<abi>/libroboco_mobile.so`, `<out>/host/<libroboco_mobile
+//! `<out>/jniLibs/<abi>/libroboco_mobile.so`, `<out>/jniLibs/<abi>/
+//! libroboco_tailcat.so` (the Go Tailcat transport, android-next#02; off with
+//! `--skip-tailcat` or `ROBOCO_ANDROID_TAILCAT=0`), `<out>/host/<libroboco_mobile
 //! or roboco_mobile.dll>` (JVM/Robolectric tests), `<out>/sizes.json`.
 
 mod android_licenses;
@@ -29,6 +31,7 @@ mod elf;
 mod kotlin;
 mod ndk;
 mod sizes;
+mod tailcat;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +41,9 @@ use anyhow::{Context, bail};
 /// The library name JNA resolves (library mode): `roboco_mobile` becomes
 /// `roboco_mobile.dll` on Windows and `libroboco_mobile.so` elsewhere.
 const LIB_NAME: &str = "roboco_mobile";
+
+/// The core's file name inside `jniLibs/<abi>/`.
+const LIB_FILE_MOBILE: &str = "libroboco_mobile.so";
 
 fn main() -> anyhow::Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -86,8 +92,11 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
         languages,
         skip_host,
         skip_ndk,
+        skip_tailcat,
         check,
     } = parsed;
+    let tailcat_enabled = !skip_tailcat
+        && tailcat::enabled_from_env(std::env::var("ROBOCO_ANDROID_TAILCAT").ok().as_deref());
 
     if skip_host && skip_ndk {
         bail!(
@@ -102,10 +111,11 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     }
 
     println!(
-        "android-core: profile={} languages={} abis={} out={}",
+        "android-core: profile={} languages={} abis={} tailcat={} out={}",
         profile.as_str(),
         languages.as_str(),
         abis.join(","),
+        if tailcat_enabled { "on" } else { "off" },
         out.display()
     );
 
@@ -240,6 +250,13 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
                 ("NDK_HOME", &ndk_home.to_string_lossy()),
             ],
         )?;
+
+        // 3b. The Go Tailcat transport, beside the core in each ABI.
+        if tailcat_enabled {
+            tailcat::build(root, &ndk_home, &out, &jni_libs, &abis)?;
+        } else {
+            tailcat::remove_stale(&jni_libs, &abis)?;
+        }
     }
 
     // 4. Kotlin bindings, from the host library or (with --skip-host) the
@@ -309,7 +326,7 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     // the checks still verify any jniLibs a previous full run left behind,
     // plus the generated Kotlin and sizes.json.
     let expected_abis: &[String] = if skip_ndk { &[] } else { &abis };
-    android_core_checks(&out, profile, languages, expected_abis)
+    android_core_checks(&out, profile, languages, expected_abis, tailcat_enabled)
 }
 
 fn refuse_rustflags() -> anyhow::Result<()> {
@@ -333,6 +350,7 @@ fn android_core_checks(
     profile: args::Profile,
     languages: args::Languages,
     expected_abis: &[String],
+    tailcat_expected: bool,
 ) -> anyhow::Result<()> {
     let mut failures = Vec::new();
     let mut abi_sizes = Vec::new();
@@ -362,43 +380,63 @@ fn android_core_checks(
             failures.push(format!(
                 "jniLibs/{abi}/libroboco_mobile.so was not produced"
             ));
+        } else if tailcat_expected && !jni_libs.join(abi).join(tailcat::LIB_FILE).is_file() {
+            failures.push(format!(
+                "jniLibs/{abi}/{} was not produced",
+                tailcat::LIB_FILE
+            ));
         }
     }
     for dir in &abi_dirs {
-        let library = dir.join("libroboco_mobile.so");
-        if !library.is_file() {
-            continue;
-        }
         let abi = dir
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let bytes = match fs::read(&library) {
-            Ok(bytes) => bytes,
-            Err(error) => {
+        for (library_name, alignment_hint) in [
+            (
+                LIB_FILE_MOBILE,
+                "a RUSTFLAGS override or a non-NDK linker stripped the .cargo/config.toml rustflags",
+            ),
+            (
+                tailcat::LIB_FILE,
+                "the go build lost its -extldflags=-Wl,-z,max-page-size=16384",
+            ),
+        ] {
+            let library = dir.join(library_name);
+            if !library.is_file() {
+                continue;
+            }
+            let bytes = match fs::read(&library) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    failures.push(format!(
+                        "{abi}: could not read {}: {error}",
+                        library.display()
+                    ));
+                    continue;
+                }
+            };
+            let info = match elf::parse(&bytes) {
+                Ok(info) => info,
+                Err(error) => {
+                    failures.push(format!("{abi}/{library_name}: {error}"));
+                    continue;
+                }
+            };
+            if !info.load_alignments_ok() {
                 failures.push(format!(
-                    "{abi}: could not read {}: {error}",
-                    library.display()
+                    "{abi}/{library_name}: PT_LOAD alignment {:#x} is below 16 KB — {alignment_hint}",
+                    info.load_alignments.iter().copied().min().unwrap_or(0)
                 ));
-                continue;
             }
-        };
-        let info = match elf::parse(&bytes) {
-            Ok(info) => info,
-            Err(error) => {
-                failures.push(format!("{abi}: {error}"));
-                continue;
-            }
-        };
-        if !info.load_alignments_ok() {
-            failures.push(format!(
-                "{abi}: PT_LOAD alignment {:#x} is below 16 KB — a RUSTFLAGS \
-                 override or a non-NDK linker stripped the .cargo/config.toml rustflags",
-                info.load_alignments.iter().copied().min().unwrap_or(0)
+            abi_sizes.push(sizes::AbiSizes::from_file(
+                &abi,
+                library_name,
+                bytes.len() as u64,
+                &info,
             ));
         }
-        abi_sizes.push(sizes::AbiSizes::from_file(&abi, bytes.len() as u64, &info));
     }
 
     let kotlin_file = out

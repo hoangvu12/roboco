@@ -208,6 +208,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
         working-directory: .
@@ -270,8 +276,8 @@ jobs:
           {
             echo "### Android release APKs"
             echo ""
-            echo "| ABI | APK (bytes) | uncompressed libroboco_mobile.so (bytes) |"
-            echo "| --- | ---: | ---: |"
+            echo "| ABI | APK (bytes) | uncompressed libroboco_mobile.so (bytes) | uncompressed libroboco_tailcat.so (bytes) |"
+            echo "| --- | ---: | ---: | ---: |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           for abi in arm64-v8a x86_64; do
@@ -310,19 +316,26 @@ jobs:
             "$bt/zipalign" -c -P 16 -v 4 "$src" > /dev/null || {
               echo "::error::$src fails zipalign -c -P 16 -v 4"; exit 1; }
 
-            # The packaged core: no .debug_* sections (AGP strips with the
-            # NDK llvm-strip) and every LOAD segment 16 KB aligned.
+            # The packaged core and the Tailcat transport (android-next#02):
+            # present, no .debug_* sections (AGP strips with the NDK
+            # llvm-strip; the Go library is also built -s -w) and every LOAD
+            # segment 16 KB aligned.
             tmp="$(mktemp -d)"
-            unzip -q "$src" "lib/$abi/libroboco_mobile.so" -d "$tmp"
+            for lib in libroboco_mobile.so libroboco_tailcat.so; do
+              unzip -q "$src" "lib/$abi/$lib" -d "$tmp" || {
+                echo "::error::$src does not package lib/$abi/$lib"; exit 1; }
+              lib_path="$tmp/lib/$abi/$lib"
+              if "$readelf" -S "$lib_path" | grep -F '.debug_'; then
+                echo "::error::$src ships an unstripped $lib (#621: 45 MB instead of 18)"
+                exit 1
+              fi
+              if ! "$readelf" -l "$lib_path" | awk '$1 == "LOAD" && $NF != "0x4000" { bad = 1; print "::error::LOAD segment is not 16 KB aligned: " $0 } END { exit bad }'; then
+                echo "::error::$abi $lib has LOAD segments that are not 16 KB aligned"
+                exit 1
+              fi
+            done
             so="$tmp/lib/$abi/libroboco_mobile.so"
-            if "$readelf" -S "$so" | grep -F '.debug_'; then
-              echo "::error::$src ships an unstripped libroboco_mobile.so (#621: 45 MB instead of 18)"
-              exit 1
-            fi
-            if ! "$readelf" -l "$so" | awk '$1 == "LOAD" && $NF != "0x4000" { bad = 1; print "::error::LOAD segment is not 16 KB aligned: " $0 } END { exit bad }'; then
-              echo "::error::$abi core has LOAD segments that are not 16 KB aligned"
-              exit 1
-            fi
+            tailcat_so="$tmp/lib/$abi/libroboco_tailcat.so"
 
             # Signer certificate pin — catches an accidental key swap. The
             # digest is public information (published in the README).
@@ -354,7 +367,8 @@ jobs:
             # is reported, not gated).
             size="$(stat -c%s "$src")"
             so_size="$(stat -c%s "$so")"
-            echo "| $abi$suffix | $size | $so_size |" >> "$GITHUB_STEP_SUMMARY"
+            tailcat_size="$(stat -c%s "$tailcat_so")"
+            echo "| $abi$suffix | $size | $so_size | $tailcat_size |" >> "$GITHUB_STEP_SUMMARY"
             case "$abi" in
               arm64-v8a) budget=26214400 ;; # 25 MiB
               x86_64) budget=31457280 ;;   # 30 MiB
