@@ -2,8 +2,12 @@ package sh.roboco.android.transcript
 
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.AndroidUiDispatcher
 import androidx.compose.ui.unit.Density
+import android.view.Choreographer
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -278,21 +282,40 @@ class TranscriptStateTest {
         assertEquals(0, heard.get())
     }
 
+    /**
+     * Round 51 changed the contract this test pinned. It used to require the
+     * production constructor to throw off the main thread, but composition
+     * can legitimately build the state off main (CI 88b067d0: compose-ui-test
+     * recomposed the session route on a Dispatchers.IO worker), so that throw
+     * crashed a real flow. The constructor now resolves the MAIN looper's
+     * Choreographer from any thread; this test pins exactly that resolution.
+     * It no longer constructs the state off main: that would create the
+     * native engine from a fake TextSystem.
+     */
     @Test
-    fun theProductionConstructorRequiresTheMainThread() {
-        val failures = ArrayList<IllegalStateException>()
+    fun theMainChoreographerResolvesToTheMainLoopersInstanceFromAnyThread() {
+        // On main: the main looper's own instance. Touching Compose's main
+        // dispatcher here initialises it on main, so the worker below never
+        // takes its runBlocking(Dispatchers.Main) path while main is parked
+        // in join().
+        val onMain = TranscriptState.mainChoreographer()
+        assertSame(Choreographer.getInstance(), onMain)
+        assertSame(onMain, (AndroidUiDispatcher.Main[ContinuationInterceptor] as AndroidUiDispatcher).choreographer)
+
+        val fromWorker = AtomicReference<Any?>()
         val thread = Thread {
-            try {
-                TranscriptState(TextSystem(NoHandle))
-            } catch (failure: IllegalStateException) {
-                failures.add(failure)
-            }
+            fromWorker.set(
+                try {
+                    TranscriptState.mainChoreographer()
+                } catch (failure: Throwable) {
+                    failure
+                },
+            )
         }
         thread.start()
         thread.join()
 
-        assertEquals(1, failures.size)
-        assertEquals("TranscriptState must be created on the main thread", failures.single().message)
+        assertSame("a worker resolves the main looper's Choreographer, never throws", onMain, fromWorker.get())
     }
 
     @Test

@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.platform.AndroidUiDispatcher
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 import sh.roboco.android.core.TextEngine
@@ -22,6 +23,7 @@ import uniffi.roboco_core.LayoutListener
 import uniffi.roboco_core.RowPlacement
 import uniffi.roboco_core.TextSystem
 import uniffi.roboco_core.TranscriptView
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.math.max
 
 /**
@@ -66,9 +68,11 @@ interface RunwayHooks {
  * which read [frame] and register [FrameListener]s — 132's [rowMotion] is
  * the one exception: this class owns it so [apply] can feed it.
  *
- * Construct on the main thread (the production constructor checks it
- * before creating the Rust engine, which spawns the `roboco-layout`
- * worker). Owners pass `TextEngine.await()` from a main-dispatcher
+ * Construct from composition or any thread (round 51): the production
+ * constructor resolves the MAIN looper's Choreographer before creating the
+ * Rust engine (which spawns the `roboco-layout` worker), so frames always
+ * apply on main; everything after construction is main-thread only.
+ * Owners pass `TextEngine.await()` from a main-dispatcher
  * coroutine; the default argument is a convenience for tests and the lab.
  * [close] is mandatory for every owner — the Rust side holds the relay,
  * the relay holds this state and every frame until the worker exits.
@@ -89,10 +93,11 @@ class TranscriptState internal constructor(
     makeEngine: (TextSystem, LayoutListener) -> TranscriptView,
 ) : RunwayHooks {
     /**
-     * Production constructor: main thread only. The check runs inside
-     * `mainChoreographer()`, while the delegation arguments are evaluated —
-     * before the primary constructor creates the Rust engine — so a wrong
-     * thread never leaks a running layout worker.
+     * Production constructor. `mainChoreographer()` resolves the main
+     * looper's Choreographer while the delegation arguments are evaluated,
+     * before the primary constructor creates the Rust engine, so the relay
+     * posts every frame apply to main even when composition built this
+     * state on another thread (round 51).
      */
     constructor(text: TextSystem = TextEngine.shared) :
         this(text, ChoreographerPoster(mainChoreographer()), makeEngine = ::TranscriptView)
@@ -591,10 +596,31 @@ class TranscriptState internal constructor(
 
         private const val TAG = "RobocoTranscript"
 
-        /** Captured on main, before the engine exists. */
-        private fun mainChoreographer(): Choreographer {
-            check(Looper.getMainLooper().isCurrentThread) { "TranscriptState must be created on the main thread" }
-            return Choreographer.getInstance()
-        }
+        /**
+         * The MAIN looper's Choreographer, from whichever thread constructs
+         * the state — before the engine exists. The relay only needs that
+         * instance: `postFrameCallback` is thread-safe and every callback
+         * runs on main, so the apply path stays main-only whoever built us.
+         *
+         * Construction is not always on main (round 51): composition can
+         * run on the thread that triggered a snapshot apply. On CI
+         * 88b067d0 (SessionFlowTest.scrollingUpWhileStreamingStaysPut)
+         * compose-ui-test's ApplyingContinuationInterceptor sent apply
+         * notifications on a Dispatchers.IO worker that had just finished a
+         * `withContext`, the Recomposer resumed inline, and
+         * TestMonotonicFrameClock recomposed the session route — and this
+         * constructor — on that worker. `Choreographer.getInstance()` is
+         * per-thread (a looper-less worker has none), so the old check threw
+         * instead. Off main, the instance comes from Compose's own main
+         * dispatcher, which captured it on main (or hops there once itself
+         * if first touched elsewhere).
+         */
+        @VisibleForTesting
+        internal fun mainChoreographer(): Choreographer =
+            if (Looper.getMainLooper().isCurrentThread) {
+                Choreographer.getInstance()
+            } else {
+                (AndroidUiDispatcher.Main[ContinuationInterceptor] as AndroidUiDispatcher).choreographer
+            }
     }
 }
