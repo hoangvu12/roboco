@@ -215,7 +215,9 @@ jobs:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
-        run: sdkmanager --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+        # sdkmanager is not on PATH on ubuntu-24.04 runners; call it by path
+        # (android.yml does the same).
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
       - name: Provide the release keystore (secrets → env)
