@@ -171,6 +171,9 @@ fun newSessionChips(
     return chips
 }
 
+/** The chips a side chat's draft keeps (iOS `refreshChips` with `sideOf`). */
+private val SideChatChipIds = setOf(NewSessionChipIds.Model, NewSessionChipIds.Effort)
+
 /**
  * Foundation's `String.capitalized` (`CFStringCapitalize`), which the effort
  * titles (here and in ticket 114's effort rows) use: a letter is
@@ -262,13 +265,16 @@ fun NewSessionChipsEffect(
 ) {
     val chips by remember(model, labels) {
         derivedStateOf {
-            newSessionChips(
+            val all = newSessionChips(
                 model.draft,
                 model.project,
                 model.currentOptions?.hosts.orEmpty(),
                 model.models,
                 labels,
             )
+            // android-next #06: a side chat runs in its parent's checkout
+            // on its parent's host — only the model and effort are picked.
+            if (model.side == null) all else all.filter { it.id in SideChatChipIds }
         }
     }
     // Seed synchronously so the first composition already has the chips.

@@ -15,6 +15,8 @@ import sh.roboco.android.sessions.FolderRoute
 import sh.roboco.android.sessions.FolderRouteContent
 import sh.roboco.android.sessions.SearchScreen
 import sh.roboco.android.sessions.SessionsScreen
+import sh.roboco.android.sidechats.SideChatDraftRoute
+import sh.roboco.android.sidechats.SubagentRoute
 
 /**
  * A tab's root route (android-ui-parity #26): the first entry of the
@@ -77,6 +79,12 @@ fun ShellRouteContent(route: NavRoute) {
         // net + 75's SessionScreen). Ticket 106's detail column falls
         // through to this same table.
         is SessionScreenRoute -> route.Content()
+        // android-next #06: a subagent's read-only transcript, pushed from
+        // a spawn card or the Side Chats & Agents sheet.
+        is SubagentRoute -> route.Content()
+        // android-next #06: a new side chat's draft, pushed from the ⋯ or
+        // the sheet's +; its first send swaps the chat in for it.
+        is SideChatDraftRoute -> route.Content()
         // Ticket 140: the Engine detail page — the status card, the
         // actions card (Rename…, Pair again) and the Forget confirm the
         // Devices row's push lands on. 104's tablet Settings dialog routes

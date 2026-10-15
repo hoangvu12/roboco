@@ -33,6 +33,10 @@ object SessionHeaderMetrics {
      * ⋯ circle always bounds the trailing side.
      *
      * Worked values: 402 → 240, 412 → 240, 360 → 224, 320 → 184, 100 → 0.
+     *
+     * [extraTrailing] widens the trailing side for a second bar item
+     * (android-next #06's side chats button: [AccessoryExtent], one more
+     * circle and the item gap) — 402 → 162, 360 → 120.
      */
     fun titleMaxWidth(
         width: Float,
@@ -41,11 +45,15 @@ object SessionHeaderMetrics {
         button: Float = SessionHeaderDefaults.ButtonSize.value,
         gap: Float = SessionHeaderDefaults.TitleItemGap.value,
         cap: Float = SessionHeaderDefaults.TitleMaxWidth.value,
+        extraTrailing: Float = 0f,
     ): Float {
         val lead = if (showBack) side + button else side
-        val trail = side + button
+        val trail = side + button + extraTrailing
         return minOf(cap, width - 2 * (maxOf(lead, trail) + gap)).coerceAtLeast(0f)
     }
+
+    /** A second trailing bar item's extent: its 44 circle plus the 8 item gap. */
+    val AccessoryExtent: Float = SessionHeaderDefaults.ButtonSize.value + SessionHeaderDefaults.TitleItemGap.value
 
     /**
      * The title view's height: 37.4 with a subtitle (20.8 + 1 + 15.6), the

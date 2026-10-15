@@ -30,6 +30,9 @@ interface NewSessionPage {
      * `NewSessionViewController.swift:415-418`.
      */
     fun markCreated()
+
+    /** android-next #06: the chat a side-chat draft hangs off; `null` for a new session. */
+    val side: SideChatParent? get() = null
 }
 
 /** The live [NewSessionPage] over ticket 92's model. */
@@ -38,6 +41,7 @@ class ModelNewSessionPage(private val m: NewSessionModel) : NewSessionPage {
     override val projects: List<ProjectOption> get() = m.currentOptions?.projects ?: emptyList()
     override fun persistBeforeCreate() = m.persistBeforeCreate()
     override fun markCreated() = m.markCreated()
+    override val side: SideChatParent? get() = m.side
 }
 
 /**
@@ -82,14 +86,16 @@ class NewSessionSendHandler(
         //    persist the options (sticky even on failure, iOS `:409`).
         val d = page.draft
         val projects = page.projects
+        val side = page.side
         page.persistBeforeCreate()
 
-        // 2. create → open → send on IO; null = failure.
-        val chatId = creator.createAndSend(d, text, images, projects)
+        // 2. create → open → send on IO; null = failure. A side chat
+        //    (android-next #06) names its parent.
+        val chatId = creator.createAndSend(d, text, images, projects, side)
 
         // 3a. Failure: the alert, and the composer keeps everything.
         if (chatId == null) {
-            alerts.show(StartFailedAlert)
+            alerts.show(if (side != null) SideChatStartFailedAlert else StartFailedAlert)
             return@withContext SendResult.Kept
         }
 
@@ -98,8 +104,9 @@ class NewSessionSendHandler(
 
         // 4. The one-time notification ask, fire-and-forget: it must
         //    never throw into the sequence (the system dialog may open
-        //    over the handoff, as on iOS — do not delay it).
-        runCatching { askAfterFirstSession() }
+        //    over the handoff, as on iOS — do not delay it). A side chat
+        //    is never a first session (iOS's side path asks nothing).
+        if (side == null) runCatching { askAfterFirstSession() }
 
         // 5. Capture before the composer clears (54 clears only after
         //    this returns Sent; null when the page left composition).

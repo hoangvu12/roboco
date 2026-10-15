@@ -145,6 +145,10 @@ internal fun NewSessionCanvas(
     state: NewSessionCanvasState = remember { NewSessionCanvasState() },
     insets: CanvasInsets? = null,
     wallpaper: @Composable (Modifier, () -> Rect?) -> Unit = { m, c -> WallpaperHero(m, cutout = c) },
+    /** android-next #06: a side chat's draft says "Ask on the side". */
+    headline: String = NewSessionHeadline,
+    /** android-next #06: false when the host draws its own bar (the side-chat draft's session header). */
+    navBar: Boolean = true,
 ) {
     ProvideHazeState {
         val haze = LocalHazeState.current!!
@@ -191,6 +195,7 @@ internal fun NewSessionCanvas(
                         Modifier
                             .hazeSource(haze, zIndex = 1f)
                             .testTag("new-session-hero"),
+                        headline = headline,
                     )
                 }
                 val composerSlot: @Composable () -> Unit = {
@@ -323,7 +328,7 @@ internal fun NewSessionCanvas(
                     },
                 )
             }
-            NewSessionNavBar(embedded, onClose, insets)
+            if (navBar) NewSessionNavBar(embedded, onClose, insets)
         }
     }
 }
@@ -337,7 +342,7 @@ internal fun NewSessionCanvas(
  * the column is 76.6 dp (1 line) or 105.2 dp (2 lines) at font scale 1.
  */
 @Composable
-internal fun NewSessionHero(harness: String, modifier: Modifier = Modifier) {
+internal fun NewSessionHero(harness: String, modifier: Modifier = Modifier, headline: String = NewSessionHeadline) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
     Column(
@@ -354,7 +359,7 @@ internal fun NewSessionHero(harness: String, modifier: Modifier = Modifier) {
                 .clearAndSetSemantics { },
         )
         BasicText(
-            "What are we building?",
+            headline,
             Modifier.testTag("new-session-headline"),
             style = uiStyle(Face.SansSemibold, typeScale.fixed(NewSessionLayout.HeadlineSize), palette.text)
                 .copy(textAlign = TextAlign.Center),
@@ -363,6 +368,12 @@ internal fun NewSessionHero(harness: String, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/** The New Session hero's headline (`:122`). */
+const val NewSessionHeadline = "What are we building?"
+
+/** A side chat's draft headline (upstream #899's `sideOf` hero). */
+const val SideChatHeadline = "Ask on the side"
 
 /**
  * The transparent nav bar (`:113-118`, `SplitRootController.swift:46-47`).

@@ -173,6 +173,9 @@ object SessionHeaderDefaults {
  *   sit below it
  * @param hazeState the screen's [HazeState] (ticket 07); `null` = no blur
  *   anywhere (the edge effect's scrim-only fallback, glass fallback fills)
+ * @param accessory a second 44 dp bar item left of the ⋯ (android-next
+ *   #06: the side chats button, iOS `rightBarButtonItems = [menu, …,
+ *   sideChats]`); `null` = none. The title's cap narrows to clear it.
  */
 @Composable
 fun SessionHeader(
@@ -185,6 +188,9 @@ fun SessionHeader(
     onBack: () -> Unit = LocalNavStack.current.let { stack -> { stack.pop() } },
     statusBarTop: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
     hazeState: HazeState? = LocalHazeState.current,
+    accessory: (@Composable () -> Unit)? = null,
+    /** android-next #06: false drops the ⋯ (a side chat's draft has no menu). */
+    showMore: Boolean = true,
 ) {
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
@@ -238,8 +244,11 @@ fun SessionHeader(
                     .fillMaxWidth()
                     .height(SessionHeaderDefaults.BarHeight),
             ) {
-                val titleMaxWidth =
-                    SessionHeaderMetrics.titleMaxWidth(maxWidth.value, showBack).dp
+                val titleMaxWidth = SessionHeaderMetrics.titleMaxWidth(
+                    maxWidth.value,
+                    showBack,
+                    extraTrailing = if (accessory != null) SessionHeaderMetrics.AccessoryExtent else 0f,
+                ).dp
                 if (showBack) {
                     Box(
                         Modifier
@@ -260,7 +269,7 @@ fun SessionHeader(
                         )
                     }
                 }
-                Box(
+                if (showMore) Box(
                     Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = SessionHeaderDefaults.SideMargin + cutoutEnd),
@@ -280,6 +289,20 @@ fun SessionHeader(
                         iconPt = SessionHeaderDefaults.IconPt,
                         weight = SymbolWeight.Medium,
                     )
+                }
+                if (accessory != null) {
+                    // The second bar item: one 44 dp circle plus UIKit's
+                    // 8 dp item gap left of the ⋯.
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(
+                                end = SessionHeaderDefaults.SideMargin + cutoutEnd +
+                                    SessionHeaderDefaults.ButtonSize + SessionHeaderDefaults.TitleItemGap,
+                            ),
+                    ) {
+                        accessory()
+                    }
                 }
                 SessionTitleView(
                     title = title,

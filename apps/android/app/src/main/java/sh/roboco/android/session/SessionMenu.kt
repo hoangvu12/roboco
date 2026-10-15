@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -33,6 +35,7 @@ import sh.roboco.android.design.glass.GlassMenuPanel
 import sh.roboco.android.design.glass.Menu
 import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
+import sh.roboco.android.design.glass.MenuSection
 import sh.roboco.android.design.glass.flattenLevel
 import sh.roboco.android.design.glass.rememberGlassMenuState
 import sh.roboco.android.sessions.ActionOutcome
@@ -84,9 +87,10 @@ fun sessionMenu(
     onSetPinned: (Boolean) -> Unit,
     onCopyTranscript: () -> Unit,
     onArchive: () -> Unit,
+    sideChats: SideChatMenuRows? = null,
 ): Menu = Menu(
     title = null,
-    children = listOf(
+    children = listOfNotNull(
         MenuItem(
             title = if (pinned) "Unpin" else "Pin",
             icon = MenuIcon.Symbol(if (pinned) RobocoIcons.PinSlash else RobocoIcons.Pin),
@@ -100,6 +104,7 @@ fun sessionMenu(
             testTag = "session-menu-copy",
             action = onCopyTranscript,
         ),
+        sideChats?.let { sideChatSection(it, canWrite) },
         MenuItem(
             title = "Archive",
             icon = MenuIcon.Symbol(RobocoIcons.Archivebox),
@@ -107,6 +112,39 @@ fun sessionMenu(
             disabled = !canWrite,
             testTag = "session-menu-archive",
             action = onArchive,
+        ),
+    ),
+)
+
+/**
+ * android-next #06's ⋯ rows (upstream #899's inline group between Copy
+ * Transcript and Archive): New Side Chat and Fork into Side Chat. `null`
+ * — an engine without side chats — leaves the menu as it was. [forking]
+ * disables the fork while one is in flight (one at a time).
+ */
+class SideChatMenuRows(
+    val forking: Boolean,
+    val onNew: () -> Unit,
+    val onFork: () -> Unit,
+)
+
+/** The inline group (hairlines above and below); both rows need a writable engine. */
+private fun sideChatSection(rows: SideChatMenuRows, canWrite: Boolean): MenuSection = MenuSection(
+    inline = true,
+    children = listOf(
+        MenuItem(
+            title = "New Side Chat",
+            icon = MenuIcon.Symbol(RobocoIcons.QuestionmarkBubble),
+            disabled = !canWrite,
+            testTag = "session-menu-new-side-chat",
+            action = rows.onNew,
+        ),
+        MenuItem(
+            title = "Fork into Side Chat",
+            icon = MenuIcon.Symbol(RobocoIcons.ArrowTriangleBranch),
+            disabled = !canWrite || rows.forking,
+            testTag = "session-menu-fork-side-chat",
+            action = rows.onFork,
         ),
     ),
 )
@@ -134,7 +172,10 @@ fun sessionMenu(
 fun rememberSessionMenu(
     controller: SessionController,
     transcript: TranscriptState,
+    /** android-next #06: the side-chat rows, read at open time; `null` result = none. */
+    sideChats: () -> SideChatMenuRows? = { null },
 ): (anchorInWindow: Rect) -> Unit {
+    val currentSideChats by rememberUpdatedState(sideChats)
     val menuState = rememberGlassMenuState()
     val actions = LocalRowActions.current
     val router = LocalAppRouter.current
@@ -171,6 +212,7 @@ fun rememberSessionMenu(
                         }
                     }
                 },
+                sideChats = currentSideChats(),
             )
             menuState.open(anchor, menu)
         }

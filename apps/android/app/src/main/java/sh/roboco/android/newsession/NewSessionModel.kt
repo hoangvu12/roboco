@@ -2,6 +2,7 @@ package sh.roboco.android.newsession
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -24,9 +25,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.ComposerController
+import sh.roboco.android.composer.DEFAULT_HARNESS
 import sh.roboco.android.composer.DraftKey
 import sh.roboco.android.composer.LocalDrafts
 import sh.roboco.android.composer.StagedImage
+import uniffi.roboco_core.SessionRow
 
 /**
  * The New Session page's state holder (android-ui-parity #92) — the port
@@ -69,13 +72,21 @@ class NewSessionModel(
     private val appScope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val main: CoroutineDispatcher = Dispatchers.Main.immediate,
+    /**
+     * android-next #06: a side chat's draft (upstream #899's
+     * `NewSessionViewController(sideOf:)`). It runs in the parent's
+     * checkout on the parent's host, so only the model and effort are
+     * picked (any harness, until the first send mints the row); it starts
+     * on the parent's model and never reads or writes the sticky store.
+     */
+    val side: SideChatParent? = null,
 ) {
 
     /** The epoch the page opened with; a full reset while open freezes this page. */
     private val openedEpoch: Int = store.resetEpoch
 
-    /** The page's copy of the sticky draft (iOS `self.draft`, `:75`). */
-    var draft: NewSessionDraft by mutableStateOf(store.lastDraft)
+    /** The page's copy of the sticky draft (iOS `self.draft`, `:75`); a side chat's starts on its parent's model. */
+    var draft: NewSessionDraft by mutableStateOf(side?.let(::sideChatDraft) ?: store.lastDraft)
         private set
 
     /** Models for the draft's device: cached or built-in at once, then the engine's own. */
@@ -83,10 +94,10 @@ class NewSessionModel(
         private set
 
     /** `prompt ?: store.text` — a non-null prompt (even `""`) wins over the saved text (`:78`). */
-    val initialText: String = prompt ?: store.text
+    val initialText: String = prompt ?: if (side == null) store.text else ""
 
     /** The images staged when the page last closed unsent (`:79`). */
-    val initialImages: List<StagedImage> = store.images
+    val initialImages: List<StagedImage> = if (side == null) store.images else emptyList()
 
     /** Snapshot state; assigned by the options collector (109/113 read it in `derivedStateOf`). */
     var currentOptions: NewSessionOptions? by mutableStateOf(options.value)
@@ -111,9 +122,10 @@ class NewSessionModel(
 
     init {
         // The defaults run once, here (iOS `viewDidLoad` `:177-181`) —
-        // without a coroutine, so the first frame already has them.
+        // without a coroutine, so the first frame already has them. A side
+        // chat picks no project or host (`sideOf == nil` guards on iOS).
         val initial = options.value
-        if (initial != null) {
+        if (initial != null && side == null) {
             val n = normalize(draft, initial)
             if (n != draft) updateInternal({ n }, userEdit = false)
         }
@@ -123,7 +135,7 @@ class NewSessionModel(
         pageScope.launch {
             options.collect { o ->
                 currentOptions = o
-                if (o != null) {
+                if (o != null && side == null) {
                     val n = normalize(draft, o)
                     if (n != draft) updateInternal({ n }, userEdit = false) else loadModels()
                 }
@@ -132,8 +144,9 @@ class NewSessionModel(
         // The late store load (the tablet launch page, 106, and a
         // `roboco://new` cold start can open the page before `warm()`
         // finished): once it lands, an untouched page takes over the
-        // stored draft; a touched one keeps the user's pick.
-        if (!store.isLoaded) {
+        // stored draft; a touched one keeps the user's pick. A side chat's
+        // draft never comes from the store.
+        if (!store.isLoaded && side == null) {
             pageScope.launch {
                 store.awaitLoaded()
                 if (!touched) {
@@ -148,13 +161,13 @@ class NewSessionModel(
         }
     }
 
-    /** The picked project (iOS `:236`); null while the options are still null. */
+    /** The picked project (iOS `:236`); null while the options are still null, and for a side chat. */
     val project: ProjectOption?
-        get() = currentOptions?.projects?.firstOrNull { it.id == draft.projectId }
+        get() = if (side != null) null else currentOptions?.projects?.firstOrNull { it.id == draft.projectId }
 
-    /** The engine the session runs on (iOS `:237`). */
+    /** The engine the session runs on (iOS `:237`); a side chat's parent's host. */
     val deviceId: String
-        get() = project?.device ?: draft.hostId ?: ""
+        get() = side?.deviceId ?: project?.device ?: draft.hostId ?: ""
 
     /**
      * Checkouts of the picked project, one per row of the host menu
@@ -194,7 +207,8 @@ class NewSessionModel(
      * reset while the page was open (epoch mismatch).
      */
     fun rememberDraft(text: String, images: List<StagedImage>) {
-        if (created || store.resetEpoch != openedEpoch) return
+        // A side chat's draft is its own: it never seeds the next new session.
+        if (created || side != null || store.resetEpoch != openedEpoch) return
         if (store.isLoaded || touched) store.lastDraft = draft
         store.text = text
         store.images = images
@@ -206,7 +220,7 @@ class NewSessionModel(
      * draft, unconditionally.
      */
     fun persistBeforeCreate() {
-        store.lastDraft = draft
+        if (side == null) store.lastDraft = draft
     }
 
     /**
@@ -216,6 +230,7 @@ class NewSessionModel(
      */
     fun markCreated() {
         created = true
+        if (side != null) return // the sticky text and images were never this page's
         store.text = ""
         store.images = emptyList()
     }
@@ -268,10 +283,51 @@ class NewSessionModel(
         if (n == draft) return
         draft = n
         if (userEdit) touched = true
-        if (!created && store.isLoaded && store.resetEpoch == openedEpoch) store.lastDraft = n
+        if (!created && side == null && store.isLoaded && store.resetEpoch == openedEpoch) store.lastDraft = n
         loadModels()
     }
 }
+
+/**
+ * The chat a side-chat draft hangs off (android-next #06, upstream #899's
+ * `NewSessionViewController(sideOf:)`), read from its workspace row when
+ * the page opens. The create sends `parentChatId` and the core takes the
+ * host, the checkout and the sandbox from the parent; this record only
+ * names the parent and seeds the page.
+ */
+@Immutable
+data class SideChatParent(
+    /** The scoped chat id the new side chat hangs off (a side chat's own: a sibling, the core decides). */
+    val chatId: String,
+    /** The parent's title — the nav subtitle "Side chat · <title>". */
+    val title: String,
+    /** The parent's host device: the model catalog's device. */
+    val deviceId: String,
+    /** The parent's project (scoped space id), for `@file` search; null when projectless. */
+    val projectId: String?,
+    val harness: String?,
+    val model: String?,
+    val effort: String?,
+) {
+    companion object {
+        fun of(row: SessionRow): SideChatParent = SideChatParent(
+            chatId = row.id,
+            title = row.title,
+            deviceId = row.deviceId,
+            projectId = row.project?.id,
+            harness = row.harness,
+            model = row.model,
+            effort = row.reasoning,
+        )
+    }
+}
+
+/** A side chat's starting draft: the parent's harness, model and effort (iOS `init(sideOf:)`). Pure. */
+fun sideChatDraft(parent: SideChatParent): NewSessionDraft = NewSessionDraft(
+    harness = parent.harness?.takeIf { it.isNotEmpty() } ?: DEFAULT_HARNESS,
+    model = parent.model,
+    effort = parent.effort,
+)
 
 /**
  * The stale-id rule and the defaults (ticket 92's Normalize table, the
@@ -312,10 +368,10 @@ fun normalize(d: NewSessionDraft, o: NewSessionOptions): NewSessionDraft {
  * composition; the fetches outlive it on the app scope.
  */
 @Composable
-fun rememberNewSessionModel(prompt: String?): NewSessionModel {
+fun rememberNewSessionModel(prompt: String?, side: SideChatParent? = null): NewSessionModel {
     val app = LocalContext.current.applicationContext as RobocoApplication
     val pageScope = rememberCoroutineScope()
-    val model = remember(prompt) {
+    val model = remember(prompt, side) {
         val feed = app.workspaceFeed
         NewSessionModel(
             prompt = prompt,
@@ -330,6 +386,7 @@ fun rememberNewSessionModel(prompt: String?): NewSessionModel {
             catalog = CoreModelCatalogSource { app.clientOrNull() },
             pageScope = pageScope,
             appScope = app.appScope,
+            side = side,
         )
     }
     DisposableEffect(model) {
@@ -362,7 +419,9 @@ fun rememberNewSessionModel(prompt: String?): NewSessionModel {
 @Composable
 fun NewSessionDraftEffect(model: NewSessionModel, composer: ComposerController) {
     val drafts = LocalDrafts.current
-    if (remember { !drafts.isLoaded }) {
+    val loadPending = remember { !drafts.isLoaded }
+    // android-next #06: a side chat's composer never takes the new-session text.
+    if (loadPending && model.side == null) {
         LaunchedEffect(Unit) {
             val t = drafts.load(DraftKey.NewSession)
             if (composer.text.isEmpty() && model.initialText.isEmpty()) composer.text = t

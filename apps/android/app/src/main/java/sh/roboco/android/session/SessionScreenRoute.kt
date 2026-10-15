@@ -2,7 +2,12 @@ package sh.roboco.android.session
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.CoreQueueEditPort
 import sh.roboco.android.composer.CoreQuestionPort
 import sh.roboco.android.composer.DraftKey
@@ -13,6 +18,19 @@ import sh.roboco.android.composer.QueueEditController
 import sh.roboco.android.composer.QueueEditPort
 import sh.roboco.android.composer.SessionChipMenus
 import sh.roboco.android.composer.sessionDraftSaver
+import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.newsession.SideChatParent
+import sh.roboco.android.sessions.rememberSessionListOpener
+import sh.roboco.android.sidechats.SideChatDraftRoute
+import sh.roboco.android.sidechats.SideChatFork
+import sh.roboco.android.sidechats.SideChatsButton
+import sh.roboco.android.sidechats.SideChatsModel
+import sh.roboco.android.sidechats.SideChatsOverlay
+import sh.roboco.android.sidechats.SideChatsSheetController
+import sh.roboco.android.sidechats.SideChatsUi
+import sh.roboco.android.sidechats.SubagentOpenRequest
+import sh.roboco.android.sidechats.rememberSubagentOpener
+import sh.roboco.android.sidechats.sideChatsSupported
 import sh.roboco.android.shell.LocalNavEntry
 import sh.roboco.android.shell.LocalNavStack
 import sh.roboco.android.shell.NavRoute
@@ -57,6 +75,13 @@ class SessionScreenRoute internal constructor(
      * routes Edit to 83's QueueEditController and everything else here.
      */
     val queueActions: QueueActions?,
+    /**
+     * android-next #06: this chat's side chats and subagents (the header
+     * button, the sheet, the ⋯ rows), built by [CoreSessionRouteFactory]
+     * over [core]'s handle; started on first composition, stopped on
+     * release or discard. Null for a test fake core.
+     */
+    val sideChats: SideChatsModel? = null,
 ) : SessionRoute, NavRoute {
 
     /**
@@ -127,6 +152,7 @@ class SessionScreenRoute internal constructor(
         // Ticket 89: the chip-menu loads resolve empty after this (the
         // in-flight writes still finish — never cancelled).
         controller.filler<SessionChipMenus>()?.dispose()
+        sideChats?.stop()
         val lifecycle = navLifecycle
         if (lifecycle != null) {
             // Ticket 85: detach + mark seen, then the layout engine.
@@ -225,6 +251,87 @@ class SessionScreenRoute internal constructor(
                 entry.retain(QuestionsKey) { CoreQuestionPort(live.handle) }
             }
         }
+        // android-next #06: side chats and subagents — the header button
+        // and its sheet, the ⋯ rows, the spawn-card opener. The sheet state
+        // and the fork in flight live on the entry (a tab switch keeps them).
+        val sideChatsModel = sideChats
+        remember(entry) {
+            sideChatsModel?.start()
+            true
+        }
+        val sideUi = sideChatsModel?.ui?.collectAsState()?.value ?: SideChatsUi()
+        val sheet = remember(entry) { entry.retain(SideChatsSheetKey) { SideChatsSheetController() } }
+        val subagentOpener = rememberSubagentOpener()
+        val openChat = rememberSessionListOpener()
+        val app = LocalContext.current.applicationContext as? RobocoApplication
+        val toaster = LocalToaster.current
+        val fork: SideChatFork? = remember(entry) {
+            val live = core as? CoreSessionCore
+            if (live == null || app == null) {
+                null
+            } else {
+                entry.retain(SideChatForkKey) {
+                    SideChatFork(
+                        fork = { source -> withContext(Dispatchers.IO) { live.client.forkSideChat(source) } },
+                        scope = app.appScope,
+                        toaster = toaster,
+                    )
+                }
+            }
+        }
+        // Read at tap time: an engine that predates side chats offers none.
+        val sideChatsOffered: () -> Boolean = {
+            sideChatsModel != null && fork != null && sideChatsSupported(controller.engineVersion)
+        }
+        val isTopAndIdle: () -> Boolean = { stack.top === entry && stack.transition == null }
+        val newSideChat: () -> Unit = {
+            // iOS `newSideChat()`: the draft pushed on top, seeded from the
+            // row the last refresh cached (no FFI on main).
+            val row = controller.sessionRow
+            if (row != null && isTopAndIdle()) stack.push(SideChatDraftRoute(SideChatParent.of(row)), animated = true)
+        }
+        val forkSideChat: () -> Unit = {
+            fork?.start(controller.chatId) { forkId ->
+                sideChatsModel?.invalidate()
+                // iOS opens the fork only while this screen is still shown.
+                if (isTopAndIdle()) openChat(forkId)
+            }
+        }
+        val openSubagent: (String, String, Boolean) -> Unit = { docId, title, frozen ->
+            subagentOpener?.open(
+                SubagentOpenRequest(
+                    docId = docId,
+                    title = title,
+                    frozen = frozen,
+                    spawnerId = controller.chatId,
+                    parentTitle = controller.chrome.value.title,
+                ),
+            )
+        }
+        val badge = sideUi.badge
+        val sideChatsButton: (@Composable () -> Unit)? = if (badge != null) {
+            { SideChatsButton(badge, onClick = { sheet.open() }) }
+        } else {
+            null
+        }
+        val sideChatsOverlay: @Composable () -> Unit = {
+            SideChatsOverlay(
+                controller = sheet,
+                ui = sideUi,
+                canAdd = sideChatsOffered(),
+                onOpenChat = openChat,
+                onOpenAgent = { agent -> openSubagent(agent.docId, agent.title, !agent.running) },
+                onNew = newSideChat,
+                onFork = forkSideChat,
+            )
+        }
+        val onMore = rememberSessionMenu(controller, transcript) {
+            if (sideChatsOffered()) {
+                SideChatMenuRows(forking = fork?.forking == true, onNew = newSideChat, onFork = forkSideChat)
+            } else {
+                null
+            }
+        }
         // Ticket 85: the push/pop choreography (the stack and jump
         // multipliers) and the will/did lifecycle wiring around the
         // screen. The alpha travels through [LocalSessionNavAlpha], so
@@ -244,11 +351,14 @@ class SessionScreenRoute internal constructor(
                 questionPort = questionPort,
                 // Ticket 80: the ⋯ menu — the header's onMore opens the session
                 // menu built fresh on every tap (pin state and canWrite read
-                // at open time).
-                onMore = rememberSessionMenu(controller, transcript),
+                // at open time); android-next #06 adds the side-chat rows.
+                onMore = onMore,
                 // 84: the engine half of the draft key (the route's core has
                 // it; SessionScreen pairs it with the controller's chatId).
                 engineId = core.engineId,
+                onOpenSubagent = openSubagent,
+                headerAccessory = sideChatsButton,
+                overlay = sideChatsOverlay,
             )
         }
     }
@@ -276,6 +386,7 @@ class SessionScreenRoute internal constructor(
     override fun discard() {
         // Ticket 89: same rule as release — later loads resolve empty.
         controller.filler<SessionChipMenus>()?.dispose()
+        sideChats?.stop()
         controller.dispose()
         if (state.transcriptCreated) state.transcript.close()
     }
@@ -290,6 +401,12 @@ class SessionScreenRoute internal constructor(
 
     /** 83's queue-edit-port retention key. */
     private object QueueEditPortKey
+
+    /** android-next #06's sheet-state retention key. */
+    private object SideChatsSheetKey
+
+    /** android-next #06's fork retention key. */
+    private object SideChatForkKey
     /** 91's question-port retention key. */
     private object QuestionsKey
 }

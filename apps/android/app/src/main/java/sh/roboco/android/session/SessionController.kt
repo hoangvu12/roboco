@@ -138,6 +138,25 @@ class SessionController private constructor(
     var pinned: Boolean = false
         private set
 
+    /**
+     * The owning engine's reported version as of the last refresh
+     * (`EngineView.version`), `null` while unknown. android-next #06's ⋯
+     * reads it on main to offer the side-chat rows only to engines that
+     * serve them; a stale read only until the next refresh.
+     */
+    @Volatile
+    var engineVersion: String? = null
+        private set
+
+    /**
+     * The chat's workspace row as of the last refresh (`null` before the
+     * workspace knows it). android-next #06's New Side Chat seeds its draft
+     * from it on main, with no FFI call.
+     */
+    @Volatile
+    var sessionRow: SessionRow? = null
+        private set
+
     private val closed = AtomicBoolean(false)
 
     /** The view [attach] bound; a second attach of the same instance is a no-op. Cleared again when the attach FFI failed, so a retry is possible. */
@@ -325,6 +344,8 @@ class SessionController private constructor(
             val engine = core.engine()
             hostDeviceId = c.host.deviceId
             pinned = row?.pinned == true
+            engineVersion = engine?.version
+            sessionRow = row
             // Ticket 89: the local config beside the row — the menus'
             // deferred loads re-read it at load time (#664), so it rides
             // along on every refresh.
