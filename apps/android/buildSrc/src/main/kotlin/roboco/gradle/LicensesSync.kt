@@ -5,6 +5,7 @@ import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -45,8 +46,10 @@ abstract class LicensesSync : DefaultTask() {
      * The Tailcat adapter's Go licence bundle
      * (`adapters/roboco-tailcat/licenses/bundle`: `DEPENDENCIES.txt`,
      * `go/`, `modules/`), staged under `licenses/go/` with its layout kept
-     * — the APK ships `libroboco_tailcat.so` (android-next#02).
+     * — the APK ships `libroboco_tailcat.so` (android-next#02). Optional:
+     * unset stages no `licenses/go/` at all.
      */
+    @get:Optional
     @get:InputDirectory
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val goBundleDir: DirectoryProperty
@@ -82,9 +85,11 @@ abstract class LicensesSync : DefaultTask() {
         // Same reset rule for the Go bundle: nothing stale survives.
         val go = licenses.resolve("go")
         go.deleteRecursively()
-        goBundleDir.get().asFile.copyRecursively(go, overwrite = true)
-        for (file in goLicenseFiles) {
-            file.copyTo(go.resolve(file.name), overwrite = true)
+        if (goBundleDir.isPresent) {
+            goBundleDir.get().asFile.copyRecursively(go, overwrite = true)
+            for (file in goLicenseFiles) {
+                file.copyTo(go.resolve(file.name), overwrite = true)
+            }
         }
     }
 }
