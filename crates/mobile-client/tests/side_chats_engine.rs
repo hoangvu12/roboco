@@ -857,7 +857,7 @@ async fn a_background_subagent_binds_after_its_tool_result_and_freezes_on_done()
             .any(|entry| entry
                 .parts
                 .iter()
-                .any(|part| matches!(part, roboco_doc::MessagePart::Text { text, .. } if text.contains("parent turn done")));
+                .any(|part| matches!(part, roboco_doc::MessagePart::Text { text, .. } if text.contains("parent turn done"))));
         if answered {
             break;
         }
