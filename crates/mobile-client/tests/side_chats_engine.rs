@@ -204,6 +204,10 @@ struct Rig {
     engine_dir: tempfile::TempDir,
     #[allow(dead_code)]
     data_dir: tempfile::TempDir,
+    /// Held for the rig's life: dropping it stops the engine listening,
+    /// and every call then fails with "Engine connection lost".
+    #[allow(dead_code)]
+    listener: roboco_engine::EngineListener,
     requests: Arc<Mutex<Vec<RunRequest>>>,
 }
 
@@ -300,6 +304,7 @@ async fn rig_with_background(
         engine_id: record.engine_id,
         engine_dir,
         data_dir,
+        listener,
         requests,
     };
     (rig, background_tx)
