@@ -105,7 +105,9 @@ pub fn build_args(output: &Path) -> Vec<String> {
         // No VCS stamp: the build stays reproducible and needs no git.
         "-buildvcs=false".to_owned(),
         "-buildmode=c-shared".to_owned(),
-        "-ldflags=-s -w -extldflags=-Wl,-z,max-page-size=16384".to_owned(),
+        // Go's c-shared link sets no DT_SONAME (cmd/link/internal/ld/lib.go);
+        // the NDK guide requires one for shared libraries.
+        format!("-ldflags=-s -w -extldflags=-Wl,-z,max-page-size=16384,-soname,{LIB_FILE}"),
         "-o".to_owned(),
         output.to_string_lossy().into_owned(),
         PACKAGE.to_owned(),
@@ -248,7 +250,9 @@ mod tests {
         assert!(args.contains(&"-trimpath".to_owned()));
         assert!(
             args.iter()
-                .any(|arg| arg.starts_with("-ldflags=") && arg.contains("max-page-size=16384")),
+                .any(|arg| arg.starts_with("-ldflags=")
+                    && arg.contains("max-page-size=16384")
+                    && arg.contains("-soname,libroboco_tailcat.so")),
             "{args:?}"
         );
         assert_eq!(args.last().map(String::as_str), Some("./capi"));

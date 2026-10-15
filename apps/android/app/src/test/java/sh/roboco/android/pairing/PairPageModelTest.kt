@@ -126,9 +126,15 @@ class PairPageModelTest {
             res(R.string.pair_error_unreachable),
         )
         assertEquals(
-            "Tailcat invites aren't supported on Android yet. Create a pairing link on the engine instead.",
-            res(R.string.pair_error_tailcat),
+            "That Tailcat invite has expired. Run roboco engine tailcat invite again.",
+            res(R.string.pair_error_tailcat_expired),
         )
+        assertEquals(
+            "Could not reach that engine over Tailcat. Check that it is running and online.",
+            res(R.string.pair_error_tailcat_unreachable),
+        )
+        assertEquals("Tailcat isn't available in this build.", res(R.string.pair_error_tailcat_unavailable))
+        assertEquals("Connecting through Tailcat…", res(R.string.pair_submitting_tailcat))
         assertEquals("Pairing failed.", res(R.string.pair_error_failed))
         assertEquals(
             "Couldn't save the engine's credential on this phone.",
@@ -161,11 +167,29 @@ class PairPageModelTest {
     }
 
     @Test
-    fun tailcatMapsToTheTailcatSentence() {
+    fun tailcatFailuresMapToTheirSentencesNeverTheReason() {
         assertEquals(
-            PairMessage.Res(R.string.pair_error_tailcat),
-            describePairError(PairException.TailcatUnsupported()),
+            PairMessage.Res(R.string.pair_error_tailcat_expired),
+            describePairError(PairException.TailcatExpired()),
         )
+        assertEquals(
+            PairMessage.Res(R.string.pair_error_tailcat_unreachable),
+            describePairError(PairException.TailcatUnreachable("Tailcat client startup failed")),
+        )
+        assertEquals(
+            PairMessage.Res(R.string.pair_error_tailcat_unavailable),
+            describePairError(PairException.TailcatUnavailable("libroboco_tailcat.so is missing")),
+        )
+    }
+
+    @Test
+    fun inviteExpiryRoundsUpToWholeMinutes() {
+        assertEquals("5 min", inviteExpiryLabel(300_000))
+        assertEquals("5 min", inviteExpiryLabel(299_001))
+        assertEquals("2 min", inviteExpiryLabel(60_001))
+        assertEquals("1 min", inviteExpiryLabel(60_000))
+        assertEquals("under a minute", inviteExpiryLabel(59_999))
+        assertEquals("under a minute", inviteExpiryLabel(-5_000))
     }
 
     @Test

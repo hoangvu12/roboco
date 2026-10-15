@@ -67,14 +67,39 @@ jobs:
   # Kotlin painter leans on. Pure Rust, no GPUI system deps.
   mobile-core:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # android-next#02: the Tailcat end-to-end test (mobile-client
+      # tests/tailcat_engine.rs) loads the real host libroboco_tailcat, runs
+      # the desktop adapter as the engine's server and a local DERP+STUN.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Build the Tailcat test pieces (host library, adapter, local DERP)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out/lib"
+          CGO_ENABLED=1 go build -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared -o "$out/lib/libroboco_tailcat.so" ./capi
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_LIB_DIR=$out/lib"
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
       - name: Mobile core tests
         run: cargo test --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-mobile-client
+      - name: Tailcat end-to-end (verbose)
+        # Already part of the run above; repeated alone with output so a
+        # failure shows the adapter and tunnel logs.
+        if: failure()
+        run: cargo test --locked -p roboco-mobile-client --test tailcat_engine -- --nocapture
       - name: Mobile grammar subset tests
         # android-app#10: the Android core links the middle grammar set
         # (Kotlin/Swift/C++ kept); the subset build must stay green.

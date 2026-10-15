@@ -67,9 +67,16 @@ pub type CoreResult<T> = Result<T, CoreError>;
 pub enum PairError {
     #[error("invalid pairing URL: {message}")]
     InvalidUrl { message: String },
-    /// `roboco-tailcat:` invites are out of scope on mobile (spec D9).
-    #[error("tailcat pairing is not supported on this device")]
-    TailcatUnsupported,
+    /// The Tailcat invite's pairing code has expired (android-next#02).
+    #[error("that tailcat invite has expired")]
+    TailcatExpired,
+    /// `libroboco_tailcat.so` is missing from this build or failed to load.
+    #[error("tailcat is not available: {message}")]
+    TailcatUnavailable { message: String },
+    /// The Tailcat tunnel did not come up (no route, engine offline, DERP
+    /// blocked).
+    #[error("could not reach the engine over tailcat: {message}")]
+    TailcatUnreachable { message: String },
     /// The code was expired, already used or unknown.
     #[error("pairing link refused")]
     Refused,
@@ -86,7 +93,9 @@ impl From<mc::PairError> for PairError {
         use mc::PairError as P;
         match err {
             P::InvalidUrl { message } => PairError::InvalidUrl { message },
-            P::TailcatUnsupported => PairError::TailcatUnsupported,
+            P::TailcatExpired => PairError::TailcatExpired,
+            P::TailcatUnavailable { message } => PairError::TailcatUnavailable { message },
+            P::TailcatUnreachable { message } => PairError::TailcatUnreachable { message },
             P::Refused => PairError::Refused,
             P::Unreachable { message } => PairError::Unreachable { message },
             P::Failed { message } => PairError::Failed { message },
@@ -112,6 +121,10 @@ pub struct CoreConfig {
     /// (`BuildConfig.DEBUG` on the Kotlin side); the mock is a test rig,
     /// never a production picker entry.
     pub show_mock_harness: bool,
+    /// `applicationInfo.nativeLibraryDir`, where `libroboco_tailcat.so`
+    /// lives (android-next#02). `None`: Tailcat is unavailable.
+    #[uniffi(default = None)]
+    pub native_lib_dir: Option<String>,
 }
 
 impl From<CoreConfig> for mc::ClientConfig {
@@ -122,6 +135,64 @@ impl From<CoreConfig> for mc::ClientConfig {
             platform: config.platform,
             app_version: config.app_version,
             show_mock_harness: config.show_mock_harness,
+            native_lib_dir: config
+                .native_lib_dir
+                .filter(|dir| !dir.is_empty())
+                .map(Into::into),
+        }
+    }
+}
+
+/// How a paired engine is dialed (android-next#02). `Tailcat` carries two
+/// secrets — the address embeds the engine's pre-shared key, the state
+/// this phone's private key — which Kotlin stores Keystore-encrypted,
+/// never in plain metadata.
+#[derive(Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum EngineTransport {
+    Direct,
+    Tailcat { address: String, client_state: String },
+}
+
+impl std::fmt::Debug for EngineTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the derived Debug would print both secrets.
+        match self {
+            EngineTransport::Direct => f.write_str("Direct"),
+            EngineTransport::Tailcat { address, .. } => f
+                .debug_struct("Tailcat")
+                .field("address", &mc::tailcat::describe(address))
+                .field("client_state", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
+impl From<mc::EngineTransport> for EngineTransport {
+    fn from(transport: mc::EngineTransport) -> Self {
+        match transport {
+            mc::EngineTransport::Direct => EngineTransport::Direct,
+            mc::EngineTransport::Tailcat {
+                address,
+                client_state,
+            } => EngineTransport::Tailcat {
+                address,
+                client_state,
+            },
+        }
+    }
+}
+
+impl From<EngineTransport> for mc::EngineTransport {
+    fn from(transport: EngineTransport) -> Self {
+        match transport {
+            EngineTransport::Direct => mc::EngineTransport::Direct,
+            EngineTransport::Tailcat {
+                address,
+                client_state,
+            } => mc::EngineTransport::Tailcat {
+                address,
+                client_state,
+            },
         }
     }
 }
@@ -144,6 +215,10 @@ pub struct PairedEngine {
     pub device_id: Option<String>,
     /// Last known engine device name, for offline display.
     pub name: Option<String>,
+    /// How the engine is dialed; `None` (records stored before Tailcat)
+    /// means `Direct`.
+    #[uniffi(default = None)]
+    pub transport: Option<EngineTransport>,
 }
 
 impl std::fmt::Debug for PairedEngine {
@@ -158,6 +233,7 @@ impl std::fmt::Debug for PairedEngine {
             .field("paired_at_ms", &self.paired_at_ms)
             .field("device_id", &self.device_id)
             .field("name", &self.name)
+            .field("transport", &self.transport)
             .finish()
     }
 }
@@ -173,6 +249,7 @@ impl From<mc::PairedEngine> for PairedEngine {
             paired_at_ms: record.paired_at_ms,
             device_id: record.device_id,
             name: record.name,
+            transport: Some(record.transport.into()),
         }
     }
 }
@@ -188,6 +265,7 @@ impl From<PairedEngine> for mc::PairedEngine {
             paired_at_ms: record.paired_at_ms,
             device_id: record.device_id,
             name: record.name,
+            transport: record.transport.map(Into::into).unwrap_or_default(),
         }
     }
 }
@@ -196,9 +274,18 @@ impl From<PairedEngine> for mc::PairedEngine {
 /// crosses this record.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PairingTarget {
+    /// `http(s)://host[:port][/prefix]`, or `tailcat:<8 hex>` for a Tailcat
+    /// invite (never the address).
     pub base_url: String,
-    /// `host[:port]`.
+    /// `host[:port]`; `Tailcat` for an invite.
     pub host: String,
+    /// A `roboco-tailcat:` invite (android-next#02): WireGuard-encrypted,
+    /// so the confirm UI shows no cleartext note.
+    #[uniffi(default = false)]
+    pub tailcat: bool,
+    /// When a Tailcat invite's pairing code expires (epoch ms).
+    #[uniffi(default = None)]
+    pub expires_at_ms: Option<i64>,
 }
 
 impl From<mc::PairingTarget> for PairingTarget {
@@ -206,6 +293,8 @@ impl From<mc::PairingTarget> for PairingTarget {
         Self {
             base_url: target.base_url,
             host: target.host,
+            tailcat: target.transport == mc::TransportKind::Tailcat,
+            expires_at_ms: target.expires_at_ms,
         }
     }
 }
@@ -296,6 +385,10 @@ pub struct EngineView {
     /// Rows come from the offline cache; no live frame yet this process.
     pub from_cache: bool,
     pub diagnostics: EngineDiagnostics,
+    /// Dialed over Tailcat (android-next#02): the Address row shows the
+    /// `base_url` fingerprint, "Reconnecting over Tailcat".
+    #[uniffi(default = false)]
+    pub tailcat: bool,
 }
 
 impl From<mc::EngineView> for EngineView {
@@ -316,6 +409,7 @@ impl From<mc::EngineView> for EngineView {
             notice: view.notice,
             from_cache: view.from_cache,
             diagnostics: view.diagnostics.into(),
+            tailcat: view.transport == mc::TransportKind::Tailcat,
         }
     }
 }

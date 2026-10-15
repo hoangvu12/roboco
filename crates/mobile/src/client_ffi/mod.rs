@@ -201,6 +201,13 @@ impl CoreClient {
         self.client.set_network_online(online);
     }
 
+    /// The default network changed (a different `Network`, or new link
+    /// properties): Tailcat engines rebuild their tunnels on the new
+    /// interface and redial now. Direct engines are untouched.
+    pub fn set_network_changed(&self) {
+        self.client.set_network_changed();
+    }
+
     /// App returned to the foreground: probe connected feeds, dial the
     /// rest now, re-open spares.
     pub fn on_foreground(&self) {
@@ -215,7 +222,8 @@ impl CoreClient {
 
 // ── static helpers ─────────────────────────────────────────────────────────
 
-/// Parse a pairing link for the confirm UI. The token never crosses.
+/// Parse a pairing link or a `roboco-tailcat:` invite for the confirm UI.
+/// Neither the token nor the Tailcat address crosses.
 #[uniffi::export]
 pub fn parse_pairing_url(input: String) -> Result<PairingTarget, PairError> {
     mc::parse_pairing_url(&input)
@@ -248,6 +256,7 @@ mod tests {
                 platform: "android".into(),
                 app_version: "0.9.2".into(),
                 show_mock_harness: true,
+                native_lib_dir: None,
             },
             Vec::new(),
             recorder.clone(),
@@ -270,10 +279,35 @@ mod tests {
         let target = parse_pairing_url("http://h:8123/pair#token=abc".into()).unwrap();
         assert_eq!(target.base_url, "http://h:8123");
         assert_eq!(target.host, "h:8123");
-        assert_eq!(
-            parse_pairing_url("roboco-tailcat:x".into()).unwrap_err(),
-            PairError::TailcatUnsupported
-        );
+        assert!(!target.tailcat);
+        assert_eq!(target.expires_at_ms, None);
+        // A junk invite is an invalid URL, never echoing its input.
+        match parse_pairing_url("roboco-tailcat:SECRET!".into()).unwrap_err() {
+            PairError::InvalidUrl { message } => assert!(!message.contains("SECRET")),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A valid, live invite crosses as a secret-free Tailcat target.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let expires_at = now_ms + 300_000;
+        let invite = roboco_proto::tailcat::TailcatInvite::new("tcSECRETaddress", "SECRETcode", expires_at)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let target = parse_pairing_url(invite).unwrap();
+        assert!(target.tailcat);
+        assert_eq!(target.host, "Tailcat");
+        assert_eq!(target.expires_at_ms, Some(expires_at));
+        assert!(target.base_url.starts_with("tailcat:"));
+        assert!(!format!("{target:?}").contains("SECRET"));
+        // An expired one maps to TailcatExpired.
+        let expired = roboco_proto::tailcat::TailcatInvite::new("tcSECRETaddress", "SECRETcode", 1)
+            .unwrap()
+            .encode()
+            .unwrap();
+        assert_eq!(parse_pairing_url(expired).unwrap_err(), PairError::TailcatExpired);
         assert!(matches!(
             parse_pairing_url("ftp://h/pair#token=x".into()),
             Err(PairError::InvalidUrl { .. })
