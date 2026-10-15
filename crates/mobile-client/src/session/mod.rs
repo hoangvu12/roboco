@@ -64,7 +64,11 @@ pub struct SubagentRow {
     /// What the spawn asked for ("Audit grapheme handling").
     pub title: String,
     pub state: SubagentState,
-    /// The engine's one-line live tail of its output.
+    /// The chip's one-line live tail, when the doc carries one. Today's
+    /// engine never writes it (live tails were rejected: per-delta chip
+    /// rewrites grew the parent doc — `crates/engine/src/sessions.rs`
+    /// `subagent_chip_update`), so this reads `None` in practice; older or
+    /// future docs that stamp `subagentTail` still surface it.
     pub tail: Option<String>,
     /// The model the spawn picked, when it named one.
     pub model: Option<String>,
@@ -104,16 +108,10 @@ pub(crate) fn subagents_of(entries: &[Arc<SessionMessageEntry>]) -> Vec<Subagent
                 None if *resolved => SubagentState::Done,
                 None => SubagentState::Running,
             };
-            let detail = roboco_proto::view::tool_chip_content(call).1;
             // A re-spawn (a steered subagent) updates its row in place.
-            let title = detail.trim();
             let row = SubagentRow {
                 doc_id: doc_id.clone(),
-                title: if title.is_empty() {
-                    "Subagent".to_owned()
-                } else {
-                    title.to_owned()
-                },
+                title: subagent_title(call),
                 state,
                 tail: subagent_tail
                     .as_deref()
@@ -130,6 +128,69 @@ pub(crate) fn subagents_of(entries: &[Arc<SessionMessageEntry>]) -> Vec<Subagent
         }
     }
     rows
+}
+
+/// Max chars a subagent title keeps (desktop `SUBAGENT_TITLE_MAX`).
+const SUBAGENT_TITLE_MAX: usize = 40;
+
+/// A spawn chip's subagent title — the desktop's `subagent_tab_title`
+/// (`crates/ui/src/transcript.rs`), so the phone's sheet, card link and
+/// viewer name a subagent exactly as the desktop's tab strip does: the
+/// BARE task ("Agent: scan repo" → "scan repo"), backed up by the call
+/// input's `description`/`prompt` (a bare "Agent"/"Task" spawn), first
+/// line only, capped with an ellipsis; "Subagent" as the last resort.
+/// Every native driver decodes its spawn as `Unknown { "Agent[: desc]" }`
+/// (claude `Agent`/`Task` → `crates/harness/src/claude/normalize.rs`).
+pub fn subagent_title(call: &roboco_proto::ToolCall) -> String {
+    use roboco_proto::ToolCall;
+    let (name, input) = match call {
+        ToolCall::Unknown { name, input } => (name.as_str(), input.as_ref()),
+        ToolCall::Mcp { tool, input, .. } => (tool.as_str(), input.as_ref()),
+        _ => return "Subagent".to_owned(),
+    };
+    let candidates = [
+        Some(name),
+        input.and_then(|i| i.get("description")?.as_str()),
+        input.and_then(|i| i.get("prompt")?.as_str()),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|text| title_line(strip_spawn_prefix(text), SUBAGENT_TITLE_MAX))
+        .unwrap_or_else(|| "Subagent".to_owned())
+}
+
+/// First non-blank line of `text`, trimmed, capped at `max` chars with an
+/// ellipsis (desktop `title_line`).
+fn title_line(text: &str, max: usize) -> Option<String> {
+    let line = text.lines().find(|l| !l.trim().is_empty())?.trim();
+    let mut out: String = line.chars().take(max).collect();
+    if line.chars().count() > max {
+        out.push('…');
+    }
+    Some(out)
+}
+
+/// Drop a leading "Agent"/"Task" genus (with its `:` and spacing); only a
+/// word boundary strips — "Taskmaster" keeps its name (desktop
+/// `strip_spawn_prefix`).
+fn strip_spawn_prefix(text: &str) -> &str {
+    let t = text.trim();
+    for prefix in ["agent", "task"] {
+        if t.len() >= prefix.len()
+            && t.is_char_boundary(prefix.len())
+            && t[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
+            let rest = &t[prefix.len()..];
+            if rest.is_empty() {
+                return "";
+            }
+            if rest.starts_with(':') || rest.starts_with(char::is_whitespace) {
+                return rest.trim_start_matches(':').trim();
+            }
+        }
+    }
+    t
 }
 
 /// Subagents whose spawn chips still run — the sessions-list "● N" pill
@@ -870,11 +931,16 @@ fn spawn_session_tasks(core: &Arc<SessionCore>) {
     crate::runtime::shared().spawn(async move {
         transcript::run(transcript_core, transcript_cancel).await;
     });
-    let queue_core = core.clone();
-    let queue_cancel = cancel.clone();
-    crate::runtime::shared().spawn(async move {
-        queue::run(queue_core, queue_cancel).await;
-    });
+    // A read-only subagent doc has no composer and nothing queues on it:
+    // its `WatchQueue` would only hold a calls-connection stream open
+    // (and pin the doc on the engine) for a list that stays empty.
+    if !core.read_only {
+        let queue_core = core.clone();
+        let queue_cancel = cancel.clone();
+        crate::runtime::shared().spawn(async move {
+            queue::run(queue_core, queue_cancel).await;
+        });
+    }
     let watch_core = core.clone();
     crate::runtime::shared().spawn(async move {
         watch_task(watch_core, cancel).await;
@@ -1176,6 +1242,13 @@ impl SessionHandle {
     /// Send: a new turn when idle; while working, queue (or steer, or
     /// stop-and-send, per `busy`).
     pub async fn send(&self, request: SendRequest) -> Result<SendOutcome, ClientError> {
+        // A subagent transcript is read-only (upstream #899's viewer): a
+        // send would queue a run on a doc that has no chat row.
+        if self.core.read_only {
+            return Err(ClientError::InvalidArgument {
+                message: "a subagent transcript is read-only".into(),
+            });
+        }
         self.core.clone().send(request).await
     }
 
@@ -1731,6 +1804,39 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].doc_id, "c--sub--s");
         assert_eq!(rows[0].spawned_at_ms, 2_000, "the newest spawn wins");
+    }
+
+    /// Subagent titles match the desktop's tab titles (`subagent_tab_title`):
+    /// the bare task, the input's description/prompt for a bare spawn,
+    /// word-boundary genus stripping, a capped first line.
+    #[test]
+    fn subagent_titles_match_the_desktop_tabs() {
+        use roboco_proto::ToolCall;
+        let unknown = |name: &str, input: Option<serde_json::Value>| ToolCall::Unknown {
+            name: name.into(),
+            input,
+        };
+        assert_eq!(subagent_title(&unknown("Agent: scan repo", None)), "scan repo");
+        assert_eq!(
+            subagent_title(&unknown(
+                "Task",
+                Some(serde_json::json!({
+                    "description": "Agent: audit the auth flow",
+                    "prompt": "very long instructions…",
+                }))
+            )),
+            "audit the auth flow"
+        );
+        assert_eq!(
+            subagent_title(&unknown("Agent", Some(serde_json::json!({ "prompt": "line one\nline two" })))),
+            "line one"
+        );
+        assert_eq!(subagent_title(&unknown("Taskmaster", None)), "Taskmaster");
+        assert_eq!(subagent_title(&unknown("agent", None)), "Subagent");
+        let long = subagent_title(&unknown(&"x".repeat(120), None));
+        assert_eq!(long.chars().count(), SUBAGENT_TITLE_MAX + 1);
+        assert!(long.ends_with('…'));
+        assert_eq!(subagent_title(&ToolCall::Exec { command: "ls".into() }), "Subagent");
     }
 
     /// The pill counts only running subagents.

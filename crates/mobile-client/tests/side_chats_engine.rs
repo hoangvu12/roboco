@@ -87,19 +87,22 @@ impl Harness for ScenarioHarness {
         request: RunRequest,
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        self.requests.lock().unwrap().push(request);
-        if let Some(rx) = self.background.lock().unwrap().take() {
+        self.requests.lock().unwrap().push(request.clone());
+        let background = self.background.lock().unwrap().take();
+        if let Some(rx) = background {
             // The test drives every event: the parent turn's completion,
-            // then the background subagent's nested traffic.
-            let rx = Arc::new(tokio::sync::Mutex::new(rx));
-            return Ok(futures::stream::unfold(rx, |rx| async move {
-                rx.lock().await.recv().await.map(|item| (item, rx))
+            // then the background subagent's nested traffic. The stream
+            // stays open until the test drops its sender.
+            return Ok(futures::stream::unfold(rx, |mut rx| async move {
+                let item = rx.recv().await?;
+                Some((item, rx))
             })
             .boxed());
         }
         let reply = self.reply;
         let events: Vec<Result<AgentEvent, HarnessError>> = match reply {
-            Reply::Plain => vec![
+            // A background rig's later runs (none today) answer plainly.
+            Reply::Plain | Reply::Background => vec![
                 Ok(AgentEvent::SessionStarted {
                     harness: HarnessId::Mock,
                     model: "mock-1".into(),
@@ -282,6 +285,15 @@ async fn rig_with_background(
             .is_some_and(|engine| engine.rows.chats.iter().any(|chat| chat.id == "parent"))
     })
     .await;
+    // The workspace store derives off the fleet asynchronously: the side
+    // chat create reads the parent's ROW (host, checkout, sandbox), so
+    // wait for the derived row too, not only the fleet frame.
+    let scoped_parent = client.scope(&record.engine_id, "parent");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while client.workspace().session(&scoped_parent).is_none() {
+        assert!(Instant::now() < deadline, "the parent row never derived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let rig = Rig {
         client,
         core,
@@ -314,6 +326,24 @@ impl Rig {
                 return;
             }
             assert!(Instant::now() < deadline, "the reply never arrived");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait until the parent's reply is COMPLETE (not merely streaming):
+    /// the engine's fork boundary is the last completed assistant entry.
+    async fn wait_completed(&self) {
+        let handle = self.client.open_session(&self.parent_id()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let completed = handle.snapshot().entries.iter().any(|entry| {
+                entry.role == roboco_doc::MessageRole::Assistant
+                    && entry.status == Some(roboco_doc::MessageStatus::Complete)
+            });
+            if completed {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the reply never completed");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -359,6 +389,7 @@ async fn fork_side_chat_copies_history_under_its_parent() {
 
     // A completed turn, then the fork.
     rig.ask("hello").await;
+    rig.wait_completed().await;
     let fork = rig.client.fork_side_chat(&parent).await.expect("fork");
     assert!(roboco_engine_client::registry::ScopedId::is_scoped(&fork));
     let raw_fork = roboco_engine_client::registry::ScopedId::parse(&fork)
@@ -434,7 +465,7 @@ async fn create_side_chat_runs_in_the_parents_checkout() {
     let rig = rig(Reply::Plain).await;
     let parent = rig.parent_id();
     let config = ChatConfig {
-        harness: "mock".into(),
+        harness: ProtoHarnessId::Mock,
         model: Some("mock-1".into()),
         reasoning: None,
         model_options: Default::default(),
@@ -590,7 +621,10 @@ async fn the_subagent_doc_streams_and_counts_while_it_runs() {
     assert_eq!(rows[0].state, SubagentState::Running);
     assert_eq!(rows[0].title, "Audit the repo");
     assert_eq!(rows[0].model.as_deref(), Some("mock-1"));
-    assert_eq!(rows[0].tail.as_deref(), Some("subagent: reading the tree"));
+    // No live tail: the engine's chip carries lifecycle only (tails were
+    // rejected — `subagent_chip_update` in crates/engine/src/sessions.rs);
+    // the nested text lands in the subagent's own doc instead.
+    assert_eq!(rows[0].tail, None);
     assert_eq!(rows[0].doc_id, rig.scope("parent--sub--tool-1"));
 
     // The parent's row counts it (the "● N" pill).
@@ -808,7 +842,12 @@ async fn a_background_subagent_binds_after_its_tool_result_and_freezes_on_done()
         .unwrap();
 
     // The parent's reply landed; the subagent has not spoken yet, so
-    // nothing is listed (the chip IS the index).
+    // nothing is listed (the chip IS the index): the engine stamps
+    // `subagentRef` on the FIRST tagged event, never on the ToolCall
+    // (sessions.rs subagent routing). The real claude driver binds at spawn
+    // time because it seeds a tagged `UserMessage` with the spawn's prompt
+    // right after the call (claude/normalize.rs); this harness omits that
+    // seed, which exercises the in-place stamp on a finished entry.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let answered = parent_handle
@@ -851,7 +890,8 @@ async fn a_background_subagent_binds_after_its_tool_result_and_freezes_on_done()
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, SubagentState::Running);
     assert_eq!(rows[0].doc_id, rig.scope("parent--sub--tool-1"));
-    assert_eq!(rows[0].tail.as_deref(), Some("background: scanning the tree"));
+    // Lifecycle only on the chip (no tail); the text is in the doc below.
+    assert_eq!(rows[0].tail, None);
     // The running count lands on the row (the card's dots).
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {

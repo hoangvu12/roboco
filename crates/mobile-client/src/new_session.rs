@@ -21,7 +21,7 @@ use roboco_engine_client::registry::{EngineKey, ScopedId};
 use roboco_proto::ChatIndicator;
 
 use crate::workspace::ProjectView;
-use crate::{Client, ClientError};
+use crate::{Client, ClientError, ClientInner};
 
 /// How long a pending chat stays in the workspace before the engine's
 /// `WatchChats` echo is assumed lost: the overlay drops after this, and

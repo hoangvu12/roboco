@@ -299,9 +299,19 @@ impl WorkspaceStore {
     /// publication; `0` clears it. Recomputes on every change — a count
     /// that did not move changes nothing (the row hash holds it).
     pub(crate) fn set_running_subagents(&self, chat_id: &str, count: u32) {
+        // A leaf lock: nothing else is taken while it is held, so the
+        // session's publish path may call this from any lock state the
+        // crate's order allows (it runs after the session state lock).
         let mut counts = lock(&self.running_subagents);
-        if counts.insert(chat_id.to_owned(), count) != Some(count) {
-            drop(counts);
+        // `0` removes the entry, so every chat ever opened does not leave
+        // a zero behind (and clearing an absent count is a no-op).
+        let changed = if count == 0 {
+            counts.remove(chat_id).is_some()
+        } else {
+            counts.insert(chat_id.to_owned(), count) != Some(count)
+        };
+        drop(counts);
+        if changed {
             self.notify.notify_one();
         }
     }
