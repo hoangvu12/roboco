@@ -153,12 +153,22 @@ impl TailcatRoute {
         let opener = self.opener.clone();
         let address = self.address.clone();
         let state = lock(&self.client_state).clone();
+        tracing::debug!("tailcat route: opening a tunnel");
+        let opened = tokio::task::spawn_blocking(move || opener.open(&address, &state))
+            .await
+            .map_err(|_| TailcatError::Unreachable("the Tailcat open was interrupted".into()))
+            .and_then(|opened| opened);
         let OpenedTunnel {
             tunnel,
             client_state,
-        } = tokio::task::spawn_blocking(move || opener.open(&address, &state))
-            .await
-            .map_err(|_| TailcatError::Unreachable("the Tailcat open was interrupted".into()))??;
+        } = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                tracing::debug!(%error, "tailcat route: open failed");
+                return Err(error);
+            }
+        };
+        tracing::debug!(url = tunnel.url(), "tailcat route: tunnel open");
         if !client_state.is_empty() {
             *lock(&self.client_state) = client_state;
         }
@@ -179,6 +189,7 @@ impl TailcatRoute {
             return;
         };
         if loopback_accepts(tunnel.url()).await {
+            tracing::debug!(url = tunnel.url(), "tailcat route: dial failed, loopback alive; Go recovers");
             return;
         }
         tracing::info!("the Tailcat loopback is gone; rebuilding the tunnel");
@@ -231,6 +242,12 @@ impl DialTarget {
             .await
             .map_err(|error| RpcError::Transport(error.to_string()))?;
         let result = roboco_rpc::connect_ws_authenticated(&endpoint, &self.credential).await;
+        if self.route.is_tailcat() {
+            match &result {
+                Ok(_) => tracing::debug!(%endpoint, "tailcat route: dial ok"),
+                Err(error) => tracing::debug!(%endpoint, %error, "tailcat route: dial failed"),
+            }
+        }
         self.route.record_dial(&result).await;
         result
     }

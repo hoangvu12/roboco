@@ -35,6 +35,16 @@ struct GoPieces {
     testderp: PathBuf,
 }
 
+/// The route's decisions on the test output (captured by libtest, shown on
+/// failure). The Go side logs to stderr with ROBOCO_TAILCAT_TEST_LOG=1,
+/// which CI sets for this job.
+fn trace_routes() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("roboco_mobile_client=debug")
+        .with_test_writer()
+        .try_init();
+}
+
 fn go_pieces() -> Option<GoPieces> {
     let env = |name: &str| {
         std::env::var_os(name)
@@ -147,6 +157,7 @@ fn mint_invite(engine_dir: &std::path::Path, address: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
+    trace_routes();
     let Some(go) = go_pieces() else {
         return;
     };
@@ -216,6 +227,7 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
 
     // 4. The engine's adapter restarts from its persisted state: the
     //    address is unchanged, and the phone reconnects without re-pairing.
+    eprintln!("tailcat e2e: phase 4 - restarting the engine's adapter");
     drop(server);
     let map_url = derp.map_url.clone();
     let server_dir = engine_dir.path().to_owned();

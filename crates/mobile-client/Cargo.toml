@@ -37,6 +37,8 @@ libloading = "0.8"
 sha2.workspace = true
 
 [dev-dependencies]
+# tests/tailcat_engine.rs prints the route's decisions.
+tracing-subscriber.workspace = true
 roboco-engine.workspace = true
 roboco-harness.workspace = true
 async-trait.workspace = true
