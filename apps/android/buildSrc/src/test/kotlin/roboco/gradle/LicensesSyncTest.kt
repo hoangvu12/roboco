@@ -147,4 +147,38 @@ class LicensesSyncTest {
         check(dir.delete() && dir.mkdirs()) { "could not create ${dir.path}" }
         return dir
     }
+
+    @Test
+    fun theGoBundleIsStagedUnderLicensesGoWithItsLayoutAndTheKratosLicense() {
+        val dir = createTempDir()
+        try {
+            val bundle = dir.resolve("bundle").apply { mkdirs() }
+            bundle.resolve("DEPENDENCIES.txt").writeText("module\tversion\tlicense_files\n")
+            bundle.resolve("modules").mkdirs()
+            bundle.resolve("modules/001-x-LICENSE.txt").writeText("x licence\n")
+            val kratos = dir.resolve("LICENSE.kratos").apply { writeText("MIT kratos\n") }
+
+            val task = taskIn(dir)
+            task.goBundleDir.set(bundle)
+            task.goLicenseFiles.from(kratos)
+            task.assetsDir.set(dir.resolve("generated-assets"))
+            task.sync()
+
+            val go = dir.resolve("generated-assets/licenses/go")
+            assertArrayEquals(
+                bundle.resolve("modules/001-x-LICENSE.txt").readBytes(),
+                go.resolve("modules/001-x-LICENSE.txt").readBytes(),
+            )
+            assertArrayEquals(kratos.readBytes(), go.resolve("LICENSE.kratos").readBytes())
+            assertEquals(true, go.resolve("DEPENDENCIES.txt").isFile)
+
+            // Unset again: no stale go/ survives a rerun.
+            val bare = taskIn(dir, "bare")
+            bare.assetsDir.set(dir.resolve("generated-assets"))
+            bare.sync()
+            assertEquals(false, go.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

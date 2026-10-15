@@ -5,12 +5,18 @@
 //! - **Tailcat** engines dial a loopback tunnel that the route opens on
 //!   demand and rebuilds when it goes bad. Concurrent dials share one open.
 //!
-//! Rebuild rules (the Go client already rebuilds its tailcat client after
-//! a failed tunnel dial, keeping the loopback port):
+//! Rebuild rules. The Go library already recovers on its own: after a
+//! failed tunnel dial it rebuilds its tailcat client with the same key and
+//! keeps the loopback listener (`adapters/roboco-tailcat/adapter.go`
+//! `Client.dial`, proven across a server restart by `recovery_test.go`).
+//! So the route must not fight it:
 //!
-//! 1. [`REBUILD_AFTER`] WebSocket dial failures in a row through the same
-//!    tunnel, or an identity timeout, drop it: the next dial reopens it.
-//!    This covers a dead Go client.
+//! 1. A failed WebSocket dial drops the tunnel only when its loopback no
+//!    longer accepts TCP: a dead Go client. A dial that reached the
+//!    loopback (a refused or unfinished handshake) leaves the Go side to
+//!    recover; tearing it down there restarts its recovery from scratch.
+//!    An identity timeout (a tunnel that connects but never answers) also
+//!    drops it.
 //! 2. A network change drops it, so magicsock binds the new interface
 //!    (Android's netmon only polls every 10 minutes).
 //! 3. Forget, re-pair and shutdown drop it.
@@ -19,8 +25,8 @@
 //! backoff, never a park. A revoked session still shows only as a refused
 //! WebSocket upgrade.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use roboco_rpc::{RpcClient, RpcError};
 
@@ -28,8 +34,8 @@ use super::EngineTransport;
 use crate::lock;
 use crate::tailcat::{OpenedTunnel, TailcatError, Tunnel, TunnelOpener};
 
-/// Consecutive failed dials through one tunnel before it is rebuilt.
-pub(crate) const REBUILD_AFTER: u32 = 2;
+/// How long the loopback probe after a failed dial may take.
+const LOOPBACK_PROBE: Duration = Duration::from_secs(2);
 
 pub(crate) enum Route {
     Direct { endpoint: String },
@@ -46,7 +52,6 @@ pub(crate) struct TailcatRoute {
     slot: Mutex<Option<Arc<Tunnel>>>,
     /// Held across an open, so concurrent dials share it.
     gate: tokio::sync::Mutex<()>,
-    failures: AtomicU32,
 }
 
 impl Route {
@@ -79,22 +84,16 @@ impl Route {
         }
     }
 
-    /// Record a dial's outcome. An auth refusal proves the tunnel works.
-    pub(crate) fn record_dial(&self, result: &Result<RpcClient, RpcError>) {
+    /// Record a dial's outcome (rule 1): after a failure, probe the
+    /// tunnel's loopback and drop the tunnel only if nothing accepts there.
+    /// An auth refusal came through a working tunnel.
+    pub(crate) async fn record_dial(&self, result: &Result<RpcClient, RpcError>) {
         let Route::Tailcat(route) = self else {
             return;
         };
         match result {
-            Ok(_) => route.failures.store(0, Ordering::Relaxed),
-            Err(error) if roboco_rpc::is_auth_refused(error) => {
-                route.failures.store(0, Ordering::Relaxed)
-            }
-            Err(_) => {
-                if route.failures.fetch_add(1, Ordering::Relaxed) + 1 >= REBUILD_AFTER {
-                    tracing::info!("Tailcat dials keep failing; rebuilding the tunnel");
-                    route.drop_tunnel();
-                }
-            }
+            Err(error) if !roboco_rpc::is_auth_refused(error) => route.drop_if_dead().await,
+            _ => {}
         }
     }
 
@@ -139,7 +138,6 @@ impl TailcatRoute {
             opener,
             slot: Mutex::new(None),
             gate: tokio::sync::Mutex::new(()),
-            failures: AtomicU32::new(0),
         }
     }
 
@@ -166,15 +164,43 @@ impl TailcatRoute {
         }
         let tunnel = Arc::new(tunnel);
         *lock(&self.slot) = Some(tunnel.clone());
-        self.failures.store(0, Ordering::Relaxed);
         Ok(tunnel)
     }
 
     fn drop_tunnel(&self) {
-        self.failures.store(0, Ordering::Relaxed);
         // The tunnel closes when the last dial holding it lets go.
         let _ = lock(&self.slot).take();
     }
+
+    /// Drops the live tunnel if its loopback no longer accepts TCP (the Go
+    /// client is gone). A newer tunnel opened meanwhile is left alone.
+    async fn drop_if_dead(&self) {
+        let Some(tunnel) = lock(&self.slot).clone() else {
+            return;
+        };
+        if loopback_accepts(tunnel.url()).await {
+            return;
+        }
+        tracing::info!("the Tailcat loopback is gone; rebuilding the tunnel");
+        let mut slot = lock(&self.slot);
+        if slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, &tunnel)) {
+            slot.take();
+        }
+    }
+}
+
+/// Whether `http://127.0.0.1:<port>` accepts a TCP connection within
+/// [LOOPBACK_PROBE]. The probe connection is closed at once; the Go proxy
+/// treats it like any client that hung up.
+async fn loopback_accepts(url: &str) -> bool {
+    let Some(authority) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = authority.trim_end_matches('/').to_owned();
+    matches!(
+        tokio::time::timeout(LOOPBACK_PROBE, tokio::net::TcpStream::connect(authority)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// What a dial needs: the route and the credential, handed around as one.
@@ -205,7 +231,7 @@ impl DialTarget {
             .await
             .map_err(|error| RpcError::Transport(error.to_string()))?;
         let result = roboco_rpc::connect_ws_authenticated(&endpoint, &self.credential).await;
-        self.route.record_dial(&result);
+        self.route.record_dial(&result).await;
         result
     }
 }
@@ -213,26 +239,33 @@ impl DialTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A fake opener: counts opens, can be slow, can fail, and reports
-    /// tunnel closes.
+    /// A fake opener: counts opens, can be slow, can fail, reports tunnel
+    /// closes, and hands out the loopback ports it is given (in order),
+    /// else 40000 + n.
     struct Fake {
         opens: AtomicUsize,
         closes: Arc<AtomicUsize>,
         delay: Duration,
         fail: Option<TailcatError>,
+        ports: Mutex<VecDeque<u16>>,
     }
 
     impl Fake {
-        fn new() -> Arc<Self> {
+        fn with(delay: Duration, fail: Option<TailcatError>, ports: Vec<u16>) -> Arc<Self> {
             Arc::new(Self {
                 opens: AtomicUsize::new(0),
                 closes: Arc::new(AtomicUsize::new(0)),
-                delay: Duration::ZERO,
-                fail: None,
+                delay,
+                fail,
+                ports: Mutex::new(ports.into()),
             })
+        }
+
+        fn new() -> Arc<Self> {
+            Self::with(Duration::ZERO, None, Vec::new())
         }
     }
 
@@ -244,10 +277,13 @@ mod tests {
                 return Err(error.clone());
             }
             let count = self.opens.fetch_add(1, Ordering::SeqCst) + 1;
+            let port = lock(&self.ports)
+                .pop_front()
+                .unwrap_or(40000 + count as u16);
             let closes = self.closes.clone();
             Ok(OpenedTunnel {
                 tunnel: Tunnel::new(
-                    format!("http://127.0.0.1:{}", 40000 + count),
+                    format!("http://127.0.0.1:{port}"),
                     Box::new(move || {
                         closes.fetch_add(1, Ordering::SeqCst);
                     }),
@@ -274,7 +310,15 @@ mod tests {
     }
 
     fn failed_dial() -> Result<RpcClient, RpcError> {
-        Err(RpcError::Transport("connection refused".into()))
+        Err(RpcError::Transport(
+            "WebSocket protocol error: Handshake not finished".into(),
+        ))
+    }
+
+    /// A loopback port nothing listens on (bound, then released).
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap().port()
     }
 
     async fn wait_for(counter: &AtomicUsize, value: usize) {
@@ -293,8 +337,7 @@ mod tests {
         let opener: Arc<dyn TunnelOpener> = fake.clone();
         let route = Route::for_record("http://h:8123", &EngineTransport::Direct, &opener);
         assert_eq!(route.endpoint().await.unwrap(), "ws://h:8123/");
-        route.record_dial(&failed_dial());
-        route.record_dial(&failed_dial());
+        route.record_dial(&failed_dial()).await;
         route.invalidate();
         assert!(!route.is_tailcat());
         assert_eq!(fake.opens.load(Ordering::SeqCst), 0);
@@ -302,10 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_dials_share_one_open() {
-        let fake = Arc::new(Fake {
-            delay: Duration::from_millis(200),
-            ..Arc::try_unwrap(Fake::new()).ok().unwrap()
-        });
+        let fake = Fake::with(Duration::from_millis(200), None, Vec::new());
         let route = tailcat(&fake, "");
         let dials: Vec<_> = (0..5)
             .map(|_| {
@@ -324,30 +364,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_dial_failures_rebuild_the_tunnel() {
-        let fake = Fake::new();
+    async fn failures_through_a_live_loopback_leave_recovery_to_the_go_client() {
+        // The Go proxy is alive (its listener accepts): the server side is
+        // what failed, and the Go client rebuilds itself. Never tear it
+        // down from here, however many dials fail.
+        let live = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = live.local_addr().unwrap().port();
+        let fake = Fake::with(Duration::ZERO, None, vec![port]);
         let route = tailcat(&fake, "stored-state");
-        assert_eq!(route.endpoint().await.unwrap(), "ws://127.0.0.1:40001/");
-        route.record_dial(&failed_dial());
-        // One failure keeps the tunnel (the Go client retries itself).
-        assert_eq!(route.endpoint().await.unwrap(), "ws://127.0.0.1:40001/");
+        let endpoint = route.endpoint().await.unwrap();
+        for _ in 0..5 {
+            route.record_dial(&failed_dial()).await;
+        }
+        assert_eq!(route.endpoint().await.unwrap(), endpoint);
+        assert_eq!(fake.opens.load(Ordering::SeqCst), 1);
         assert_eq!(fake.closes.load(Ordering::SeqCst), 0);
-        route.record_dial(&failed_dial());
+        drop(live);
+    }
+
+    #[tokio::test]
+    async fn a_failure_with_a_dead_loopback_rebuilds_the_tunnel() {
+        let (dead, next) = (closed_port().await, closed_port().await);
+        let fake = Fake::with(Duration::ZERO, None, vec![dead, next]);
+        let route = tailcat(&fake, "stored-state");
+        assert_eq!(route.endpoint().await.unwrap(), format!("ws://127.0.0.1:{dead}/"));
+        route.record_dial(&failed_dial()).await;
         wait_for(&fake.closes, 1).await;
-        assert_eq!(route.endpoint().await.unwrap(), "ws://127.0.0.1:40002/");
+        assert_eq!(route.endpoint().await.unwrap(), format!("ws://127.0.0.1:{next}/"));
         assert_eq!(fake.opens.load(Ordering::SeqCst), 2);
         // The stored identity is reused, never replaced.
         assert_eq!(route.client_state().as_deref(), Some("stored-state"));
     }
 
     #[tokio::test]
-    async fn a_success_or_an_auth_refusal_resets_the_failure_count() {
-        let fake = Fake::new();
+    async fn an_auth_refusal_never_rebuilds() {
+        let dead = closed_port().await;
+        let fake = Fake::with(Duration::ZERO, None, vec![dead]);
         let route = tailcat(&fake, "s");
         route.endpoint().await.unwrap();
-        route.record_dial(&failed_dial());
-        route.record_dial(&Err(RpcError::Transport("HTTP error: 401 Unauthorized".into())));
-        route.record_dial(&failed_dial());
+        route
+            .record_dial(&Err(RpcError::Transport("HTTP error: 401 Unauthorized".into())))
+            .await;
         route.endpoint().await.unwrap();
         assert_eq!(fake.opens.load(Ordering::SeqCst), 1);
     }
@@ -367,15 +424,20 @@ mod tests {
 
     #[tokio::test]
     async fn open_failures_surface_as_transport_errors_without_the_address() {
-        let fake = Arc::new(Fake {
-            fail: Some(TailcatError::Unreachable("Tailcat client startup failed".into())),
-            ..Arc::try_unwrap(Fake::new()).ok().unwrap()
-        });
+        let fake = Fake::with(
+            Duration::ZERO,
+            Some(TailcatError::Unreachable("Tailcat client startup failed".into())),
+            Vec::new(),
+        );
         let target = DialTarget {
             route: tailcat(&fake, "s"),
             credential: "credential".into(),
         };
-        let error = target.connect().await.unwrap_err();
+        // RpcClient is not Debug, so no unwrap_err.
+        let error = match target.connect().await {
+            Ok(_) => panic!("a failed open must not connect"),
+            Err(error) => error,
+        };
         assert!(!roboco_rpc::is_auth_refused(&error));
         let text = error.to_string();
         assert!(text.contains("Tailcat"), "{text}");
