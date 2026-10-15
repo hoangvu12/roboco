@@ -416,10 +416,13 @@ class SettingsScreenTest {
     }
 
     @Test
-    // Back at the class's 874 dp phone height (it ran at 3000 dp while the
-    // scroll-then-click there never went idle): the bounded diagnostic
-    // below settled and removed on CI 3bd01174, so the frame loop no longer
-    // reproduces. Remove sits below the fold, so the row is scrolled in first.
+    // At the class's 874 dp phone height on purpose. With a wallpaper set,
+    // Remove straddles the bottom edge by a few px at rest, so
+    // performScrollToNode issues a ScrollBy of a few dp: c lands inside the
+    // large title's 0 < c < 52 range. The scaffold's end-of-scroll snap used
+    // to undo it (back to c = 0), and performScrollToNode re-issued the same
+    // ScrollBy forever: the OOM on CI afca10c5 (round 45). The snap now only
+    // follows a user drag (LargeTitleScaffold), so this scroll stays put.
     fun tappingRemoveWallpaperRemovesAtOnce() {
         // The wallpaper is set (a fixture flip before mounting): the
         // effect and remove rows exist.
@@ -439,8 +442,10 @@ class SettingsScreenTest {
      * frozen clock, fixed scroll steps and at most 240 frames, recording the
      * scroll value and Remove's bounds per frame. A frame loop fails with
      * that trace (which value oscillates names the cause) instead of hanging
-     * the job. Green on CI 3bd01174, so the test above is back at 874 dp;
-     * this one stays as the guard that names the loop if it returns.
+     * the job. It stayed green while the loop was live (CI afca10c5): its
+     * 300 dp steps jump straight past the 52 dp collapse range, where the
+     * snap never fires. The loop needed a small in-range scroll (round 45;
+     * see the test above). Kept as a bounded scroll-then-tap guard.
      */
     @Test
     fun removeWallpaperBelowTheFoldSettlesAndRemoves() {

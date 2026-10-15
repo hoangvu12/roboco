@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
@@ -29,6 +30,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeWithVelocity
 import androidx.compose.ui.unit.Dp
@@ -381,6 +383,32 @@ class LargeTitleScaffoldTest {
         compose.waitForIdle()
         val c = collapseOf(listState)
         assertTrue("settled at c = $c, not a snap target (0 or 52)", c < 0.5f || c > 51.5f)
+    }
+
+    /**
+     * Round 45 (the Settings remove-wallpaper loop): only a scroll the user
+     * dragged snaps. An accessibility/programmatic scroll — the semantics
+     * ScrollBy that TalkBack and `performScrollToNode` issue — that rests at
+     * 0 < c < L stays there; snapping it back to 0 undid it, and
+     * `performScrollToNode` re-issued the same scroll forever. A later drag
+     * still snaps.
+     */
+    @Test
+    fun aSemanticsScrollInsideTheCollapseRangeStaysAndALaterDragStillSnaps() {
+        val listState = LazyListState()
+        host(listState = listState)
+        compose.onNode(hasScrollBy).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, dp(10f)) }
+        compose.waitForIdle()
+        assertEquals("a semantics scroll to c = 10 must not snap back", 10f, collapseOf(listState), 0.5f)
+
+        // From c = 10, a 20 dp drag releases at c = 30 (past half): closed.
+        dragUp(20f)
+        compose.waitForIdle()
+        assertEquals("the drag's release should snap to 52", 52f, collapseOf(listState), 0.5f)
+    }
+
+    private val hasScrollBy = SemanticsMatcher("has a ScrollBy action") {
+        it.config.contains(SemanticsActions.ScrollBy)
     }
 
     // ------------------------------------------------------- hit testing
