@@ -133,7 +133,7 @@ class CoreSideChatsSource(
     private val client: () -> CoreClient?,
     private val handle: SessionHandle,
 ) : SideChatsSource {
-    override fun agents(): List<SideChatsAgent> = handle.subagents().map(SideChatsAgent::from)
+    override fun agents(): List<SideChatsAgent> = handle.subagents().map { SideChatsAgent.from(it) }
 
     override fun children(parentChatId: String): List<SessionRowVM> =
         client()?.childSessions(parentChatId).orEmpty()
