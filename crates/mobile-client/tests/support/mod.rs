@@ -183,8 +183,10 @@ pub fn test_timings() -> Timings {
         undelivered_grace: Duration::from_secs(2),
         workspace_tick: Duration::from_millis(100),
         // android-next#05: the forced-usage deadline shrinks so the
-        // stall-proxy test cuts a frozen probe in well under a second.
-        accounts_forced_deadline: Duration::from_millis(400),
+        // stall-proxy test cuts a frozen probe in well under a second, and
+        // before the link's own stall detection (probe 200 + lag 400 ms)
+        // tears the connection down with a different error.
+        accounts_forced_deadline: Duration::from_millis(250),
         notify: NotifyTimings::default(),
     }
 }
