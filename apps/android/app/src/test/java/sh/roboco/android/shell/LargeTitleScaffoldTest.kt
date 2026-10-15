@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -405,6 +406,38 @@ class LargeTitleScaffoldTest {
         dragUp(20f)
         compose.waitForIdle()
         assertEquals("the drag's release should snap to 52", 52f, collapseOf(listState), 0.5f)
+    }
+
+    /**
+     * Round 49 evidence: a real drag on the fixture's list is observed on
+     * `listState.interactionSource` as a `DragInteraction.Start`, and the
+     * scaffold's snap gate saw the finger. Either failure message quotes the
+     * scaffold's LTS-DIAG lines (interactions, scroll edges, gate state), so
+     * CI shows which signal is missing.
+     */
+    @Test
+    fun aDragIsObservedOnTheListsInteractionSourceAndOpensTheSnapGate() {
+        LargeTitleSnapDiagnostics.reset()
+        val listState = LazyListState()
+        val seen = mutableListOf<String>()
+        compose.setContent {
+            RobocoTheme(Appearance.Light) {
+                LaunchedEffect(listState) {
+                    listState.interactionSource.interactions.collect { seen += it::class.simpleName.orEmpty() }
+                }
+                LargeTitleFixtureScaffold(listState = listState, rows = 30)
+            }
+        }
+        compose.waitForIdle()
+        dragUp(20f)
+        compose.waitForIdle()
+        val diag = LargeTitleSnapDiagnostics.snapshot().joinToString("\n")
+        assertTrue(
+            "no DragInteraction.Start on listState.interactionSource; seen=$seen\n$diag",
+            seen.contains("Start"),
+        )
+        assertTrue("the snap gate never saw the finger:\n$diag", diag.contains("pointer down -> userScroll=true"))
+        assertEquals("c should have snapped to 0 (seen=$seen)\n$diag", 0f, collapseOf(listState), 0.5f)
     }
 
     private val hasScrollBy = SemanticsMatcher("has a ScrollBy action") {
