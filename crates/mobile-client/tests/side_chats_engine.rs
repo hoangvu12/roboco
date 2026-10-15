@@ -37,14 +37,23 @@ enum Reply {
     /// Spawn a subagent and keep the turn (and it) running: the stream
     /// stays open after the nested text.
     SpawnLive,
+    /// The user's claude-code background shape: the harness's stream is a
+    /// channel the TEST drives — the parent turn completes (a parked,
+    /// steerable session), and the subagent's nested traffic arrives
+    /// afterwards, exactly like claude's `run_in_background` lane (the
+    /// `task_notification` re-keying of `agent_tasks`).
+    Background,
 }
 
 /// A mock harness that records every `RunRequest` and answers with the
 /// scenario's event stream. `SpawnLive` parks the stream (the turn never
-/// completes), so the spawned subagent stays `Running`.
+/// completes), so the spawned subagent stays `Running`. `Background`
+/// answers from a channel the test feeds.
 struct ScenarioHarness {
     reply: Reply,
     requests: Arc<Mutex<Vec<RunRequest>>>,
+    /// `Reply::Background`: the events the test feeds.
+    background: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Result<AgentEvent, HarnessError>>>>,
 }
 
 #[async_trait]
@@ -79,6 +88,15 @@ impl Harness for ScenarioHarness {
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         self.requests.lock().unwrap().push(request);
+        if let Some(rx) = self.background.lock().unwrap().take() {
+            // The test drives every event: the parent turn's completion,
+            // then the background subagent's nested traffic.
+            let rx = Arc::new(tokio::sync::Mutex::new(rx));
+            return Ok(futures::stream::unfold(rx, |rx| async move {
+                rx.lock().await.recv().await.map(|item| (item, rx))
+            })
+            .boxed());
+        }
         let reply = self.reply;
         let events: Vec<Result<AgentEvent, HarnessError>> = match reply {
             Reply::Plain => vec![
@@ -200,11 +218,31 @@ impl Rig {
 /// Assemble the engine with the scenario harness, a parent chat with a
 /// known checkout, serve it, and pair a client.
 async fn rig(reply: Reply) -> Rig {
+    rig_with_background(reply).await.0
+}
+
+/// [`rig`] plus the background lane: when `reply` is `Reply::Background`,
+/// the returned sender feeds the harness's event stream (the test drives
+/// the parent turn and the subagent's nested traffic itself).
+async fn rig_with_background(
+    reply: Reply,
+) -> (Rig, Option<tokio::sync::mpsc::Sender<Result<AgentEvent, HarnessError>>>) {
     let engine_dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let registry = HarnessRegistry::new();
     let requests = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Arc::new(ScenarioHarness { reply, requests: requests.clone() }));
+    let background = if reply == Reply::Background {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (background_tx, background_rx) = background;
+    registry.register(Arc::new(ScenarioHarness {
+        reply,
+        requests: requests.clone(),
+        background: std::sync::Mutex::new(background_rx),
+    }));
     let core = EngineCore::assemble_with_profile(
         roboco_engine::EngineProfile::local(engine_dir.path()).unwrap(),
         Arc::new(registry),
@@ -244,14 +282,15 @@ async fn rig(reply: Reply) -> Rig {
             .is_some_and(|engine| engine.rows.chats.iter().any(|chat| chat.id == "parent"))
     })
     .await;
-    Rig {
+    let rig = Rig {
         client,
         core,
         engine_id: record.engine_id,
         engine_dir,
         data_dir,
         requests,
-    }
+    };
+    (rig, background_tx)
 }
 
 impl Rig {
@@ -694,4 +733,202 @@ async fn a_finished_subagent_clears_the_count_and_still_reads() {
         assert!(Instant::now() < deadline, "the finished transcript never read");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// The user's claude-code background shape (run_in_background): the spawn
+/// call's tool result returns at once ("Async agent launched") and the
+/// parent turn completes, while the subagent's nested traffic arrives
+/// afterwards — the run loop stays parked and routes it into the
+/// subagent's doc (sessions.rs: "Handled BEFORE the parked gate so a
+/// parked session's background traffic still reaches the subagent doc").
+/// The card binds to the doc (a link with running dots), the doc opens
+/// live and keeps streaming, and the chip freezes when the agent's Done
+/// lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_subagent_binds_after_its_tool_result_and_freezes_on_done() {
+    let (rig, sender) = rig_with_background(Reply::Background).await;
+    let sender = sender.expect("the background lane");
+    let parent = rig.parent_id();
+    let parent_handle = rig.client.open_session(&parent).unwrap();
+    let request_cwd = "/checkout/parent".to_owned();
+    let send = parent_handle
+        .send(SendRequest::text("run an agent in the background"))
+        .await
+        .expect("send");
+    assert!(matches!(send, roboco_mobile_client::SendOutcome::Started { .. }));
+
+    // Phase 1 — the parent turn: the spawn call, its IMMEDIATE result
+    // (the async-launch ack resolves the tool call), the parent's text,
+    // and the turn's Done (the steerable session parks, not ends).
+    let event = |e: AgentEvent| -> Result<AgentEvent, HarnessError> { Ok(e) };
+    sender
+        .send(event(AgentEvent::SessionStarted {
+            harness: HarnessId::Mock,
+            model: "mock-1".into(),
+            tools: vec![],
+            cwd: request_cwd.clone(),
+            session_id: "sess-1".into(),
+            assistant_message_id: "a-1".into(),
+        }))
+        .await
+        .unwrap();
+    sender
+        .send(event(AgentEvent::ToolCall {
+            id: "tool-1".into(),
+            call: ToolCall::Unknown {
+                name: "Agent: Audit the repo".into(),
+                input: Some(serde_json::json!({ "prompt": "audit", "run_in_background": true })),
+            },
+        }))
+        .await
+        .unwrap();
+    sender
+        .send(event(AgentEvent::ToolResult {
+            id: "tool-1".into(),
+            is_error: false,
+            output: Some("Async agent launched…".into()),
+            diff: None,
+        }))
+        .await
+        .unwrap();
+    sender
+        .send(event(AgentEvent::TextDelta {
+            text: "parent turn done".into(),
+        }))
+        .await
+        .unwrap();
+    sender
+        .send(event(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        }))
+        .await
+        .unwrap();
+
+    // The parent's reply landed; the subagent has not spoken yet, so
+    // nothing is listed (the chip IS the index).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let answered = parent_handle
+            .snapshot()
+            .entries
+            .iter()
+            .any(|entry| entry
+                .parts
+                .iter()
+                .any(|part| matches!(part, roboco_doc::MessagePart::Text { text, .. } if text.contains("parent turn done")));
+        if answered {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the parent turn never landed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(parent_handle.subagents().is_empty(), "no subagent yet");
+
+    // Phase 2 — the background agent speaks, AFTER the turn completed.
+    // The engine stamps the (already-resolved) chip with the doc ref and
+    // Running, and routes the text into the subagent's own doc.
+    sender
+        .send(event(AgentEvent::Subagent {
+            parent_tool_use_id: "tool-1".into(),
+            event: Box::new(AgentEvent::TextDelta {
+                text: "background: scanning the tree".into(),
+            }),
+        }))
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let rows = loop {
+        let rows = parent_handle.subagents();
+        if !rows.is_empty() {
+            break rows;
+        }
+        assert!(Instant::now() < deadline, "the background subagent never bound");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, SubagentState::Running);
+    assert_eq!(rows[0].doc_id, rig.scope("parent--sub--tool-1"));
+    assert_eq!(rows[0].tail.as_deref(), Some("background: scanning the tree"));
+    // The running count lands on the row (the card's dots).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let count = rig
+            .client
+            .workspace()
+            .session(&parent)
+            .map(|row| row.running_subagents)
+            .unwrap_or(0);
+        if count == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the background count never landed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The doc opens read-only and streams the background output.
+    let viewer = rig
+        .client
+        .open_subagent(&rig.scope("parent--sub--tool-1"))
+        .expect("open the background subagent");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let streaming = viewer.snapshot().entries.iter().any(|entry| entry
+            .parts
+            .iter()
+            .any(|part| matches!(part, roboco_doc::MessagePart::Text { text, .. } if text.contains("scanning the tree"))));
+        if streaming {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the background doc never streamed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Phase 3 — the agent finishes: the chip freezes (Done), the count
+    // clears, and the transcript still reads.
+    sender
+        .send(event(AgentEvent::Subagent {
+            parent_tool_use_id: "tool-1".into(),
+            event: Box::new(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: None,
+            }),
+        }))
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let rows = parent_handle.subagents();
+        if rows.len() == 1 && rows[0].state == SubagentState::Done {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the background subagent never froze: {rows:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let count = rig
+            .client
+            .workspace()
+            .session(&parent)
+            .map(|row| row.running_subagents)
+            .unwrap_or(0);
+        if count == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the frozen count never cleared");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let still_reads = viewer
+        .snapshot()
+        .entries
+        .iter()
+        .any(|entry| entry
+            .parts
+            .iter()
+            .any(|part| matches!(part, roboco_doc::MessagePart::Text { text, .. } if text.contains("scanning the tree"))));
+    assert!(still_reads, "the frozen transcript still reads");
 }
