@@ -1,0 +1,45 @@
+[package]
+name = "roboco-mobile-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The data plane of the Roboco Android app (spec D1 "Option A"): pairing,
+# supervised multi-engine connections (feed / calls / transcript / spare),
+# lenient decoding of newer engines' payloads, the phone-clock re-stamper and
+# the offline cache. Pure Rust + tokio, UniFFI-free, so `cargo test` runs on
+# any host. `roboco-mobile` (the UniFFI library Kotlin links) wraps it in
+# `client_ffi`.
+#
+# `roboco-engine` must never appear here as a normal dependency: tests drive
+# real in-process engines (spec "Testing Decisions" — no protocol mocks).
+
+[dependencies]
+roboco-proto.workspace = true
+roboco-doc.workspace = true
+roboco-rpc.workspace = true
+roboco-engine-client.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+futures = "0.3"
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+# The Tailcat transport (android-next#02): libroboco_tailcat is dlopen'ed on
+# the first Tailcat dial; sha2 derives the non-secret display handle.
+libloading = "0.8"
+sha2.workspace = true
+
+[dev-dependencies]
+# tests/tailcat_engine.rs prints the route's decisions.
+tracing-subscriber.workspace = true
+roboco-engine.workspace = true
+roboco-harness.workspace = true
+async-trait.workspace = true
+tempfile.workspace = true

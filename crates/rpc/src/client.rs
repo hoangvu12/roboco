@@ -145,6 +145,38 @@ impl RpcClient {
         self.out.closed().await;
     }
 
+    /// Force-close the transport now, even while [`Arc`] clones of this
+    /// client are still held: pending RPCs fail as [`RpcError::Closed`] and
+    /// every stream subscriber sees its receiver end. The client's pump owns
+    /// the socket; aborting the inbound reader drops the receiver the pump
+    /// selects on, which tears the socket down from either half. Idempotent.
+    ///
+    /// The mobile client's transcript lag check uses this to drop a frozen
+    /// connection whose `Arc` is still held by an open session handle.
+    pub fn close(&self) {
+        self.reader.abort();
+        // The aborted reader is what would have failed every pending call;
+        // do it here instead so callers do not hang behind a dead socket.
+        let drained: Vec<Pending> = {
+            let mut pending = self.shared.lock();
+            pending.drain().map(|(_, p)| p).collect()
+        };
+        for entry in drained {
+            match entry {
+                Pending::Call(tx) => {
+                    let _ = tx.send(Err(RpcError::Closed));
+                }
+                Pending::CheckedStream {
+                    ready: Some(ready), ..
+                } => {
+                    let _ = ready.send(Err(RpcError::Closed));
+                }
+                Pending::Stream(_) | Pending::CheckedStream { ready: None, .. } => {}
+            }
+            // Stream item receivers end by sender drop.
+        }
+    }
+
     /// Unary request.
     pub async fn call(
         &self,
@@ -362,6 +394,43 @@ fn wire_error(error: String) -> RpcError {
         .unwrap_or(RpcError::Failed(error))
 }
 
+/// The one prefix a refused upgrade is rendered with (tungstenite's own
+/// `Error::Http` text), produced from the structured status in
+/// [`dial_error`] and nowhere else.
+const HTTP_ERROR_PREFIX: &str = "HTTP error: ";
+
+/// Did the WebSocket upgrade refuse this client's session credential?
+///
+/// A refused upgrade (401, or 403 when the bind policy forbids the address)
+/// is classified from tungstenite's structured `Error::Http` status in
+/// [`dial_error`] and rendered as `RpcError::Transport("HTTP error: 401 …")`.
+/// Only that exact prefix plus status token counts: a URL or address that
+/// merely contains "401"/"403" (`ws://10.0.0.1:4013`, "timed out dialing …")
+/// is a transport failure, never a revocation. A paired client maps a
+/// refusal to "session revoked / pair again" — unlike a browser it never
+/// sees the 4401 close code, because the pump treats Close as end-of-stream.
+pub fn is_auth_refused(err: &RpcError) -> bool {
+    match err {
+        RpcError::Transport(message) => message
+            .strip_prefix(HTTP_ERROR_PREFIX)
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|status| status == "401" || status == "403"),
+        _ => false,
+    }
+}
+
+/// Maps a failed WebSocket upgrade to a transport error, classifying an
+/// HTTP refusal from the response's structured status (never by searching
+/// the rendered text, which can carry the URL).
+fn dial_error(error: tokio_tungstenite::tungstenite::Error) -> RpcError {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            RpcError::Transport(format!("{HTTP_ERROR_PREFIX}{}", response.status()))
+        }
+        other => RpcError::Transport(other.to_string()),
+    }
+}
+
 /// How long each dial phase (TCP connect, WebSocket upgrade) may take before
 /// we give up.
 ///
@@ -381,11 +450,21 @@ pub async fn connect_ws_authenticated(url: &str, credential: &str) -> Result<Rpc
     connect_ws_with_session(url, Some(credential)).await
 }
 
+/// Per-message size ceiling for client WebSocket connections. #621 measured
+/// a 16.4 MB transcript reset; tungstenite 0.24's 64 MiB default would drop a
+/// growing one, so every client dial ([`connect_ws`] and
+/// [`connect_ws_authenticated`], desktop and mobile alike) raises the ceiling
+/// to 256 MiB (the engine's server side stays at defaults: client→engine
+/// frames are small).
+pub const MAX_MESSAGE_BYTES: usize = 256 << 20;
+
 async fn connect_ws_with_session(
     url: &str,
     credential: Option<&str>,
 ) -> Result<RpcClient, RpcError> {
-    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue};
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
+    };
     let mut request = url
         .into_client_request()
         .map_err(|_| RpcError::Transport("invalid engine URL".into()))?;
@@ -424,11 +503,20 @@ async fn connect_ws_with_session(
     let (io, progress) = crate::pump::ProgressIo::new(io);
     let (ws, _) = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        tokio_tungstenite::client_async_tls(request, io),
+        tokio_tungstenite::client_async_tls_with_config(
+            request,
+            io,
+            Some(WebSocketConfig {
+                max_message_size: Some(MAX_MESSAGE_BYTES),
+                max_frame_size: Some(MAX_MESSAGE_BYTES),
+                ..Default::default()
+            }),
+            None,
+        ),
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    .map_err(dial_error)?;
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
     tokio::spawn(crate::pump::pump(
@@ -471,5 +559,114 @@ mod wss_dial_tests {
             !err.to_string().contains("unsupported engine URL scheme"),
             "wss was rejected at the scheme gate: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod auth_and_close_tests {
+    use super::*;
+
+    #[test]
+    fn auth_refusal_is_recognized_from_tungstenites_exact_strings() {
+        // The exact string tungstenite renders for a refused upgrade.
+        assert!(is_auth_refused(&RpcError::Transport(
+            "HTTP error: 401 Unauthorized".into()
+        )));
+        assert!(is_auth_refused(&RpcError::Transport(
+            "HTTP error: 403 Forbidden".into()
+        )));
+        // Other transports, and every non-transport error, are not refusals:
+        // a store hiccup is 503 and must keep the reconnect loop alive.
+        assert!(!is_auth_refused(&RpcError::Transport(
+            "HTTP error: 503 Service Unavailable".into()
+        )));
+        assert!(!is_auth_refused(&RpcError::Transport(
+            "timed out dialing ws://127.0.0.1:1/".into()
+        )));
+        assert!(!is_auth_refused(&RpcError::Failed("401-ish".into())));
+        assert!(!is_auth_refused(&RpcError::Closed));
+    }
+
+    #[test]
+    fn a_url_or_address_containing_401_or_403_is_not_a_refusal() {
+        // The old substring match parked these engines as Revoked forever.
+        for message in [
+            "timed out dialing ws://10.0.0.1:4013/",
+            "timed out dialing ws://192.168.40.1:27654/",
+            "IO error: Connection refused (os error 111) dialing ws://10.4.0.3:4030",
+            "unsupported engine URL scheme (expected ws or wss): http://h:4401",
+            "HTTP error: 4013 Unknown",
+            "HTTP error: 503 Service Unavailable at ws://h:403/",
+        ] {
+            assert!(
+                !is_auth_refused(&RpcError::Transport(message.into())),
+                "classified as a refusal: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_is_classified_from_tungstenites_structured_status() {
+        use tokio_tungstenite::tungstenite::{
+            Error as WsError,
+            http::{Response, StatusCode},
+        };
+        // tungstenite 0.24: `Error::Http(Response<Option<Vec<u8>>>)`.
+        let http = |status: StatusCode| {
+            WsError::Http(Response::builder().status(status).body(None).unwrap())
+        };
+        assert!(is_auth_refused(&dial_error(http(StatusCode::UNAUTHORIZED))));
+        assert!(is_auth_refused(&dial_error(http(StatusCode::FORBIDDEN))));
+        assert!(!is_auth_refused(&dial_error(http(
+            StatusCode::SERVICE_UNAVAILABLE
+        ))));
+        assert!(!is_auth_refused(&dial_error(WsError::ConnectionClosed)));
+    }
+
+    #[tokio::test]
+    async fn close_fails_pending_calls_and_ends_streams_while_clones_live() {
+        // Closing a client must tear down its transport even though a clone
+        // of its `Arc` is still held — the shape the mobile transcript lag
+        // check depends on.
+        struct Never;
+        #[async_trait::async_trait]
+        impl crate::RpcService for Never {
+            async fn handle(
+                &self,
+                _method: &str,
+                _params: serde_json::Value,
+            ) -> Result<crate::RpcReply, RpcError> {
+                // Hang: the call stays pending until the transport dies.
+                std::future::pending().await
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let service: Arc<dyn crate::RpcService> = Arc::new(Never);
+        let server = tokio::spawn(crate::serve_ws_listener(listener, service));
+        let client = Arc::new(connect_ws(&url).await.unwrap());
+        let held = client.clone();
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("Whatever", serde_json::json!({})).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        client.close();
+        let deadline = std::time::Duration::from_secs(5);
+        assert!(matches!(
+            tokio::time::timeout(deadline, pending)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(RpcError::Closed)
+        ));
+        tokio::time::timeout(deadline, client.closed())
+            .await
+            .unwrap();
+        assert!(
+            held.is_closed(),
+            "the held clone must see the transport closed"
+        );
+        server.abort();
     }
 }

@@ -295,7 +295,13 @@ fn line_starts(source: &str) -> Vec<usize> {
     starts
 }
 
-/// Whether this build contains a parser and compatible highlight queries.
+/// Whether this build highlights `language` when asked. Grammar subsets
+/// (android-app#10) deliberately do **not** change this: `LanguageId`,
+/// aliases and paths stay grammar-agnostic, and a compiled-out language
+/// surfaces as [`HighlightError::UnknownLanguage`] from `configuration`
+/// instead — so the desktop callers (which always link all grammars) are
+/// unchanged and the mobile layout still knows a fence's language while
+/// treating its highlighting as "no colours".
 pub const fn supports_language(language: LanguageId) -> bool {
     let _ = language;
     true
@@ -327,11 +333,16 @@ pub fn highlight_with_limits(
 
     let primary_configuration = cached_configuration(language)?;
     let injected = injected_languages(language);
+    // `lang-markdown` carries both the block grammar and the inline dialect
+    // it injects; without the feature `cached_configuration` already failed.
+    #[cfg(feature = "lang-markdown")]
     let markdown_inline = if language == LanguageId::Markdown {
         Some(cached_markdown_inline_configuration()?)
     } else {
         None
     };
+    #[cfg(not(feature = "lang-markdown"))]
+    let markdown_inline: Option<&'static HighlightConfiguration> = None;
     let mut highlighter = Highlighter::new();
     let events = highlighter
         .highlight(
@@ -377,7 +388,7 @@ pub fn highlight_with_limits(
 
 fn injected_languages(parent: LanguageId) -> Vec<LanguageId> {
     use LanguageId::*;
-    match parent {
+    let mut languages = match parent {
         Html => vec![JavaScript, Css, Json],
         Markdown => vec![
             Rust, JavaScript, Jsx, TypeScript, Tsx, Python, Go, Json, Jsonc, Bash, Toml, Html, Css,
@@ -385,6 +396,64 @@ fn injected_languages(parent: LanguageId) -> Vec<LanguageId> {
         ],
         Dockerfile => vec![Bash, Json, Yaml, Toml],
         _ => Vec::new(),
+    };
+    // Grammar subsets (android-app#10): never inject a language this build
+    // did not link — the parser would fail to load mid-highlight.
+    languages.retain(|&language| grammar_enabled(language));
+    languages
+}
+
+/// Whether this build links the grammar for `language`. Mirrors the
+/// `lang-*` Cargo features; injected languages are filtered through this so
+/// a Markdown fence in a compiled-out language degrades to plain text
+/// instead of a parser error.
+///
+/// `LanguageId`, aliases and paths deliberately stay grammar-agnostic: the
+/// code fence still knows *which* language it holds; `configuration`
+/// reports `UnknownLanguage` for it.
+fn grammar_enabled(language: LanguageId) -> bool {
+    macro_rules! grammar_gates {
+        ($($variant:ident => $feature:literal),+ $(,)?) => {
+            match language {
+                $(
+                    #[cfg(feature = $feature)]
+                    LanguageId::$variant => true,
+                )+
+                // Reachable exactly when some grammar feature is compiled out.
+                #[allow(unreachable_patterns)]
+                _ => false,
+            }
+        };
+    }
+    grammar_gates! {
+        Rust => "lang-rust",
+        JavaScript => "lang-javascript",
+        Jsx => "lang-javascript",
+        TypeScript => "lang-typescript",
+        Tsx => "lang-typescript",
+        Python => "lang-python",
+        Go => "lang-go",
+        Json => "lang-json",
+        Jsonc => "lang-json",
+        Bash => "lang-bash",
+        Toml => "lang-toml",
+        Markdown => "lang-markdown",
+        Html => "lang-html",
+        Css => "lang-css",
+        Yaml => "lang-yaml",
+        C => "lang-c",
+        Cpp => "lang-cpp",
+        CSharp => "lang-c-sharp",
+        Java => "lang-java",
+        Kotlin => "lang-kotlin",
+        Swift => "lang-swift",
+        Ruby => "lang-ruby",
+        Php => "lang-php",
+        Sql => "lang-sql",
+        Lua => "lang-lua",
+        Dockerfile => "lang-dockerfile",
+        Nix => "lang-nix",
+        Make => "lang-make",
     }
 }
 
@@ -418,6 +487,8 @@ fn cached_configuration(
     )
 }
 
+/// Compiled markdown-inline queries: see [`cached_configuration`].
+#[cfg(feature = "lang-markdown")]
 fn cached_markdown_inline_configuration() -> Result<&'static HighlightConfiguration, HighlightError>
 {
     static CONFIG: std::sync::OnceLock<Result<HighlightConfiguration, HighlightError>> =
@@ -432,6 +503,7 @@ fn cached_markdown_inline_configuration() -> Result<&'static HighlightConfigurat
         .map_err(Clone::clone)
 }
 
+#[cfg(feature = "lang-rust")]
 fn rust_configuration() -> Result<HighlightConfiguration, HighlightError> {
     // The upstream Rust query groups numbers and booleans as
     // `constant.builtin`. Roboco preserves those structural roles separately.
@@ -458,6 +530,7 @@ fn rust_configuration() -> Result<HighlightConfiguration, HighlightError> {
     .map_err(|error| HighlightError::Parser(error.to_string()))
 }
 
+#[cfg(feature = "lang-markdown")]
 fn markdown_configuration() -> Result<HighlightConfiguration, HighlightError> {
     // tree-sitter-highlight excludes child ranges from injections by default.
     // The Markdown block grammar's `inline` node owns anonymous children that
@@ -475,6 +548,7 @@ fn markdown_configuration() -> Result<HighlightConfiguration, HighlightError> {
     )
 }
 
+#[cfg(feature = "lang-markdown")]
 fn markdown_inline_configuration() -> Result<HighlightConfiguration, HighlightError> {
     make_configuration(
         tree_sitter_md::INLINE_LANGUAGE.into(),
@@ -485,6 +559,9 @@ fn markdown_inline_configuration() -> Result<HighlightConfiguration, HighlightEr
     )
 }
 
+// Called from at least one `configuration` arm whenever any grammar
+// feature is on; a build with every grammar compiled out leaves it unused.
+#[allow(dead_code)]
 fn make_configuration(
     language: tree_sitter::Language,
     name: &str,
@@ -496,6 +573,10 @@ fn make_configuration(
         .map_err(|error| HighlightError::Parser(error.to_string()))
 }
 
+// The JavaScript family composes queries across two grammar crates, so its
+// helpers compile when either family feature is on and each arm is gated to
+// the grammars it references (`lang-typescript` implies `lang-javascript`).
+#[cfg(any(feature = "lang-javascript", feature = "lang-typescript"))]
 fn javascript_family_highlights(language: LanguageId) -> String {
     use LanguageId::*;
 
@@ -505,10 +586,12 @@ fn javascript_family_highlights(language: LanguageId) -> String {
             tree_sitter_javascript::HIGHLIGHT_QUERY,
             tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
         ][..],
+        #[cfg(feature = "lang-typescript")]
         TypeScript => &[
             tree_sitter_javascript::HIGHLIGHT_QUERY,
             tree_sitter_typescript::HIGHLIGHTS_QUERY,
         ][..],
+        #[cfg(feature = "lang-typescript")]
         Tsx => &[
             tree_sitter_javascript::HIGHLIGHT_QUERY,
             tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
@@ -519,6 +602,7 @@ fn javascript_family_highlights(language: LanguageId) -> String {
     queries.join("\n")
 }
 
+#[cfg(any(feature = "lang-javascript", feature = "lang-typescript"))]
 fn javascript_family_configuration(
     language: LanguageId,
 ) -> Result<HighlightConfiguration, HighlightError> {
@@ -538,12 +622,14 @@ fn javascript_family_configuration(
             tree_sitter_javascript::INJECTIONS_QUERY,
             tree_sitter_javascript::LOCALS_QUERY,
         ),
+        #[cfg(feature = "lang-typescript")]
         TypeScript => (
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             "typescript",
             "",
             tree_sitter_typescript::LOCALS_QUERY,
         ),
+        #[cfg(feature = "lang-typescript")]
         Tsx => (
             tree_sitter_typescript::LANGUAGE_TSX.into(),
             "tsx",
@@ -556,10 +642,18 @@ fn javascript_family_configuration(
 }
 
 fn configuration(language: LanguageId) -> Result<HighlightConfiguration, HighlightError> {
+    // The wildcard import feeds the cfg-gated match arms below; a build with
+    // every grammar compiled out has no arms left to use it.
+    #[allow(unused_imports)]
     use LanguageId::*;
     match language {
+        #[cfg(feature = "lang-rust")]
         Rust => rust_configuration(),
-        JavaScript | Jsx | TypeScript | Tsx => javascript_family_configuration(language),
+        #[cfg(feature = "lang-javascript")]
+        JavaScript | Jsx => javascript_family_configuration(language),
+        #[cfg(feature = "lang-typescript")]
+        TypeScript | Tsx => javascript_family_configuration(language),
+        #[cfg(feature = "lang-python")]
         Python => make_configuration(
             tree_sitter_python::LANGUAGE.into(),
             "python",
@@ -567,6 +661,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-go")]
         Go => make_configuration(
             tree_sitter_go::LANGUAGE.into(),
             "go",
@@ -574,6 +669,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-json")]
         Json | Jsonc => make_configuration(
             tree_sitter_json::LANGUAGE.into(),
             "json",
@@ -581,6 +677,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-bash")]
         Bash => make_configuration(
             tree_sitter_bash::LANGUAGE.into(),
             "bash",
@@ -588,6 +685,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-toml")]
         Toml => make_configuration(
             tree_sitter_toml_ng::LANGUAGE.into(),
             "toml",
@@ -595,7 +693,9 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-markdown")]
         Markdown => markdown_configuration(),
+        #[cfg(feature = "lang-html")]
         Html => make_configuration(
             tree_sitter_html::LANGUAGE.into(),
             "html",
@@ -603,6 +703,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             tree_sitter_html::INJECTIONS_QUERY,
             "",
         ),
+        #[cfg(feature = "lang-css")]
         Css => make_configuration(
             tree_sitter_css::LANGUAGE.into(),
             "css",
@@ -610,6 +711,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-yaml")]
         Yaml => make_configuration(
             tree_sitter_yaml::LANGUAGE.into(),
             "yaml",
@@ -617,6 +719,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-c")]
         C => make_configuration(
             tree_sitter_c::LANGUAGE.into(),
             "c",
@@ -624,6 +727,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-cpp")]
         Cpp => make_configuration(
             tree_sitter_cpp::LANGUAGE.into(),
             "cpp",
@@ -635,6 +739,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-c-sharp")]
         CSharp => make_configuration(
             tree_sitter_c_sharp::LANGUAGE.into(),
             "csharp",
@@ -642,6 +747,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-java")]
         Java => make_configuration(
             tree_sitter_java::LANGUAGE.into(),
             "java",
@@ -649,6 +755,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-kotlin")]
         Kotlin => make_configuration(
             tree_sitter_kotlin_ng::LANGUAGE.into(),
             "kotlin",
@@ -656,6 +763,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-swift")]
         Swift => make_configuration(
             tree_sitter_swift::LANGUAGE.into(),
             "swift",
@@ -663,6 +771,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             tree_sitter_swift::LOCALS_QUERY,
         ),
+        #[cfg(feature = "lang-ruby")]
         Ruby => make_configuration(
             tree_sitter_ruby::LANGUAGE.into(),
             "ruby",
@@ -670,6 +779,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             tree_sitter_ruby::LOCALS_QUERY,
         ),
+        #[cfg(feature = "lang-php")]
         Php => make_configuration(
             tree_sitter_php::LANGUAGE_PHP.into(),
             "php",
@@ -677,6 +787,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-sql")]
         Sql => make_configuration(
             tree_sitter_sequel::LANGUAGE.into(),
             "sql",
@@ -684,6 +795,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-lua")]
         Lua => make_configuration(
             tree_sitter_lua::LANGUAGE.into(),
             "lua",
@@ -691,6 +803,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             tree_sitter_lua::LOCALS_QUERY,
         ),
+        #[cfg(feature = "lang-nix")]
         Nix => make_configuration(
             tree_sitter_nix::LANGUAGE.into(),
             "nix",
@@ -698,6 +811,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-make")]
         Make => make_configuration(
             tree_sitter_make::LANGUAGE.into(),
             "make",
@@ -705,6 +819,7 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             "",
             "",
         ),
+        #[cfg(feature = "lang-dockerfile")]
         Dockerfile => make_configuration(
             tree_sitter_containerfile::LANGUAGE.into(),
             "dockerfile",
@@ -712,6 +827,12 @@ fn configuration(language: LanguageId) -> Result<HighlightConfiguration, Highlig
             tree_sitter_containerfile::INJECTIONS_QUERY,
             "",
         ),
+        // Grammar subsets (android-app#10): a compiled-out language keeps
+        // its identity (aliases and fences still resolve) but never
+        // highlights; the mobile layout treats this as "no colours".
+        // Unreachable whenever every `lang-*` feature is enabled.
+        #[allow(unreachable_patterns)]
+        _ => Err(HighlightError::UnknownLanguage),
     }
 }
 
@@ -1143,6 +1264,7 @@ fn build(value: usize) -> Widget {
     }
 
     #[test]
+    #[cfg(feature = "lang-rust")]
     fn rust_queries_load_for_the_bundled_abi() {
         assert!(rust_configuration().is_ok());
         let language_version = std::hint::black_box(tree_sitter::LANGUAGE_VERSION);
@@ -1205,6 +1327,12 @@ fn build(value: usize) -> Widget {
             ),
         ];
         for (language, path, source) in fixtures {
+            // Grammar subsets (android-app#10): only the grammars this build
+            // carries are required to load; compiled-out ones are covered by
+            // `compiled_out_grammar_keeps_fence_identity_but_does_not_highlight`.
+            if !super::grammar_enabled(language) {
+                continue;
+            }
             let config =
                 configuration(language).unwrap_or_else(|error| panic!("{language:?}: {error}"));
             assert!(
@@ -1226,6 +1354,11 @@ fn build(value: usize) -> Widget {
     }
 
     #[test]
+    #[cfg(all(
+        feature = "lang-typescript",
+        feature = "lang-kotlin",
+        feature = "lang-dockerfile"
+    ))]
     fn affected_composed_and_project_queries_load_for_pinned_grammars() {
         for language in [
             LanguageId::TypeScript,
@@ -1349,6 +1482,68 @@ fn build(value: usize) -> Widget {
             )),
             "YAML fence was not injected: {:?}",
             document.lines[5]
+        );
+    }
+
+    // android-app#10: grammar subsets. A language compiled out keeps its
+    // identity (aliases, paths, fences still resolve) but `configuration`
+    // reports `UnknownLanguage`, which the mobile layout treats as "no
+    // colours" — the fence renders monospaced and copyable. Ruby is outside
+    // `mobile-languages` (the middle set keeps Kotlin, Swift and C++).
+    #[test]
+    #[cfg(not(feature = "lang-ruby"))]
+    fn compiled_out_grammar_keeps_fence_identity_but_does_not_highlight() {
+        assert_eq!(
+            super::language_for_alias("ruby"),
+            Some(super::LanguageId::Ruby),
+            "aliases must not depend on compiled grammars"
+        );
+        assert_eq!(
+            highlight(HighlightRequest {
+                source: "def value\n  1\nend\n",
+                path: None,
+                fence_tag: Some("ruby"),
+            }),
+            Err(HighlightError::UnknownLanguage)
+        );
+        // A compiled-in fence still highlights on the same build.
+        let document = highlight(HighlightRequest {
+            source: "fn main() { let value = 42; }",
+            path: None,
+            fence_tag: Some("rust"),
+        })
+        .unwrap();
+        assert!(
+            document.lines[0]
+                .iter()
+                .any(|span| span.kind == HighlightKind::Keyword)
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "lang-ruby"))]
+    fn markdown_injections_skip_compiled_out_grammars() {
+        assert!(
+            !super::injected_languages(super::LanguageId::Markdown)
+                .contains(&super::LanguageId::Ruby)
+        );
+    }
+
+    // The middle set keeps the languages a coding agent most often emits:
+    // Kotlin, Swift and C++ fences must still colour on mobile builds.
+    #[test]
+    #[cfg(feature = "lang-kotlin")]
+    fn kotlin_fences_highlight_under_grammar_subsets() {
+        let document = highlight(HighlightRequest {
+            source: "fun main() { val value = 42 }",
+            path: None,
+            fence_tag: Some("kotlin"),
+        })
+        .unwrap();
+        assert!(
+            document.lines[0]
+                .iter()
+                .any(|span| span.kind == HighlightKind::Keyword)
         );
     }
 }

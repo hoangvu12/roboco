@@ -12014,6 +12014,30 @@ button.files-save-pill:hover {
   font-size: 12px;
 }
 
+/* The pairing-link QR tile (remote_access.rs pairing_qr_tile): 176px square
+ * inside 10px of padding on a radius-12 white ground. The white is not
+ * themed — scanners need dark on light, whatever the theme — and the SVG
+ * carries its own quiet zone. */
+.pairing-qr-tile {
+  flex: none;
+  align-self: center;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.pairing-qr-tile img {
+  display: block;
+  width: 176px;
+  height: 176px;
+}
+
+/* An expired link's QR dims so nobody scans a dead code (the caption swaps
+ * to "Expired. Create a new pairing link." in `pairingQr`). */
+.pairing-qr-expired {
+  opacity: 0.3;
+}
+
 .settings-provider {
   margin-top: 24px;
 }

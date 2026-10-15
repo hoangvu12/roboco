@@ -58,6 +58,7 @@ roboco-proto.workspace = true
 similar.workspace = true
 roboco-doc.workspace = true
 roboco-engine.workspace = true
+roboco-engine-client.workspace = true
 roboco-harness.workspace = true
 roboco-rpc.workspace = true
 roboco-update.workspace = true
@@ -73,6 +74,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark.workspace = true
+roboco-markdown.workspace = true
 alacritty_terminal.workspace = true
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
@@ -117,6 +119,7 @@ url = "2"
 x11rb = { version = "0.14.0", features = ["image"] }
 
 [dev-dependencies]
+roboco-engine-client = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 mimalloc.workspace = true
 tracing-subscriber.workspace = true

@@ -11,6 +11,9 @@ Artifact names use Rust's architecture token (`x86_64` or `aarch64`) so the
 updater can find the matching executable; published releases include both.
 Background services are not supported yet.
 
+For the Android client's Windows setup (JDKs, Android SDK/NDK, emulator
+acceleration), see [android-development.md](android-development.md).
+
 `scripts/package-windows.ps1` builds the portable ZIP, the updater payload
 `.exe`, and `roboco-<version>-windows-<arch>-setup.exe` (Inno Setup 6
 required: `winget install JRSoftware.InnoSetup`).

@@ -83,6 +83,81 @@ pub fn attention_rank(status: ChatIndicator) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Notification decision (shared by every surface)
+// ---------------------------------------------------------------------------
+
+/// Which notification a state transition earned. Shared by the desktop
+/// chimes/banners (via `roboco-ui`'s `Sound` mapping), the web port and the
+/// Android notification driver — one rule for every client (the mobile
+/// notifications ticket moved it here from `crates/ui/src/sound.rs`, ported
+/// 1:1; the decision itself must never drift between surfaces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyKind {
+    /// An agent turn completed successfully.
+    Done,
+    /// The agent is waiting on a question (→ AwaitingInput).
+    Request,
+    /// A run failed or the durable connection state degraded.
+    Attention,
+}
+
+/// Notification baseline is separate from the visual activity indicator:
+/// going idle can mean cancellation, expiry, or an internal handoff.
+///
+/// Lives in `proto` (not the viewport crate) so desktop, web and mobile
+/// share one copy of the rule (`sound_since`) and its staleness inputs
+/// ([`effective_indicator`], [`SESSION_STALE_MS`]).
+#[derive(Debug, Clone)]
+pub struct SessionNotificationState {
+    /// The staleness-gated indicator ([`effective_indicator`]).
+    pub indicator: Indicator,
+    /// The last successfully completed turn marker, compared across
+    /// baselines for the Done rule.
+    pub last_completed_turn: Option<String>,
+    /// `now − updated_at ≤ SESSION_STALE_MS` — the freshness gate of the
+    /// Done rule.
+    pub fresh: bool,
+}
+
+impl SessionNotificationState {
+    /// The baseline of one session row. `now` must be measured on the same
+    /// clock as `updated_at` (the mobile client re-stamps rows on the
+    /// phone's clock as frames arrive, so `Utc::now()` is correct there).
+    pub fn new(session: &Session, now: DateTime<Utc>) -> Self {
+        Self {
+            indicator: effective_indicator(Some(session), now),
+            last_completed_turn: session.last_completed_turn.clone(),
+            fresh: now
+                .signed_duration_since(session.updated_at)
+                .num_milliseconds()
+                <= SESSION_STALE_MS,
+        }
+    }
+
+    /// Call after saving the new baseline, including when delivery is
+    /// pending or outputs are disabled. Suppressed pings must never be
+    /// replayed later. Precedence: error, then input, then done.
+    pub fn sound_since(&self, prev: &Self, send_pending: bool) -> Option<NotifyKind> {
+        if self.indicator == Indicator::Errored && prev.indicator != Indicator::Errored {
+            return Some(NotifyKind::Attention);
+        }
+        if self.indicator == Indicator::AwaitingInput
+            && prev.indicator != Indicator::AwaitingInput
+        {
+            return Some(NotifyKind::Request);
+        }
+        if !send_pending
+            && self.fresh
+            && self.last_completed_turn.is_some()
+            && self.last_completed_turn != prev.last_completed_turn
+        {
+            return Some(NotifyKind::Done);
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Sort orders
 // ---------------------------------------------------------------------------
 
@@ -626,6 +701,115 @@ mod checkout_tests {
         assert_eq!(
             checkout_label(CheckoutKind::NewWorktree, Some(&plain("main"))),
             "New worktree"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notification decision tests (moved 1:1 from crates/ui/src/sound.rs —
+// the rule now lives here so desktop, web and mobile share one copy).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    fn baseline(indicator: Indicator, turn: Option<&str>) -> SessionNotificationState {
+        SessionNotificationState {
+            indicator,
+            last_completed_turn: turn.map(str::to_owned),
+            fresh: true,
+        }
+    }
+
+    #[test]
+    fn interrupted_and_expired_activity_never_chime() {
+        let working = baseline(Indicator::Working, Some("old"));
+        let idle = baseline(Indicator::None, Some("old"));
+        assert_eq!(idle.sound_since(&working, false), None);
+        // An older host without explicit completion metadata is silent too.
+        assert_eq!(
+            baseline(Indicator::None, None).sound_since(&baseline(Indicator::Working, None), false),
+            None
+        );
+    }
+
+    #[test]
+    fn a_run_error_chimes_once_and_never_masquerades_as_completion() {
+        let working = baseline(Indicator::Working, Some("old"));
+        let errored = baseline(Indicator::Errored, Some("failed"));
+        assert_eq!(
+            errored.sound_since(&working, false),
+            Some(NotifyKind::Attention)
+        );
+        assert_eq!(errored.sound_since(&errored, false), None);
+    }
+
+    #[test]
+    fn ordinary_queue_completions_survive_coalesced_working_states() {
+        let first = baseline(Indicator::Working, None);
+        let second = baseline(Indicator::Working, Some("first"));
+        assert_eq!(second.sound_since(&first, false), Some(NotifyKind::Done));
+        assert_eq!(second.sound_since(&second, false), None);
+        let last = baseline(Indicator::None, Some("second"));
+        assert_eq!(last.sound_since(&second, false), Some(NotifyKind::Done));
+        assert_eq!(last.sound_since(&last, false), None);
+    }
+
+    #[test]
+    fn pending_send_consumes_completion_but_preserves_input_requests() {
+        let before = baseline(Indicator::Working, None);
+        let settled = baseline(Indicator::None, Some("first"));
+        assert_eq!(settled.sound_since(&before, true), None);
+        assert_eq!(settled.sound_since(&settled, false), None);
+        let question = baseline(Indicator::AwaitingInput, Some("first"));
+        assert_eq!(
+            question.sound_since(&settled, true),
+            Some(NotifyKind::Request)
+        );
+        assert_eq!(question.sound_since(&question, false), None);
+    }
+
+    #[test]
+    fn stale_completion_is_consumed_without_replaying_on_a_heartbeat() {
+        let before = baseline(Indicator::Working, None);
+        let mut stale = baseline(Indicator::None, Some("old"));
+        stale.fresh = false;
+        assert_eq!(stale.sound_since(&before, false), None);
+        let refreshed = baseline(Indicator::Working, Some("old"));
+        assert_eq!(refreshed.sound_since(&stale, false), None);
+    }
+
+    /// `SessionNotificationState::new` folds the 45 s staleness gate into
+    /// the baseline exactly as `effective_indicator` does (mobile's driver
+    /// relies on this when it computes baselines off engine frames).
+    #[test]
+    fn new_derives_the_indicator_and_freshness_from_the_row() {
+        let now = Utc::now();
+        let fresh = now - chrono::TimeDelta::seconds(10);
+        let stale = now - chrono::TimeDelta::seconds(50);
+        let session = |status: SessionStatus, updated| Session {
+            last_completed_turn: Some("t".into()),
+            chat_id: "c".into(),
+            device_id: "d".into(),
+            status,
+            started_at: None,
+            updated_at: updated,
+        };
+        let working = SessionNotificationState::new(&session(SessionStatus::Working, fresh), now);
+        assert_eq!(working.indicator, Indicator::Working);
+        assert!(working.fresh);
+        let expired = SessionNotificationState::new(&session(SessionStatus::Working, stale), now);
+        // A Working row older than SESSION_STALE_MS reads as dead.
+        assert_eq!(expired.indicator, Indicator::None);
+        assert!(!expired.fresh);
+        let idle = SessionNotificationState::new(&session(SessionStatus::Idle, fresh), now);
+        assert_eq!(idle.indicator, Indicator::None);
+        assert!(idle.fresh);
+        assert_eq!(
+            idle.last_completed_turn.as_deref(),
+            Some("t"),
+            "the completion marker rides along for the comparison"
         );
     }
 }

@@ -6,6 +6,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - '.cargo/**'
       - 'crates/**'
       - 'apps/**'
       - 'adapters/roboco-tailcat/**'
@@ -17,6 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - '.cargo/**'
       - 'crates/**'
       - 'apps/**'
       - 'adapters/roboco-tailcat/**'
@@ -61,6 +63,104 @@ jobs:
           cargo test --locked -p roboco-update --lib
           cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings
 
+  # Mobile Rust core (spec D1, android-app#02): the crates the Android app's
+  # Kotlin painter leans on. Pure Rust, no GPUI system deps.
+  mobile-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # android-next#02: the Tailcat end-to-end test (mobile-client
+      # tests/tailcat_engine.rs) loads the real host libroboco_tailcat, runs
+      # the desktop adapter as the engine's server and a local DERP+STUN.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Build the Tailcat test pieces (host library, adapter, local DERP)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out/lib"
+          CGO_ENABLED=1 go build -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared -o "$out/lib/libroboco_tailcat.so" ./capi
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_LIB_DIR=$out/lib"
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
+      - name: Mobile core tests
+        # android-next#02: tailcat's own diagnostics (test-only sink) from the
+        # host library and the engine's adapter go to stderr for the
+        # Tailcat end-to-end test; nothing else in this run logs with it.
+        env:
+          ROBOCO_TAILCAT_TEST_LOG: '1'
+        run: cargo test --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-mobile-client
+      - name: Tailcat end-to-end (verbose)
+        # Already part of the run above; repeated alone with output so a
+        # failure shows the adapter and tunnel logs.
+        if: failure()
+        env:
+          ROBOCO_TAILCAT_TEST_LOG: '1'
+        run: cargo test --locked -p roboco-mobile-client --test tailcat_engine -- --nocapture
+      - name: Mobile grammar subset tests
+        # android-app#10: the Android core links the middle grammar set
+        # (Kotlin/Swift/C++ kept); the subset build must stay green.
+        run: cargo test --locked -p roboco-syntax --no-default-features --features mobile-languages --lib
+      - name: Engine client tests
+        # Real engines over loopback with restart/reconnect waits: serial, like
+        # the UI suite.
+        run: cargo test --locked -p roboco-engine-client -- --test-threads=1
+      - name: Mobile core benches compile
+        # Compile only, never run: keeps the criterion bench from rotting
+        # without paying its runtime on every PR.
+        run: cargo bench --locked -p roboco-text --no-run
+      - name: Mobile layout bench (informational)
+        # android-app#05: the layout bench numbers land in the logs for
+        # drift tracking; never gate the build on them.
+        continue-on-error: true
+        run: cargo test --locked --release -p roboco-mobile -- --ignored bench_layout_passes --nocapture
+
+  # The real Android core build (android-app#10): cargo-ndk artifacts for
+  # both ABIs, UniFFI Kotlin bindings, and the 16 KB PT_LOAD check. Runs the
+  # distribution profile so the recorded sizes are the shipped ones. This
+  # job supersedes ticket 04's ad-hoc `cargo check --target …` step in
+  # mobile-core, which never linked.
+  android-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install Android targets and NDK
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Install cargo-ndk
+        # Pinned like android.yml/release.yml (CARGO_NDK_VERSION 4.1.2).
+        run: cargo install --locked cargo-ndk --version 4.1.2
+      # android-next#02: android-core also builds libroboco_tailcat.so.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Build the mobile core and generate bindings
+        run: cargo xtask android-core --profile mobile-dist --check
+      - name: Upload core sizes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-core-sizes
+          path: target/android-core/sizes.json
+          if-no-files-found: warn
+          retention-days: 30
+
   tailcat-adapter:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -75,6 +175,22 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go test -mod=readonly -count=1 ./...
+      # android-next#02: the C ABI Android loads (./capi). Built and tested
+      # with cgo on the host too, so a broken export fails here and not only
+      # in the Android jobs.
+      - name: C ABI (cgo) vet, tests and host c-shared build
+        working-directory: adapters/roboco-tailcat
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go vet -mod=readonly ./capi
+          go test -mod=readonly -count=1 ./capi
+          go build -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared -o "$RUNNER_TEMP/libroboco_tailcat.so" ./capi
+          ls -l "$RUNNER_TEMP/libroboco_tailcat.so"
+          for symbol in abi_version start_client close free; do
+            nm -D --defined-only "$RUNNER_TEMP/libroboco_tailcat.so" | grep -qE " T roboco_tailcat_${symbol}\$" || {
+              echo "::error::libroboco_tailcat.so does not export roboco_tailcat_${symbol}"; exit 1; }
+          done
 
   ui-tests:
     runs-on: ubuntu-24.04

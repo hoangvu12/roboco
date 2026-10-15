@@ -62,6 +62,9 @@ with `roboco daemon install` separately if you need boot persistence.
 On another **native desktop**, paste the invite into **Settings → Devices**.
 The desktop owns its Tailcat connection; no `connect` command is required.
 
+On **Android**, scan or paste the invite on the Pair page. The app keeps its
+own Tailcat connection and reconnects after restarts and network changes.
+
 For the **browser**, run this on the machine running the browser:
 
 ```sh
@@ -161,3 +164,146 @@ remain readable. A compact strip marks the offline view, and sending is refused.
 The client retries with capped backoff and restores live updates after reconnecting.
 Each engine owns its files, terminals, queue and history; pairing does not copy
 engine data between machines.
+
+## Protocol compatibility
+
+The first call on every connection is `EngineInfo`. Besides the engine's
+identity (`deviceId`, `workspaceScope`) it is the compatibility handshake: the
+engine advertises the release that built it, its wire protocol generation, and
+the features it supports. Old clients ignore fields they do not know; new
+clients read missing fields as "protocol 1, version unknown".
+
+| Field | JSON | Meaning | Absent means |
+|---|---|---|---|
+| `version` | `"version":"0.9.2"` | The Roboco release that built this engine (`CARGO_PKG_VERSION`). For display and the newer-engine notice only. Never gate features on it. | An engine older than the field; the client may read the engine's `Device.version` row instead |
+| `protocolVersion` | `"protocolVersion":1` | The wire protocol *generation*. Bumped only for an incompatible change (a removed or renamed method or field, a changed frame or auth meaning). ADR 0005 freezes wire names, so expect this to stay 1 for a long time. | Treat as `1` |
+| `minClientProtocolVersion` | `"minClientProtocolVersion":1` | The oldest client protocol generation this engine still serves correctly. Raised only together with a bump of `protocolVersion` that drops the old generation. | Treat as `1` |
+
+Clients assess the handshake with `roboco_proto::compat::assess` (a pure
+module any client can call):
+
+1. `minClientProtocolVersion` above the client's protocol generation → the
+   engine refuses this client: **park the connection** (no reconnect loop),
+   re-assess on app start or manual "Try again".
+2. Engine `protocolVersion` below the client's oldest drivable generation →
+   the engine predates what the client can drive: park, same as above.
+3. Engine `protocolVersion` above the client's generation → a newer engine:
+   keep working, decode leniently, show a non-blocking notice once per engine
+   version.
+4. The engine's `major.minor` is newer than the client's → a newer engine
+   (rule 3 applies to the notice). A newer *patch* is silent; an unparseable
+   version never blocks.
+5. Otherwise compatible: features gate on capabilities, never on version
+   numbers. An older engine is never flagged as a whole — each missing feature
+   says so individually when its capability is absent.
+
+The web client is served by its engine (ADR 0006), so it cannot skew and does
+not park on these rules. The Android app is installed separately and follows
+them in full (client-side lenient decoding lands with it).
+
+### When a change needs a capability
+
+| Change on the engine side | Gate | Why |
+|---|---|---|
+| New RPC method | none: older engines answer `unknown method: X`. Clients hide or degrade that feature | engine RPC dispatch |
+| New param on an existing method, new `Mutate` op, new command kind or enum variant clients send, or changed semantics | **new capability string `<feature>-vN`** | older engines ignore unknown params silently or fail with `bad params` |
+| New field in a reply or stream item | none: additive and serde-defaulted, and clients ignore unknown fields | ADR 0005 |
+| New enum variant engines *send* (`MessagePart`, `ToolCall`, status) | none on the engine side; clients must decode leniently | unknown variants fail decoding in strict clients |
+| Removing or renaming anything on the wire | forbidden (ADR 0005). If ever unavoidable: bump `PROTOCOL_VERSION` and decide `MIN_CLIENT_PROTOCOL_VERSION`, in an ADR | — |
+
+Capability strings are never reused or removed within a protocol generation.
+
+### Gate catalogue (Android app)
+
+| Feature | Gate |
+|---|---|
+| Queue a message, watch the queue | `message-queue-v1` |
+| Queue send-now, steer-now, remove | `message-queue-actions-v1` |
+| Queue with attachments | `message-queue-attachments-v1` |
+| Clean attachment text in queued rows | `message-queue-clean-attachment-text-v1` |
+| Edit a queued message (60 s lease, renew every 20 s) | `message-queue-edit-lease-v1` |
+| Mid-run steer (`QueueCommand{command:{kind:"steer"}}`) | per harness, not per engine: `HarnessDescriptor.supportsSteering` / `steeringMode` from `ListHarnesses` |
+| `roboco-file:` mentions decoded by the host | `composer-references-v1` |
+| Transcript resume on reconnect | `transcript-resume-v1` |
+| `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
+| Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
+
+## Transcript resume
+
+A phone loses its transcript socket constantly (Doze, network handoffs, going to
+background), and every reconnect used to re-download the whole transcript: a
+`WatchDocMessages` stream always opens with a full `reset` (7.6 MB on a large
+chat — minutes over a slow relay). Resume is an opt-in, capability-gated fix:
+
+- The engine advertises `transcript-resume-v1` in `EngineInfo.capabilities`.
+- A client that kept a transcript copy sends a summary of what it holds with its
+  next `WatchDocMessages {chatId}` call.
+- When the summary matches, the first stream item is an ordinary **delta** that
+  brings the client's copy up to date; otherwise it is the usual `reset`, exactly
+  as before. Clients apply either with the existing `apply_transcript_frame`.
+
+### Subscribe params
+
+| Param | Type | Meaning |
+|---|---|---|
+| `digests` | `bool`, default `false` | Attach `digests` to every frame of this stream |
+| `resume` | `TranscriptResume?` | Try to resume from the client's copy. Implies `digests: true`. Takes precedence over `openingTail` |
+
+```jsonc
+// TranscriptResume
+{ "count": 412,                                  // entries the client holds
+  "prefix": "e3b0c44298fc1c149afbf4c8996fb924", // digest of the first count − tail.length entries
+  "tail": [ { "id": "e380", "digest": "9f2c0a1b44d0e7aa" } ] } // the last W held entries; W ≤ 512
+```
+
+A malformed `resume` object never fails the call: the engine logs it at debug
+level and serves the stream as `digests: true` without resume, so a corrupt
+cache can never block a transcript. Engines that predate the capability ignore
+both params entirely.
+
+### The `digests` frame field
+
+`TranscriptUpdate` gains one optional field, present only when the stream opted
+in:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `digests` | `{ [entryId]: string }` | **Reset**: the digest of every entry. **Delta**: the digest of every entry this frame upserts or appends to; removed ids drop out client-side. An empty delta carries `{}` |
+
+The `historyPending` preview frames of `openingTail` never carry digests: they
+are partial, and clients must never store them as resumable state.
+
+### Digest definitions
+
+| Function | Definition |
+|---|---|
+| `entry_digest(entry)` | lowercase hex of the first 8 bytes of `SHA-256(serde_json::to_vec(entry))` — 16 chars |
+| `prefix_digest(digests)` | lowercase hex of the first 16 bytes of `SHA-256(d₀ ‖ "\n" ‖ d₁ ‖ "\n" ‖ …)`, each entry digest followed by one `\n` — 32 chars; empty input is `e3b0c44298fc1c149afbf4c8996fb924` |
+
+Digests are opaque to clients: they store what the engine sent and send it
+back, never recompute it. A different engine build may serialize entries
+differently (for example after adding a field). Its digests then differ, the
+prefix does not match, and the client gets a full reset — that costs bandwidth
+but is always correct. Digests are deterministic within one build, so resume
+also works across an engine restart on the same data dir.
+
+### Client rules
+
+- Store `{entries, digests}` per chat only from **complete** state: after a
+  reset or delta on a `digests` stream. Never store an `openingTail` preview
+  (`historyPending: true`) as resumable state.
+- On (re)subscribe: if the engine advertises `transcript-resume-v1` and a
+  resume summary can be built from the held copy, send `resume`. Otherwise
+  send `digests: true`, plus `openingTail: true` when nothing is cached.
+  The reference builder is `roboco_doc::TranscriptResume::from_held` (the
+  default client window is the last 64 entries).
+- After a `TranscriptDesync`, resubscribe **without** `resume` (a plain reset),
+  so a bad summary cannot loop.
+- If `roboco_doc::apply_update_digests` returns `false`, drop the stored
+  digests: the update changed entries but carried none (an older engine).
+
+Resume never changes `contextUsage`, the `replayBaseline` watermark (the first
+frame of a stream always carries it, so resumed catch-up content is treated as
+history and not animated), or `diff_transcript`'s behaviour on streams that did
+not opt in — a plain subscription is byte-for-byte what it was before the
+capability existed.

@@ -16,9 +16,16 @@
 //!
 //! Hygiene: the address can embed a pre-shared key, so logs and errors here never
 //! quote it — [`describe`] reports only its shape.
+//!
+//! The invite grammar ([`TailcatInvite`], [`INVITE_PREFIX`], the address and
+//! code validators, [`describe`]) lives in `roboco_proto::tailcat`, shared with
+//! the Android core (android-next#02), and is re-exported here.
 
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+pub use roboco_proto::tailcat::{
+    INVITE_PREFIX, InviteError, MAX_ADDRESS_BYTES, TailcatInvite, describe, validate_pair_code,
+    validate_tailcat_address,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader},
@@ -37,19 +44,11 @@ pub const LEGACY_ADAPTER_ENV: &str = "ZERON_TAILCAT_ADAPTER";
 pub const DERP_MAP_ENV: &str = "ROBOCO_TAILCAT_DERP_MAP";
 /// The managed adapter's file name, installed beside the application binary.
 pub const ADAPTER_BINARY: &str = "roboco-tailcat";
-/// Prefix of a single-paste tailcat handle carrying route plus pair code.
-pub const INVITE_PREFIX: &str = "roboco-tailcat:";
 /// Where a running engine records the address its adapter published.
 pub const ADDRESS_FILE: &str = "tailcat-address.json";
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_GRACE: Duration = Duration::from_millis(750);
-const MAX_ADDRESS_BYTES: usize = 4096;
-
-/// Shape-only description of an address, safe to log.
-pub fn describe(address: &str) -> String {
-    format!("tc…({} chars)", address.len())
-}
 
 /// Resolve the adapter executable: explicit override first, then the copy shipped
 /// beside the running application binary.
@@ -93,87 +92,6 @@ pub fn derp_map_from_environment() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-}
-
-/// A `tc…` address is compact base64url text. Validate shape, not existence: only
-/// the adapter can tell whether the peer is listening.
-pub fn validate_tailcat_address(address: &str) -> Result<()> {
-    anyhow::ensure!(!address.is_empty(), "tailcat address is empty");
-    anyhow::ensure!(
-        address.len() <= MAX_ADDRESS_BYTES,
-        "tailcat address exceeds {MAX_ADDRESS_BYTES} bytes"
-    );
-    anyhow::ensure!(
-        address.starts_with("tc"),
-        "tailcat address must start with \"tc\""
-    );
-    anyhow::ensure!(
-        address
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
-        "tailcat address carries characters outside base64url"
-    );
-    Ok(())
-}
-
-fn validate_pair_code(code: &str) -> Result<()> {
-    anyhow::ensure!(!code.is_empty(), "tailcat invite carries no pairing code");
-    anyhow::ensure!(
-        code.len() <= MAX_ADDRESS_BYTES
-            && code
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
-        "tailcat invite pairing code is malformed"
-    );
-    Ok(())
-}
-
-/// One pasteable handle: the route to the engine plus a short-lived, single-use
-/// pairing code minted by that engine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct TailcatInvite {
-    pub address: String,
-    pub token: String,
-    pub expires_at: i64,
-}
-
-impl TailcatInvite {
-    pub fn new(address: &str, token: &str, expires_at: i64) -> Result<Self> {
-        validate_tailcat_address(address)?;
-        validate_pair_code(token)?;
-        Ok(Self {
-            address: address.to_owned(),
-            token: token.to_owned(),
-            expires_at,
-        })
-    }
-
-    pub fn encode(&self) -> Result<String> {
-        validate_tailcat_address(&self.address)?;
-        validate_pair_code(&self.token)?;
-        let payload = serde_json::to_vec(self)?;
-        Ok(format!("{INVITE_PREFIX}{}", URL_SAFE_NO_PAD.encode(payload)))
-    }
-
-    pub fn decode(value: &str) -> Result<Self> {
-        let trimmed = value.trim();
-        let payload = trimmed.strip_prefix(INVITE_PREFIX).with_context(|| {
-            format!("a tailcat invite starts with {INVITE_PREFIX}; pass --address for a bare address")
-        })?;
-        let bytes = URL_SAFE_NO_PAD
-            .decode(payload)
-            .context("tailcat invite payload is not base64url")?;
-        let invite: Self =
-            serde_json::from_slice(&bytes).context("tailcat invite payload is malformed")?;
-        validate_tailcat_address(&invite.address)?;
-        validate_pair_code(&invite.token)?;
-        Ok(invite)
-    }
-
-    pub fn expired(&self, now_millis: i64) -> bool {
-        self.expires_at <= now_millis
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -618,42 +536,6 @@ mod tests {
     fn file_mode(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    #[test]
-    fn addresses_are_shape_checked_and_never_logged() {
-        assert!(validate_tailcat_address(ADDRESS).is_ok());
-        let oversized = format!("tc{}", "A".repeat(MAX_ADDRESS_BYTES));
-        for bad in [
-            "",
-            "http://127.0.0.1:27655/",
-            "tcAAAA BBBB",
-            "tcAAAA\nBBBB",
-            "tcAAAAé",
-            oversized.as_str(),
-        ] {
-            assert!(validate_tailcat_address(bad).is_err(), "{bad:?} was accepted");
-        }
-        assert_eq!(describe(ADDRESS), format!("tc…({} chars)", ADDRESS.len()));
-        assert!(!describe("tcSECRETSECRET").contains("SECRET"));
-    }
-
-    #[test]
-    fn invites_round_trip_and_reject_junk() {
-        let invite = TailcatInvite::new(ADDRESS, "code-123", 1_700_000_000_000).unwrap();
-        let encoded = invite.encode().unwrap();
-        assert!(encoded.starts_with(INVITE_PREFIX));
-        assert_eq!(TailcatInvite::decode(&encoded).unwrap(), invite);
-        assert!(!invite.expired(1_699_999_999_999));
-        assert!(invite.expired(1_700_000_000_000));
-        for junk in [
-            "",
-            "http://example/pair#token=1",
-            "roboco-tailcat:!!!!",
-            "roboco-tailcat:eyJhIjoxfQ",
-        ] {
-            assert!(TailcatInvite::decode(junk).is_err(), "{junk:?} decoded");
-        }
     }
 
     #[test]

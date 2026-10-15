@@ -1753,8 +1753,10 @@ pub struct Shell {
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
     /// Last seen session status per chat — the chime trigger compares against
-    /// it (a row's FIRST appearance never chimes, so boot stays silent).
-    sound_prev: std::collections::HashMap<String, crate::sound::SessionNotificationState>,
+    /// it (a row's FIRST appearance never chimes, so boot stays silent). The
+    /// baseline type lives in `roboco-proto` (the shared decision rule);
+    /// `crate::sound` maps its verdict onto the desktop chime.
+    sound_prev: std::collections::HashMap<String, roboco_proto::view::SessionNotificationState>,
     /// Startup-aware durable connectivity notification baseline.
     connectivity_notifications: crate::sound::ConnectivityNotificationState,
     /// Persistent across AppState observer callbacks so simultaneous session
@@ -2424,7 +2426,7 @@ impl Shell {
             let now = Utc::now();
             type Ping = (
                 String,
-                crate::sound::SessionNotificationState,
+                roboco_proto::view::SessionNotificationState,
                 bool,
                 Option<String>,
                 bool,
@@ -2435,7 +2437,8 @@ impl Shell {
                     .sessions
                     .iter()
                     .map(|s| {
-                        let status = crate::sound::SessionNotificationState::new(s, now);
+                        let status =
+                            roboco_proto::view::SessionNotificationState::new(s, now);
                         let send_pending = state.send_pending(&s.chat_id, now);
                         let chat = state.chats.iter().find(|c| c.id == s.chat_id);
                         let title = chat.and_then(|c| c.title.clone());
@@ -2460,8 +2463,9 @@ impl Shell {
                 // completion, input-request, or failure sounds/banners.
                 if notify
                     && let Some(prev) = prev
-                    && let Some(sound) = status.sound_since(&prev, send_pending)
+                    && let Some(kind) = status.sound_since(&prev, send_pending)
                 {
+                    let sound = crate::sound::sound_of(kind);
                     if self.settings.session_sound_enabled(sound) {
                         let should_play = sound != crate::sound::Sound::Attention
                             || self
@@ -3781,6 +3785,7 @@ impl Shell {
                         replay_baseline: Some(roboco_doc::TranscriptBaseline::capture(&entries)),
                         frame: roboco_doc::TranscriptFrame::Reset { reset: entries },
                         context_usage: None,
+                        digests: None,
                     };
                     let prepared = crate::transcript::TranscriptPreparation::default()
                         .prepare(&update)

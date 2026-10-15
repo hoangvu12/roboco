@@ -2,3 +2,7 @@
 # `roboco-theme-export --check` freshness gate compares identically on
 # Windows dev machines and Linux CI.
 web/packages/theme/src/generated/* text eol=lf
+# The layout fixture is `include_str!`-ed (CRLF would leak to Android via
+# `layout_fixture_markdown`); a Windows checkout must keep it LF
+# (android-app#05).
+crates/mobile/src/layout/fixture.md text eol=lf

@@ -574,7 +574,26 @@ impl Harness for MockHarness {
             .chain(table_event)
             .chain(mend_event)
             .chain(error_event)
-            .chain(tail.iter().cloned())
+            // With the error knob the run *fails*, like a real harness that
+            // hit a usage limit: the terminal Done is Errored (the engine maps
+            // only `Done { Errored }` to `SessionStatus::Errored`), so the
+            // session ends Errored rather than as a completed turn.
+            .chain(tail.iter().cloned().map(move |event| match event {
+                AgentEvent::Done {
+                    status: _,
+                    result,
+                    error: _,
+                    session_id,
+                } if mock_error => AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result,
+                    error: Some(
+                        "Claude usage limit reached — try again after the limit resets.".into(),
+                    ),
+                    session_id,
+                },
+                other => other,
+            }))
             .map(Ok)
             .collect();
         // Dev/testing knob: `ROBOCO_MOCK_CHARS=N` re-chunks every TextDelta

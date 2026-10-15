@@ -1,3 +1,5 @@
+#![cfg(feature = "all-languages")]
+
 use std::time::Instant;
 
 use roboco_syntax::{HighlightKind, HighlightRequest, HighlightedDocument, highlight};

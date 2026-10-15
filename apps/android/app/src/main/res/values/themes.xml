@@ -1,0 +1,17 @@
+<resources>
+    <style name="Theme.Roboco" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/launch_background</item>
+        <item name="android:windowSplashScreenBackground">@color/launch_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_blank</item>
+        <item name="android:colorAccent">@color/accent</item>
+    </style>
+
+    <!-- The QR scanner (android-ui-parity #138): same parent, but the
+         window background is black so no light flash appears before the
+         first frame of the camera stage (ios:Transcript/ImageViewer.swift:22).
+         values/ only — it must not change in values-night; the stage is
+         black in both modes. -->
+    <style name="Theme.Roboco.Scanner" parent="Theme.Roboco">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

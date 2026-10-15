@@ -1,0 +1,15 @@
+# Android targets need 16 KB page-aligned ELF segments (Android 15+ devices
+# with 16 KB pages; NDK r28 defaults to it, but we pin it regardless of NDK
+# version). `cargo xtask android-core --check` verifies the PT_LOAD alignment
+# of every produced .so.
+#
+# Pitfall: a RUSTFLAGS (or CARGO_ENCODED_RUSTFLAGS) environment variable
+# overrides `target.<triple>.rustflags` entirely — the xtask refuses to run
+# the Android steps when either is set, and its ELF check catches the rest.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[alias]
+xtask = "run --locked --package roboco-xtask --"

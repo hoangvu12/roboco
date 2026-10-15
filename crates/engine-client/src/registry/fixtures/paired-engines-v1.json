@@ -1,0 +1,19 @@
+{
+  "engines": [
+    {
+      "key": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "endpoint": "ws://127.0.0.1:27655/",
+      "credential": "fixture-session-credential-not-a-real-secret",
+      "info": {
+        "deviceId": "fixture-engine-device",
+        "workspaceScope": "local",
+        "cursorSdkVersion": "0.57.0",
+        "capabilities": [
+          "composer-references-v1",
+          "message-queue-v1",
+          "web-client"
+        ]
+      }
+    }
+  ]
+}

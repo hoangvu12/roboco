@@ -18,7 +18,8 @@
 //! unit tests; rendering reads them.
 
 use crate::engine_registry::{
-    EngineConnectionState, EngineRegistry, EngineTarget, RegistrySnapshot, ScopedId,
+    EngineConnectionState, EngineRegistry, EngineTarget, FileSessionStore, LocalEngine,
+    RegistryOptions, RegistrySnapshot, ScopedId,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -550,6 +551,9 @@ impl EngineHandle {
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
                 capabilities: Vec::new(),
+                version: None,
+                protocol_version: None,
+                min_client_protocol_version: None,
             },
             deferred_state: None,
         }
@@ -582,6 +586,11 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
                 capabilities: Vec::new(),
+                // A daemon this old predates the compatibility fields; the
+                // accessors read them back as protocol 1.
+                version: None,
+                protocol_version: None,
+                min_client_protocol_version: None,
             })
         }
         Err(err) => Err(err),
@@ -2890,9 +2899,7 @@ fn spawn_registry_watch(
     handle: EngineHandle,
     data_dir: Option<PathBuf>,
 ) -> Task<()> {
-    let path = data_dir
-        .unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"))
-        .join("paired-engines-v1.json");
+    let data_dir = data_dir.unwrap_or_else(|| std::env::temp_dir().join("roboco-ui-unpersisted"));
     let info = handle.engine_info().clone();
     let client = handle.inner.client();
     // Both modes reconnect: a remote engine redials its URL, an embedded one
@@ -2901,7 +2908,21 @@ fn spawn_registry_watch(
     // for the rest of the process's life.
     let reconnect = handle.reconnect();
     let open = Tokio::spawn(cx, async move {
-        EngineRegistry::open(path, info, client, reconnect).await
+        // Desktop keeps today's exact wiring: a JSON-file session store, the
+        // mandatory local engine, and Tailcat invites resolved in-process.
+        EngineRegistry::open_with(RegistryOptions {
+            sessions: Arc::new(FileSessionStore::new(
+                data_dir.join("paired-engines-v1.json"),
+            )),
+            local: Some(LocalEngine {
+                info,
+                client,
+                reconnect,
+            }),
+            data_dir,
+            resolvers: vec![Arc::new(crate::tailcat_pairing::TailcatResolver)],
+        })
+        .await
     });
     cx.spawn(async move |this, cx| {
         let registry = match open.await {
@@ -3698,6 +3719,9 @@ mod tests {
                     workspace_scope: WorkspaceScope::Local,
                     cursor_sdk_version: None,
                     capabilities: roboco_proto::capabilities::current(),
+                    version: None,
+                    protocol_version: None,
+                    min_client_protocol_version: None,
                 },
                 state: state_rx,
             }),
@@ -4575,6 +4599,7 @@ mod tests {
                 frame: TranscriptFrame::reset(&[user_entry(id)]),
                 context_usage: None,
                 replay_baseline: None,
+                digests: None,
             };
             state.select_chat(Some("whale".into()), cx);
             state

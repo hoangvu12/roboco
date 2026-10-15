@@ -11,10 +11,17 @@ members = [
     "crates/engine",
     "crates/rpc",
     "crates/roboco-mcp",
+    "crates/engine-client",
     "crates/update",
     "crates/ui",
     "crates/syntax",
+    "crates/text",
+    "crates/markdown",
+    "crates/mobile",
+    "crates/mobile-client",
+    "crates/xtask",
     "crates/wiregen",
+    "crates/android-assets",
     "apps/roboco",
 ]
 
@@ -33,9 +40,14 @@ roboco-harness = { path = "crates/harness" }
 roboco-engine = { path = "crates/engine" }
 roboco-rpc = { path = "crates/rpc" }
 roboco-mcp = { path = "crates/roboco-mcp" }
+roboco-engine-client = { path = "crates/engine-client" }
 roboco-update = { path = "crates/update" }
 roboco-ui = { path = "crates/ui" }
 roboco-syntax = { path = "crates/syntax" }
+roboco-text = { path = "crates/text" }
+roboco-markdown = { path = "crates/markdown" }
+roboco-mobile = { path = "crates/mobile" }
+roboco-mobile-client = { path = "crates/mobile-client" }
 roboco-theme = { path = "crates/theme" }
 
 # CRDT
@@ -100,6 +112,10 @@ async-trait = "0.1"
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Pairing-link QR rendering (proto::qr). Only the `svg` renderer feature is
+# enabled — the unicode half-block renderer is unconditional, and without
+# `image`/`pic` the crate pulls no dependencies at all.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 json5 = "0.4"
 # antigravity writes `settings.json` but reads it back with `hjson.load`, so a
 # user's comments and unquoted keys have to survive our read of the same file.
@@ -184,3 +200,26 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Mobile core (cargo xtask android-core, android-app#10). Always optimized:
+# layout runs on the phone's hot path, so even debug app builds link an -O
+# core. Unwinding stays enabled (no `panic = "abort"`): the layout's
+# `catch_unwind` recovery (upstream #623) needs it, and UniFFI only turns
+# panics into Kotlin exceptions when they unwind.
+[profile.mobile]
+inherits = "release"
+lto = false
+strip = false
+debug = "line-tables-only"
+# sccache cannot cache incremental compiles, so workspace crates skip the
+# cache under this profile; dependencies still hit it. Fine for a dev loop.
+incremental = true
+codegen-units = 16
+
+# The GitHub release APKs (ADR 0009: no Play Store). Keeps the symbol table (`strip = "debuginfo"`):
+# UniFFI library-mode bindgen and JNA's dlsym need exported symbols.
+[profile.mobile-dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

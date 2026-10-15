@@ -1,0 +1,646 @@
+name: Android
+
+# The Android client scaffold (android-app#13): Gradle builds the debug APK
+# from the Rust mobile core (cargo xtask android-core, ticket 10) and runs
+# the JVM unit suite — Robolectric against the host core, plus the plain
+# version/asset/network tests — on both hosts the project supports. The
+# ubuntu job uploads the APK; windows proves the build needs no bash/WSL.
+# On pushes to main it also runs the unsigned x86_64 assembleRelease R8
+# smoke (android-app#31) so R8 breakage surfaces before a tag; the signed
+# release APKs are built by release.yml only. Every job that builds the core
+# also builds the Go Tailcat transport (android-next#02), so each sets up Go.
+
+on:
+  pull_request:
+    paths:
+      - 'apps/android/**'
+      - 'crates/android-assets/**'
+      - 'crates/mobile/**'
+      - 'crates/mobile-client/**'
+      - 'crates/text/**'
+      - 'crates/markdown/**'
+      - 'crates/doc/**'
+      - 'crates/engine/**'
+      - 'crates/harness/**'
+      - 'crates/rpc/**'
+      - 'crates/proto/**'
+      - 'crates/syntax/**'
+      - 'crates/xtask/**'
+      - 'adapters/roboco-tailcat/**'
+      - 'crates/ui/assets/fonts/**'
+      - 'crates/ui/assets/icons/**'
+      - 'crates/ui/assets/file-icons/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/android.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/android/**'
+      - 'crates/android-assets/**'
+      - 'crates/mobile/**'
+      - 'crates/mobile-client/**'
+      - 'crates/text/**'
+      - 'crates/markdown/**'
+      - 'crates/doc/**'
+      - 'crates/engine/**'
+      - 'crates/harness/**'
+      - 'crates/rpc/**'
+      - 'crates/proto/**'
+      - 'crates/syntax/**'
+      - 'crates/xtask/**'
+      - 'adapters/roboco-tailcat/**'
+      - 'crates/ui/assets/fonts/**'
+      - 'crates/ui/assets/icons/**'
+      - 'crates/ui/assets/file-icons/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+    inputs:
+      record_goldens:
+        # android-app#30: android-screenshots RECORDS the Roborazzi goldens
+        # instead of verifying them, re-verifies them (determinism), writes
+        # the parity board and uploads `android-goldens` for a human to
+        # commit — see apps/android/parity/README.md.
+        description: 'Record the Roborazzi goldens (android-screenshots) and upload them as android-goldens'
+        type: boolean
+        default: false
+      perf_apk:
+        # An installable release-speed APK for hand testing smoothness: the
+        # `benchmark` build type (R8, mobile-dist core, profileable, signed
+        # with the runner's debug key). Uninstall a debug APK first — the
+        # debug keys differ per runner.
+        description: 'Also build the benchmark APK (release speed, debug-signed) and upload it as roboco-android-benchmark'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  ANDROID_NDK_VERSION: 28.2.13676358
+  CARGO_NDK_VERSION: 4.1.2
+  # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS overrides
+  # (they would replace the 16 KB PT_LOAD alignment rustflags).
+  RUSTFLAGS: ''
+  CARGO_ENCODED_RUSTFLAGS: 
+
+jobs:
+  android-benchmark-apk:
+    # workflow_dispatch with perf_apk only. Its first runs also prove the R8
+    # keep rules for the benchmark variant (review-concerns: unverified).
+    if: ${{ inputs.perf_apk && !inputs.record_goldens }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add the Android Rust target
+        run: rustup target add aarch64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-benchmark
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        shell: pwsh
+        run: |
+          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
+          if (-not $installed) {
+            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+        working-directory: .
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
+          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the benchmark APK
+        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a :app:assembleBenchmark
+      - name: Upload the benchmark APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-benchmark
+          path: apps/android/app/build/outputs/apk/benchmark/*.apk
+          retention-days: 14
+          if-no-files-found: error
+
+  android:
+    # A `record_goldens` dispatch runs android-screenshots only (it builds
+    # the host core itself); everything else is skipped to keep it cheap.
+    if: ${{ !inputs.record_goldens }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 90: the push-to-main R8 smoke (below) adds a mobile-dist core
+          # build plus R8 on top of the debug build and the JVM tests.
+          - os: ubuntu-24.04
+            abis: arm64-v8a,x86_64
+            upload: true
+            timeout: 90
+          # Windows-host proof: the Gradle tasks are bash-free, and the
+          # xtask handles .dll/.exe naming (upstream #609 was mac/Linux-only).
+          - os: windows-2022
+            abis: arm64-v8a
+            upload: false
+            timeout: 60
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add Android Rust targets
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        shell: pwsh
+        run: |
+          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
+          if (-not $installed) {
+            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+        working-directory: .
+      # 17 is the build JDK; 21 runs the Robolectric test JVMs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
+          if ($IsWindows) { $sdkmanager = "$sdkmanager.bat" }
+          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      # pwsh exists on both runners; on Windows .\gradlew.bat keeps bash
+      # off the build path entirely.
+      - name: Build the debug APK and run the JVM tests
+        shell: pwsh
+        run: |
+          $gradle = if ($IsWindows) { ".\gradlew.bat" } else { "./gradlew" }
+          & $gradle --stacktrace "-ProbocoAbis=$env:ABIS" :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          ABIS: ${{ matrix.abis }}
+      - name: "R8 smoke — unsigned release build (pushes to main only)"
+        # Proves R8 plus the JNA/UniFFI keep rules build before a tag
+        # (release.yml runs the real signed build). PRs skip it to keep their
+        # time down. Unsigned on purpose: no signing secrets here, and the
+        # unsigned path must produce the same R8 output as the signed one
+        # (android-app#31).
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        run: ./gradlew --stacktrace -ProbocoAbis=x86_64 :app:assembleRelease
+      - name: Upload the unsigned release APK (manual emulator smoke)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-release-unsigned
+          path: apps/android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Test the asset generator and the xtask (Rust)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p roboco-android-assets -p roboco-xtask
+        working-directory: .
+      - name: Check the native libraries in the debug APKs
+        # android-next#02: every split carries the core AND the Tailcat
+        # transport for its own ABI. Sizes go to the job summary (stored is
+        # the compressed size in the APK: useLegacyPackaging compresses .so).
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk"
+          if (-not $apks) { Write-Output "::error::no debug APK was built"; exit 1 }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Native libraries in the debug APKs", "", "| APK | library | stored (KB) | uncompressed (KB) |", "| --- | --- | ---: | ---: |"
+          $missing = @()
+          foreach ($apk in $apks) {
+            $abi = $apk.BaseName -replace '^app-(.+)-debug$', '$1'
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($apk.FullName)
+            try {
+              foreach ($lib in "libroboco_mobile.so", "libroboco_tailcat.so") {
+                $entry = $zip.GetEntry("lib/$abi/$lib")
+                if ($entry) {
+                  $stored = [math]::Round($entry.CompressedLength / 1KB)
+                  $full = [math]::Round($entry.Length / 1KB)
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| $($apk.Name) | $lib | $stored | $full |"
+                } else {
+                  $missing += "$($apk.Name) has no lib/$abi/$lib"
+                }
+              }
+            } finally {
+              $zip.Dispose()
+            }
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          foreach ($line in $missing) { Write-Output "::error::$line" }
+          if ($missing) { exit 1 }
+      - name: Append build sizes to the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          # ABI splits (android-app#31) name every APK after its ABI.
+          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk" -ErrorAction SilentlyContinue
+          foreach ($apk in $apks) {
+            $kb = [math]::Round($apk.Length / 1KB)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "APK $($apk.Name): $kb KB", ""
+          }
+          # The push-to-main R8 smoke, when it ran this build.
+          $release = Get-ChildItem "app/build/outputs/apk/release/*.apk" -ErrorAction SilentlyContinue
+          foreach ($apk in $release) {
+            $kb = [math]::Round($apk.Length / 1KB)
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Release APK $($apk.Name): $kb KB (unsigned R8 smoke)", ""
+          }
+          # The xtask's sizes.json, when the core was built this run.
+          $sizes = Get-Content "../../target/android-core/mobile/sizes.json" -Raw -ErrorAction SilentlyContinue
+          if ($sizes) {
+            $fence = ([string][char]96) * 3
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Core sizes", "", "$($fence)json", $sizes, $fence, ""
+          }
+      - name: Upload the debug APK
+        # Not gated on the JVM tests: assembleDebug runs first in the same
+        # Gradle call, so a test failure still leaves an installable APK.
+        if: ${{ !cancelled() && matrix.upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-debug
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload unit-test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-test-reports-${{ matrix.os }}
+          path: apps/android/app/build/reports/tests/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # android-app#30: the JVM screenshot suite + the iOS parity gate.
+  # ubuntu is the source of truth for recording goldens (font
+  # rasterisation differs across hosts); the job gates on
+  # verifyRoborazziDebug (G1) and the parity tests (G2–G4 run inside
+  # testDebugUnitTest), and uploads the parityReport board (G5) on every
+  # run — including failures — so the reviewer's walk never waits on a
+  # green build. The goldens themselves are recorded by a workflow_dispatch
+  # run with `record_goldens` (record, determinism re-verify, board, the
+  # `android-goldens` artifact a human commits back — docs/reference/android-development.md
+  # and apps/android/parity/README.md).
+  #
+  # NON-BLOCKING for now: no goldens are committed yet
+  # (app/src/test/screenshots is empty), so verify fails on every missing
+  # reference. Drop continue-on-error once the first recorded set lands.
+  # It runs only the capturing classes + the parity tests in verify mode -
+  # the full unit suite already runs in the `android` job above.
+  android-screenshots:
+    runs-on: ubuntu-24.04
+    # Non-blocking for push/PR verify runs until the first signed-off set
+    # lands; a `record_goldens` dispatch must fail visibly (the determinism
+    # re-verify below), so it is blocking there.
+    continue-on-error: ${{ !inputs.record_goldens }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: apps/android
+    env:
+      # The capturing classes: the *Screenshot* suites plus the behaviour
+      # tests that also capture. One list for every step below (expanded
+      # into --tests arguments with globbing off).
+      CAPTURE_TESTS: >-
+        *Screenshot* *GalleryCapture* *FolderBrowserBottomBarTest
+        *NewProjectScreenTest *ReferenceBoardTest *SessionArrivalTest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add the Android Rust target
+        # The unit-test tasks build the x86_64 jniLib + the host core.
+        run: rustup target add x86_64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+        working-directory: .
+      # 17 is the build JDK; 21 runs the Robolectric test JVMs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify the goldens and the parity gate, write the parity board
+        if: ${{ !inputs.record_goldens }}
+        # roborazzi.test.verify=true is what verifyRoborazziDebug sets; the
+        # --tests filter keeps this to the classes that capture and the
+        # parity tests, instead of re-running the whole suite.
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true -ProbocoParity=true \
+            :app:testDebugUnitTest "${tests[@]}" --tests 'sh.roboco.android.parity.*' \
+            :app:parityReport
+      # ── record_goldens (workflow_dispatch) ────────────────────────────
+      # Ubuntu is the goldens' source of truth (font rasterisation differs
+      # across hosts). The property form, not :app:recordRoborazziDebug:
+      # that task is not a Test task and rejects --tests, and this records
+      # exactly the set the verify step checks. The parity tests are left
+      # out (G2-G4 read the goldens being written).
+      - name: Record the goldens
+        if: ${{ inputs.record_goldens }}
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.record=true \
+            :app:testDebugUnitTest "${tests[@]}"
+      - name: Re-verify the recorded goldens (determinism)
+        if: ${{ inputs.record_goldens }}
+        # Same runner, same inputs: any diff is a non-deterministic capture
+        # (clock, animation, async load) and must be fixed before the set
+        # is committed. --rerun: Gradle must not skip it as up to date.
+        run: |
+          set -f
+          tests=(); for t in $CAPTURE_TESTS; do tests+=(--tests "$t"); done
+          ./gradlew --stacktrace "-ProbocoAbis=x86_64" -Proborazzi.test.verify=true \
+            :app:testDebugUnitTest --rerun "${tests[@]}"
+      - name: Write the parity board
+        if: ${{ inputs.record_goldens }}
+        run: ./gradlew --stacktrace "-ProbocoAbis=x86_64" :app:parityReport
+      - name: Upload the recorded goldens
+        if: ${{ inputs.record_goldens }}
+        uses: actions/upload-artifact@v4
+        with:
+          # Unzip into apps/android/app/src/test/screenshots and commit (see
+          # apps/android/parity/README.md for the manifest + sign-off steps).
+          name: android-goldens
+          path: apps/android/app/src/test/screenshots
+          retention-days: 7
+          if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-parity
+          path: |
+            apps/android/app/build/parity
+            apps/android/app/build/outputs/roborazzi
+          retention-days: 14
+          if-no-files-found: ignore
+      # The Gradle test reports and JUnit XML, on BOTH paths (verify and
+      # record_goldens), pass or fail. The XML <system-out> carries
+      # IosParitySimilarityTest's "parity ssim <golden>: score X" lines (the
+      # ssimFloor baselines: score - 0.02), and every failure keeps its
+      # message. Record run 38595804909 failed 12 captures with nothing
+      # uploaded.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-screenshots-test-reports
+          path: |
+            apps/android/app/build/reports/tests/
+            apps/android/app/build/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+  # android-app#30: the instrumented flow suite against the fixture
+  # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
+  # logic: three android_fixture processes, adb reverse, the suite with
+  # the @Tour annotations excluded, and the artefact harvest.
+  android-emulator:
+    # A `record_goldens` dispatch runs android-screenshots only (it builds
+    # the host core itself); everything else is skipped to keep it cheap.
+    if: ${{ !inputs.record_goldens }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # The x86_64 emulator needs only the x86_64 core; connectedDebugAndroidTest
+      # is not a unit-test-only invocation, so without this Gradle builds the
+      # default arm64-v8a + x86_64 and cargo-ndk fails on the uninstalled
+      # aarch64-linux-android target (E0463).
+      ROBOCO_ANDROID_ABIS: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add the Android Rust target
+        run: rustup target add x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+      # 17 builds the app inside the script (the Gradle daemon runs the
+      # app's Kotlin + the x86_64 core).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the fixture engine
+        run: cargo build --locked -p roboco-engine --example android_fixture
+      # android-next#02: the Tailcat smoke (TailcatPairingFlowTest) — the
+      # desktop adapter the fixture publishes through and the local DERP
+      # relay; flow-tests.sh starts both when these are exported.
+      - name: Build the Tailcat smoke pieces (adapter, local DERP relay)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out"
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
+      # AVD snapshot cache (the runner's README recipe): cold boots cost
+      # minutes on every run otherwise.
+      - uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-36-pixel-7-20261012
+      - name: Run the flow suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          disable-animations: true
+          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash apps/android/scripts/flow-tests.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-flow-artifacts
+          path: |
+            apps/android/app/build/flow-artifacts
+            apps/android/app/build/reports/androidTests
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # android-app#30: the tablet split shell (smallest width ≥ 600) plus the
+  # @Tour motion recordings — push-to-main and dispatch only, keeping PR
+  # time down. The Tour tests record `screenrecord` mp4s that the
+  # artefact step pulls.
+  android-emulator-tablet:
+    # Never on a record_goldens dispatch (android-screenshots only).
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !inputs.record_goldens
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ROBOCO_ANDROID_ABIS: x86_64 # the x86_64 emulator's core only (see android-emulator)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Add the Android Rust target
+        run: rustup target add x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          cache-workspace-crates: 'true'
+      - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the fixture engine
+        run: cargo build --locked -p roboco-engine --example android_fixture
+      - uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-36-pixel-tablet-20261012
+      - name: Run the tablet + tour suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_tablet
+          disable-animations: true
+          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          # The tour runs WITH its recordings here.
+          script: FLOW_INCLUDE_TOUR=1 bash apps/android/scripts/flow-tests.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-tablet-artifacts
+          path: |
+            apps/android/app/build/flow-artifacts
+            apps/android/app/build/reports/androidTests
+          retention-days: 14
+          if-no-files-found: ignore

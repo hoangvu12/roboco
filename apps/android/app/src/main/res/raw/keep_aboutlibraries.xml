@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Resource-shrinking keep rule for the AboutLibraries JSON
+    (android-ui-parity #101). AGP 9 turns on optimized resource shrinking
+    by default, and the AboutLibraries README ("Optimized Resource
+    Shrinking / AGP 9.0") warns that aboutlibraries.json can be stripped
+    even though code references it through R.raw — the resource is opened
+    by name at runtime, so the shrinker sees no direct reference. The
+    release APK check (aapt2 dump resources | grep raw/aboutlibraries)
+    catches a missing rule.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@raw/aboutlibraries" />

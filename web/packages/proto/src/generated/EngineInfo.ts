@@ -13,4 +13,21 @@ cursorSdkVersion?: string | null,
 /**
  * Supported protocol/document features. Missing on older engines.
  */
-capabilities?: Array<string>, };
+capabilities?: Array<string>, 
+/**
+ * The Roboco release that built this engine (`CARGO_PKG_VERSION`).
+ * For display and the newer-engine notice only — never gate features on
+ * it. Absent on engines older than the field; the client may fall back
+ * to the engine's `Device.version` row.
+ */
+version?: string | null, 
+/**
+ * The wire protocol generation. Absent on pre-field engines; readers
+ * treat it as 1.
+ */
+protocolVersion?: number | null, 
+/**
+ * The oldest client protocol generation this engine still serves
+ * correctly. Absent on pre-field engines; readers treat it as 1.
+ */
+minClientProtocolVersion?: number | null, };
