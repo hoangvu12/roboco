@@ -20,6 +20,7 @@
 //! Pure Rust + tokio, UniFFI-free, so `cargo test` runs on any host.
 //! `roboco-mobile` wraps this crate in `crates/mobile/src/client_ffi`.
 
+pub mod accounts;
 pub mod attachments;
 pub mod cache;
 pub mod catalog;
@@ -58,6 +59,7 @@ use timings::Timings;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+pub use accounts::{UsageLevel, usage_level, USAGE_CRITICAL_FRACTION, USAGE_WARN_FRACTION};
 pub use engines::{
     Connectivity, ConnectivityState, EngineDiagnostics, EngineHandle, EngineSnapshot, EngineState,
     EngineTransport, EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason,
@@ -173,6 +175,10 @@ pub(crate) struct ClientInner {
     sessions: session::SessionRegistry,
     /// The live harness/model catalog state (ticket 08).
     catalog: catalog_live::Catalog,
+    /// The newest agent-accounts snapshot per engine (android-next#05):
+    /// the paint-at-once cache behind the usage chip and the Accounts &
+    /// Usage page.
+    accounts: accounts::AccountsState,
     /// Decoded attachment bytes, byte-budgeted LRU (ticket 08). Shared so
     /// session tasks can hold it across awaits.
     attachments: Arc<attachments::AttachmentCache>,
@@ -277,6 +283,7 @@ impl Client {
             cache,
             sessions: session::SessionRegistry::new(),
             catalog: catalog_live::Catalog::default(),
+            accounts: accounts::AccountsState::default(),
             attachments: Arc::new(attachments::AttachmentCache::new(
                 attachments::ATTACHMENT_CACHE_BUDGET,
             )),

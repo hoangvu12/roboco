@@ -182,6 +182,9 @@ pub fn test_timings() -> Timings {
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_secs(2),
         workspace_tick: Duration::from_millis(100),
+        // android-next#05: the forced-usage deadline shrinks so the
+        // stall-proxy test cuts a frozen probe in well under a second.
+        accounts_forced_deadline: Duration::from_millis(400),
         notify: NotifyTimings::default(),
     }
 }
