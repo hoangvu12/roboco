@@ -1,6 +1,7 @@
 package sh.roboco.android.update
 
 import java.io.IOException
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,9 +14,13 @@ import org.junit.Test
  */
 class UpdateCheckerTest {
 
-    private class FakeSource(private val text: String?) : ManifestSource {
+    /** [text] null = the 404 (no manifest); [offline] = the fetch throws. */
+    private class FakeSource(
+        private val text: String?,
+        private val offline: Boolean = false,
+    ) : ManifestSource {
         override suspend fun fetch(): String? {
-            text ?: throw IOException("offline")
+            if (offline) throw IOException("offline")
             return text
         }
     }
@@ -24,49 +29,49 @@ class UpdateCheckerTest {
         UpdateChecker(FakeSource(manifest), current)
 
     @Test
-    fun aStrictlyNewerManifestVersionIsAvailable() {
+    fun aStrictlyNewerManifestVersionIsAvailable() = runTest {
         val result = checker("0.9.2", """{"version": "0.10.0"}""").check()
         assertTrue(result is UpdateCheckResult.Available)
         assertEquals("0.10.0", (result as UpdateCheckResult.Available).manifest.version)
     }
 
     @Test
-    fun aNewerPreReleaseCountsAsNewer() {
+    fun aNewerPreReleaseCountsAsNewer() = runTest {
         val result = checker("1.0.0-rc.1", """{"version": "1.0.0"}""").check()
         assertTrue(result is UpdateCheckResult.Available)
     }
 
     @Test
-    fun theSameVersionIsUpToDate() {
+    fun theSameVersionIsUpToDate() = runTest {
         assertTrue(checker("0.9.2", """{"version": "0.9.2"}""").check() is UpdateCheckResult.UpToDate)
     }
 
     @Test
-    fun anOlderManifestVersionIsUpToDate() {
+    fun anOlderManifestVersionIsUpToDate() = runTest {
         assertTrue(checker("0.10.0", """{"version": "0.9.9"}""").check() is UpdateCheckResult.UpToDate)
     }
 
     @Test
-    fun aNewerPreReleaseThanTheReleaseIsUpToDate() {
+    fun aNewerPreReleaseThanTheReleaseIsUpToDate() = runTest {
         // The user runs the release; a pre-release of the same version is
         // lower, not newer.
         assertTrue(checker("1.0.0", """{"version": "1.0.0-rc.2"}""").check() is UpdateCheckResult.UpToDate)
     }
 
     @Test
-    fun aMissingManifestIsNotFound() {
+    fun aMissingManifestIsNotFound() = runTest {
         val result = checker("0.9.2", null).check()
         assertEquals(UpdateCheckReason.NOT_FOUND, (result as UpdateCheckResult.Unavailable).reason)
     }
 
     @Test
-    fun anOfflineSourceIsOffline() {
-        val result = UpdateChecker(FakeSource(null), "0.9.2").check()
+    fun anOfflineSourceIsOffline() = runTest {
+        val result = UpdateChecker(FakeSource(null, offline = true), "0.9.2").check()
         assertEquals(UpdateCheckReason.OFFLINE, (result as UpdateCheckResult.Unavailable).reason)
     }
 
     @Test
-    fun anUnparseableManifestIsNoManifest() {
+    fun anUnparseableManifestIsNoManifest() = runTest {
         assertEquals(
             UpdateCheckReason.NO_MANIFEST,
             (checker("0.9.2", "{oops").check() as UpdateCheckResult.Unavailable).reason,
@@ -78,11 +83,11 @@ class UpdateCheckerTest {
     }
 
     @Test
-    fun anUnparseableCurrentVersionNeverBlocks() {
+    fun anUnparseableCurrentVersionNeverBlocks() = runTest {
         // Like the desktop's lenient parse: an unparseable own version
         // reads as up to date, never as "update available".
         assertTrue(
-            UpdateChecker(FakeSource("""{"version": "0.10.0"}"""), "0.9-dev").check()
+            UpdateChecker(FakeSource("""{"version": "0.10.0"}"""), "dev-build").check()
                 is UpdateCheckResult.UpToDate,
         )
     }

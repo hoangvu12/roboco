@@ -167,6 +167,8 @@ class NotificationSettingsTest {
             shown += alert
         }
 
+        override fun updateCurrent(alert: RobocoAlert) {}
+
         override fun dismissAll() {
             dismissAlls++
         }

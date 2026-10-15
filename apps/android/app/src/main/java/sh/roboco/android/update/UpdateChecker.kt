@@ -72,6 +72,6 @@ sealed interface UpdateCheckResult {
 fun engineNeedsNudge(engineVersions: List<String?>, release: String): Boolean {
     val releaseVersion = SemVer.parse(release) ?: return false
     return engineVersions
-        .mapNotNull { it?.let(SemVer::parse) }
+        .mapNotNull { SemVer.parse(it) }
         .any { it < releaseVersion }
 }

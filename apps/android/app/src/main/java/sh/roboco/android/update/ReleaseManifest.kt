@@ -1,6 +1,7 @@
 package sh.roboco.android.update
 
 import androidx.compose.runtime.Immutable
+import kotlin.math.roundToLong
 
 /**
  * The release feed's `manifest.json` (android-next#04) — the exact shape
@@ -117,8 +118,8 @@ internal object MiniJson {
     internal data class Bool(val value: Boolean) : Value
 
     internal data class Num(private val raw: Double) : Value {
-        /** The integral value (sizes); null for non-integral numbers. */
-        fun asLong(): Long? = if (raw % 1.0 == 0.0) raw.toLong() else null
+        /** The value rounded to a whole number (sizes); null when not finite. */
+        fun asLong(): Long? = if (raw.isFinite()) raw.roundToLong() else null
     }
 
     internal data class Str(val value: String) : Value

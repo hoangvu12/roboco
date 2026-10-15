@@ -734,6 +734,7 @@ class QueueEditControllerTest {
         override fun show(alert: RobocoAlert) {
             shown += alert
         }
+        override fun updateCurrent(alert: RobocoAlert) {}
         override fun dismissAll() {}
     }
 

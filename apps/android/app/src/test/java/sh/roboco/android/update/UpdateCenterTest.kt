@@ -110,7 +110,7 @@ class UpdateCenterTest {
 
     /** Builds a center over the fakes; [block] configures before start. */
     private fun TestScope.center(
-        feed: FakeFeed = FakeFeed(manifestJson),
+        feed: ManifestSource = FakeFeed(manifestJson),
         apkSource: FakeApkSource = FakeApkSource(),
         verifier: FakeVerifier = FakeVerifier(ApkVerifier.Result.Ok),
         installer: FakeInstaller = FakeInstaller(),

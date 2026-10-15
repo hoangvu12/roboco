@@ -94,6 +94,8 @@ class NewSessionSendHandlerTest {
             shown += alert
         }
 
+        override fun updateCurrent(alert: RobocoAlert) {}
+
         override fun dismissAll() {}
     }
 
