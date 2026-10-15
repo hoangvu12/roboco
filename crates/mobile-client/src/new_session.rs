@@ -51,6 +51,11 @@ pub struct NewSession {
     pub cwd: Option<String>,
     /// A non-blank title rides a `renameChat` after the create.
     pub title: Option<String>,
+    /// A side chat of this chat (upstream #899): `target`, `cwd` and
+    /// `branch` are ignored — it runs in its parent's checkout on its
+    /// parent's host, and lists under the parent. A side chat's own side
+    /// chats hang off the same root instead (siblings).
+    pub parent_chat_id: Option<String>,
 }
 
 /// One chat created but not yet echoed by `WatchChats` — the optimistic
@@ -75,6 +80,10 @@ pub struct PendingChat {
     /// The chat's run configuration.
     pub config: Option<roboco_proto::ChatConfig>,
     pub branch: Option<String>,
+    /// The parent a side chat hangs off (scoped); `None` for a top-level
+    /// chat. The synthetic row lists under its parent, never the front
+    /// page.
+    pub parent_chat_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -111,7 +120,7 @@ impl PendingChat {
             space_id: self.space_id.clone(),
             last_seen_at: None,
             room_gen: None,
-            parent_chat_id: None,
+            parent_chat_id: self.parent_chat_id.clone(),
         }
     }
 }
@@ -245,6 +254,13 @@ impl Client {
     /// `WorktreeSpec` and the engine materializes it on run.
     pub async fn create_session(&self, new: NewSession) -> Result<String, ClientError> {
         let inner = self.inner_arc();
+        // A side chat of an open chat (upstream #899): everything comes
+        // from the parent's row — target, cwd and branch are ignored.
+        if let Some(parent_id) = new.parent_chat_id.as_deref() {
+            return self
+                .create_side_chat(&inner, parent_id, new.config, new.title)
+                .await;
+        }
         // 1. Resolve the target: the project (its engine owns the row, the
         //    default cwd is its folder) or an execution host.
         let target = match new.target {
@@ -354,11 +370,180 @@ impl Client {
                 cwd: target.cwd,
                 config: new.config.clone(),
                 branch: new.branch.clone().filter(|b| !b.is_empty()),
+                parent_chat_id: None,
                 created_at: Utc::now(),
             });
         }
         // 7. The scoped id: what every other client surface speaks.
         Ok(scoped_chat_id)
+    }
+
+    /// An empty side chat of `parent_id` (upstream #899's "New Side
+    /// Chat"): the parent's host, project and checkout with a fresh
+    /// identity, created through `Mutate createChat` with `parentChatId`.
+    /// A side chat of a side chat hangs off the same root — a sibling.
+    /// The run config is the caller's pick, but the sandbox stays the
+    /// parent's (the checkout is the parent's). Returns the scoped id.
+    async fn create_side_chat(
+        &self,
+        inner: &Arc<crate::ClientInner>,
+        parent_id: &str,
+        config: Option<roboco_proto::ChatConfig>,
+        title: Option<String>,
+    ) -> Result<String, ClientError> {
+        // 1. The parent's row, and the root the new chat hangs off (the
+        //    parent, or the parent's parent when the parent is itself a
+        //    side chat — a sibling, like the fork button).
+        let workspace = self.workspace();
+        let Some(parent) = workspace.session(parent_id) else {
+            return Err(ClientError::NotFound {
+                message: format!("Unknown session: {parent_id}"),
+            });
+        };
+        let root = parent
+            .parent_chat_id
+            .as_deref()
+            .and_then(|grand| workspace.session(grand))
+            .unwrap_or(parent);
+        // 2. The engine that owns the row — must be connected, like any
+        //    create (nothing is queued; story 24).
+        let handle = self.engine_handle(&root.engine_id)?;
+        crate::workspace::ensure_writable(&handle)?;
+        // 3. Mint the id (the engine's createChat is idempotent by it).
+        let raw_chat_id = uuid::Uuid::new_v4().to_string();
+        // 4. Create the row in the parent's checkout: `spaceId` when the
+        //    root has a project, else the root's host device; `cwd` the
+        //    root's checkout (its own override, else the project folder —
+        //    the pending overlay's cwd must match what the row will say,
+        //    so 08's first send runs in the parent's folder).
+        let root_space = root.project.as_ref().and_then(|project| {
+            let raw = ScopedId::parse(&project.id).ok()?.raw_id;
+            workspace
+                .project(&project.id)
+                .map(|space| (raw, space.path.clone()))
+        });
+        let root_raw_device = ScopedId::parse(&root.device_id)
+            .ok()
+            .map(|scoped| scoped.raw_id)
+            .ok_or_else(|| ClientError::NotFound {
+                message: format!("Unknown session: {parent_id}"),
+            })?;
+        let cwd = root
+            .cwd
+            .clone()
+            .or_else(|| root_space.as_ref().map(|(_, path)| path.clone()))
+            .unwrap_or_else(|| "~".to_owned());
+        // 5. The sandbox stays the parent's (the run config is the pick).
+        let config = config.map(|mut config| {
+            let parent_sandbox = inner
+                .workspace
+                .get()
+                .and_then(|store| store.session_config(&root.id))
+                .map(|wire| wire.sandbox);
+            if let Some(sandbox) = parent_sandbox {
+                config.sandbox = sandbox;
+            }
+            config
+        });
+        let mut params = serde_json::Map::new();
+        params.insert("op".into(), "createChat".into());
+        params.insert("chatId".into(), raw_chat_id.clone().into());
+        params.insert("parentChatId".into(), root.id.clone().into());
+        if let Some((raw_space, _)) = root_space {
+            params.insert("spaceId".into(), raw_space.into());
+        } else {
+            params.insert("deviceId".into(), root_raw_device.into());
+        }
+        if let Some(config) = &config {
+            let wire = serde_json::to_value(config).map_err(|error| ClientError::Internal {
+                message: error.to_string(),
+            })?;
+            params.insert("config".into(), wire);
+        }
+        params.insert("cwd".into(), cwd.clone().into());
+        handle
+            .call(
+                roboco_rpc::methods::MUTATE,
+                serde_json::Value::Object(params),
+            )
+            .await?;
+        // 6. The title rides a rename, as on the New Session canvas.
+        if let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            handle
+                .call(
+                    roboco_rpc::methods::MUTATE,
+                    serde_json::json!({
+                        "op": "renameChat",
+                        "chatId": raw_chat_id,
+                        "title": title,
+                    }),
+                )
+                .await?;
+        }
+        // 7. The optimistic overlay: the row (under its parent, never the
+        //    front page) until the engine's `WatchChats` echo replaces
+        //    it; 08's send reads its cwd.
+        let engine_id = handle.engine_id().to_owned();
+        let scoped_chat_id = ScopedId::encode(&EngineKey(engine_id.clone()), &raw_chat_id);
+        if let Some(store) = inner.workspace.get() {
+            store.register_pending_chat(PendingChat {
+                engine_id,
+                chat_id: scoped_chat_id.clone(),
+                raw_chat_id,
+                space_id: root.project.as_ref().map(|p| p.id.clone()),
+                device_id: root.device_id.clone(),
+                cwd,
+                config: config.clone(),
+                branch: None,
+                parent_chat_id: Some(root.id.clone()),
+                created_at: Utc::now(),
+            });
+        }
+        Ok(scoped_chat_id)
+    }
+
+    /// Fork `source_id` through its latest completed response into a side
+    /// chat (upstream #899's "Fork into Side Chat"): the engine copies
+    /// the history, appends the fork seam and publishes the row. A side
+    /// chat's fork lists as its sibling (the source's parent becomes the
+    /// fork's parent). Fails with the engine's reason when nothing is
+    /// completed yet. Returns the scoped id of the fork.
+    pub async fn fork_side_chat(&self, source_id: &str) -> Result<String, ClientError> {
+        let handle = self.resolve(source_id)?.0;
+        // The parent the fork hangs under: the source, or the source's
+        // parent when the source is a side chat (a sibling).
+        let workspace = self.workspace();
+        let parent = workspace
+            .session(source_id)
+            .and_then(|row| row.parent_chat_id.clone())
+            .filter(|parent| !parent.is_empty())
+            .and_then(|parent| {
+                // A dangling parent (the row left) falls back to the source.
+                workspace.session(&parent).map(|_| parent)
+            })
+            .unwrap_or_else(|| source_id.to_owned());
+        let raw_chat_id = uuid::Uuid::new_v4().to_string();
+        let reply = handle
+            .call(
+                roboco_rpc::methods::FORK_SIDE_CHAT,
+                serde_json::json!({
+                    "chatId": raw_chat_id,
+                    "sourceChatId": source_id,
+                    "parentChatId": parent,
+                }),
+            )
+            .await?;
+        let chat: roboco_proto::Chat = serde_json::from_value(reply).map_err(|error| {
+            ClientError::Internal {
+                message: format!("unexpected fork reply: {error}"),
+            }
+        })?;
+        // The engine published the row; this client's `WatchChats` echo
+        // replaces nothing here (the id is fresh) and the caller can open
+        // the fork at once — a scoped id naming a paired engine opens
+        // before the echo lands.
+        let scoped = ScopedId::encode(&EngineKey(handle.engine_id().to_owned()), &chat.id);
+        Ok(scoped)
     }
 }
 
@@ -456,6 +641,7 @@ mod tests {
             cwd: "~".into(),
             config: None,
             branch: None,
+            parent_chat_id: None,
             created_at: DateTime::<Utc>::from_timestamp_millis(10_000).unwrap(),
         };
         assert!(pending.finished(true, 10_050));
@@ -485,6 +671,7 @@ mod tests {
                 sandbox: roboco_proto::SandboxLevel::WorkspaceWrite,
             }),
             branch: Some("main".into()),
+            parent_chat_id: None,
             created_at: DateTime::<Utc>::from_timestamp_millis(10_000).unwrap(),
         };
         let chat = pending.synthetic_chat("engine:v1:xyz");
@@ -542,6 +729,7 @@ mod tests {
                 branch: Some("main".into()),
                 cwd: None,
                 title: Some("  My chat  ".into()),
+                parent_chat_id: None,
             })
             .await
             .expect("create_session");
@@ -592,6 +780,7 @@ mod tests {
                 branch: None,
                 cwd: None,
                 title: None,
+                parent_chat_id: None,
             })
             .await
             .expect("create_session");
@@ -658,6 +847,7 @@ mod tests {
                 branch: None,
                 cwd: None,
                 title: None,
+                parent_chat_id: None,
             })
             .await
             .expect_err("phones never host sessions");
@@ -685,6 +875,7 @@ mod tests {
                 branch: None,
                 cwd: None,
                 title: None,
+                parent_chat_id: None,
             })
             .await
             .expect_err("offline refuses");
@@ -721,6 +912,7 @@ mod tests {
                 branch: None,
                 cwd: None,
                 title: None,
+                parent_chat_id: None,
             })
             .await
             .expect("create_session");
@@ -785,6 +977,7 @@ mod tests {
                 branch: None,
                 cwd: None,
                 title: None,
+                parent_chat_id: None,
             })
             .await
             .expect("create_session");

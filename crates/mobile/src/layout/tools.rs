@@ -54,6 +54,19 @@ pub(crate) struct ToolLine {
     pub key: u64,
     pub open: bool,
     pub body: Vec<DetailBlock>,
+    /// A spawn card whose subagent doc exists: tapping opens its
+    /// transcript (upstream #899). `None` for every non-agent line.
+    pub link: Option<SubagentLink>,
+}
+
+/// The subagent doc a spawn card links to.
+pub(crate) struct SubagentLink {
+    /// The doc id (`{chatId}--sub--{id}`, scoped on this client).
+    pub doc_id: String,
+    /// The spawn's description — the viewer's title.
+    pub title: String,
+    /// Done/Failed → the subagent is no longer live.
+    pub frozen: bool,
 }
 
 pub(crate) struct ToolGroup {
@@ -786,6 +799,28 @@ impl RowBuilder {
                 match part {
                     MessagePart::Tool { call, is_error, resolved, subagent_ref, subagent_status, .. } => {
                         let (label, detail) = roboco_proto::view::tool_chip_content(call);
+                        // A spawn card whose doc exists is a link (upstream
+                        // #899): tapping opens the subagent's transcript.
+                        // Computed before `detail` is shadowed by the
+                        // prepared text below, and only for agent cards.
+                        let link = match (agents, subagent_ref) {
+                            (true, Some(doc_id)) => Some(SubagentLink {
+                                doc_id: doc_id.clone(),
+                                title: detail
+                                    .trim()
+                                    .lines()
+                                    .next()
+                                    .map(str::trim)
+                                    .filter(|t| !t.is_empty())
+                                    .unwrap_or("Subagent")
+                                    .to_owned(),
+                                frozen: matches!(
+                                    subagent_status,
+                                    Some(SubagentStatus::Done | SubagentStatus::Failed)
+                                ),
+                            }),
+                            _ => None,
+                        };
                         // Subagent lifecycle is distinct from `resolved`: under
                         // eager-done the spawn call resolves while the subagent
                         // still runs (desktop transcript.rs `running`/`failed`).
@@ -822,6 +857,7 @@ impl RowBuilder {
                             key: dkey,
                             open,
                             body,
+                            link,
                         });
                     }
                     MessagePart::Reasoning { text, .. } => {
@@ -849,6 +885,7 @@ impl RowBuilder {
                             key: dkey,
                             open,
                             body,
+                            link: None,
                         });
                     }
                     _ => {}
@@ -1108,6 +1145,19 @@ fn place_agents(t: &ToolGroup, px: Px, x: f32, y: f32, cw: f32, mut out: Option<
             let s = d(px, 14.0);
             o.widget(WidgetKind::Spinner, (x + cw - d(px, 8.0) - s, card_y + (card_h - s) / 2.0, s, s), None);
         }
+        // The spawn card is a link once the engine stamped the subagent's
+        // doc: a full-card tap target (upstream #899's `SubagentLink`).
+        if let Some(link) = &line.link {
+            o.widget(
+                WidgetKind::SubagentLink {
+                    doc_id: link.doc_id.clone(),
+                    title: link.title.clone(),
+                    frozen: link.frozen,
+                },
+                (x, card_y, cw, card_h),
+                None,
+            );
+        }
     }
     h
 }
@@ -1120,6 +1170,7 @@ pub(crate) fn heap_bytes(t: &ToolGroup) -> usize {
                 l.label.p.heap_bytes()
                     + l.detail.as_ref().map_or(0, |d| d.p.heap_bytes())
                     + l.badge.as_ref().map_or(0, |b| b.1.p.heap_bytes())
+                    + l.link.as_ref().map_or(0, |link| link.doc_id.capacity() + link.title.capacity())
                     + l.body
                         .iter()
                         .map(|b| match b {

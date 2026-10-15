@@ -72,6 +72,10 @@ pub(crate) struct WorkspaceStore {
     /// source for the derive (the optimistic row before `WatchChats`
     /// echoes the id) and a `cwd`/`config` source for 08's send.
     pending_chats: Arc<Mutex<HashMap<String, PendingChat>>>,
+    /// The running-subagent count per scoped chat id (upstream #899's
+    /// "● N" pill): the open sessions write it from their transcripts,
+    /// the rows read it. Sessions that leave the registry clear theirs.
+    running_subagents: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 /// The mutable, lock-guarded half of the store.
@@ -105,6 +109,7 @@ impl WorkspaceStore {
             pr: change_requests::ChangeRequestWatches::new(weak.clone(), notify),
             send_states: Arc::new(Mutex::new(HashMap::new())),
             pending_chats: Arc::new(Mutex::new(HashMap::new())),
+            running_subagents: Arc::new(Mutex::new(HashMap::new())),
         });
         // Seed with the derive of an empty fleet: a client with no engines
         // stays silent (its first recompute reproduces this content hash),
@@ -116,6 +121,7 @@ impl WorkspaceStore {
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
             pending_chats: &HashMap::new(),
+            running_subagents: &HashMap::new(),
             previous: None,
         });
         *store
@@ -175,6 +181,7 @@ impl WorkspaceStore {
             .collect();
         let overlays = state.overlays.clone();
         let send_states = lock(&self.send_states).clone();
+        let running_subagents = lock(&self.running_subagents).clone();
         // Ticket 09: drop pending chats the engine has echoed (or whose
         // 30 s TTL ran out); the survivors are the derive's extra rows.
         let pending_chats = {
@@ -204,6 +211,7 @@ impl WorkspaceStore {
             change_requests: &statuses,
             send_states: &send_states,
             pending_chats: &pending_chats,
+            running_subagents: &running_subagents,
             previous: Some(&previous),
         });
         if next.content_hash() == previous.content_hash() {
@@ -283,6 +291,18 @@ impl WorkspaceStore {
                     self.notify.notify_one();
                 }
             }
+        }
+    }
+
+    /// The running-subagent count of a chat (upstream #899's "● N" pill
+    /// on session rows). The open session writes it on every transcript
+    /// publication; `0` clears it. Recomputes on every change — a count
+    /// that did not move changes nothing (the row hash holds it).
+    pub(crate) fn set_running_subagents(&self, chat_id: &str, count: u32) {
+        let mut counts = lock(&self.running_subagents);
+        if counts.insert(chat_id.to_owned(), count) != Some(count) {
+            drop(counts);
+            self.notify.notify_one();
         }
     }
 

@@ -628,6 +628,10 @@ pub struct SessionRow {
     pub host_indicator: ChatIndicator,
     /// Run start of the live turn while Working/AwaitingInput.
     pub working_since_ms: Option<i64>,
+    /// Agents running under this chat right now — running subagents of
+    /// its open transcript plus its working side chats (upstream #899's
+    /// "● N" pill). Counts only while a session is open.
+    pub running_subagents: u32,
     pub last_activity_ms: i64,
     /// `now` / `34m` / `4h` / `2d` at derive time.
     pub time_label: String,
@@ -670,6 +674,7 @@ impl From<&mc::SessionRow> for SessionRow {
             indicator: r.indicator.into(),
             host_indicator: r.host_indicator.into(),
             working_since_ms: r.working_since_ms,
+            running_subagents: r.running_subagents,
             last_activity_ms: r.last_activity_ms,
             time_label: r.time_label.clone(),
             created_at_ms: r.created_at_ms,
@@ -1191,6 +1196,10 @@ pub struct NewSession {
     pub branch: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
+    /// A side chat of this chat (upstream #899): runs in its parent's
+    /// checkout and host (`target`, `cwd` and `branch` ignored), and
+    /// lists under the parent.
+    pub parent_chat_id: Option<String>,
 }
 
 impl TryFrom<NewSession> for mc::NewSession {
@@ -1208,6 +1217,7 @@ impl TryFrom<NewSession> for mc::NewSession {
             branch: new.branch,
             cwd: new.cwd,
             title: new.title,
+            parent_chat_id: new.parent_chat_id,
         })
     }
 }
