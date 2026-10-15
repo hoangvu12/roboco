@@ -417,6 +417,17 @@ class LargeTitleScaffoldTest {
      */
     @Test
     fun aDragIsObservedOnTheListsInteractionSourceAndOpensTheSnapGate() {
+        // Round 50: the diagnostics are off by default; on for this test only
+        // (before composing — the scaffold reads the switch when its effect starts).
+        LargeTitleSnapDiagnostics.enabled = true
+        try {
+            dragObservedAndSnapped()
+        } finally {
+            LargeTitleSnapDiagnostics.enabled = false
+        }
+    }
+
+    private fun dragObservedAndSnapped() {
         LargeTitleSnapDiagnostics.reset()
         val listState = LazyListState()
         val seen = mutableListOf<String>()

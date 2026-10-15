@@ -64,6 +64,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import sh.roboco.android.core.Face
@@ -387,32 +388,43 @@ fun LargeTitleScaffold(
             .drop(1)
             .filter { !it }
             .collect {
-                if (!snapGate.userScroll) return@collect
-                val c = collapseDp()
-                val target = LargeTitleMetrics.snapTarget(c)
-                if (target == null) {
-                    // Settled at 0, at L or past the title: nothing to snap.
-                    snapGate.userScroll = false
-                    return@collect
-                }
-                LargeTitleSnapDiagnostics.log("snap c=$c -> $target")
-                try {
-                    listState.animateScrollBy(
-                        with(density) { (target - c).dp.toPx() },
-                        Motion.LargeTitleSnap.spec(),
-                    )
-                    snapGate.userScroll = false
-                } catch (e: CancellationException) {
-                    LargeTitleSnapDiagnostics.log("snap cancelled at c=${collapseDp()}")
-                    // `userScroll` stays set: the fling (or a new drag) that
-                    // interrupted the snap ends with another scroll end,
-                    // which snaps from wherever it left c.
-                    // A finger touching down mid-snap cancels
-                    // animateScrollBy (MutationInterruptedException); without
-                    // this catch the collect itself would end and every
-                    // later release would silently stop snapping. A real
-                    // scope cancellation rethrows here.
-                    coroutineContext.ensureActive()
+                // The settle loop (round 50): snap, and if something
+                // interrupts the snap, wait for THAT scroll to end and snap
+                // again from wherever it left c — until the touch settles.
+                // The interrupting scroll's end cannot come back through the
+                // edge flow above: snapshotFlow re-reads the value when this
+                // collector resumes, so the interrupting true→false is
+                // conflated to `false`, equal to the last emitted value, and
+                // distinctUntilChanged drops it (CI 9863226e: "snap cancelled
+                // at c=20.0", then nothing).
+                while (snapGate.userScroll) {
+                    val c = collapseDp()
+                    val target = LargeTitleMetrics.snapTarget(c)
+                    if (target == null) {
+                        // Settled at 0, at L or past the title: nothing to
+                        // snap. A completed snap lands here too if its own
+                        // end is ever seen, so it can never re-trigger.
+                        snapGate.userScroll = false
+                        break
+                    }
+                    LargeTitleSnapDiagnostics.log("snap c=$c -> $target")
+                    try {
+                        listState.animateScrollBy(
+                            with(density) { (target - c).dp.toPx() },
+                            Motion.LargeTitleSnap.spec(),
+                        )
+                        snapGate.userScroll = false
+                    } catch (e: CancellationException) {
+                        // The release's fling (UserInput priority) or a new
+                        // drag interrupted the snap (MutationInterruptedException).
+                        // A real scope cancellation rethrows here; otherwise
+                        // `userScroll` stays set and the loop waits for the
+                        // interrupting scroll to end, then snaps from there.
+                        coroutineContext.ensureActive()
+                        LargeTitleSnapDiagnostics.log("snap cancelled at c=${collapseDp()}")
+                        snapshotFlow { listState.isScrollInProgress }.first { !it }
+                        LargeTitleSnapDiagnostics.log("interrupting scroll ended at c=${collapseDp()}")
+                    }
                 }
             }
     }
@@ -787,11 +799,12 @@ private fun Modifier.observeFingerForSnap(gate: SnapGate, listState: LazyListSta
 
 /**
  * Round 49 diagnostics for the snap gate (CI prints a test's stdout in its
- * report; the drag test also quotes [lines] in its failure message). Remove
- * once the snap is confirmed green on CI.
+ * report; the drag test also quotes [lines] in its failure message). Off by
+ * default since round 50 ([enabled]); a test turns it on before composing.
  */
 internal object LargeTitleSnapDiagnostics {
-    var enabled = true
+    /** Off by default (round 50); the drag test turns it on for its own evidence. */
+    var enabled = false
 
     val lines = mutableListOf<String>()
 
