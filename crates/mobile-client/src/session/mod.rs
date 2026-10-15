@@ -1114,6 +1114,18 @@ impl SessionHandle {
         self.core.snapshot()
     }
 
+    /// Subagents spawned in this transcript, in spawn order (pull after
+    /// `SessionChanged`). The spawn chips are the index — no listing RPC.
+    pub fn subagents(&self) -> Vec<SubagentRow> {
+        self.core.snapshot().subagents()
+    }
+
+    /// Whether this handle is a read-only subagent transcript (no
+    /// composer, no sends, no seen marks) — the viewer's contract.
+    pub fn is_subagent(&self) -> bool {
+        self.core.read_only
+    }
+
     /// The raw subscription (Rust consumers).
     pub fn subscribe(&self) -> watch::Receiver<Arc<SessionSnapshot>> {
         self.core.snapshot_tx_subscribe()

@@ -14,6 +14,7 @@
 //! helper here. 08's `send` reads the pending chat's `cwd`/`config`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use roboco_engine_client::registry::{EngineKey, ScopedId};
@@ -386,7 +387,7 @@ impl Client {
     /// parent's (the checkout is the parent's). Returns the scoped id.
     async fn create_side_chat(
         &self,
-        inner: &Arc<crate::ClientInner>,
+        inner: &Arc<ClientInner>,
         parent_id: &str,
         config: Option<roboco_proto::ChatConfig>,
         title: Option<String>,
