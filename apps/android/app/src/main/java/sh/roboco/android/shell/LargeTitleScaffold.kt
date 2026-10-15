@@ -2,6 +2,7 @@ package sh.roboco.android.shell
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -63,6 +64,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.launch
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.LocalTypeScale
 import sh.roboco.android.design.Motion
@@ -345,13 +347,31 @@ fun LargeTitleScaffold(
     // is not a scroll end, and without the drop a screen composed at a
     // restored mid position (the mid golden, a reopened folder) would snap
     // immediately on appearing.
+    //
+    // Only a scroll the user dragged snaps (UIKit snaps at the end of
+    // dragging/deceleration, never after a programmatic setContentOffset).
+    // A programmatic or accessibility scroll — a semantics ScrollBy (TalkBack,
+    // performScrollToNode), bring-into-view — that rests inside 0 < c < L is
+    // left there: snapping it back undid the scroll, so a caller bringing a
+    // row a few px into view (Settings' Remove Wallpaper, straddling the
+    // bottom edge at 874 dp) re-issued the same scroll forever (round 45).
     LaunchedEffect(listState, effectiveMode) {
         if (!hasLargeTitle) return@LaunchedEffect
+        // Set by a drag's start (a fling always follows one), cleared when
+        // its scroll ends: main-thread only, both collectors run here.
+        var dragged = false
+        launch {
+            listState.interactionSource.interactions.collect { interaction ->
+                if (interaction is DragInteraction.Start) dragged = true
+            }
+        }
         snapshotFlow { listState.isScrollInProgress }
             .distinctUntilChanged()
             .drop(1)
             .filter { !it }
             .collect {
+                if (!dragged) return@collect
+                dragged = false
                 val c = collapseDp()
                 val target = LargeTitleMetrics.snapTarget(c) ?: return@collect
                 try {
