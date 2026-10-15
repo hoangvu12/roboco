@@ -13,6 +13,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.ImageBitmap
@@ -116,6 +117,13 @@ import sh.roboco.android.transcript.widgets.imageTileRadius
  *   (`DraftKey.Chat(engineId, chatId)`). The route passes `core.engineId`;
  *   `null` — a fake core in tests — leaves the drafts unwired: no saver,
  *   no seed text, exactly the pre-84 behaviour
+ * @param onOpenSubagent android-next #06: a subagent spawn card was tapped
+ *   (the doc id, the spawn's title, whether it had finished). `null` —
+ *   tests, previews — leaves the cards inert
+ * @param headerAccessory android-next #06: the side chats button, the
+ *   header's second bar item left of the ⋯; `null` = none
+ * @param overlay android-next #06: composed last, over the whole screen —
+ *   the Side Chats & Agents sheet
  */
 @Composable
 fun SessionScreen(
@@ -129,6 +137,9 @@ fun SessionScreen(
     queueEditPort: QueueEditPort? = null,
     queueActions: QueueActions? = null,
     engineId: String? = null,
+    onOpenSubagent: ((docId: String, title: String, frozen: Boolean) -> Unit)? = null,
+    headerAccessory: (@Composable () -> Unit)? = null,
+    overlay: @Composable () -> Unit = {},
 ) {
     // 1. The per-screen state: the same instance the route holds. The
     //    first main-thread read creates the transcript (76's factory
@@ -249,6 +260,12 @@ fun SessionScreen(
             )
         },
     )
+    // android-next #06: a spawn card opens its subagent through the route's
+    // opener, read at tap time (the actions are remembered once).
+    val currentOpenSubagent by rememberUpdatedState(onOpenSubagent)
+    val openSubagent: (String, String, Boolean) -> Unit = remember {
+        { docId: String, title: String, frozen: Boolean -> currentOpenSubagent?.invoke(docId, title, frozen) }
+    }
     val actions = remember(controller, attachments, viewer, router) {
         val openImage: (String, Rect, ImageBitmap?, String?) -> Unit = { reference, source, bitmap, label ->
             viewer?.show(
@@ -274,9 +291,10 @@ fun SessionScreen(
                 openImage = openImage,
                 loadImage = binding::load,
                 cachedImage = binding::cached,
+                openSubagent = openSubagent,
             )
         } else {
-            TranscriptActions(openLink = router::open)
+            TranscriptActions(openLink = router::open, openSubagent = openSubagent)
         }
     }
 
@@ -429,6 +447,9 @@ fun SessionScreen(
     //     IME animation frame and the runway re-sizes in the same pass
     //     (69). `covered` (not `contentInset`) is the effective viewport
     //     bottom inset — iOS's `adjustedContentInset.bottom`.
+    // android-next #06: the [overlay] (the Side Chats & Agents sheet) is
+    //     the root's last child, over the header and the bottom stack.
+    Box(Modifier.fillMaxSize()) {
     SessionScaffold(
         reveal = state.reveal,
         header = {
@@ -438,6 +459,7 @@ fun SessionScreen(
                 edgeEngaged = edgeEngaged,
                 onMore = onMore,
                 statusBarTop = statusBarTop,
+                accessory = headerAccessory,
             )
         },
         modifier = modifier,
@@ -548,5 +570,7 @@ fun SessionScreen(
             stackAlpha = { nav.stackAlpha() * state.arrival.stackAlpha },
             modifier = Modifier.fillMaxSize(),
         )
+    }
+    overlay()
     }
 }

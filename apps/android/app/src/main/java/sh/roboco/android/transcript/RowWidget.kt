@@ -11,6 +11,7 @@ import sh.roboco.android.transcript.widgets.ImageTileCopy
 import sh.roboco.android.transcript.widgets.RailSpec
 import sh.roboco.android.transcript.widgets.ShimmerWidget
 import sh.roboco.android.transcript.widgets.SpinnerWidget
+import sh.roboco.android.transcript.widgets.SubagentLinkTarget
 import sh.roboco.android.transcript.widgets.ToolChevron
 import sh.roboco.android.transcript.widgets.ToolRail
 import sh.roboco.android.transcript.widgets.ToolStatusWidget
@@ -54,6 +55,13 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
             onToggle = { ctx.state.toggleDetail(ctx.model.display.key, k.detail, k.open) },
         )
         is WidgetKind.Chevron -> ToolChevron(rowKey = ctx.model.display.key, expanded = k.expanded)
+        // android-next #06 (upstream #899's `subagentLink`): the whole spawn
+        // card opens the subagent's transcript; the actions are read at
+        // click time so a rebuilt TranscriptActions is honoured.
+        is WidgetKind.SubagentLink -> SubagentLinkTarget(
+            title = k.title,
+            onOpen = { ctx.actions().openSubagent(k.docId, k.title, k.frozen) },
+        )
         // ticket 123 (status glyphs): running beats failed; the Working /
         // Writing flip reuses this slot (same `#working` row key), so the
         // ticker's remember survives and the clock never restarts — no
