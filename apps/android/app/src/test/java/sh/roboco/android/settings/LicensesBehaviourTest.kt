@@ -31,6 +31,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -46,6 +47,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import sh.roboco.android.BuildConfig
 import sh.roboco.android.core.CoreStatus
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.Cue
@@ -61,6 +63,7 @@ import sh.roboco.android.shell.NavStackHost
 import sh.roboco.android.shell.SheetHost
 import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
+import sh.roboco.android.update.UpdateUiState
 
 /**
  * The About section and Licenses screen behaviour (android-ui-parity
@@ -140,6 +143,9 @@ class LicensesBehaviourTest {
                                     versionCode = 9002L,
                                     core = core,
                                     sdkInt = sdkInt,
+                                    // android-next#04: the middle row follows a fixed
+                                    // Idle state, never the app's live update check.
+                                    updateState = idleUpdates,
                                 )
                                 LazyColumn(Modifier.fillMaxSize()) {
                                     aboutSection(about)
@@ -197,6 +203,20 @@ class LicensesBehaviourTest {
 
     private fun heightOf(bounds: DpRect): Dp = bounds.bottom - bounds.top
 
+    /** The About section's update state for every test: Idle (panel E's plain Check row). */
+    private val idleUpdates = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
+
+    /**
+     * The Version subtitle for 0.9.2 (9002) and [core]. android-next#04's
+     * approved panel F puts the build type after the version on non-release
+     * builds ("Roboco 0.9.2 (9002) debug · core 0.9.2"); unit tests run the
+     * debug variant, so the marker is part of the expected text.
+     */
+    private fun subtitle(core: String): String {
+        val marker = if (BuildConfig.UPDATE_INSTALLER_ENABLED) "" else " ${BuildConfig.BUILD_TYPE}"
+        return "Roboco 0.9.2 (9002)$marker \u00B7 $core"
+    }
+
     private fun rowImage(tag: String): PixelMap =
         compose.onNodeWithTag(tag).captureToImage().toPixelMap()
 
@@ -208,12 +228,18 @@ class LicensesBehaviourTest {
     fun theAboutCardMatchesTheGeometryTable() {
         hostAbout()
         val version = compose.onNodeWithTag("settings-about:version").getUnclippedBoundsInRoot()
+        val check = compose.onNodeWithTag("settings-about:check").getUnclippedBoundsInRoot()
         val licenses = compose.onNodeWithTag("settings-about:licenses").getUnclippedBoundsInRoot()
         assertDp(version.left, 16.dp, "card left")
         assertDp(version.right, 386.dp, "card right")
         assertDp(heightOf(version), 68.dp, "version row height")
         assertDp(heightOf(licenses), 68.dp, "licenses row height")
-        assertDp(licenses.top - version.bottom, 0.dp, "the two rows form one card")
+        // android-next#04 (approved panel E): with no update known, a
+        // title-only "Check for Updates" row (52 dp) sits between Version
+        // and Licenses; the three rows form one card.
+        assertDp(heightOf(check), 52.dp, "idle check row height (title only)")
+        assertDp(check.top - version.bottom, 0.dp, "the check row follows Version in the card")
+        assertDp(licenses.top - check.bottom, 0.dp, "Licenses follows the check row in the card")
         // The header block: 27 above + 20.8 line box + 10 below = 57.8, the
         // first row's top; the header text starts 32 from the screen.
         assertDp(version.top, 57.8.dp, "first row top = the header block (27 + 20.8 + 10)")
@@ -286,7 +312,7 @@ class LicensesBehaviourTest {
         assertTrue("merged text should contain the title: '$text'", text.contains("Version"))
         assertTrue(
             "merged text should contain the subtitle: '$text'",
-            text.contains("Roboco 0.9.2 (9002) · core 0.9.2"),
+            text.contains(subtitle("core 0.9.2")),
         )
         // No Role.Button (a plain tap does nothing), but the long-click
         // action is labelled "Copy".
@@ -324,7 +350,7 @@ class LicensesBehaviourTest {
         val clip = context().getSystemService(ClipboardManager::class.java).primaryClip
         assertNotNull("the copy landed on the clipboard", clip)
         assertEquals("Version", clip!!.description.label.toString())
-        assertEquals("Roboco 0.9.2 (9002) · core 0.9.2", clip.getItemAt(0).text.toString())
+        assertEquals(subtitle("core 0.9.2"), clip.getItemAt(0).text.toString())
         assertEquals(listOf("LongPress"), feedback.events)
         assertEquals(listOf("Copied"), toaster.texts)
     }
@@ -342,11 +368,11 @@ class LicensesBehaviourTest {
     @Test
     fun theCoreFailedSubtitleIsCopiedVerbatim() {
         hostAbout(sdkInt = 32, core = CoreStatus.Failed("boom"))
-        compose.onNodeWithText("Roboco 0.9.2 (9002) · core unavailable").assertExists()
+        compose.onNodeWithText(subtitle("core unavailable")).assertExists()
         compose.onNodeWithTag("settings-about:version").performTouchInput { longClick() }
         compose.waitForIdle()
         assertEquals(
-            "Roboco 0.9.2 (9002) · core unavailable",
+            subtitle("core unavailable"),
             context().getSystemService(ClipboardManager::class.java).primaryClip!!.getItemAt(0).text.toString(),
         )
     }

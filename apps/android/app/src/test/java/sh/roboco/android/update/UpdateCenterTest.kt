@@ -195,9 +195,14 @@ class UpdateCenterTest {
 
     @Test
     fun upToDateAndFailedChecksNeverPrompt() = runTest {
+        // Up to date (the same version) and failed checks (no manifest, junk).
+        // Round 52: the second feed was `{"version": "0.9.9"}`, a valid and
+        // strictly newer release than 0.9.2, which SHOULD prompt; a failed
+        // check is a null fetch or an unparseable body.
         listOf(
             FakeFeed("""{"version": "0.9.2"}"""),
-            FakeFeed("""{"version": "0.9.9"}"""),
+            FakeFeed(null),
+            FakeFeed("not a manifest"),
         ).forEach { feed ->
             val alerts = AlertHostState()
             val center = center(feed = feed, alerts = alerts)
@@ -221,6 +226,12 @@ class UpdateCenterTest {
             checker = UpdateChecker(FakeFeed(manifestJson), "0.9.2"),
             io = dispatcher,
             initialDelayMs = 0,
+            // Round 52: a release build. The constructor's default is
+            // BuildConfig.UPDATE_INSTALLER_ENABLED, false in the debug
+            // unit-test variant, and non-release builds never prompt
+            // (nonReleaseBuildsNeverPrompt), so this test could never pass.
+            installEnabled = true,
+            currentVersion = "0.9.2",
             rootReady = { ready },
             deviceAbi = { "arm64-v8a" },
         )
