@@ -6,6 +6,7 @@ import roboco.gradle.RobocoFonts
 import roboco.gradle.RobocoVersion
 import roboco.gradle.RustLicensesTask
 import java.io.File
+import java.time.Duration
 import java.util.Properties
 
 plugins {
@@ -587,8 +588,9 @@ tasks.withType<Test>().configureEach {
         showStackTraces = true
     }
     // Safety net (round 51): a hang fails the task after 45 min instead of
-    // eating the whole 90-min CI job.
-    timeout.set(java.time.Duration.ofMinutes(45))
+    // eating the whole 90-min CI job. Imported: inside this block `java`
+    // resolves to the project's java extension, not the package.
+    timeout.set(Duration.ofMinutes(45))
     // android-app#30's parity gate (G2–G4) is armed against goldens that
     // are not recorded yet, so it fails until the first sign-off. It runs
     // only when asked (-ProbocoParity: the android-screenshots CI job), not
