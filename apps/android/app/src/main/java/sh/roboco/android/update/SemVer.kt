@@ -1,6 +1,7 @@
 package sh.roboco.android.update
 
 import androidx.compose.runtime.Immutable
+import kotlin.math.sign
 
 /**
  * A semantic version (android-next#04): `major.minor.patch` with an
@@ -80,7 +81,10 @@ data class SemVer(
                     // Numeric identifiers always have lower precedence.
                     xn != null -> return -1
                     yn != null -> return 1
-                    else -> x.compareTo(y).let { if (it != 0) return it }
+                    // ASCII order (identifiers are [0-9A-Za-z-]), as a
+                    // sign: String.compareTo returns the raw char gap, and
+                    // every other branch here is -1 / 0 / 1.
+                    else -> x.compareTo(y).sign.let { if (it != 0) return it }
                 }
             }
             // A larger set of fields has higher precedence when the

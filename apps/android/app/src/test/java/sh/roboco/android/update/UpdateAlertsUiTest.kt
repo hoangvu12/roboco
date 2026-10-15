@@ -174,6 +174,11 @@ class UpdateAlertsUiTest {
         show(launchAlert())
 
         compose.onNodeWithTag("alert-primary").performClick()
+        // The clock is paused (mount): advance as laterResolvesTheAlert does,
+        // so the tap is processed and the swapped content recomposes. One
+        // frame was not enough (CI on a8122511). A morph never fades out, so
+        // the alert is still up afterwards.
+        compose.mainClock.advanceTimeBy(600)
         compose.waitForIdle()
 
         // One card, the same presentation — never a second alert.

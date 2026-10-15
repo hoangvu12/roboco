@@ -173,9 +173,11 @@ class RobocoIconsTest {
                 assertSame("bySfName[\"$name\"] must be ${entry.name}", entry.icon, RobocoIcons.bySfName[name])
             }
         }
-        // 67 SF constants + 1 alias (pin.slash.fill) + 7 Roboco extras.
-        assertEquals(68, RobocoIcons.bySfName.size)
-        assertEquals(74, RobocoIcons.entries.size)
+        // 68 SF constants + 1 alias (pin.slash.fill) + 7 Roboco extras.
+        // android-next#04 added Refresh (`arrow.clockwise`, the About
+        // "Check for Updates" row; the approved design allows one new glyph).
+        assertEquals(69, RobocoIcons.bySfName.size)
+        assertEquals(75, RobocoIcons.entries.size)
         assertEquals(
             "constant names are unique",
             RobocoIcons.entries.size,
@@ -283,6 +285,7 @@ class RobocoIconsTest {
             RobocoIcons.InfoCircle to R.drawable.zi_info_circle,
             RobocoIcons.ArrowTriangleBranch to R.drawable.zi_git_branch,
             RobocoIcons.Command to R.drawable.zi_command,
+            RobocoIcons.Refresh to R.drawable.zi_refresh, // android-next#04
             RobocoIcons.TabChat to R.drawable.zi_tab_chat,
             RobocoIcons.TabSettings to R.drawable.zi_tab_settings,
             RobocoIcons.RobocoBow to R.drawable.zi_roboco_bow, // android-next #03: replaced RobocoGlyph
