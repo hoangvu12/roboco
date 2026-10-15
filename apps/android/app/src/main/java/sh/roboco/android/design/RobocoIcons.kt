@@ -306,6 +306,9 @@ object RobocoIcons {
     /** SF `command` — core slash-command chip. */
     val Command = RobocoIcon.Vector(R.drawable.zi_command)
 
+    /** SF `arrow.clockwise` — the update "Check for Updates" row (android-next#04). */
+    val Refresh = RobocoIcon.Vector(R.drawable.zi_refresh)
+
     // -----------------------------------------------------------------
     // Roboco / Android extras: no SF name, so [bySfName] omits them.
     // -----------------------------------------------------------------
@@ -345,6 +348,7 @@ object RobocoIcons {
         RegistryEntry("ArrowUp", listOf("arrow.up"), ArrowUp),
         RegistryEntry("ArrowDown", listOf("arrow.down"), ArrowDown),
         RegistryEntry("ArrowUpRight", listOf("arrow.up.right"), ArrowUpRight),
+        RegistryEntry("Refresh", listOf("arrow.clockwise"), Refresh),
         RegistryEntry("ArrowUpArrowDown", listOf("arrow.up.arrow.down"), ArrowUpArrowDown),
         RegistryEntry("ArrowTurnDownRight", listOf("arrow.turn.down.right"), ArrowTurnDownRight),
         RegistryEntry("ArrowTurnLeftUp", listOf("arrow.turn.left.up"), ArrowTurnLeftUp),

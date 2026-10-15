@@ -456,6 +456,14 @@ android {
             // built unsigned (CI's workflow_dispatch path) — never the
             // debug key.
             releaseKeystore?.let { signingConfig = signingConfigs.getByName("release") }
+            // android-next#04: only release builds install updates — their
+            // signer is the one the release APK must match. Debug and
+            // benchmark builds still check, but their Update action opens
+            // the releases page and the launch prompt stays off.
+            buildConfigField("boolean", "UPDATE_INSTALLER_ENABLED", "true")
+        }
+        debug {
+            buildConfigField("boolean", "UPDATE_INSTALLER_ENABLED", "false")
         }
         // ui-parity #136: the Macrobenchmark build — release performance
         // (initWith keeps R8 and the mobile-dist core), debug-signed so it
@@ -469,6 +477,9 @@ android {
             matchingFallbacks += listOf("release")
             isDebuggable = false
             isProfileable = true
+            // android-next#04: debug-signed, like `debug` above — an update
+            // would refuse on the signer gate.
+            buildConfigField("boolean", "UPDATE_INSTALLER_ENABLED", "false")
         }
     }
 

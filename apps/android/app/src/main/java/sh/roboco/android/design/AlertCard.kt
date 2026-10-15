@@ -8,6 +8,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -173,6 +174,15 @@ fun RobocoAlertCard(
                                 .padding(horizontal = AlertMetrics.ControlInsetDp.dp),
                         )
                     }
+                    alert.progress?.let { progress ->
+                        Spacer(Modifier.height(AlertMetrics.TextToFieldGapDp.dp))
+                        AlertProgressSection(
+                            progress = progress,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = AlertMetrics.ControlInsetDp.dp),
+                        )
+                    }
                 }
                 // (b) The button area: pinned at the bottom, 20 dp below the
                 //     field (or the last text line with no field), 16 from the
@@ -249,6 +259,53 @@ private fun AlertTextField(
             }
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// The progress section (android-next#04)
+// ---------------------------------------------------------------------------
+
+/**
+ * The update alert's progress (panel B of the approved mockup): a thin
+ * 6 dp bar — the track is the capsule [AlertTokens.controlFill], the fill
+ * `palette.accent` — with an optional Geist 13 label ("10.3 of 24.5 MB")
+ * 6 dp under it. The bar tracks the fraction directly; the caller's
+ * coalescing keeps the recomposition rate sane.
+ */
+@Composable
+private fun AlertProgressSection(
+    progress: AlertProgress,
+    modifier: Modifier = Modifier,
+) {
+    val palette = RobocoTheme.palette
+    val typeScale = LocalTypeScale.current
+    Column(modifier) {
+        val fraction = progress.fraction.coerceIn(0f, 1f)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(AlertMetrics.ProgressHeightDp.dp)
+                .clip(CapsuleShape)
+                .background(AlertTokens.controlFill())
+                .semantics { this[AlertProgressKey] = fraction },
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .fillMaxHeight()
+                    .clip(CapsuleShape)
+                    .background(palette.accent),
+            )
+        }
+        progress.label?.let { label ->
+            Spacer(Modifier.height(AlertMetrics.ProgressLabelGapDp.dp))
+            BasicText(
+                label,
+                style = uiStyle(Face.Sans, typeScale.fixed(13f), palette.secondary),
+                modifier = Modifier.padding(horizontal = AlertMetrics.ControlInnerDp.dp / 2),
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +397,11 @@ private fun AlertButtons(
  * with an ellipsis: `text` for Cancel/Default (identical ink — the capture
  * shows no accent and no bold), `danger` for Destructive, `tertiary` while
  * disabled.
+ *
+ * A [preferred][AlertButton.preferred] button (android-next#04) is the
+ * filled accent capsule with white Geist Medium text — the update alert's
+ * "Update" — and darkens slightly while pressed, the accent twin of the
+ * grey control's pressed overlay.
  */
 @Composable
 private fun AlertButtonCell(
@@ -356,14 +418,22 @@ private fun AlertButtonCell(
     val titleColor = when {
         !enabled -> palette.tertiary
         button.role == AlertButtonRole.Destructive -> palette.danger
+        button.preferred -> Color.White
         else -> palette.text
+    }
+    val fill = if (button.preferred) {
+        // The accent capsule; pressed darkens it like the grey control's
+        // heavier overlay.
+        if (pressed) darken(palette.accent) else palette.accent
+    } else {
+        AlertTokens.controlFill()
     }
     Box(
         Modifier
             .heightIn(min = AlertMetrics.ControlMinHeightDp.dp)
             .clip(CapsuleShape)
-            .background(AlertTokens.controlFill())
-            .then(if (pressed) Modifier.background(palette.controlFill) else Modifier)
+            .background(fill)
+            .then(if (!button.preferred && pressed) Modifier.background(palette.controlFill) else Modifier)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -375,7 +445,11 @@ private fun AlertButtonCell(
     ) {
         BasicText(
             button.title,
-            style = uiStyle(Face.Sans, typeScale.scaled(17f), titleColor)
+            style = uiStyle(
+                if (button.preferred) Face.SansMedium else Face.Sans,
+                typeScale.scaled(17f),
+                titleColor,
+            )
                 .copy(textAlign = TextAlign.Center),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -383,6 +457,9 @@ private fun AlertButtonCell(
         )
     }
 }
+
+/** The preferred capsule's pressed fill: the accent at 88 % alpha over the card. */
+private fun darken(accent: Color): Color = accent.copy(alpha = 0.88f)
 
 // ---------------------------------------------------------------------------
 // The striped backdrop of the previews and goldens (ticket 22's stand-in)

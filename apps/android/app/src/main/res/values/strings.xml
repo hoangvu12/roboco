@@ -85,4 +85,51 @@
     <string name="group_by_project" translatable="false">Group by Project</string>
     <string name="settings_group_by_project_subtitle" translatable="false">Sessions outside your sections, under their project</string>
     <string name="settings_archived_sessions" translatable="false">Archived Sessions</string>
+
+    <!-- In-app updates (android-next#04): the approved mockup's copy
+         (updates.png panels A–F). The launch alert (A), the in-place
+         download state (B), the one-time install-permission ask (C), the
+         About rows (D/E/F), and the short check-failure reasons. Copy uses
+         "Roboco"; the ellipsis is U+2026, the middle dot U+00B7;
+         apostrophes are ASCII. -->
+    <string name="update_alert_title">Update Available</string>
+    <string name="update_alert_message">Roboco %1$s is available. You have %2$s.</string>
+    <string name="update_alert_engine_nudge">Update Roboco on your computer too.</string>
+    <string name="update_alert_update">Update</string>
+    <string name="update_alert_later">Later</string>
+    <string name="update_downloading_title">Updating Roboco</string>
+    <string name="update_downloading_message">Downloading %1$s…</string>
+    <string name="update_progress_of_mb">%1$s of %2$s</string>
+    <string name="update_downloading_cancel">Cancel</string>
+    <string name="update_failed_title">Update Failed</string>
+    <string name="update_failed_retry">Try Again</string>
+    <string name="update_failed_not_now">Not Now</string>
+    <string name="update_failed_network">The download didn\'t finish. Check your connection and try again.</string>
+    <string name="update_failed_storage">Roboco couldn\'t write the download. Check free space and try again.</string>
+    <string name="update_failed_checksum">The download didn\'t match its published checksum, so it was discarded. Try again.</string>
+    <string name="update_failed_signer">The update is signed by a different key than this install, so it can\'t replace it. Install it from the releases page instead.</string>
+    <string name="update_failed_install">Roboco couldn\'t be updated. %1$s</string>
+    <string name="update_failed_install_bare">Roboco couldn\'t be updated.</string>
+    <string name="update_permission_title">Allow Roboco to Install Updates</string>
+    <string name="update_permission_message">Android asks once. Turn on \"Allow from this source\" for Roboco, then come back.</string>
+    <string name="update_permission_open">Open Settings</string>
+    <string name="update_permission_not_now">Not Now</string>
+    <string name="update_row_update_title">Update to Roboco %1$s</string>
+    <string name="update_row_size_date">%1$s MB · Released %2$s</string>
+    <string name="update_row_size">%1$s MB</string>
+    <string name="update_row_released">Released %1$s</string>
+    <string name="update_row_check_title">Check for Updates</string>
+    <string name="update_row_checking">Checking…</string>
+    <string name="update_row_up_to_date">Roboco is up to date</string>
+    <string name="update_row_up_to_date_at">Roboco is up to date · checked %1$s</string>
+    <string name="update_row_error">Couldn\'t check: %1$s</string>
+    <string name="update_row_github_title">Roboco %1$s on GitHub</string>
+    <string name="update_row_github_subtitle">Debug build: install the release APK manually</string>
+    <string name="update_checked_just_now">just now</string>
+    <string name="update_checked_minutes_ago">%1$d min ago</string>
+    <string name="update_checked_hours_ago">%1$d h ago</string>
+    <string name="update_checked_yesterday">yesterday</string>
+    <string name="update_reason_offline">offline</string>
+    <string name="update_reason_not_found">not found</string>
+    <string name="update_reason_no_manifest">no manifest</string>
 </resources>

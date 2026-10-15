@@ -52,6 +52,12 @@ internal object AlertMetrics {
 
     /** Gap between the two side-by-side capsules, and between stacked ones. */
     const val ControlGapDp = 8f
+
+    /** The progress bar's height (android-next#04, the mockup's 6 px bar). */
+    const val ProgressHeightDp = 6f
+
+    /** The gap between the progress bar and its label. */
+    const val ProgressLabelGapDp = 6f
 }
 
 /**

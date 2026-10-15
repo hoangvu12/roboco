@@ -54,21 +54,26 @@ import sh.roboco.android.newsession.HandoffOverlayHost
  *   caller passes to [AppRoot].
  * @param toaster the app-scoped toast state (42's `appToaster`); `null`
  *   (tests, previews) mounts a local one.
+ * @param alerts the app-scoped alert state (android-next#04, the
+ *   toaster precedent): the update center shows its prompts through it
+ *   from outside any composition. `null` (tests, previews) mounts a
+ *   local one.
  */
 @Composable
 fun RootHosts(
     presentations: RootPresentations,
     toaster: ToasterState? = null,
+    alerts: AlertHostState? = null,
     content: @Composable () -> Unit,
 ) {
-    val alerts = remember { AlertHostState() } // 18
+    val alertState = alerts ?: remember { AlertHostState() } // 18
     val actionSheets = remember { ActionSheetHostState() } // 19
     val sheets = rememberSheetHostState() // 31
     val menuHaze = rememberHazeState() // 07 / 15
     CompositionLocalProvider(LocalRootPresentations provides presentations) {
         ContextMenuHost { // 16: outermost inside RobocoTheme
             val lift = LocalContextMenuHost.current
-            AlertHost(alerts) { // 18: outside ToastHost
+            AlertHost(alertState) { // 18: outside ToastHost
                 ToastHost(state = toaster) { // 14: outside ActionSheetHost
                     ActionSheetHost(actionSheets) { // 19
                         GlassMenuHost(menuHaze) { // 15
@@ -95,7 +100,7 @@ fun RootHosts(
                     // for exactly this call.
                     presentations.register { lift?.dismiss(animated = false) },
                     // 18: `dismissAll()` fades; accepted (see KDoc above).
-                    presentations.register { alerts.dismissAll() },
+                    presentations.register { alertState.dismissAll() },
                     // 19: `clear()` is internal, same module.
                     presentations.register { actionSheets.clear() },
                     // 31: also covers 104's in-window Settings card entry.
