@@ -462,11 +462,20 @@ jobs:
           echo "VERSION=$ver" >> "$GITHUB_ENV"
       - name: updater manifest
         run: |
-          manifest=$(jq -n --arg version "$VERSION" '{version: $version, files: {}}')
+          # android-next#04: the manifest gains the release date (ISO-8601
+          # UTC) and each file's size in bytes — the Android in-app update
+          # row shows "<size> MB · Released <date>". Additive: the desktop
+          # updater's serde structs ignore unknown fields, and the
+          # Android parser tolerates both keys being absent (older
+          # releases' manifests).
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          manifest=$(jq -n --arg version "$VERSION" --arg date "$date" \
+            '{version: $version, date: $date, files: {}}')
           for f in dist/*; do
             sha=$(sha256sum "$f" | cut -d' ' -f1)
-            manifest=$(jq --arg name "$(basename "$f")" --arg sha "$sha" \
-              '.files[$name] = {sha256: $sha}' <<<"$manifest")
+            size=$(stat -c %s "$f")
+            manifest=$(jq --arg name "$(basename "$f")" --arg sha "$sha" --argjson size "$size" \
+              '.files[$name] = {sha256: $sha, size: $size}' <<<"$manifest")
           done
           printf '%s' "$manifest" > manifest.json
       - name: stage install script

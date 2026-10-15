@@ -38,7 +38,9 @@ import sh.roboco.android.core.WorkspaceCore
 import sh.roboco.android.core.WorkspaceFeed
 import sh.roboco.android.core.robocoPrefsStore
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.AlertHostState
 import sh.roboco.android.design.ToasterState
+import sh.roboco.android.update.RELEASES_PAGE
 import sh.roboco.android.notify.NotificationCenter
 import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.NotificationPolicy
@@ -66,6 +68,8 @@ import sh.roboco.android.shell.DeepLinkHub
 import sh.roboco.android.shell.RootInput
 import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SearchTabState
+import sh.roboco.android.update.UpdateCenter
+import sh.roboco.android.composer.openInCustomTab
 import uniffi.roboco_core.ClientEvent
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.WorkspaceSnapshot
@@ -390,6 +394,47 @@ class RobocoApplication : Application() {
     val appToaster: ToasterState by lazy { ToasterState() }
 
     /**
+     * The app-scoped alert state (android-next#04, the [appToaster]
+     * precedent): the update center — an app-lifetime service, not a
+     * screen — shows its alerts through it, so a prompt raised while no
+     * activity is composed (or after a rotation) still lands in the live
+     * root host. `RobocoAppContent` passes it to `RootHosts` (the alert
+     * host is the root's own; this is only the shared state behind it).
+     */
+    val appAlerts: AlertHostState by lazy { AlertHostState() }
+
+    /**
+     * The in-app update center (android-next#04): the scheduled manifest
+     * checks, the launch prompt (over [appAlerts], once per process,
+     * deferred until the shell is idle), the download/verify/install
+     * flow, and the state the Settings → About update rows read. Started
+     * in `onCreate` (its 2 s initial delay waits out the first frame);
+     * the foreground observer below feeds it the process's foreground
+     * edges (the hourly cadence and the install resume).
+     */
+    val updates: UpdateCenter by lazy {
+        UpdateCenter(
+            context = this,
+            scope = applicationScope,
+            alerts = appAlerts,
+            engineVersions = { workspaceFeed.engines.value.map { it.version } },
+            rootReady = {
+                val input = rootInput.value
+                input is RootInput.Ready && input.hasEngines
+            },
+            openReleases = {
+                openInCustomTab(
+                    this,
+                    RELEASES_PAGE,
+                    dark = appearance.value != Appearance.Light &&
+                        (appearance.value == Appearance.Dark ||
+                            resources.configuration.isNightModeActive),
+                )
+            },
+        )
+    }
+
+    /**
      * The one object every session/section write goes through (ticket
      * 42) — the [sh.roboco.android.sessions.RowActions] instance ticket
      * 35 provides as `LocalRowActions` inside the root `ToastHost`.
@@ -602,11 +647,15 @@ class RobocoApplication : Application() {
                     notifications.foreground = true
                     runWatch.onForeground(true)
                     refreshNotificationsOn()
+                    // android-next#04: the update loop's hourly cadence and
+                    // the install resume ride the same foreground edge.
+                    updates.onForeground(true)
                 }
 
                 override fun onStop(owner: LifecycleOwner) {
                     notifications.foreground = false
                     runWatch.onForeground(false)
+                    updates.onForeground(false)
                 }
             },
         )
@@ -623,6 +672,11 @@ class RobocoApplication : Application() {
             rowActions.startNoticeToasts(appEvents.notices())
             coreStartup.start()
         }
+        // android-next#04: the update checks start with the process (the
+        // launch check's 2 s delay waits out the first frame). Debug and
+        // benchmark builds check too — the center's BuildConfig flag only
+        // turns the install path into the releases-page link.
+        updates.start()
     }
 
     /**

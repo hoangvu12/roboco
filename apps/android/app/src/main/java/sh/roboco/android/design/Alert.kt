@@ -81,16 +81,42 @@ data class AlertField(
 )
 
 /**
+ * The alert's optional progress section (android-next#04, the update
+ * alert's "Updating Roboco" state): a thin bar between the message and
+ * the buttons plus an optional label (`"10.3 of 24.5 MB"`). Immutable on
+ * purpose — callers push a fresh copy through [Alerts.updateCurrent] to
+ * move it, which keeps the card's presentation (id, animations, field
+ * state) alive.
+ */
+@Immutable
+data class AlertProgress(
+    /** The fraction of the bar, 0…1 (clamped). */
+    val fraction: Float,
+    /** The label under the bar; null draws the bar alone. */
+    val label: String? = null,
+)
+
+/**
  * One alert action. [onClick] receives the field's **raw** text (or `""`
  * with no field); trimming and empty checks stay in the caller, as on iOS.
  * [requiresText] disables the button while the trimmed field text is empty
  * (PR #685's Create), re-enabling live as the user types.
+ *
+ * [preferred] (android-next#04) draws the button as the filled accent
+ * capsule with white text — the approved update alert's "Update" — while
+ * staying a normal button otherwise; at most one per alert (checked in
+ * debug). [morphsInPlace] runs the handler and **keeps the alert open**,
+ * expecting the handler to replace the content through
+ * [Alerts.updateCurrent] (the update alert's A→B morph); the normal
+ * resolve — handler, fade-out, next queued alert — is skipped.
  */
 @Immutable
 data class AlertButton(
     val title: String,
     val role: AlertButtonRole = AlertButtonRole.Default,
+    val preferred: Boolean = false,
     val requiresText: Boolean = false,
+    val morphsInPlace: Boolean = false,
     val onClick: (fieldText: String) -> Unit = {},
 )
 
@@ -100,14 +126,28 @@ data class RobocoAlert(
     val title: String,
     val message: String? = null,
     val field: AlertField? = null,
+    val progress: AlertProgress? = null,
     val buttons: List<AlertButton>,
 )
 
 /** Shows alerts from anywhere: composable code, view models, any thread. */
 interface Alerts {
 
+    /** True while an alert is presented (read on the main thread). */
+    val isShowing: Boolean
+        get() = false
+
     /** Presents now, or after the alerts already shown/queued. Callable from any thread. */
     fun show(alert: RobocoAlert)
+
+    /**
+     * Replaces the **showing** alert's content in place (android-next#04):
+     * the same card keeps its presentation id, so no re-animation, no
+     * re-focus, no queue slot — the morph target of an
+     * [AlertButton.morphsInPlace] handler. With nothing showing (or from
+     * [Alerts.Noop]) the update is dropped and logged.
+     */
+    fun updateCurrent(alert: RobocoAlert)
 
     /** Clears the queue and fades the current alert out without running any handler. */
     fun dismissAll()
@@ -117,6 +157,10 @@ interface Alerts {
         val Noop: Alerts = object : Alerts {
             override fun show(alert: RobocoAlert) {
                 Log.w("Alerts", "No AlertHost mounted; dropped: ${alert.title}")
+            }
+
+            override fun updateCurrent(alert: RobocoAlert) {
+                Log.w("Alerts", "No AlertHost mounted; dropped update: ${alert.title}")
             }
 
             override fun dismissAll() {}
@@ -145,6 +189,10 @@ class AlertHostState : Alerts {
     internal var current: Presented? by mutableStateOf<Presented?>(null)
         private set
 
+    /** True while an alert is presented (main thread only, like [current]). */
+    override val isShowing: Boolean
+        get() = current != null
+
     /**
      * The id of the alert `dismissAll` asked to go away (it fades out
      * without running any handler); `null` otherwise.
@@ -159,6 +207,12 @@ class AlertHostState : Alerts {
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     override fun show(alert: RobocoAlert) = onMain { present(alert) }
+
+    override fun updateCurrent(alert: RobocoAlert) = onMain {
+        // Same id: the composition's key(p.id) survives, so the card keeps
+        // its animations and field state while the content swaps.
+        current = current?.let { Presented(it.id, alert) }
+    }
 
     override fun dismissAll() = onMain {
         queue.clear()
@@ -182,6 +236,9 @@ class AlertHostState : Alerts {
             }
             require(alert.buttons.isNotEmpty()) {
                 "RobocoAlert needs at least one button (alert \"${alert.title}\")"
+            }
+            require(alert.buttons.count { it.preferred } <= 1) {
+                "RobocoAlert allows at most one preferred button (alert \"${alert.title}\")"
             }
         }
         if (current != null) {
@@ -304,9 +361,19 @@ private fun PresentedAlert(
         }
     }
 
-    /** The single exit path: `index == null` dismisses without any handler. */
+    /**
+     * The single exit path: `index == null` dismisses without any handler.
+     * A [morphsInPlace][AlertButton.morphsInPlace] button never exits: it
+     * runs its handler (which replaces the content through
+     * [AlertHostState.updateCurrent]) and the alert stays up.
+     */
     fun resolve(index: Int?) {
         if (resolved) return
+        val button = index?.let { alert.buttons.getOrNull(it) }
+        if (button != null && button.morphsInPlace) {
+            button.onClick(fieldValue.text)
+            return
+        }
         resolved = true
         focusManager.clearFocus(force = true)
         keyboard?.hide()
@@ -453,6 +520,12 @@ val AlertAlphaKey = SemanticsPropertyKey<Float>("AlertAlpha")
 
 /** Test-only: the present scale of the current alert card (1.1 → 1). */
 val AlertScaleKey = SemanticsPropertyKey<Float>("AlertScale")
+
+/**
+ * Test-only: the current alert's progress fraction (0…1), when it carries
+ * an [AlertProgress] (android-next#04's download state).
+ */
+val AlertProgressKey = SemanticsPropertyKey<Float>("AlertProgress")
 
 /**
  * Exposes [AlertAlphaKey]/[AlertScaleKey] on a zero-size sibling of the

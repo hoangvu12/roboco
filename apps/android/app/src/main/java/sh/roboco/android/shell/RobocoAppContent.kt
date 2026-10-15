@@ -81,7 +81,11 @@ fun RobocoAppContent(app: RobocoApplication, rootState: AppRootState) {
             FontGateHost(fontStatus) { // 03: keep this wrapper
                 val presentations = remember { RootPresentations() }
                 CompositionLocalProvider(LocalRouterHooks provides app.routerHooks) { // 32: one per app root
-                    RootHosts(presentations, toaster = app.appToaster) { // 42's app-scoped toaster
+                    RootHosts(
+                        presentations,
+                        toaster = app.appToaster, // 42's app-scoped toaster
+                        alerts = app.appAlerts, // android-next#04's app-scoped alert state
+                    ) { // 42's app-scoped toaster
                         // 42's row actions, provided inside the root
                         // ToastHost so every screen can write and the
                         // toasts land in the root host.
