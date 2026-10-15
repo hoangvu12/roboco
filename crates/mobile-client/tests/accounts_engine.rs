@@ -63,7 +63,9 @@ async fn with_env_lock<T>(f: impl Future<Output = T>) -> T {
 
 /// One Claude login: `~/.claude.json` plus `.credentials.json` under the
 /// fixture home, with a far-future expiry (a usage probe must never try
-/// to rotate it). Mirrors the engine test's `write_claude_login`.
+/// to rotate it). Mirrors the engine test's `write_claude_login`
+/// (including the `projects` map and rate-limit tier the identity merge
+/// and plan label read).
 fn write_claude_login(home: &std::path::Path, email: &str, uuid: &str, token: &str) {
     std::fs::create_dir_all(home).expect("claude dir");
     std::fs::write(
@@ -75,8 +77,10 @@ fn write_claude_login(home: &std::path::Path, email: &str, uuid: &str, token: &s
                 "displayName": "Test User",
                 "organizationName": "Test Org",
                 "organizationType": "claude_max",
+                "organizationRateLimitTier": "default_claude_max_20x",
             },
             "userID": format!("user-{uuid}"),
+            "projects": { "/keep/me": { "history": [] } },
         })
         .to_string(),
     )
@@ -188,23 +192,43 @@ fn emails(
 }
 
 /// List, activate and forget over the paired link, plus the cache every
-/// success refreshes: two logins (the live one active), a switch flips
-/// them and the reply agrees, a forget drops the saved slot, and the
-/// cache always mirrors the newest reply.
+/// success refreshes: the live login lists (and is auto-snapshotted), a
+/// second login replaces it live (the first becomes a saved, inactive
+/// slot), a switch flips them and the reply agrees, a forget drops the
+/// saved slot, and the cache always mirrors the newest reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_activate_forget_and_the_cache() {
     let fixture = tempfile::tempdir().unwrap();
     write_claude_login(fixture.path(), "alice@example.com", "uuid-alice", "token-alice");
-    write_claude_login(fixture.path(), "bob@example.com", "uuid-bob", "token-bob");
     with_claude_home(fixture.path(), async {
         let rig = AccountsRig::start().await;
-        // The last-written login (Bob) is live; the earlier one (Alice) is
-        // a saved, inactive slot.
+        // Alice is live: the first list detects her and auto-snapshots
+        // her into a slot.
+        let first = rig
+            .client
+            .list_agent_accounts(&rig.device_id, false)
+            .await
+            .expect("first list");
+        assert_eq!(
+            emails(&first, roboco_proto::HarnessId::ClaudeCode),
+            vec![("alice@example.com".to_string(), true)],
+        );
+        let alice = first
+            .accounts
+            .iter()
+            .find(|a| a.email.as_deref() == Some("alice@example.com"))
+            .expect("alice listed")
+            .id
+            .clone();
+
+        // Bob logs in via the CLI (the live files replaced): the next
+        // list snapshots him and shows Alice as a saved, inactive slot.
+        write_claude_login(fixture.path(), "bob@example.com", "uuid-bob", "token-bob");
         let snapshot = rig
             .client
             .list_agent_accounts(&rig.device_id, false)
             .await
-            .expect("plain list");
+            .expect("second list");
         assert_eq!(
             emails(&snapshot, roboco_proto::HarnessId::ClaudeCode),
             vec![
@@ -231,13 +255,6 @@ async fn list_activate_forget_and_the_cache() {
 
         // Switch to Alice: her slot goes active, Bob's goes inactive, the
         // reply and the cache agree.
-        let alice = snapshot
-            .accounts
-            .iter()
-            .find(|a| a.email.as_deref() == Some("alice@example.com"))
-            .expect("alice listed")
-            .id
-            .clone();
         let switched = rig
             .client
             .activate_agent_account(&rig.device_id, "claude-code", &alice)

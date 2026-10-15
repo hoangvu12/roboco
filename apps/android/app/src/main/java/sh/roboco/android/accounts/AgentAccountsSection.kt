@@ -229,8 +229,8 @@ class AgentAccountsSectionState internal constructor(
     /**
      * Points the section at its device (the screen re-runs this whenever
      * the primary device changes): the core's cached snapshot paints at
-     * once, then the plain list, then the forced probe. An unsupported
-     * engine never asks again.
+     * once (one io hop — never an FFI call on main), then the plain list,
+     * then the forced probe. An unsupported engine never asks again.
      */
     internal fun track(deviceId: String?) {
         if (unsupported) return
@@ -242,14 +242,21 @@ class AgentAccountsSectionState internal constructor(
         }
         if (tracked == deviceId) return
         tracked = deviceId
-        snapshot = core.cached(deviceId)
         loadMessage = null
         scope.launch {
             try {
+                val cached = withContext(io) { core.cached(deviceId) }
+                if (tracked == deviceId) {
+                    snapshot = cached
+                }
                 val plain = withContext(io) { core.list(deviceId, false) }
-                snapshot = plain
+                if (tracked == deviceId) {
+                    snapshot = plain
+                }
                 val forced = withContext(io) { core.list(deviceId, true) }
-                snapshot = forced
+                if (tracked == deviceId) {
+                    snapshot = forced
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {

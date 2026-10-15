@@ -39,6 +39,7 @@ class AgentAccountsModelTest {
     /** Records every call in order; knobs for the answers and failures. */
     private class FakeAccountsCore : AccountsCore {
         val calls = mutableListOf<String>()
+        var cachedReads = 0
         var cached: AgentAccountsSnapshot? = null
         val listAnswers = ArrayDeque<AgentAccountsSnapshot>()
         var listThrows: Throwable? = null
@@ -74,7 +75,10 @@ class AgentAccountsModelTest {
             return forgetAnswer!!
         }
 
-        override fun cached(deviceId: String): AgentAccountsSnapshot? = cached
+        override fun cached(deviceId: String): AgentAccountsSnapshot? {
+            cachedReads++
+            return cached
+        }
     }
 
     private class FakeToaster : Toaster {
@@ -152,7 +156,7 @@ class AgentAccountsModelTest {
     // --------------------------------------------------------- the loads
 
     @Test
-    fun openPaintsTheCacheThenThePlainThenTheForcedList() = runTest {
+    fun openConsultsTheCacheThenThePlainThenTheForcedList() = runTest {
         val core = FakeAccountsCore()
         val cached = snapshot(account("alice", active = true))
         core.cached = cached
@@ -162,10 +166,11 @@ class AgentAccountsModelTest {
         val model = model(core, scope = this)
 
         model.open("device-1")
-        // The cache paints at once, before any call lands.
-        assertEquals(cached, model.snapshot)
-        assertEquals(AccountsLoad.Ready, model.load)
         advanceUntilIdle()
+        // The open sequence: the core's cache first (the paint-at-once
+        // source), then the host's last probe, then the forced probe —
+        // whose reply is what stays on screen.
+        assertEquals(1, core.cachedReads)
         assertEquals(listOf("list:false", "list:true"), core.calls)
         assertEquals(forced, model.snapshot)
         assertEquals(AccountsLoad.Ready, model.load)

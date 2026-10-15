@@ -186,9 +186,9 @@ class AgentAccountsModel(
 
     /**
      * Opens the page on `device`: the core's cached snapshot paints at
-     * once, then the plain list (the host's last probe) and the forced
-     * probe land behind it. `null` (no computer) shows the no-computer
-     * message.
+     * once (one io hop — never an FFI call on main), then the plain list
+     * (the host's last probe) and the forced probe land behind it.
+     * `null` (no computer) shows the no-computer message.
      */
     fun open(deviceId: String?) {
         this.deviceId = deviceId
@@ -197,15 +197,17 @@ class AgentAccountsModel(
             load = AccountsLoad.Loading
             return
         }
-        val cached = core.cached(deviceId)
-        if (cached != null) {
-            snapshot = cached
-            load = AccountsLoad.Ready
-        } else {
-            snapshot = null
-            load = AccountsLoad.Loading
+        snapshot = null
+        load = AccountsLoad.Loading
+        workScope.launch {
+            val cached = withContext(io) { core.cached(deviceId) }
+            if (this@AgentAccountsModel.deviceId != deviceId) return@launch
+            if (cached != null) {
+                snapshot = cached
+                load = AccountsLoad.Ready
+            }
+            loadOnce(deviceId, force = false, thenForce = true)
         }
-        workScope.launch { loadOnce(deviceId, force = false, thenForce = true) }
     }
 
     /** Pull-to-refresh: re-probe usage on the host. Suspends until the
