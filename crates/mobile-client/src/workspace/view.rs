@@ -115,6 +115,11 @@ pub struct SessionRow {
     pub host_indicator: ChatIndicator,
     /// Run start of the live turn while Working/AwaitingInput.
     pub working_since_ms: Option<i64>,
+    /// Agents running under this chat right now — its open transcript's
+    /// running subagents plus its working side chats (upstream #899's
+    /// "● N" pill; the follow-up folds the side chats in). Counts only
+    /// while a session is open (the chip state lives in the transcript).
+    pub running_subagents: u32,
     /// `last_message_at`, falling back to `created_at` (the sort key).
     pub last_activity_ms: i64,
     /// [`relative_time_label`] of `last_activity_ms` at derive time (the 1 Hz
@@ -468,6 +473,10 @@ pub struct DeriveContext<'a> {
     /// renders them as synthetic rows so the Sessions list shows a new
     /// chat at once. An engine row with the same id wins.
     pub pending_chats: &'a HashMap<String, PendingChat>,
+    /// Running subagents per scoped chat id (upstream #899): the open
+    /// sessions' spawn-chip state, written by the session tasks. The
+    /// derive folds each row's working side chats on top.
+    pub running_subagents: &'a HashMap<String, u32>,
     pub previous: Option<&'a WorkspaceSnapshot>,
 }
 
@@ -512,6 +521,7 @@ fn hash_row(row: &SessionRow) -> u64 {
     attention_rank(row.indicator).hash(&mut h);
     attention_rank(row.host_indicator).hash(&mut h);
     row.working_since_ms.hash(&mut h);
+    row.running_subagents.hash(&mut h);
     row.last_activity_ms.hash(&mut h);
     row.time_label.hash(&mut h);
     row.created_at_ms.hash(&mut h);
@@ -599,6 +609,9 @@ struct RowContext<'a> {
     sessions: HashMap<&'a str, &'a Session>,
     pinned: &'a HashSet<String>,
     section_of: &'a HashMap<String, String>,
+    /// Working (unarchived) side chats per parent (scoped) — the #899
+    /// follow-up's half of the "● N" pill.
+    working_children: &'a HashMap<String, u32>,
 }
 
 fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<SessionRow> {
@@ -616,6 +629,10 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
             .map(|t| t.timestamp_millis()),
         _ => None,
     };
+    // The "● N" pill (upstream #899): the open transcript's running
+    // subagents plus the working side chats folded in by the derive.
+    let running_subagents = cx.running_subagents.get(&chat.id).copied().unwrap_or(0)
+        + rc.working_children.get(chat.id.as_str()).copied().unwrap_or(0);
     let project = chat
         .space_id
         .as_deref()
@@ -678,6 +695,7 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         indicator,
         host_indicator,
         working_since_ms,
+        running_subagents,
         last_activity_ms: sort_key(chat).timestamp_millis(),
         time_label: relative_time_label(sort_key(chat).timestamp_millis(), now_ms),
         created_at_ms: chat.created_at.timestamp_millis(),
@@ -787,7 +805,23 @@ pub fn derive(cx: &DeriveContext<'_>) -> WorkspaceSnapshot {
         }
     }
 
-    // 3. Rows, one context per engine.
+    // 3. Rows, one context per engine. First the working-children pre-pass
+    //    (the #899 follow-up): a parent's working side chats count into its
+    //    "● N" pill, so the map is built before any row.
+    let working_children: HashMap<String, u32> = merged
+        .chats
+        .values()
+        .filter(|chat| chat.parent_chat_id.is_some() && !chat.archived)
+        .filter_map(|chat| {
+            let parent = chat.parent_chat_id.as_deref()?;
+            let session = sessions.get(chat.id.as_str()).copied();
+            (display_status(chat, session, cx.now) == ChatIndicator::Working)
+                .then(|| parent.to_owned())
+        })
+        .fold(HashMap::new(), |mut acc, parent| {
+            *acc.entry(parent).or_insert(0) += 1;
+            acc
+        });
     let mut rows: HashMap<String, Arc<SessionRow>> = HashMap::new();
     // Pending chats grouped by their engine — they render through their
     // engine's own row context (device names, engine online state).
@@ -809,6 +843,7 @@ pub fn derive(cx: &DeriveContext<'_>) -> WorkspaceSnapshot {
             sessions: sessions.clone(),
             pinned: &pinned,
             section_of: &section_of,
+            working_children: &working_children,
         };
         for raw_chat in &engine.rows.chats {
             let scoped = ScopedId::encode(&key, &raw_chat.id);
@@ -1308,6 +1343,7 @@ mod tests {
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
             pending_chats: &HashMap::new(),
+            running_subagents: &HashMap::new(),
             previous: None,
         })
     }
@@ -1590,6 +1626,7 @@ mod tests {
             change_requests: &HashMap::new(),
             send_states: &send_states,
             pending_chats: &HashMap::new(),
+            running_subagents: &HashMap::new(),
             previous: None,
         });
         snapshot
@@ -1975,6 +2012,7 @@ mod tests {
             cwd: "/repo".into(),
             config: None,
             branch: Some("main".into()),
+            parent_chat_id: None,
             created_at: at(NOW_SECS - 5),
         }
     }
@@ -1996,6 +2034,7 @@ mod tests {
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
             pending_chats: &pending,
+            running_subagents: &HashMap::new(),
             previous: None,
         });
         let row = snapshot
@@ -2033,6 +2072,7 @@ mod tests {
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
             pending_chats: &pending,
+            running_subagents: &HashMap::new(),
             previous: None,
         });
         // One row, and it is the engine's (titled), not the synthetic one.
@@ -2055,6 +2095,7 @@ mod tests {
             change_requests: &HashMap::new(),
             send_states: &HashMap::new(),
             pending_chats: &pending,
+            running_subagents: &HashMap::new(),
             previous: None,
         });
         assert!(snapshot.sessions.is_empty());

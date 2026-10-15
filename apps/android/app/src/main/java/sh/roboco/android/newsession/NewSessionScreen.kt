@@ -31,6 +31,7 @@ import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.findActivity
 import sh.roboco.android.shell.DraftHandoff
 import sh.roboco.android.shell.LocalPageSheetScope
+import uniffi.roboco_core.FileMatch
 
 /**
  * The New Session page (android-ui-parity #93) — the port of
@@ -87,6 +88,9 @@ internal fun NewSessionScreenBody(
     // The chip title chain's labels: the core's catalog in the app; tests and
     // previews pass GalleryLabels to stay FFI-free (FakeCatalog's intent).
     labels: ChipLabels = CoreChipLabels,
+    // android-next #06: the side-chat draft's hero line and its own bar.
+    headline: String = NewSessionHeadline,
+    navBar: Boolean = true,
 ) {
     val composer = rememberComposerController(initialText = ns.initialText)
 
@@ -144,6 +148,9 @@ internal fun NewSessionScreenBody(
         // Runs once, before the first frame (iOS sets these in `init` and
         // `viewDidLoad`).
         bindNewSessionComposer(composer, project = { ns.project }, ns.initialImages, fileSearch)
+        // android-next #06: a side chat searches its parent's project (iOS
+        // `sideOf`: the parent's device and space; none when projectless).
+        ns.side?.let { side -> composer.mentionSearch = sideChatMentionSearch(side, fileSearch) }
         // 94: the real send handler replaces the `Kept` stub the bind
         // installs for direct-bind tests.
         composer.onSend = { text, images, _ -> handler.send(text, images) }
@@ -207,6 +214,8 @@ internal fun NewSessionScreenBody(
         // outside). Chained after the caller's modifier so the recording
         // covers everything the sheet-sized node draws.
         modifier = modifier.handoffScene(capture),
+        headline = headline,
+        navBar = navBar,
     )
 }
 
@@ -248,6 +257,29 @@ internal fun bindNewSessionComposer(
         }
     }
     if (composer.onSend == null) composer.onSend = { _, _, _ -> SendResult.Kept }
+}
+
+/**
+ * A side chat's `@` search (android-next #06, iOS `mentionSearch` with
+ * `sideOf`): the parent's project on the parent's device, `[]` for a
+ * projectless parent; errors read as no matches, cancellation propagates.
+ */
+internal fun sideChatMentionSearch(
+    side: SideChatParent,
+    fileSearch: NewSessionFileSearch,
+): suspend (String) -> List<FileMatch> = { q ->
+    val space = side.projectId
+    if (space == null) {
+        emptyList()
+    } else {
+        try {
+            fileSearch.search(side.deviceId, space, q)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
 }
 
 /**

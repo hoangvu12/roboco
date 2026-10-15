@@ -71,4 +71,11 @@ class TranscriptActions(
      * Initial-pass observer.
      */
     val onTap: () -> Unit = {},
+    /**
+     * A subagent spawn card was tapped (android-next #06, upstream #899's
+     * `onOpenSubagent`): open the subagent's read-only transcript.
+     * [docId] is the scoped subagent doc, [title] the spawn's description,
+     * [frozen] whether the subagent had already finished when tapped.
+     */
+    val openSubagent: (docId: String, title: String, frozen: Boolean) -> Unit = { _, _, _ -> },
 )

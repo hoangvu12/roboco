@@ -494,6 +494,47 @@ pub struct SessionHandle {
     pub(crate) inner: mc::SessionHandle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SubagentState {
+    Running,
+    Done,
+    Failed,
+}
+
+/// A subagent the session's agent spawned (one linked spawn chip), as the
+/// side-chats sheet lists it (upstream #899).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SubagentInfo {
+    /// Its transcript doc — `CoreClient.open_subagent`.
+    pub doc_id: String,
+    /// What the spawn asked for ("Audit grapheme handling").
+    pub title: String,
+    pub state: SubagentState,
+    /// One-line live tail of its output, while it runs.
+    pub tail: Option<String>,
+    /// The model the spawn picked, when it named one.
+    pub model: Option<String>,
+    /// When the spawning reply was written (epoch ms).
+    pub spawned_at_ms: i64,
+}
+
+impl From<mc::SubagentRow> for SubagentInfo {
+    fn from(r: mc::SubagentRow) -> Self {
+        Self {
+            doc_id: r.doc_id,
+            title: r.title,
+            state: match r.state {
+                mc::SubagentState::Running => SubagentState::Running,
+                mc::SubagentState::Done => SubagentState::Done,
+                mc::SubagentState::Failed => SubagentState::Failed,
+            },
+            tail: r.tail,
+            model: r.model,
+            spawned_at_ms: r.spawned_at_ms,
+        }
+    }
+}
+
 impl SessionHandle {
     pub(crate) fn new(inner: mc::SessionHandle) -> Arc<Self> {
         Arc::new(Self { inner })
@@ -520,6 +561,22 @@ impl SessionHandle {
     /// Composer + status strip state (pull after `ComposerChanged`).
     pub fn composer(&self) -> ComposerState {
         self.inner.composer().as_ref().clone().into()
+    }
+
+    /// Subagents spawned in this transcript, in spawn order (pull after
+    /// `SessionChanged`). The spawn chips are the index — no listing RPC.
+    pub fn subagents(&self) -> Vec<SubagentInfo> {
+        self.inner
+            .subagents()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Whether this handle is a read-only subagent transcript (no
+    /// composer, no sends, no seen marks) — the viewer's contract.
+    pub fn is_subagent(&self) -> bool {
+        self.inner.is_subagent()
     }
 
     pub fn transcript_status(&self) -> TranscriptStatus {
@@ -711,6 +768,16 @@ impl CoreClient {
     pub fn open_session(&self, chat_id: String) -> CoreResult<Arc<SessionHandle>> {
         Ok(SessionHandle::new(
             self.client.open_session(&chat_id)?,
+        ))
+    }
+
+    /// Open (or return the open) subagent transcript — the doc id a
+    /// spawn chip carries (`{chatId}--sub--{id}`, scoped). Read-only:
+    /// the viewer shows no composer; live while the subagent runs, the
+    /// persisted doc once finished, live again if it resumes.
+    pub fn open_subagent(&self, doc_id: String) -> CoreResult<Arc<SessionHandle>> {
+        Ok(SessionHandle::new(
+            self.client.open_subagent(&doc_id)?,
         ))
     }
 
@@ -1022,5 +1089,38 @@ mod tests {
             file_mention_link("docs".into(), true),
             "[docs](roboco-file:docs/)"
         );
+    }
+
+    /// The FFI `SubagentInfo` maps one-to-one off the client's
+    /// `SubagentRow` (upstream #899's sheet record).
+    #[test]
+    fn subagent_info_maps_off_the_client_row() {
+        let row = mc::SubagentRow {
+            doc_id: "engine:v1:chat--sub--s1".into(),
+            title: "Audit grapheme handling".into(),
+            state: mc::SubagentState::Running,
+            tail: Some("Reading RowView.swift…".into()),
+            model: Some("haiku".into()),
+            spawned_at_ms: 1_000,
+        };
+        let info: SubagentInfo = row.clone().into();
+        assert_eq!(info.doc_id, "engine:v1:chat--sub--s1");
+        assert_eq!(info.title, "Audit grapheme handling");
+        assert_eq!(info.state, SubagentState::Running);
+        assert_eq!(info.tail.as_deref(), Some("Reading RowView.swift…"));
+        assert_eq!(info.model.as_deref(), Some("haiku"));
+        assert_eq!(info.spawned_at_ms, 1_000);
+        let done: SubagentInfo = mc::SubagentRow {
+            state: mc::SubagentState::Done,
+            ..row.clone()
+        }
+        .into();
+        assert_eq!(done.state, SubagentState::Done);
+        let failed: SubagentInfo = mc::SubagentRow {
+            state: mc::SubagentState::Failed,
+            ..row
+        }
+        .into();
+        assert_eq!(failed.state, SubagentState::Failed);
     }
 }

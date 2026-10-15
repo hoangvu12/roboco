@@ -1,12 +1,16 @@
 package sh.roboco.android.sessions
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Size
@@ -17,6 +21,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.testTag
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -89,10 +95,19 @@ fun SessionRow(
     val glyph = c?.glyph(p)
     val shape = rememberSmoothRoundedShape(SessionRowTokens.CornerRadius)
     val hl by rememberUpdatedState(highlight)
+    // android-next #06: the "● N" pill — its text measured here (one
+    // measure per child per pass), so the frames know its width.
+    val agentsText = if (vm.runningSubagents > 0) "● ${vm.runningSubagents}" else null
+    val agentsStyle = uiStyle(Face.SansMedium, ts.scaled(11.5f), p.status.working)
+    val agentsMeasurer = rememberTextMeasurer()
+    val agentsTextWidthPx = remember(agentsText, agentsStyle, density) {
+        agentsText?.let { agentsMeasurer.measure(it, agentsStyle, maxLines = 1, softWrap = false).size.width } ?: 0
+    }
 
-    // The content has exactly five children, always in this order, so the
-    // measure policy's indices are stable. The glyph stays an empty Box
-    // when there is nothing to draw, and the meta slot is always present.
+    // The content has exactly six children, always in this order, so the
+    // measure policy's indices are stable. The glyph and the pill stay an
+    // empty Box when there is nothing to draw, and the meta slot is always
+    // present.
     Layout(
         content = {
             HarnessMark(vm.harness ?: "claude-code", SessionRowGeometry.MARK_SIDE.dp, p.text)
@@ -106,6 +121,7 @@ fun SessionRow(
             )
             if (glyph != null) StatusGlyph(glyph) else Box(Modifier)
             Box { meta() }
+            if (agentsText != null) RunningAgentsPill(agentsText, agentsStyle) else Box(Modifier)
         },
         modifier = modifier
             .fillMaxWidth()
@@ -155,7 +171,14 @@ fun SessionRow(
         // measurable may only be measured once per pass, so the placeable
         // is right-aligned inside the ceil'd frame at placement instead.
         val wordP = measurables[2].measure(Constraints(maxWidth = SessionRowGeometry.WORD_MAX_WIDTH.px()))
-        val f = SessionRowGeometry.frames(W, ts.factor, titleFace, wordP.width / d, glyph != null)
+        val f = SessionRowGeometry.frames(
+            W,
+            ts.factor,
+            titleFace,
+            wordP.width / d,
+            glyph != null,
+            agentsTextWidth = agentsTextWidthPx / d,
+        )
 
         val markP = measurables[0].measure(Constraints.fixed(f.mark.w.px(), f.mark.h.px()))
         val titleP = measurables[1].measure(Constraints.fixed(f.title.w.px(), f.title.h.px()))
@@ -163,6 +186,10 @@ fun SessionRow(
             if (f.glyph != null) Constraints.fixed(f.glyph.w.px(), f.glyph.h.px()) else Constraints.fixed(0, 0),
         )
         val metaP = measurables[4].measure(Constraints.fixed(f.metaSlot.w.px(), f.metaSlot.h.px()))
+        val agents = f.agents
+        val agentsP = measurables[5].measure(
+            if (agents != null) Constraints.fixed(agents.w.px(), agents.h.px()) else Constraints.fixed(0, 0),
+        )
 
         layout(constraints.maxWidth, f.height.px()) {
             // Absolute place(), never placeRelative(): the iOS hand layout
@@ -181,6 +208,23 @@ fun SessionRow(
                 glyphP.place(0, 0)
             }
             metaP.place(f.metaSlot.x.px(), f.metaSlot.y.px())
+            if (agents != null) agentsP.place(agents.x.px(), agents.y.px()) else agentsP.place(0, 0)
         }
+    }
+}
+
+/**
+ * The "● N" running-agents pill (android-next #06, upstream #899's
+ * `SessionCell.agents`): the count in the working tone, centred on a
+ * `controlFill` capsule the row's measure sizes (`ceil(text) + 12` ×
+ * `R(18k)`). Decorative — the row's label speaks the count.
+ */
+@Composable
+private fun RunningAgentsPill(text: String, style: TextStyle) {
+    Box(
+        Modifier.background(RobocoTheme.palette.controlFill, RoundedCornerShape(50)),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText(text, style = style.copy(textAlign = TextAlign.Center), maxLines = 1, softWrap = false)
     }
 }

@@ -39,6 +39,12 @@ data class SessionRowVM(
     val unseen: Boolean,
     val pinned: Boolean,
     val sendFailed: Boolean,
+    /**
+     * android-next #06 (upstream #899's `runningSubagents`): agents running
+     * under this session right now — its open transcript's running
+     * subagents plus its working side chats. The "● N" pill.
+     */
+    val runningSubagents: Int = 0,
 ) {
     /**
      * `SessionRowVM.Status` (`SessionCell.swift:4-6`). Not the FFI enum:
@@ -74,6 +80,7 @@ data class SessionRowVM(
                 unseen = r.unseen,
                 pinned = r.pinned,
                 sendFailed = r.sendState == SendState.FAILED,
+                runningSubagents = r.runningSubagents.toInt(),
             )
     }
 }
@@ -101,8 +108,9 @@ object HomeColorIndex {
 
 /**
  * The row's accessibility label — `SessionCell.swift:152`: title, project
- * name, the corner word (never the time label), and the PR badge's label
- * only when both `pr` and `prNumber` are non-nil.
+ * name, the corner word (never the time label), the running agents
+ * ("2 subagents running", android-next #06), and the PR badge's label only
+ * when both `pr` and `prNumber` are non-nil.
  */
 fun sessionRowA11yLabel(vm: SessionRowVM): String {
     val pr = vm.pr
@@ -111,6 +119,14 @@ fun sessionRowA11yLabel(vm: SessionRowVM): String {
         vm.title,
         vm.projectName,
         corner(vm)?.word,
+        runningAgentsLabel(vm.runningSubagents),
         if (pr != null && number != null) prBadgeA11yLabel(number, pr) else null,
     ).joinToString(", ")
+}
+
+/** The "● N" pill's spoken label (upstream #899's `SessionCell`); `null` at 0. */
+fun runningAgentsLabel(running: Int): String? = when {
+    running <= 0 -> null
+    running == 1 -> "1 subagent running"
+    else -> "$running subagents running"
 }

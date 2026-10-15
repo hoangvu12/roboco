@@ -59,6 +59,17 @@ impl CoreClient {
         on_runtime(async move { client.create_session(new_session).await }).await
     }
 
+    /// Fork `source_id` through its last completed reply into a side chat
+    /// (upstream #899's "Fork into Side Chat"): the engine copies the
+    /// history and publishes the row; a side chat's fork lists as its
+    /// sibling. Returns the new **scoped** chat id. An engine without
+    /// the RPC answers `Unsupported` (hide the entry point); nothing
+    /// completed yet → `HostError` with the engine's reason.
+    pub async fn fork_side_chat(&self, source_id: String) -> CoreResult<String> {
+        let client = self.client.clone();
+        on_runtime(async move { client.fork_side_chat(&source_id).await }).await
+    }
+
     /// Create (or find) the project for `path` on an engine device
     /// (`Mutate createSpace`); returns the **scoped** space id. A space
     /// on the same device in the same folder dedupes to its id (case- and
@@ -278,6 +289,7 @@ mod tests {
             branch: Some("main".into()),
             cwd: None,
             title: Some("My chat".into()),
+            parent_chat_id: None,
         }
         .try_into()
         .unwrap();
@@ -289,6 +301,21 @@ mod tests {
         );
         assert!(ok.config.is_some());
         assert_eq!(ok.branch.as_deref(), Some("main"));
+        assert_eq!(ok.parent_chat_id, None);
+        let side: mc::NewSession = NewSession {
+            target: SessionTarget::Projectless {
+                device_id: "engine:v1:dev".into(),
+            },
+            config: None,
+            branch: None,
+            cwd: None,
+            title: None,
+            parent_chat_id: Some("engine:v1:chat".into()),
+        }
+        .try_into()
+        .unwrap();
+        assert_eq!(side.parent_chat_id.as_deref(), Some("engine:v1:chat"));
+        assert!(matches!(side.target, mc::SessionTarget::Projectless { .. }));
         let bad = NewSession {
             target: SessionTarget::Projectless {
                 device_id: "engine:v1:dev".into(),
@@ -303,6 +330,7 @@ mod tests {
             branch: None,
             cwd: None,
             title: None,
+            parent_chat_id: None,
         };
         let error = TryInto::<mc::NewSession>::try_into(bad).unwrap_err();
         assert!(matches!(error, crate::client_ffi::CoreError::InvalidArgument { .. }));

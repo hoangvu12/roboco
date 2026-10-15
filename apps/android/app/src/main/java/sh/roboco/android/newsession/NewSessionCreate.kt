@@ -77,7 +77,10 @@ internal object NewSessionRequests {
      * neither → `null`, and the caller fails **without** a core call (the
      * alert explains). Ids are the scoped ids the options carry.
      */
-    fun target(d: NewSessionDraft): SessionTarget? {
+    fun target(d: NewSessionDraft, side: SideChatParent? = null): SessionTarget? {
+        // android-next #06: ignored by the core for a side chat (the
+        // parent's host fills it), but the record needs one (iOS `sideOf`).
+        if (side != null) return SessionTarget.Projectless(deviceId = side.deviceId)
         val projectId = d.projectId
         if (projectId != null) return SessionTarget.Project(spaceId = projectId)
         val hostId = d.hostId
@@ -89,9 +92,11 @@ internal object NewSessionRequests {
      * `NewSession(target:config:branch:cwd:title:)` (`:629-630`):
      * `reasoning = effort` (nil ⇒ the engine chooses), `sandbox` is
      * always workspace-write on this canvas, `branch` only without a
-     * worktree (with one, the branch becomes the worktree's base).
+     * worktree (with one, the branch becomes the worktree's base). A side
+     * chat (android-next #06) names its parent and no branch: it runs in
+     * the parent's checkout (the core keeps the parent's sandbox too).
      */
-    fun newSession(d: NewSessionDraft, target: SessionTarget): NewSession = NewSession(
+    fun newSession(d: NewSessionDraft, target: SessionTarget, side: SideChatParent? = null): NewSession = NewSession(
         target = target,
         config = ChatConfig(
             harness = d.harness,
@@ -100,9 +105,10 @@ internal object NewSessionRequests {
             modelOptions = emptyMap(),
             sandbox = SandboxLevel.WORKSPACE_WRITE,
         ),
-        branch = if (d.worktree) null else d.branch,
+        branch = if (d.worktree || side != null) null else d.branch,
         cwd = null,
         title = null,
+        parentChatId = side?.chatId,
     )
 
     /**
@@ -117,6 +123,7 @@ internal object NewSessionRequests {
         text: String,
         images: List<StagedImage>,
         projects: List<ProjectOption>,
+        side: SideChatParent? = null,
     ): SendRequest = SendRequest(
         text = text,
         attachments = images.map { image ->
@@ -127,7 +134,8 @@ internal object NewSessionRequests {
                 data = image.bytes,
             )
         },
-        worktree = if (d.worktree) {
+        // A side chat never makes a worktree (iOS `draft.worktree && parentId == nil`).
+        worktree = if (d.worktree && side == null) {
             projects.firstOrNull { it.id == d.projectId }?.let { project ->
                 WorktreeSpec(
                     repoPath = project.path,
@@ -170,14 +178,15 @@ class NewSessionCreator(
         text: String,
         images: List<StagedImage>,
         projects: List<ProjectOption>,
+        side: SideChatParent? = null,
     ): String? {
         // No target: fail without a core call and without a log — the
         // alert explains it, and there is no error to log.
-        val target = NewSessionRequests.target(d) ?: return null
+        val target = NewSessionRequests.target(d, side) ?: return null
         return withContext(io) {
             try {
-                val chatId = core.createSession(NewSessionRequests.newSession(d, target))
-                core.sendFirst(chatId, NewSessionRequests.sendRequest(d, text, images, projects))
+                val chatId = core.createSession(NewSessionRequests.newSession(d, target, side))
+                core.sendFirst(chatId, NewSessionRequests.sendRequest(d, text, images, projects, side))
                 chatId
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -198,6 +207,17 @@ class NewSessionCreator(
 val StartFailedAlert = RobocoAlert(
     title = "Couldn't start the session",
     message = "Choose a project or a host that can run it.",
+    buttons = listOf(AlertButton("OK", AlertButtonRole.Default)),
+)
+
+/**
+ * A side chat's failure alert (android-next #06, upstream #899's
+ * `create(sideOf:)` copy verbatim): the parent is gone or the create
+ * failed — the composer stays `Kept`.
+ */
+val SideChatStartFailedAlert = RobocoAlert(
+    title = "Couldn't start the side chat",
+    message = "Its session is no longer available.",
     buttons = listOf(AlertButton("OK", AlertButtonRole.Default)),
 )
 

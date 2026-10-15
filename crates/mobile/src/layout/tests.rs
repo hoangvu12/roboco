@@ -662,6 +662,87 @@ fn running_subagent_shows_a_spinner_after_its_spawn_resolves() {
     assert!(failed.display(0).unwrap().runs.iter().any(|r| r.color == display::ColorRole::Danger), "failed subagent is tinted danger");
 }
 
+/// A spawn card whose engine-stamped doc exists is a link (upstream
+/// #899): the whole card is a tap target carrying the doc id, the spawn's
+/// description as the title, and `frozen` once the subagent finished. A
+/// spawn chip without a ref (the engine never linked one) renders no
+/// link — nothing to open.
+#[test]
+fn spawn_cards_with_a_doc_ref_become_subagent_links() {
+    use roboco_doc::parts::{MessagePart, MessageStatus, SubagentStatus};
+    use roboco_doc::schema::{MessageRole, SessionMessageEntry};
+    let spawn = |subagent_ref: Option<String>, status: SubagentStatus| MessagePart::Tool {
+        id: "k1".into(),
+        call: roboco_proto::ToolCall::Unknown {
+            name: "Agent: Audit grapheme handling".into(),
+            input: Some(serde_json::json!({ "prompt": "x" })),
+        },
+        is_error: false,
+        resolved: true,
+        output: None,
+        diff: None,
+        output_ref: None,
+        output_bytes: None,
+        diff_ref: None,
+        diff_stats: None,
+        subagent_ref,
+        subagent_status: Some(status),
+        subagent_tail: None,
+    };
+    let frame_for = |part: MessagePart| {
+        let mut w = worker(390.0);
+        w.input = TranscriptInput {
+            entries: vec![Arc::new(SessionMessageEntry {
+                id: "a".into(),
+                role: MessageRole::Assistant,
+                parts: vec![part],
+                created_at: 0,
+                device_id: String::new(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+            })],
+            ..Default::default()
+        };
+        w.pass()
+    };
+    let link = |f: &LayoutFrame| {
+        f.display(0)
+            .unwrap()
+            .widgets
+            .iter()
+            .find_map(|w| match &w.kind {
+                display::WidgetKind::SubagentLink { doc_id, title, frozen } => {
+                    Some((doc_id.clone(), title.clone(), *frozen, (w.x, w.y, w.w, w.h)))
+                }
+                _ => None,
+            })
+    };
+    // Running: a live link over the whole card.
+    let running = frame_for(spawn(Some("chat--sub--s1".into()), SubagentStatus::Running));
+    let (doc_id, title, frozen, _bounds) = link(&running).expect("running spawn card is a link");
+    assert_eq!(doc_id, "chat--sub--s1");
+    assert_eq!(title, "Audit grapheme handling");
+    assert!(!frozen);
+    // The link covers the card: as wide as the row's reading column and
+    // as tall as the 30pt card (T = 1.125) inside its 38pt row.
+    let (_, _, _, (lx, _, lw, lh)) = link(&running).expect("link bounds");
+    let row = running.display(0).unwrap();
+    assert!(lw > 300.0 && lw <= row.width, "link spans the card: {lw} of {}", row.width);
+    assert!(lx < 40.0, "the card starts at the row's margin: {lx}");
+    assert!((lh - 33.75).abs() < 0.5, "link covers the 30pt card (T = 1.125): {lh}");
+    // Done/Failed: frozen links.
+    let (_, _, frozen, _) = link(&frame_for(spawn(Some("chat--sub--s1".into()), SubagentStatus::Done)))
+        .expect("done spawn card is a link");
+    assert!(frozen);
+    let (_, _, frozen, _) = link(&frame_for(spawn(Some("chat--sub--s1".into()), SubagentStatus::Failed)))
+        .expect("failed spawn card is a link");
+    assert!(frozen);
+    // No doc ref: no link at all (a stray chip must not open anything).
+    let unlinked = frame_for(spawn(None, SubagentStatus::Running));
+    assert!(link(&unlinked).is_none(), "a spawn without a doc ref is not a link");
+}
+
 #[test]
 fn links_get_hit_regions() {
     for md in [

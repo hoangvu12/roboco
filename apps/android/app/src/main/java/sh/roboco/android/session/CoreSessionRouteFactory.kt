@@ -9,6 +9,8 @@ import sh.roboco.android.composer.QueueActions
 import sh.roboco.android.core.TextEngine
 import sh.roboco.android.shell.RouterHooks
 import sh.roboco.android.shell.SessionRouteFactory
+import sh.roboco.android.sidechats.CoreSideChatsSource
+import sh.roboco.android.sidechats.SideChatsModel
 import sh.roboco.android.transcript.TranscriptState
 import uniffi.roboco_core.TextSystem
 
@@ -98,12 +100,24 @@ class CoreSessionRouteFactory(
         val queueActions = (core as? CoreSessionCore)?.let { live ->
             QueueActions(CoreQueuePort(live.handle), queueScope)
         }
+        // android-next #06: the chat's side chats and subagents over the
+        // same handle (its spawn chips) and the workspace children; the
+        // screen starts it on first composition, the release stops it.
+        val sideChats = (core as? CoreSessionCore)?.let { live ->
+            SideChatsModel(
+                parentChatId = live.chatId,
+                source = CoreSideChatsSource({ live.client }, live.handle),
+                hub = hub,
+                logW = logW,
+            )
+        }
         return SessionScreenRoute(
             controller = controller,
             core = core,
             state = SessionScreenState(core.chatId, openedAt) { TranscriptState(ts) },
             text = ts,
             queueActions = queueActions,
+            sideChats = sideChats,
         )
     }
 }
