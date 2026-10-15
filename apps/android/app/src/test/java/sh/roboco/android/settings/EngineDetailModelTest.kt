@@ -265,6 +265,15 @@ class EngineDetailModelTest {
         assertEquals("https://studio.tail1234.ts.net:27655", ui.address)
     }
 
+    @Test
+    fun aTailcatEnginesAddressIsItsFingerprint() {
+        val ui = engineDetailUi(
+            engineView(id = "e1", name = "n", state = EngineState.Connected, host = "tailcat:3f9a12bc", baseUrl = "tailcat:3f9a12bc"),
+            now,
+        )
+        assertEquals("Tailcat · 3f9a12bc", ui.address)
+    }
+
     // ---------------------------------------------------------- statusRows
 
     @Test

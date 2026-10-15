@@ -42,7 +42,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -95,6 +97,7 @@ import sh.roboco.android.design.sheet.SheetLeading
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.shell.PageSheetScope
 import uniffi.roboco_core.PairingTarget
+import kotlinx.coroutines.delay
 
 /**
  * The clipboard seam (android-ui-parity #72): what the Pair page needs
@@ -330,13 +333,27 @@ fun PairPageContent(
                 Modifier.testTag("pair-hint"),
             )
             target?.let {
-                GroupedFooter(
-                    stringResource(R.string.pair_target, it.host),
-                    Modifier.testTag("pair-target"),
-                )
+                val expiresAtMs = it.expiresAtMs
+                val line = if (it.tailcat && expiresAtMs != null) {
+                    // android-next#02: the invite's code is short-lived;
+                    // the countdown refreshes each minute.
+                    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+                    LaunchedEffect(expiresAtMs) {
+                        while (true) {
+                            nowMs = System.currentTimeMillis()
+                            delay(INVITE_EXPIRY_TICK_MS)
+                        }
+                    }
+                    stringResource(R.string.pair_target_tailcat, inviteExpiryLabel(expiresAtMs - nowMs))
+                } else {
+                    stringResource(R.string.pair_target, it.host)
+                }
+                GroupedFooter(line, Modifier.testTag("pair-target"))
             }
-            // WHATWG lower-cases the scheme, so a plain prefix check is enough.
-            if (target?.baseUrl?.startsWith("http://") == true) {
+            // WHATWG lower-cases the scheme, so a plain prefix check is
+            // enough. A Tailcat invite never shows it: WireGuard encrypts
+            // the whole route.
+            if (target?.tailcat != true && target?.baseUrl?.startsWith("http://") == true) {
                 GroupedFooter(
                     stringResource(R.string.pair_cleartext),
                     Modifier.testTag("pair-cleartext"),
@@ -359,8 +376,10 @@ fun PairPageContent(
                 .padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 24.dp),
         ) {
             val busy = phase is PairPhase.Redeeming
+            // A Tailcat open pings the engine first (up to ~20 s).
+            val busyLabel = if (target?.tailcat == true) R.string.pair_submitting_tailcat else R.string.pair_submitting
             ProminentGlassButton(
-                text = stringResource(if (busy) R.string.pair_submitting else R.string.pair_submit),
+                text = stringResource(if (busy) busyLabel else R.string.pair_submit),
                 onClick = onSubmit,
                 busy = busy,
                 // Busy is not "off": clicks are ignored via busy, the
@@ -653,3 +672,14 @@ private fun PairPageErrorLightPreview() {
 private fun PairPageErrorDarkPreview() {
     PairPagePreviewBody(Appearance.Dark, PairPagePreviewError)
 }
+
+/** How often a Tailcat invite's countdown refreshes (android-next#02). */
+internal const val INVITE_EXPIRY_TICK_MS = 60_000L
+
+/**
+ * A Tailcat invite's remaining time for `pair_target_tailcat`: whole
+ * minutes, rounded up ("5 min"), or "under a minute" at the end (and once
+ * past it — the engine re-checks on redeem).
+ */
+internal fun inviteExpiryLabel(remainingMs: Long): String =
+    if (remainingMs < 60_000L) "under a minute" else "${(remainingMs + 59_999L) / 60_000L} min"

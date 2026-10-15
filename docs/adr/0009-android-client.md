@@ -48,7 +48,11 @@ display lists at Rust coordinates with the same font bytes.
   Builds work on Windows and Linux hosts.
 - Transport v1 is LAN `ws://` (cleartext allowed by the network security
   config) and `wss://` through operator tunnels (Cloudflare, Tailscale).
-  Tailcat on Android and upstream's SSH direct mode are out of scope.
+  Tailcat is supported on Android through the in-process
+  `libroboco_tailcat.so` (the Go adapter built `-buildmode=c-shared`,
+  loaded on demand by the Rust core) — android-next#02, which reversed the
+  original out-of-scope call. Upstream's SSH direct mode stays out of
+  scope.
 
 ## Considered Options
 
@@ -66,6 +70,14 @@ display lists at Rust coordinates with the same font bytes.
 - **Forking upstream #609 or #621**: both sit on `zeron-client` (Loro rooms,
   WorkOS, edge) and an older core; carrying them would re-import the cloud
   model ADR 0004 removed — rejected.
+- **Tailcat on Android** (android-next#02): a Go `c-shared` library
+  driven in-process from the Rust core (chosen — reconnects are decided in
+  Rust, so the route lives there, and host tests load the same library);
+  a gomobile AAR (rejected: every dial would hop Rust → Kotlin → gobind,
+  and the AAR cannot run in host tests; kept as the fallback if cgo
+  cross-builds fail on Windows); spawning the `roboco-tailcat` executable
+  (rejected: apps cannot exec files they wrote since API 29, and Android
+  12+ kills "phantom" child processes).
 
 ## Consequences
 

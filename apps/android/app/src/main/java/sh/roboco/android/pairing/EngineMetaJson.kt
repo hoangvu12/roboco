@@ -4,14 +4,32 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 
 /**
+ * How a stored engine is dialed (android-next#02). The metadata says only
+ * which kind; a Tailcat engine's address and client identity are secrets
+ * and live encrypted under `tc:<engineId>`, never here.
+ */
+internal enum class TransportKind(val wire: String) {
+    DIRECT("direct"),
+    TAILCAT("tailcat"),
+    ;
+
+    companion object {
+        fun fromWire(value: String): TransportKind? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
  * The non-secret half of a paired-engine record, JSON-encoded as the
- * `engines` preference (pairing order). Only [PairedEngine.credential] is
- * secret and encrypted; keeping this metadata readable is what lets a
- * lost Keystore key degrade to "Session revoked / Pair again" instead of
- * a vanished engine (spec W8).
+ * `engines` preference (pairing order). Only [PairedEngine.credential] —
+ * and, for a Tailcat engine, its address and client state — are secret
+ * and encrypted; keeping this metadata readable is what lets a lost
+ * Keystore key degrade to "Session revoked / Pair again" instead of a
+ * vanished engine (spec W8). For a Tailcat engine [baseUrl] is the
+ * non-secret `tailcat:<8 hex>` fingerprint.
  */
 internal data class EngineMeta(
     val engineId: String,
@@ -21,8 +39,9 @@ internal data class EngineMeta(
     val pairedAtMs: Long,
     val deviceId: String?,
     val name: String?,
+    val transport: TransportKind = TransportKind.DIRECT,
 ) {
-    fun toPaired(credential: String): PairedEngine = PairedEngine(
+    fun toPaired(credential: String, transport: EngineTransport): PairedEngine = PairedEngine(
         engineId = engineId,
         baseUrl = baseUrl,
         credential = credential,
@@ -31,6 +50,7 @@ internal data class EngineMeta(
         pairedAtMs = pairedAtMs,
         deviceId = deviceId,
         name = name,
+        transport = transport,
     )
 }
 
@@ -42,6 +62,7 @@ internal fun PairedEngine.meta(): EngineMeta = EngineMeta(
     pairedAtMs = pairedAtMs,
     deviceId = deviceId,
     name = name,
+    transport = if (transport is EngineTransport.Tailcat) TransportKind.TAILCAT else TransportKind.DIRECT,
 )
 
 /**
@@ -65,6 +86,7 @@ internal object EngineMetaJson {
                 .put("sessionId", meta.sessionId)
                 .put("label", meta.label)
                 .put("pairedAtMs", meta.pairedAtMs)
+                .put("transport", meta.transport.wire)
             meta.deviceId?.let { element.put("deviceId", it) }
             meta.name?.let { element.put("name", it) }
             array.put(element)
@@ -103,6 +125,12 @@ internal object EngineMetaJson {
             pairedAtMs = element.getLong("pairedAtMs"),
             deviceId = optional(element, "deviceId"),
             name = optional(element, "name"),
+            // Records written before android-next#02 have no transport:
+            // they are direct. An unknown kind (a newer app's) skips the
+            // element rather than dial it the wrong way.
+            transport = optional(element, "transport")
+                ?.let { TransportKind.fromWire(it) ?: throw JSONException("unknown transport") }
+                ?: TransportKind.DIRECT,
         )
     } catch (_: JSONException) {
         null

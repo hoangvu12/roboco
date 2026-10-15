@@ -10,6 +10,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
+import uniffi.roboco_core.EngineTransport
 
 /**
  * The `engines` preference's JSON codec (ticket 71): round-trip of all
@@ -46,9 +47,10 @@ class EngineMetaJsonTest {
         val objectA = JSONArray(encoded).getJSONObject(0)
 
         assertEquals(
-            setOf("engineId", "baseUrl", "sessionId", "label", "pairedAtMs"),
+            setOf("engineId", "baseUrl", "sessionId", "label", "pairedAtMs", "transport"),
             objectA.keys().asSequence().toSet(),
         )
+        assertEquals("direct", objectA.getString("transport"))
         assertEquals("http://10.0.2.2:27655", objectA.getString("baseUrl"))
         assertEquals(1_760_000_000_000, objectA.getLong("pairedAtMs"))
     }
@@ -163,6 +165,53 @@ class EngineMetaJsonTest {
         )
 
         assertEquals(metaA, engine.meta())
-        assertEquals(engine.copy(credential = "cred-x"), metaA.toPaired("cred-x"))
+        assertEquals(
+            engine.copy(credential = "cred-x"),
+            metaA.toPaired("cred-x", EngineTransport.Direct),
+        )
+    }
+
+    // android-next#02 ------------------------------------------------------
+
+    @Test
+    fun aRecordWithoutTransportDecodesAsDirect() {
+        val legacy = JSONObject()
+            .put("engineId", metaA.engineId)
+            .put("baseUrl", metaA.baseUrl)
+            .put("sessionId", "s1")
+            .put("label", "Pixel 9")
+            .put("pairedAtMs", 1_760_000_000_000)
+
+        val decoded = EngineMetaJson.decode(JSONArray().put(legacy).toString())
+
+        assertEquals(listOf(metaA), decoded)
+        assertEquals(TransportKind.DIRECT, decoded?.single()?.transport)
+    }
+
+    @Test
+    fun aTailcatMetaRoundTripsWithoutItsSecrets() {
+        val engine = newTailcatEngine()
+        val meta = engine.meta()
+        val encoded = EngineMetaJson.encode(listOf(meta))
+
+        assertEquals(TransportKind.TAILCAT, meta.transport)
+        assertEquals(listOf(meta), EngineMetaJson.decode(encoded))
+        assertEquals("tailcat", JSONArray(encoded).getJSONObject(0).getString("transport"))
+        assertTrue("the address leaked into metadata", !encoded.contains("SECRET"))
+    }
+
+    @Test
+    fun anUnknownTransportSkipsThatElement() {
+        val future = JSONObject()
+            .put("engineId", metaA.engineId)
+            .put("baseUrl", metaA.baseUrl)
+            .put("sessionId", "s1")
+            .put("label", "Pixel 9")
+            .put("pairedAtMs", 1_760_000_000_000)
+            .put("transport", "carrier-pigeon")
+
+        val decoded = EngineMetaJson.decode(JSONArray().put(future).toString())
+
+        assertTrue(decoded != null && decoded.isEmpty())
     }
 }

@@ -32,6 +32,11 @@ object LicenseSources {
     const val SymbolsLicense = "licenses/vscode-symbols-LICENSE.txt"
     const val SpdxDir = "licenses/spdx"
     const val RustCrates = "licenses/rust-crates.json"
+
+    /** The Tailcat transport's Go licence bundle (android-next#02). */
+    const val GoDir = "licenses/go"
+    const val GoDependencies = "licenses/go/DEPENDENCIES.txt"
+    const val KratosLicense = "licenses/go/LICENSE.kratos"
 }
 
 /**
@@ -227,6 +232,39 @@ fun parseRustCrates(json: String): List<LicenceEntry> {
 }
 
 /** The non-blank string at [key], or null when absent, JSON `null` or blank. */
+/**
+ * Parses the Go licence bundle's `DEPENDENCIES.txt` (android-next#02): a
+ * tab-separated table with a `module  version  license_files` header and
+ * one row per module, `license_files` comma-separated paths relative to
+ * the bundle. One entry per row, in file order (the bundle is already
+ * sorted, with the Go standard library last); a row whose texts are all
+ * missing still lists the module with a fallback line.
+ *
+ * @param readText the text of a bundle-relative path, or null.
+ */
+fun parseGoDependencies(table: String, readText: (String) -> String?): List<LicenceEntry> {
+    val entries = ArrayList<LicenceEntry>()
+    for (line in table.lineSequence()) {
+        val columns = line.split('\t')
+        if (columns.size < 3) continue
+        val (module, version, files) = columns
+        if (module == "module" || module.isBlank()) continue
+        val texts = files.split(',')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .mapNotNull(readText)
+            .filter(String::isNotBlank)
+        entries += LicenceEntry(
+            id = "go:$module",
+            title = module,
+            subtitle = "$version \u00B7 $SeeLicenseFile",
+            header = null,
+            texts = texts.ifEmpty { listOf("No license text is bundled for this module.") },
+        )
+    }
+    return entries
+}
+
 private fun JSONObject.optStringOrNull(key: String): String? =
     if (isNull(key)) null else optString(key, "").ifBlank { null }
 
@@ -250,6 +288,7 @@ class LicensesRepository(private val assets: AssetManager, private val resources
             LicenceSection(key = "assets", title = "Fonts and assets", entries = assetEntries()),
             LicenceSection(key = "android", title = "Android libraries", entries = androidEntries()),
             LicenceSection(key = "rust", title = "Rust core", entries = rustEntries()),
+            LicenceSection(key = "go", title = "Tailcat transport (Go)", entries = goEntries()),
         )
         return sections.filter { it.entries.isNotEmpty() }
     }
@@ -311,6 +350,18 @@ class LicensesRepository(private val assets: AssetManager, private val resources
             Log.w(TAG, "rust-crates.json is malformed: $e")
             emptyList()
         }
+    }
+
+    private fun goEntries(): List<LicenceEntry> {
+        val table = readAsset(LicenseSources.GoDependencies) ?: return emptyList()
+        val kratos = assetEntry(
+            id = "go:roboco-tailcat",
+            title = "roboco-tailcat adapter (from Kratos)",
+            subtitle = "MIT License",
+            path = LicenseSources.KratosLicense,
+        )
+        return listOfNotNull(kratos) +
+            parseGoDependencies(table) { path -> readAsset("${LicenseSources.GoDir}/$path") }
     }
 
     /** One asset-backed entry, or null (logged) when the asset is missing. */

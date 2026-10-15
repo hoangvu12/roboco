@@ -1,6 +1,8 @@
 package sh.roboco.android.pairing
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,6 +41,19 @@ class RedactionTest {
         assertTrue(text.contains("engineId=11111111-1111-4111-8111-111111111111"))
         assertTrue(text.contains("host=10.0.2.2"))
         assertTrue(text.contains("deviceId=dev-1"))
+    }
+
+    @Test
+    fun aTailcatEngineShowsOnlyItsFingerprint() {
+        val engine = newTailcatEngine()
+
+        val text = engine.redacted()
+
+        assertFalse(text.contains("SECRET"))
+        assertTrue(text.contains("host=tailcat:3f9a12bc"))
+        assertTrue(text.contains("transport=tailcat"))
+        assertEquals("Tailcat \u00B7 3f9a12bc", tailcatAddressLabel(engine.baseUrl))
+        assertNull(tailcatAddressLabel("http://10.0.2.2:27655"))
     }
 
     @Test

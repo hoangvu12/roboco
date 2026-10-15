@@ -15,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 import java.io.File
 import java.util.UUID
@@ -94,6 +95,31 @@ class PairedEngineStoreDeviceTest {
             second.store.load().single().credential,
         )
         closeFixture(second)
+    }
+
+    /** android-next#02: one Tailcat record through the real Keystore. */
+    @Test
+    fun aTailcatRecordRoundTripsWithNoSecretAtRest() = runBlocking {
+        val address = "tcDEVICE-SECRET-${UUID.randomUUID()}"
+        val state = "{\"private_key\":\"DEVICE-SECRET-${UUID.randomUUID()}\"}"
+        val engine = newEngine("33333333-3333-4333-8333-333333333333", "cred-DEVICE-TC")
+            .copy(
+                baseUrl = "tailcat:3f9a12bc",
+                transport = EngineTransport.Tailcat(address = address, clientState = state),
+            )
+        val (first, file) = newFixture()
+        first.store.upsert(engine)
+        closeFixture(first)
+
+        val second = newStoreOver(file)
+        assertEquals(engine, second.store.load().single())
+        closeFixture(second)
+
+        for (needle in listOf(address, state).map { it.toByteArray(Charsets.UTF_8) }) {
+            for (candidate in context.dataDir.walkBottomUp().filter { it.isFile }) {
+                assertTrue("$candidate leaks a Tailcat secret", indexOf(candidate.readBytes(), needle) < 0)
+            }
+        }
     }
 
     @Test
