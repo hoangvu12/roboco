@@ -46,6 +46,8 @@ data class ReleaseManifest(
 /** One artifact's row in the manifest's `files` map. */
 @Immutable
 data class ApkAsset(
+    /** The artifact basename: the manifest key and the download URL's last segment. */
+    val name: String,
     /** The SHA-256 the downloaded bytes must match; null when absent. */
     val sha256: String?,
     /** The artifact's size in bytes; null on old manifests. */
@@ -75,13 +77,14 @@ fun parseReleaseManifest(json: String): ReleaseManifest? {
     val version = (root["version"] as? MiniJson.Str)?.value?.takeIf { it.isNotBlank() } ?: return null
     val date = (root["date"] as? MiniJson.Str)?.value
     val files = when (val filesValue = root["files"]) {
-        null, is MiniJson.Null -> emptyMap()
-        is MiniJson.Obj -> buildMap {
+        null, is MiniJson.Null -> emptyMap<String, ApkAsset>()
+        is MiniJson.Obj -> buildMap<String, ApkAsset> {
             for ((name, entry) in filesValue.values) {
                 val file = entry as? MiniJson.Obj ?: continue
                 put(
                     name,
                     ApkAsset(
+                        name = name,
                         sha256 = (file["sha256"] as? MiniJson.Str)?.value,
                         sizeBytes = (file["size"] as? MiniJson.Num)?.asLong(),
                     ),
