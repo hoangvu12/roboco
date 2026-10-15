@@ -2,7 +2,6 @@ package sh.roboco.android.shell
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,6 +38,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -64,6 +64,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.LocalTypeScale
@@ -355,44 +356,55 @@ fun LargeTitleScaffold(
     // left there: snapping it back undid the scroll, so a caller bringing a
     // row a few px into view (Settings' Remove Wallpaper, straddling the
     // bottom edge at 874 dp) re-issued the same scroll forever (round 45).
+    //
+    // "The user scrolled" is read from the finger itself (round 49), not
+    // from foundation's DragInteractions: [snapGate] is set by a pointer
+    // down on the list (an Initial-pass observer that consumes nothing,
+    // [observeFingerForSnap]) and cleared once that touch has settled — a
+    // tap that scrolled nothing on its up, or a scroll end with nothing (left)
+    // to snap, or a completed snap. A semantics/a11y scroll has no pointer,
+    // so it never snaps. The flag must survive the release's first scroll
+    // end: the drag's scroll block ends, then onDragStopped launches the
+    // fling as a second one (even at zero velocity), whose UserInput
+    // priority cancels a snap started in between.
+    val snapGate = remember(listState) { SnapGate() }
     LaunchedEffect(listState, effectiveMode) {
         if (!hasLargeTitle) return@LaunchedEffect
-        // Set by a drag's start (a fling always follows one), cleared only
-        // once that drag has SETTLED — the snap ran to completion, or a
-        // scroll end found nothing to snap. Not on the first scroll end: a
-        // release ends the drag's scroll block, then onDragStopped launches
-        // the fling as a second one (even at zero velocity), whose
-        // UserInput priority cancels a snap started in between; the flag
-        // must survive for the fling's end to snap (round 48: clearing it at
-        // the first end stopped every drag from snapping). Main-thread
-        // only; both collectors run here.
-        var dragged = false
-        launch {
-            listState.interactionSource.interactions.collect { interaction ->
-                if (interaction is DragInteraction.Start) dragged = true
+        if (LargeTitleSnapDiagnostics.enabled) {
+            launch {
+                listState.interactionSource.interactions.collect { interaction ->
+                    LargeTitleSnapDiagnostics.log("interaction ${interaction::class.simpleName}")
+                }
             }
         }
         snapshotFlow { listState.isScrollInProgress }
             .distinctUntilChanged()
+            .onEach { inProgress ->
+                LargeTitleSnapDiagnostics.log(
+                    "isScrollInProgress=$inProgress userScroll=${snapGate.userScroll} c=${collapseDp()}",
+                )
+            }
             .drop(1)
             .filter { !it }
             .collect {
-                if (!dragged) return@collect
+                if (!snapGate.userScroll) return@collect
                 val c = collapseDp()
                 val target = LargeTitleMetrics.snapTarget(c)
                 if (target == null) {
                     // Settled at 0, at L or past the title: nothing to snap.
-                    dragged = false
+                    snapGate.userScroll = false
                     return@collect
                 }
+                LargeTitleSnapDiagnostics.log("snap c=$c -> $target")
                 try {
                     listState.animateScrollBy(
                         with(density) { (target - c).dp.toPx() },
                         Motion.LargeTitleSnap.spec(),
                     )
-                    dragged = false
+                    snapGate.userScroll = false
                 } catch (e: CancellationException) {
-                    // `dragged` stays set: the fling (or a new drag) that
+                    LargeTitleSnapDiagnostics.log("snap cancelled at c=${collapseDp()}")
+                    // `userScroll` stays set: the fling (or a new drag) that
                     // interrupted the snap ends with another scroll end,
                     // which snaps from wherever it left c.
                     // A finger touching down mid-snap cancels
@@ -443,8 +455,9 @@ fun LargeTitleScaffold(
                             .fillMaxSize()
                             .onSizeChanged { pull.viewportPx = it.height.toFloat() }
                             .offset { IntOffset(0, pull.offsetPx.roundToInt()) }
+                            .observeFingerForSnap(snapGate, listState)
                     } else {
-                        Modifier.fillMaxSize()
+                        Modifier.fillMaxSize().observeFingerForSnap(snapGate, listState)
                     },
                 ) {
                     if (hasLargeTitle) {
@@ -732,6 +745,71 @@ private class ScaffoldContentPadding(
         base.calculateRightPadding(layoutDirection)
 
     override fun calculateBottomPadding(): Dp = base.calculateBottomPadding()
+}
+
+/**
+ * The end-of-scroll snap's "a finger scrolled this list" flag (round 49).
+ * Plain field, not snapshot state: written by the pointer observer and the
+ * snap collector, both on the main thread, and never read in composition.
+ */
+private class SnapGate {
+    var userScroll = false
+}
+
+/**
+ * Observes (never consumes) the list's pointer stream in the Initial pass,
+ * before the list's own scrollable sees it: a finger down marks the coming
+ * scroll as the user's; an up with no scroll in progress (a tap, or a touch
+ * that never passed the slop) clears it again. A drag's up still sees its
+ * scroll in progress here (the scrollable ends it in the Main pass, after
+ * this), so the flag survives into the release's scroll ends.
+ */
+private fun Modifier.observeFingerForSnap(gate: SnapGate, listState: LazyListState): Modifier =
+    pointerInput(gate, listState) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.any { it.pressed && !it.previousPressed }) {
+                    gate.userScroll = true
+                    LargeTitleSnapDiagnostics.log("pointer down -> userScroll=true")
+                } else if (
+                    event.changes.isNotEmpty() &&
+                    event.changes.none { it.pressed } &&
+                    !listState.isScrollInProgress &&
+                    gate.userScroll
+                ) {
+                    gate.userScroll = false
+                    LargeTitleSnapDiagnostics.log("pointer up with no scroll -> userScroll=false")
+                }
+            }
+        }
+    }
+
+/**
+ * Round 49 diagnostics for the snap gate (CI prints a test's stdout in its
+ * report; the drag test also quotes [lines] in its failure message). Remove
+ * once the snap is confirmed green on CI.
+ */
+internal object LargeTitleSnapDiagnostics {
+    var enabled = true
+
+    val lines = mutableListOf<String>()
+
+    fun log(message: String) {
+        if (!enabled) return
+        val line = "LTS-DIAG $message"
+        println(line)
+        synchronized(lines) {
+            lines += line
+            if (lines.size > 200) lines.removeAt(0)
+        }
+    }
+
+    fun snapshot(): List<String> = synchronized(lines) { lines.toList() }
+
+    fun reset() {
+        synchronized(lines) { lines.clear() }
+    }
 }
 
 /**
