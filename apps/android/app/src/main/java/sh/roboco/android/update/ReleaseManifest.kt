@@ -93,9 +93,6 @@ fun parseReleaseManifest(json: String): ReleaseManifest? {
     return ReleaseManifest(version = version, date = date, files = files)
 }
 
-/** The Kotlin alias of the Rust parser's entry point (see [ReleaseManifest]). */
-internal fun ReleaseManifest.Companion.parse(json: String): ReleaseManifest? = parseReleaseManifest(json)
-
 // ---------------------------------------------------------------------------
 // A minimal JSON reader
 // ---------------------------------------------------------------------------
@@ -243,7 +240,10 @@ internal object MiniJson {
                             'u' -> {
                                 if (i + 4 >= text.length) return null
                                 val hex = text.substring(i + 1, i + 5)
-                                val code = hex.toInt(16) ?: return null
+                                // toInt(16) throws on a malformed escape;
+                                // a failed parse is a failed document.
+                                val code = runCatching { hex.toInt(16) }.getOrNull()
+                                    ?: return null
                                 sb.append(code.toChar())
                                 i += 4
                             }

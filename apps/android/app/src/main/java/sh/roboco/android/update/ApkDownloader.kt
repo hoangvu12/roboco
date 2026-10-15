@@ -5,6 +5,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -90,7 +91,7 @@ class ApkDownloader(
         } catch (e: IOException) {
             dest.delete()
             Result.Failed(if (phase == Phase.Write) Failure.Disk else Failure.Network)
-        } catch (e: kotlinx.coroutines.CancellationException) {
+        } catch (e: CancellationException) {
             dest.delete()
             Result.Cancelled
         } finally {

@@ -40,6 +40,7 @@ import sh.roboco.android.core.robocoPrefsStore
 import sh.roboco.android.design.Appearance
 import sh.roboco.android.design.AlertHostState
 import sh.roboco.android.design.ToasterState
+import sh.roboco.android.update.RELEASES_PAGE
 import sh.roboco.android.notify.NotificationCenter
 import sh.roboco.android.notify.NotificationPermission
 import sh.roboco.android.notify.NotificationPolicy
@@ -424,9 +425,9 @@ class RobocoApplication : Application() {
             openReleases = {
                 openInCustomTab(
                     this,
-                    sh.roboco.android.update.RELEASES_PAGE,
-                    dark = appearance.value != sh.roboco.android.design.Appearance.Light &&
-                        (appearance.value == sh.roboco.android.design.Appearance.Dark ||
+                    RELEASES_PAGE,
+                    dark = appearance.value != Appearance.Light &&
+                        (appearance.value == Appearance.Dark ||
                             resources.configuration.isNightModeActive),
                 )
             },

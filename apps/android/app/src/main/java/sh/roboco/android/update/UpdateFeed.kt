@@ -60,12 +60,7 @@ class HttpManifestSource(
 ) : ManifestSource {
 
     override suspend fun fetch(): String? = withContext(io) {
-        val connection = (URL("$RELEASES_DOWNLOAD/manifest.json").openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Roboco-Android")
-        }
+        val connection = openHttps("$RELEASES_DOWNLOAD/manifest.json", CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS)
         try {
             when (val code = connection.responseCode) {
                 HttpURLConnection.HTTP_OK -> readBody(connection)?.toString(Charsets.UTF_8)
@@ -105,12 +100,7 @@ interface ApkByteSource {
 class HttpApkByteSource : ApkByteSource {
 
     override fun open(url: String): Pair<InputStream, Long?> {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = APK_CONNECT_TIMEOUT_MS
-            readTimeout = APK_READ_TIMEOUT_MS
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "Roboco-Android")
-        }
+        val connection = openHttps(url, APK_CONNECT_TIMEOUT_MS, APK_READ_TIMEOUT_MS)
         val code = connection.responseCode
         if (code != HttpURLConnection.HTTP_OK) {
             connection.disconnect()
@@ -120,3 +110,12 @@ class HttpApkByteSource : ApkByteSource {
         return connection.inputStream to (length.takeIf { it > 0 })
     }
 }
+
+/** One connection, the shared setup: timeouts, redirects, the UA. */
+private fun openHttps(url: String, connectTimeoutMs: Int, readTimeoutMs: Int): HttpURLConnection =
+    (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = connectTimeoutMs
+        readTimeout = readTimeoutMs
+        instanceFollowRedirects = true
+        setRequestProperty("User-Agent", "Roboco-Android")
+    }

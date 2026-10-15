@@ -76,11 +76,7 @@ private fun updateSubtitle(
 ): String? {
     val abi = assetAbi(deviceAbi)
     // mbNumber, not sizeMb — the resource's patterns carry their own "MB".
-    val size = if (abi == null) {
-        null
-    } else {
-        manifest.files[apkAssetName(manifest.version, abi)]?.sizeBytes?.let(::mbNumber)
-    }
+    val size = abi?.let(manifest::apkFor)?.sizeBytes?.let(::mbNumber)
     val date = releaseDateLabel(manifest.date)
     return when {
         size != null && date != null -> strings.sizeDate(size, date)

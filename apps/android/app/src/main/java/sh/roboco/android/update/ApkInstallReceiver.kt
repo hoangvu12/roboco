@@ -3,6 +3,7 @@ package sh.roboco.android.update
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import sh.roboco.android.RobocoApplication
 
 /**
  * The install-status receiver (android-next#04): the one entry point the
@@ -15,7 +16,7 @@ import android.content.Intent
 class ApkInstallReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val app = context.applicationContext as? sh.roboco.android.RobocoApplication ?: return
+        val app = context.applicationContext as? RobocoApplication ?: return
         app.updates.onInstallStatus(intent)
     }
 

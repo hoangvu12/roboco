@@ -130,8 +130,11 @@ class UpdateCenter(
             while (isActive) {
                 if (!foregroundGate.value) foregroundGate.first { it }
                 when (val result = runCheck(manual = false)) {
-                    // A check was already running: nothing to schedule on.
-                    null -> Unit
+                    // A check was already running (a manual one): a check
+                    // just happened either way, so the next scheduled one
+                    // stays an hour out — and the loop always suspends
+                    // here, never spins on the main lane.
+                    null -> delay(UpdateSchedule.CHECK_INTERVAL_MS)
                     is UpdateCheckResult.Unavailable -> {
                         failures += 1
                         delay(UpdateSchedule.retryDelayMs(failures))
@@ -296,24 +299,35 @@ class UpdateCenter(
         } else {
             var lastShownBytes = 0L
             var lastShownAt = 0L
+            // The progress morphs hop onto the caller's (main) lane — the
+            // download lane must not touch the alert state directly. One
+            // pending morph at a time, replaced per tick and cancelled at
+            // the flow's decision point, so a stale bar never lands after
+            // the failure or hand-off alert.
+            var pendingMorph: Job? = null
             result = try {
                 downloader.download(url, dest, apkSource) { read, total ->
                     val now = clock()
                     if (read - lastShownBytes >= PROGRESS_MIN_BYTES || now - lastShownAt >= PROGRESS_MIN_MS) {
                         lastShownBytes = read
                         lastShownAt = now
-                        morphOrShow(
-                            downloadingAlert(
-                                manifest.version,
-                                fractionOf(read, total ?: asset.sizeBytes),
-                                progressLabel(read, total ?: asset.sizeBytes),
-                            ),
-                        )
+                        pendingMorph?.cancel()
+                        pendingMorph = scope.launch {
+                            morphOrShow(
+                                downloadingAlert(
+                                    manifest.version,
+                                    fractionOf(read, total ?: asset.sizeBytes),
+                                    progressLabel(read, total ?: asset.sizeBytes),
+                                ),
+                            )
+                        }
                     }
                 }
             } catch (e: CancellationException) {
                 ApkDownloader.Result.Cancelled
             }
+            pendingMorph?.cancel()
+            pendingMorph = null
         }
         when (result) {
             ApkDownloader.Result.Cancelled -> Unit // the handler cleaned up

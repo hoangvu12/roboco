@@ -99,7 +99,10 @@ class PackageInstallerApkInstaller(
  * the intent in `Intent.EXTRA_INTENT`; `0` (`STATUS_SUCCESS`); anything
  * positive is a failure whose `EXTRA_STATUS_MESSAGE` carries the
  * sentence. A broadcast for a session we did not start is ignored
- * (stale replays).
+ * **while a session is active**; with none active, every broadcast is
+ * processed (the receiver is only reachable through our own
+ * PendingIntent, so anything that arrives is ours or a stale replay of
+ * a finished session).
  */
 fun installStatusOf(intent: Intent, activeSessionId: Int?): ApkInstallStatus {
     val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
