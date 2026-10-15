@@ -7,10 +7,19 @@ use roboco_proto::{PairingLink, RemoteAccessSnapshot};
 use roboco_rpc::methods;
 use serde_json::{Value, json};
 
+/// The `CreateTailcatInvite` reply (`{id, url, expiresAt}`); the page keeps
+/// only the invite URL for its card. Like a pairing link, the invite is
+/// single-use and never logged.
+#[derive(serde::Deserialize)]
+struct TailcatInviteLink {
+    url: String,
+}
+
 pub struct RemoteAccessPage {
     state: Entity<AppState>,
     snapshot: Option<RemoteAccessSnapshot>,
     url: Option<String>,
+    invite: Option<String>,
     error: Option<String>,
     busy: bool,
     task: Option<Task<()>>,
@@ -22,6 +31,7 @@ impl RemoteAccessPage {
             state,
             snapshot: None,
             url: None,
+            invite: None,
             error: None,
             busy: false,
             task: None,
@@ -60,6 +70,12 @@ impl RemoteAccessPage {
                     Ok(value) if method == methods::CREATE_PAIRING_LINK => {
                         match serde_json::from_value::<PairingLink>(value) {
                             Ok(link) => page.url = Some(link.url),
+                            Err(error) => page.error = Some(error.to_string()),
+                        }
+                    }
+                    Ok(value) if method == methods::CREATE_TAILCAT_INVITE => {
+                        match serde_json::from_value::<TailcatInviteLink>(value) {
+                            Ok(invite) => page.invite = Some(invite.url),
                             Err(error) => page.error = Some(error.to_string()),
                         }
                     }
@@ -117,17 +133,45 @@ impl Render for RemoteAccessPage {
             page = page.child(widgets::error_strip(&theme, error));
         }
         let url = self.url.clone();
-        if enabled || url.is_some() {
+        let invite = self.invite.clone();
+        if enabled || url.is_some() || invite.is_some() {
+            // Both minting actions share the busy-gate in `request`, so a
+            // second click while one is in flight is ignored, never stacked.
             let create = enabled.then(|| {
-                widgets::ghost_action(&theme)
-                    .id("create-pairing-link")
-                    .child(crate::icons::icon(crate::icons::PLUS)
-                        .size(px(14.0))
-                        .text_color(theme.text_muted))
-                    .child(SharedString::from("Create pairing link"))
-                    .on_click(cx.listener(|page, _, _, cx| {
-                        page.request(methods::CREATE_PAIRING_LINK, json!({}), cx)
-                    }))
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        widgets::ghost_action(&theme)
+                            .id("create-pairing-link")
+                            .child(
+                                crate::icons::icon(crate::icons::PLUS)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Create pairing link"))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.request(methods::CREATE_PAIRING_LINK, json!({}), cx)
+                            })),
+                    )
+                    .child(
+                        widgets::ghost_action(&theme)
+                            .id("create-tailcat-invite")
+                            .child(
+                                crate::icons::icon(crate::icons::PLUS)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Create Tailcat invite"))
+                            .on_click(cx.listener(|page, _, _, cx| {
+                                page.request(
+                                    methods::CREATE_TAILCAT_INVITE,
+                                    json!({"ttlSeconds": 300}),
+                                    cx,
+                                )
+                            })),
+                    )
                     .into_any_element()
             });
             page = page.child(widgets::section_header(&theme, "Pairing link", create));
@@ -141,19 +185,30 @@ impl Render for RemoteAccessPage {
                                     .flex_1()
                                     .min_w_0()
                                     .child(widgets::url_fragment(&theme, url))
-                                    .child(widgets::meta_line(&theme, vec![div()
-                                        .child(SharedString::from("Use once within five minutes."))
-                                        .into_any_element()])),
+                                    .child(widgets::meta_line(
+                                        &theme,
+                                        vec![
+                                            div()
+                                                .child(SharedString::from(
+                                                    "Use once within five minutes.",
+                                                ))
+                                                .into_any_element(),
+                                        ],
+                                    )),
                             )
                             .child(
                                 widgets::ghost_action(&theme)
                                     .id("copy-pairing-link")
-                                    .child(crate::icons::icon(crate::icons::COPY)
-                                        .size(px(14.0))
-                                        .text_color(theme.text_muted))
+                                    .child(
+                                        crate::icons::icon(crate::icons::COPY)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
                                     .child(SharedString::from("Copy"))
                                     .on_click(cx.listener(move |_, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ))
                                     })),
                             ),
                     ),
@@ -169,6 +224,47 @@ impl Render for RemoteAccessPage {
                             .child(SharedString::from(
                                 "No link yet. Create one and paste it on the other device under Settings → Devices.",
                             )),
+                    ),
+                );
+            }
+            if let Some(invite) = invite {
+                // Same card pattern as the pairing link; the invite string
+                // lives only here and on the clipboard, never in a log.
+                let copy = invite.clone();
+                page = page.child(
+                    widgets::section_card(&theme).child(
+                        widgets::card_row(&theme, true)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(widgets::url_fragment(&theme, invite))
+                                    .child(widgets::meta_line(
+                                        &theme,
+                                        vec![
+                                            div()
+                                                .child(SharedString::from(
+                                                    "Use once within five minutes.",
+                                                ))
+                                                .into_any_element(),
+                                        ],
+                                    )),
+                            )
+                            .child(
+                                widgets::ghost_action(&theme)
+                                    .id("copy-tailcat-invite")
+                                    .child(
+                                        crate::icons::icon(crate::icons::COPY)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Copy"))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ))
+                                    })),
+                            ),
                     ),
                 );
             }
