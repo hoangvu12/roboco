@@ -164,12 +164,15 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
     let derp = TestDerp::start(&go.testderp);
     let engine_dir = tempfile::tempdir().unwrap();
     let core = support::core(engine_dir.path());
+    // The engine's listener must live for the whole test: dropping an
+    // EngineListener aborts it. Only its (Copy) address goes into the
+    // `move` closures below.
     let listener = serve(&core, engine_dir.path()).await;
-    let target = listener.address;
+    let engine_addr = listener.address;
     let map_url = derp.map_url.clone();
     let server_dir = engine_dir.path().to_owned();
     let server = tokio::task::spawn_blocking(move || {
-        TailcatServer::start(&server_dir, target, Some(&map_url)).expect("tailcat serve")
+        TailcatServer::start(&server_dir, engine_addr, Some(&map_url)).expect("tailcat serve")
     })
     .await
     .unwrap();
@@ -232,7 +235,7 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
     let map_url = derp.map_url.clone();
     let server_dir = engine_dir.path().to_owned();
     let server = tokio::task::spawn_blocking(move || {
-        TailcatServer::start(&server_dir, target_addr(&listener), Some(&map_url))
+        TailcatServer::start(&server_dir, engine_addr, Some(&map_url))
             .expect("tailcat serve again")
     })
     .await
@@ -249,10 +252,7 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
     ));
     client.shutdown();
     drop(server);
-}
-
-fn target_addr(listener: &roboco_engine::EngineListener) -> std::net::SocketAddr {
-    listener.address
+    drop(listener);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
