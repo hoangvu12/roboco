@@ -181,11 +181,11 @@ fun resetText(
         }
         return "Resets in $inText"
     }
-    val at = Instant.ofEpochMilli(at).atZone(zone)
+    val zoned = Instant.ofEpochMilli(at).atZone(zone)
     return if (left < 7 * 24 * 3_600_000) {
-        "Resets " + at.format(DateTimeFormatter.ofPattern("EEE h:mm a", locale))
+        "Resets " + zoned.format(DateTimeFormatter.ofPattern("EEE h:mm a", locale))
     } else {
-        "Resets " + at.format(DateTimeFormatter.ofPattern("MMM d", locale))
+        "Resets " + zoned.format(DateTimeFormatter.ofPattern("MMM d", locale))
     }
 }
 

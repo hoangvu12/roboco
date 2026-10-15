@@ -4,7 +4,6 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -287,7 +286,7 @@ class AgentAccountsSectionState internal constructor(
  */
 @Composable
 fun rememberAgentAccountsSectionState(
-    workspace: State<WorkspaceSnapshot?>? = null,
+    workspace: kotlinx.coroutines.flow.StateFlow<WorkspaceSnapshot?>? = null,
     core: AccountsCore? = null,
     scope: CoroutineScope? = null,
     io: CoroutineDispatcher = Dispatchers.IO,
