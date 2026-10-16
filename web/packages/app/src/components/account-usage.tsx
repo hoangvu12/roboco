@@ -36,6 +36,10 @@ import { BtnGhost, BtnPrimary, Dialog, DialogBody, DialogCard, DialogTitle } fro
  * muted below the thresholds. The ring degrades quietly: no active account
  * with usage windows, no harness that reports usage, no client — no chip.
  *
+ * A signed-out account is marked on its row, offers "Sign in again" (the
+ * engine's own login flow, driven inline here), and asks before a switch
+ * lands on it — ticket 08, the same rules Settings → Accounts follows.
+ *
  * Loads mirror the desktop: the first sight of a target lists plain-then-
  * forced (the engine's persisted usage paints at once, then the probe
  * replaces it); opening the card re-probes, throttled to 30s; a 5-minute
