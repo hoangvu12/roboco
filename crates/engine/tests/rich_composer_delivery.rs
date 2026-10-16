@@ -159,6 +159,7 @@ fn request(prompt: &str) -> RunRequest {
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
         resume: None,
+        provider_fork: None,
         attachments: vec![],
         worktree: None,
         mcp: None,

@@ -84,6 +84,7 @@ fn start(core: &EngineCore, cwd: &std::path::Path, prompt: String) {
                     worktree: None,
                     mcp: None,
                     resume: None,
+                    provider_fork: None,
                 },
             },
         )

@@ -111,6 +111,7 @@ fn run(
         attachments: vec![],
         worktree: None,
         resume: None,
+        provider_fork: None,
     }
 }
 

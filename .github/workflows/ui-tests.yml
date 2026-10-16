@@ -53,6 +53,11 @@ jobs:
         run: |
           cargo test --locked -p roboco-harness --lib opencode::
           cargo test --locked -p roboco-harness --test opencode
+      - name: Codex native driver integration tests
+        # t3-orchestration-v2 ticket 17: the fake app-server suite covers
+        # the native fork (thread/fork + fallback paste) and provider turn
+        # refs; it was previously not run by any workflow.
+        run: cargo test --locked -p roboco-harness --test codex
       - name: Pi native driver integration tests
         run: |
           cargo test --locked -p roboco-harness --test pi

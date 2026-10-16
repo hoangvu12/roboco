@@ -1186,6 +1186,7 @@ mod tests {
             created_at: (Utc::now() - chrono::Duration::minutes(3)).timestamp_millis(),
             device_id: "dev".into(),
             status: Some(MessageStatus::Complete),
+            provider_turn: None,
             continuation_of: None,
         }
     }

@@ -60,6 +60,7 @@ async fn silent_agent_errors_via_the_prompt_stall_watchdog() {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     };
     let harness = AcpHarness::grok().with_executable(fixture_path());
     let stream = harness.run(request, controls).await.expect("run starts");

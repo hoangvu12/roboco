@@ -104,6 +104,7 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -203,6 +204,25 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
     assert_eq!(model, "gpt-5.6-sol");
     assert_eq!(cwd, "/tmp");
     assert_eq!(session_id, "th-1");
+
+    // The turn ref rides the stream once per turn (ticket 17): the engine
+    // stamps it on the transcript entry so a fork can continue this thread
+    // at exactly that turn.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TurnRef { .. }))
+            .count(),
+        1,
+        "turn ref emitted exactly once: {events:?}"
+    );
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Codex,
+            session_id: "th-1".into(),
+            turn_id: "t-1".into(),
+        }
+    }));
 
     // Deltas — both wire spellings accepted.
     assert!(events.contains(&AgentEvent::TextDelta {
@@ -349,6 +369,92 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
             result: None,
             error: None,
             session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_native_fork_forks_the_source_thread_and_pastes_no_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:fork-success");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-source".into(),
+        last_turn: "turn-7".into(),
+        // What the engine would have pasted for a fresh session — the driver
+        // must NOT use it when the fork succeeds (the fake fails the turn if
+        // any of it reaches the input).
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    // The run continues the FORKED thread (thread/fork's new id), and its
+    // turn ref names that thread and the turn that actually ran.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-forked"
+        )),
+        "session continues the forked thread: {events:?}"
+    );
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Codex,
+            session_id: "th-forked".into(),
+            turn_id: "t-f1".into(),
+        }
+    }));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "forked thread answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-forked".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_refused_fork_falls_back_to_a_fresh_thread_with_the_budgeted_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:fork-refused");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-refused".into(),
+        last_turn: "turn-7".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    // The fresh fallback thread serves the turn (the fake fails it unless
+    // the input carries the budgeted history AND the user message).
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-fresh"
+        )),
+        "refused fork fell back to a fresh thread: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "fresh thread answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-fresh".into()),
         })
     );
 }

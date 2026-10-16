@@ -639,6 +639,7 @@ fn dictation_question_takeover_stops_capture_without_losing_draft(cx: &mut TestA
                     header: "Choose".into(),
                     question: "Continue?".into(),
                     options: vec!["Yes".into()],
+                    provider_turn: None,
                     multi_select: false,
                 }],
             }],

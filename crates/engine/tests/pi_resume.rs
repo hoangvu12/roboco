@@ -36,6 +36,7 @@ async fn pi_idle_crash_next_dispatch_resumes_the_stored_session() {
             worktree: None,
             mcp: None,
             resume: None,
+            provider_fork: None,
         };
         core.sessions
             .dispatch(chat, HarnessId::Pi, req, None)

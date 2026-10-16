@@ -455,6 +455,7 @@ impl ChatDocHandle {
             device_id: self.device_id.clone(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
     }
@@ -3171,6 +3172,7 @@ impl DocHost {
             auto_approve: false,
             attachments: Vec::new(),
             resume: None,
+            provider_fork: None,
             worktree: None,
             mcp: None,
         })
@@ -3281,6 +3283,7 @@ mod transcript_revisit_tests {
                     device_id: "remote".into(),
                     status: None,
                     continuation_of: None,
+                    provider_turn: None,
                     duration_ms: None,
                 })
                 .unwrap();

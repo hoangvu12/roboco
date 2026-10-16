@@ -80,6 +80,8 @@ export * from "./ProjectActionDraft";
 export * from "./ProjectActionIcon";
 export * from "./ProjectActionRun";
 export * from "./ProjectActionsSnapshot";
+export * from "./ProviderFork";
+export * from "./ProviderTurnRef";
 export * from "./QueueDeliveryGate";
 export * from "./QueuedMessage";
 export * from "./ReadWorkspaceFileRequest";

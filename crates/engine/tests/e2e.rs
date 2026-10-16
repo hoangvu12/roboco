@@ -39,6 +39,7 @@ fn run_request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -1237,6 +1238,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
             device_id: device_id.into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -1339,6 +1341,7 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
             device_id: device.into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -1407,6 +1410,7 @@ async fn subagent_done_without_a_live_sink_updates_a_persisted_chip() {
             device_id: core.device_id.clone(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -2439,6 +2443,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         auto_approve: false,
         attachments: vec![path],
         resume: None,
+        provider_fork: None,
         worktree: None,
         mcp: None,
     };

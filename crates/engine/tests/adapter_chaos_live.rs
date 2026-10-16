@@ -151,6 +151,7 @@ impl Suite {
             attachments: vec![],
             worktree: None,
             resume: None,
+            provider_fork: None,
         }
     }
 
@@ -1215,6 +1216,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         resume: None,
+        provider_fork: None,
     }
 }
 

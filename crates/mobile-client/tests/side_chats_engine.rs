@@ -701,6 +701,7 @@ async fn the_subagent_doc_streams_and_counts_while_it_runs() {
             created_at: 2_000,
             device_id: rig.core.device_id.clone(),
             status: Some(roboco_doc::MessageStatus::Complete),
+            provider_turn: None,
             continuation_of: None,
         })
         .unwrap();

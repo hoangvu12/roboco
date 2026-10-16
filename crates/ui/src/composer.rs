@@ -8260,6 +8260,7 @@ impl Composer {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         self.launching_new_chat = is_new;
@@ -8426,6 +8427,7 @@ impl Composer {
                             device_id: "local".into(),
                             status: None,
                             continuation_of: None,
+                            provider_turn: None,
                             duration_ms: None,
                         };
                         let echo_chat_id = chat_id.clone();
@@ -8634,6 +8636,7 @@ impl Composer {
                         sandbox: SandboxLevel::WorkspaceWrite,
                         auto_approve: false,
                         resume: None,
+                        provider_fork: None,
                         attachments: attachment_paths,
                         worktree: run_worktree.clone(),
                         mcp: None,
@@ -15139,6 +15142,7 @@ mod tests {
             device_id: "d".into(),
             status,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         // Streaming entry with unresolved input → panel.
@@ -15176,6 +15180,7 @@ mod tests {
                 device_id: "d".into(),
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
+                provider_turn: None,
                 duration_ms: None,
             },
         ];
@@ -15209,6 +15214,7 @@ mod tests {
             device_id: "d".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         let t = vec![

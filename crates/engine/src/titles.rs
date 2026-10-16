@@ -210,6 +210,7 @@ impl TitleGenerator {
                 auto_approve: false,
                 attachments: Vec::new(),
                 resume: None,
+                provider_fork: None,
                 worktree: None,
                 mcp: None,
             };
@@ -380,6 +381,7 @@ mod tests {
             resume: None,
             attachments: vec![],
             worktree: None,
+            provider_fork: None,
             mcp: None,
         };
         let result = collect_text(&harness, request, None).await;
