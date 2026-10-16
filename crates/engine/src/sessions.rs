@@ -1204,7 +1204,7 @@ impl SessionsEngine {
         chat_id: &str,
         config: roboco_proto::ChatConfig,
     ) -> Result<(), EngineError> {
-        let Some(ws) = self.workspace() else {
+        let Some(ws) = self.inner.workspace() else {
             return Err(EngineError::Other("workspace unavailable".into()));
         };
         let chat = ws
