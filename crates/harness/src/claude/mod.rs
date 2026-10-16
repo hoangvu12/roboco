@@ -188,7 +188,7 @@ async fn session_last_message_uuid(
                 Ok(0) | Err(_) => break,
                 Ok(_) => {}
             }
-            if !line.contains(b"\"uuid\"") {
+            if !line.windows(6).any(|window| window == b"\"uuid\"") {
                 continue;
             }
             let Ok(text) = std::str::from_utf8(&line) else {

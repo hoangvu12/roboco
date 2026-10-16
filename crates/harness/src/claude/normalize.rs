@@ -789,7 +789,7 @@ impl Normalizer {
                         },
                         result: f.result,
                         error: None,
-                        session_id: f.session_id,
+                        session_id: f.session_id.clone(),
                     }
                 } else {
                     // Split the CLI's internal `[ede_diagnostic]` breadcrumbs
@@ -838,7 +838,7 @@ impl Normalizer {
                         },
                         result: None,
                         error,
-                        session_id: f.session_id,
+                        session_id: f.session_id.clone(),
                     }
                 };
                 let mut out = Vec::new();
