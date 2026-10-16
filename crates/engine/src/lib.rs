@@ -18,6 +18,7 @@ use roboco_sync::DocsStore;
 pub mod agent_accounts;
 pub mod change_requests;
 mod chat_persistence;
+pub mod completion_notices;
 pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;

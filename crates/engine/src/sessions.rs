@@ -143,6 +143,12 @@ struct RunHandle {
     /// This runtime's provider session holds the fork's copied history (a
     /// side chat's bootstrap went out on its run or on one of its steers).
     fork_history_sent: Arc<std::sync::atomic::AtomicBool>,
+    /// The parent chat this run's CURRENT turn owes a completion notice to
+    /// (orchestration v2): set when the turn's starting message or a steer
+    /// within it came from the notifying parent that created the chat,
+    /// reset when a user message starts a new turn. Read at the engine's
+    /// own turn-end states to record the outcome.
+    notifiable: Mutex<Option<String>>,
     /// The user stopped this runtime: it is being torn down and takes no
     /// more prompts. Flipped under the ledger lock, so every accepted steer
     /// is unambiguously before the stop (cancelled with it) or after it
@@ -155,6 +161,11 @@ struct RunHandle {
 struct RoutedSteer {
     prompt: String,
     message_id: String,
+    /// The chat that sent this steer, when a chat sent it through the Roboco
+    /// MCP server — the re-dispatch of an orphaned steer keeps it, so the
+    /// turn it starts stays notifiable for its parent (ticket 11's rule,
+    /// extended to the orphan path by ticket 12).
+    origin_chat_id: Option<String>,
     /// The delivered text carried the fork's copied history: its delivery
     /// is recorded only when the runtime confirms consuming it (`Steered`).
     /// An orphan re-dispatches the bare prompt, still owing the history.
@@ -198,6 +209,10 @@ struct Inner {
     /// (roboco kept the same pair on `chats.harness_session_id`). An empty
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
+    /// Completion-notice bookkeeping (orchestration v2): the outcomes
+    /// side-chat turns owe their agent parents. Durability lands with
+    /// ticket 13; this is the in-memory seam.
+    notices: crate::completion_notices::CompletionNotices,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
@@ -246,6 +261,7 @@ impl SessionsEngine {
                 sessions_tx,
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
+                notices: crate::completion_notices::CompletionNotices::default(),
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
@@ -328,6 +344,61 @@ impl SessionsEngine {
 
     pub fn session_status(&self, chat_id: &str) -> Option<Session> {
         lock(&self.inner.statuses).get(chat_id).cloned()
+    }
+
+    /// The completion-notice state (crate-internal; orchestration v2).
+    pub(crate) fn notices(&self) -> &crate::completion_notices::CompletionNotices {
+        &self.inner.notices
+    }
+
+    /// The doc host, for the completion-notice delivery path (crate-internal).
+    pub(crate) fn host(&self) -> Option<crate::doc_host::DocHost> {
+        self.inner.doc_host()
+    }
+
+    /// The parent a message from `origin` makes a turn of `chat_id`
+    /// notifiable for: only the chat the durable agent-origin row
+    /// (`roboco_proto::AgentOrigin` on the chat) names, and only while it
+    /// did not opt out of notices at creation. `None` for user-typed sends
+    /// (no origin), third-party sends, user-created side chats (no agent
+    /// origin) and opted-out creators — those never notify.
+    fn notifiable_parent_for(&self, chat_id: &str, origin: Option<&str>) -> Option<String> {
+        let origin = origin?;
+        let agent_origin = self
+            .inner
+            .doc_host()
+            .and_then(|host| host.workspace())
+            .and_then(|ws| ws.chat(chat_id).ok().flatten())
+            .and_then(|chat| chat.agent_origin)?;
+        agent_origin
+            .notify
+            .then(|| agent_origin.chat_id)
+            .filter(|parent| parent == origin)
+    }
+
+    /// Stamp a live run's notifiable parent for a message that just joined
+    /// it. A message into a parked (idle) session starts a NEW turn: the
+    /// turn's notifiability is that message's own. One into a working turn
+    /// only ever ARMS notices — a parent message makes the turn notifiable;
+    /// anything else (a user's steer) leaves the starting message's claim
+    /// intact.
+    fn mark_notifiable(&self, chat_id: &str, run_id: &str, origin: Option<&str>) {
+        let mid_turn = matches!(
+            self.session_status(chat_id).map(|session| session.status),
+            Some(SessionStatus::Working) | Some(SessionStatus::AwaitingInput)
+        );
+        let from_parent = self.notifiable_parent_for(chat_id, origin);
+        let mut handle = lock(&self.inner.runs);
+        let Some(run) = handle.get_mut(chat_id).filter(|h| h.run_id == *run_id) else {
+            return;
+        };
+        let mut notifiable = lock(&run.notifiable);
+        let current = notifiable.take();
+        *notifiable = if mid_turn {
+            from_parent.or(current)
+        } else {
+            from_parent
+        };
     }
 
     /// Whether this harness takes a prompt *during* a turn, rather than only at
@@ -569,6 +640,7 @@ impl SessionsEngine {
                         pending.push_back(RoutedSteer {
                             prompt: request.prompt.clone(),
                             message_id: user_id.clone(),
+                            origin_chat_id: origin_chat_id.clone(),
                             fork_history: bootstrap.is_some(),
                             after_stop: retiring.load(std::sync::atomic::Ordering::Acquire),
                             request: Some(Box::new(request.clone())),
@@ -580,6 +652,11 @@ impl SessionsEngine {
                 false
             };
             if accepted {
+                // A warm dispatch is a steer: the message joins the turn in
+                // flight (arming its completion notice) or starts the parked
+                // session's next turn (whose notifiability is the message's
+                // own) — orchestration v2.
+                self.mark_notifiable(chat_id, &run_id, origin_chat_id.as_deref());
                 if reconfigure {
                     // The runtime runs this configuration from now on: later
                     // sends compare against it, and a re-dispatch of an
@@ -762,6 +839,9 @@ impl SessionsEngine {
                 pending_inputs,
                 routed_steers: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 fork_history_sent: fork_history_sent.clone(),
+                notifiable: Mutex::new(
+                    self.notifiable_parent_for(chat_id, origin_chat_id.as_deref()),
+                ),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
@@ -905,6 +985,7 @@ impl SessionsEngine {
                 pending.push_back(RoutedSteer {
                     prompt: prompt.to_string(),
                     message_id: user_id.clone(),
+                    origin_chat_id: origin_chat_id.clone(),
                     fork_history: bootstrap.is_some(),
                     after_stop: retiring.load(std::sync::atomic::Ordering::Acquire),
                     request: sent_with,
@@ -919,6 +1000,10 @@ impl SessionsEngine {
                 _ => SteerOutcome::DeferredByUpdate,
             });
         };
+        // A parent's steer within the turn keeps the turn notifiable; one
+        // into a parked session defines the next turn's notifiability —
+        // orchestration v2 completion notices.
+        self.mark_notifiable(chat_id, &run_id, origin_chat_id.as_deref());
         let handle = self.doc_handle(chat_id)?;
         handle.write_user_message(
             &user_id,
@@ -1125,7 +1210,9 @@ impl SessionsEngine {
             }
             // The revival prompt: the last user message (idempotent re-dispatch
             // under the SAME id — `write_user_message` dedupes by id, so the
-            // transcript never shows a duplicate).
+            // transcript never shows a duplicate). Its structured origin
+            // rides along, so a parent-started turn that is revived stays
+            // notifiable for its completion notice (orchestration v2).
             let prompt = handle.doc().read_entries().ok().and_then(|entries| {
                 entries
                     .iter()
@@ -1133,7 +1220,11 @@ impl SessionsEngine {
                     .find(|e| e.role == MessageRole::User)
                     .and_then(|e| {
                         e.parts.iter().find_map(|p| match p {
-                            MessagePart::Text { text, .. } => Some((e.id.clone(), text.clone())),
+                            MessagePart::Text { text, .. } => Some((
+                                e.id.clone(),
+                                text.clone(),
+                                e.origin_chat_id.clone(),
+                            )),
                             _ => None,
                         })
                     })
@@ -1183,7 +1274,7 @@ impl SessionsEngine {
                 resume_ix * RESUME_STAGGER_MS + resume_jitter_ms(&chat_id),
             );
             resume_ix += 1;
-            let (user_id, prompt_text) = prompt.expect("gated by will_resume");
+            let (user_id, prompt_text, origin_chat_id) = prompt.expect("gated by will_resume");
             let sessions = self.clone();
             let gate = resume_gate.clone();
             tokio::spawn(async move {
@@ -1233,9 +1324,7 @@ impl SessionsEngine {
                         harness_id,
                         request,
                         Some(user_id),
-                        // The user entry already carries its origin; the
-                        // re-dispatch dedupes on its id.
-                        None,
+                        origin_chat_id,
                     )
                     .await
                 {
@@ -2189,6 +2278,83 @@ fn event_signs_out(event: &AgentEvent) -> bool {
     )
 }
 
+/// The parent the run's CURRENT turn owes a completion notice to, read at
+/// the engine's own turn-end states (orchestration v2).
+fn run_notifiable_parent(inner: &Inner, chat_id: &str, run_id: &str) -> Option<String> {
+    lock(&inner.runs)
+        .get(chat_id)
+        .filter(|h| h.run_id == run_id)
+        .and_then(|h| lock(&h.notifiable).clone())
+}
+
+/// Record a completion-notice outcome, fire-and-forget: the side chat's
+/// event stream never waits on the parent's notice turn. Engine teardown
+/// records nothing — the runs it kills were not user-visible outcomes
+/// (restart semantics are ticket 13's, at boot, not at teardown).
+fn spawn_notice_record(
+    inner: Arc<Inner>,
+    side_chat: String,
+    parent: String,
+    outcome: crate::completion_notices::Outcome,
+) {
+    if inner
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
+    let engine = SessionsEngine { inner };
+    tokio::spawn(async move {
+        crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, outcome).await;
+    });
+}
+
+/// Record the outcome of a turn that settled INSIDE the run loop (a parked
+/// persistent session, the quiesce watchdog): only real turn ends record —
+/// an internal handoff (a pending steer or a sent message owns the
+/// continuation) notifies nothing.
+fn record_parked_turn(
+    inner: &Arc<Inner>,
+    chat_id: &str,
+    run_id: &str,
+    completed: bool,
+    stopped_in_place: bool,
+) {
+    let outcome = if stopped_in_place {
+        Some(crate::completion_notices::Outcome::Stopped)
+    } else if completed {
+        Some(crate::completion_notices::Outcome::Completed)
+    } else {
+        None
+    };
+    if let Some(outcome) = outcome
+        && let Some(parent) = run_notifiable_parent(inner, chat_id, run_id)
+    {
+        spawn_notice_record(inner.clone(), chat_id.to_string(), parent, outcome);
+    }
+}
+
+/// The outcome for the run's FINAL turn-end, from the engine's own recorded
+/// state: the Done status and error, and whether the completion marker was
+/// minted (a Done with a pending steer or a sent message on its way is an
+/// internal handoff, not a completion).
+fn final_outcome(
+    status: DoneStatus,
+    error: Option<&str>,
+    completed_turn: bool,
+) -> Option<crate::completion_notices::Outcome> {
+    match status {
+        DoneStatus::Completed if completed_turn => {
+            Some(crate::completion_notices::Outcome::Completed)
+        }
+        DoneStatus::Completed => None,
+        DoneStatus::Errored => Some(crate::completion_notices::Outcome::Errored {
+            reason: crate::completion_notices::one_line(error),
+        }),
+        DoneStatus::Interrupted => Some(crate::completion_notices::Outcome::Stopped),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_run(
     inner: Arc<Inner>,
@@ -2383,10 +2549,18 @@ async fn drive_run(
                 &AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some(message),
+                    error: Some(message.clone()),
                     session_id: None,
                 },
             );
+            // Completion notices (orchestration v2): a notifiable turn that
+            // never started is still a turn the parent is owed — it errored.
+            if let Some(parent) = run_notifiable_parent(&inner, &chat_id, &run_id) {
+                let outcome = crate::completion_notices::Outcome::Errored {
+                    reason: crate::completion_notices::one_line(Some(message.as_str())),
+                };
+                spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
+            }
             inner.remove_run(&chat_id, &run_id);
             inner.set_status(&chat_id, SessionStatus::Errored, false);
             return;
@@ -2545,6 +2719,10 @@ async fn drive_run(
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
 
     let mut final_completed_turn = None;
+    // The run's FINAL Done (status + error), captured at the break that ends
+    // the run — the engine's own recorded turn-end state for the completion
+    // notice. Parked settles record inside the loop instead.
+    let mut final_done: Option<(DoneStatus, Option<String>)> = None;
     let final_status = loop {
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
@@ -2756,6 +2934,15 @@ async fn drive_run(
                     self_continued_turn = false;
                     inner.set_status_with_completion(
                         &chat_id, SessionStatus::Idle, false, completed_turn,
+                    );
+                    // The watchdog finalized a completed turn (no native
+                    // Done): it owes its parent the same notice a Done would.
+                    record_parked_turn(
+                        &inner,
+                        &chat_id,
+                        &run_id,
+                        completed_turn.is_some(),
+                        false,
                     );
                     continue;
                 }
@@ -3239,10 +3426,27 @@ async fn drive_run(
                 inner.remember_harness_session(&chat_id, session_id, &run_cwd);
                 note_fork_history_session(&doc, carried_history, session_id);
             }
-            AgentEvent::InputRequested { .. } => {
+            AgentEvent::InputRequested { questions, .. } => {
                 // Known-id guaranteed: the unknown-id twin was dropped above,
                 // before the parked gate.
+                let was_awaiting = lock(&inner.statuses)
+                    .get(&chat_id)
+                    .is_some_and(|s| s.status == SessionStatus::AwaitingInput);
                 inner.set_status(&chat_id, SessionStatus::AwaitingInput, false);
+                // A notifiable turn reaching awaiting input owes its parent a
+                // notice with a one-line summary of the question — once per
+                // awaiting stretch, not per twin question.
+                if !was_awaiting
+                    && let Some(parent) = run_notifiable_parent(&inner, &chat_id, &run_id)
+                {
+                    let summary = crate::completion_notices::question_summary(questions);
+                    spawn_notice_record(
+                        inner.clone(),
+                        chat_id.clone(),
+                        parent,
+                        crate::completion_notices::Outcome::WaitingForInput { summary },
+                    );
+                }
             }
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
@@ -3265,7 +3469,7 @@ async fn drive_run(
             // still in place and tested.
         }
 
-        if let AgentEvent::Done { status, .. } = &event {
+        if let AgentEvent::Done { status, error, .. } = &event {
             // A question still pending at turn end can never be legitimately
             // answered (its turn is over): drain the resolvers NOW, or a late
             // `respond_input` finds one, emits InputResolved, and un-parks
@@ -3375,9 +3579,20 @@ async fn drive_run(
                     false,
                     completed_turn,
                 );
+                // The parked turn settled: a completed turn notifies its
+                // parent, a stop-in-place notifies as stopped, an internal
+                // handoff (a pending steer owns the continuation) does not.
+                record_parked_turn(
+                    &inner,
+                    &chat_id,
+                    &run_id,
+                    completed_turn.is_some(),
+                    stopped_in_place,
+                );
                 continue;
             }
             final_completed_turn = completed_turn;
+            final_done = Some((*status, error.clone()));
             break match status {
                 DoneStatus::Errored => SessionStatus::Errored,
                 _ => SessionStatus::Idle,
@@ -3418,8 +3633,18 @@ async fn drive_run(
         .filter(|h| h.run_id == run_id)
         .map(|h| std::mem::take(&mut *lock(&h.routed_steers)).into())
         .unwrap_or_default();
+    // Completion notices (orchestration v2): the run's final turn ended —
+    // read the notifiable parent before the handle goes away, then record
+    // the outcome the engine's own state observed.
+    let notifiable = run_notifiable_parent(&inner, &chat_id, &run_id);
     inner.remove_run(&chat_id, &run_id);
     inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
+    if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
+        let completed_turn = final_completed_turn.is_some();
+        if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
+            spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
+        }
+    }
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.
     let orphans: Vec<RoutedSteer> = if inner
@@ -3467,9 +3692,7 @@ async fn drive_run(
                         harness_id,
                         request,
                         Some(steer.message_id.clone()),
-                        // The steer's user entry already carries its origin;
-                        // write_user_message dedupes on its id.
-                        None,
+                        steer.origin_chat_id.clone(),
                     )
                     .await
                 {

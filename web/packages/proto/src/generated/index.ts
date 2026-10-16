@@ -74,6 +74,8 @@ export * from "./ModelOption";
 export * from "./ModelOptionChoice";
 export * from "./MoveWorkspaceEntryRequest";
 export * from "./MutateParams";
+export * from "./NoticeOutcome";
+export * from "./NoticeSide";
 export * from "./PairedSession";
 export * from "./PairingLink";
 export * from "./PreviewService";

@@ -1605,6 +1605,11 @@ pub fn rows_for_entry(
                     // intake landed first): the part persists in the doc and
                     // simply renders no row here until the UI port lands.
                     MessagePart::Image { .. } => {}
+                    // The engine's completion notice renders through its
+                    // plain-text sibling part for now (orchestration v2
+                    // ticket 15 owns the distinct system-notice row); the
+                    // marker itself is structure, not content.
+                    MessagePart::CompletionNotice { .. } => {}
                 }
             }
         }
