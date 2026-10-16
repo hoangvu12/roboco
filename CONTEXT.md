@@ -44,6 +44,10 @@ _Avoid_: API version, app version (that is `version`)
 The durable conversation and work history with a harness. Owns its transcript, configuration, and message queue; survives harness restarts.
 _Avoid_: Conversation, thread, session (when it means the chat)
 
+**Side chat**:
+A chat with a parent chat: forked from it in the UI, opened blank next to it, or created by its agent through the Roboco MCP tools. Agent-created side chats record their creator; user-created ones never notify it. Lists under the parent instead of the sidebar's main list.
+_Avoid_: Child chat, subagent (that is a harness-spawned agent inside a run)
+
 **Chat status**:
 A chat's live run state: idle, working, awaiting input, or errored.
 _Avoid_: Session, state (when it means chat status)

@@ -704,6 +704,7 @@ mod tests {
 
     fn entry(role: MessageRole, parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: "m".into(),
             role,
             parts,
@@ -970,6 +971,7 @@ mod composer_tests {
 
     fn assistant_with_todo(list: Vec<TodoItem>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: "m".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Tool {

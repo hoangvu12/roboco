@@ -274,7 +274,7 @@ async fn queued_row_waits_for_attachment_bytes_then_sends_resolved_paths() {
     // have not landed yet: the idle chat must NOT send it.
     let pending_ref = "pending://att-q1/queued shot.png";
     core.doc_host
-        .queue_message_with_behavior(CHAT, "what is this", vec![pending_ref.into()], false)
+        .queue_message_with_behavior(CHAT, "what is this", vec![pending_ref.into()], false, None)
         .expect("queue row");
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(

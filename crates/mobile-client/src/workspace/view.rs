@@ -1250,6 +1250,7 @@ mod tests {
 
     fn chat(id: &str) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev-1".into(),
             title: None,

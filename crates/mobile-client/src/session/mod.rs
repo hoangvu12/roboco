@@ -1685,6 +1685,7 @@ mod tests {
     /// One assistant entry carrying the given tool parts.
     fn entry(parts: Vec<roboco_doc::MessagePart>) -> Arc<SessionMessageEntry> {
         Arc::new(SessionMessageEntry {
+            origin_chat_id: None,
             id: "e1".into(),
             role: roboco_doc::MessageRole::Assistant,
             parts,

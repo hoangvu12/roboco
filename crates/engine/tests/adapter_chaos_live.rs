@@ -245,6 +245,7 @@ impl Suite {
             })
         };
         Chat {
+            agent_origin: None,
             suite: self,
             id,
             sends: Default::default(),

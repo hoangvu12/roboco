@@ -405,6 +405,7 @@ mod tests {
     #[test]
     fn open_input_finds_the_newest_unresolved_question() {
         let entry = |id: &str, parts: Vec<MessagePart>| Arc::new(SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts,

@@ -388,6 +388,7 @@ mod tests {
 
     fn chat(id: &str, device: &str, cwd: Option<&str>, checkout: Option<&str>) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: device.into(),
             title: None,

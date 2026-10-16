@@ -281,6 +281,7 @@ mod tests {
     use super::*;
 
     fn stub_chat(id: &str) -> roboco_proto::Chat {
+        agent_origin: None,
         serde_json::from_value(serde_json::json!({
             "id": id,
             "deviceId": "dev",
@@ -353,6 +354,7 @@ mod tests {
                     "engine",
                     &format!("chat-{i}"),
                     &[SessionMessageEntry {
+                        origin_chat_id: None,
                         id: format!("m{i}"),
                         role: roboco_doc::MessageRole::User,
                         parts: vec![],

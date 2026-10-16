@@ -284,6 +284,7 @@ async fn update_deferred_steering_preserves_the_active_turn_and_queued_prompt() 
             HarnessId::Mock,
             run_request("opening"),
             Some("opening".into()),
+            None,
         )
         .await
         .unwrap();
@@ -420,6 +421,7 @@ async fn pending_update_does_not_block_dispatch_or_other_harnesses() {
             HarnessId::ClaudeCode,
             run_request("waiting"),
             None,
+            None,
         ),
     )
     .await
@@ -434,13 +436,14 @@ async fn pending_update_does_not_block_dispatch_or_other_harnesses() {
             HarnessId::ClaudeCode,
             run_request("cancelled"),
             None,
+            None,
         ),
     )
     .await
     .expect("dispatch must not wait for installation")
     .unwrap();
     core.sessions
-        .dispatch("other", HarnessId::Codex, run_request("other"), None)
+        .dispatch("other", HarnessId::Codex, run_request("other"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -477,6 +480,7 @@ fn queue_as_viewer(doc: &SessionDoc, id: &str, payload: SessionCommandPayload) {
                 frontier: None,
             });
     doc.queue_command(&SessionCommandEntry {
+        origin_chat_id: None,
         id: id.into(),
         payload,
         issued_by: VIEWER.into(),
@@ -1227,6 +1231,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
 
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "m-user".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -1329,6 +1334,7 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
     let doc = SessionDoc::init(CHAT).unwrap();
     for (id, device) in [("local", device_id), ("remote", "other-device")] {
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts: vec![
@@ -1400,6 +1406,7 @@ async fn subagent_done_without_a_live_sink_updates_a_persisted_chip() {
         .unwrap()
         .doc()
         .push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "old-assistant".into(),
             role: MessageRole::Assistant,
             parts: vec![spawn_chip("old-spawn", SubagentStatus::Running)],
@@ -1411,7 +1418,7 @@ async fn subagent_done_without_a_live_sink_updates_a_persisted_chip() {
         })
         .unwrap();
     core.sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("resume"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("resume"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -2963,13 +2970,14 @@ async fn pending_steer_handoff_does_not_publish_a_completion() {
                     HarnessId::Mock,
                     run_request("redirect"),
                     Some("user-steer".into()),
+                    None,
                 )
                 .await
                 .unwrap();
         } else {
             assert_eq!(
                 core.sessions
-                    .steer(CHAT, "redirect", Some("user-steer".into()))
+                    .steer(CHAT, "redirect", Some("user-steer".into()), None)
                     .await
                     .unwrap(),
                 roboco_engine::sessions::SteerOutcome::Accepted
@@ -3080,7 +3088,7 @@ async fn generated_image_is_materialized_before_publication_and_survives_reopen(
     );
     sessions.set_doc_host(host.clone());
     sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("image"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("image"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -3128,7 +3136,7 @@ async fn generated_image_is_materialized_before_publication_and_survives_reopen(
     );
     // Resume echoes the successful completed item after Codex removed its source.
     sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("resume"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("resume"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -3179,6 +3187,7 @@ async fn real_image_generation_profile_smoke() {
             CHAT,
             HarnessId::Codex,
             run_request("Generate an image of a small green goblin using image generation."),
+            None,
             None,
         )
         .await
