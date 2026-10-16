@@ -1100,7 +1100,7 @@ pub struct AgentAccountsSnapshot {
 /// recommended one. Signed-out accounts ride `signed_out` — the picker
 /// lists them with a "Sign in again" action instead of a switch (stories
 /// 47/50). Both lists empty leaves only Resume (and Resume at reset).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResumeAccountCandidates {
     pub chat_id: String,
