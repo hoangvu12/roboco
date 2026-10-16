@@ -3995,6 +3995,7 @@ mod tests {
             device_id: "dev".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }
@@ -5337,6 +5338,7 @@ mod tests {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         let row = |id: &str| roboco_doc::QueuedMessage {
@@ -5377,6 +5379,7 @@ mod tests {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         state.push_echo("c1", echo.clone());

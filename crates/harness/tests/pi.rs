@@ -55,6 +55,7 @@ fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 

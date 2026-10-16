@@ -4,6 +4,7 @@
 import type { MessagePart } from "./MessagePart";
 import type { MessageRole } from "./MessageRole";
 import type { MessageStatus } from "./MessageStatus";
+import type { ProviderTurnRef } from "./ProviderTurnRef";
 
 /**
  * One entry in the doc's `messages` list (`SessionMessageEntry` in TS).
@@ -25,4 +26,13 @@ durationMs?: number | null,
  * completion-notice rules key on. None on typed messages and entries
  * written before the field existed.
  */
-originChatId?: string | null, };
+originChatId?: string | null, 
+/**
+ * The provider turn that produced this assistant entry (additive,
+ * t3-orchestration-v2 ticket 17): harness, provider session id, and the
+ * harness's own turn ref. A fork continues the provider session at
+ * exactly this entry using it. Absent on user/system rows and on docs
+ * written before the field existed — those fall back to the budgeted
+ * paste.
+ */
+providerTurn?: ProviderTurnRef | null, };

@@ -28,10 +28,11 @@
 //!
 //! One engine piece on purpose: every path that must hand a chat's prior
 //! transcript to a session that lacks it reuses
-//! [`budgeted_transcript_prompt`] — the fork bootstrap (ticket 01), the
-//! account-failover fallback (ticket 09), the native-fork fallbacks
-//! (17–20), forks into another harness (22) and the one-way harness switch
-//! (24).
+//! [`budgeted_transcript_prompt`] (or its prefix form,
+//! [`budgeted_transcript_prefix`], which the native-fork fallback rides) —
+//! the fork bootstrap (ticket 01), the account-failover fallback (ticket
+//! 09), the native-fork fallbacks (17–20), forks into another harness (22)
+//! and the one-way harness switch (24).
 
 use roboco_doc::{join_continuation_entries, MessagePart, MessageRole, SessionMessageEntry};
 use roboco_proto::{ToolCall, ToolDiff};
@@ -76,6 +77,20 @@ pub fn budgeted_transcript_prompt(
     source_chat_id: Option<&str>,
     prompt: &str,
 ) -> Option<String> {
+    budgeted_transcript_prefix(entries, source_chat_id)
+        .map(|prefix| format!("{prefix}{prompt}"))
+}
+
+/// The budgeted transcript alone (ticket 17): everything
+/// [`budgeted_transcript_prompt`] would put in front of the new user
+/// message, without the message. The native-fork path rides this as the
+/// request's fallback history — the driver pastes it in front of the prompt
+/// only when the harness refuses the fork, so a successful fork pastes
+/// nothing at all.
+pub fn budgeted_transcript_prefix(
+    entries: &[SessionMessageEntry],
+    source_chat_id: Option<&str>,
+) -> Option<String> {
     let items = transcript_items(entries);
     let lines: Vec<String> = items
         .iter()
@@ -88,7 +103,7 @@ pub fn budgeted_transcript_prompt(
     let transcript = lines.join("\n");
     if wrapper_fixed + transcript.len() <= TRANSCRIPT_BUDGET_BYTES {
         // The whole transcript fits: complete, verbatim, no coverage note.
-        return Some(wrap(None, &lines, prompt));
+        return Some(wrap(None, &lines));
     }
 
     // Selection mode. The header's length depends on the omitted count, so
@@ -142,10 +157,10 @@ pub fn budgeted_transcript_prompt(
         // Unreachable with the shipped budget (three capped priorities
         // always fit); degrade to the verbatim transcript rather than send
         // an empty block.
-        return Some(wrap(None, &lines, prompt));
+        return Some(wrap(None, &lines));
     }
     let header = coverage_header(omitted, source_chat_id);
-    Some(wrap(Some(header), &selected, prompt))
+    Some(wrap(Some(header), &selected))
 }
 
 /// Render transcript entries into handoff items. Continuation entries are
@@ -328,9 +343,10 @@ fn coverage_header_max(items: usize, source_chat_id: Option<&str>) -> usize {
         + 1
 }
 
-/// Assemble the delivered prompt: lead, optional coverage header, the
-/// transcript block, then the new user message — whole, always last.
-fn wrap(header: Option<String>, lines: &[String], prompt: &str) -> String {
+/// Assemble the budgeted transcript: lead, optional coverage header, and
+/// the transcript block — ending with the blank line that separates it
+/// from whatever follows (the new user message, whole and always last).
+fn wrap(header: Option<String>, lines: &[String]) -> String {
     let mut out =
         String::with_capacity(LEAD.len() + TRANSCRIPT_OPEN.len() + TRANSCRIPT_CLOSE.len() + 256);
     out.push_str(LEAD);
@@ -342,7 +358,6 @@ fn wrap(header: Option<String>, lines: &[String], prompt: &str) -> String {
     out.push_str(TRANSCRIPT_OPEN);
     out.push_str(&lines.join("\n"));
     out.push_str(TRANSCRIPT_CLOSE);
-    out.push_str(prompt);
     out
 }
 
@@ -354,6 +369,8 @@ mod tests {
     fn entry(id: &str, role: MessageRole, parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
             duration_ms: None,
+            origin_chat_id: None,
+            provider_turn: None,
             id: id.into(),
             role,
             parts,
@@ -709,5 +726,32 @@ mod tests {
         ];
         assert!(budgeted_transcript_prompt(&entries, Some("main"), NEW_MESSAGE).is_none());
         assert!(budgeted_transcript_prompt(&[], Some("main"), NEW_MESSAGE).is_none());
+    }
+
+    #[test]
+    fn the_prefix_is_the_prompt_without_its_tail() {
+        // The native-fork fallback (ticket 17) rides the prefix: the driver
+        // appends the user message itself, so the prefix must be exactly the
+        // delivered prompt minus the message — same selection, same header,
+        // same trailing blank line, never counting the message.
+        let mut entries = vec![
+            user("u0", "ORIGINAL: build the parser"),
+            assistant("a0", "on it"),
+        ];
+        for i in 1..=20 {
+            entries.push(user(&format!("u{i}"), &format!("fill-{i}: {}", "x".repeat(900))));
+            entries.push(assistant(&format!("a{i}"), &format!("note-{i}: {}", "y".repeat(90))));
+        }
+        let prefix = budgeted_transcript_prefix(&entries, Some("main")).unwrap();
+        let prompt = budgeted_transcript_prompt(&entries, Some("main"), NEW_MESSAGE).unwrap();
+        assert!(prompt.starts_with(&prefix), "prefix must head the prompt");
+        assert!(prompt.ends_with(NEW_MESSAGE));
+        assert_eq!(&prompt[..prefix.len()], &prefix);
+        assert!(prefix.ends_with("\n\n"));
+        assert!(!prefix.contains(NEW_MESSAGE));
+        assert!(prefix.contains("read_chat"));
+        assert!(prefix.len() <= TRANSCRIPT_BUDGET_BYTES);
+        // An undeliverable transcript has no prefix either.
+        assert!(budgeted_transcript_prefix(&[], Some("main")).is_none());
     }
 }

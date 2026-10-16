@@ -1612,6 +1612,7 @@ impl RpcService for EngineRpc {
                         .push_message(&roboco_doc::SessionMessageEntry {
                             origin_chat_id: None,
                             duration_ms: None,
+                            provider_turn: None,
                             id: marker_id.clone(),
                             role: roboco_doc::MessageRole::System,
                             parts: vec![roboco_doc::MessagePart::Fork {
@@ -1624,6 +1625,28 @@ impl RpcService for EngineRpc {
                             status: Some(roboco_doc::MessageStatus::Complete),
                             continuation_of: None,
                         })
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
+                // Native fork intent (t3-orchestration-v2 ticket 17): when the
+                // boundary entry carries a provider turn ref, the fork records
+                // the source provider session and the boundary on the new chat —
+                // its first run asks the harness to fork the source session at
+                // that turn (Codex `thread/fork {threadId, lastTurnId}`)
+                // instead of resuming it, so the copied history rides the
+                // provider and nothing is pasted. No ref — old chats, or a
+                // harness that records none — keeps today's behavior: a fresh
+                // session plus the budgeted paste.
+                if let Some(reference) = entries[boundary].provider_turn.clone() {
+                    target
+                        .doc()
+                        .set_provider_fork(
+                            reference.harness,
+                            &roboco_proto::ProviderFork {
+                                session_id: reference.session_id,
+                                last_turn: reference.turn_id,
+                                fallback_history: None,
+                            },
+                        )
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
@@ -3347,6 +3370,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                provider_turn: None,
             })
             .unwrap();
         // Hold publication blocked: the opening must not await the full mirror.
@@ -3543,6 +3567,7 @@ mod context_usage_tests {
                     status: Some(roboco_doc::MessageStatus::Streaming),
                     continuation_of: None,
                     duration_ms: None,
+                    provider_turn: None,
                 })
                 .unwrap()
         };
@@ -3677,6 +3702,7 @@ mod context_usage_tests {
             status: Some(roboco_doc::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         handle.doc().push_message(&entry("local-before")).unwrap();
         source.update_context_usage(Some(10), Some(100)).unwrap();
