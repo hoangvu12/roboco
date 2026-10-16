@@ -607,8 +607,8 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // this crate reads them as `state::…`.
 pub use roboco_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
-    chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    chat_location, display_status, effective_indicator, format_limit_reset, format_time_ago,
+    gate_phase, group_chats, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
 };
 
 // ---------------------------------------------------------------------------
@@ -2174,6 +2174,23 @@ impl AppState {
             return Indicator::Working;
         }
         effective_indicator(self.session_for(chat_id), now)
+    }
+
+    /// The usage-limit record for `chat_id`, when its status row reads as
+    /// Limited right now (errored with a recorded limit): the window, reset
+    /// time and account the Limited banner, the list markers and Resume act
+    /// on. `None` for plain errors and non-limited rows.
+    pub fn limit_for(&self, chat_id: &str, now: DateTime<Utc>) -> Option<roboco_proto::SessionLimit> {
+        let session = self.session_for(chat_id)?;
+        (self.indicator_for(chat_id, now) == Indicator::Limited)
+            .then(|| session.limit.clone())
+            .flatten()
+    }
+
+    /// Whether `chat_id` reads as Limited right now — the cheap marker
+    /// predicate for row dots (the record itself is [`Self::limit_for`]).
+    pub fn is_limited(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        self.indicator_for(chat_id, now) == Indicator::Limited
     }
 
     /// The earliest moment after `now` at which a clock-derived value flips
@@ -3997,6 +4014,7 @@ mod tests {
             status,
             started_at: None,
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
+            limit: None,
         }
     }
 
@@ -4039,6 +4057,7 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            limit: None,
         };
         assert!(state.apply_sessions_at(vec![row.clone()], now));
         row.updated_at = now + TimeDelta::seconds(30);
@@ -4070,6 +4089,7 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            limit: None,
         }];
         let mut row = device("host", "Host");
         row.last_seen_at = Some(now);
@@ -4311,6 +4331,44 @@ mod tests {
             effective_indicator(Some(&awaiting_stale), now),
             Indicator::None
         );
+    }
+
+    /// A Limited chat is an errored row carrying the additive limit record:
+    /// the state derivation surfaces the record (banner + markers + Resume)
+    /// and only while the row is errored — a row that is working again
+    /// (a new turn clears the record) shows plain Working.
+    #[test]
+    fn limited_rows_expose_their_limit_record_while_errored() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut limited = session("c", SessionStatus::Errored, 10, now);
+        assert_eq!(state.indicator_for("c", now), Indicator::None);
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Errored);
+        assert_eq!(state.limit_for("c", now), None, "no record yet");
+
+        let record = roboco_proto::SessionLimit {
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some((now + TimeDelta::hours(2)).timestamp_millis()),
+            account_id: Some("slot-9f2c".into()),
+        };
+        limited.limit = Some(record.clone());
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Limited);
+        assert_eq!(state.limit_for("c", now), Some(record));
+
+        // The new turn clears the record: a Working row never reads Limited.
+        limited.status = SessionStatus::Working;
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Working);
+        assert_eq!(state.limit_for("c", now), None);
+        // Even back on a settled row, no record means no Limited read.
+        limited.status = SessionStatus::Errored;
+        limited.limit = None;
+        state.sessions = vec![limited];
+        assert_eq!(state.indicator_for("c", now), Indicator::Errored);
+        assert_eq!(state.limit_for("c", now), None);
     }
 
     #[test]

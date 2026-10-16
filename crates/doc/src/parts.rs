@@ -128,12 +128,16 @@ pub enum NoticeOutcome {
     Completed,
     Errored,
     Stopped,
+    /// The run was lost to an engine restart without auto-resume (ticket
+    /// 13): the work never finished — distinct from a stop, which the
+    /// user chose.
+    Interrupted,
     WaitingForInput,
 }
 
 /// One side chat a completion notice reports: its id and title, the
-/// recorded outcome, and the one-line reason (error text or question
-/// summary) when the outcome carries one.
+/// recorded outcome, and the one-line reason (error text, restart reason or
+/// question summary) when the outcome carries one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NoticeSide {
@@ -144,8 +148,9 @@ pub struct NoticeSide {
     /// without a registry lookup (a later rename never rewrites history).
     pub title: String,
     pub outcome: NoticeOutcome,
-    /// The one-line detail for errored (reason) and waiting-for-input
-    /// (question summary) rows; absent otherwise.
+    /// The one-line detail for errored (reason), interrupted (restart
+    /// reason) and waiting-for-input (question summary) rows; absent
+    /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -266,7 +271,8 @@ pub enum MessagePart {
     /// The engine's completion notice (orchestration v2): an engine-authored
     /// SYSTEM entry in a parent chat reporting the recorded outcomes of its
     /// agent-created side chats' turns — finished, failed (one-line reason),
-    /// stopped, or waiting for input (one-line summary). The entry's sibling
+    /// stopped, interrupted by an engine restart without auto-resume, or
+    /// waiting for input (one-line summary). The entry's sibling
     /// text part carries the same notice as plain text, so older layouts —
     /// whose unknown-kind fallback yields an empty part — stay readable.
     /// Written only by the engine when it delivers a notice; never a user

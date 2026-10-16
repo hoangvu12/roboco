@@ -1080,6 +1080,12 @@ pub struct Row {
     /// settled row, beside the timestamp; tools and transport-only metadata
     /// are deliberately excluded.
     pub copy_text: Option<SharedString>,
+    /// "Fork from here" (t3-orchestration-v2 ticket 21): the entry a settled
+    /// ASSISTANT reply's hover strip offers to fork at. Present on the same
+    /// row as `copy_text` — every settled assistant reply, errored and
+    /// interrupted ones included — never on a user row, the fork seam, or a
+    /// reply still streaming.
+    pub fork_entry: Option<SharedString>,
     /// Hidden while the named compact-work fold is closed.
     pub compact_fold: Option<SharedString>,
 }
@@ -1325,6 +1331,7 @@ pub fn rows_for_entry(
             timestamp: Some(entry.created_at),
             copy_text,
             compact_fold: None,
+            fork_entry: None,
         }];
     }
 
@@ -1385,6 +1392,7 @@ pub fn rows_for_entry(
                 timestamp: None,
                 copy_text: None,
                 compact_fold: None,
+                fork_entry: None,
             });
             *group_ix += 1;
         };
@@ -1527,6 +1535,7 @@ pub fn rows_for_entry(
                                 timestamp: None,
                                 copy_text: None,
                                 compact_fold: None,
+                                fork_entry: None,
                                 kind: if streaming {
                                     RowKind::LiveMarkdown {
                                         tree: tree.clone(),
@@ -1567,6 +1576,7 @@ pub fn rows_for_entry(
                             timestamp: None,
                             copy_text: None,
                             compact_fold: None,
+                            fork_entry: None,
                         });
                     }
                     MessagePart::Error {
@@ -1585,6 +1595,7 @@ pub fn rows_for_entry(
                             timestamp: None,
                             copy_text: None,
                             compact_fold: None,
+                            fork_entry: None,
                         });
                     }
                     MessagePart::Fork {
@@ -1604,6 +1615,7 @@ pub fn rows_for_entry(
                             timestamp: None,
                             copy_text: None,
                             compact_fold: None,
+                            fork_entry: None,
                         });
                     }
                     MessagePart::HarnessSwitch { id: part_id, harness } => {
@@ -1626,6 +1638,7 @@ pub fn rows_for_entry(
                             timestamp: None,
                             copy_text: None,
                             compact_fold: None,
+                            fork_entry: None,
                         });
                     }
                     // Tools and thoughts are grouped by the outer arms;
@@ -1673,6 +1686,11 @@ pub fn rows_for_entry(
                 row.turn_start = false;
                 row.timestamp = None;
                 row.copy_text = None;
+                // The synthetic work entry shares the original's role, so
+                // its recursive rows picked up a fork action too — the
+                // action belongs to the entry's own last settled row, not
+                // to a fold-hidden work row.
+                row.fork_entry = None;
                 row.compact_fold = Some(work_id.clone());
             }
             let header = Row {
@@ -1697,6 +1715,7 @@ pub fn rows_for_entry(
                 timestamp: None,
                 copy_text: None,
                 compact_fold: None,
+                fork_entry: None,
             };
             let pos = compact_group_pos.unwrap_or(rows.len());
             for (i, row) in inner.into_iter().enumerate() {
@@ -1729,6 +1748,11 @@ pub fn rows_for_entry(
     {
         last.timestamp = Some(entry.created_at);
         last.copy_text = assistant_copy_text(entry);
+        // "Fork from here" (ticket 21) rides the same settled row: every
+        // assistant reply — errored and interrupted ones included — offers
+        // the fork action. User and system entries never do.
+        last.fork_entry = (entry.role == MessageRole::Assistant)
+            .then(|| entry_id.clone());
         last.version ^= 1 << 62;
     }
     rows
@@ -3426,6 +3450,14 @@ pub enum TranscriptEvent {
         doc_id: String,
         title: String,
         frozen: bool,
+    },
+    /// "Fork from here" (t3-orchestration-v2 ticket 21): the hover action
+    /// on a settled assistant reply — completed, errored or interrupted.
+    /// `chat_id` is the chat the reply lives in; `entry_id` is the boundary
+    /// the fork copies up to, inclusive.
+    ForkFromEntry {
+        chat_id: String,
+        entry_id: String,
     },
 }
 
@@ -7141,10 +7173,11 @@ impl Transcript {
         self.ensure_diagram_worker(cx);
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the
-        // entry's last row. Timestamp, copy action, and copied feedback only
-        // flip visibility/content, so none of them shifts the virtualizer.
-        // User entries align end (under the bubble), assistant entries start.
-        // Both read timestamp first, then the copy action.
+        // entry's last row. Timestamp, copy action, fork action, and copied
+        // feedback only flip visibility/content, so none of them shifts the
+        // virtualizer. User entries align end (under the bubble), assistant
+        // entries start. Both read timestamp first, then the copy action;
+        // assistant entries end with "Fork from here" (ticket 21).
         let is_user_row = matches!(row.kind, RowKind::User { .. });
         let hovered = self
             .hovered_entry
@@ -7153,6 +7186,49 @@ impl Transcript {
         let copied_message = self.copied_message.as_ref() == Some(&row.entry_id);
         let copy_text = row.copy_text.clone();
         let copy_entry_id = row.entry_id.clone();
+        // "Fork from here" (t3-orchestration-v2 ticket 21): every settled
+        // assistant reply — errored and interrupted ones included — offers a
+        // fork at exactly that reply, beside the copy action. A subagent doc
+        // tab is a read-only view with no chat row to fork, so it never
+        // offers the action; the tooltip says what the fork does NOT do:
+        // files are not rewound.
+        let fork_here = row
+            .fork_entry
+            .clone()
+            .filter(|_| self.doc_override.is_none())
+            .zip(self.chat_id.clone())
+            .map(|(entry_id, chat_id)| {
+                let fade_key = format!("fork-here-hover-{entry_id}");
+                div()
+                    .id(SharedString::from(format!("fork-here-{entry_id}")))
+                    .size(px(Theme::SPACE_MD * 2.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .cursor_pointer()
+                    // Same quiet icon-button treatment as the copy action.
+                    .bg(motion::hover_blend(
+                        &fade_key,
+                        gpui::transparent_black(),
+                        crate::theme::ink(0.08),
+                    ))
+                    .on_hover(motion::hover_listener(fade_key))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(TranscriptEvent::ForkFromEntry {
+                            chat_id: chat_id.clone(),
+                            entry_id: entry_id.clone(),
+                        });
+                    }))
+                    .tooltip(crate::settings::widgets::text_tooltip(
+                        "Fork from here — a new side chat continues from this reply. Files are not rewound.",
+                    ))
+                    .child(
+                        crate::icons::icon(crate::icons::GIT_BRANCH)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+            });
         let strip = row.timestamp.map(|ms| {
             let timestamp = div()
                 .text_size(crate::typography::ui_rems(12.0))
@@ -7196,7 +7272,7 @@ impl Transcript {
                 .flex_row()
                 .items_center()
                 .gap(px(Theme::SPACE_SM));
-            let metadata = metadata.child(timestamp).children(copy);
+            let metadata = metadata.child(timestamp).children(copy).children(fork_here);
             div()
                 .h(px(Theme::SPACE_SM + Theme::SPACE_MD * 2.0))
                 .pt(px(Theme::SPACE_SM))
@@ -10090,6 +10166,7 @@ mod tests {
                     last_completed_turn: None,
                     started_at: None,
                     updated_at: now,
+                    limit: None,
                 }];
             });
             assert!(
@@ -11686,6 +11763,7 @@ mod tests {
             timestamp: None,
             copy_text: None,
             compact_fold: None,
+            fork_entry: None,
         }
     }
 
@@ -13753,6 +13831,7 @@ mod tests {
                             status: roboco_proto::SessionStatus::Working,
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
+                            limit: None,
                         })
                     });
                     this.on_own_send("chat".into(), "prompt".into(), cx);
@@ -15785,6 +15864,115 @@ mod tests {
         assert!(rows.iter().all(|r| r.copy_text.is_none()));
         // Every row knows its entry (the hover group).
         assert!(rows.iter().all(|r| r.entry_id.as_ref() == live.id));
+    }
+
+    /// "Fork from here" (t3-orchestration-v2 ticket 21): the hover-strip
+    /// action is offered on every SETTLED assistant reply — completed,
+    /// errored (complete status + error part), and interrupted (aborted)
+    /// ones — and never on a user row, the fork seam, or a reply still
+    /// streaming. It rides the same last settled row as the timestamp and
+    /// copy action, and carries the entry id the fork RPC forks at.
+    #[test]
+    fn fork_from_here_is_offered_on_every_settled_assistant_reply() {
+        // Completed reply: the action rides its LAST settled row only.
+        let done = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![text_part("p1", "one\n\ntwo")],
+        );
+        let rows = rows_for_entry(&done, false, false, &mut parse);
+        assert!(rows.len() >= 2);
+        assert_eq!(rows.last().unwrap().fork_entry.as_deref(), Some("a1"));
+        assert!(rows[..rows.len() - 1]
+            .iter()
+            .all(|r| r.fork_entry.is_none()));
+
+        // An errored reply is a settled reply (complete status, error part).
+        let mut errored = assistant(
+            "a2",
+            MessageStatus::Complete,
+            vec![text_part("p1", "half an answer")],
+        );
+        errored.parts.push(MessagePart::Error {
+            id: "a2-err".into(),
+            message: "the model blew up".into(),
+        });
+        assert_eq!(
+            rows_for_entry(&errored, false, false, &mut parse)
+                .last()
+                .unwrap()
+                .fork_entry
+                .as_deref(),
+            Some("a2")
+        );
+
+        // An interrupted reply too (aborted status).
+        let interrupted = assistant(
+            "a3",
+            MessageStatus::Aborted,
+            vec![text_part("p1", "partial answer")],
+        );
+        assert_eq!(
+            rows_for_entry(&interrupted, false, false, &mut parse)
+                .last()
+                .unwrap()
+                .fork_entry
+                .as_deref(),
+            Some("a3")
+        );
+
+        // Never mid-stream.
+        let live = assistant(
+            "a4",
+            MessageStatus::Streaming,
+            vec![text_part("p1", "streaming…")],
+        );
+        assert!(
+            rows_for_entry(&live, false, false, &mut parse)
+                .iter()
+                .all(|r| r.fork_entry.is_none())
+        );
+
+        // Never on a user row.
+        let mut user = assistant(
+            "u1",
+            MessageStatus::Complete,
+            vec![text_part("p1", "hi")],
+        );
+        user.role = MessageRole::User;
+        assert!(
+            rows_for_entry(&user, false, false, &mut parse)
+                .iter()
+                .all(|r| r.fork_entry.is_none())
+        );
+
+        // Never on the fork seam (a system entry).
+        let mut seam = assistant("seam", MessageStatus::Complete, vec![]);
+        seam.role = MessageRole::System;
+        seam.parts = vec![MessagePart::Fork {
+            id: "fork:side".into(),
+            source_chat_id: "main".into(),
+            source_title: "Main".into(),
+        }];
+        assert!(
+            rows_for_entry(&seam, false, false, &mut parse)
+                .iter()
+                .all(|r| r.fork_entry.is_none())
+        );
+
+        // Compact mode: the work rows fold under a header built from a
+        // SYNTHETIC work entry that shares the reply's role — its rows must
+        // never carry the action; only the entry's own last (reply) row does.
+        let with_work = assistant(
+            "a5",
+            MessageStatus::Complete,
+            vec![tool_part("t1", "cargo test"), text_part("p1", "done")],
+        );
+        let rows = rows_for_entry(&with_work, false, true, &mut parse);
+        assert_eq!(rows.last().unwrap().fork_entry.as_deref(), Some("a5"));
+        assert!(rows[..rows.len() - 1]
+            .iter()
+            .all(|r| r.fork_entry.is_none()));
     }
 
     #[test]

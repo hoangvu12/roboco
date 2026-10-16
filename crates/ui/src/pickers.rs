@@ -6174,6 +6174,7 @@ mod tests {
                 status,
                 started_at: None,
                 updated_at: chrono::Utc::now(),
+                limit: None,
             }]);
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -6238,6 +6239,7 @@ mod tests {
                     status: roboco_proto::SessionStatus::Working,
                     started_at: None,
                     updated_at: chrono::Utc::now(),
+                    limit: None,
                 }]);
             });
             pickers.update(cx, |pickers, cx| {

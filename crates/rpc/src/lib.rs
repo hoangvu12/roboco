@@ -71,7 +71,10 @@ pub mod methods {
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
     /// Fork a chat into a side chat: copies the source's completed history,
     /// appends the `fork` seam, and lists the copy under its parent.
-    /// Params `{chatId, sourceChatId, parentChatId?}` → `Chat`.
+    /// Params `{chatId, sourceChatId, parentChatId?, boundary?}` → `Chat`;
+    /// `boundary` (t3-orchestration-v2 ticket 21) names the assistant entry
+    /// to fork at — any settled reply, not just the latest complete one —
+    /// and the copy stops there, inclusive.
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
     /// One-way harness switch on an existing chat between turns
     /// (t3-orchestration-v2 ticket 24). Params `{chatId, harness, model?,

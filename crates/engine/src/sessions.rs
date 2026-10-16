@@ -30,8 +30,8 @@ use roboco_doc::{
 };
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus,
-    UserInputAnswer, UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionLimit,
+    SessionStatus, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -210,8 +210,9 @@ struct Inner {
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Completion-notice bookkeeping (orchestration v2): the outcomes
-    /// side-chat turns owe their agent parents. Durability lands with
-    /// ticket 13; this is the in-memory seam.
+    /// side-chat turns owe their agent parents, mirrored to a durable
+    /// engine-local ledger so undelivered outcomes survive restarts
+    /// (ticket 13).
     notices: crate::completion_notices::CompletionNotices,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
@@ -220,10 +221,12 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
-    /// Harness accounts (engine assembly; absent in bare tests): a run that
-    /// fails with a signed-out error marks the harness's live login on them.
+    /// Harness accounts (engine assembly; absent in bare tests): usage-limit
+    /// records read the active login's cached windows (which account the
+    /// limit hit, reset-time fill — ticket 06), and a run that fails with a
+    /// signed-out error marks the harness's live login on them (ticket 08).
     /// A `Mutex` (not `OnceLock`) so a test's isolated store can swap in over
-    /// the detected one — the marking and the RPC list must see one store.
+    /// the detected one — every reader must see one store.
     agent_accounts: Mutex<Option<crate::agent_accounts::AgentAccounts>>,
 }
 
@@ -317,8 +320,9 @@ impl SessionsEngine {
     }
 
     /// Wire the harness accounts (called once at engine assembly; a test
-    /// swaps in an isolated store through the same call). A run that fails
-    /// with a signed-out error marks the harness's live login on them.
+    /// swaps in an isolated store through the same call). Usage-limit records
+    /// read the active login's cached windows (see [`Inner::limit_record`]),
+    /// and runs that fail signed-out mark the live login on them.
     pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
         *lock(&self.inner.agent_accounts) = Some(accounts);
     }
@@ -351,9 +355,40 @@ impl SessionsEngine {
         &self.inner.notices
     }
 
+    /// Load the durable completion-notice ledger a previous engine run
+    /// left (ticket 13): outcomes recorded but never delivered survive the
+    /// restart. Called at assembly, BEFORE boot recovery, so the
+    /// interrupted outcomes recovery records for runs the restart lost
+    /// land in the same ledger.
+    pub(crate) fn load_pending_notices(&self, path: &std::path::Path) {
+        self.inner.notices.load(path);
+    }
+
+    /// Boot delivery (ticket 13): every parent the ledger owes gets its
+    /// notice now, unless it is already busy again. A parent whose crashed
+    /// run is auto-resumed may still read idle here — the staggered
+    /// revival lands up to a couple of seconds later — in which case the
+    /// notice turn starts and the revival joins it like any later message;
+    /// either order loses nothing, and the outcome always reaches the
+    /// parent.
+    pub(crate) fn deliver_pending_notices(&self) {
+        for parent in self.inner.notices.parents() {
+            spawn_notice_delivery(&self.inner, &parent);
+        }
+    }
+
     /// The doc host, for the completion-notice delivery path (crate-internal).
     pub(crate) fn host(&self) -> Option<crate::doc_host::DocHost> {
         self.inner.doc_host()
+    }
+
+    /// Whether the engine is tearing down (crate-internal): notice
+    /// delivery defers — outcomes stay durably pending, and the next boot
+    /// delivers them.
+    pub(crate) fn shutting_down(&self) -> bool {
+        self.inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The parent a message from `origin` makes a turn of `chat_id`
@@ -366,8 +401,7 @@ impl SessionsEngine {
         let origin = origin?;
         let agent_origin = self
             .inner
-            .doc_host()
-            .and_then(|host| host.workspace())
+            .workspace()
             .and_then(|ws| ws.chat(chat_id).ok().flatten())
             .and_then(|chat| chat.agent_origin)?;
         agent_origin
@@ -1347,6 +1381,36 @@ impl SessionsEngine {
             recovered += 1;
 
             if !will_resume {
+                // Completion notices (orchestration v2, ticket 13): a
+                // notifiable run lost to the restart with no auto-resume
+                // owes its parent an interrupted outcome — the work never
+                // finished, and the parent may want to restart it. Recorded
+                // synchronously here (not through `spawn_notice_record`)
+                // so the boot delivery that runs after recovery sees it in
+                // the ledger. Archived chats are quiet both ways: an
+                // archived side chat sends nothing, an archived parent is
+                // owed nothing.
+                let notifiable = prompt
+                    .as_ref()
+                    .and_then(|(_, _, origin)| origin.as_deref())
+                    .and_then(|origin| self.notifiable_parent_for(&chat_id, Some(origin)))
+                    .filter(|parent| {
+                        !crate::completion_notices::chat_archived(self, &chat_id)
+                            && !crate::completion_notices::chat_archived(self, parent)
+                    });
+                if let Some(parent) = notifiable {
+                    self.inner.notices.record(
+                        &parent,
+                        crate::completion_notices::PendingOutcome {
+                            side_chat_id: chat_id.clone(),
+                            outcome: crate::completion_notices::Outcome::Interrupted {
+                                reason: Some(
+                                    crate::completion_notices::INTERRUPTED_REASON.into(),
+                                ),
+                            },
+                        },
+                    );
+                }
                 continue;
             }
             let attempt = self.inner.journal.note_resume_attempt(&chat_id);
@@ -1601,6 +1665,50 @@ impl Inner {
         self.set_status_with_completion(chat_id, status, fresh_start, None);
     }
 
+    /// Complete a usage-limit record for a turn that ended on one: which
+    /// harness account it hit (the active login — resolved when the turn
+    /// settles; warm runtimes keep the token they started with, so that is
+    /// the login the run used in practice), and — when the harness's own
+    /// error carried no reset time — the fill from that account: the window
+    /// whose LABEL matches the limit's (Codex's meters name the driver's
+    /// windows; Claude's do not), else the account's `limited_until` (the
+    /// latest reset among its exhausted windows — ticket 08's derivation,
+    /// one shared meaning for "the account is limited until"). Engines
+    /// without an accounts store (bare tests) record without either.
+    /// `None` when the classification was not a usage limit.
+    async fn limit_record(
+        &self,
+        harness: HarnessId,
+        kind: AgentErrorKind,
+    ) -> Option<SessionLimit> {
+        let AgentErrorKind::UsageLimit { window, resets_at } = kind else {
+            return None;
+        };
+        let accounts = lock(&self.agent_accounts).clone();
+        let active = match accounts {
+            Some(accounts) => accounts.active_account(harness).await,
+            None => None,
+        };
+        let resets_at = resets_at.or_else(|| {
+            let account = active.as_ref()?;
+            // Same window, when the account's meters name it.
+            let by_label = account
+                .usage_windows
+                .iter()
+                .find(|w| w.resets_at.is_some() && w.label.eq_ignore_ascii_case(&window));
+            by_label
+                .and_then(|w| w.resets_at)
+                .or(account.limited_until)
+                .map(|at| at.timestamp_millis())
+        });
+        Some(SessionLimit {
+            harness,
+            window,
+            resets_at,
+            account_id: active.map(|account| account.id),
+        })
+    }
+
     fn has_pending_steers(&self, chat_id: &str, run_id: &str) -> bool {
         lock(&self.runs)
             .get(chat_id)
@@ -1617,6 +1725,23 @@ impl Inner {
         fresh_start: bool,
         completed_turn: Option<String>,
     ) {
+        self.set_status_with_limit(chat_id, status, fresh_start, completed_turn, None);
+    }
+
+    /// The full status transition: everything above, plus the usage-limit
+    /// record a limited turn ends with. `None` CLEARS any previous record —
+    /// the marker lives exactly as long as the errored status that recorded
+    /// it, so a new turn (any Working transition) or any other settled
+    /// outcome drops it. Only the run task's limit-errored exit passes
+    /// `Some`.
+    fn set_status_with_limit(
+        &self,
+        chat_id: &str,
+        status: SessionStatus,
+        fresh_start: bool,
+        completed_turn: Option<String>,
+        limit: Option<SessionLimit>,
+    ) {
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
@@ -1629,6 +1754,7 @@ impl Inner {
                     status,
                     started_at: None,
                     updated_at: now,
+                    limit: None,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -1645,6 +1771,7 @@ impl Inner {
             }
             entry.status = status;
             entry.updated_at = now;
+            entry.limit = limit;
             match status {
                 SessionStatus::Working if fresh_start || !was_active => {
                     entry.started_at = Some(now);
@@ -2407,8 +2534,9 @@ fn run_notifiable_parent(inner: &Inner, chat_id: &str, run_id: &str) -> Option<S
 
 /// Record a completion-notice outcome, fire-and-forget: the side chat's
 /// event stream never waits on the parent's notice turn. Engine teardown
-/// records nothing — the runs it kills were not user-visible outcomes
-/// (restart semantics are ticket 13's, at boot, not at teardown).
+/// records nothing — the runs it kills were not user-visible outcomes;
+/// a restart's lost runs are covered at boot (interrupted outcomes),
+/// where the crash state is durable enough to read.
 fn spawn_notice_record(
     inner: Arc<Inner>,
     side_chat: String,
@@ -2424,6 +2552,31 @@ fn spawn_notice_record(
     let engine = SessionsEngine { inner };
     tokio::spawn(async move {
         crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, outcome).await;
+    });
+}
+
+/// Deliver the completion notices `chat_id` is owed as a PARENT, now that
+/// its turn has ended (ticket 13's busy-parent rule): the outcomes that
+/// piled up while it worked were never steered in, so they start the
+/// chat's next turn now. Fire-and-forget, like the records: the run loop
+/// never waits on another chat's turn. Delivery re-checks `turn_in_flight`
+/// (a queued user message may have claimed the boundary first — then the
+/// notice waits for that turn's own end) and `shutting_down` (teardown
+/// never starts recovered work). A turn ended by an interrupt is the
+/// user's Stop: no wakeup — ticket 14 owns the stopped-parent rule.
+fn spawn_notice_delivery(inner: &Arc<Inner>, chat_id: &str) {
+    if inner
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
+    let engine = SessionsEngine {
+        inner: inner.clone(),
+    };
+    let chat = chat_id.to_string();
+    tokio::spawn(async move {
+        crate::completion_notices::deliver(&engine, &chat).await;
     });
 }
 
@@ -2681,6 +2834,10 @@ async fn drive_run(
             }
             inner.remove_run(&chat_id, &run_id);
             inner.set_status(&chat_id, SessionStatus::Errored, false);
+            // The chat's own turn is over (it errored before it started):
+            // notices that piled up while it was working start its next
+            // turn now (ticket 13).
+            spawn_notice_delivery(&inner, &chat_id);
             return;
         }
     };
@@ -2837,6 +2994,11 @@ async fn drive_run(
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
 
     let mut final_completed_turn = None;
+    // The run's LAST error classification. Harnesses emit the classified
+    // `AgentEvent::Error` (usage limit / signed out) before their terminal
+    // `Done`; when that Done is Errored, this is what turns the settled row
+    // into a Limited one (the record on the session status).
+    let mut last_error_kind: Option<AgentErrorKind> = None;
     // The run's FINAL Done (status + error), captured at the break that ends
     // the run — the engine's own recorded turn-end state for the completion
     // notice. Parked settles record inside the loop instead.
@@ -3051,7 +3213,7 @@ async fn drive_run(
                     reap_deferred_until = None;
                     self_continued_turn = false;
                     inner.set_status_with_completion(
-                        &chat_id, SessionStatus::Idle, false, completed_turn,
+                        &chat_id, SessionStatus::Idle, false, completed_turn.clone(),
                     );
                     // The watchdog finalized a completed turn (no native
                     // Done): it owes its parent the same notice a Done would.
@@ -3062,6 +3224,10 @@ async fn drive_run(
                         completed_turn.is_some(),
                         false,
                     );
+                    // The watchdog-finalized turn is over: notices that
+                    // piled up while the chat worked start its next turn
+                    // (ticket 13).
+                    spawn_notice_delivery(&inner, &chat_id);
                     continue;
                 }
             };
@@ -3569,6 +3735,12 @@ async fn drive_run(
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
             }
+            AgentEvent::Error { kind, .. } => {
+                // Track the latest classification; a later unclassified
+                // error supersedes an earlier limit one (the turn then ended
+                // on that failure, not the limit).
+                last_error_kind = kind.clone();
+            }
             _ => {}
         }
 
@@ -3695,7 +3867,7 @@ async fn drive_run(
                     &chat_id,
                     SessionStatus::Idle,
                     false,
-                    completed_turn,
+                    completed_turn.clone(),
                 );
                 // The parked turn settled: a completed turn notifies its
                 // parent, a stop-in-place notifies as stopped, an internal
@@ -3707,6 +3879,9 @@ async fn drive_run(
                     completed_turn.is_some(),
                     stopped_in_place,
                 );
+                // The parked turn is over: notices that piled up while the
+                // chat worked start its next turn (ticket 13).
+                spawn_notice_delivery(&inner, &chat_id);
                 continue;
             }
             final_completed_turn = completed_turn;
@@ -3751,17 +3926,46 @@ async fn drive_run(
         .filter(|h| h.run_id == run_id)
         .map(|h| std::mem::take(&mut *lock(&h.routed_steers)).into())
         .unwrap_or_default();
+    // A turn that ended on a usage limit records the additive limit row
+    // (account + reset-time fill) while this run still owns the chat — the
+    // accounts lookup is the only await in the exit path, so it runs before
+    // the handle goes away rather than racing a fresh dispatch's status.
+    let limit = match (final_status, last_error_kind) {
+        (SessionStatus::Errored, Some(kind)) => {
+            inner.limit_record(harness_id, kind).await
+        }
+        _ => None,
+    };
+    if limit.is_some() {
+        // Queued messages wait BEHIND the continuation instead of dispatching
+        // into the same wall: a limited chat holds its queue exactly like a
+        // Stop does, and the next explicit prompt (Resume's continue prompt,
+        // or the user's own message) thaws it when its run dispatches.
+        if let Some(host) = inner.doc_host()
+            && let Ok(handle) = host.open(&chat_id)
+        {
+            handle.pause_queue();
+        }
+    }
     // Completion notices (orchestration v2): the run's final turn ended —
     // read the notifiable parent before the handle goes away, then record
     // the outcome the engine's own state observed.
     let notifiable = run_notifiable_parent(&inner, &chat_id, &run_id);
     inner.remove_run(&chat_id, &run_id);
-    inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
+    let final_turn_completed = final_completed_turn.is_some();
+    inner.set_status_with_limit(&chat_id, final_status, false, final_completed_turn, limit);
     if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
-        let completed_turn = final_completed_turn.is_some();
+        let completed_turn = final_turn_completed;
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
             spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
         }
+    }
+    // A busy parent's notices waited — never steered mid-turn (ticket 13):
+    // its turn is over, so they start its next one now. A turn ended by an
+    // interrupt is the user's Stop: no wakeup (ticket 14 owns the full
+    // stopped-parent rule).
+    if !interrupted {
+        spawn_notice_delivery(&inner, &chat_id);
     }
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.
