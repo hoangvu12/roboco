@@ -1243,7 +1243,7 @@ async fn run_session(session: Session) {
     // still governs native-command routing below (a native command never
     // carries a fallback — the engine attaches none).
     let delivered_prompt = match &fork_fallback {
-        Some(history) => format!("{history}{request.prompt}"),
+        Some(history) => format!("{history}{}", request.prompt),
         None => request.prompt.clone(),
     };
     // Model, effort and service tier ride every `turn/start` (each sticks
