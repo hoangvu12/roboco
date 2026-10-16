@@ -17,8 +17,10 @@ import {
   reconcileFreshDraftHarness,
   reconcileFreshDraftModel,
   rememberNoProject,
+  rememberModel,
   rememberReasoningForModel,
   rememberedReasoningFor,
+  switchHarnessDraft,
 } from "../src/lib/composer-draft";
 import type { StorageLike } from "../src/lib/engine-store";
 
@@ -266,6 +268,63 @@ describe("isHarnessLocked", () => {
     // harness stays pickable until the send snapshots it — the desktop's
     // `side_chat_harness_editable` (state.rs).
     expect(isHarnessLocked(config, true)).toBe(false);
+  });
+
+  it("unlocks for a one-way switch between turns (ticket 24's harness_switchable)", () => {
+    // An idle existing chat — no send in flight, no turn running — opens
+    // the facet for the one-way harness switch; a pick becomes the switch
+    // instead of a draft change.
+    expect(isHarnessLocked(config, false, true)).toBe(false);
+    // A busy or working chat keeps the lock: the switch runs between
+    // turns only. The default (no switchable) keeps the historical lock.
+    expect(isHarnessLocked(config, false, false)).toBe(true);
+    // The unlock never escapes an existing chat's config-less rows, and
+    // the editable side-chat facet outranks it either way.
+    expect(isHarnessLocked(null, false, true)).toBe(false);
+    expect(isHarnessLocked(config, true, true)).toBe(false);
+  });
+});
+
+describe("switchHarnessDraft (ticket 24)", () => {
+  const config: ChatConfig = {
+    harness: "claude-code",
+    model: "sonnet",
+    reasoning: "low",
+    modelOptions: { effort: "high" },
+    sandbox: "read-only",
+  };
+
+  it("resets to the new harness's remembered defaults; the sandbox stays the chat's own pick", () => {
+    rememberModel("codex", "gpt-5", "GPT-5");
+    rememberReasoningForModel("codex", "gpt-5", "medium");
+    const draft = switchHarnessDraft(config, "codex");
+    expect(draft).toEqual({
+      harness: "codex",
+      model: "gpt-5",
+      reasoning: "medium",
+      sandbox: "read-only",
+      // "Model options reset to the new harness's defaults unless the user
+      // chose them" — the old harness's ids are meaningless there.
+      modelOptions: {},
+    });
+  });
+
+  it("a harness with nothing remembered falls to its own defaults (model null, no options)", () => {
+    const draft = switchHarnessDraft(config, "pi");
+    expect(draft).toEqual({
+      harness: "pi",
+      model: null,
+      reasoning: null,
+      sandbox: "read-only",
+      modelOptions: {},
+    });
+  });
+
+  it("an explicit model rides the switch itself (a foreign model row's pick)", () => {
+    const draft = switchHarnessDraft(config, "codex", "gpt-6");
+    expect(draft.model).toBe("gpt-6");
+    // The old harness's reasoning never crosses either.
+    expect(draft.reasoning).toBeNull();
   });
 });
 

@@ -96,13 +96,27 @@ export const QUEUE_COMMAND = "QueueCommand";
 export const RETRY_DELIVERY = "RetryDelivery";
 /**
  * Side-chat fork (crates/engine/src/rpc.rs `FORK_SIDE_CHAT`): mints a child
- * chat by copying the source's transcript through its latest completed
- * response and stamping the `Forked from` seam part. Params
- * `{chatId, sourceChatId, parentChatId?, targetDeviceId?}` — the reply is
- * the fresh `Chat`. `parentChatId` defaults to the source (a side chat's
- * own fork passes its parent so the copy lists as a sibling).
+ * chat by copying the source's transcript through a chosen reply and
+ * stamping the `Forked from` seam part. Params `{chatId, sourceChatId,
+ * parentChatId?, boundary?, harness?, model?, targetDeviceId?}` — the
+ * reply is the fresh `Chat`. `parentChatId` defaults to the source (a side
+ * chat's own fork passes its parent so the copy lists as a sibling);
+ * `boundary` (ticket 21, "Fork from here") picks the settled assistant
+ * entry the copy stops at — any of them, errored and interrupted included
+ * — defaulting to the latest complete reply; `harness`/`model` (ticket
+ * 22) override what the copy runs on, a cross-harness fork taking the
+ * budgeted history instead of a native session fork.
  */
 export const FORK_SIDE_CHAT = "ForkSideChat";
+/** The one-way harness switch (t3-orchestration-v2 ticket 24, crates/rpc
+ *  `SWITCH_HARNESS`): `{chatId, harness, model?, reasoning?, modelOptions?}`
+ *  → `{}`. The engine writes the "Switched to <harness>" seam into the
+ *  transcript, drops the chat's harness session, and saves the arrived
+ *  picks — model options reset to the new harness's defaults unless the
+ *  user chose them. Refused while the chat works; must run on the chat's
+ *  host device. The Limited banner's "Continue on another harness"
+ *  (ticket 25) performs the same switch before its continue prompt. */
+export const SWITCH_HARNESS = "SwitchHarness";
 /** Message-queue surface (crates/engine/rpc.rs §3.5). The queue lives on the chat doc;
  *  `WatchQueue` streams `{items}` snapshots, the rest are mutations that require
  *  an explicit ack so a racing device's row never silently moves. Edit leases

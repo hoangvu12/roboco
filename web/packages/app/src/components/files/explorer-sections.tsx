@@ -9,17 +9,13 @@ import { useFleetSnapshot } from "../../state/fleet";
 import { useNow } from "../../state/hooks";
 import { rightPaneStore } from "../../state/right-pane";
 import { sidebarNotice } from "../../state/notice";
-import { beginUnsavedSideChat, seedPendingSideChat } from "../../state/side-chats";
+import { beginUnsavedSideChat } from "../../state/side-chats";
 import { mintId } from "../../lib/id";
-import {
-  beginSideChatCreate,
-  endSideChatCreate,
-  forkSideChat,
-} from "../../lib/side-chat-actions";
+import { forkSpecFor } from "../../lib/fork-dialog";
+import { forkDialogStore } from "../../state/fork-dialog";
 import {
   bodyBudget,
   childChatRows,
-  childChatTitle,
   chromeHeight,
   contentHeight,
   effectiveShown,
@@ -86,11 +82,10 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
     subagents: 10,
     chats: 10,
   });
-  // The one-at-a-time creation guard (`side_chat_creating`) — local so the
-  // header buttons' disabled state re-renders with it. Only the FORK arms it
-  // now (upstream #568): "New side chat" mints nothing up front, so there
-  // is no in-flight RPC to double-trigger.
-  const [creating, setCreating] = useState(false);
+  // The one-at-a-time creation guard (`side_chat_creating`) moved with the
+  // fork into the dialog (state/fork-dialog.ts): opening the dialog is
+  // instant, and its modal owns the in-flight window — the header buttons
+  // no longer dim for a fork under way.
 
   // The active chat's transcript — the SAME store the chat page renders
   // (one `WatchDocMessages` stream per open chat, from the session pool).
@@ -202,37 +197,15 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
       sidebarNotice.set("Start a conversation before creating a side chat.");
       return;
     }
-    if (!beginSideChatCreate()) {
-      return;
-    }
-    setCreating(true);
-    void (async () => {
-      try {
-        const chat = await forkSideChat(session.client, {
-          chatId: mintId(),
-          sourceChatId: parentChat.id,
-          parentChatId: parentChat.id,
-          targetDeviceId: parentChat.deviceId,
-        });
-        // The reply is the ENGINE's row (raw id); the surface and the
-        // fleet rows speak the scoped form — and the seed (the desktop's
-        // `pending_side_chat`) bridges the beat before the registry frame
-        // lands the row.
-        const scoped = encodeScopedId(session.engine.baseUrl, chat.id);
-        seedPendingSideChat({ ...chat, id: scoped });
-        rightPaneStore.addSideChatSurface(chatId, {
-          chatId: scoped,
-          title: childChatTitle(chat),
-        });
-      } catch (error) {
-        sidebarNotice.set(
-          error instanceof Error ? error.message : "The side chat could not be created.",
-        );
-      } finally {
-        endSideChatCreate();
-        setCreating(false);
-      }
-    })();
+    // Ticket 22 ("fork into another harness"): the fork dialog opens first
+    // so the harness and model can be chosen (defaulting to this
+    // conversation's own); its confirm performs the fork through the same
+    // RPC + seed + surface path the button used to drive inline — the
+    // one-at-a-time guard and the error surface moved with it
+    // (state/fork-dialog.ts).
+    forkDialogStore.open(
+      forkSpecFor(parentChat, chatId, null, session.client, session.engine.baseUrl),
+    );
   }, [session, parentChat, chatId]);
 
   // ── The height budget (`render_sections`, sections.rs:384-449) ───────────
@@ -289,7 +262,6 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
               className="files-section-action"
               aria-label="New side chat"
               title="New side chat"
-              disabled={creating}
               onClick={(event) => {
                 event.stopPropagation();
                 newChildChat();
@@ -302,7 +274,6 @@ export function ExplorerSections({ chatId }: { chatId: string }) {
               className="files-section-action"
               aria-label="Fork this chat"
               title="Fork this chat"
-              disabled={creating}
               onClick={(event) => {
                 event.stopPropagation();
                 forkChat();

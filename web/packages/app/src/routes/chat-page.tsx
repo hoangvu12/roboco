@@ -13,7 +13,13 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, effectiveIndicator, type ChatRow } from "../lib/view";
-import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
+import {
+  JumpPill,
+  StatusStrip,
+  TranscriptView,
+  type ForkFromEntryPayload,
+  type JumpButtonState,
+} from "../components/transcript";
 import { ChatTranscriptOutlet } from "../components/chat-transcript-outlet";
 import type { SubagentOpen } from "../components/tool-group";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
@@ -68,6 +74,10 @@ import {
   QUEUE_EDIT_UNREACHABLE_MESSAGE,
 } from "../lib/queue-actions";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
+import { catalogTargetDeviceId } from "../lib/harness-choice";
+import type { DraftConfig } from "../lib/composer-actions";
+import { forkSpecFor } from "../lib/fork-dialog";
+import { forkDialogStore } from "../state/fork-dialog";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import { canvasTerminalKey } from "../terminal/session";
@@ -513,7 +523,7 @@ export function ConversationPage() {
   // back), and the status strip's Limited banner calls it. The banner lives
   // above the composer in the bottom stack; the ref is the one channel that
   // reaches the send path without re-mounting anything.
-  const resumeRef = useRef<(() => void) | null>(null);
+  const resumeRef = useRef<((override?: Partial<DraftConfig>) => void) | null>(null);
 
   // If the queue store reports the row disappeared while we were editing
   // (another device removed/sent it), drop the edit state so the composer
@@ -1297,6 +1307,34 @@ export function ConversationPage() {
     [navigate, session],
   );
 
+  /**
+   * "Fork from here" (t3-orchestration-v2 tickets 21/22/26, the desktop's
+   * `TranscriptEvent::ForkFromEntry`): the hover action on a settled
+   * assistant reply opens the fork dialog at exactly that reply. The
+   * reply lives in the selected chat's transcript, so the fork hangs
+   * under the source — a side chat's parent would make its own fork land
+   * as a sibling (its surface's callback computes that parent) — and the
+   * copy's surface opens in THIS chat's pane.
+   */
+  const onForkFromEntry = useCallback(
+    (payload: ForkFromEntryPayload) => {
+      if (session === null) {
+        return;
+      }
+      const source =
+        snapshot.chats.loaded
+          ? snapshot.chats.rows.find((row) => row.id === payload.chatId) ?? null
+          : null;
+      if (source === null) {
+        return;
+      }
+      forkDialogStore.open(
+        forkSpecFor(source, chatId, payload.entryId, session.client, session.engine.baseUrl),
+      );
+    },
+    [session, snapshot, chatId],
+  );
+
   // The titlebar is the shell's; the route fills its identity and the `+`'s
   // handler. The right pane, its toggle, its surface tabs and its expand
   // control are all shell chrome — see `state/chrome.ts` for why they must
@@ -1393,6 +1431,7 @@ export function ConversationPage() {
                   indicator={row?.status ?? "idle"}
                   turnStartedAt={turnStartedAt}
                   onOpenSubagent={onOpenSubagent}
+                  onForkFromEntry={onForkFromEntry}
                   deliveryDegraded={deliveryDegraded}
                 />
               )}
@@ -1429,7 +1468,19 @@ export function ConversationPage() {
                     limit: sessionRow?.limit ?? null,
                     scheduled: sessionRow?.scheduledResume ?? null,
                     now,
-                    onResume: () => resumeRef.current?.(),
+                    onResume: (switched?: Partial<DraftConfig>) => resumeRef.current?.(switched),
+                    // Ticket 26: the "Continue on another harness" picker's
+                    // inputs — the harness to exclude (the chat's row config)
+                    // and the catalog routing (the dialogs' target rule: the
+                    // chat's host device when it differs from the connected
+                    // engine's own, both in the fleet's scoped form).
+                    currentHarness: chat?.config?.harness ?? null,
+                    targetDeviceId: catalogTargetDeviceId(
+                      session !== null && deviceId !== null
+                        ? encodeScopedId(session.engine.baseUrl, deviceId)
+                        : null,
+                      chat?.deviceId ?? null,
+                    ),
                   }
                 : null
             }

@@ -3,6 +3,7 @@ import type { EngineClient } from "@roboco/engine-client";
 import type {
   AgentAccount,
   AgentUsageWindow,
+  HarnessDescriptor,
   HarnessId,
   ResumeAccountCandidates,
 } from "@roboco/proto";
@@ -10,6 +11,7 @@ import {
   RESUME_CONTINUE_PROMPT,
   cancelScheduledResume,
   candidateResetCaption,
+  continueOfferedHarnesses,
   failoverCardTitle,
   failoverListOffers,
   failoverOutcomeNotice,
@@ -144,6 +146,38 @@ function candidates(fields: Partial<ResumeAccountCandidates> = {}): ResumeAccoun
     ...fields,
   };
 }
+
+// ── "Continue on another harness" (tickets 25/26) ─────────────────────
+
+describe("continueOfferedHarnesses", () => {
+  const descriptor = (id: HarnessId, installed = true): HarnessDescriptor => ({
+    id,
+    name: id,
+    supportsSteering: true,
+    steeringMode: "step-boundary",
+    reasoningLevels: [],
+    installed,
+    canInstall: false,
+    enabled: true,
+  });
+
+  it("offers the composer's offered set minus the chat's current harness", () => {
+    const catalog = [
+      descriptor("claude-code"),
+      descriptor("codex"),
+      descriptor("pi"),
+      // Present but not installed: offered_harnesses drops it.
+      descriptor("grok", false),
+    ];
+    const offered = continueOfferedHarnesses(catalog, "claude-code");
+    expect(offered.map((row) => row.id)).toEqual(["codex", "pi"]);
+    // A config-less chat (no current harness): the whole offered set.
+    expect(continueOfferedHarnesses(catalog, null)).toHaveLength(3);
+    // The current harness is the ONLY other one: nothing to offer.
+    expect(continueOfferedHarnesses([descriptor("claude-code")], "claude-code")).toEqual([]);
+    expect(continueOfferedHarnesses([], "pi")).toEqual([]);
+  });
+});
 
 describe("harnessOffersFailover / failoverCardTitle", () => {
   it("only the switchable harnesses offer the account failover (ticket 09)", () => {

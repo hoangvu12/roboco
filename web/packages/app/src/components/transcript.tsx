@@ -17,7 +17,7 @@ import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
 import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
-import type { ContextUsage, FetchToolBlobReply, ScheduledResume, SessionLimit, SessionMessageEntry } from "@roboco/proto";
+import type { ContextUsage, FetchToolBlobReply, HarnessId, ScheduledResume, SessionLimit, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
   pendingSendStatus,
@@ -92,6 +92,7 @@ import { ChatArrivalWindow } from "../lib/chat-arrival";
 import { VeilTracker } from "../lib/veil";
 import type { ChatIndicator } from "../lib/view";
 import type { MessageBadge } from "../lib/badges";
+import type { DraftConfig } from "../lib/composer-actions";
 import { MarkdownBlockView, MarkdownSurfaceProvider, CodeBlock, InlineRunView, type MarkdownSurface, type VeilChunk } from "./markdown";
 import { MessageBadges } from "./badges";
 import { MessageRail } from "./message-rail";
@@ -150,6 +151,7 @@ export const TranscriptView = memo(function TranscriptView({
   turnStartedAt = null,
   store: sharedStore = null,
   onOpenSubagent,
+  onForkFromEntry,
   markdownSurface = null,
   deliveryDegraded = false,
 }: {
@@ -200,6 +202,16 @@ export const TranscriptView = memo(function TranscriptView({
    */
   onOpenSubagent?: (payload: SubagentOpen) => void;
   /**
+   * "Fork from here" (t3-orchestration-v2 ticket 21): the hover action on
+   * a settled assistant reply — completed, errored or interrupted — opens
+   * the fork dialog at exactly that reply. `chatId` is the doc the reply
+   * lives in; `entryId` is the boundary the fork copies up to,
+   * inclusive. Default: absent — the subagent pane's read-only view has no
+   * chat row to fork from, so its rows render without the action (the
+   * desktop's `doc_override` gate).
+   */
+  onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
+  /**
    * The markdown host hooks (`RenderOptions` on the desktop): the chat's
    * workspace root and the internal-link action. Null (default, the subagent
    * dialog): workspace links render inert.
@@ -246,6 +258,7 @@ export const TranscriptView = memo(function TranscriptView({
       indicator={indicator}
       turnStartedAt={turnStartedAt}
       onOpenSubagent={onOpenSubagent}
+      onForkFromEntry={onForkFromEntry}
       markdownSurface={markdownSurface}
       deliveryDegraded={deliveryDegraded}
     />
@@ -263,6 +276,7 @@ function TranscriptSurface({
   indicator,
   turnStartedAt,
   onOpenSubagent,
+  onForkFromEntry,
   markdownSurface,
   deliveryDegraded,
 }: {
@@ -276,6 +290,7 @@ function TranscriptSurface({
   indicator: ChatIndicator | null;
   turnStartedAt: number | null;
   onOpenSubagent?: (payload: SubagentOpen) => void;
+  onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
   markdownSurface: MarkdownSurface | null;
   deliveryDegraded: boolean;
 }) {
@@ -556,6 +571,7 @@ function TranscriptSurface({
         trailer={trailerState}
         onJumpChange={onJumpChange}
         onOpenSubagent={onOpenSubagent}
+        onForkFromEntry={onForkFromEntry}
         toolMotion={toolMotion}
         chatArrival={chatArrival}
       />
@@ -625,6 +641,8 @@ interface ScrollerProps {
   readonly onJumpChange?: (state: JumpButtonState) => void;
   /** A spawn chip's open — the host registers the right-pane tab. */
   readonly onOpenSubagent?: (payload: SubagentOpen) => void;
+  /** A settled assistant reply's "Fork from here" — the host opens the fork dialog. */
+  readonly onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
   /** The surface's tool-group motion store (folds, reveals, blob fetches). */
   readonly toolMotion: ToolGroupMotionStore;
   /** The surface's chat-switch arrival window (ticket 58's ONE predicate). */
@@ -666,6 +684,7 @@ function TranscriptScroller({
   trailer,
   onJumpChange,
   onOpenSubagent,
+  onForkFromEntry,
   toolMotion,
   chatArrival,
 }: ScrollerProps) {
@@ -1809,6 +1828,7 @@ function TranscriptScroller({
                 row={row}
                 hovered={hoveredEntry?.entryId === row.entryId}
                 onOpenSubagent={onOpenSubagent}
+                onForkFromEntry={onForkFromEntry}
                 client={client}
                 deviceId={deviceId}
                 docId={docId}
@@ -2097,6 +2117,7 @@ function RowContent({
   row,
   hovered,
   onOpenSubagent,
+  onForkFromEntry,
   client,
   deviceId,
   docId,
@@ -2112,6 +2133,8 @@ function RowContent({
   row: TranscriptRow;
   hovered: boolean;
   onOpenSubagent?: (payload: SubagentOpen) => void;
+  /** The row's "Fork from here" open (absent = no action renders). */
+  onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
   client: EngineClient;
   deviceId: string | null;
   docId: string;
@@ -2166,13 +2189,49 @@ function RowContent({
       {kind.kind === "inputChip" && <InputChipRow header={kind.header} resolved={kind.resolved} />}
       {kind.kind === "errorChip" && <ErrorChipRow message={kind.message} />}
       {kind.kind === "forkMarker" && <ForkMarkerRow sourceTitle={kind.sourceTitle} />}
-      {row.timestamp !== null && <RowMeta row={row} visible={hovered} isUserRow={kind.kind === "user"} />}
+      {kind.kind === "harnessSwitchMarker" && <HarnessSwitchMarkerRow label={kind.label} />}
+      {row.timestamp !== null && (
+        <RowMeta
+          row={row}
+          visible={hovered}
+          isUserRow={kind.kind === "user"}
+          docId={docId}
+          onForkFromEntry={onForkFromEntry}
+        />
+      )}
     </>
   );
 }
 
-/** The hover strip under a settled entry's last row: timestamp + copy. */
-function RowMeta({ row, visible, isUserRow }: { row: TranscriptRow; visible: boolean; isUserRow: boolean }) {
+/**
+ * "Fork from here" (t3-orchestration-v2 ticket 21, the desktop's
+ * `TranscriptEvent::ForkFromEntry`): the hover action's payload — `chatId`
+ * is the doc the reply lives in; `entryId` is the boundary the fork copies
+ * up to, inclusive.
+ */
+export interface ForkFromEntryPayload {
+  readonly chatId: string;
+  readonly entryId: string;
+}
+
+/**
+ * The hover strip under a settled entry's last row: timestamp + copy +
+ * (ticket 21) "Fork from here" on assistant replies.
+ */
+function RowMeta({
+  row,
+  visible,
+  isUserRow,
+  docId,
+  onForkFromEntry,
+}: {
+  row: TranscriptRow;
+  visible: boolean;
+  isUserRow: boolean;
+  /** The doc the row's entry lives in — the fork's source chat id. */
+  docId: string;
+  onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
+}) {
   const [copied, setCopied] = useState(false);
   const copy = (): void => {
     const text = row.copyText;
@@ -2185,6 +2244,16 @@ function RowMeta({ row, visible, isUserRow }: { row: TranscriptRow; visible: boo
       setTimeout(() => setCopied(false), COPIED_CLEAR_MS);
     });
   };
+  // "Fork from here" (t3-orchestration-v2 ticket 21): every settled
+  // assistant reply — errored and interrupted ones included — offers a
+  // fork at exactly that reply, beside the copy action. A host that
+  // passed no callback (the subagent pane's read-only view) renders no
+  // button; the tooltip says what the fork does NOT do: files are not
+  // rewound.
+  const fork =
+    row.forkEntry != null && onForkFromEntry !== undefined
+      ? { entryId: row.forkEntry, open: onForkFromEntry }
+      : null;
   return (
     // A RESERVED lane (always occupies its 32px) so the virtualizer never
     // shifts; only the contents' visibility flips.
@@ -2203,6 +2272,20 @@ function RowMeta({ row, visible, isUserRow }: { row: TranscriptRow; visible: boo
             title="Copy message"
           >
             <Icon name={copied ? "check" : "copy"} size={14} />
+          </button>
+        )}
+        {fork !== null && (
+          <button
+            type="button"
+            className="row-meta-copy row-meta-fork"
+            onClick={(event) => {
+              event.stopPropagation();
+              fork.open({ chatId: docId, entryId: fork.entryId });
+            }}
+            aria-label="Fork from here"
+            title="Fork from here — a new side chat continues from this reply. Files are not rewound."
+          >
+            <Icon name="gitBranch" size={14} />
           </button>
         )}
       </div>
@@ -2677,6 +2760,25 @@ function ForkMarkerRow({ sourceTitle }: { sourceTitle: string }) {
   );
 }
 
+/**
+ * A quiet harness-switch seam (t3-orchestration-v2 ticket 24, transcript.rs
+ * `harness_switch_marker`): the same divider treatment as the fork seam, one
+ * line — the label arrives pre-resolved ("Switched to Codex", the row model
+ * resolved it at build time) so nothing here needs a catalog. No message
+ * metadata lane.
+ */
+function HarnessSwitchMarkerRow({ label }: { label: string }) {
+  return (
+    <div className="harness-switch-marker" role="separator" aria-label={label}>
+      <span className="fork-marker-rule" aria-hidden />
+      <span className="harness-switch-marker-label" title={label}>
+        {label}
+      </span>
+      <span className="fork-marker-rule" aria-hidden />
+    </div>
+  );
+}
+
 // ── Shell chrome published from the transcript surface ──────────────────────
 
 /**
@@ -2733,6 +2835,8 @@ export function StatusStrip({
           scheduled={limited.scheduled}
           now={limited.now}
           onResume={limited.onResume}
+          currentHarness={limited.currentHarness}
+          targetDeviceId={limited.targetDeviceId}
         />
       ) : status === "errored" ? (
         <span className="status-strip-error">Run failed</span>
@@ -2758,5 +2862,22 @@ export interface LimitedStripProps {
   readonly limit: SessionLimit | null;
   readonly scheduled: ScheduledResume | null;
   readonly now: number;
-  readonly onResume: () => void;
+  /**
+   * The composer's fixed-prompt send — plainly for Resume, or with the
+   * switch's landed picks for "Continue on another harness" (ticket 25).
+   */
+  readonly onResume: (switched?: Partial<DraftConfig>) => void;
+  /**
+   * The harness the chat runs today (its row config) — the one the
+   * "Continue on another harness" picker (ticket 26) never offers: the
+   * continuation is a switch to ANOTHER harness, never a re-pick of the
+   * one that hit the limit.
+   */
+  readonly currentHarness: HarnessId | null;
+  /**
+   * The catalog routing for that picker's loads: the chat's host device
+   * when it differs from the connected engine's own (scoped ids), else
+   * null — the chat page computes it, the picker's dialogs' rule.
+   */
+  readonly targetDeviceId: string | null;
 }

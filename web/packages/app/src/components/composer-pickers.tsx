@@ -17,6 +17,7 @@ import {
   rememberModelOption,
   rememberReasoning,
   rememberReasoningForModel,
+  switchHarnessDraft,
   toggleModelFavorite,
 } from "../lib/composer-draft";
 import { effectiveReasoningLadder, fastModeValues, fastTierOn, traitsCustomized, traitsSummary } from "../lib/traits-summary";
@@ -103,6 +104,23 @@ export interface ComposerPickersProps {
   /** Persist the next config on an existing chat (`Mutate setChatConfig`). */
   readonly onPersist: (next: DraftConfig) => void;
   /**
+   * The one-way harness switch (t3-orchestration-v2 ticket 24): an
+   * EXISTING chat's unlocked harness pick hands the built draft here
+   * instead of `onPersist` — the SwitchHarness RPC owns the config write
+   * (it also writes the "Switched to <harness>" seam and drops the old
+   * harness session, none of which `setChatConfig` does). Absent: the
+   * switch is unavailable and the pick stays locked (the subagent-less
+   * hosts that never wired it).
+   */
+  readonly onSwitchHarness?: (next: DraftConfig) => void;
+  /**
+   * Whether the chat's harness picker is unlocked for that one-way switch
+   * (ticket 24 — the desktop's `harness_switchable`): true only while the
+   * chat exists, no send is in flight, and no turn runs. The composer
+   * computes it; `isHarnessLocked` consumes it.
+   */
+  readonly harnessSwitchable?: boolean;
+  /**
    * Escape's focus return — the composer's textarea (`animate_close`,
    * pickers.rs:866): Base UI's escape-key dismissal routes it through
    * `RbPopover`'s finalFocus.
@@ -130,7 +148,7 @@ export interface ComposerPickersProps {
 }
 
 export function ComposerPickers(props: ComposerPickersProps) {
-  const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, escapeFocusTarget, onOpenChange, newChat = false, openRequest } = props;
+  const { catalog, draft, chatConfig, sideChatHarnessEditable = false, onDraft, onPersist, onSwitchHarness, harnessSwitchable = false, escapeFocusTarget, onOpenChange, newChat = false, openRequest } = props;
   const engineLabel = props.engineLabel ?? "this engine";
   const [open, setOpen] = useState(false);
   const setOpenAndNotify = useCallback(
@@ -204,7 +222,7 @@ export function ComposerPickers(props: ComposerPickersProps) {
     useCallback(() => composerDefaults.getSnapshot(), []),
   );
 
-  const locked = isHarnessLocked(chatConfig, sideChatHarnessEditable);
+  const locked = isHarnessLocked(chatConfig, sideChatHarnessEditable, harnessSwitchable);
   const effectiveHarness = draft.harness;
   const offered = useMemo(() => offeredHarnesses(harnesses.rows), [harnesses.rows]);
   // The tab strip's descriptor set: offered harnesses, the committed one
@@ -300,9 +318,28 @@ export function ComposerPickers(props: ComposerPickersProps) {
     [draft, resolveModel, resolveDescriptor, onDraft, onPersist, chatConfig],
   );
 
+  /**
+   * The one-way switch (ticket 24): an existing chat's harness pick — or a
+   * foreign model row's pick, which rides the same switch — hands the
+   * built draft to `onSwitchHarness` (the composer drives the RPC) and
+   * flips the draft optimistically, exactly the desktop's
+   * `switch_chat_harness` stamp. Model options reset to the new harness's
+   * defaults unless the user chose them (`switchHarnessDraft`).
+   */
+  function switchTo(harness: HarnessId, model?: string): void {
+    if (chatConfig === null || onSwitchHarness === undefined) {
+      return;
+    }
+    rememberHarness(harness);
+    const next = switchHarnessDraft(chatConfig, harness, model ?? undefined);
+    onDraft(next);
+    onSwitchHarness(next);
+  }
+
   function pickHarness(harness: HarnessId): void {
     if (locked) {
-      // Harness is locked once the chat exists (feature-inventory A1.7).
+      // Harness is locked once the chat works (feature-inventory A1.7) —
+      // an idle chat unlocks it for ticket 24's one-way switch.
       return;
     }
     if (draft.harness === harness) {
@@ -324,6 +361,16 @@ export function ComposerPickers(props: ComposerPickersProps) {
           remembered === null ? {} : rememberedModelOptions(harness, remembered.id),
       });
       rememberHarness(harness);
+      return;
+    }
+    // An existing chat's pick is a one-way harness switch
+    // (t3-orchestration-v2 ticket 24): the engine writes the
+    // "Switched to <harness>" seam, drops the old harness session, and
+    // saves this harness with its default picks — the next send carries
+    // the budgeted history of everything above the seam. Unsaved side
+    // chats never reach here (their createChat still owns the harness).
+    if (chatConfig !== null && onSwitchHarness !== undefined) {
+      switchTo(harness);
       return;
     }
     rememberHarness(harness);
@@ -350,6 +397,14 @@ export function ComposerPickers(props: ComposerPickersProps) {
     const { harness, model } = row;
     if (harness !== effectiveHarness) {
       if (locked) {
+        return;
+      }
+      if (chatConfig !== null && onSwitchHarness !== undefined) {
+        // Ticket 24: a foreign model row's pick IS the switch — the model
+        // rides the switch's own config write (a separate setChatConfig
+        // would race it, and the seam belongs to the switch).
+        rememberModel(harness, model.id, model.label);
+        switchTo(harness, model.id);
         return;
       }
       pickHarness(harness);

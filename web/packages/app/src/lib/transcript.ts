@@ -10,6 +10,7 @@
  */
 
 import type {
+  HarnessId,
   MessagePart,
   SessionMessageEntry,
   ToolCall,
@@ -19,6 +20,7 @@ import type {
 } from "@roboco/proto";
 import type { IconName } from "@roboco/icons";
 import { layout } from "@roboco/theme";
+import { providerName } from "./accounts";
 import { bodyHeight, DIFF_LINE_HEIGHT, truncateFileLines, type FileDiff } from "./diff";
 import { blockFlatText, parseMarkdown, type Block, type BlockTree, type InlineRun, type InlineStyle } from "./markdown";
 import { parseUserMessageImages, type UserImageAttachment } from "./attachments";
@@ -1525,7 +1527,16 @@ export type TranscriptRowKind =
    * source title is stamped on the part at fork time, so a later rename or
    * delete of the source never rewrites the seam.
    */
-  | { readonly kind: "forkMarker"; readonly sourceChatId: string; readonly sourceTitle: string };
+  | { readonly kind: "forkMarker"; readonly sourceChatId: string; readonly sourceTitle: string }
+  /**
+   * The harness-switch seam (`RowKind::HarnessSwitchMarker`, transcript.rs
+   * :1050-1056, t3-orchestration-v2 ticket 24): a labeled divider under
+   * which the chat runs on the harness the switch named; everything above
+   * it belonged to the dropped provider session. The label arrives
+   * pre-resolved ("Switched to Codex") so nothing rendering it needs a
+   * catalog.
+   */
+  | { readonly kind: "harnessSwitchMarker"; readonly label: string };
 
 /** A transcript row: stable id + content version (diff key) + block payload. */
 export interface TranscriptRow {
@@ -1540,6 +1551,15 @@ export interface TranscriptRow {
   readonly timestamp: number | null;
   /** Text copied by the entry-level hover action (settled last row only). */
   readonly copyText: string | null;
+  /**
+   * "Fork from here" (t3-orchestration-v2 ticket 21): the entry id a
+   * settled ASSISTANT reply's hover strip offers to fork at. Present on
+   * the same row as `copyText` — every settled assistant reply, errored
+   * and interrupted ones included — never on a user row, a seam row, or a
+   * reply still streaming. Absent = no fork action (the subagent pane
+   * renders the same rows with no host to fork from).
+   */
+  readonly forkEntry?: string;
   /** Hidden while the named compact-work fold is closed. */
   readonly compactFold: string | null;
 }
@@ -1855,7 +1875,29 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         copyText: null,
         compactFold: null,
       });
+      return;
     }
+    if (part.kind === "harnessSwitch") {
+      // The one-way harness switch's seam (t3-orchestration-v2 ticket 24,
+      // transcript.rs:1621-1641): the divider line, resolved once at row
+      // build — the seam is fixed, so the row's version only moves when
+      // the label does.
+      const label = switchedToLabel(part.harness);
+      rows.push({
+        id: `${entry.id}#${part.id}`,
+        version: fnv1a(label),
+        turnStart: false,
+        rowKind: { kind: "harnessSwitchMarker", label },
+        entryId: entry.id,
+        timestamp: null,
+        copyText: null,
+        compactFold: null,
+      });
+      return;
+    }
+    // Generated images and the engine's completion-notice markers render no
+    // row here (the notice keeps its plain-text sibling part for older
+    // layouts); they persist in the doc and stay inert in this model.
   });
   if (compact) {
     // Collapsed: one work header. Expanded: the same rows compact-off would
@@ -1880,6 +1922,11 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
         turnStart: false,
         timestamp: null,
         copyText: null,
+        // The synthetic work entry shares the original's role, so its
+        // recursive rows picked up a fork action too — the action belongs
+        // to the entry's own last settled row, not to a fold-hidden work
+        // row (transcript.rs:1692-1697).
+        forkEntry: undefined,
         compactFold: workId,
       }));
       const workedSecs =
@@ -1913,23 +1960,36 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
     rows[0] = { ...rows[0]!, turnStart: true };
   }
   // Timestamp strip under the entry's LAST row once the turn has settled
-  // ("No timestamp hover mid-stream"). The fork seam carries NO message
-  // metadata lane (transcript.rs:1674-1683 excludes ForkMarker — a quiet
-  // divider, never a hover target).
-  if (
-    !streaming &&
-    rows.length > 0 &&
-    rows[rows.length - 1]!.rowKind.kind !== "forkMarker"
-  ) {
-    const last = rows[rows.length - 1]!;
+  // ("No timestamp hover mid-stream"). The fork seam and the harness-switch
+  // seam carry NO message metadata lane (transcript.rs:1674-1683 excludes
+  // ForkMarker and HarnessSwitchMarker — a quiet divider, never a hover
+  // target).
+  const lastRow = rows.length > 0 ? rows[rows.length - 1]! : null;
+  const lastIsSeam =
+    lastRow !== null &&
+    (lastRow.rowKind.kind === "forkMarker" || lastRow.rowKind.kind === "harnessSwitchMarker");
+  if (!streaming && lastRow !== null && !lastIsSeam) {
     rows[rows.length - 1] = {
-      ...last,
+      ...lastRow,
       timestamp: entry.createdAt,
       copyText: assistantCopyText(entry),
-      version: last.version ^ 0x40000000,
+      // "Fork from here" (ticket 21) rides the same settled row: every
+      // assistant reply — errored and interrupted ones included — offers
+      // the fork action. User and system entries never do.
+      forkEntry: entry.role === "assistant" ? entry.id : undefined,
+      version: lastRow.version ^ 0x40000000,
     };
   }
   return rows;
+}
+
+/**
+ * The harness-switch seam's divider line (transcript.rs:1628-1632):
+ * "Switched to <display name>", resolved once when the row is built — the
+ * label the harness renders as (`provider_name`, lib/accounts.ts). Pure.
+ */
+export function switchedToLabel(harness: HarnessId): string {
+  return `Switched to ${providerName(harness)}`;
 }
 
 /**

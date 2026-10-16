@@ -30,6 +30,8 @@ const h = vi.hoisted(() => {
   let candidatesReply: ResumeAccountCandidates | null = null;
   /** The next ResumeOnAnotherAccount reply. */
   let resumeReply: Record<string, unknown> = { type: "switched", accountId: "a2", accountEmail: "bea@example.com" };
+  /** The next SwitchHarness reply's behavior (tickets 24/25). */
+  let switchFails = false;
 
   const client = {
     async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -47,6 +49,39 @@ const h = vi.hoisted(() => {
             cliOpensBrowser: true,
             callbackPort: null,
           } as T;
+        case "ListHarnesses":
+          return [
+            {
+              id: "claude-code",
+              name: "Claude Code",
+              supportsSteering: true,
+              steeringMode: "step-boundary",
+              reasoningLevels: [],
+              installed: true,
+              canInstall: false,
+              enabled: true,
+            },
+            {
+              id: "codex",
+              name: "Codex",
+              supportsSteering: true,
+              steeringMode: "step-boundary",
+              reasoningLevels: [],
+              installed: true,
+              canInstall: false,
+              enabled: true,
+            },
+          ] as T;
+        case "ListModels":
+          return [
+            { id: "gpt-6-codex", label: "GPT-6 Codex", description: "the coder", reasoningLevels: [], options: [] },
+            { id: "gpt-6-mini", label: "GPT-6 Mini", reasoningLevels: [], options: [] },
+          ] as T;
+        case "SwitchHarness":
+          if (switchFails) {
+            throw new Error("The chat is working; switch harnesses between turns");
+          }
+          return {} as T;
         default:
           return {} as T;
       }
@@ -62,10 +97,14 @@ const h = vi.hoisted(() => {
     setResumeReply(next: Record<string, unknown>): void {
       resumeReply = next;
     },
+    setSwitchFails(next: boolean): void {
+      switchFails = next;
+    },
     reset(): void {
       calls.length = 0;
       candidatesReply = null;
       resumeReply = { type: "switched", accountId: "a2", accountEmail: "bea@example.com" };
+      switchFails = false;
     },
   };
 });
@@ -124,8 +163,12 @@ interface MountedBanner {
   banner(): HTMLDivElement | null;
   /** The failover picker's chip (the trigger), when the list offers it. */
   failoverChip(): HTMLButtonElement | null;
+  /** The "Continue on another harness" chip (tickets 25/26). */
+  continueChip(): HTMLButtonElement | null;
   /** The failover card, wherever it portals (open only). */
   card(): HTMLElement | null;
+  /** The continue picker's card, wherever it portals (open only). */
+  continueCard(): HTMLElement | null;
   pressChip(label: string): void;
   unmount(): void;
 }
@@ -134,19 +177,23 @@ function mountBanner(
   limit: SessionLimit | null,
   scheduled: ScheduledResume | null = null,
   onResume: () => void = () => {},
+  fields: { currentHarness?: "claude-code" | "codex" | null; chatId?: string } = {},
 ): MountedBanner {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root: Root = createRoot(host);
+  const chatId = fields.chatId ?? "chat-1";
   act(() => {
     root.render(
       createElement(LimitedBanner, {
-        chatId: "chat-1",
+        chatId,
         client: h.client,
         limit,
         scheduled,
         now: NOW,
         onResume,
+        currentHarness: fields.currentHarness ?? "claude-code",
+        targetDeviceId: null,
       }),
     );
   });
@@ -157,14 +204,20 @@ function mountBanner(
     host.remove();
   };
   mounted.push(unmount);
-  const banner = (): HTMLDivElement | null => document.querySelector<HTMLDivElement>(".limited-banner");
+  const banner = (): HTMLDivElement | null =>
+    document.querySelector<HTMLDivElement>(".limited-banner");
   return {
     banner,
     failoverChip: () =>
       Array.from(document.querySelectorAll<HTMLButtonElement>(".limited-banner-chip")).find(
         (chip) => chip.textContent === "Resume on another account",
       ) ?? null,
+    continueChip: () =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".limited-banner-chip")).find(
+        (chip) => chip.textContent === "Continue on another harness",
+      ) ?? null,
     card: () => document.querySelector<HTMLElement>(".failover-card"),
+    continueCard: () => document.querySelector<HTMLElement>(".continue-card"),
     pressChip(label: string): void {
       const chip = Array.from(document.querySelectorAll<HTMLButtonElement>(".limited-banner-chip")).find(
         (candidate) => candidate.textContent === label,
@@ -386,7 +439,195 @@ describe("LimitedBanner — Resume on another account", () => {
   });
 });
 
-// ── The strip mounts the banner (the chat page's wiring) ───────────────────
+// ── "Continue on another harness" (tickets 25/26) ─────────────────────
+
+describe("LimitedBanner — Continue on another harness", () => {
+  it("offers the chip on every Limited chat, whatever the harness (story 55's escape hatch)", async () => {
+    const handle = mountBanner({ harness: "cursor", window: "usage", resetsAt: null, accountId: null });
+    await flush();
+    expect(handle.continueChip()).not.toBeNull();
+    expect(handle.continueChip()!.title).toBe(
+      "Switch this chat to another harness and continue there",
+    );
+  });
+
+  it("the card offers the enabled harnesses minus the current one, defaulting to the first", async () => {
+    const handle = mountBanner(claudeLimit({ resetsAt: NOW + 60_000 }));
+    await flush();
+    press(handle.continueChip()!);
+    await flush();
+    const card = handle.continueCard();
+    expect(card).not.toBeNull();
+    expect(card!.querySelector(".menu-heading")!.textContent).toBe("Continue on another harness");
+    // Claude Code is the current harness: only Codex is offered, and it is
+    // the resolved default (the first offered once the catalog lands).
+    const chips = Array.from(card!.querySelectorAll<HTMLButtonElement>(".harness-choice-chip"));
+    expect(chips.map((chip) => chip.textContent)).toEqual(["Codex"]);
+    expect(chips[0]!.getAttribute("data-selected")).toBe("1");
+    // The model list for the default pick, with the Default tag on the
+    // first row (a null model means the default at run time).
+    const rows = Array.from(card!.querySelectorAll(".harness-choice-model-row"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("Default");
+  });
+
+  it("confirming switches the harness first, then hands the composer the switched picks for the continuation", async () => {
+    const resumed: unknown[][] = [];
+    const handle = mountBanner(
+      claudeLimit({ resetsAt: NOW + 60_000 }),
+      null,
+      (...args: unknown[]) => resumed.push(args),
+    );
+    await flush();
+    press(handle.continueChip()!);
+    await flush();
+    // Pick a model so the switch's config write carries it.
+    press(Array.from(handle.continueCard()!.querySelectorAll<HTMLButtonElement>(".harness-choice-model-row"))[1]!);
+    await flush();
+    const confirm = Array.from(handle.continueCard()!.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Continue",
+    )!;
+    press(confirm);
+    await flush();
+    expect(h.calls.find((call) => call.method === "SwitchHarness")?.params).toEqual({
+      chatId: "chat-1",
+      harness: "codex",
+      model: "gpt-6-mini",
+    });
+    // The continuation went out AFTER the switch landed — through the
+    // composer's send path carrying the SWITCHED picks (the desktop's row
+    // stamp: the chats-watch frame can trail the switch's reply), so no
+    // other RPC fires from the banner.
+    expect(resumed).toEqual([
+      [{ harness: "codex", model: "gpt-6-mini", reasoning: null, modelOptions: {} }],
+    ]);
+    expect(h.calls.filter((call) => call.method === "Mutate")).toEqual([]);
+    // The card closed (the switch's seam + the run are the feedback).
+    expect(handle.continueCard()).toBeNull();
+  });
+
+  it("a refused switch never sends the continuation — the reason rides the notice line", async () => {
+    h.setSwitchFails(true);
+    const resumed: unknown[][] = [];
+    const handle = mountBanner(
+      claudeLimit({ resetsAt: NOW + 60_000 }),
+      null,
+      (...args: unknown[]) => resumed.push(args),
+    );
+    await flush();
+    press(handle.continueChip()!);
+    await flush();
+    press(
+      Array.from(handle.continueCard()!.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Continue",
+      )!,
+    );
+    await flush();
+    expect(h.calls.find((call) => call.method === "SwitchHarness")).toBeDefined();
+    expect(resumed).toEqual([]);
+    expect(handle.banner()!.querySelector(".limited-banner-notice")!.textContent).toBe(
+      "Could not switch the harness: The chat is working; switch harnesses between turns",
+    );
+    // The banner stays up for another try — still Limited, still on its
+    // old harness.
+    expect(handle.continueChip()).not.toBeNull();
+  });
+
+  it("a selection that moved while the switch was in flight never fires the continuation", async () => {
+    // The banner re-keys through props (no remount): the guard compares
+    // the live chat id against the one the switch started for — the
+    // switched chat keeps its banner and Resume, never sending another
+    // chat's continuation into it (the desktop's still_selected rule).
+    let release: (() => void) | null = null;
+    const slow = {
+      async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
+        h.calls.push({ method, params });
+        if (method === "SwitchHarness") {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          return {} as T;
+        }
+        if (method === "ListHarnesses") {
+          return [
+            {
+              id: "claude-code",
+              name: "Claude Code",
+              supportsSteering: true,
+              steeringMode: "step-boundary",
+              reasoningLevels: [],
+              installed: true,
+              canInstall: false,
+              enabled: true,
+            },
+            {
+              id: "codex",
+              name: "Codex",
+              supportsSteering: true,
+              steeringMode: "step-boundary",
+              reasoningLevels: [],
+              installed: true,
+              canInstall: false,
+              enabled: true,
+            },
+          ] as T;
+        }
+        return {} as T;
+      },
+    } as unknown as EngineClient;
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root: Root = createRoot(host);
+    const resumed: string[] = [];
+    const render = (chatId: string): void => {
+      act(() => {
+        root.render(
+          createElement(LimitedBanner, {
+            chatId,
+            client: slow,
+            limit: claudeLimit({ resetsAt: NOW + 60_000 }),
+            scheduled: null,
+            now: NOW,
+            onResume: (switched?: { readonly harness?: string }) => {
+              // The override never fires into the moved selection either.
+              resumed.push(switched?.harness ?? chatId);
+            },
+            currentHarness: "claude-code",
+            targetDeviceId: null,
+          }),
+        );
+      });
+    };
+    render("chat-1");
+    mounted.push(() => {
+      act(() => {
+        root.unmount();
+      });
+      host.remove();
+    });
+    await flush();
+    const chip = Array.from(document.querySelectorAll<HTMLButtonElement>(".limited-banner-chip")).find(
+      (button) => button.textContent === "Continue on another harness",
+    )!;
+    press(chip);
+    await flush();
+    press(
+      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Continue",
+      )!,
+    );
+    await flush();
+    // The selection moves mid-switch; the switch then lands.
+    render("chat-2");
+    await flush();
+    release!();
+    await flush();
+    expect(resumed).toEqual([]);
+  });
+});
+
+// ── The strip mounts the banner (the chat page's wiring) ───────────────
 
 describe("StatusStrip — the Limited arm", () => {
   it("renders the banner instead of the error word when the chat reads Limited", async () => {
@@ -407,6 +648,8 @@ describe("StatusStrip — the Limited arm", () => {
               scheduled: null,
               now: NOW,
               onResume: () => {},
+              currentHarness: "claude-code",
+              targetDeviceId: null,
             },
           },
         ),
