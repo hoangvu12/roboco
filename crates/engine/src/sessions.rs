@@ -1206,6 +1206,9 @@ impl SessionsEngine {
                         harness_id,
                         request,
                         Some(user_id),
+                        // The user entry already carries its origin; the
+                        // re-dispatch dedupes on its id.
+                        None,
                     )
                     .await
                 {
@@ -3292,6 +3295,9 @@ async fn drive_run(
                         harness_id,
                         request,
                         Some(steer.message_id.clone()),
+                        // The steer's user entry already carries its origin;
+                        // write_user_message dedupes on its id.
+                        None,
                     )
                     .await
                 {
