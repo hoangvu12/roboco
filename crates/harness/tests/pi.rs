@@ -1359,7 +1359,7 @@ async fn a_compaction_recovered_run_completes() {
     assert!(text_of(&events).contains("doomed"), "{events:?}");
     assert!(text_of(&events).contains("recovered"), "{events:?}");
     assert!(
-        events.iter().any(|e| matches!(e, AgentEvent::Error { message } if message.contains("overflow"))),
+        events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("overflow"))),
         "{events:?}"
     );
 }
