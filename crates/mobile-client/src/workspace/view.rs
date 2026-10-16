@@ -1295,6 +1295,7 @@ mod tests {
             started_at: Some(at(updated)),
             updated_at: at(updated),
             limit: None,
+            scheduled_resume: None,
         }
     }
 

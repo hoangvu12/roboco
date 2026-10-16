@@ -10036,6 +10036,7 @@ mod tests {
                     started_at: None,
                     updated_at: now,
                     limit: None,
+                    scheduled_resume: None,
                 }];
             });
             assert!(
@@ -13701,6 +13702,7 @@ mod tests {
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
                             limit: None,
+                            scheduled_resume: None,
                         })
                     });
                     this.on_own_send("chat".into(), "prompt".into(), cx);

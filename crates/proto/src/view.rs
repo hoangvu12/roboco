@@ -76,24 +76,38 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
 /// 2h 05m"). A reset already past reads as due — the honest offer is Resume,
 /// not a countdown into the past. Pure.
 pub fn format_limit_reset(resets_at: i64, now: DateTime<Utc>) -> String {
-    let until = chrono::TimeDelta::milliseconds(resets_at - now.timestamp_millis());
+    relative_reset_text("resets", resets_at, now)
+}
+
+/// Banner text for a chat's armed Resume-at-reset continuation ("resumes in
+/// 45m", "resumes in 2h 05m"). Same shape as [`format_limit_reset`]; a fire
+/// time already past reads as due — the continuation is running or about to.
+/// Pure.
+pub fn format_scheduled_resume(fire_at: i64, now: DateTime<Utc>) -> String {
+    relative_reset_text("resumes", fire_at, now)
+}
+
+/// The shared relative countdown behind both Limited banner texts — one
+/// wall-clock deadline, one phrasing, verb-parameterized only.
+fn relative_reset_text(verb: &str, at: i64, now: DateTime<Utc>) -> String {
+    let until = chrono::TimeDelta::milliseconds(at - now.timestamp_millis());
     if until.num_seconds() <= 0 {
-        return "resets now".to_string();
+        return format!("{verb} now");
     }
     let minutes = until.num_minutes();
     if minutes < 60 {
-        return format!("resets in {minutes}m");
+        return format!("{verb} in {minutes}m");
     }
     let hours = minutes / 60;
     let rest = minutes % 60;
     if hours < 24 {
         return if rest == 0 {
-            format!("resets in {hours}h")
+            format!("{verb} in {hours}h")
         } else {
-            format!("resets in {hours}h {rest:02}m")
+            format!("{verb} in {hours}h {rest:02}m")
         };
     }
-    format!("resets in {}d", hours / 24)
+    format!("{verb} in {}d", hours / 24)
 }
 
 /// The full display status for a chat row / tab dot: live states win, then the
@@ -766,6 +780,7 @@ mod limited_tests {
             started_at: None,
             updated_at: Utc::now(),
             limit,
+            scheduled_resume: None,
         }
     }
 
@@ -811,6 +826,21 @@ mod limited_tests {
         // A reset already due: the offer is Resume, not a negative countdown.
         assert_eq!(format_limit_reset(ms(-600), now), "resets now");
         assert_eq!(format_limit_reset(now.timestamp_millis(), now), "resets now");
+    }
+
+    #[test]
+    fn scheduled_resume_text_is_relative_and_never_counts_into_the_past() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap();
+        let ms = |secs: i64| (now + chrono::TimeDelta::seconds(secs)).timestamp_millis();
+        assert_eq!(format_scheduled_resume(ms(45 * 60), now), "resumes in 45m");
+        assert_eq!(format_scheduled_resume(ms(30), now), "resumes in 0m");
+        assert_eq!(format_scheduled_resume(ms(3 * 3600 + 5 * 60), now), "resumes in 3h 05m");
+        assert_eq!(format_scheduled_resume(ms(7 * 3600), now), "resumes in 7h");
+        assert_eq!(format_scheduled_resume(ms(2 * 86_400 + 3 * 3600), now), "resumes in 2d");
+        // A fire time already due: the continuation is about to run, not
+        // counting into the past.
+        assert_eq!(format_scheduled_resume(ms(-600), now), "resumes now");
+        assert_eq!(format_scheduled_resume(now.timestamp_millis(), now), "resumes now");
     }
 }
 
@@ -915,6 +945,7 @@ mod notification_tests {
             started_at: None,
             updated_at: updated,
             limit: None,
+            scheduled_resume: None,
         };
         let working = SessionNotificationState::new(&session(SessionStatus::Working, fresh), now);
         assert_eq!(working.indicator, Indicator::Working);
