@@ -5,8 +5,8 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -192,6 +192,13 @@ impl Harness for MockHarness {
         let (body, tail) = self.script.split_at(done_ix);
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
+            // The same classification the Claude driver attaches to its
+            // `rate_limit` error code, so engine-side tests can assert on the
+            // structured kind without a real CLI.
+            kind: Some(AgentErrorKind::UsageLimit {
+                window: "usage".into(),
+                resets_at: None,
+            }),
         });
         // Dev/testing knob: `ROBOCO_MOCK_CODE=1` appends rust + ts code blocks
         // (keywords, strings, numbers, comments) plus inline code — for

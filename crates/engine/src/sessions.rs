@@ -1266,6 +1266,7 @@ impl Inner {
                         },
                         AgentEvent::Error {
                             message: "Generated image unavailable".into(),
+                            kind: None,
                         },
                     ]
                 }
@@ -2190,6 +2191,7 @@ async fn drive_run(
                 &chat_id,
                 &AgentEvent::Error {
                     message: message.clone(),
+                    kind: None,
                 },
             );
             inner.publish(

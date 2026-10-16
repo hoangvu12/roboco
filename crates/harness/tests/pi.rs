@@ -518,7 +518,7 @@ async fn errored_assistant_message_rejects_the_prompt() {
     // The failed message also surfaces as a visible error chip.
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message == "provider returned 529"
+        AgentEvent::Error { message, .. } if message == "provider returned 529"
     )));
 }
 
@@ -537,7 +537,7 @@ async fn exhausted_auto_retry_rejects_the_prompt_and_recovery_completes() {
     // Retry status surfaces as a visible notice.
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message.contains("attempt 1/3")
+        AgentEvent::Error { message, .. } if message.contains("attempt 1/3")
     )));
 
     let (controls, _steer, _token) = controls();
@@ -614,7 +614,7 @@ async fn lost_resume_pointer_announces_fresh_context() {
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message.contains("without the previous context")
+        AgentEvent::Error { message, .. } if message.contains("without the previous context")
     )));
     assert_eq!(text_of(&events), "reply:fresh");
 }
@@ -1044,7 +1044,7 @@ async fn a_prompt_rejected_while_pi_streams_keeps_the_session_and_the_message() 
     assert!(
         events.iter().any(|e| matches!(
             e,
-            AgentEvent::Error { message } if message.contains("busy")
+            AgentEvent::Error { message, .. } if message.contains("busy")
         )),
         "{events:?}"
     );

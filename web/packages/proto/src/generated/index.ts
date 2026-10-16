@@ -4,6 +4,7 @@ export * from "./AgentAccount";
 export * from "./AgentAccountWarning";
 export * from "./AgentAccountsSnapshot";
 export * from "./AgentAuthKind";
+export * from "./AgentErrorKind";
 export * from "./AgentEvent";
 export * from "./AgentLoginMode";
 export * from "./AgentLoginPoll";
