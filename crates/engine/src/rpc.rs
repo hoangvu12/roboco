@@ -1791,6 +1791,43 @@ impl RpcService for EngineRpc {
                 self.workspace.import_chat_row(&chat).map_err(failed)?;
                 RpcReply::value(&chat)
             }
+            methods::SWITCH_HARNESS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct SwitchParams {
+                    chat_id: String,
+                    harness: HarnessId,
+                    #[serde(default)]
+                    model: Option<String>,
+                    #[serde(default)]
+                    reasoning: Option<roboco_proto::ReasoningLevel>,
+                    #[serde(default)]
+                    model_options: serde_json::Map<String, serde_json::Value>,
+                }
+                let p: SwitchParams = parse_params(params)?;
+                let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+                // Sandbox is the one field the switch does not own: whatever
+                // the chat already runs stays (the picker never offered it).
+                let sandbox = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(failed)?
+                    .and_then(|chat| chat.config)
+                    .map(|config| config.sandbox)
+                    .unwrap_or(roboco_proto::SandboxLevel::WorkspaceWrite);
+                let config = ChatConfig {
+                    harness: p.harness,
+                    model: p.model,
+                    reasoning: p.reasoning,
+                    model_options: p.model_options,
+                    sandbox,
+                };
+                self.sessions
+                    .switch_harness(&p.chat_id, config)
+                    .await
+                    .map_err(failed)?;
+                RpcReply::value(&serde_json::json!({}))
+            }
             methods::RELAY_COMMAND => {
                 let p: RelayCommandParams = parse_params(params)?;
                 let outcome = self

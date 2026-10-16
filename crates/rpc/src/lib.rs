@@ -79,6 +79,14 @@ pub mod methods {
     /// different harness takes the budgeted-transcript path instead of a
     /// native session fork, the same harness keeps it.
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
+    /// One-way harness switch on an existing chat between turns
+    /// (t3-orchestration-v2 ticket 24). Params `{chatId, harness, model?,
+    /// reasoning?, modelOptions?}` → `{}`: the engine writes the
+    /// "Switched to <harness>" seam, clears the chat's harness session, and
+    /// saves the new harness with the picks that arrived (model options
+    /// reset to the new harness's defaults unless the user chose them).
+    /// Refused while the chat works; must run on the chat's host device.
+    pub const SWITCH_HARNESS: &str = "SwitchHarness";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
     /// device sees the same queue. `{ chatId }` → `{ items: QueuedMessage[] }`.

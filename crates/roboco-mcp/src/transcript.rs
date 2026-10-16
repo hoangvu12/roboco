@@ -146,11 +146,13 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
                 }
             }
             MessagePart::Error { message, .. } => errors.push(message.clone()),
-            // The fork seam and the completion notice are transcript
-            // markers, not agent content: an orchestrator reads the copied
-            // history as ordinary turns, and the notice's own text part
-            // already rendered above.
-            MessagePart::Fork { .. } | MessagePart::CompletionNotice { .. } => {}
+            // The fork seam, the harness-switch seam and the completion
+            // notice are transcript markers, not agent content: an
+            // orchestrator reads the copied history as ordinary turns, and
+            // the notice's own text part already rendered above.
+            MessagePart::Fork { .. }
+            | MessagePart::HarnessSwitch { .. }
+            | MessagePart::CompletionNotice { .. } => {}
         }
     }
     RenderedMessage {

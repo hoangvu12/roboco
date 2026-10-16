@@ -92,6 +92,10 @@ _Avoid_: Message (a command is not a message), request
 A user message waiting in the chat's queue, optionally held until the turn ends, delivered in order.
 _Avoid_: Draft, pending message
 
+**Harness switch**:
+A one-way switch of an existing chat to another harness between turns: the engine records a "Switched to <harness>" seam in the transcript, drops the chat's harness session, and the next send starts a fresh session carrying the budgeted history of everything above the seam. Switching back is another switch, never a resume.
+_Avoid_: Harness handoff, migration, resume (the old session is dropped, not resumed)
+
 ## Harnesses
 
 **Harness**:
