@@ -724,6 +724,16 @@ async fn candidates_exclude_dead_rows_and_rank_by_usage_then_org() {
     let carol = ranked.candidates.first().unwrap();
     assert_eq!(carol.usage_windows.len(), 1);
     assert_eq!(carol.usage_windows[0].used_fraction, 0.05);
+    // The signed-out accounts (stories 47/50) ride their own list — dave
+    // is excluded as a candidate but offered for "Sign in again"; the
+    // still-limited erin and the API-key frank are neither (reviving them
+    // means waiting or a new API key, not a sign-in).
+    let signed_out: Vec<&str> = ranked
+        .signed_out
+        .iter()
+        .map(|row| row.id.as_str())
+        .collect();
+    assert_eq!(signed_out, vec!["slot-dave"]);
     core.shutdown().await;
 }
 
@@ -920,6 +930,10 @@ async fn with_no_healthy_candidate_only_resume_at_reset_remains() {
 
     let ranked = candidates(&client, LIMITED).await;
     assert!(ranked.candidates.is_empty(), "no candidates offered");
+    assert!(
+        ranked.signed_out.is_empty(),
+        "no signed-out rows either — nothing to sign back in"
+    );
     let outcome = resume_on_another_account(&client, LIMITED, None).await;
     assert_eq!(outcome, ResumeOnAccountOutcome::NoCandidates);
     // Nothing switched, nothing dispatched: the live login is still the

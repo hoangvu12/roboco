@@ -11,9 +11,9 @@ import type { HarnessId } from "./HarnessId";
  * switchable, not an API key, not signed out, not still limited, and not
  * the account that hit the limit; lowest usage first, accounts sharing the
  * limited account's org or workspace ranked lower. The first entry is the
- * recommended one. Signed-out accounts are absent (they offer "Sign in
- * again" in the account switcher instead); an empty list leaves only
- * Resume at reset.
+ * recommended one. Signed-out accounts ride `signed_out` — the picker
+ * lists them with a "Sign in again" action instead of a switch (stories
+ * 47/50). Both lists empty leaves only Resume (and Resume at reset).
  */
 export type ResumeAccountCandidates = { chatId: string, harness: HarnessId, 
 /**
@@ -26,4 +26,11 @@ limitedAccountId?: string | null,
  * The candidate rows in rank order, best first. Usage windows and
  * limited-until ride the rows themselves.
  */
-candidates: Array<AgentAccount>, };
+candidates: Array<AgentAccount>, 
+/**
+ * The harness's OTHER accounts that are signed out (ticket 08's mark):
+ * never switch targets, but the picker lists them with a "Sign in
+ * again" action (the existing login flow) so a dead login can be
+ * revived in place — stories 47 and 50. Additive + serde-defaulted.
+ */
+signedOut?: Array<AgentAccount>, };

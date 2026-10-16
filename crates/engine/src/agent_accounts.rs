@@ -1009,6 +1009,29 @@ impl AgentAccounts {
     /// limit record's account, else the harness's active login when the
     /// record carried none). See [`rank_failover_candidates`] for the
     /// exclusion and ranking rules.
+    /// The harness's OTHER accounts that are signed out (ticket 09's
+    /// picker): never switch targets — the ranking excludes them — but the
+    /// picker lists them with a "Sign in again" action (the existing login
+    /// flow ticket 08 drives) so a dead login can be revived in place
+    /// (spec stories 47 and 50). Cached rows, no network; the live login is
+    /// never listed (it is the account the picker says it switches FROM).
+    pub async fn failover_signed_out(&self, harness: HarnessId) -> Vec<AgentAccount> {
+        self.list(false)
+            .await
+            .map(|snapshot| {
+                snapshot
+                    .accounts
+                    .into_iter()
+                    .filter(|row| {
+                        row.harness == harness
+                            && !row.active
+                            && row.sign_in_state == AgentSignInState::SignedOut
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub async fn failover_candidates(
         &self,
         harness: HarnessId,

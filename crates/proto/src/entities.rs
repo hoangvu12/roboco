@@ -1097,9 +1097,9 @@ pub struct AgentAccountsSnapshot {
 /// switchable, not an API key, not signed out, not still limited, and not
 /// the account that hit the limit; lowest usage first, accounts sharing the
 /// limited account's org or workspace ranked lower. The first entry is the
-/// recommended one. Signed-out accounts are absent (they offer "Sign in
-/// again" in the account switcher instead); an empty list leaves only
-/// Resume at reset.
+/// recommended one. Signed-out accounts ride `signed_out` — the picker
+/// lists them with a "Sign in again" action instead of a switch (stories
+/// 47/50). Both lists empty leaves only Resume (and Resume at reset).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ResumeAccountCandidates {
@@ -1113,6 +1113,12 @@ pub struct ResumeAccountCandidates {
     /// The candidate rows in rank order, best first. Usage windows and
     /// limited-until ride the rows themselves.
     pub candidates: Vec<AgentAccount>,
+    /// The harness's OTHER accounts that are signed out (ticket 08's mark):
+    /// never switch targets, but the picker lists them with a "Sign in
+    /// again" action (the existing login flow) so a dead login can be
+    /// revived in place — stories 47 and 50. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signed_out: Vec<AgentAccount>,
 }
 
 /// The synchronous outcome of "Resume on another account" (ticket 09): the
@@ -1827,6 +1833,7 @@ mod tests {
             harness: HarnessId::Codex,
             limited_account_id: Some("slot-1".into()),
             candidates: vec![account.clone()],
+            signed_out: Vec::new(),
         };
         let value = serde_json::to_value(&candidates).unwrap();
         assert_eq!(value["chatId"], "chat-9");
@@ -1841,10 +1848,38 @@ mod tests {
         let bare = ResumeAccountCandidates {
             limited_account_id: None,
             candidates: Vec::new(),
-            ..candidates
+            ..candidates.clone()
         };
         let value = serde_json::to_value(&bare).unwrap();
         assert!(value.get("limitedAccountId").is_none());
+
+        // The signed-out rows the picker offers "Sign in again" for ride
+        // their own additive list, camelCased, serializing away when empty.
+        let mut signed_out = account.clone();
+        signed_out.id = "slot-3".into();
+        signed_out.sign_in_state = AgentSignInState::SignedOut;
+        let with_signed_out = ResumeAccountCandidates {
+            signed_out: vec![signed_out.clone()],
+            ..candidates.clone()
+        };
+        let value = serde_json::to_value(&with_signed_out).unwrap();
+        assert_eq!(value["signedOut"][0]["id"], "slot-3");
+        assert_eq!(value["signedOut"][0]["signInState"], "signed-out");
+        assert_eq!(
+            serde_json::from_value::<ResumeAccountCandidates>(value).unwrap(),
+            with_signed_out
+        );
+        // An empty signed-out list is omitted, not null — older payloads
+        // parse with nothing to sign in.
+        let value = serde_json::to_value(&candidates).unwrap();
+        assert!(value.get("signedOut").is_none());
+        let legacy = serde_json::json!({
+            "chatId": "chat-9",
+            "harness": "codex",
+            "candidates": [],
+        });
+        let legacy: ResumeAccountCandidates = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.signed_out.is_empty());
 
         let switched = ResumeOnAccountOutcome::Switched {
             account_id: "slot-2".into(),

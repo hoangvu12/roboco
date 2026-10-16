@@ -362,9 +362,10 @@ impl SessionsEngine {
 
     /// The ranked switch targets for one Limited chat's "Resume on another
     /// account" (orchestration v2, ticket 09): the cached harness accounts
-    /// of the chat's harness, best first. Empty when every other account is
-    /// limited, signed out, an API key, or unswitchable — then only Resume
-    /// at reset is offered.
+    /// of the chat's harness, best first, plus the harness's signed-out
+    /// rows (listed with a "Sign in again" offer — stories 47/50). Both
+    /// lists empty when every other account is limited, an API key, or
+    /// unswitchable — then only Resume at reset is offered.
     pub async fn resume_account_candidates(
         &self,
         chat_id: &str,

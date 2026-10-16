@@ -92,28 +92,35 @@ pub(crate) async fn candidates(
             harness: HarnessId::ClaudeCode,
             limited_account_id: None,
             candidates: Vec::new(),
+            signed_out: Vec::new(),
         });
     };
-    let (limited_account_id, candidates) = match engine.agent_accounts() {
+    let (limited_account_id, candidates, signed_out) = match engine.agent_accounts() {
         Some(accounts) => {
             let limited = session
                 .as_ref()
                 .and_then(|row| row.limit.as_ref())
                 .and_then(|limit| limit.account_id.clone());
-            let rows = if failover_supported(harness) {
-                accounts.failover_candidates(harness, limited.as_deref()).await
+            if failover_supported(harness) {
+                (
+                    limited,
+                    accounts.failover_candidates(harness, limited.as_deref()).await,
+                    // The dead logins the picker offers "Sign in again"
+                    // for (stories 47/50) — listed, never switched to.
+                    accounts.failover_signed_out(harness).await,
+                )
             } else {
-                Vec::new()
-            };
-            (limited, rows)
+                (limited, Vec::new(), Vec::new())
+            }
         }
-        None => (None, Vec::new()),
+        None => (None, Vec::new(), Vec::new()),
     };
     Ok(ResumeAccountCandidates {
         chat_id: chat_id.to_string(),
         harness,
         limited_account_id,
         candidates,
+        signed_out,
     })
 }
 
