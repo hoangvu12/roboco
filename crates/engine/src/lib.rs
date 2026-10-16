@@ -43,6 +43,7 @@ pub mod tailcat;
 pub mod tailcat_relay;
 pub mod terminals;
 pub mod titles;
+pub mod transcript_budget;
 mod transcript_history;
 pub mod uploads;
 mod web;
