@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.delete
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -400,6 +401,11 @@ fun PairPageContent(
  * last footer, a polite live region. Absent (not composed) unless the
  * phase is [PairPhase.Error]. It appears and disappears instantly —
  * iOS assigns `status.text` directly (`SignInViewController.swift:66`).
+ *
+ * A [PairMessage.Res.detail] adds a collapsed "Show details" toggle
+ * (Geist Medium 13 `accent`) under the sentence; expanded, the reason
+ * shows verbatim in Geist Mono 13 `secondary`, selectable for a bug
+ * report. Each new error starts collapsed.
  */
 @Composable
 private fun PairErrorLine(message: PairMessage) {
@@ -407,17 +413,42 @@ private fun PairErrorLine(message: PairMessage) {
         is PairMessage.Res -> stringResource(message.id)
         is PairMessage.Verbatim -> message.text
     }
+    val detail = (message as? PairMessage.Res)?.detail
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
-    BasicText(
-        copy,
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 32.dp, end = 32.dp, top = 12.dp)
-            .testTag("pair-error")
-            .semantics { liveRegion = LiveRegionMode.Polite },
-        style = uiStyle(Face.Sans, typeScale.fixed(14f), palette.danger),
-    )
+    Column(Modifier.fillMaxWidth().padding(start = 32.dp, end = 32.dp, top = 12.dp)) {
+        BasicText(
+            copy,
+            Modifier
+                .fillMaxWidth()
+                .testTag("pair-error")
+                .semantics { liveRegion = LiveRegionMode.Polite },
+            style = uiStyle(Face.Sans, typeScale.fixed(14f), palette.danger),
+        )
+        if (detail != null) {
+            var expanded by remember(message) { mutableStateOf(false) }
+            BasicText(
+                stringResource(if (expanded) R.string.pair_error_details_hide else R.string.pair_error_details_show),
+                Modifier
+                    .padding(top = 6.dp)
+                    .clickable(role = Role.Button) { expanded = !expanded }
+                    .testTag("pair-error-details"),
+                style = uiStyle(Face.SansMedium, typeScale.fixed(13f), palette.accent),
+            )
+            if (expanded) {
+                SelectionContainer {
+                    BasicText(
+                        detail,
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                            .testTag("pair-error-detail"),
+                        style = uiStyle(Face.Mono, typeScale.fixed(13f), palette.secondary),
+                    )
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

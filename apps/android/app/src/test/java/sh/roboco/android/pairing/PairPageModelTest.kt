@@ -46,7 +46,8 @@ import uniffi.roboco_core.PairingTarget
  *   whitespace-only submit → no call; the URL is trimmed;
  *   `replaceEngineId` is passed through;
  * - `describePairError`'s full table (Refused/Unreachable/InvalidUrl
- *   verbatim/Tailcat/Failed/Storage/other) and the store-failure copy;
+ *   verbatim/Tailcat with its redacted reason as the detail/Failed/
+ *   Storage/other) and the store-failure copy;
  * - the error persists while editing and is replaced by the next submit;
  * - a store write failure: `forget` then `remove`, once each, in that
  *   order, for a **new** engine; neither for an engine already in
@@ -140,6 +141,8 @@ class PairPageModelTest {
             "Couldn't save the engine's credential on this phone.",
             res(R.string.pair_error_store),
         )
+        assertEquals("Show details", res(R.string.pair_error_details_show))
+        assertEquals("Hide details", res(R.string.pair_error_details_hide))
         assertEquals("Pair this phone", res(R.string.pair_title))
         assertEquals("Pairing link", res(R.string.pair_section))
         assertEquals("Pair engine", res(R.string.pair_submit))
@@ -167,18 +170,35 @@ class PairPageModelTest {
     }
 
     @Test
-    fun tailcatFailuresMapToTheirSentencesNeverTheReason() {
+    fun tailcatFailuresMapToTheirSentences() {
         assertEquals(
             PairMessage.Res(R.string.pair_error_tailcat_expired),
             describePairError(PairException.TailcatExpired()),
         )
         assertEquals(
-            PairMessage.Res(R.string.pair_error_tailcat_unreachable),
-            describePairError(PairException.TailcatUnreachable("Tailcat client startup failed")),
-        )
-        assertEquals(
             PairMessage.Res(R.string.pair_error_tailcat_unavailable),
             describePairError(PairException.TailcatUnavailable("libroboco_tailcat.so is missing")),
+        )
+    }
+
+    /**
+     * The fixed sentence cannot tell an offline engine from a corrupt
+     * invite, so the adapter's redacted reason rides along as the detail
+     * (a live diagnosis once hung on "invalid Tailcat address").
+     */
+    @Test
+    fun tailcatUnreachableCarriesItsReasonAsTheDetail() {
+        assertEquals(
+            PairMessage.Res(R.string.pair_error_tailcat_unreachable, detail = "invalid Tailcat address"),
+            describePairError(PairException.TailcatUnreachable("invalid Tailcat address")),
+        )
+        assertEquals(
+            PairMessage.Res(R.string.pair_error_tailcat_unreachable, detail = "Tailcat client startup failed"),
+            describePairError(PairException.TailcatUnreachable(" Tailcat client startup failed\n")),
+        )
+        assertEquals(
+            PairMessage.Res(R.string.pair_error_tailcat_unreachable),
+            describePairError(PairException.TailcatUnreachable("  ")),
         )
     }
 

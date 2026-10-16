@@ -59,6 +59,7 @@ import sh.roboco.android.design.glass.BusySpinnerTag
 import sh.roboco.android.shell.SheetHost
 import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
+import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairingTarget
 
@@ -80,6 +81,8 @@ import uniffi.roboco_core.PairingTarget
  * - the capsule: disabled while the field is blank, busy while
  *   redeeming (frozen clock: "Pairing…", 08's spinner, taps ignored);
  *   `performImeAction` on the field submits;
+ * - error details: a Tailcat failure's reason behind a collapsed "Show
+ *   details" toggle; no toggle for an error without a detail;
  * - the success flow: `upsert` before the Confirm haptic, the sheet
  *   dismissed once;
  * - tag bounds: the card rows at x 16, the footer at x 32, the field
@@ -431,6 +434,39 @@ class PairPageTest {
         assertEquals(1, sink.upserts.size)
         assertEquals(1, dismissals)
         compose.waitUntil(5_000) { state.entries.isEmpty() }
+    }
+
+    // ------------------------------------------------------------ error details
+
+    @Test
+    fun aTailcatFailureShowsItsReasonBehindADetailsToggle() {
+        backend.pairImpl = { _, _ -> throw PairException.TailcatUnreachable("invalid Tailcat address") }
+        hostPage(prefill = "roboco-tailcat:abc")
+        compose.onNodeWithTag("pair-submit").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Could not reach that engine over Tailcat. Check that it is running and online.")
+            .assertExists()
+        compose.onNodeWithTag("pair-error-detail").assertDoesNotExist()
+        compose.onNodeWithTag("pair-error-details").assert(hasClickAction()).performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("invalid Tailcat address").assertExists()
+        compose.onNodeWithText("Hide details").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("pair-error-detail").assertDoesNotExist()
+        compose.onNodeWithText("Show details").assertExists()
+    }
+
+    @Test
+    fun anErrorWithoutADetailHasNoToggle() {
+        backend.pairImpl = { _, _ -> throw PairException.Refused() }
+        hostPage(prefill = "https://h/pair#token=x")
+        compose.onNodeWithTag("pair-submit").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("pair-error").assertExists()
+        compose.onNodeWithTag("pair-error-details").assertDoesNotExist()
     }
 
     // ---------------------------------------------------------- the success flow
