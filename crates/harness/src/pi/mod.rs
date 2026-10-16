@@ -30,9 +30,15 @@
 //!   is unbounded: pi's preflight (extensions, the Roboco MCP bridge,
 //!   compaction) may take arbitrarily long, and only Stop interrupts it. A
 //!   rejected prompt never ends the session — the message returns to the
-//!   driver queue and the rejection surfaces. `abort` interrupts, waiting
-//!   for idle before responding. `follow_up` stays unused: a parked
-//!   session's next message is a fresh prompt in roboco's model.
+//!   driver queue and the rejection surfaces. A mid-run steer carries its
+//!   staged images inline, exactly like a turn-start prompt. Pi is a
+//!   STEP-BOUNDARY harness (the engine registry descriptor agrees): the
+//!   steering mode is set to `"all"` at session start unless the user
+//!   already configured one (agent-dir or project `.pi/settings.json`),
+//!   so a burst of steers is delivered together, in order, at the next
+//!   step boundary. `abort` interrupts, waiting for idle before
+//!   responding. `follow_up` stays unused: a parked session's next message
+//!   is a fresh prompt in roboco's model.
 //! - **Turn settlement**: `agent_settled`, then a state probe: the turn
 //!   ends only once pi reports it is not streaming, not compacting and
 //!   holds no pending messages, and the settle generation is unchanged
@@ -42,7 +48,12 @@
 //!   still ends with a deterministic `Done` (the engine retires its
 //!   quiesce watchdogs). Turn errors reject the prompt: a final assistant
 //!   error (`stopReason: "error"`), exhausted `auto_retry_*`, or a failed
-//!   `compaction_end` without `willRetry` produce `Done { Errored }`.
+//!   `compaction_end` without `willRetry` produce `Done { Errored }` — and
+//!   a successful compaction retry clears the error state, so a run that
+//!   recovered through compaction ends completed. Stop sends `clear_queue`
+//!   before `abort`: steers pi queued but never consumed are cancelled
+//!   with the turn (the engine's at-least-once ledger already owns their
+//!   fate), never delivered into the aborted run.
 //! - **Stats**: `get_session_stats.contextUsage` feeds the context meter
 //!   after each settle; `message_update.usage` rides per-turn `Usage`
 //!   passthrough — first-party replacements for the pi-acp fork's
@@ -134,6 +145,37 @@ const INSTALL_HINT: &str = "pi (searched PATH, the login shell's PATH, npm globa
      and fnm/nvm/volta/pnpm/bun install dirs; install with \
      `npm install -g @earendil-works/pi-coding-agent` — Node.js >= 24; set \
      PI_EXECUTABLE to override)";
+
+/// pi's settings directory: an explicit override (tests), else
+/// `PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
+fn pi_agent_dir(explicit: Option<&Path>) -> PathBuf {
+    explicit.map(Path::to_path_buf).unwrap_or_else(|| {
+        crate::model_context::root(
+            "PI_CODING_AGENT_DIR",
+            crate::executable::home_or_current_dir().join(".pi").join("agent"),
+        )
+    })
+}
+
+/// Whether a steering mode is already set in the settings pi loads for
+/// `cwd` (the agent directory's global settings, then the project's):
+/// `set_steering_mode "all"` at session start must never overwrite an
+/// explicit choice — the user's, or `/steering` picked inside a chat
+/// (pi persists that in the same files). A missing, unreadable, or
+/// malformed file simply means "not configured".
+fn steering_mode_configured(agent_dir: Option<&Path>, cwd: &str) -> bool {
+    [
+        pi_agent_dir(agent_dir).join("settings.json"),
+        Path::new(cwd).join(".pi").join("settings.json"),
+    ]
+    .into_iter()
+    .any(|settings| {
+        std::fs::read(&settings)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|settings| settings.get("steeringMode").is_some())
+    })
+}
 
 /// pi accepts both spellings for its npm-global install locations.
 fn pi_install_paths() -> Vec<PathBuf> {
@@ -293,6 +335,11 @@ async fn apply_model(client: &PiClient, model: &str) -> Result<(), HarnessError>
 /// fixture RPC process with [`PiHarness::with_executable`].
 pub struct PiHarness {
     executable: Option<PathBuf>,
+    /// The pi agent directory the steering-mode default reads settings
+    /// from: `PI_CODING_AGENT_DIR` / `~/.pi/agent` unless overridden. Only
+    /// the steering-mode check consults it — model contexts keep hashing
+    /// `auth.json` alone (see [`PiHarness::model_context`]).
+    agent_dir: Option<PathBuf>,
     /// Grace between `abort` and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -312,6 +359,7 @@ impl Default for PiHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            agent_dir: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
             startup_timeout: Duration::from_secs(120),
@@ -328,6 +376,14 @@ impl PiHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Pin the pi agent directory the steering-mode default reads
+    /// `settings.json` from (tests: a temp dir makes the "user configured
+    /// a mode" check hermetic against the real `~/.pi/agent`).
+    pub fn with_agent_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.agent_dir = Some(path.into());
         self
     }
 
@@ -518,6 +574,12 @@ impl PiHarness {
 
         let (client, incoming) = PiClient::new(stdin, stdout);
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+        // Steering mode "all" at session start unless the user configured
+        // one: pi defaults to one-at-a-time, and a burst of roboco steers
+        // belongs together at the next step boundary, in order. Title runs
+        // never steer, so the one-shot sandbox never touches the setting.
+        let steering_mode_all =
+            !title_only && !steering_mode_configured(self.agent_dir.as_deref(), &request.cwd);
         tokio::spawn(run_session(Session {
             child,
             client,
@@ -527,6 +589,7 @@ impl PiHarness {
             request,
             resume_path,
             mcp_scratch,
+            steering_mode_all,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             startup_timeout: self.startup_timeout,
@@ -551,11 +614,13 @@ impl Harness for PiHarness {
     fn supports_steering(&self) -> bool {
         true
     }
-    /// pi's steer queue (reached through `prompt` + steer behavior)
-    /// delivers after the current assistant turn's tool calls — turn
-    /// boundaries, matching the registry descriptor.
+    /// pi's steer queue (reached through `prompt` + steer behavior, with the
+    /// mode set to "all") delivers after the current assistant turn's tool
+    /// calls — the next STEP boundary inside the live turn — matching the
+    /// registry descriptor exactly (both must flip together; orchestration
+    /// v2 ticket 03).
     fn steering_mode(&self) -> SteeringMode {
-        SteeringMode::TurnBoundary
+        SteeringMode::StepBoundary
     }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &REASONING_LEVELS
@@ -657,6 +722,9 @@ struct Session {
     /// The scratch dir holding the MCP bridge file for exactly this run
     /// (dropped after the pi child shuts down, when the file is closed).
     mcp_scratch: Option<crate::scratch::ScratchDir>,
+    /// Send `set_steering_mode "all"` once pi answers `get_state` — armed
+    /// in `run_with_mode` only when no mode is configured (see there).
+    steering_mode_all: bool,
     interrupt_grace: Duration,
     kill_grace: Duration,
     startup_timeout: Duration,
@@ -860,6 +928,7 @@ async fn run_session(session: Session) {
         // Held for the whole run: dropping it removes the bridge file, so it
         // must outlive the pi child (shut down before this function ends).
         mcp_scratch: _mcp_scratch,
+        steering_mode_all,
         interrupt_grace,
         kill_grace,
         startup_timeout,
@@ -877,6 +946,21 @@ async fn run_session(session: Session) {
     // ---- startup: get_state (interruptible, bounded) ----------------------
     let setup = async {
         let state = client.request("get_state", json!({})).await?;
+        // The steering mode rides the same startup: pi defaults to
+        // one-at-a-time and roboco's steers belong together. Best-effort —
+        // a pi old enough to lack the command logs and runs on its own
+        // default (the mode is a delivery-batching preference, never a
+        // run-shape contract).
+        if steering_mode_all
+            && let Err(e) = client
+                .request("set_steering_mode", json!({ "mode": "all" }))
+                .await
+        {
+            tracing::debug!(
+                target: "roboco_harness::pi",
+                "set_steering_mode all rejected (pi default runs): {e}"
+            );
+        }
         // Apply the run's model and thinking level (pi clamps to the model's
         // own ladder; a rejected switch logs and the agent default runs,
         // pi-acp parity). Best-effort: an unavailable model or level is not
@@ -1621,8 +1705,13 @@ async fn run_session(session: Session) {
                         }
                         "compaction_end" => {
                             // A failed compaction that will not retry ends
-                            // the run as an error; success (manual, threshold,
-                            // overflow-retry) just continues or re-prompts.
+                            // the run as an error; success (manual,
+                            // threshold, overflow-retry) just continues or
+                            // re-prompts. A compaction retry that SUCCEEDED
+                            // recovered the turn: the error that triggered
+                            // it (the overflow error message, an exhausted
+                            // auto-retry) no longer rejects the prompt — the
+                            // retried run may still complete it.
                             let will_retry = event.get("willRetry").and_then(Value::as_bool).unwrap_or(false);
                             let aborted = event.get("aborted").and_then(Value::as_bool).unwrap_or(false);
                             let failed = event.get("result").map(Value::is_null).unwrap_or(true)
@@ -1635,6 +1724,8 @@ async fn run_session(session: Session) {
                                         .unwrap_or("pi's compaction failed.")
                                         .to_owned(),
                                 );
+                            } else if will_retry && !failed && !aborted {
+                                turn_error = None;
                             }
                         }
                         "extension_ui_request" => {
@@ -1777,10 +1868,11 @@ async fn run_session(session: Session) {
                     if run_active || armed.is_some() {
                         // Live turn: the prompt rides steer behavior — pi
                         // queues it while streaming (delivered after the
-                        // current assistant turn's tool calls) and starts a
-                        // run when idle, atomically against settlement. The
-                        // attachments' path refs ride the text; the parked
-                        // delivery inlines them as images.
+                        // current assistant turn's tool calls, all queued
+                        // steers together in mode "all") and starts a run
+                        // when idle, atomically against settlement. The
+                        // staged attachments inline as images, exactly like
+                        // a turn-start prompt.
                         generation += 1; // the prompt goes out
                         steer_calls.push(steer_request(&client, msg));
                     } else if probe.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
@@ -1841,11 +1933,21 @@ async fn run_session(session: Session) {
                 }
                 let in_flight = run_active || armed.is_some() || saw_activity;
                 if in_flight {
-                    // abort() waits for idle before responding; do not block
-                    // the loop on it — the agent_settled it triggers (or the
-                    // signal escalation below) ends the run.
+                    // clear_queue FIRST: steers pi accepted but never
+                    // consumed must not survive into the abort — they are
+                    // cancelled with the turn (the engine's at-least-once
+                    // ledger drops them on the interrupted exit, their user
+                    // entries already sit in the transcript), never
+                    // delivered into the aborted run. abort() waits for
+                    // idle before responding; neither request blocks the
+                    // loop — the agent_settled abort triggers (or the
+                    // signal escalation below) ends the run. The wire keeps
+                    // the order: both ride the client's single writer.
                     let client = client.clone();
                     tokio::spawn(async move {
+                        if let Err(e) = client.request("clear_queue", json!({})).await {
+                            tracing::debug!(target: "roboco_harness::pi", "clear_queue failed (escalation will reap): {e}");
+                        }
                         if let Err(e) = client.request("abort", json!({})).await {
                             tracing::debug!(target: "roboco_harness::pi", "abort failed (escalation will reap): {e}");
                         }
@@ -1935,14 +2037,21 @@ fn prompt_acceptance(
 
 /// One mid-run steer: the same `prompt` with steer behavior (pi queues it
 /// while streaming and starts a run when idle). Carries the mailbox
-/// message so a rejection can hand it back to the queue verbatim.
+/// message so a rejection can hand it back to the queue verbatim, and
+/// stages the message's attachments as inline images — a steer delivers
+/// its images exactly like a turn-start prompt (the path refs ride the
+/// text as a fallback either way).
 fn steer_request(client: &PiClient, msg: SteerMessage) -> SteerCall {
     let client = client.clone();
     Box::pin(async move {
-        let params = json!({
+        let images = load_image_contents(&msg.attachments).await;
+        let mut params = json!({
             "message": msg.prompt.clone(),
             "streamingBehavior": "steer",
         });
+        if !images.is_empty() {
+            params["images"] = Value::Array(images);
+        }
         let result = client.request("prompt", params).await;
         (msg, result)
     })
@@ -2091,4 +2200,68 @@ fn image_mime_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str>
         ] => Some("image/webp"),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::steering_mode_configured;
+    use std::path::Path;
+
+    fn write_settings(dir: &Path, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("settings.json"), body).unwrap();
+    }
+
+    /// No settings anywhere: the driver selects the mode itself.
+    #[test]
+    fn steering_mode_is_unconfigured_without_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// A mode in the agent directory (the user's own, or `/steering` written
+    /// globally) is an explicit choice: never overwritten.
+    #[test]
+    fn agent_dir_settings_count_as_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(home.path(), r#"{"steeringMode": "one-at-a-time"}"#);
+        assert!(steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// A mode in the project `.pi/settings.json` counts the same way.
+    #[test]
+    fn project_settings_count_as_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(&project.path().join(".pi"), r#"{"steeringMode": "all"}"#);
+        assert!(steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// Settings without the key (or unreadable JSON) are not a choice.
+    #[test]
+    fn settings_without_the_key_are_not_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(home.path(), r#"{"defaultModel": "x/y"}"#);
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+        write_settings(home.path(), "not json");
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
 }
