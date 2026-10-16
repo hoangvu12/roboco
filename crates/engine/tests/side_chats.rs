@@ -2562,3 +2562,118 @@ async fn a_limited_source_chat_can_be_forked_into_another_harness() {
     );
     core.shutdown().await;
 }
+
+/// "Fork from here" INTO another harness (tickets 21+22 combined): the
+/// boundary cuts the copy, and the cross-harness override rides on top —
+/// no native fork even though the boundary reply carries a provider turn
+/// ref, and the budgeted history the first send carries never mentions
+/// anything after the boundary.
+#[tokio::test]
+async fn forking_from_an_earlier_reply_into_another_harness_cuts_and_pastes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mock_requests = Arc::new(Mutex::new(Vec::new()));
+    let codex_requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(mock_requests.clone())));
+    registry.register(Arc::new(CaptureOn {
+        id: HarnessId::Codex,
+        session: "codex-provider-session",
+        requests: codex_requests.clone(),
+    }));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u2",
+            MessageRole::User,
+            "And the code?",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "the code is fine",
+            MessageStatus::Complete,
+            "turn-2",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    let fork = client
+        .call_as::<roboco_proto::Chat>(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "boundary": "a1",
+                "harness": "codex",
+                "model": "gpt-6-codex",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.config.map(|config| (config.harness, config.model)),
+        Some((HarnessId::Codex, Some("gpt-6-codex".into())))
+    );
+    let ids = |chat: &str| {
+        core.doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids("side"),
+        vec!["u1".to_string(), "a1".to_string(), "fork:side".to_string()],
+        "the copy stops at the boundary, inclusive"
+    );
+    // The first send: budgeted history cut at the boundary, no native fork,
+    // no resume — and nothing from after the boundary rides along.
+    let request = queued_side_turn(&core, &codex_requests, "side", "What did I ask?").await;
+    assert_eq!(request.provider_fork, None);
+    assert_eq!(request.resume, None);
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(
+        !request.prompt.contains("the code is fine"),
+        "{}",
+        request.prompt
+    );
+    assert!(request.prompt.ends_with("What did I ask?"), "{}", request.prompt);
+    core.shutdown().await;
+}

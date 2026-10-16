@@ -87,7 +87,7 @@ pub(super) fn fork_params(
 /// harness `fallback` names (the source's own, or the current pick) whenever
 /// the catalog carries it — a chat can outlive its harness's enablement, and
 /// the default must stay pickable so "fork as-is" is always one click.
-pub(super) fn fork_offered(
+pub(super) fn fork_offered_harnesses(
     catalog: &[HarnessDescriptor],
     fallback: Option<HarnessId>,
 ) -> Vec<HarnessDescriptor> {
@@ -99,6 +99,27 @@ pub(super) fn fork_offered(
         offered.push(descriptor.clone());
     }
     offered
+}
+
+/// The overrides a dialog confirm sends (t3-orchestration-v2 ticket 22):
+/// only the picks that differ from the source's own. A confirm of the
+/// untouched defaults is therefore byte-for-byte the classic fork request;
+/// a model pick rides along whenever the harness does (a different harness
+/// needs the model spelled out, even an id that happens to match).
+pub(super) fn confirm_overrides(
+    source: &roboco_proto::Chat,
+    harness: Option<HarnessId>,
+    model: Option<&str>,
+) -> (Option<HarnessId>, Option<String>) {
+    let source_harness = source.config.as_ref().map(|config| config.harness);
+    let source_model = source.config.as_ref().and_then(|config| config.model.clone());
+    let harness = harness.filter(|harness| source_harness != Some(*harness));
+    let model = model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+        .filter(|model| harness.is_some() || source_model.as_deref() != Some(model.as_str()));
+    (harness, model)
 }
 
 impl Shell {
@@ -117,7 +138,10 @@ impl Shell {
             return;
         }
         let harness = source.config.as_ref().map(|config| config.harness);
-        let model = source.config.as_ref().and_then(|config| config.model.clone());
+        let model = source
+            .config
+            .as_ref()
+            .and_then(|config| config.model.clone());
         self.fork_dialog = Some(ForkDialog {
             source,
             parent_id,
@@ -155,16 +179,8 @@ impl Shell {
             if dialog.harness == Some(harness) {
                 return;
             }
-            let source_harness = dialog
-                .source
-                .config
-                .as_ref()
-                .map(|config| config.harness);
-            let source_model = dialog
-                .source
-                .config
-                .as_ref()
-                .and_then(|config| config.model.clone());
+            let source_harness = dialog.source_harness();
+            let source_model = dialog.source_model();
             dialog.harness = Some(harness);
             dialog.model = (source_harness == Some(harness))
                 .then_some(source_model)
@@ -183,7 +199,9 @@ impl Shell {
     }
 
     /// Confirm: hand the dialog's fork — source, parent, boundary and the
-    /// chosen harness/model — to the fork RPC flow.
+    /// chosen harness/model — to the fork RPC flow. Only picks that differ
+    /// from the source's ride the wire, so untouched defaults fork exactly
+    /// as the classic button always did.
     pub(super) fn confirm_fork(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self.fork_dialog.take() else {
             return;
@@ -196,6 +214,7 @@ impl Shell {
             model,
             ..
         } = dialog;
+        let (harness, model) = confirm_overrides(&source, harness, model.as_deref());
         self.fork_chat(source, parent_id, boundary, harness, model, cx);
     }
 
@@ -211,8 +230,8 @@ impl Shell {
 
     /// The catalog load's `targetDeviceId`: the fork runs on the SOURCE's
     /// device (the RPC refuses a source hosted elsewhere), so its installed
-    /// agents are the ones that matter. `None` for a locally-hosted source —
-    /// the connected engine serves it directly.
+    /// harnesses are the ones that matter. `None` for a locally-hosted
+    /// source — the connected engine serves it directly.
     fn fork_catalog_target(&self, cx: &App) -> Option<String> {
         let local = self.state.read(cx).local_device_id.as_deref()?;
         let dialog = self.fork_dialog.as_ref()?;
@@ -273,10 +292,7 @@ impl Shell {
                 // A source with no config keeps no default of its own: the
                 // first offered harness becomes the pick once the catalog
                 // lands, mirroring the composer's picker.
-                let first = dialog
-                    .fork_offered()
-                    .first()
-                    .map(|descriptor| descriptor.id);
+                let first = dialog.offered().first().map(|descriptor| descriptor.id);
                 if dialog.harness.is_none()
                     && let Some(harness) = first
                 {
@@ -354,9 +370,9 @@ impl Shell {
     ) -> Option<AnyElement> {
         let dialog = self.fork_dialog.as_ref()?;
         let theme = Theme::of(cx).for_popup();
-        let source_harness = dialog.source.config.as_ref().map(|config| config.harness);
+        let source_harness = dialog.source_harness();
         let catalog: Vec<HarnessDescriptor> = dialog.harnesses.ready().cloned().unwrap_or_default();
-        let offered = fork_offered(&catalog, source_harness.or(dialog.harness));
+        let offered = fork_offered_harnesses(&catalog, source_harness.or(dialog.harness));
         let harness_loading = matches!(dialog.harnesses, Loadable::Loading);
         let harness_error = dialog.harnesses.error().map(str::to_owned);
         let selected_harness = dialog.harness;
@@ -391,7 +407,7 @@ impl Shell {
             .child(popover::dialog_title(&theme, title))
             .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)));
 
-        // ── Agent: one chip per offered harness; the pick rides the border
+        // ── Harness: one chip per offered harness; the pick rides the border
         //    and fill, like the composer's rail tabs.
         let label_style = |el: gpui::Div| {
             el.mt(px(14.0))
@@ -400,7 +416,7 @@ impl Shell {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.text_muted)
         };
-        card = card.child(label_style(div()).child(SharedString::from("AGENT")));
+        card = card.child(label_style(div()).child(SharedString::from("HARNESS")));
         let mut chips = div().flex().flex_row().flex_wrap().gap(px(6.0));
         for (ix, descriptor) in offered.iter().enumerate() {
             let harness = descriptor.id;
@@ -448,11 +464,11 @@ impl Shell {
         }
         if offered.is_empty() {
             let text = if let Some(error) = harness_error {
-                SharedString::from(format!("Couldn't load the agents: {error}"))
+                SharedString::from(format!("Couldn't load the harnesses: {error}"))
             } else if harness_loading {
-                SharedString::from("Loading this device's agents…")
+                SharedString::from("Loading this device's harnesses…")
             } else {
-                SharedString::from("No agents are available on this device.")
+                SharedString::from("No harnesses are available on this device.")
             };
             chips = chips.child(
                 div()
@@ -486,7 +502,7 @@ impl Shell {
             } else if models_loading {
                 SharedString::from("Loading models…")
             } else {
-                SharedString::from("This agent lists no models.")
+                SharedString::from("This harness lists no models.")
             };
             list = list.child(
                 div()
@@ -576,8 +592,8 @@ impl Shell {
                     .line_height(px(17.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
-                        "A different agent starts a fresh session and receives a \
-                         size-limited transcript of this conversation, not the full history.",
+                        "A different harness starts fresh and receives a \
+                         size-limited transcript of this chat, not its full history.",
                     )),
             );
         }
@@ -609,16 +625,28 @@ impl Shell {
 }
 
 impl ForkDialog {
-    /// The harnesses this dialog offers — `fork_offered` over its catalog
-    /// with the source's harness as the guaranteed member.
-    fn fork_offered(&self) -> Vec<HarnessDescriptor> {
-        let source_harness = self.source.config.as_ref().map(|config| config.harness);
+    /// The harness the source chat runs on per its row config.
+    fn source_harness(&self) -> Option<HarnessId> {
+        self.source.config.as_ref().map(|config| config.harness)
+    }
+
+    /// The source's model id, when its row carries one.
+    fn source_model(&self) -> Option<String> {
+        self.source
+            .config
+            .as_ref()
+            .and_then(|config| config.model.clone())
+    }
+
+    /// The harnesses this dialog offers — `fork_offered_harnesses` over its
+    /// catalog with the source's harness as the guaranteed member.
+    fn offered(&self) -> Vec<HarnessDescriptor> {
         let catalog = self
             .harnesses
             .ready()
             .map(|list| list.as_slice())
             .unwrap_or_default();
-        fork_offered(catalog, source_harness.or(self.harness))
+        fork_offered_harnesses(catalog, self.source_harness().or(self.harness))
     }
 }
 
@@ -708,6 +736,54 @@ mod tests {
         assert!(blank.get("model").is_none());
     }
 
+    /// The overrides a confirm sends: only the picks that differ from the
+    /// source's own, so an untouched dialog produces the classic fork
+    /// request — and a model rides along whenever the harness does.
+    #[test]
+    fn confirm_overrides_send_only_what_differs() {
+        let source = chat_row(
+            "src",
+            Some(serde_json::json!({
+                "harness": "codex",
+                "model": "gpt-6-codex",
+                "sandbox": "workspace-write",
+            })),
+        );
+        // Untouched defaults: byte-for-byte the classic fork.
+        assert_eq!(
+            confirm_overrides(&source, Some(HarnessId::Codex), Some("gpt-6-codex")),
+            (None, None)
+        );
+        // Another harness: the harness rides, and a model equal to the
+        // source's still rides with it (the new harness needs it spelled
+        // out).
+        assert_eq!(
+            confirm_overrides(&source, Some(HarnessId::Pi), Some("gpt-6-codex")),
+            (Some(HarnessId::Pi), Some("gpt-6-codex".into()))
+        );
+        // Another harness, no model picked.
+        assert_eq!(
+            confirm_overrides(&source, Some(HarnessId::Pi), None),
+            (Some(HarnessId::Pi), None)
+        );
+        // Same harness, another model.
+        assert_eq!(
+            confirm_overrides(&source, Some(HarnessId::Codex), Some("gpt-6-mini")),
+            (None, Some("gpt-6-mini".into()))
+        );
+        // A blank model pick counts as none.
+        assert_eq!(
+            confirm_overrides(&source, Some(HarnessId::Codex), Some("  ")),
+            (None, None)
+        );
+        // A config-less source: any resolved pick is an override.
+        let bare = chat_row("bare", None);
+        assert_eq!(
+            confirm_overrides(&bare, Some(HarnessId::Codex), None),
+            (Some(HarnessId::Codex), None)
+        );
+    }
+
     /// The offered list: the composer's offered set, with the source's own
     /// harness appended when the catalog carries it but it is not offered —
     /// the default must stay pickable.
@@ -729,25 +805,25 @@ mod tests {
             // Present but not installed: offered_harnesses drops it.
             descriptor(HarnessId::ClaudeCode, "Claude Code", false),
         ];
-        let offered = fork_offered(&catalog, Some(HarnessId::Codex));
+        let offered = fork_offered_harnesses(&catalog, Some(HarnessId::Codex));
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
             vec![HarnessId::Codex, HarnessId::Pi]
         );
         // The source's harness is not offered (its CLI is gone): it still
         // rides the list, behind the offered ones.
-        let offered = fork_offered(&catalog, Some(HarnessId::ClaudeCode));
+        let offered = fork_offered_harnesses(&catalog, Some(HarnessId::ClaudeCode));
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
             vec![HarnessId::Codex, HarnessId::Pi, HarnessId::ClaudeCode]
         );
         // Not in the catalog at all: nothing to append.
-        let offered = fork_offered(&catalog, Some(HarnessId::Grok));
+        let offered = fork_offered_harnesses(&catalog, Some(HarnessId::Grok));
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
             vec![HarnessId::Codex, HarnessId::Pi]
         );
-        assert!(fork_offered(&[], Some(HarnessId::Pi)).is_empty());
+        assert!(fork_offered_harnesses(&[], Some(HarnessId::Pi)).is_empty());
     }
 
     /// The dialog opens on both entry points with the source's own harness
@@ -817,7 +893,7 @@ mod tests {
                 dialog.harnesses = Loadable::Ready(catalog);
                 // The default-resolution the load completion applies —
                 // exercised through the dialog's own offered list here.
-                let first = dialog.fork_offered().first().map(|d| d.id);
+                let first = dialog.offered().first().map(|d| d.id);
                 if dialog.harness.is_none() && let Some(harness) = first {
                     dialog.harness = Some(harness);
                 }
@@ -890,6 +966,73 @@ mod tests {
                 assert!(shell.capture_escape_surface(cx));
                 assert!(shell.fork_dialog.is_none());
                 assert!(!shell.overlay_owns_keyboard(cx));
+            })
+            .unwrap();
+    }
+
+    /// The overlay renders while the dialog is open — harness chips, model
+    /// rows, the cross-harness note and the button pair all build against a
+    /// landed catalog and model list — and stops once it closes.
+    #[gpui::test]
+    fn the_fork_dialog_overlay_builds_from_a_landed_catalog(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let window = shell_window(dir.path(), cx);
+        let source = chat_row(
+            "src",
+            Some(serde_json::json!({
+                "harness": "codex",
+                "model": "gpt-6-codex",
+                "sandbox": "workspace-write",
+            })),
+        );
+        window
+            .update(cx, |shell, _, cx| {
+                shell.open_fork_dialog(source, "src".into(), Some("a1".into()), cx);
+                let viewport = gpui::size(px(800.0), px(600.0));
+                // Nothing has loaded yet: the overlay still renders (its
+                // loading states).
+                assert!(shell.render_fork_dialog(viewport, cx).is_some());
+                // A landed catalog and model list: chips, rows and the
+                // cross-harness note after picking another harness.
+                {
+                    let dialog = shell.fork_dialog.as_mut().unwrap();
+                    dialog.harnesses = Loadable::Ready(vec![
+                        HarnessDescriptor {
+                            id: HarnessId::Codex,
+                            name: "Codex".into(),
+                            supports_steering: true,
+                            steering_mode: roboco_proto::SteeringMode::StepBoundary,
+                            reasoning_levels: vec![],
+                            installed: true,
+                            can_install: false,
+                            enabled: Some(true),
+                        },
+                        HarnessDescriptor {
+                            id: HarnessId::Pi,
+                            name: "Pi".into(),
+                            supports_steering: true,
+                            steering_mode: roboco_proto::SteeringMode::StepBoundary,
+                            reasoning_levels: vec![],
+                            installed: true,
+                            can_install: false,
+                            enabled: Some(true),
+                        },
+                    ]);
+                    dialog.models.insert(
+                        HarnessId::Pi,
+                        Loadable::Ready(vec![Model {
+                            id: "glm-5.3".into(),
+                            label: "GLM 5.3".into(),
+                            description: Some("the flagship".into()),
+                            reasoning_levels: vec![],
+                            options: vec![],
+                        }]),
+                    );
+                }
+                shell.pick_fork_harness(HarnessId::Pi, cx);
+                assert!(shell.render_fork_dialog(viewport, cx).is_some());
+                shell.close_fork_dialog(cx);
+                assert!(shell.render_fork_dialog(viewport, cx).is_none());
             })
             .unwrap();
     }
