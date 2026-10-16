@@ -52,6 +52,10 @@ _Avoid_: Child chat, subagent (that is a harness-spawned agent inside a run)
 A chat's live run state: idle, working, awaiting input, or errored.
 _Avoid_: Session, state (when it means chat status)
 
+**Limited**:
+An errored chat whose last run ended on a harness usage limit — the additive limit record (harness, window, reset time, account) on its status row. Offers Resume; queued messages wait behind the continuation. Not a separate wire status: the chat stays errored.
+_Avoid_: Rate-limited (that is the harness event), throttled, capped
+
 **Chat doc**:
 The chat's durable document — transcript, command ledger, and message queue in one doc, owned by the engine.
 _Avoid_: Session doc

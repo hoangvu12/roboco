@@ -1294,6 +1294,7 @@ mod tests {
             status,
             started_at: Some(at(updated)),
             updated_at: at(updated),
+            limit: None,
         }
     }
 

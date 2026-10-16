@@ -1501,6 +1501,10 @@ impl RegistryDoc {
     /// Upsert a session-status row (writer discipline: each device writes only
     /// its own runs' rows). Staleness is checked client-side via `updatedAt`.
     pub fn upsert_session(&mut self, session: &Session) -> Result<(), DocError> {
+        let limit = match &session.limit {
+            Some(limit) => serde_json::to_value(limit)?,
+            None => Value::Null,
+        };
         let set = fields([
             ("chatId", json!(session.chat_id)),
             ("deviceId", json!(session.device_id)),
@@ -1508,6 +1512,7 @@ impl RegistryDoc {
             ("lastCompletedTurn", json!(session.last_completed_turn)),
             ("startedAt", opt_ms(session.started_at)),
             ("updatedAt", json!(session.updated_at.timestamp_millis())),
+            ("limit", limit),
         ]);
         self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1647,6 +1652,10 @@ impl RegistryDoc {
         }
         for session in &state.sessions {
             let ms = newest(&[Some(session.updated_at), session.started_at]);
+            let limit = match &session.limit {
+                Some(limit) => serde_json::to_value(limit)?,
+                None => Value::Null,
+            };
             seed(
                 KIND_SESSIONS,
                 &session.chat_id,
@@ -1658,6 +1667,7 @@ impl RegistryDoc {
                     ("lastCompletedTurn", json!(session.last_completed_turn)),
                     ("startedAt", opt_ms(session.started_at)),
                     ("updatedAt", json!(session.updated_at.timestamp_millis())),
+                    ("limit", limit),
                 ]),
             );
         }

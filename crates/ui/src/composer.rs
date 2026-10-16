@@ -8839,6 +8839,32 @@ impl Composer {
         self.interrupt_chat(chat_id, cx);
     }
 
+    /// **Resume** on a Limited chat (orchestration v2): send the fixed
+    /// continue prompt as a NORMAL run — same send path, same guards, same
+    /// queue semantics as typing it — never a special engine mode. The run
+    /// clears the limit record when it starts; messages queued on the chat
+    /// stay behind the continuation.
+    pub(crate) fn resume_limited(&mut self, cx: &mut Context<Self>) {
+        // A draft the user was typing (and files they staged) are theirs, not
+        // part of the resume: the send clears the composer, so hand them
+        // straight back. `send` takes its own copies, so restoring the slots
+        // after it returns cannot leak into the sent message.
+        let draft = self.input.read(cx).text().to_string();
+        let staged = self.attachments.remove(&self.current_key).unwrap_or_default();
+        let appshots = self.appshots.remove(&self.current_key).unwrap_or_default();
+        self.send(roboco_proto::RESUME_CONTINUE_PROMPT.into(), false, cx);
+        if !draft.is_empty() {
+            self.input.update(cx, |input, cx| input.set_text(&draft, cx));
+            self.drafts.insert(self.current_key.clone(), draft);
+        }
+        if !staged.is_empty() {
+            self.attachments.insert(self.current_key.clone(), staged);
+        }
+        if !appshots.is_empty() {
+            self.appshots.insert(self.current_key.clone(), appshots);
+        }
+    }
+
     pub(crate) fn interrupt_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
@@ -12091,6 +12117,7 @@ mod tests {
                 status: roboco_proto::SessionStatus::Working,
                 started_at: Some(updated),
                 updated_at: updated,
+                limit: None,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);

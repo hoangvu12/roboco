@@ -260,6 +260,31 @@ pub enum SessionStatus {
     Errored,
 }
 
+/// A usage-limit record for a Limited chat: what the chat hit and when the
+/// window resets. The chat stays `Errored` on the wire (ADR 0005: names are
+/// frozen, this row is additive) — clients that know the field layer the
+/// Limited presentation on top of the errored one. Written when a run ends
+/// on a usage-limit error; cleared when a new turn starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLimit {
+    /// The harness the limited run was on.
+    pub harness: HarnessId,
+    /// The harness's own window label ("5-hour", "weekly", … — "usage"
+    /// when the harness did not name the window).
+    pub window: String,
+    /// Epoch millis when the window resets, when known — from the harness's
+    /// own error, else filled from the harness account's cached usage
+    /// windows (see `AgentUsageWindow`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// The harness account the limit hit (the engine slot id of the harness's
+    /// active login), when the engine could resolve one. Account switching
+    /// is addressed by this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.
 /// Staleness-checked client-side against `updated_at` so a crashed backend never shows
 /// an eternal "Working".
@@ -276,6 +301,11 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// The usage-limit record when the last turn ended on a harness usage
+    /// limit — the additive "Limited" detail on the errored status (see
+    /// [`SessionLimit`]). Absent on rows from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<SessionLimit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -1767,5 +1797,61 @@ mod tests {
         assert_eq!(old.agent_origin, None);
         let encoded = serde_json::to_value(&old).unwrap();
         assert!(encoded.get("agentOrigin").is_none());
+    }
+
+    fn session_row(status: SessionStatus) -> Session {
+        Session {
+            last_completed_turn: None,
+            chat_id: "chat-1".into(),
+            device_id: "device-1".into(),
+            status,
+            started_at: None,
+            updated_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+            limit: None,
+        }
+    }
+
+    /// The limit record is additive on the session row (ADR 0005): it rides
+    /// the errored status under stable camelCase names, omits itself when
+    /// absent, and rows from older engines still parse.
+    #[test]
+    fn session_limit_row_is_additive_and_round_trips() {
+        let mut limited = session_row(SessionStatus::Errored);
+        limited.limit = Some(SessionLimit {
+            harness: HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some(1_762_675_400_000),
+            account_id: Some("slot-9f2c".into()),
+        });
+        let value = serde_json::to_value(&limited).unwrap();
+        assert_eq!(value["status"], "errored");
+        assert_eq!(value["limit"]["harness"], "claude-code");
+        assert_eq!(value["limit"]["window"], "5-hour");
+        assert_eq!(value["limit"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(value["limit"]["accountId"], "slot-9f2c");
+        assert_eq!(serde_json::from_value::<Session>(value).unwrap(), limited);
+
+        // A missing reset or account is omitted, not null.
+        let unknown = SessionLimit {
+            harness: HarnessId::Codex,
+            window: "usage".into(),
+            resets_at: None,
+            account_id: None,
+        };
+        let value = serde_json::to_value(&unknown).unwrap();
+        assert!(value.get("resetsAt").is_none());
+        assert!(value.get("accountId").is_none());
+
+        // Older engines never wrote `limit`; their rows parse as unlimited.
+        let legacy = serde_json::json!({
+            "chatId": "chat-1",
+            "deviceId": "device-1",
+            "status": "errored",
+            "updatedAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Session>(legacy).unwrap();
+        assert_eq!(old.limit, None);
+        let encoded = serde_json::to_value(&old).unwrap();
+        assert!(encoded.get("limit").is_none());
     }
 }

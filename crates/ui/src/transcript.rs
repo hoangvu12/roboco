@@ -10035,6 +10035,7 @@ mod tests {
                     last_completed_turn: None,
                     started_at: None,
                     updated_at: now,
+                    limit: None,
                 }];
             });
             assert!(
@@ -13699,6 +13700,7 @@ mod tests {
                             status: roboco_proto::SessionStatus::Working,
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
+                            limit: None,
                         })
                     });
                     this.on_own_send("chat".into(), "prompt".into(), cx);
