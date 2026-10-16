@@ -17,7 +17,7 @@ import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
 import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
-import type { ContextUsage, FetchToolBlobReply, SessionMessageEntry } from "@roboco/proto";
+import type { ContextUsage, FetchToolBlobReply, ScheduledResume, SessionLimit, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
   pendingSendStatus,
@@ -27,6 +27,7 @@ import {
 } from "../state/transcript-store";
 import { transcriptFoldCache } from "../state/transcript-fold-state";
 import { NoticeChip } from "./notice-chip";
+import { LimitedBanner } from "./limited-banner";
 import { useUiSettings } from "../state/ui-settings";
 import {
   CODE_BLOCK_LINE_HEIGHT_BASELINE,
@@ -2705,13 +2706,35 @@ export function JumpPill({ onClick }: { onClick: () => void }) {
  * (`shell.rs:6373`): 24px tall, ALWAYS reserved so the composer below never
  * shifts, aligned with the composer column (max-width 768, centered,
  * 24px inner gutters, 11px type). The working loader and the awaiting-input
- * surface live elsewhere now; what is left is the error word and the sending
- * indicator.
+ * surface live elsewhere now; what is left is the error word, the sending
+ * indicator, and — orchestration v2 (ticket 06/07/09's web parity) — the
+ * Limited banner an errored-with-limit row paints instead of the error
+ * word: window and reset, Resume, Resume at reset, and the account
+ * failover picker.
  */
-export function StatusStrip({ status, sending }: { status: ChatIndicator; sending: boolean }) {
+export function StatusStrip({
+  status,
+  sending,
+  limited,
+}: {
+  status: ChatIndicator;
+  sending: boolean;
+  /** The Limited detail the banner needs — null unless the chat reads as
+   *  Limited right now (the caller derives it from the raw session row). */
+  limited: LimitedStripProps | null;
+}) {
   return (
     <div className="status-strip" role="status">
-      {status === "errored" ? (
+      {limited !== null ? (
+        <LimitedBanner
+          chatId={limited.chatId}
+          client={limited.client}
+          limit={limited.limit}
+          scheduled={limited.scheduled}
+          now={limited.now}
+          onResume={limited.onResume}
+        />
+      ) : status === "errored" ? (
         <span className="status-strip-error">Run failed</span>
       ) : sending ? (
         <>
@@ -2726,4 +2749,14 @@ export function StatusStrip({ status, sending }: { status: ChatIndicator; sendin
       ) : null}
     </div>
   );
+}
+
+/** The `StatusStrip`'s Limited arm's inputs (see `StatusStrip`). */
+export interface LimitedStripProps {
+  readonly chatId: string;
+  readonly client: EngineClient | null;
+  readonly limit: SessionLimit | null;
+  readonly scheduled: ScheduledResume | null;
+  readonly now: number;
+  readonly onResume: () => void;
 }

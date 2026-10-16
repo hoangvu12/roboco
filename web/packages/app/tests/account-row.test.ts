@@ -542,6 +542,7 @@ describe("AccountRow (settings) — the Forget affordance (wpn-09)", () => {
           onForget: () => {
             settingsForgetCalls.push(account);
           },
+          onSignInAgain: () => {},
         }),
       );
     });

@@ -12,7 +12,7 @@ import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } fr
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
-import { chatPageRow, type ChatRow } from "../lib/view";
+import { chatPageRow, effectiveIndicator, type ChatRow } from "../lib/view";
 import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
 import { ChatTranscriptOutlet } from "../components/chat-transcript-outlet";
 import type { SubagentOpen } from "../components/tool-group";
@@ -506,6 +506,14 @@ export function ConversationPage() {
   // lands in the composer's red failure notice, chat-scoped, instead of a
   // sidebar toast (ticket 06 — the desktop's placement).
   const editFailureRef = useRef<((message: string) => void) | null>(null);
+
+  // The composer's **Resume** handle (orchestration v2, ticket 06/10) — the
+  // same ref pattern: the composer assigns its `resume_limited` (the fixed
+  // continue prompt through the normal send path, the user's draft handed
+  // back), and the status strip's Limited banner calls it. The banner lives
+  // above the composer in the bottom stack; the ref is the one channel that
+  // reaches the send path without re-mounting anything.
+  const resumeRef = useRef<(() => void) | null>(null);
 
   // If the queue store reports the row disappeared while we were editing
   // (another device removed/sent it), drop the edit state so the composer
@@ -1191,6 +1199,15 @@ export function ConversationPage() {
     useCallback(() => echoStore.forChat(chatId).length > 0, [chatId]),
   );
 
+  // The chat's RAW status row — the Limited banner's input. The banner
+  // reads the live session (errored + a recorded limit), not the
+  // unseen-marker status the row word carries, exactly like the desktop's
+  // `Indicator::Limited` arm of `render_status_strip`.
+  const sessionRow = hasSelection
+    ? snapshot.statuses.rows.find((row) => row.chatId === chatId) ?? null
+    : null;
+  const sessionRowLimited = effectiveIndicator(sessionRow ?? undefined, now) === "limited";
+
   // The session row's `started_at` — the working trailer's timer base
   // (`session_for(chat_id).started_at` on the desktop).
   const turnStartedAt = useMemo(() => {
@@ -1401,7 +1418,22 @@ export function ConversationPage() {
           Terminal surfaces ride a separate, independent host.
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
-          <StatusStrip status={row?.status ?? "idle"} sending={sending} />
+          <StatusStrip
+            status={row?.status ?? "idle"}
+            sending={sending}
+            limited={
+              hasSelection && sessionRowLimited
+                ? {
+                    chatId,
+                    client: session?.client ?? null,
+                    limit: sessionRow?.limit ?? null,
+                    scheduled: sessionRow?.scheduledResume ?? null,
+                    now,
+                    onResume: () => resumeRef.current?.(),
+                  }
+                : null
+            }
+          />
           {targetUnavailable && (
             <div className="composer-target-warning" role="status">
               {target.projectUnavailable
@@ -1442,6 +1474,7 @@ export function ConversationPage() {
                 onEditCancel={onEditCancel}
                 editCommitRef={editCommitRef}
                 editFailureRef={editFailureRef}
+                resumeRef={resumeRef}
                 activateLatestQueued={activateLatestQueued}
                 dockFrame={dockFrame}
                 liveDockFrame={liveDockFrame}

@@ -31,6 +31,14 @@ export const CREATE_PAIRING_LINK = "CreatePairingLink";
 export const LIST_AGENT_ACCOUNTS = "ListAgentAccounts";
 export const ACTIVATE_AGENT_ACCOUNT = "ActivateAgentAccount";
 export const FORGET_AGENT_ACCOUNT = "ForgetAgentAccount";
+/** "Resume on another account" (orchestration v2, ticket 09): the ranked
+ *  switch targets for one Limited chat — `{chatId}` → `ResumeAccountCandidates`
+ *  (the engine filters and ranks; signed-out accounts ride `signedOut`). */
+export const LIST_RESUME_ACCOUNT_CANDIDATES = "ListResumeAccountCandidates";
+/** The failover itself — `{chatId, accountId?}` → `ResumeOnAccountOutcome`
+ *  (`switched | noCandidates | failed`); `accountId` omitted takes the
+ *  engine's recommendation. */
+export const RESUME_ON_ANOTHER_ACCOUNT = "ResumeOnAnotherAccount";
 export const START_AGENT_LOGIN = "StartAgentLogin";
 export const COMPLETE_AGENT_LOGIN = "CompleteAgentLogin";
 export const POLL_AGENT_LOGIN = "PollAgentLogin";

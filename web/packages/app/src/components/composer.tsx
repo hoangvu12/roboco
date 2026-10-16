@@ -97,6 +97,7 @@ import {
 import { menuStep } from "../lib/picker-search";
 import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
 import { createChat, waitForChatRow } from "../lib/chat-actions";
+import { RESUME_CONTINUE_PROMPT } from "../lib/limited";
 import { mintUnsavedSideChat } from "../lib/side-chat-actions";
 import {
   completionTargetChatId,
@@ -377,6 +378,14 @@ interface ComposerProps {
    */
   readonly editFailureRef?: React.MutableRefObject<((message: string) => void) | null>;
   /**
+   * The Limited banner's **Resume** handle (orchestration v2, tickets
+   * 06/10): assigned the composer's `resume_limited` — the fixed continue
+   * prompt through the normal send path, the user's draft and staged files
+   * handed back — so the status strip above the composer can trigger it.
+   * The `editCommitRef` pattern again.
+   */
+  readonly resumeRef?: React.MutableRefObject<(() => void) | null>;
+  /**
    * The workspace commands' host surfaces (composer.rs's
    * `ComposerEvent::WorkspaceCommand` dispatch, web-shaped): the Roboco-local
    * `/new`, `/settings`, `/diff`, `/files`, `/terminal`, and `/rename` route
@@ -468,6 +477,7 @@ export function Composer({
   onEditCancel,
   editCommitRef,
   editFailureRef,
+  resumeRef,
   activateLatestQueued,
   dockFrame = null,
   liveDockFrame,
@@ -2854,6 +2864,49 @@ export function Composer({
     },
     [chat.id, chat.cwd, draft, session.client, session.engine.baseUrl, staged, engineSupports, checkReferenceDelivery, onNewThreadLaunched, commentCount],
   );
+
+  // ── **Resume** on a Limited chat (orchestration v2, tickets 06/10) ────
+  // `resume_limited` (composer.rs): send the fixed continue prompt as a
+  // NORMAL run — same send path, same guards, same queue semantics as
+  // typing it — never a special engine mode. The run clears the limit
+  // record when it starts; messages queued on the chat stay behind the
+  // continuation. A draft the user was typing (and files they staged) is
+  // theirs, not part of the resume: the send clears the composer, so hand
+  // the slots straight back — `send` takes its own copies, so restoring
+  // them after it settles cannot leak into the sent message.
+  const resumeLimited = useCallback(() => {
+    const draftText = textRef.current;
+    const stagedSnapshot = staged;
+    void send(RESUME_CONTINUE_PROMPT, false).then(() => {
+      if (draftText.length > 0) {
+        setText(draftText);
+        chatDrafts.set(textDraftKey, draftText);
+      }
+      if (stagedSnapshot.length > 0) {
+        setStagedByChat((current) => {
+          const fresh = current[chat.id] ?? [];
+          const merged = [
+            ...stagedSnapshot.filter((att) => !fresh.some((f) => f.id === att.id)),
+            ...fresh,
+          ];
+          return { ...current, [chat.id]: merged };
+        });
+      }
+    });
+  }, [chat.id, staged, send, textDraftKey]);
+
+  // The banner's handle assignment: the strip above the composer holds the
+  // ref; `send`'s identity churn re-binds it without re-subscribing the
+  // host (the `editCommitRef` pattern).
+  useEffect(() => {
+    if (resumeRef === undefined) {
+      return;
+    }
+    resumeRef.current = resumeLimited;
+    return () => {
+      resumeRef.current = null;
+    };
+  }, [resumeRef, resumeLimited]);
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
   // `commit_queue_edit` (queue.rs:1430): save the composer into the leased

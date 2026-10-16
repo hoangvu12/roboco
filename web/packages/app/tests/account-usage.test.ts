@@ -34,17 +34,23 @@ const h = vi.hoisted(() => {
   /** The reply the next ActivateAgentAccount serves (defaults to the snapshot). */
   let activateReply: AgentAccountsSnapshot | null = null;
 
+  /** The reply the next StartAgentLogin serves (the inline sign-in flow). */
+  let loginReply: Record<string, unknown> | null = null;
+
   const client = {
     async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
       calls.push({ method, params });
       if (method === "ActivateAgentAccount" && activateReply !== null) {
         return activateReply as T;
       }
+      if (method === "StartAgentLogin" && loginReply !== null) {
+        return loginReply as T;
+      }
       return snapshot as T;
     },
   } as unknown as EngineClient;
 
-  return { calls, client, setSnapshot(next: AgentAccountsSnapshot): void { snapshot = next; }, setActivateReply(next: AgentAccountsSnapshot | null): void { activateReply = next; }, reset(): void { calls.length = 0; activateReply = null; } };
+  return { calls, client, setSnapshot(next: AgentAccountsSnapshot): void { snapshot = next; }, setActivateReply(next: AgentAccountsSnapshot | null): void { activateReply = next; }, setLoginReply(next: Record<string, unknown> | null): void { loginReply = next; }, reset(): void { calls.length = 0; activateReply = null; loginReply = null; } };
 });
 
 // ── jsdom gaps the mounted popovers hit (account-row.test.ts's set) ─────────
@@ -75,9 +81,13 @@ beforeAll(() => {
       return 0;
     }) as typeof requestAnimationFrame;
   }
+  // The sign-in flow pre-opens a tab inside the click gesture; jsdom's
+  // window.open is a no-op stub, so pin it to a quiet null.
+  vi.spyOn(window, "open").mockReturnValue(null);
 });
 
 afterAll(() => {
+  vi.restoreAllMocks();
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
 });
 
@@ -287,5 +297,137 @@ describe("AccountUsageIndicator — the accounts card", () => {
     expect(refreshed).not.toBeNull();
     expect(refreshed!.textContent).toContain("bea@example.com");
     expect(Array.from(refreshed!.querySelectorAll(".account-usage-row-in-use")).length).toBe(1);
+  });
+});
+
+// ── The signed-out rows (ticket 08) ──────────────────────────────────────
+
+describe("AccountUsageIndicator — the signed-out rows (ticket 08)", () => {
+  it("marks a signed-out account and keeps its reason beside the meters", async () => {
+    h.setSnapshot({
+      accounts: [
+        account({
+          id: "codex-dead",
+          harness: "codex",
+          active: false,
+          switchable: true,
+          email: "dead@example.com",
+          signInState: "signed-out",
+          // Stale cached meters: they used to hide the sign-out.
+          usageWindows: [{ label: "5h", usedFraction: 0.3, resetsAt: null }],
+        }),
+        account({
+          id: "codex-active",
+          harness: "codex",
+          active: true,
+          switchable: true,
+          usageWindows: [{ label: "5h", usedFraction: 0.5, resetsAt: null }],
+        }),
+      ],
+      warnings: [],
+    });
+    const handle = mountIndicator("codex");
+    await flushLoads();
+    press(handle.ring()!);
+
+    const card = handle.card()!;
+    const deadRow = Array.from(card.querySelectorAll<HTMLElement>(".menu-row")).find((row) =>
+      row.textContent!.includes("dead@example.com"),
+    )!;
+    // The mark, the reason (beside the meters, not only when they are
+    // gone — the display fix), and the sign-in action.
+    expect(deadRow.querySelector(".account-usage-row-signed-out")!.textContent).toBe("Signed out");
+    expect(deadRow.querySelector(".account-usage-row-reason")!.textContent).toBe(
+      "Signed out — sign in again",
+    );
+    expect(deadRow.querySelector(".account-usage-meters")).not.toBeNull();
+    expect(deadRow.querySelector<HTMLButtonElement>(".failover-row-sign-in")!.textContent).toBe(
+      "Sign in again",
+    );
+  });
+
+  it("offers Sign in again — the engine's own login flow (story 47)", async () => {
+    h.setSnapshot({
+      accounts: [
+        account({
+          id: "codex-dead",
+          harness: "codex",
+          active: false,
+          switchable: true,
+          email: "dead@example.com",
+          signInState: "signed-out",
+          usageWindows: [{ label: "5h", usedFraction: 0.9, resetsAt: null }],
+        }),
+      ],
+      warnings: [],
+    });
+    h.setLoginReply({
+      loginId: "login-1",
+      url: "https://example.com/auth",
+      mode: "paste-code",
+      cliOpensBrowser: false,
+      callbackPort: null,
+    });
+    const handle = mountIndicator("codex");
+    await flushLoads();
+    press(handle.ring()!);
+
+    const card = handle.card()!;
+    press(card.querySelector<HTMLButtonElement>(".failover-row-sign-in")!);
+    await flushLoads();
+
+    // The engine's login started for the harness (the account's own
+    // provider group — null for Codex's single login).
+    expect(h.calls.find((call) => call.method === "StartAgentLogin")?.params).toMatchObject({
+      harness: "codex",
+    });
+    // The paste-code fallback renders inline, exactly where the ring is.
+    const flow = handle.card()!.querySelector<HTMLElement>(".sign-in-again-card");
+    expect(flow).not.toBeNull();
+    expect(flow!.textContent).toContain("Signing in to Codex — paste the code");
+  });
+
+  it("a row click asks before switching to a signed-out account; Switch anyway activates", async () => {
+    const dead = account({
+      id: "codex-dead",
+      harness: "codex",
+      active: false,
+      switchable: true,
+      email: "dead@example.com",
+      signInState: "signed-out",
+      usageWindows: [{ label: "5h", usedFraction: 0.3, resetsAt: null }],
+    });
+    h.setSnapshot({ accounts: [dead], warnings: [] });
+    h.setActivateReply({ accounts: [{ ...dead, active: true }], warnings: [] });
+    const handle = mountIndicator("codex");
+    await flushLoads();
+    press(handle.ring()!);
+
+    // The row's own click (a div for signed-out rows) asks first — no
+    // ActivateAgentAccount yet.
+    const deadRow = Array.from(handle.card()!.querySelectorAll<HTMLElement>(".menu-row")).find(
+      (row) => row.textContent!.includes("dead@example.com"),
+    )!;
+    press(deadRow);
+    await flushLoads();
+    expect(h.calls.find((call) => call.method === "ActivateAgentAccount")).toBeUndefined();
+
+    // The confirm dialog (the desktop's `render_switch_confirm`) portals
+    // to the body: the warning, Cancel, and Switch anyway.
+    const dialog = document.querySelector<HTMLElement>(
+      '.rb-dialog-card[aria-label="Switch to a signed-out account?"]',
+    );
+    expect(dialog).not.toBeNull();
+    expect(dialog!.textContent).toContain("Switch to a signed-out account?");
+    expect(dialog!.textContent).toContain("dead@example.com is signed out");
+
+    const confirm = Array.from(dialog!.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Switch anyway",
+    )!;
+    press(confirm);
+    await flushLoads();
+    expect(h.calls.find((call) => call.method === "ActivateAgentAccount")?.params).toMatchObject({
+      accountId: "codex-dead",
+    });
   });
 });

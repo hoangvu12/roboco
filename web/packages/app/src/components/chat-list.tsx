@@ -1334,6 +1334,12 @@ export function ChatListRow({
   const word = statusWord(row.status);
   const sendState = row.sendState;
   const sendWord = sendState === "failed" ? "Failed" : sendState === "queued" ? "Queued" : null;
+  // LIMITED (orchestration v2, ticket 06): the amber word that replaces the
+  // plain status word (or the idle time-ago) — `render_chat_row`'s
+  // `status_label` override, after the send-truth words, before the plain
+  // status mapping. `row.limited` already folds the send overlay: a send in
+  // flight is Working, never Limited.
+  const limitedWord = row.limited ? "Limited" : null;
   const archived = row.chat.archived;
   const brand = row.harness === null ? null : harnessBrandIcon(row.harness);
   const { menu, element } = useChatMenu(row.chat);
@@ -1440,12 +1446,17 @@ export function ChatListRow({
                     {archived ? "Unarchive" : "Archive"}
                   </button>,
                 )
-              ) : word === null && sendWord === null ? (
+              ) : word === null && sendWord === null && limitedWord === null ? (
                 <span className="chat-row-time">{row.timeAgo}</span>
               ) : sendWord !== null ? (
                 <span className={`chat-row-status status-send-${sendState}`}>
                   <StatusGlyph status={row.status} sendState={sendState} />
                   {sendWord}
+                </span>
+              ) : limitedWord !== null ? (
+                <span className="chat-row-status status-limited">
+                  <StatusGlyph status={row.status} sendState={sendState} limited={true} />
+                  {limitedWord}
                 </span>
               ) : (
                 <span className={`chat-row-status status-${row.status}`}>
@@ -1459,10 +1470,12 @@ export function ChatListRow({
         <div className="chat-row-title-line">
           {compact && (
             <span
-              className={`chat-row-status-compact status-${row.status}`}
-              aria-label={sendWord ?? word ?? "Idle"}
+              className={`chat-row-status-compact ${
+                limitedWord !== null && sendWord === null ? "status-limited" : `status-${row.status}`
+              }`}
+              aria-label={sendWord ?? limitedWord ?? word ?? "Idle"}
             >
-              <StatusGlyph status={row.status} sendState={sendState} />
+              <StatusGlyph status={row.status} sendState={sendState} limited={sendWord === null && limitedWord !== null} />
             </span>
           )}
           {monogram}
@@ -1577,11 +1590,24 @@ function owningSession(
  * The corner's glyph slot (`render_chat_row`): Done wears the check, Working
  * the animated pixel glyph, everything else a compact 6px dot. A queued or
  * failed send replaces the glyph with its own dot — the honest state is
- * the word, never a fake spinner or a stale check.
+ * the word, never a fake spinner or a stale check. A Limited row's dot is
+ * the amber `dot-limited` — "waiting out a limit", not the failure red
+ * (proto `view::dot::LIMITED`).
  */
-function StatusGlyph({ status, sendState }: { status: ChatRow["status"]; sendState: ChatRow["sendState"] }) {
+function StatusGlyph({
+  status,
+  sendState,
+  limited = false,
+}: {
+  status: ChatRow["status"];
+  sendState: ChatRow["sendState"];
+  limited?: boolean;
+}) {
   if (sendState !== null) {
     return <span className={`dot dot-send-${sendState}`} />;
+  }
+  if (limited) {
+    return <span className="dot dot-limited" />;
   }
   if (status === "completed") {
     return <Icon name="check" size={11} />;

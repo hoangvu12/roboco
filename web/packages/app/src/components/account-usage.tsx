@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EngineClient } from "@roboco/engine-client";
 import type { AgentAccount, AgentAccountsSnapshot, HarnessId } from "@roboco/proto";
 import {
+  accountNote,
   activeAccount,
   activateAgentAccount,
   listAgentAccounts,
@@ -9,6 +10,8 @@ import {
   providerAccounts,
   providerName,
   reportsUsage,
+  signedOut,
+  signedOutSwitchWarning,
   signsIn,
   usedFraction,
   usageLevel,
@@ -16,6 +19,8 @@ import {
 import { PickerCard } from "./ui/PickerCard";
 import { MenuHeading, MenuRowNav } from "./ui/MenuRows";
 import { useCursorList } from "./ui/CursorList";
+import { SignInAgainCard, useSignInAgainFlow } from "./sign-in-again";
+import { BtnGhost, BtnPrimary, Dialog, DialogBody, DialogCard, DialogTitle } from "./ui/Dialog";
 
 /**
  * The footer's plan-usage ring — the web peer of the desktop's
@@ -127,10 +132,17 @@ export function AccountUsageIndicator({ client, harness, targetDeviceId }: Accou
   }, [open]);
 
   /** Switch optimistically: the rows flip at once and the engine's reply
-   * replaces them; a refusal restores the list. */
+   * replaces them; a refusal restores the list. A signed-out target asks
+   * first (ticket 08) — the desktop's `confirm_switch` — and the confirm
+   * runs the same switch (`confirmed` skips the ask). */
+  const [confirmSwitch, setConfirmSwitch] = useState<AgentAccount | null>(null);
   const switchTo = useCallback(
-    async (account: AgentAccount): Promise<void> => {
+    async (account: AgentAccount, confirmed = false): Promise<void> => {
       if (client === null) {
+        return;
+      }
+      if (!confirmed && signedOut(account)) {
+        setConfirmSwitch(account);
         return;
       }
       const previous = snapshot;
@@ -155,6 +167,17 @@ export function AccountUsageIndicator({ client, harness, targetDeviceId }: Accou
     [client, snapshot, targetDeviceId],
   );
 
+  // "Sign in again" on a signed-out row (ticket 08): the engine's own login
+  // flow, driven inline below the rows — the desktop's `sign_in_footer`. A
+  // landed sign-in re-probes (the row flips back to signed in).
+  const signIn = useSignInAgainFlow({
+    client,
+    targetDeviceId,
+    onLanded: () => {
+      void load(true);
+    },
+  });
+
   const rows = useMemo(
     () => (snapshot !== null && harness !== null ? providerAccounts(snapshot, harness) : []),
     [snapshot, harness],
@@ -176,48 +199,82 @@ export function AccountUsageIndicator({ client, harness, targetDeviceId }: Accou
   const label = `${Math.round(fraction * 100)}%`;
 
   return (
-    <PickerCard
-      open={open}
-      onOpenChange={setOpen}
-      placement="anchorAboveEnd"
-      role="dialog"
-      ariaLabel={`${providerName(harness)} accounts`}
-      width={400}
-      overlaySource="composer-pickers"
-      trigger={
-        <div
-          className="account-usage"
-          data-tone={tone}
-          data-open={open || undefined}
-          title={`${providerName(harness)} plan usage`}
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            {/* Rotated so the arc starts at 12 o'clock, like the desktop's paths. */}
-            <g transform="rotate(-90 8 8)" fill="none" strokeWidth="1.8">
-              <circle cx="8" cy="8" r={RING_RADIUS} className="account-usage-track" />
-              <circle
-                cx="8"
-                cy="8"
-                r={RING_RADIUS}
-                className="account-usage-arc"
-                strokeDasharray={`${RING_CIRCUMFERENCE * fraction} ${RING_CIRCUMFERENCE}`}
-                strokeLinecap="butt"
-              />
-            </g>
-          </svg>
-          <span>{label}</span>
-        </div>
-      }
-    >
-      <AccountUsageCard
+    <>
+      <PickerCard
         open={open}
-        title={`${providerName(harness)} accounts`}
-        rows={rows}
-        error={error}
-        onSwitch={(account) => void switchTo(account)}
-      />
-    </PickerCard>
+        onOpenChange={setOpen}
+        placement="anchorAboveEnd"
+        role="dialog"
+        ariaLabel={`${providerName(harness)} accounts`}
+        width={400}
+        overlaySource="composer-pickers"
+        trigger={
+          <div
+            className="account-usage"
+            data-tone={tone}
+            data-open={open || undefined}
+            title={`${providerName(harness)} plan usage`}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              {/* Rotated so the arc starts at 12 o'clock, like the desktop's paths. */}
+              <g transform="rotate(-90 8 8)" fill="none" strokeWidth="1.8">
+                <circle cx="8" cy="8" r={RING_RADIUS} className="account-usage-track" />
+                <circle
+                  cx="8"
+                  cy="8"
+                  r={RING_RADIUS}
+                  className="account-usage-arc"
+                  strokeDasharray={`${RING_CIRCUMFERENCE * fraction} ${RING_CIRCUMFERENCE}`}
+                  strokeLinecap="butt"
+                />
+              </g>
+            </svg>
+            <span>{label}</span>
+          </div>
+        }
+      >
+        <AccountUsageCard
+          open={open}
+          title={`${providerName(harness)} accounts`}
+          rows={rows}
+          error={error}
+          onSwitch={(account) => void switchTo(account)}
+          onSignIn={signIn.begin}
+        />
+        {signIn.flow !== null && (
+          <SignInAgainCard flow={signIn.flow} onCancel={signIn.cancel} onSubmitCode={signIn.submitCode} />
+        )}
+      </PickerCard>
+      {/* The "switch to a signed-out account" ask (ticket 08) — the same
+          modal-over-popover the desktop's `render_switch_confirm` draws. */}
+      {confirmSwitch !== null && (
+        <Dialog ariaLabel="Switch to a signed-out account?" onClose={() => setConfirmSwitch(null)}>
+          <DialogCard>
+            <DialogTitle>Switch to a signed-out account?</DialogTitle>
+            <DialogBody>{signedOutSwitchWarning(confirmSwitch)}</DialogBody>
+            <div className="dialog-actions-row">
+              <BtnGhost type="button" onClick={() => setConfirmSwitch(null)}>
+                Cancel
+              </BtnGhost>
+              <BtnPrimary type="button" onClick={confirmSwitchTo}>
+                Switch anyway
+              </BtnPrimary>
+            </div>
+          </DialogCard>
+        </Dialog>
+      )}
+    </>
   );
+
+  /** The confirm dialog's "Switch anyway" — the ask is advice, not a block
+   *  (the desktop's `confirm_switch` take runs the same switch). */
+  function confirmSwitchTo(): void {
+    const account = confirmSwitch;
+    setConfirmSwitch(null);
+    if (account !== null) {
+      void switchTo(account, true);
+    }
+  }
 }
 
 const RING_RADIUS = 6;
@@ -229,19 +286,24 @@ function AccountUsageCard({
   rows,
   error,
   onSwitch,
+  onSignIn,
 }: {
   readonly open: boolean;
   readonly title: string;
   readonly rows: readonly AgentAccount[];
   readonly error: string | null;
   readonly onSwitch: (account: AgentAccount) => void;
+  /** "Sign in again" on a signed-out row (ticket 08) — the inline flow. */
+  readonly onSignIn: (account: AgentAccount) => void;
 }) {
   const { cursor, setCursor, onKeyDown } = useCursorList({
     enabled: open,
     count: rows.length,
     onActivate: (ix) => {
       const row = rows[ix];
-      if (row !== undefined && !row.active && row.switchable) {
+      // A signed-out row is listed, never keyboard-switched — its own
+      // action is the sign-in (stories 47/50).
+      if (row !== undefined && !row.active && row.switchable && !signedOut(row)) {
         onSwitch(row);
       }
     },
@@ -255,8 +317,76 @@ function AccountUsageCard({
       ) : (
         <div className="picker-list picker-list-plain">
           {rows.map((account, ix) => {
-            const canSwitch = !account.active && account.switchable;
+            const isSignedOut = signedOut(account);
+            const canSwitch = !account.active && account.switchable && !isSignedOut;
             const label = account.email ?? account.displayName ?? "Unknown account";
+            // The probe's reason rides the meta line EVEN WHEN stale meters
+            // are shown — cached meters used to hide the sign-out (ticket
+            // 08's display bug; the desktop's `account_note`).
+            const note = accountNote(account);
+            const body = (
+              <span className="account-usage-row-main">
+                <span className="account-usage-row-label">{label}</span>
+                <span className="account-usage-row-meta">
+                  {account.planLabel != null && <span className="account-usage-row-plan">{account.planLabel}</span>}
+                  {account.active && <span className="account-usage-row-in-use">In use</span>}
+                  {/* The mark that keeps a dead login from reading healthy. */}
+                  {isSignedOut && <span className="account-usage-row-signed-out">Signed out</span>}
+                  {note !== null && (
+                    <span
+                      className={`account-usage-row-reason ${
+                        isSignedOut ? "account-usage-row-reason-signed-out" : ""
+                      }`}
+                    >
+                      {note}
+                    </span>
+                  )}
+                </span>
+                {account.usageWindows.length > 0 && (
+                  <span className="account-usage-meters">
+                    {account.usageWindows.slice(0, 2).map((window, index) => (
+                      <AccountUsageMeter key={index} label={window.label} usedFraction={window.usedFraction} />
+                    ))}
+                  </span>
+                )}
+                {/* The signed-out row's own action (ticket 08): the same
+                    login flow the settings page drives, inline here. The
+                    row renders as a div for these — a nested button can
+                    never live inside the row button. */}
+                {isSignedOut && (
+                  <button
+                    type="button"
+                    className="failover-row-sign-in"
+                    onClick={(event) => {
+                      // The row's own click asks about the switch; the
+                      // nested button owns this one.
+                      event.stopPropagation();
+                      onSignIn(account);
+                    }}
+                  >
+                    Sign in again
+                  </button>
+                )}
+              </span>
+            );
+            if (isSignedOut) {
+              // A signed-out row is listed, never switched directly: the
+              // row's own click asks first (the switch confirm below), and
+              // its nested action signs in — a div, so the nesting is valid
+              // (a nested button can never live inside the row button).
+              return (
+                <div
+                  key={account.id}
+                  className="menu-row"
+                  data-rb-row-key={`account-usage-row-${ix}`}
+                  onClick={() => {
+                    onSwitch(account);
+                  }}
+                >
+                  {body}
+                </div>
+              );
+            }
             return (
               <MenuRowNav
                 key={account.id}
@@ -271,23 +401,7 @@ function AccountUsageCard({
                   }
                 }}
               >
-                <span className="account-usage-row-main">
-                  <span className="account-usage-row-label">{label}</span>
-                  <span className="account-usage-row-meta">
-                    {account.planLabel != null && <span className="account-usage-row-plan">{account.planLabel}</span>}
-                    {account.active && <span className="account-usage-row-in-use">In use</span>}
-                    {account.usageError != null && account.usageWindows.length === 0 && (
-                      <span className="account-usage-row-reason">{account.usageError}</span>
-                    )}
-                  </span>
-                  {account.usageWindows.length > 0 && (
-                    <span className="account-usage-meters">
-                      {account.usageWindows.slice(0, 2).map((window, index) => (
-                        <AccountUsageMeter key={index} label={window.label} usedFraction={window.usedFraction} />
-                      ))}
-                    </span>
-                  )}
-                </span>
+                {body}
               </MenuRowNav>
             );
           })}
@@ -304,8 +418,10 @@ function AccountUsageCard({
 
 /** One compact meter line (`render_usage_meter`): label, a short bar,
  * percent. The reset moment stays out of this card — the desktop's footer
- * card likewise leaves it to the settings page's fuller rows. */
-function AccountUsageMeter({ label, usedFraction: fraction }: { readonly label: string; readonly usedFraction: number }) {
+ * card likewise leaves it to the settings page's fuller rows (the Limited
+ * banner's failover picker draws its own caption under the meters).
+ * Exported for the failover picker's candidate rows (same meters). */
+export function AccountUsageMeter({ label, usedFraction: fraction }: { readonly label: string; readonly usedFraction: number }) {
   const clamped = Math.min(Math.max(fraction, 0), 1);
   const level = usageLevel(clamped);
   return (
