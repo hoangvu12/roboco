@@ -68,7 +68,7 @@ jobs:
       - name: Pi native driver integration tests
         run: |
           cargo test --locked -p roboco-harness --test pi
-          cargo test --locked -p roboco-engine --test pi_resume --test pi_steering
+          cargo test --locked -p roboco-engine --test pi_resume --test pi_steering --test pi_forks
       - name: Engine-local storage and recovery
         run: |
           cargo test --locked -p roboco-sync --lib
