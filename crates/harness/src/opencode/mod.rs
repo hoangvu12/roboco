@@ -973,6 +973,27 @@ impl Server {
             .await
             .map(|_| ())
     }
+
+    /// 2.x: the agent rides the session too (a create carries it in the
+    /// body; a resumed or forked session re-applies it here). A no-op on
+    /// 1.x, which has no session-scoped agent route — the run's agent
+    /// rides the prompt wire there or stays the server default.
+    async fn adopt_agent(
+        &self,
+        session_id: &str,
+        agent: Option<&str>,
+        directory: Option<&str>,
+    ) -> Result<(), HarnessError> {
+        if self.protocol().await == Protocol::V2
+            && let Some(agent) = agent
+        {
+            let path = format!("/api/session/{session_id}/agent");
+            self.post_json(&path, directory, &json!({ "agent": agent }))
+                .await
+                .map(|_| ())?;
+        }
+        Ok(())
+    }
 }
 
 fn http_client() -> reqwest::Client {
@@ -1563,17 +1584,7 @@ async fn run_session(session: Session) {
             // history the engine attached.
             match fork_session(&server, dir, &fork).await {
                 Ok(forked) => {
-                    if server.protocol().await == Protocol::V2
-                        && let Some(agent) = agent
-                    {
-                        server
-                            .post_json(
-                                &format!("/api/session/{forked}/agent"),
-                                dir,
-                                &json!({"agent": agent}),
-                            )
-                            .await?;
-                    }
+                    server.adopt_agent(&forked, agent, dir).await?;
                     forked
                 }
                 Err(e) => {
@@ -1594,17 +1605,7 @@ async fn run_session(session: Session) {
                         .and_then(Value::as_str)
                         .unwrap_or(resume)
                         .to_owned();
-                    if server.protocol().await == Protocol::V2
-                        && let Some(agent) = agent
-                    {
-                        server
-                            .post_json(
-                                &format!("/api/session/{id}/agent"),
-                                dir,
-                                &json!({"agent": agent}),
-                            )
-                            .await?;
-                    }
+                    server.adopt_agent(&id, agent, dir).await?;
                     id
                 }
                 Err(e) => {
@@ -2534,7 +2535,7 @@ async fn fork_session(
 /// One message-list entry reduced to what a fork cut needs: (id, role).
 /// 1.x wraps the message in `{info: {id, role}, parts}`; 2.x items are
 /// flat `{id, type, …}` — the role lives under either key.
-fn message_role(item: &Value) -> Option<(String, String)> {
+fn message_id_and_role(item: &Value) -> Option<(String, String)> {
     let info = item.get("info").unwrap_or(item);
     let id = info.get("id").and_then(Value::as_str)?;
     let role = info
@@ -2613,7 +2614,7 @@ async fn session_messages(
             .filter(|cursor| !cursor.is_empty())
             .map(str::to_owned);
         for item in unwrap_data(response).as_array().cloned().unwrap_or_default() {
-            if let Some(entry) = message_role(&item) {
+            if let Some(entry) = message_id_and_role(&item) {
                 messages.push(entry);
             }
         }

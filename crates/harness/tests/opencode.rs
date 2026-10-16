@@ -52,6 +52,10 @@ struct FakeOpencode {
     /// (`GET /session/{id}/message`, `GET /api/session/{id}/message`).
     /// Unlisted sessions 404 — the fork's "a call fails" fallback.
     messages: Arc<Mutex<std::collections::HashMap<String, Vec<Value>>>>,
+    /// Cursor-paginated 2.x message fixtures by session: whole pages,
+    /// served one `cursor=` step at a time (the pagination path of the
+    /// fork's boundary resolution).
+    paged_messages: Arc<Mutex<std::collections::HashMap<String, Vec<Vec<Value>>>>>,
     /// Fork outcomes by SOURCE session id: (status, response). An
     /// unconfigured source 404s the fork (the refused-fork fallback).
     forks: Arc<
@@ -92,6 +96,7 @@ impl FakeOpencode {
             fail_aborts: Arc::new(Mutex::new(false)),
             v2,
             messages: Arc::default(),
+            paged_messages: Arc::default(),
             forks: Arc::default(),
         };
         let accept = fake.clone();
@@ -144,6 +149,15 @@ impl FakeOpencode {
             .lock()
             .unwrap()
             .insert(session.to_owned(), messages);
+    }
+
+    /// Install a session's message list as 2.x cursor pages (creation
+    /// order across the pages).
+    fn set_messages_paged(&self, session: &str, pages: Vec<Vec<Value>>) {
+        self.paged_messages
+            .lock()
+            .unwrap()
+            .insert(session.to_owned(), pages);
     }
 
     /// Install the fork outcome for a source session (status + response
@@ -205,7 +219,10 @@ impl FakeOpencode {
             let mut parts = start.split_whitespace();
             let method = parts.next().unwrap_or_default().to_owned();
             let target = parts.next().unwrap_or_default().to_owned();
-            let path = target.split('?').next().unwrap_or_default().to_owned();
+            let (path, query) = match target.split_once('?') {
+                Some((path, query)) => (path.to_owned(), query.to_owned()),
+                None => (target, String::new()),
+            };
 
             if method == "GET" && (path == "/global/event" || path == "/api/event") {
                 // Subscribe FIRST, then snapshot the backlog: frames landing
@@ -250,7 +267,7 @@ impl FakeOpencode {
                 }
                 self.posts.lock().unwrap().push((path.clone(), body));
             }
-            let (status, payload) = self.route(&method, &path);
+            let (status, payload) = self.route(&method, &path, &query);
             let body = payload.to_string();
             let resp = format!(
                 "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
@@ -263,9 +280,9 @@ impl FakeOpencode {
         }
     }
 
-    fn route(&self, method: &str, path: &str) -> (&'static str, Value) {
+    fn route(&self, method: &str, path: &str, query: &str) -> (&'static str, Value) {
         if self.v2 {
-            return self.route_v2(method, path);
+            return self.route_v2(method, path, query);
         }
         self.route_v1(method, path)
     }
@@ -355,7 +372,7 @@ impl FakeOpencode {
     /// The 2.x `/api` surface: version-bearing info endpoints (protocol
     /// detection), `{data}`-wrapped responses, and the fork/message routes
     /// in their 2.x shapes.
-    fn route_v2(&self, method: &str, path: &str) -> (&'static str, Value) {
+    fn route_v2(&self, method: &str, path: &str, query: &str) -> (&'static str, Value) {
         match (method, path) {
             ("GET", "/api/info") | ("GET", "/api/health") | ("GET", "/api/status") => {
                 ("200 OK", json!({ "version": "2.0.11", "healthy": true }))
@@ -386,8 +403,29 @@ impl FakeOpencode {
             }
             ("GET", "/api/session/active") => ("200 OK", json!({ "data": {} })),
             // The fork's boundary resolution: `{data, cursor}` pages of
-            // flat `{id, type}` entries (the 2.0.11 shape).
+            // flat `{id, type}` entries (the 2.0.11 shape). A paged fixture
+            // answers one page per `cursor=` step; the driver's first page
+            // rides `order=asc` (no cursor).
             ("GET", p) if p.starts_with("/api/session/") && p.ends_with("/message") => {
+                let session = Self::session_id_of(p, "/api/session/");
+                let pages = session
+                    .as_deref()
+                    .and_then(|id| self.paged_messages.lock().unwrap().get(id))
+                    .cloned();
+                if let Some(pages) = pages {
+                    let index = query
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("cursor="))
+                        .and_then(|cursor| cursor.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let page = pages.get(index).cloned().unwrap_or_default();
+                    let next = (index + 1 < pages.len()).then(|| (index + 1).to_string());
+                    let cursor = match next {
+                        Some(next) => json!({ "next": next }),
+                        None => json!({}),
+                    };
+                    return ("200 OK", json!({ "data": page, "cursor": cursor }));
+                }
                 match self.message_list(p, "/api/session/") {
                     Some(list) => ("200 OK", json!({ "data": list, "cursor": {} })),
                     None => ("404 Not Found", json!({})),
@@ -2041,4 +2079,47 @@ async fn a_fork_boundary_the_server_cannot_resolve_falls_back_to_the_paste() {
     v2_idle(&fake, "ses_test2");
     let events = drain_to_done(&mut stream).await;
     assert!(events.iter().all(|ev| !matches!(ev, AgentEvent::Error { .. })));
+}
+
+#[tokio::test]
+async fn a_v2_fork_resolution_follows_the_message_list_cursor() {
+    // The boundary turn sits on the first page, the next user message on
+    // the second: the driver must follow the cursor before it cuts.
+    let fake = FakeOpencode::start_v2().await;
+    fake.set_messages_paged(
+        "ses_src",
+        vec![
+            vec![
+                json!({ "id": "msg_a", "type": "user", "time": { "created": 1 } }),
+                json!({ "id": "msg_a_reply", "type": "assistant", "time": { "created": 2 } }),
+            ],
+            vec![
+                json!({ "id": "msg_b", "type": "user", "time": { "created": 3 } }),
+                json!({ "id": "msg_b_reply", "type": "assistant", "time": { "created": 4 } }),
+            ],
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "data": { "id": "ses_fork2" } }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork2"
+    ));
+    let _commands = next_event(&mut stream).await;
+    // The cut addresses the next turn's user message — which only exists
+    // on the second page, so the driver followed the cursor to find it.
+    let forks = wait_posts(&fake, "/api/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({ "before": "msg_b" }));
+    let prompts = wait_posts(&fake, "/api/session/ses_fork2/prompt", 1).await;
+    assert_eq!(prompts[0]["text"], "hi");
+
+    v2_assistant_message(&fake, "ses_fork2", "amsg_1");
+    v2_idle(&fake, "ses_fork2");
+    drain_to_done(&mut stream).await;
 }

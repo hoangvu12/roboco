@@ -1086,25 +1086,25 @@ fn new_user_message_ids_fit_both_wires() {
 }
 
 #[test]
-fn message_role_reads_both_list_shapes() {
+fn message_id_and_role_reads_both_list_shapes() {
     // 1.x: `{info: {id, role}, parts}`. 2.x: flat `{id, type}`.
     let v1 = json!({ "info": { "id": "msg_1", "role": "user" }, "parts": [] });
     let v2 = json!({ "id": "msg_2", "type": "assistant", "time": { "created": 1 } });
     assert_eq!(
-        message_role(&v1),
+        message_id_and_role(&v1),
         Some(("msg_1".to_owned(), "user".to_owned()))
     );
     assert_eq!(
-        message_role(&v2),
+        message_id_and_role(&v2),
         Some(("msg_2".to_owned(), "assistant".to_owned()))
     );
     // A synthetic 2.x report is a turn start the fork must cut at too.
     let synthetic = json!({ "id": "msg_3", "type": "synthetic" });
     assert_eq!(
-        message_role(&synthetic),
+        message_id_and_role(&synthetic),
         Some(("msg_3".to_owned(), "synthetic".to_owned()))
     );
-    assert_eq!(message_role(&json!({ "parts": [] })), None);
+    assert_eq!(message_id_and_role(&json!({ "parts": [] })), None);
 }
 
 #[test]
@@ -1961,14 +1961,18 @@ async fn v2_model_selection_and_prompt_use_the_documented_bodies() {
             .1,
         json!({"model":{"providerID":"opencode","id":"muse","variant":"low"}})
     );
-    assert_eq!(
-        posts
-            .iter()
-            .find(|(p, _)| p == "/api/session/fixture/prompt")
-            .unwrap()
-            .1,
-        json!({"text":"first","files":[]})
-    );
+    let prompt = posts
+        .iter()
+        .find(|(p, _)| p == "/api/session/fixture/prompt")
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(prompt["text"], "first");
+    assert_eq!(prompt["files"], json!([]));
+    // The client-chosen message id (ticket 20) rides `id` — a dynamic
+    // `msg_`-prefixed uuid, so only its shape is asserted here.
+    let message_id = prompt["id"].as_str().unwrap_or_default();
+    assert!(message_id.starts_with("msg_"), "{message_id}");
 }
 
 #[tokio::test]
