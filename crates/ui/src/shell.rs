@@ -66,6 +66,7 @@ mod chat_rename_tests;
 mod command_palette;
 mod file_mutations;
 mod files_panel;
+mod fork_dialog;
 mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
@@ -1708,6 +1709,10 @@ pub struct Shell {
     section_menu_active: Option<usize>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
+    /// The fork dialog (t3-orchestration-v2 ticket 22): the harness and
+    /// model a pending fork runs on. `Some` while open; the confirm hands
+    /// the fork to `fork_chat` with the chosen overrides.
+    fork_dialog: Option<fork_dialog::ForkDialog>,
     /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
     /// The New project palette's collapsed-breadcrumbs (`…`) menu.
@@ -2115,6 +2120,7 @@ impl Shell {
             section_menu_focus: cx.focus_handle(),
             section_menu_active: None,
             delete_space_confirm: None,
+            fork_dialog: None,
             add_space: None,
             command_palette: None,
             pending_workspace_command: None,
@@ -3683,7 +3689,10 @@ impl Shell {
                 // The reply may live in the selected chat or in an open side
                 // chat's transcript. The fork hangs under the source — a
                 // side chat's own fork lands as a sibling, like its fork
-                // button — and copies only up to the chosen reply.
+                // button — and copies only up to the chosen reply. Ticket
+                // 22: the fork dialog opens first, so the user picks the
+                // harness and model the fork runs on (defaulting to the
+                // source's) before anything is sent.
                 let Some(source) = self
                     .state
                     .read(cx)
@@ -3698,7 +3707,7 @@ impl Shell {
                     .parent_chat_id
                     .clone()
                     .unwrap_or_else(|| source.id.clone());
-                self.fork_chat(source, parent, Some(entry_id.clone()), cx);
+                self.open_fork_dialog(source, parent, Some(entry_id.clone()), cx);
             }
         }
     }
@@ -5243,6 +5252,7 @@ impl Shell {
             || self.section_dialog.is_some()
             || self.section_menu.is_some()
             || self.add_space.is_some()
+            || self.fork_dialog.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
             || self.open_side_chat_pickers(cx).is_some()
     }
@@ -8249,6 +8259,11 @@ impl Shell {
             self.close_project_crumb_menu(cx);
             return true;
         }
+        if self.fork_dialog.is_some() {
+            // The fork dialog is a modal over everything else open here.
+            self.close_fork_dialog(cx);
+            return true;
+        }
         if self.add_space.is_some() {
             self.add_space = None;
             cx.notify();
@@ -8648,6 +8663,9 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_project_action_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_fork_dialog(viewport, cx) {
             overlays.push(overlay);
         }
 

@@ -108,12 +108,20 @@ lost the bind) gets no Roboco tools rather than a dead server.
 
 ### Forks
 
-`ForkSideChat { chatId, sourceChatId, parentChatId? }` copies a chat's
-history through its latest completed response into a new chat and appends
-a `fork` part (a system entry: `sourceChatId`, `sourceTitle`) as the seam;
-the transcript draws it as "This chat was forked from <title>". `parentChatId`
-defaults to the source; a side chat's own fork button passes its parent so
-the copy lists as a sibling.
+`ForkSideChat { chatId, sourceChatId, parentChatId?, boundary?, harness?,
+model? }` copies a chat's history through its latest completed response into
+a new chat and appends a `fork` part (a system entry: `sourceChatId`,
+`sourceTitle`) as the seam; the transcript draws it as "This chat was forked
+from <title>". `parentChatId` defaults to the source; a side chat's own fork
+button passes its parent so the copy lists as a sibling. `boundary`
+(t3-orchestration-v2 ticket 21) names the assistant entry to fork at — any
+settled reply, errored and interrupted included — and the copy stops there,
+inclusive. `harness`/`model` (ticket 22) override what the copy runs on, by
+wire name ("codex", "claude-code", …): a different harness never continues
+the source's provider session — its first send carries the budgeted
+transcript instead — while a pick of the source's own harness keeps the
+native fork. A source chat that hit a usage limit can still be forked into
+another harness this way.
 
 ## Tools
 

@@ -32,14 +32,16 @@ impl Shell {
     }
 
     /// The surface picker's "Side chat": fork the current conversation
-    /// through its latest completed response, as a child of it.
+    /// through its latest completed response, as a child of it. Ticket 22:
+    /// the fork dialog opens first so the harness and model can be chosen
+    /// (defaulting to this conversation's); its confirm performs the fork.
     pub(super) fn create_side_chat(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.state.read(cx).selected_chat_row().cloned() else {
             self.show_side_chat_error("Start a conversation before creating a side chat.", cx);
             return;
         };
         let parent = source.id.clone();
-        self.fork_chat(source, parent, None, cx);
+        self.open_fork_dialog(source, parent, None, cx);
     }
 
     /// Fork `source` into a new chat hanging under `parent_id`, and open it
@@ -48,12 +50,17 @@ impl Shell {
     /// `boundary` (t3-orchestration-v2 ticket 21, "Fork from here") forks at
     /// a chosen assistant reply — any settled one, errored and interrupted
     /// included — instead of the latest completed response; `None` keeps
-    /// today's behaviour.
+    /// today's behaviour. `harness`/`model` (ticket 22, "fork into another
+    /// harness") override what the copy runs on — `None` keeps the source's
+    /// harness and its native fork behaviour, and the fork dialog passes
+    /// its picks here on confirm.
     pub(super) fn fork_chat(
         &mut self,
         source: roboco_proto::Chat,
         parent_id: String,
         boundary: Option<String>,
+        harness: Option<roboco_proto::HarnessId>,
+        model: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.side_chat_creating {
@@ -64,21 +71,16 @@ impl Shell {
         };
         let key = self.panel_key(cx);
         self.side_chat_creating = true;
-        let mut params = serde_json::json!({
-            "chatId": uuid::Uuid::new_v4().to_string(),
-            "sourceChatId": source.id,
-            "parentChatId": parent_id,
-            "targetDeviceId": source.device_id,
-        });
-        // Only send the boundary when one was chosen: absent, the engine
-        // forks from the latest complete reply (the classic button).
-        if let Some(boundary) = boundary
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            params["boundary"] = serde_json::Value::String(boundary.to_owned());
-        }
+        // The wire payload: overrides ride only when chosen, so an engine
+        // predating tickets 21/22 still reads its classic fork.
+        let params = fork_dialog::fork_params(
+            &uuid::Uuid::new_v4().to_string(),
+            &source,
+            &parent_id,
+            boundary.as_deref(),
+            harness,
+            model.as_deref(),
+        );
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
