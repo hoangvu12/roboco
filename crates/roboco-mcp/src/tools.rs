@@ -144,6 +144,24 @@ fn catalog() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "fork_chat",
+            description: "Fork a chat into a new side chat: the copy carries the source's transcript up to a chosen reply and, on the same harness, continues its real provider session. The source defaults to the chat you are speaking from; reply takes any settled assistant entry id from read_chat (errored and interrupted included) and defaults to the latest; harness and model override what the copy runs on — a different harness starts from a size-limited transcript of the source instead; prompt and wait behave like create_chat's. The fork lists under you like any side chat you create and notifies you by default (notify: false opts out). A side chat cannot call it. Returns the new chat id.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "chat": { "type": "string", "description": "Source chat to fork: id, unique id prefix, or exact title. Defaults to the chat you are speaking from." },
+                    "reply": { "type": "string", "description": "Assistant reply to fork from, inclusive: the entry id read_chat reports. Any settled reply — errored and interrupted included. Defaults to the latest reply." },
+                    "harness": { "type": "string", "description": "Harness id for the copy (see list_harnesses). Defaults to the source's harness, which keeps the native fork." },
+                    "model": { "type": "string", "description": "Model id from list_models on the chosen harness. Omit to keep the source's (or the harness default)." },
+                    "title": { "type": "string", "description": "Sidebar title. Otherwise the fork's first turn generates its own." },
+                    "prompt": { "type": "string", "description": "First message to send to the fork right away." },
+                    "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
+                    "notify": { "type": "boolean", "default": true, "description": "For a fork you make: whether you want a completion notice when it finishes, fails, stops or needs input (default on). Pass false for a fire-and-forget fork." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
+                }
+            }),
+        },
+        ToolDef {
             name: "read_chat",
             description: "Read a chat's transcript as plain messages (newest window by default). Tool calls are summarized one per line. Use it to collect a side chat's result after a completion notice names it.",
             input_schema: chat_key_schema(json!({
@@ -317,6 +335,26 @@ struct CreateChatArgs {
     timeout_secs: Option<u64>,
 }
 
+/// `fork_chat` (t3-orchestration-v2 ticket 23): the source, boundary and
+/// overrides an agent forks with. Every option is optional; the source
+/// defaults to the chat this server speaks for.
+#[derive(Deserialize, Default)]
+struct ForkChatArgs {
+    chat: Option<String>,
+    reply: Option<String>,
+    harness: Option<String>,
+    model: Option<String>,
+    title: Option<String>,
+    prompt: Option<String>,
+    #[serde(default)]
+    wait: bool,
+    /// Opt out of completion notices for this fork (default on). Only
+    /// meaningful when an agent is the creator; user forks never notify.
+    #[serde(default)]
+    notify: Option<bool>,
+    timeout_secs: Option<u64>,
+}
+
 #[derive(Deserialize)]
 struct ReadChatArgs {
     chat: String,
@@ -472,6 +510,7 @@ impl Tools {
             "get_chat" => self.get_chat(parse(args)?).await,
             "create_chat" => self.create_chat(parse(args)?).await,
             "create_chats" => self.batch(parse(args)?, true).await,
+            "fork_chat" => self.fork_chat(parse(args)?).await,
             "send_messages" => self.batch(parse(args)?, false).await,
             "read_chat" => self.read_chat(parse(args)?).await,
             "send_message" => self.send_message(parse(args)?).await,
@@ -883,6 +922,218 @@ impl Tools {
                 baseline: None,
                 // A brand-new chat has no earlier messages.
                 start: TurnStart::default(),
+            });
+            self.pending_turns
+                .lock()
+                .await
+                .insert(chat.id.clone(), pending.clone());
+            if args.wait {
+                result["turn"] = self
+                    .await_pending_turn(&chat, pending, wait_duration(args.timeout_secs))
+                    .await?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// `fork_chat` (t3-orchestration-v2 ticket 23): fork a chat into a new
+    /// side chat through the same RPC the UI's fork button uses. The source
+    /// defaults to the calling chat; the boundary, harness and model ride
+    /// the RPC verbatim; a first prompt and wait behave exactly like
+    /// `create_chat`'s. An agent-made fork records its creator (with the
+    /// `notify` opt-out) the same way `create_chat` does, so completion
+    /// notices reach the forking chat; a human at a terminal creates an
+    /// unmarked fork that never notifies.
+    async fn fork_chat(&self, args: ForkChatArgs) -> anyhow::Result<Value> {
+        // The same guard as `create_chat`: the calling chat must be
+        // top-level. Side chats cannot fork chats.
+        let origin_chat = match self.roboco.origin().chat_id.as_deref() {
+            Some(id) => Some(self.roboco.resolve_chat(id).await?),
+            None => None,
+        };
+        if let Some(chat) = &origin_chat {
+            anyhow::ensure!(
+                chat.parent_chat_id.is_none(),
+                "Side chats cannot fork chats. Ask your parent chat to create another side chat."
+            );
+        }
+        // Source: the explicit `chat` argument, else the chat this server
+        // speaks for (spec story 65: "by default my own"). A terminal
+        // without an origin must name one.
+        let source = match args
+            .chat
+            .as_deref()
+            .map(str::trim)
+            .filter(|chat| !chat.is_empty())
+        {
+            Some(key) => self.roboco.resolve_chat(key).await?,
+            None => match &origin_chat {
+                Some(chat) => chat.clone(),
+                None => anyhow::bail!(
+                    "fork_chat needs a source chat: pass `chat` (id, prefix, or title), or run it from inside a chat"
+                ),
+            },
+        };
+        // Agent-made forks are marked exactly like `create_chat`'s side
+        // chats: the creator (this server's origin chat) and its notify
+        // preference. No origin chat — a human at a terminal — never marks
+        // the fork, so it never notifies.
+        let agent_origin = self.roboco.origin().chat_id.as_deref().map(|origin_id| {
+            roboco_proto::AgentOrigin {
+                chat_id: origin_id.to_owned(),
+                notify: args.notify.unwrap_or(true),
+            }
+        });
+        let harnesses = self
+            .roboco
+            .harnesses()
+            .await
+            .with_context(|| format!("harness catalog on device {}", source.device_id))?;
+        let harness_override =
+            match args.harness.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+                Some(raw) => {
+                    let id: HarnessId = parse_enum("harness", raw).map_err(anyhow::Error::msg)?;
+                    // The source's own harness stays pickable even when its
+                    // CLI is gone (the fork dialog's rule — the copy runs on
+                    // it either way); any other pick must be offered here.
+                    let source_harness = source.config.as_ref().map(|config| config.harness);
+                    anyhow::ensure!(
+                        source_harness == Some(id)
+                            || harnesses.iter().any(|h| h.id == id && h.available()),
+                        "harness {raw} is not available on device {} (see list_harnesses)",
+                        source.device_id
+                    );
+                    Some(id)
+                }
+                None => None,
+            };
+        if let Some(model) = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            // The model must be offered by the harness the copy runs on:
+            // the override, else the source's (else the offered default —
+            // a configless source runs on the engine default).
+            let target = match harness_override
+                .or_else(|| source.config.as_ref().map(|config| config.harness))
+            {
+                Some(harness) => harness,
+                None => default_harness(&harnesses)?,
+            };
+            let models = self
+                .roboco
+                .models(target)
+                .await
+                .with_context(|| format!("model catalog on device {}", source.device_id))?;
+            anyhow::ensure!(
+                models.iter().any(|m| m.id == model),
+                "model {model:?} is not offered by {target:?} on device {}; available: {}",
+                source.device_id,
+                models
+                    .iter()
+                    .map(|m| m.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        // Where the copy hangs: the calling chat when an agent forks —
+        // `create_chat`'s rule, so the fork is the agent's side chat and
+        // owes it the notices — else the UI's rule: the source, or the
+        // source's parent when the source is itself a side chat, so the
+        // copy lists as a sibling instead of nesting under a side chat.
+        let parent_chat_id = match origin_chat.as_ref() {
+            Some(origin) => origin.id.clone(),
+            None => source
+                .parent_chat_id
+                .clone()
+                .unwrap_or_else(|| source.id.clone()),
+        };
+        let mut params = json!({
+            "chatId": chat_id,
+            "sourceChatId": source.id,
+            "parentChatId": parent_chat_id,
+        });
+        // Overrides ride only when chosen — the same wire shape the fork
+        // dialog sends — so an engine predating tickets 21/22/23 still
+        // reads its classic fork.
+        if let Some(reply) = args
+            .reply
+            .as_deref()
+            .map(str::trim)
+            .filter(|reply| !reply.is_empty())
+        {
+            params["boundary"] = json!(reply);
+        }
+        if let Some(harness) = harness_override {
+            // The kebab-case wire name ("codex", "claude-code"), like the
+            // fork dialog's params.
+            params["harness"] = json!(harness);
+        }
+        if let Some(model) = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            params["model"] = json!(model);
+        }
+        if let Some(origin) = &agent_origin {
+            params["agentOrigin"] = json!({
+                "chatId": origin.chat_id,
+                "notify": origin.notify,
+            });
+        }
+        let chat = self.roboco.fork_side_chat(params).await?;
+        if let Some(title) = args
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        {
+            self.roboco
+                .mutate(json!({ "op": "renameChat", "chatId": chat.id, "title": title }))
+                .await?;
+        }
+
+        let mut result = json!({
+            "chatId": chat.id,
+            "kind": "side",
+            "sourceChatId": source.id,
+            "deviceId": chat.device_id,
+            "parentChatId": chat.parent_chat_id,
+            "agentOrigin": chat.agent_origin,
+            "title": args.title,
+            "harness": chat.config.as_ref().map(|config| config.harness),
+            "model": chat.config.as_ref().and_then(|config| config.model.clone()),
+        });
+        if let Some(prompt) = args.prompt.filter(|prompt| !prompt.trim().is_empty()) {
+            let spaces = self.roboco.spaces().await?;
+            let space = chat
+                .space_id
+                .as_deref()
+                .and_then(|id| spaces.iter().find(|space| space.id == id));
+            // The copied history is already in the fork's doc: baseline the
+            // turn on the entries present before the send, so a wait
+            // reports the fork's own replies, never the copied ones
+            // (`create_chat`'s empty baseline is wrong for a fork).
+            let message_ids = self
+                .roboco
+                .transcript(&chat.id)
+                .await?
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect();
+            let sent = self
+                .deliver(&chat, space, &harnesses, None, prompt, "run")
+                .await?;
+            result["sent"] = sent;
+            let pending = Arc::new(PendingTurn {
+                baseline: None,
+                start: TurnStart { message_ids },
             });
             self.pending_turns
                 .lock()
@@ -1381,10 +1632,38 @@ mod tests {
         /// When set, `WatchSessions` reports this chat as Working — a wait
         /// on it can only time out.
         working_session: Option<String>,
+        /// Alpha's config harness — overridden to test forking onto the
+        /// source's own harness while its CLI is no longer installed (the
+        /// fork dialog keeps that pick legal).
+        alpha_harness: Option<&'static str>,
     }
 
     fn stream(item: Value) -> RpcReply {
         RpcReply::Stream(futures::stream::iter(vec![item]).boxed())
+    }
+
+    /// The workspace's chat rows, as `WatchChats` reports them. The fork
+    /// handler builds its copy from the same shape, so the stub's chats
+    /// stay one source of truth.
+    fn rows(&self) -> Value {
+        json!([
+            {
+                "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
+                "archived": false, "spaceId": "space-1",
+                "config": {
+                    "harness": self.alpha_harness.unwrap_or("claude-code"),
+                    "model": "opus", "reasoning": null, "sandbox": "workspace-write"
+                },
+                "createdAt": "2026-09-01T00:00:00Z"
+            },
+            {
+                "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
+                "parentChatId": self.beta_parent,
+                "agentOrigin": self.beta_agent_origin,
+                "archived": false, "spaceId": "space-1",
+                "createdAt": "2026-09-02T00:00:00Z"
+            }
+        ])
     }
 
     #[async_trait]
@@ -1411,21 +1690,7 @@ mod tests {
                     "id": "space-2", "deviceId": "dev-local", "path": "/repo/other", "name": "comet",
                     "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
                 }])),
-                methods::WATCH_CHATS => stream(json!([
-                    {
-                        "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
-                        "archived": false, "spaceId": "space-1",
-                        "config": { "harness": "claude-code", "model": "opus", "reasoning": null, "sandbox": "workspace-write" },
-                        "createdAt": "2026-09-01T00:00:00Z"
-                    },
-                    {
-                        "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
-                        "parentChatId": self.beta_parent,
-                        "agentOrigin": self.beta_agent_origin,
-                        "archived": false, "spaceId": "space-1",
-                        "createdAt": "2026-09-02T00:00:00Z"
-                    }
-                ])),
+                methods::WATCH_CHATS => stream(self.rows()),
                 methods::WATCH_SESSIONS => stream(match &self.working_session {
                     Some(chat_id) => json!([{
                         "chatId": chat_id, "deviceId": "dev-local",
@@ -1437,7 +1702,9 @@ mod tests {
                     { "id": "claude-code", "name": "Claude Code", "supportsSteering": true,
                       "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true },
                     { "id": "codex", "name": "Codex", "supportsSteering": true,
-                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true }
+                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true },
+                    { "id": "pi", "name": "Pi", "supportsSteering": true,
+                      "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true }
                 ])),
                 methods::LIST_MODELS => RpcReply::Value(json!([
                     { "id": "opus", "label": "Opus" }, { "id": "sonnet", "label": "Sonnet" }
@@ -1471,6 +1738,84 @@ mod tests {
                         .unwrap()
                         .push((method.to_owned(), params));
                     RpcReply::Value(json!({}))
+                }
+                methods::FORK_SIDE_CHAT => {
+                    // The engine's fork semantics as far as the tools
+                    // exercise them (tickets 21–23): the copy is the source
+                    // row with a new id, the chosen parent, no title, the
+                    // agent origin (absent strips — user forks never
+                    // notify), and the harness/model overrides on its run
+                    // config, a cross-harness pick resetting the model
+                    // vocabulary. Recorded like a write so tests assert
+                    // exactly what the tool sent.
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    let rows = self.rows().as_array().cloned().unwrap_or_default();
+                    let source = rows
+                        .iter()
+                        .find(|chat| chat["id"] == params["sourceChatId"])
+                        .cloned()
+                        .ok_or_else(|| {
+                            RpcError::Failed("Source chat no longer exists".into())
+                        })?;
+                    let mut chat = source.clone();
+                    chat["id"] = params["chatId"].clone();
+                    let parent = params
+                        .get("parentChatId")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        .unwrap_or_else(|| source["id"].clone());
+                    chat["parentChatId"] = parent;
+                    chat["title"] = Value::Null;
+                    chat["agentOrigin"] = params
+                        .get("agentOrigin")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let requested_harness = params
+                        .get("harness")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|harness| !harness.is_empty());
+                    let requested_model = params
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|model| !model.is_empty());
+                    if requested_harness.is_some() || requested_model.is_some() {
+                        let base = chat
+                            .get("config")
+                            .filter(|value| !value.is_null())
+                            .cloned()
+                            .unwrap_or(json!({
+                                "harness": "claude-code", "model": null, "reasoning": null,
+                                "sandbox": "workspace-write",
+                            }));
+                        let cross = requested_harness
+                            .is_some_and(|harness| base["harness"].as_str() != Some(harness));
+                        chat["config"] = json!({
+                            "harness": requested_harness.or_else(|| base["harness"].as_str()),
+                            "model": if cross {
+                                requested_model
+                            } else {
+                                requested_model.or_else(|| base["model"].as_str())
+                            },
+                            "reasoning": if cross {
+                                Value::Null
+                            } else {
+                                base["reasoning"].clone()
+                            },
+                            "modelOptions": if cross {
+                                json!({})
+                            } else {
+                                base.get("modelOptions").cloned().unwrap_or(json!({}))
+                            },
+                            "sandbox": base["sandbox"].clone(),
+                        });
+                    }
+                    RpcReply::Value(chat)
                 }
                 other => return Err(RpcError::UnknownMethod(other.into())),
             })
@@ -1828,6 +2173,308 @@ mod tests {
         assert_eq!(
             writes[5].1["agentOrigin"],
             json!({ "chatId": "chat-beta-2", "notify": false })
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_chat_with_no_options_forks_the_caller_from_its_latest_reply() {
+        let world = Arc::new(World::default());
+        let tools = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        let forked = tools.call("fork_chat", json!({})).await.unwrap();
+        let chat_id = forked["chatId"].as_str().unwrap().to_owned();
+        assert!(!chat_id.is_empty(), "a fresh id comes back");
+        assert_eq!(forked["kind"], "side");
+        assert_eq!(forked["sourceChatId"], "chat-alpha-1");
+        assert_eq!(forked["parentChatId"], "chat-alpha-1");
+        // An agent-made fork is a notifying side chat of the caller.
+        assert_eq!(
+            forked["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": true })
+        );
+        assert_eq!(forked["harness"], "claude-code");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        let (method, params) = &writes[0];
+        assert_eq!(method, methods::FORK_SIDE_CHAT);
+        assert_eq!(params["chatId"], chat_id);
+        assert_eq!(params["sourceChatId"], "chat-alpha-1");
+        assert_eq!(params["parentChatId"], "chat-alpha-1");
+        assert_eq!(
+            params["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": true })
+        );
+        // No options picked: the classic fork payload — the boundary,
+        // harness and model ride only when chosen.
+        assert!(params.get("boundary").is_none());
+        assert!(params.get("harness").is_none());
+        assert!(params.get("model").is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_chat_options_ride_the_rpc_and_title_the_copy() {
+        let world = Arc::new(World::default());
+        let tools = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        let forked = tools
+            .call(
+                "fork_chat",
+                json!({
+                    "chat": "alpha",
+                    "reply": "a1",
+                    "harness": "pi",
+                    "model": "sonnet",
+                    "title": "Branch",
+                }),
+            )
+            .await
+            .unwrap();
+        let chat_id = forked["chatId"].as_str().unwrap().to_owned();
+        assert_eq!(forked["kind"], "side");
+        assert_eq!(forked["sourceChatId"], "chat-alpha-1");
+        // The fork hangs under the CALLING chat (create_chat's rule), so it
+        // is the agent's own side chat.
+        assert_eq!(forked["parentChatId"], "chat-alpha-1");
+        assert_eq!(
+            forked["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": true })
+        );
+        assert_eq!(forked["title"], "Branch");
+        assert_eq!(forked["harness"], "pi");
+        assert_eq!(forked["model"], "sonnet");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes.len(), 2, "the fork, then the rename");
+        let (method, params) = &writes[0];
+        assert_eq!(method, methods::FORK_SIDE_CHAT);
+        assert_eq!(params["chatId"], chat_id);
+        assert_eq!(params["sourceChatId"], "chat-alpha-1");
+        assert_eq!(params["parentChatId"], "chat-alpha-1");
+        assert_eq!(params["boundary"], "a1");
+        assert_eq!(params["harness"], "pi");
+        assert_eq!(params["model"], "sonnet");
+        assert_eq!(
+            params["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": true })
+        );
+        let (method, params) = &writes[1];
+        assert_eq!(method, methods::MUTATE);
+        assert_eq!(params["op"], "renameChat");
+        assert_eq!(params["chatId"], chat_id);
+        assert_eq!(params["title"], "Branch");
+    }
+
+    #[tokio::test]
+    async fn fork_chat_validates_the_catalogs_before_forking() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        for args in [
+            // Not installed on this device.
+            json!({ "chat": "alpha", "harness": "codex" }),
+            // Not a harness at all.
+            json!({ "chat": "alpha", "harness": "not-a-harness" }),
+            // Not offered by the harness the copy would run on.
+            json!({ "chat": "alpha", "model": "nope" }),
+        ] {
+            let error = tools.call("fork_chat", args).await.unwrap_err();
+            assert!(world.writes.lock().unwrap().is_empty(), "{error}");
+        }
+        // A cross-harness pick with its model rides the wire and lands on
+        // the copy's config.
+        let forked = tools
+            .call(
+                "fork_chat",
+                json!({ "chat": "alpha", "harness": "pi", "model": "sonnet" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forked["harness"], "pi");
+        assert_eq!(forked["model"], "sonnet");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[0].1["harness"], "pi");
+        assert_eq!(writes[0].1["model"], "sonnet");
+        drop(writes);
+
+        // The source's own harness stays pickable even when its CLI is gone
+        // (the fork dialog's rule): the copy runs on it either way.
+        let codex_source = Arc::new(World {
+            alpha_harness: Some("codex"),
+            ..Default::default()
+        });
+        let tools = tools(codex_source.clone(), Origin::default());
+        let forked = tools
+            .call("fork_chat", json!({ "chat": "alpha", "harness": "codex" }))
+            .await
+            .unwrap();
+        assert_eq!(forked["harness"], "codex");
+        assert_eq!(
+            codex_source.writes.lock().unwrap()[0].1["harness"],
+            "codex"
+        );
+    }
+
+    #[tokio::test]
+    async fn side_chats_cannot_fork_chats() {
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            ..Default::default()
+        });
+        let side = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        for args in [json!({}), json!({ "chat": "alpha" })] {
+            assert!(
+                side.call("fork_chat", args)
+                    .await
+                    .unwrap_err()
+                    .contains("Side chats cannot"),
+                "the same refusal create_chat gives"
+            );
+        }
+        assert!(world.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fork_chat_notify_opt_out_and_human_forks_stay_unmarked() {
+        let world = Arc::new(World::default());
+        let agent = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        // `notify: false` opts the creator out at fork time.
+        let forked = agent
+            .call("fork_chat", json!({ "notify": false }))
+            .await
+            .unwrap();
+        assert_eq!(
+            forked["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": false })
+        );
+        assert_eq!(
+            world.writes.lock().unwrap()[0].1["agentOrigin"],
+            json!({ "chatId": "chat-alpha-1", "notify": false })
+        );
+
+        // A human at a terminal: no agent origin, hanging under the source
+        // like the UI's fork button.
+        let human = tools(world.clone(), Origin::default());
+        let forked = human
+            .call("fork_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        assert_eq!(forked["parentChatId"], "chat-alpha-1");
+        assert!(forked["agentOrigin"].is_null());
+        assert!(world.writes.lock().unwrap()[1].1.get("agentOrigin").is_none());
+
+        // A human forking a side chat: the copy lists as a sibling under the
+        // side chat's parent, exactly like the side chat's own fork button —
+        // never a child of a side chat.
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            ..Default::default()
+        });
+        let human = tools(world.clone(), Origin::default());
+        let forked = human
+            .call("fork_chat", json!({ "chat": "beta" }))
+            .await
+            .unwrap();
+        assert_eq!(forked["parentChatId"], "chat-alpha-1");
+        assert!(world.writes.lock().unwrap()[0].1.get("agentOrigin").is_none());
+
+        // A terminal with neither an origin nor a source has nothing to fork.
+        let bare = tools(Arc::new(World::default()), Origin::default());
+        let error = bare.call("fork_chat", json!({})).await.unwrap_err();
+        assert!(error.contains("needs a source chat"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn fork_chat_prompt_and_wait_behave_like_create_chat() {
+        // The copied history is baselined out of the wait: a fork that never
+        // runs must not report the source's replies as its own turn's.
+        let world = Arc::new(World::default());
+        let tools = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        let forked = tools
+            .call(
+                "fork_chat",
+                json!({ "prompt": "continue from the reply", "wait": true, "timeout_secs": 1 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forked["turn"]["timedOut"], true, "{forked}");
+        assert_eq!(forked["turn"]["replies"], json!([]), "{forked}");
+        assert_eq!(forked["sent"]["delivery"], "run");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].0, methods::FORK_SIDE_CHAT);
+        assert_eq!(writes[1].0, methods::QUEUE_COMMAND);
+        let request = &writes[1].1["command"]["request"];
+        // The first prompt rides the run un-attributed, like create_chat's.
+        assert_eq!(request["prompt"], "continue from the reply");
+        assert_eq!(request["harness"], "claude-code");
+        assert_eq!(writes[1].1["originChatId"], "chat-alpha-1");
+
+        // And a wait that completes: the fork's own reply comes back.
+        let service = Arc::new(DelayedTurn {
+            world: World::default(),
+            sent: Mutex::new(None),
+            reply_delay: Duration::from_millis(100),
+            never_reply: false,
+            host_skew_millis: 0,
+        });
+        let tools = Tools::new(Arc::new(Roboco::with_client(
+            memory_client(service.clone()),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        )));
+        let forked = tools
+            .call(
+                "fork_chat",
+                json!({ "prompt": "continue from the reply", "wait": true, "timeout_secs": 2 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forked["turn"]["outcome"], "completed", "{forked}");
+        assert_eq!(forked["turn"]["replies"][0]["text"], "new reply");
+        let writes = service.world.writes.lock().unwrap();
+        assert_eq!(writes.len(), 3, "{writes:?}");
+        assert_eq!(writes[0].0, methods::FORK_SIDE_CHAT);
+        assert_eq!(writes[0].1["sourceChatId"], "chat-alpha-1");
+        assert_eq!(writes[1].0, methods::QUEUE_COMMAND);
+        assert_eq!(
+            writes[1].1["command"]["request"]["prompt"],
+            "continue from the reply"
+        );
+        // The wait that completed observed the fork's outcome (ticket 14):
+        // it is reported, so no completion notice is owed for it.
+        assert_eq!(writes[2].0, methods::ACK_SIDE_CHAT);
+        assert_eq!(writes[2].1["originChatId"], "chat-alpha-1");
+        assert_eq!(
+            writes[2].1["chatId"],
+            writes[1].1["chatId"]
         );
     }
 
@@ -2719,6 +3366,15 @@ mod tests {
         assert!(instructions.contains("git worktree add"));
         assert!(instructions.contains("never switches branches in the main checkout"));
         assert!(instructions.contains("Read-only side chats"));
+
+        // The fork tool (ticket 23): what it forks from, that it can move
+        // harnesses, and that a fork the agent makes notifies like any
+        // side chat it created.
+        assert!(instructions.contains("fork_chat"));
+        assert!(instructions.contains("from its latest reply"));
+        assert!(instructions.contains("errored and interrupted replies count"));
+        assert!(instructions.contains("size-limited transcript"));
+        assert!(instructions.contains("side chats cannot fork chats"));
     }
 
     #[tokio::test]
@@ -2747,5 +3403,21 @@ mod tests {
         let wait = find("wait_for_turn");
         assert!(wait.description.contains("quick synchronous"));
         assert!(wait.description.contains("notify you"));
+
+        // fork_chat (ticket 23): the fork flow, the notify default, and the
+        // side-chat refusal.
+        let fork = find("fork_chat");
+        assert!(fork.description.contains("settled assistant entry id from read_chat"));
+        assert!(fork.description.contains("size-limited transcript"));
+        assert!(fork.description.contains("prompt and wait behave like create_chat"));
+        assert!(fork.description.contains("notify: false"));
+        assert!(fork.description.contains("A side chat cannot call it"));
+        let schema = &fork.input_schema;
+        for option in ["chat", "reply", "harness", "model", "title", "prompt", "wait", "notify", "timeout_secs"] {
+            assert!(
+                schema["properties"][option].is_object(),
+                "fork_chat must document the {option} option"
+            );
+        }
     }
 }

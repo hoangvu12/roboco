@@ -69,6 +69,15 @@ side` for a child with an explicit parent or your origin chat. Omitted kind \
 keeps legacy defaults: side with an origin/parent, standalone otherwise. Side \
 chats cannot create chats.\n\
 \n\
+Forking: `fork_chat` branches a conversation into a new side chat — by \
+default the one you are speaking from, from its latest reply. `reply` forks \
+from any earlier assistant reply (an entry id from `read_chat`; errored and \
+interrupted replies count), `harness` and `model` move the fork onto another \
+agent (it then starts from a size-limited transcript of the source), and \
+`prompt` with `wait` behave like `create_chat`'s. A fork you make is a side \
+chat you created: it notifies you by default (`notify: false` opts out), and \
+side chats cannot fork chats.\n\
+\n\
 If a chat is `awaitingInput`, answer it with `respond_to_input`.";
 
 const PARSE_ERROR: i64 = -32700;
