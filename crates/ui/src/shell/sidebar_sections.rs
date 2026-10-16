@@ -586,7 +586,6 @@ mod tests {
     }
 
     fn chat(id: &str) -> roboco_proto::Chat {
-        agent_origin: None,
         serde_json::from_value(serde_json::json!({"id":id,"title":id,"deviceId":"local","archived":false,"createdAt":"2026-09-20T00:00:00Z"})).unwrap()
     }
     fn prepare(shell: &mut Shell, cx: &mut Context<Shell>) {

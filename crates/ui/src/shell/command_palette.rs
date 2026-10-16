@@ -596,7 +596,6 @@ mod tests {
     }
 
     fn chat(id: &str, parent: Option<&str>, archived: bool, age: i64) -> roboco_proto::Chat {
-        agent_origin: None,
         serde_json::from_value(serde_json::json!({
             "id": id, "title": id, "deviceId": "local", "archived": archived,
             "parentChatId": parent,

@@ -356,7 +356,6 @@ impl Rig {
 
     /// The engine's own row for a raw chat id.
     fn engine_row(&self, raw: &str) -> roboco_proto::Chat {
-        agent_origin: None,
         self.core
             .workspace
             .chat(raw)
