@@ -64,6 +64,24 @@
 //!   after each settle; `message_update.usage` rides per-turn `Usage`
 //!   passthrough — first-party replacements for the pi-acp fork's
 //!   usage_update/turn-error patches.
+//! - **Native forks** (orchestration v2 ticket 19): the forked chat's
+//!   first run continues the SOURCE's real session instead of pasting
+//!   the copied transcript. A short-lived `pi --mode rpc --fork <source
+//!   file>` process in the run's cwd performs the fork — the CLI copies
+//!   the source session into a new file for the current project, and,
+//!   when the boundary is not the source's latest turn, the RPC `fork`
+//!   re-roots that copy BEFORE the next turn's user entry (pi's fork is
+//!   exclusive) — then the main spawn resumes the new file with
+//!   `--session` and the copied history rides the provider: nothing is
+//!   pasted. Transcript entries record a provider turn ref (the session
+//!   file plus the turn's user entry id, `get_entries` after each
+//!   settle): for an unsteered turn that is its FIRST user entry; a turn
+//!   a steer landed in names its LAST user entry instead, because the
+//!   fork boundary is "the user entry after the ref" and naming the last
+//!   consumed entry makes that the next turn's start exactly. A missing
+//!   ref, a stale boundary, or a refused/cancelled fork falls back to
+//!   the budgeted transcript in front of the prompt — never a failed
+//!   send.
 //! - **Extension UI**: blocking dialogs (`select`/`confirm`/`input`/`editor`)
 //!   map to roboco's question flow and are answered with
 //!   `extension_ui_response`; fire-and-forget methods are tolerated.
@@ -90,7 +108,7 @@ mod mcp;
 mod normalize;
 mod wire;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,8 +122,8 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};
 
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ProviderFork, ProviderTurnRef, ReasoningLevel,
+    RunRequest, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::acp::child;
@@ -479,7 +497,7 @@ impl PiHarness {
     /// command construction below).
     async fn run_with_mode(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         controls: RunControls,
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
@@ -490,11 +508,79 @@ impl PiHarness {
         // directory?" prompt — on stdin, the protocol channel. A pointer
         // that is not an existing file (a legacy ACP-era id, a moved
         // session) degrades to a fresh session with a visible notice.
-        let resume_path = request
+        let mut resume_path = request
             .resume
             .as_deref()
             .filter(|resume| Path::new(resume).is_file())
             .map(str::to_owned);
+        // A native fork (t3-orchestration-v2 ticket 19): the forked chat's
+        // first run continues the SOURCE's real pi session instead of
+        // pasting the copied transcript into a fresh one. A short-lived
+        // `pi --mode rpc --fork <source file>` process performs the fork
+        // (see [`fork_source_session`]) and the main spawn below resumes
+        // the forked session file with `--session`, so the history rides
+        // the provider and nothing is pasted. Any failure — a missing
+        // source file, a stale boundary ref, a refused or cancelled fork,
+        // a pi that answers with anything but a distinct new file — falls
+        // back to a fresh session with the engine's budgeted transcript
+        // in front of the prompt: the send never fails. The fork owns
+        // session continuity, so a plain resume never competes with it
+        // (codex parity: `thread/fork` instead of `thread/resume`).
+        let mut fork_notice: Option<String> = None;
+        if !title_only
+            && let Some(fork) = request.provider_fork.clone()
+        {
+            request.resume = None;
+            resume_path = None;
+            let launch = if !Path::new(&fork.session_id).is_file() {
+                ForkLaunch::Failed("the source session file is gone".into())
+            } else {
+                tokio::select! {
+                    biased;
+                    // Stop before the fork could start ends the run
+                    // interrupted, exactly like a Stop during startup — a
+                    // fork is not a fallback candidate after that.
+                    _ = controls.interrupt.cancelled() => ForkLaunch::Interrupted,
+                    launched = fork_source_session(
+                        &exe,
+                        &fork,
+                        &request.cwd,
+                        self.startup_timeout,
+                        self.kill_grace,
+                    ) => match launched {
+                        Ok(file) => ForkLaunch::Session(file),
+                        Err(reason) => ForkLaunch::Failed(reason),
+                    },
+                }
+            };
+            match launch {
+                ForkLaunch::Session(file) => resume_path = Some(file),
+                ForkLaunch::Failed(reason) => {
+                    // The budgeted transcript rides the prompt in front of
+                    // the user message (codex parity: the refused-fork
+                    // fallback), and a notice says what happened.
+                    let history = fork.fallback_history.as_deref().unwrap_or("");
+                    request.prompt = format!("{history}{}", request.prompt);
+                    fork_notice = Some(format!(
+                        "pi could not fork the source session ({reason}); starting a new \
+                         session with a summary of the previous conversation"
+                    ));
+                }
+                ForkLaunch::Interrupted => {
+                    let (event_tx, event_rx) =
+                        mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+                    let _ = event_tx
+                        .send(Ok(AgentEvent::Done {
+                            status: DoneStatus::Interrupted,
+                            result: None,
+                            error: None,
+                            session_id: None,
+                        }))
+                        .await;
+                    return Ok(event_stream(event_rx));
+                }
+            }
+        }
 
         let mut cmd = Command::new(&exe);
         cmd.arg("--mode").arg("rpc");
@@ -600,13 +686,22 @@ impl PiHarness {
             kill_grace: self.kill_grace,
             startup_timeout: self.startup_timeout,
             stderr_tail,
+            fork_notice,
         }));
 
-        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed())
+        Ok(event_stream(event_rx))
     }
+}
+
+/// The consumer's event stream: one channel receiver unfolded into a
+/// boxed stream (the run task owns the sender side).
+fn event_stream(
+    event_rx: mpsc::Receiver<Result<AgentEvent, HarnessError>>,
+) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    futures::stream::unfold(event_rx, |mut rx| async move {
+        rx.recv().await.map(|ev| (ev, rx))
+    })
+    .boxed()
 }
 
 #[async_trait]
@@ -708,6 +803,10 @@ impl Harness for PiHarness {
         request.mcp = None;
         request.model_options.clear();
         request.auto_approve = false;
+        // A native-fork directive must never reach the title sandbox: the
+        // one-shot never continues a session, so a fork would only spawn a
+        // doomed subprocess (its history belongs to a chat, not a title).
+        request.provider_fork = None;
         self.run_with_mode(request, controls, true).await
     }
 }
@@ -736,6 +835,11 @@ struct Session {
     startup_timeout: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
     stderr_tail: crate::StderrTail,
+    /// A refused native fork's notice (ticket 19): the run starts fresh
+    /// with the budgeted transcript pasted in front of the prompt, and
+    /// this surfaces what happened to the fold (parity with the
+    /// lost-resume notice).
+    fork_notice: Option<String>,
 }
 
 fn new_message_id() -> String {
@@ -945,6 +1049,290 @@ fn rearm_probe(client: &PiClient, delay: bool) -> BoxFuture<'static, ProbeRound>
     })
 }
 
+/// One `get_entries` listing parsed for the session-tree walks (ticket
+/// 19): the entry map (id → parent + whether the entry is a user message)
+/// and the current leaf id. Entries without an id are skipped — the walks
+/// simply cannot pass through them; a listing without the entries array
+/// fails outright. Only `type: "message"` entries carry a role; every
+/// other entry type (compaction, model changes, extension entries) walks
+/// as a pass-through node.
+struct SessionEntries {
+    by_id: HashMap<String, (Option<String>, bool)>,
+    leaf: Option<String>,
+}
+
+fn parse_entries(data: &Value) -> Option<SessionEntries> {
+    let entries = data.get("entries")?.as_array()?;
+    let mut by_id = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let parent = entry
+            .get("parentId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let is_user = entry.pointer("/message/role").and_then(Value::as_str) == Some("user");
+        by_id.insert(id.to_owned(), (parent, is_user));
+    }
+    let leaf = data.get("leafId").and_then(Value::as_str).map(str::to_owned);
+    Some(SessionEntries { by_id, leaf })
+}
+
+/// The newest user entry on the active branch: walking the branch from
+/// the leaf, the FIRST user entry encountered is the LAST user entry the
+/// settling turn consumed — the turn's steer when one landed mid-run,
+/// else its prompt (for an unsteered turn that is also the turn's FIRST
+/// user entry, the ticket's spelling). That is the turn's provider turn
+/// ref, because pi's exclusive fork boundary is "the user entry after the
+/// ref" and naming the last consumed entry makes that the next turn's
+/// start exactly — see [`fork_boundary`]. A walk that leaves the listing
+/// (a since-bounded stretch with no user entry of its own — an
+/// extension-initiated run) or reaches the root names nothing.
+fn newest_user_entry(entries: &SessionEntries) -> Option<String> {
+    let mut cursor = entries.leaf.clone()?;
+    // A corrupt parent cycle cannot loop the walk: at most one pass per
+    // entry, then the walk gives up.
+    let mut steps = entries.by_id.len().saturating_add(1);
+    loop {
+        let Some((parent, is_user)) = entries.by_id.get(&cursor).cloned() else {
+            return None;
+        };
+        if is_user {
+            return Some(cursor);
+        }
+        let Some(parent) = parent else {
+            return None; // the root: no user entry on this stretch.
+        };
+        if steps == 0 {
+            return None;
+        }
+        steps -= 1;
+        cursor = parent;
+    }
+}
+
+/// The user entry ids on the active branch, NEWEST first. The fork
+/// boundary search walks the whole branch: the fork subprocess reads a
+/// full `get_entries` listing, so the walk always reaches the root (and
+/// the same cycle guard bounds a corrupt tree).
+fn branch_user_entries(entries: &SessionEntries) -> Vec<String> {
+    let mut users = Vec::new();
+    let mut cursor = entries.leaf.clone();
+    let mut steps = entries.by_id.len().saturating_add(1);
+    while let Some(current) = cursor {
+        let Some((parent, is_user)) = entries.by_id.get(&current).cloned() else {
+            break;
+        };
+        if is_user {
+            users.push(current);
+        }
+        if steps == 0 {
+            break;
+        }
+        steps -= 1;
+        cursor = parent;
+    }
+    users
+}
+
+/// The exclusive fork boundary for a native fork at `last_turn` (the
+/// provider turn ref recorded on the boundary entry): the user entry id
+/// of the turn AFTER the boundary. pi's RPC `fork` re-roots the session
+/// BEFORE the named user message, so naming the next turn's user entry
+/// keeps everything through the boundary turn — exactly the prefix the
+/// fork copied. `Ok(None)` when the boundary IS the branch's newest turn
+/// (the `--fork` copy already ends there: no RPC, fork the whole
+/// session); `Err` when the ref names no entry on the active branch (a
+/// stale ref, or one from a re-rooted/compacted-away branch) — the fork
+/// then falls back to the budgeted paste rather than silently keeping
+/// turns the boundary excluded.
+fn fork_boundary(users: &[String], last_turn: &str) -> Result<Option<String>, ()> {
+    let Some(index) = users.iter().position(|id| id == last_turn) else {
+        return Err(());
+    };
+    // `users` is newest-first: index 0 is the branch's newest user entry,
+    // and one step towards the head is one turn newer.
+    Ok(index
+        .checked_sub(1)
+        .and_then(|newer| users.get(newer).cloned()))
+}
+
+/// One bounded `get_entries` round: a request pi never answers counts as a
+/// failed capture (the ref is skipped, never the turn).
+async fn read_entries(client: &PiClient, params: Value) -> Result<Value, String> {
+    match tokio::time::timeout(SETTLE_TIMEOUT, client.request("get_entries", params)).await {
+        Ok(Ok(data)) => Ok(data),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("get_entries did not answer within the settle budget".into()),
+    }
+}
+
+/// One settle's provider turn ref capture (ticket 19): read the session
+/// tree and name the LAST user entry the turn consumed — the session file
+/// plus that entry id (see [`newest_user_entry`] for why the last, not
+/// the first). The previous capture's leaf rides as `since`, bounding the
+/// listing to the turn's entries and the walk to the turn's stretch; a
+/// cursor pi no longer knows (a re-rooted branch) or a slow read falls
+/// back to one full listing — the walk's answer is the same either way,
+/// so a failed bounded read costs only the round trip. Best-effort: any
+/// failed read costs the ref, never the turn. Advances the cursor on
+/// every successful listing, so the next settle bounds itself to the next
+/// turn.
+async fn capture_turn_ref(
+    client: &PiClient,
+    session_pointer: &str,
+    cursor: &mut Option<String>,
+) -> Option<ProviderTurnRef> {
+    let params = match cursor.as_deref() {
+        Some(since) => json!({ "since": since }),
+        None => json!({}),
+    };
+    let data = match read_entries(client, params).await {
+        Ok(data) => data,
+        Err(_) => read_entries(client, json!({})).await.ok()?,
+    };
+    let listing = parse_entries(&data)?;
+    let reference =
+        newest_user_entry(&listing).map(|turn_id| ProviderTurnRef {
+            harness: HarnessId::Pi,
+            session_id: session_pointer.to_owned(),
+            turn_id,
+        });
+    *cursor = listing.leaf.clone();
+    reference
+}
+
+/// The outcome of the fork-launch phase in [`PiHarness::run_with_mode`]:
+/// the forked session file the main spawn resumes, the reason a fork
+/// could not be performed (the budgeted-paste fallback), or a Stop that
+/// landed before the fork could start.
+enum ForkLaunch {
+    Session(String),
+    Failed(String),
+    Interrupted,
+}
+
+/// Perform one native fork of a source pi session (ticket 19) in a
+/// short-lived `pi --mode rpc --fork <source file>` process running in the
+/// run's cwd: `--fork` files the new session under the CURRENT project —
+/// the same place the main spawn below resumes from (an RPC
+/// clone/switch_session alone would keep the source's cwd), and the
+/// process never runs a prompt, so it needs no MCP bridge and no model
+/// selection. The sequence is pi's own fork surface: the CLI copies the
+/// source session into a new file; `get_entries` walks the copy's active
+/// branch; when the boundary is not the source's latest turn, the RPC
+/// `fork` re-roots the copy BEFORE the next turn's user entry (pi's fork
+/// is exclusive); `get_state` reports the new session file. Returns that
+/// file — never the source itself (a pi answering with the source would
+/// have the main run CONTINUE the source session, mutating it) — or the
+/// reason the fork failed (the caller falls back to the budgeted paste).
+async fn fork_source_session(
+    exe: &Path,
+    fork: &ProviderFork,
+    cwd: &str,
+    startup_timeout: Duration,
+    kill_grace: Duration,
+) -> Result<String, String> {
+    let source = Path::new(&fork.session_id);
+    let mut cmd = Command::new(exe);
+    cmd.arg("--mode").arg("rpc").arg("--fork").arg(source);
+    if !cwd.is_empty() {
+        cmd.current_dir(cwd);
+    }
+    child::configure(&mut cmd);
+    crate::compose_child_path(&mut cmd, exe);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("could not spawn the pi fork process: {e}"))?;
+    let mut child = child::Child::new(child);
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "the pi fork process has no stdin".to_owned())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "the pi fork process has no stdout".to_owned())?;
+    let (client, mut incoming) = PiClient::new(stdin, stdout);
+    // Events (notify noise) are drained so a chatty extension can never
+    // stall the reader.
+    tokio::spawn(async move {
+        while incoming.recv().await.is_some() {}
+    });
+    let work = async {
+        // The forked copy's session file: must exist and be a DIFFERENT
+        // file from the source, or the main spawn would continue the
+        // source session itself.
+        let state = client
+            .request("get_state", json!({}))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut file = state
+            .pointer("/sessionFile")
+            .and_then(Value::as_str)
+            .filter(|file| !file.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| "pi reported no session file for the fork".to_owned())?;
+        if Path::new(&file) == source {
+            return Err("pi forked onto the source session file".to_owned());
+        }
+        // The boundary: the copy's active branch tells whether the fork is
+        // already at the right place (the source's latest turn) or needs
+        // the exclusive re-root at the turn after the boundary.
+        let data = client
+            .request("get_entries", json!({}))
+            .await
+            .map_err(|e| e.to_string())?;
+        let listing = parse_entries(&data)
+            .ok_or_else(|| "pi returned an unreadable session tree".to_owned())?;
+        let users = branch_user_entries(&listing);
+        let boundary = fork_boundary(&users, &fork.last_turn).map_err(|_| {
+            format!(
+                "the boundary entry {} is no longer on the session branch",
+                fork.last_turn
+            )
+        })?;
+        if let Some(entry_id) = boundary {
+            let data = client
+                .request("fork", json!({ "entryId": entry_id }))
+                .await
+                .map_err(|e| e.to_string())?;
+            if data
+                .get("cancelled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Err("a pi extension cancelled the session fork".to_owned());
+            }
+            // The re-rooted session file, re-read from `get_state` (the
+            // fork happens inside the copy, so this is the file the main
+            // spawn resumes): a failed re-read keeps the copy's file — the
+            // fork itself already succeeded.
+            if let Ok(state) = client.request("get_state", json!({})).await
+                && let Some(after) = state
+                    .pointer("/sessionFile")
+                    .and_then(Value::as_str)
+                    .filter(|file| !file.is_empty())
+                && Path::new(after) != source
+            {
+                file = after.to_owned();
+            }
+        }
+        Ok(file)
+    };
+    let result = tokio::time::timeout(startup_timeout, work)
+        .await
+        .map_err(|_| "the pi fork process did not answer in time".to_owned())
+        .and_then(|result| result);
+    child.shutdown(kill_grace).await;
+    result
+}
+
 /// The per-run event loop: one task multiplexing pi events, the prompt
 /// acceptance, the settle sequence, the steering mailbox, the interrupt
 /// token, and consumer liveness.
@@ -965,6 +1353,7 @@ async fn run_session(session: Session) {
         kill_grace,
         startup_timeout,
         stderr_tail,
+        fork_notice,
     } = session;
     let RunControls {
         execution_lease: _execution_lease,
@@ -1113,6 +1502,20 @@ async fn run_session(session: Session) {
         )
         .await;
     }
+    if let Some(notice) = &fork_notice {
+        // A refused native fork (ticket 19): the fresh session carries the
+        // budgeted transcript in front of the prompt (pasted in
+        // run_with_mode), so the notice says the context was summarized,
+        // not lost — parity with the lost-resume notice above.
+        let _ = send(
+            &event_tx,
+            AgentEvent::Error {
+                message: notice.clone(),
+                kind: None,
+            },
+        )
+        .await;
+    }
 
     // ---- main loop --------------------------------------------------------
     // Agent activity since the last settle (extension-initiated runs deliver
@@ -1141,6 +1544,14 @@ async fn run_session(session: Session) {
     // the counter; a probe result armed at a superseded generation is
     // stale (a prompt acknowledgement raced it) and re-arms.
     let mut probe_generation: u64 = 0;
+    // The session-tree cursor for provider turn refs (ticket 19): the leaf
+    // entry id of the last settle capture. Each settle's `get_entries` runs
+    // with it as `since`, bounding the listing — and the ref walk — to the
+    // entries the settling turn appended; a cursor pi no longer knows (a
+    // re-rooted branch) falls back to one full listing. `None` until the
+    // first capture: a fresh session's first walk simply runs to the root,
+    // and the first user entry it meets is this run's own prompt.
+    let mut ref_cursor: Option<String> = None;
     // Consecutive failed probe rounds (any success resets it).
     let mut probe_failures: u32 = 0;
     let mut generation: u64 = 0;
@@ -1434,6 +1845,24 @@ async fn run_session(session: Session) {
                                 .as_ref()
                                 .and_then(|stats| context_usage_event(stats))
                                 && !send(&event_tx, usage).await
+                            {
+                                break 'main;
+                            }
+                            // The provider turn ref (ticket 19): `get_entries`
+                            // now that the turn has settled — the session
+                            // file plus the LAST user entry the turn
+                            // consumed (its steer when one landed mid-run,
+                            // else its prompt — for an unsteered turn that
+                            // is also its first user entry, the ticket's
+                            // spelling). The engine holds it for the stamp
+                            // when the entry's segment finishes at the
+                            // `Done` below. Best-effort: a failed read costs
+                            // the ref — a later fork falls back to the
+                            // budgeted paste — never the turn.
+                            if let Some(reference) =
+                                capture_turn_ref(&client, &session_pointer, &mut ref_cursor)
+                                    .await
+                                && !send(&event_tx, AgentEvent::TurnRef { reference }).await
                             {
                                 break 'main;
                             }
@@ -2323,11 +2752,122 @@ fn image_mime_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str>
 #[cfg(test)]
 mod tests {
     use super::steering_mode_configured;
+    use super::{
+        SessionEntries, branch_user_entries, fork_boundary, newest_user_entry, parse_entries,
+    };
     use std::path::Path;
 
     fn write_settings(dir: &Path, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("settings.json"), body).unwrap();
+    }
+
+    /// One session tree as a get_entries payload: `ids` chains the entries
+    /// in order (the bool marks user entries).
+    fn tree(ids: &[(&str, bool)], leaf: Option<&str>) -> Option<SessionEntries> {
+        let mut parent: Option<&str> = None;
+        let mut entries = Vec::new();
+        for (id, user) in ids {
+            entries.push(serde_json::json!({
+                "type": "message",
+                "id": id,
+                "parentId": parent,
+                "message": { "role": if *user { "user" } else { "assistant" } },
+            }));
+            parent = Some(id);
+        }
+        parse_entries(&serde_json::json!({
+            "entries": entries,
+            "leafId": leaf,
+        }))
+    }
+
+    /// The ref walk names the newest user entry on the branch: the turn's
+    /// steer when one landed mid-run, else its prompt.
+    #[test]
+    fn the_ref_walk_names_the_last_user_entry_of_the_turn() {
+        // u1 → a1 → s2 (a steer) → a2: the turn consumed s2 last.
+        let entries = tree(
+            &[("u1", true), ("a1", false), ("s2", true), ("a2", false)],
+            Some("a2"),
+        )
+        .expect("parseable");
+        assert_eq!(newest_user_entry(&entries).as_deref(), Some("s2"));
+        // Without the steer, the prompt IS the turn's last user entry.
+        let entries = tree(
+            &[("u1", true), ("a1", false)],
+            Some("a1"),
+        )
+        .expect("parseable");
+        assert_eq!(newest_user_entry(&entries).as_deref(), Some("u1"));
+        // A stretch with no user entry of its own (an extension-initiated
+        // run) names nothing.
+        let entries = tree(&[("u1", true), ("a1", false), ("a2", false)], Some("a2"))
+            .expect("parseable");
+        assert_eq!(newest_user_entry(&entries), None);
+        // A branch that walks off the listing (a since-bounded stretch)
+        // names nothing rather than an older turn's entry.
+        let entries = tree(&[("a2", false), ("a3", false)], Some("a3")).expect("parseable");
+        assert_eq!(newest_user_entry(&entries), None);
+        // An empty session has no leaf to walk from.
+        let entries = tree(&[], None).expect("parseable");
+        assert_eq!(newest_user_entry(&entries), None);
+    }
+
+    /// A corrupt parent cycle cannot loop the walks.
+    #[test]
+    fn corrupt_parent_cycles_terminate() {
+        let data = serde_json::json!({
+            "entries": [
+                { "type": "message", "id": "x", "parentId": "y", "message": { "role": "user" } },
+                { "type": "message", "id": "y", "parentId": "x", "message": { "role": "assistant" } },
+            ],
+            "leafId": "y",
+        });
+        let entries = parse_entries(&data).expect("parseable");
+        assert_eq!(newest_user_entry(&entries), None);
+        assert!(branch_user_entries(&entries).len() <= 2);
+    }
+
+    /// The branch walk lists the active branch's user entries, newest
+    /// first — the order the fork boundary search steps through.
+    #[test]
+    fn the_branch_walk_lists_user_entries_newest_first() {
+        let entries = tree(
+            &[
+                ("u1", true),
+                ("a1", false),
+                ("u2", true),
+                ("a2", false),
+                ("u3", true),
+                ("a3", false),
+            ],
+            Some("a3"),
+        )
+        .expect("parseable");
+        assert_eq!(
+            branch_user_entries(&entries),
+            vec!["u3".to_owned(), "u2".to_owned(), "u1".to_owned()]
+        );
+    }
+
+    /// The fork boundary: the newest turn forks the whole session (no
+    /// RPC), an earlier one names the NEXT turn's user entry, and a ref
+    /// that is not on the branch refuses (the budgeted-paste fallback).
+    #[test]
+    fn the_fork_boundary_names_the_next_turn() {
+        let users: Vec<String> = ["u3", "u2", "u1"]
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        // The boundary is the latest turn: Ok(None) — the --fork copy
+        // already ends there.
+        assert_eq!(fork_boundary(&users, "u3"), Ok(None));
+        // An earlier boundary names the turn after it.
+        assert_eq!(fork_boundary(&users, "u2"), Ok(Some("u3".to_owned())));
+        assert_eq!(fork_boundary(&users, "u1"), Ok(Some("u2".to_owned())));
+        // A stale ref refuses rather than forking somewhere wrong.
+        assert_eq!(fork_boundary(&users, "gone"), Err(()));
     }
 
     /// No settings anywhere: the driver selects the mode itself.

@@ -458,6 +458,11 @@ async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
     // A hostile caller smuggles interaction surfaces; run_title must clear
     // every one of them before spawning.
     req.resume = Some("some-old-session".into());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "some-old-session.jsonl".into(),
+        last_turn: "u1".into(),
+        fallback_history: None,
+    });
     req.attachments = vec!["/etc/passwd".into()];
     req.auto_approve = true;
     let mut stream = harness().run_title(req, ctl).await.unwrap();
@@ -477,6 +482,8 @@ async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
     // No session file in the scratch dir: the title sandbox is ephemeral
     // and never resumes. (The fixture asserts the spawn flags itself.)
     assert!(!scratch.path().join(".pi-fixture-session.jsonl").exists());
+    // The smuggled fork directive never spawned a fork process either.
+    assert!(!scratch.path().join(".pi-fixture-forked.jsonl").exists());
     // pi participates in device-local title generation.
     assert!(roboco_harness::supports_titles(HarnessId::Pi));
 }
@@ -1398,4 +1405,309 @@ async fn a_burst_of_steers_is_delivered_in_order() {
         .count();
     assert_eq!(steered, 3, "{events:?}");
     assert!(text_of(&events).contains("reply-to-burst"), "{events:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Provider turn refs + native forks (t3-orchestration-v2 ticket 19)
+// ---------------------------------------------------------------------------
+
+/// The session-tree helpers: the driver names the turn's ref after each
+/// settle, the engine stamps it on the assistant entry, and a fork reads
+/// the boundary off it. The unit level (walks, boundaries) lives in the
+/// driver module; this proves the wire shape end to end.
+fn session_file_of(events: &[AgentEvent]) -> String {
+    events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::SessionStarted { session_id, .. } => Some(session_id.clone()),
+            _ => None,
+        })
+        .expect("SessionStarted")
+}
+
+fn turn_refs_of(events: &[AgentEvent]) -> Vec<roboco_proto::ProviderTurnRef> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TurnRef { reference } => Some(reference.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each settled turn emits its provider turn ref: the session file plus
+/// the turn's user entry id — the first turn's prompt, and the second
+/// turn's prompt once the parked session runs another message (the `since`
+/// cursor bounds the second capture to the second turn's entries).
+#[tokio::test]
+async fn turn_refs_name_the_session_file_and_each_turns_user_entry() {
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd = cwd.path().display().to_string();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request_cwd("first", &cwd), controls).await.unwrap();
+    let mut events = Vec::new();
+    until_done(&mut stream, &mut events, Duration::from_secs(15)).await;
+    // The parked session runs a second turn on the same process.
+    steer.send(SteerMessage::text("second")).await.unwrap();
+    let mut tail = Vec::new();
+    until_done(&mut stream, &mut tail, Duration::from_secs(15)).await;
+    events.extend(tail);
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None); 2], "{events:?}");
+    let session = session_file_of(&events);
+    assert_eq!(
+        turn_refs_of(&events),
+        vec![
+            roboco_proto::ProviderTurnRef {
+                harness: HarnessId::Pi,
+                session_id: session.clone(),
+                turn_id: "u1".into(),
+            },
+            roboco_proto::ProviderTurnRef {
+                harness: HarnessId::Pi,
+                session_id: session.clone(),
+                turn_id: "u2".into(),
+            },
+        ],
+        "{events:?}"
+    );
+    // The refs name the file the runs actually continue.
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert!(std::path::Path::new(&session).is_file());
+}
+
+/// A turn a steer landed in names its LAST user entry — the steer — as the
+/// ref: pi's exclusive fork boundary is "the user entry after the ref", so
+/// naming the last consumed entry keeps the whole turn (prompt, steer and
+/// reply) when a fork cuts at the next turn's start.
+#[tokio::test]
+async fn a_steered_turn_names_its_last_user_entry() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-flow"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer.send(SteerMessage::text("steered text")).await.unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    let session = session_file_of(&events);
+    assert_eq!(
+        turn_refs_of(&events),
+        vec![roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Pi,
+            session_id: session,
+            // u1 = the prompt, u2 = the steer: the turn consumed the steer
+            // last, so that is the ref.
+            turn_id: "u2".into(),
+        }],
+        "{events:?}"
+    );
+}
+
+/// A native fork at the source's LATEST turn: the fork process launches
+/// with `--fork` and sends no RPC fork (the copy already ends at the
+/// boundary), the run resumes the FORKED session file, and nothing is
+/// pasted — the fake refuses the turn if the budgeted history reaches the
+/// prompt or the run resumes anything but the forked file.
+#[tokio::test]
+async fn a_native_fork_at_the_latest_turn_copies_the_whole_session() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-turn", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // The fake fork tree's NEWEST user entry: forking there keeps the
+        // whole copied session — no RPC fork.
+        last_turn: "u3".into(),
+        // What the engine would have pasted for a fresh session — the
+        // driver must NOT use it when the fork succeeds.
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The run continues the FORKED session file, never the source.
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-forked.jsonl"), "{session}");
+    assert!(std::path::Path::new(&session).is_file());
+    assert_ne!(session, source.display().to_string());
+    // The fork process ran with --fork and sent NO fork RPC: the markers
+    // in the forked session file prove both.
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-launch:"), "{forked}");
+    assert!(!forked.contains("fork-rpc:"), "{forked}");
+    assert_eq!(text_of(&events), "reply:fork-turn");
+}
+
+/// A native fork at an EARLIER turn also sends the RPC `fork` with the
+/// user entry id of the turn AFTER the boundary: pi's fork is exclusive
+/// (it re-roots before the named user message), so the forked session ends
+/// exactly at the boundary. Nothing is pasted (the fake refuses it).
+#[tokio::test]
+async fn a_native_fork_at_an_earlier_turn_forks_at_the_next_turns_user_entry() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-turn", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // The fake fork tree's SECOND user entry: the boundary is turn 2,
+        // so the RPC fork must name turn 3's user entry (u3).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-forked.jsonl"), "{session}");
+    // The RPC fork named the turn AFTER the boundary.
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-rpc:u3"), "{forked}");
+    assert_eq!(text_of(&events), "reply:fork-turn");
+}
+
+/// A stale boundary ref (an entry the session branch no longer holds)
+/// refuses the fork: the run starts a FRESH session with the budgeted
+/// transcript in front of the prompt — never a failed send. The fake
+/// asserts the pasted history and refuses a --session resume.
+#[tokio::test]
+async fn a_stale_fork_boundary_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session
+").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // Not on the fake tree branch: the driver must refuse the fork.
+        last_turn: "u-gone".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.
+             <transcript>
+user: Remember PINEAPPLE
+</transcript>
+
+"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // A fresh session served the turn (the fake refuses the fork-turn
+    // scenario on a resume).
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    // The refusal surfaced.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // No fork RPC ever ran (the marker proves the refusal came first).
+    let forked = cwd.path().join(".pi-fixture-forked.jsonl");
+    if forked.exists() {
+        let forked = std::fs::read_to_string(&forked).unwrap();
+        assert!(!forked.contains("fork-rpc:"), "{forked}");
+    }
+}
+
+/// A fork a pi extension cancels falls back the same way: fresh session,
+/// budgeted transcript, visible notice.
+#[tokio::test]
+async fn a_cancelled_fork_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("fork-cancel-source.jsonl");
+    std::fs::write(&source, b"fixture session
+").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // An earlier-turn boundary, so the cancelled RPC actually fires
+        // (the source name scripts the cancellation).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.
+             <transcript>
+user: Remember PINEAPPLE
+</transcript>
+
+"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+}
+
+/// A fork whose source session file is gone never spawns the fork process:
+/// the run starts fresh with the budgeted paste (the same fallback as a
+/// lost resume pointer).
+#[tokio::test]
+async fn a_fork_with_a_missing_source_file_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: cwd.path().join("no-such-session.jsonl").display().to_string(),
+        last_turn: "u1".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.
+             <transcript>
+user: Remember PINEAPPLE
+</transcript>
+
+"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // No fork process ever ran.
+    assert!(!cwd.path().join(".pi-fixture-forked.jsonl").exists());
 }

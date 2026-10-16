@@ -10,7 +10,12 @@
 # clear_queue strand recovery — and the mid-turn steering surface
 # (orchestration v2, ticket 03): set_steering_mode all at session start,
 # steer bursts delivered together in order, images riding a steer, and
-# clear_queue-before-abort when a Stop finds steers pi never consumed.
+# clear_queue-before-abort when a Stop finds steers pi never consumed —
+# and the native fork surface (orchestration v2, ticket 19): the session
+# entry tree behind get_entries (the driver walks it after each settle to
+# record provider turn refs) and the `--fork` fork process (the source
+# copy plus the exclusive fork RPC when the boundary is not the latest
+# turn).
 # NOTE: the python below is embedded in a sh single-quoted string - it must
 # never contain an apostrophe (a stray one splits the script into argv).
 exec python3 -u -c '
@@ -35,6 +40,7 @@ def reject(req, message):
 def user_message(text):
     emit({"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
     emit({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+    append_entry("user")
 
 def assistant_chunks(chunks, thinking=False, stop="stop", error=None):
     emit({"type": "message_start", "message": {"role": "assistant", "content": []}})
@@ -47,6 +53,7 @@ def assistant_chunks(chunks, thinking=False, stop="stop", error=None):
     if error:
         message["errorMessage"] = error
     emit({"type": "message_end", "message": message})
+    append_entry("assistant")
 
 def turn_and_settle(reply=None, thinking=False, stop="stop", error=None):
     emit({"type": "turn_start"})
@@ -106,6 +113,21 @@ else:
     assert "--extension" not in argv, argv
 
 session_file = None if "--no-session" in argv else os.path.join(os.getcwd(), ".pi-fixture-session.jsonl")
+if resumed_session is not None:
+    # get_state reports the file the process was resumed with (pi answers
+    # with the session it actually holds), so a forked chat that resumes
+    # the copy keeps reporting THAT file as its session.
+    session_file = resumed_session
+fork_source = None
+if "--fork" in argv:
+    # The native-fork launch (ticket 19): a short-lived process that copies
+    # the source session and re-roots it at the boundary. It never runs a
+    # prompt, never resumes, and never loads the MCP bridge (--fork cannot
+    # combine with --session / --no-session anyway).
+    fork_source = argv[argv.index("--fork") + 1]
+    assert "--session" not in argv and "--no-session" not in argv, argv
+    assert os.path.isfile(fork_source), "fork source missing: " + fork_source
+    session_file = os.path.join(os.getcwd(), ".pi-fixture-forked.jsonl")
 if session_file is not None:
     with open(session_file, "a") as handle:  # exists so the driver resume check passes
         handle.write("fixture\n")
@@ -117,6 +139,54 @@ steering_queue = []
 # pi isStreaming flag, scripted by the scenarios that need a run in
 # flight (an extension-initiated run).
 streaming = False
+
+# --- session entry tree (ticket 19) ---------------------------------------
+# Every user and assistant message appends a {type: message, id, parentId}
+# entry so get_entries can serve the tree the driver walks after each
+# settle for provider turn refs: the leaf chain u1 -> a1 -> u2 ... with the
+# walk bounded by the `since` cursor the driver passes.
+entry_seq = 0
+leaf_id = None
+entries = []
+
+def append_entry(role):
+    global entry_seq, leaf_id
+    entry_seq += 1
+    entry_id = ("u%d" if role == "user" else "a%d") % entry_seq
+    entries.append({
+        "type": "message",
+        "id": entry_id,
+        "parentId": leaf_id,
+        "message": {"role": role},
+    })
+    leaf_id = entry_id
+
+def entries_data(command):
+    # The get_entries payload: append order, the entries strictly after
+    # `since`, and the current leaf (None for an empty session). An unknown
+    # `since` cursor fails (pi rejects it; the driver falls back to a full
+    # listing).
+    since = command.get("since")
+    if since is None:
+        return {"entries": list(entries), "leafId": leaf_id}
+    ids = [entry["id"] for entry in entries]
+    if since not in ids:
+        return None
+    return {"entries": entries[ids.index(since) + 1:], "leafId": leaf_id}
+
+# The fork source copied history (ticket 19): three turns. The boundary
+# tests exercise both "the latest turn" (last_turn u3: no RPC fork — the
+# copy already ends there) and "an earlier turn" (last_turn u2 / u1: the
+# exclusive fork RPC at the NEXT turn user entry, u3 / u2).
+FORK_TREE = [
+    {"type": "message", "id": "u1", "parentId": None, "message": {"role": "user"}},
+    {"type": "message", "id": "a1", "parentId": "u1", "message": {"role": "assistant"}},
+    {"type": "message", "id": "u2", "parentId": "a1", "message": {"role": "user"}},
+    {"type": "message", "id": "a2", "parentId": "u2", "message": {"role": "assistant"}},
+    {"type": "message", "id": "u3", "parentId": "a2", "message": {"role": "user"}},
+    {"type": "message", "id": "a3", "parentId": "u3", "message": {"role": "assistant"}},
+]
+
 
 def state_data():
     return {
@@ -517,6 +587,11 @@ def run_prompt(req):
         stats = read_command()
         assert stats["type"] == "get_session_stats", stats
         response(stats, stats_data())
+        # The turn-ref capture (ticket 19) rides between the settle stats
+        # and the Done: answer it before the streamed window opens.
+        refs = read_command()
+        assert refs["type"] == "get_entries", refs
+        response(refs, entries_data(refs))
         time.sleep(0.3)  # the driver parks: the turn Done is out
         streaming = True
         emit({"type": "agent_start"})
@@ -540,6 +615,10 @@ def run_prompt(req):
                 response(command, state_data())
             elif command["type"] == "get_session_stats":
                 response(command, stats_data())
+            elif command["type"] == "get_entries":
+                data = entries_data(command)
+                assert data is not None, command
+                response(command, data)
             elif command["type"] == "prompt":
                 assert command.get("streamingBehavior") == "steer", command
                 response(command, {"disposition": "started"})
@@ -589,9 +668,60 @@ def run_prompt(req):
             assert probe["type"] == "get_state", probe
             reject(probe, "wedged")
         return
+    if text == "fork-turn":
+        # The forked chat first turn (ticket 19): the main process must
+        # RESUME the session file the fork process created (never a fresh
+        # session, never the source), and the prompt must arrive BARE — a
+        # pasted history in front of it means the fork fell back.
+        assert resumed_session is not None, "the forked session was not resumed"
+        assert resumed_session.endswith(".pi-fixture-forked.jsonl"), resumed_session
+        assert text == "fork-turn", text
+        user_message(text)
+        turn_and_settle("reply:" + text)
+        return
+    if text == "fork-fallback":
+        # The refused/stale fork fallback (ticket 19): a FRESH session (no
+        # --session) with the budgeted history pasted in front of the
+        # prompt.
+        assert resumed_session is None, "the fallback must start a fresh session"
+        assert "PINEAPPLE" in text, text
+        assert text.endswith("fork-fallback"), text
+        user_message(text)
+        turn_and_settle("reply:fork-fallback")
+        return
     # default happy path
     user_message(text)
     turn_and_settle("reply:" + text)
+
+if fork_source is not None:
+    # fork-mode process: get_state (the copy session file, never the
+    # source), get_entries (the copied tree), the exclusive fork RPC when
+    # the boundary is not the latest turn, get_state again, then EOF (the
+    # driver shuts the process down). Markers land in the copy session
+    # file so tests can prove which steps ran. A source file named with
+    # "cancel" or "refuse" scripts the fork RPC failing those two ways.
+    with open(session_file, "a") as handle:
+        handle.write("fork-launch:" + fork_source + "\n")
+    while True:
+        command = read_command()
+        kind = command["type"]
+        if kind == "get_state":
+            response(command, dict(state_data(), sessionFile=session_file, sessionId="pi-fixture-forked"))
+        elif kind == "get_entries":
+            response(command, {"entries": [dict(entry) for entry in FORK_TREE], "leafId": FORK_TREE[-1]["id"]})
+        elif kind == "fork":
+            assert command["entryId"] in ("u2", "u3"), command
+            with open(session_file, "a") as handle:
+                handle.write("fork-rpc:" + command["entryId"] + "\n")
+            base = os.path.basename(fork_source)
+            if "cancel" in base:
+                response(command, {"text": "the boundary prompt", "cancelled": True})
+            elif "refuse" in base:
+                reject(command, "fork refused")
+            else:
+                response(command, {"text": "the boundary prompt", "cancelled": False})
+        else:
+            reject(command, "unexpected fork command: " + kind)
 
 while True:
     command = read_command()
@@ -654,6 +784,15 @@ while True:
             with open(session_file, "a") as handle:
                 handle.write("steering-mode:" + command["mode"] + "\n")
         response(command)
+    elif kind == "get_entries":
+        # The settle capture (ticket 19): the driver walks the session
+        # tree after each settle to name the turn provider ref. An unknown
+        # `since` cursor is rejected (the driver re-reads the full tree).
+        data = entries_data(command)
+        if data is None:
+            reject(command, "unknown since cursor: " + str(command.get("since")))
+        else:
+            response(command, data)
     elif kind == "get_session_stats":
         response(command, stats_data())
     elif kind == "clear_queue":
