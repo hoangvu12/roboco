@@ -1069,9 +1069,9 @@ impl Tools {
             params["boundary"] = json!(reply);
         }
         if let Some(harness) = harness_override {
-            if let Ok(value) = serde_json::to_value(harness) {
-                params["harness"] = value;
-            }
+            // The kebab-case wire name ("codex", "claude-code"), like the
+            // fork dialog's params.
+            params["harness"] = json!(harness);
         }
         if let Some(model) = args
             .model

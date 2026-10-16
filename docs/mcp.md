@@ -113,7 +113,7 @@ lost the bind) gets no Roboco tools rather than a dead server.
 ### Forks
 
 `ForkSideChat { chatId, sourceChatId, parentChatId?, boundary?, harness?,
-model? }` copies a chat's history through its latest completed response into
+model?, agentOrigin? }` copies a chat's history through its latest completed response into
 a new chat and appends a `fork` part (a system entry: `sourceChatId`,
 `sourceTitle`) as the seam; the transcript draws it as "This chat was forked
 from <title>". `parentChatId` defaults to the source; a side chat's own fork
