@@ -30,8 +30,8 @@ use roboco_doc::{
 };
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
-    UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus,
+    UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -205,6 +205,11 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// Harness accounts (engine assembly; absent in bare tests): a run that
+    /// fails with a signed-out error marks the harness's live login on them.
+    /// A `Mutex` (not `OnceLock`) so a test's isolated store can swap in over
+    /// the detected one — the marking and the RPC list must see one store.
+    agent_accounts: Mutex<Option<crate::agent_accounts::AgentAccounts>>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -244,6 +249,7 @@ impl SessionsEngine {
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                agent_accounts: Mutex::new(None),
             }),
         }
     }
@@ -292,6 +298,13 @@ impl SessionsEngine {
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
+    }
+
+    /// Wire the harness accounts (called once at engine assembly; a test
+    /// swaps in an isolated store through the same call). A run that fails
+    /// with a signed-out error marks the harness's live login on them.
+    pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
+        *lock(&self.inner.agent_accounts) = Some(accounts);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -1333,6 +1346,26 @@ impl Inner {
             .collect()
     }
 
+    /// A run failed with ticket 05's structured signed-out error: mark the
+    /// harness's live login's account signed out (ticket 08) — the account
+    /// every new run on this harness would use, so the account switcher
+    /// stops showing it as healthy. Best-effort by design: a marking failure
+    /// is logged and never disturbs the run's own error path, and the next
+    /// sign-in or successful usage probe clears the mark.
+    async fn note_run_signed_out(&self, chat_id: &str, harness: HarnessId) {
+        let Some(accounts) = lock(&self.agent_accounts).clone() else {
+            return;
+        };
+        if let Err(err) = accounts.mark_live_signed_out(harness).await {
+            tracing::warn!(
+                chat = %chat_id,
+                provider = ?harness,
+                error = %err,
+                "could not mark the harness account signed out"
+            );
+        }
+    }
+
     fn publish(&self, chat_id: &str, event: &AgentEvent) -> u64 {
         let seq = match self.journal.append(chat_id, event) {
             Ok(seq) => seq,
@@ -2094,6 +2127,23 @@ fn cursor_unstarted_history(
     ))
 }
 
+/// Whether `event` carries ticket 05's signed-out error kind — directly, or
+/// tagged inside a subagent event (a subagent runs on the same login, so its
+/// rejection is equally hard evidence the login is dead).
+fn event_signs_out(event: &AgentEvent) -> bool {
+    let leaf = match event {
+        AgentEvent::Subagent { event, .. } => event.as_ref(),
+        event => event,
+    };
+    matches!(
+        leaf,
+        AgentEvent::Error {
+            kind: Some(AgentErrorKind::SignedOut),
+            ..
+        }
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_run(
     inner: Arc<Inner>,
@@ -2286,6 +2336,10 @@ async fn drive_run(
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
     let mut saw_session_started = false;
+    // One signed-out mark per run: repeats and retries all describe the same
+    // dead login, and each marking pass resolves the live login (a detection
+    // sweep) — once is enough.
+    let mut marked_signed_out = false;
     // Liveness heartbeat: this loop RUNNING is proof the harness stream is
     // open, so freshness must not depend on events arriving. Silent stretches
     // are normal and UNBOUNDED — a long tool call, redacted thinking, an
@@ -2623,6 +2677,17 @@ async fn drive_run(
             };
             event
         };
+
+        // Sign-out evidence (ticket 05's structured kind, ticket 08's
+        // marking): the harness rejected its login — the login is dead, not
+        // stale. Checked BEFORE the subagent routing and the parked gate so
+        // every arrival shape counts (a subagent running on the same login
+        // fails signed-out just as hard), and awaited inline so the mark has
+        // landed by the time the run's own terminal state settles.
+        if !marked_signed_out && event_signs_out(&event) {
+            marked_signed_out = true;
+            inner.note_run_signed_out(&chat_id, harness_id).await;
+        }
 
         // ── subagent routing ───────────────────────────────────────────
         // Tagged events NEVER fold into the parent transcript: they stream

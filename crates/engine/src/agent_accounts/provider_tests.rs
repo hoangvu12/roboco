@@ -140,23 +140,11 @@ fn accounts_with(root: &Path, endpoints: ProbeEndpoints) -> (AgentAccounts, Agen
     )
 }
 
-/// Endpoints that all point at `base` (a mock), with slot refresh allowed.
+/// Endpoints that all point at `base` (a mock), with slot refresh allowed —
+/// [`mocked_endpoints`] in the parent, kept as the local spelling the flows
+/// read best in.
 fn mocked(base: &str) -> ProbeEndpoints {
-    ProbeEndpoints {
-        claude_usage: format!("{base}/api/oauth/usage"),
-        claude_token: format!("{base}/v1/oauth/token"),
-        claude_loopback_token: format!("{base}/v1/oauth/token"),
-        claude_profile: format!("{base}/api/oauth/profile"),
-        codex_usage: format!("{base}/backend-api/wham/usage"),
-        grok_usage: format!("{base}/v1/billing?format=credits"),
-        github_api: base.to_string(),
-        github_login: base.to_string(),
-        openai_auth: base.to_string(),
-        openai_port: 0,
-        nous_portal: base.to_string(),
-        allow_slot_refresh: true,
-        allow_loopback_http: true,
-    }
+    mocked_endpoints(base)
 }
 
 fn rows(snapshot: &AgentAccountsSnapshot, harness: HarnessId) -> Vec<AgentAccount> {

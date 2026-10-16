@@ -774,6 +774,27 @@ impl Default for ProbeEndpoints {
     }
 }
 
+/// Every endpoint on one mock server, with slot refresh and loopback http
+/// admitted — the set [`AgentAccounts::with_mocked_endpoints`] and the
+/// in-crate provider tests build their mocks on.
+fn mocked_endpoints(base: &str) -> ProbeEndpoints {
+    ProbeEndpoints {
+        claude_usage: format!("{base}/api/oauth/usage"),
+        claude_token: format!("{base}/v1/oauth/token"),
+        claude_loopback_token: format!("{base}/v1/oauth/token"),
+        claude_profile: format!("{base}/api/oauth/profile"),
+        codex_usage: format!("{base}/backend-api/wham/usage"),
+        grok_usage: format!("{base}/v1/billing?format=credits"),
+        github_api: base.to_string(),
+        github_login: base.to_string(),
+        openai_auth: base.to_string(),
+        openai_port: 0,
+        nous_portal: base.to_string(),
+        allow_slot_refresh: true,
+        allow_loopback_http: true,
+    }
+}
+
 /// The live Claude credential read, cached briefly per identity (see
 /// [`AgentAccounts::read_claude_credentials_cached`]).
 struct CachedClaudeCredentials {
@@ -927,6 +948,15 @@ impl AgentAccounts {
     #[doc(hidden)]
     pub fn override_cli(&self, harness: HarnessId, path: impl Into<PathBuf>) {
         lock(&self.inner.cli_overrides).insert(harness, path.into());
+    }
+
+    /// Test seam: [`Self::new`] with every provider endpoint pointed at
+    /// `base` (a local mock server) instead of the real providers — the same
+    /// endpoint set the in-crate provider tests use. Integration tests drive
+    /// usage probes and token flows against it; never use in production.
+    #[doc(hidden)]
+    pub fn with_mocked_endpoints(config: AgentAccountsConfig, base: &str) -> Self {
+        Self::with_endpoints(config, mocked_endpoints(base))
     }
 
     /// The ACP harness for `harness`'s CLI, honouring [`Self::override_cli`].
@@ -1536,6 +1566,31 @@ impl AgentAccounts {
             "harness account marked signed out"
         );
         Ok(())
+    }
+
+    /// [`Self::mark_account_signed_out`] for a RUN's signed-out error
+    /// (ticket 05's structured kind, wired by the sessions engine): resolve
+    /// the CLI's LIVE login for `harness` and mark ITS account — the account
+    /// every new run on this harness would use. The list first
+    /// auto-snapshots the live login into its slot, so the row exists even
+    /// when no accounts view ever ran. Single-login agents resolve
+    /// unambiguously; a per-provider agent's login names its provider, which
+    /// the caller must resolve before this can mark anything (no driver
+    /// classifies those signed-out yet).
+    pub async fn mark_live_signed_out(&self, harness: HarnessId) -> Result<(), EngineError> {
+        let snapshot = self.list(false).await?;
+        let row = snapshot
+            .accounts
+            .iter()
+            .find(|account| account.harness == harness && account.active)
+            .ok_or_else(|| {
+                EngineError::Other(format!(
+                    "no live {} login to mark signed out",
+                    harness_slug(harness)
+                ))
+            })?;
+        let account_id = row.id.clone();
+        self.mark_account_signed_out(harness, &account_id)
     }
 
     // ── add-account OAuth flows ─────────────────────────────────────────────
