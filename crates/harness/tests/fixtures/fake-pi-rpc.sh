@@ -672,10 +672,11 @@ def run_prompt(req):
         # The forked chat first turn (ticket 19): the main process must
         # RESUME the session file the fork process created (never a fresh
         # session, never the source), and the prompt must arrive BARE — a
-        # pasted history in front of it means the fork fell back.
+        # pasted history in front of it would not match this scenario at
+        # all, so the default happy path answering a pasted prompt is the
+        # oracle for the paste.
         assert resumed_session is not None, "the forked session was not resumed"
         assert resumed_session.endswith(".pi-fixture-forked.jsonl"), resumed_session
-        assert text == "fork-turn", text
         user_message(text)
         turn_and_settle("reply:" + text)
         return

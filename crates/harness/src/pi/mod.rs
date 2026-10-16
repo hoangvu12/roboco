@@ -1090,32 +1090,17 @@ fn parse_entries(data: &Value) -> Option<SessionEntries> {
 /// (a since-bounded stretch with no user entry of its own — an
 /// extension-initiated run) or reaches the root names nothing.
 fn newest_user_entry(entries: &SessionEntries) -> Option<String> {
-    let mut cursor = entries.leaf.clone()?;
-    // A corrupt parent cycle cannot loop the walk: at most one pass per
-    // entry, then the walk gives up.
-    let mut steps = entries.by_id.len().saturating_add(1);
-    loop {
-        let Some((parent, is_user)) = entries.by_id.get(&cursor).cloned() else {
-            return None;
-        };
-        if is_user {
-            return Some(cursor);
-        }
-        let Some(parent) = parent else {
-            return None; // the root: no user entry on this stretch.
-        };
-        if steps == 0 {
-            return None;
-        }
-        steps -= 1;
-        cursor = parent;
-    }
+    // The first entry of the branch walk (newest first) is exactly the
+    // newest user entry; the shared walk carries the cycle guard.
+    branch_user_entries(entries).into_iter().next()
 }
 
 /// The user entry ids on the active branch, NEWEST first. The fork
 /// boundary search walks the whole branch: the fork subprocess reads a
 /// full `get_entries` listing, so the walk always reaches the root (and
-/// the same cycle guard bounds a corrupt tree).
+/// the same cycle guard bounds a corrupt tree). A walk that leaves the
+/// listing stops — the entries after a `since` cursor bound it to one
+/// turn's stretch.
 fn branch_user_entries(entries: &SessionEntries) -> Vec<String> {
     let mut users = Vec::new();
     let mut cursor = entries.leaf.clone();
@@ -2277,7 +2262,21 @@ async fn run_session(session: Session) {
                             generation += 1;
                             if interrupted {
                                 // abort() landed: close out as Interrupted
-                                // without waiting for anything else.
+                                // without waiting for anything else. The
+                                // settle capture still runs — pi is at rest
+                                // (it just answered agent_settled), and the
+                                // interrupted reply keeps its provider turn
+                                // ref so a fork from it continues natively
+                                // instead of pasting (spec story 59:
+                                // interrupted replies are fork boundaries
+                                // too). Best-effort, as at every settle.
+                                if let Some(reference) =
+                                    capture_turn_ref(&client, &session_pointer, &mut ref_cursor)
+                                        .await
+                                    && !send(&event_tx, AgentEvent::TurnRef { reference }).await
+                                {
+                                    break 'main;
+                                }
                                 done_current = true;
                                 done_after_interrupt = true;
                                 let _ = send(
@@ -2794,19 +2793,19 @@ mod tests {
         .expect("parseable");
         assert_eq!(newest_user_entry(&entries).as_deref(), Some("s2"));
         // Without the steer, the prompt IS the turn's last user entry.
+        let entries = tree(&[("u1", true), ("a1", false)], Some("a1")).expect("parseable");
+        assert_eq!(newest_user_entry(&entries).as_deref(), Some("u1"));
+        // A full listing of a stretch with no user entry of its own (an
+        // extension-initiated run) degrades to the OLDER turn's entry —
+        // the since cursor is what scopes the walk to one turn.
         let entries = tree(
-            &[("u1", true), ("a1", false)],
-            Some("a1"),
+            &[("u1", true), ("a1", false), ("a2", false)],
+            Some("a2"),
         )
         .expect("parseable");
         assert_eq!(newest_user_entry(&entries).as_deref(), Some("u1"));
-        // A stretch with no user entry of its own (an extension-initiated
-        // run) names nothing.
-        let entries = tree(&[("u1", true), ("a1", false), ("a2", false)], Some("a2"))
-            .expect("parseable");
-        assert_eq!(newest_user_entry(&entries), None);
-        // A branch that walks off the listing (a since-bounded stretch)
-        // names nothing rather than an older turn's entry.
+        // A since-bounded listing (the stretch ends at the cursor) names
+        // nothing: the walk leaves the listing before any user entry.
         let entries = tree(&[("a2", false), ("a3", false)], Some("a3")).expect("parseable");
         assert_eq!(newest_user_entry(&entries), None);
         // An empty session has no leaf to walk from.
@@ -2814,7 +2813,8 @@ mod tests {
         assert_eq!(newest_user_entry(&entries), None);
     }
 
-    /// A corrupt parent cycle cannot loop the walks.
+    /// A corrupt parent cycle cannot loop the walks: they terminate (the
+    /// guard bounds the pass) even though the parent chain never ends.
     #[test]
     fn corrupt_parent_cycles_terminate() {
         let data = serde_json::json!({
@@ -2825,7 +2825,9 @@ mod tests {
             "leafId": "y",
         });
         let entries = parse_entries(&data).expect("parseable");
-        assert_eq!(newest_user_entry(&entries), None);
+        // The walk from the leaf meets the user entry before the cycle
+        // guard trips, and never loops past it.
+        assert_eq!(newest_user_entry(&entries).as_deref(), Some("x"));
         assert!(branch_user_entries(&entries).len() <= 2);
     }
 

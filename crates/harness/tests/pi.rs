@@ -1594,8 +1594,7 @@ async fn a_native_fork_at_an_earlier_turn_forks_at_the_next_turns_user_entry() {
 async fn a_stale_fork_boundary_falls_back_to_the_budgeted_paste() {
     let cwd = tempfile::tempdir().unwrap();
     let source = cwd.path().join("source-session.jsonl");
-    std::fs::write(&source, b"fixture session
-").unwrap();
+    std::fs::write(&source, b"fixture session\n").unwrap();
     let (controls, steer, _token) = controls();
     drop(steer);
     let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
@@ -1604,12 +1603,8 @@ async fn a_stale_fork_boundary_falls_back_to_the_budgeted_paste() {
         // Not on the fake tree branch: the driver must refuse the fork.
         last_turn: "u-gone".into(),
         fallback_history: Some(
-            "Continue this side chat using the following prior transcript as context.
-             <transcript>
-user: Remember PINEAPPLE
-</transcript>
-
-"
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
                 .into(),
         ),
     });
@@ -1642,8 +1637,7 @@ user: Remember PINEAPPLE
 async fn a_cancelled_fork_falls_back_to_the_budgeted_paste() {
     let cwd = tempfile::tempdir().unwrap();
     let source = cwd.path().join("fork-cancel-source.jsonl");
-    std::fs::write(&source, b"fixture session
-").unwrap();
+    std::fs::write(&source, b"fixture session\n").unwrap();
     let (controls, steer, _token) = controls();
     drop(steer);
     let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
@@ -1653,12 +1647,8 @@ async fn a_cancelled_fork_falls_back_to_the_budgeted_paste() {
         // (the source name scripts the cancellation).
         last_turn: "u2".into(),
         fallback_history: Some(
-            "Continue this side chat using the following prior transcript as context.
-             <transcript>
-user: Remember PINEAPPLE
-</transcript>
-
-"
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
                 .into(),
         ),
     });
@@ -1689,12 +1679,8 @@ async fn a_fork_with_a_missing_source_file_falls_back_to_the_budgeted_paste() {
         session_id: cwd.path().join("no-such-session.jsonl").display().to_string(),
         last_turn: "u1".into(),
         fallback_history: Some(
-            "Continue this side chat using the following prior transcript as context.
-             <transcript>
-user: Remember PINEAPPLE
-</transcript>
-
-"
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
                 .into(),
         ),
     });
@@ -1710,4 +1696,43 @@ user: Remember PINEAPPLE
     );
     // No fork process ever ran.
     assert!(!cwd.path().join(".pi-fixture-forked.jsonl").exists());
+}
+
+/// A fork RPC pi REFUSES (success: false) falls back the same way: fresh
+/// session, budgeted transcript, visible notice.
+#[tokio::test]
+async fn a_refused_fork_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("fork-refuse-source.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // An earlier-turn boundary, so the refused RPC actually fires
+        // (the source name scripts the refusal).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // The refused RPC still ran (its marker proves the refusal, not a
+    // silent skip).
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-rpc:u3"), "{forked}");
 }
