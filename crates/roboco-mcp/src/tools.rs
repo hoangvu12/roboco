@@ -669,6 +669,9 @@ impl Tools {
             self.roboco.sessions(),
             self.roboco.transcript(&chat.id)
         )?;
+        // The caller just read the chat's status, question and transcript —
+        // an observation (ticket 14): outcomes it already saw owe no notice.
+        self.acknowledge_observed(&chat.id).await;
         let rendered = render_entries(&entries, RenderOptions::default());
         let mut summary = summarize_chat(&chat, &spaces, &sessions);
         summary["messageCount"] = json!(rendered.len());
@@ -897,6 +900,9 @@ impl Tools {
     async fn read_chat(&self, args: ReadChatArgs) -> anyhow::Result<Value> {
         let chat = self.roboco.resolve_chat(&args.chat).await?;
         let entries = self.roboco.transcript(&chat.id).await?;
+        // The caller just read the transcript — an observation (ticket 14):
+        // outcomes for turns that already settled owe no notice.
+        self.acknowledge_observed(&chat.id).await;
         let rendered = render_entries(
             &entries,
             RenderOptions {
@@ -1064,6 +1070,26 @@ impl Tools {
     }
 
     // ---- shared pieces -------------------------------------------------------
+
+    /// Report an observation to the engine for the calling chat, best-effort
+    /// (ticket 14): `wait_for_turn`, `send_message` with wait, `read_chat`
+    /// and `get_chat` all show the caller the chat's state after its last
+    /// outcome happened, so the engine drops the completion-notice outcomes
+    /// it already saw — a wait that timed out saw nothing. No calling chat
+    /// (a human at a CLI) reports nothing: the user reading a chat is not
+    /// the parent agent that would process the notice.
+    async fn acknowledge_observed(&self, chat_id: &str) {
+        let Some(origin) = self.roboco.origin().chat_id.clone() else {
+            return;
+        };
+        if origin == chat_id {
+            // A chat cannot observe itself into silence — `whoami`'s rule.
+            return;
+        }
+        if let Err(err) = self.roboco.ack_side_chat(chat_id, &origin).await {
+            tracing::warn!(chat = chat_id, error = %err, "observation report failed");
+        }
+    }
 
     /// Prefix the sender's identity when this server speaks for a chat, so
     /// the receiving agent (and the human reading that transcript) can tell
@@ -1298,6 +1324,13 @@ impl Tools {
             tokio::time::sleep(Duration::from_millis(100).min(remaining)).await;
         }
         let (status, _) = status_of(session.as_ref());
+        // The wait resolved on a settle the caller now knows (ticket 14):
+        // report the observation — a timed-out wait observed nothing. This
+        // covers `wait_for_turn`, `send_message` with wait, and `create_chat`
+        // with wait, which all resolve through here.
+        if outcome != TurnOutcome::TimedOut {
+            self.acknowledge_observed(&chat.id).await;
+        }
         Ok(json!({
             "outcome": outcome,
             "status": status,
@@ -1345,6 +1378,9 @@ mod tests {
         /// and whether it wants completion notices.
         beta_agent_origin: Option<roboco_proto::AgentOrigin>,
         catalog_error: Option<&'static str>,
+        /// When set, `WatchSessions` reports this chat as Working — a wait
+        /// on it can only time out.
+        working_session: Option<String>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1390,7 +1426,13 @@ mod tests {
                         "createdAt": "2026-09-02T00:00:00Z"
                     }
                 ])),
-                methods::WATCH_SESSIONS => stream(json!([])),
+                methods::WATCH_SESSIONS => stream(match &self.working_session {
+                    Some(chat_id) => json!([{
+                        "chatId": chat_id, "deviceId": "dev-local",
+                        "status": "working", "updatedAt": "2026-09-02T00:00:00Z"
+                    }]),
+                    None => json!([]),
+                }),
                 methods::LIST_HARNESSES => RpcReply::Value(json!([
                     { "id": "claude-code", "name": "Claude Code", "supportsSteering": true,
                       "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true },
@@ -1420,6 +1462,15 @@ mod tests {
                         barrier.wait().await;
                     }
                     RpcReply::Value(json!({ "commandId": "cmd-1", "id": "q-1" }))
+                }
+                methods::ACK_SIDE_CHAT => {
+                    // Recorded like a write so tests can assert the report
+                    // the engine received (ticket 14).
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params));
+                    RpcReply::Value(json!({}))
                 }
                 other => return Err(RpcError::UnknownMethod(other.into())),
             })
@@ -1861,6 +1912,135 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(prompt, "typed");
+    }
+
+    #[tokio::test]
+    async fn reads_waits_and_gets_report_observations_for_the_calling_chat() {
+        let world = Arc::new(World::default());
+        let tools = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        // read_chat, get_chat and wait_for_turn all show the caller the
+        // chat's state after its last outcome happened (ticket 14): each
+        // reports the observation for the calling chat.
+        tools
+            .call("read_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        tools
+            .call("get_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        tools
+            .call("wait_for_turn", json!({ "chat": "alpha", "timeout_secs": 2 }))
+            .await
+            .unwrap();
+
+        let writes = world.writes.lock().unwrap();
+        let acks: Vec<&Value> = writes
+            .iter()
+            .filter(|(method, _)| method == methods::ACK_SIDE_CHAT)
+            .map(|(_, params)| params)
+            .collect();
+        assert_eq!(acks.len(), 3, "{writes:?}");
+        for params in acks {
+            assert_eq!(params["chatId"], "chat-alpha-1");
+            assert_eq!(params["originChatId"], "chat-beta-2");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_that_waits_reports_the_observation_once_it_resolves() {
+        // send_message with wait: the turn completes (the advancing sessions
+        // row), the reply comes back — the observation is reported.
+        let service = Arc::new(DelayedTurn {
+            world: World::default(),
+            sent: Mutex::new(None),
+            reply_delay: Duration::from_millis(100),
+            never_reply: false,
+            host_skew_millis: 0,
+        });
+        let tools = Tools::new(Arc::new(Roboco::with_client(
+            memory_client(service.clone()),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        )));
+        let result = tools
+            .call(
+                "send_message",
+                json!({ "chat": "Beta", "text": "go", "wait": true, "timeout_secs": 2 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["turn"]["outcome"], "completed", "{result}");
+
+        let writes = service.world.writes.lock().unwrap();
+        let acks: Vec<&Value> = writes
+            .iter()
+            .filter(|(method, _)| method == methods::ACK_SIDE_CHAT)
+            .map(|(_, params)| params)
+            .collect();
+        assert_eq!(acks.len(), 1, "{writes:?}");
+        assert_eq!(acks[0]["chatId"], "chat-beta-2");
+        assert_eq!(acks[0]["originChatId"], "chat-alpha-1");
+    }
+
+    #[tokio::test]
+    async fn a_human_cli_reports_no_observations() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        tools
+            .call("read_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        tools
+            .call("get_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        tools
+            .call("wait_for_turn", json!({ "chat": "alpha", "timeout_secs": 2 }))
+            .await
+            .unwrap();
+        // No calling chat: nothing is reported. The user reading a chat is
+        // not the parent agent that would process the notice.
+        let writes = world.writes.lock().unwrap();
+        assert!(
+            writes.iter().all(|(method, _)| method != methods::ACK_SIDE_CHAT),
+            "{writes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_wait_reports_no_observation() {
+        // The chat stays working, so the wait can only expire — and a wait
+        // that timed out observed nothing to acknowledge.
+        let world = Arc::new(World {
+            working_session: Some("chat-alpha-1".into()),
+            ..Default::default()
+        });
+        let tools = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        let waited = tools
+            .call("wait_for_turn", json!({ "chat": "alpha", "timeout_secs": 1 }))
+            .await
+            .unwrap();
+        assert_eq!(waited["turn"]["timedOut"], true, "{waited}");
+        let writes = world.writes.lock().unwrap();
+        assert!(
+            writes.iter().all(|(method, _)| method != methods::ACK_SIDE_CHAT),
+            "{writes:?}"
+        );
     }
 
     #[tokio::test]

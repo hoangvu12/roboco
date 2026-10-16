@@ -277,6 +277,17 @@ struct QueueMessageParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AckSideChatParams {
+    /// The chat that was observed — the side chat.
+    chat_id: String,
+    /// The chat that observed it: the Roboco MCP server's calling chat
+    /// (an agent parent). Reported after `wait_for_turn`, a send with
+    /// wait, `read_chat` or `get_chat` (ticket 14).
+    origin_chat_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct QueuedMessageParams {
     chat_id: String,
     id: String,
@@ -1969,6 +1980,15 @@ impl RpcService for EngineRpc {
                     )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "id": id }))
+            }
+            methods::ACK_SIDE_CHAT => {
+                // An agent parent observed a chat after its last outcome
+                // happened (ticket 14, orchestration v2). Engine-local:
+                // the Roboco MCP server dials this engine's loopback, and
+                // both chats live here.
+                let p: AckSideChatParams = parse_params(params)?;
+                self.sessions.ack_notice(&p.origin_chat_id, &p.chat_id);
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::UPDATE_QUEUED_MESSAGE => {
                 let p: QueuedMessageParams = parse_params(params)?;

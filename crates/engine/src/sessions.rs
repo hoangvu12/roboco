@@ -484,6 +484,52 @@ impl SessionsEngine {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// An observation report from the Roboco MCP server (ticket 14): the
+    /// chat `parent` — the server's calling chat — just observed `side_chat`
+    /// after its last outcome happened, through `wait_for_turn`, a send
+    /// with wait, `read_chat` or `get_chat`. Outcomes the parent already
+    /// observed owe no notice: they are dropped, and a record that lands
+    /// right after the report raced it is dropped too.
+    pub(crate) fn ack_notice(&self, parent: &str, side_chat: &str) {
+        let watermark = self.inner.notices.ack(parent, side_chat);
+        tracing::debug!(
+            parent,
+            side_chat,
+            watermark,
+            "completion-notice observation acknowledged"
+        );
+    }
+
+    /// Clear the notifiable-parent claim on every live run whose current
+    /// turn owes a notice to `parent` (crate-internal; ticket 14's
+    /// stopped-parent rule). The side chats keep running; their turns
+    /// simply stop owing outcomes — a later parent message re-arms the
+    /// claim through `mark_notifiable`.
+    pub(crate) fn suppress_notifiable_runs(&self, parent: &str) {
+        let runs = lock(&self.inner.runs);
+        for run in runs.values() {
+            let mut notifiable = lock(&run.notifiable);
+            if notifiable.as_deref() == Some(parent) {
+                *notifiable = None;
+            }
+        }
+    }
+
+    /// Loop-cap bookkeeping for a message that just landed (ticket 14): a
+    /// turn whose starting message id carries the engine's notice prefix
+    /// counts as notice-started (the consecutive streak grows); a
+    /// user-authored message — no origin chat, not one of the engine's own
+    /// artifacts — breaks the streak and resets the count. A message from
+    /// another chat does neither: the cap is about notice loops, and it
+    /// waits for the user, not for third-party traffic.
+    fn note_loop_counter(&self, chat_id: &str, message_id: &str, origin_chat_id: Option<&str>) {
+        if message_id.starts_with(crate::completion_notices::NOTICE_ID_PREFIX) {
+            self.inner.notices.notice_turn_started(chat_id);
+        } else if origin_chat_id.is_none() {
+            self.inner.notices.note_user_message(chat_id);
+        }
+    }
+
     /// The parent a message from `origin` makes a turn of `chat_id`
     /// notifiable for: only the chat the durable agent-origin row
     /// (`roboco_proto::AgentOrigin` on the chat) names, and only while it
@@ -821,6 +867,10 @@ impl SessionsEngine {
                     now_ms(),
                     origin_chat_id.as_deref(),
                 )?;
+                // The warm send still counts for the notice loop (ticket
+                // 14): a notice row routing into a live turn is
+                // notice-started; a user's message resets the streak.
+                self.note_loop_counter(chat_id, &user_id, origin_chat_id.as_deref());
                 // A turn counts from acceptance — a prompt deferred behind an
                 // update must not snapshot a turn that has not started.
                 self.note_turn_start(chat_id, &request.cwd);
@@ -885,6 +935,11 @@ impl SessionsEngine {
             now_ms(),
             origin_chat_id.as_deref(),
         )?;
+        // Ticket 14's loop cap: a notice turn — the starting message is one
+        // of the engine's notice artifacts (a delivered notice entry or a
+        // released parked row) — grows the consecutive count; a
+        // user-authored message resets it.
+        self.note_loop_counter(chat_id, &user_id, origin_chat_id.as_deref());
 
         // Engine-owned resume (roboco sessions.ts:736 — every dispatch read the
         // chat's stored harness session): callers always send `resume: None`;
@@ -1160,6 +1215,12 @@ impl SessionsEngine {
             issued_at.min(now_ms()),
             origin_chat_id.as_deref(),
         )?;
+        // A steer is never one of the engine's notice artifacts: a user's
+        // steer breaks the notice-turn streak (ticket 14); a chat's steer
+        // leaves the cap alone.
+        if origin_chat_id.is_none() {
+            self.inner.notices.note_user_message(chat_id);
+        }
         // A routed steer is a turn too. Fired here (not only on the confirmed
         // path) — a reclaim falls back to dispatch, which just re-snapshots.
         if let Some(request) = self.last_request(chat_id) {
@@ -1208,7 +1269,13 @@ impl SessionsEngine {
     /// shells, everything the agent runs. The next message resumes the
     /// conversation in a fresh process. (Sending, steering and switching
     /// models never come here: they keep the runtime and its work.)
+    ///
+    /// Stopping also drops the notices this chat is owed as a parent and
+    /// suppresses outcomes from side chats whose notifiable turns are
+    /// running now (ticket 14): a stopped parent must not restart on its
+    /// own. Side chats keep running — Stop does not cascade.
     pub async fn interrupt(&self, chat_id: &str) -> Result<bool, EngineError> {
+        crate::completion_notices::stop_parent(self, chat_id);
         self.terminate(chat_id).await
     }
 
@@ -1491,6 +1558,10 @@ impl SessionsEngine {
             };
             self.inner.publish(&chat_id, &done);
             let stamped = handle.mark_abandoned_streams(note)?.len();
+            // Stamp the settle serial before the recovered chat reads idle
+            // (ticket 14): the interrupted outcome belongs to this settle,
+            // so an observation of the chat after boot covers it.
+            let settle = self.inner.notices.settle(&chat_id);
             self.set_status(&chat_id, SessionStatus::Idle, false);
             tracing::info!(chat = %chat_id, stamped, will_resume, attempts, "recovered stale session journal");
             recovered += 1;
@@ -1518,6 +1589,7 @@ impl SessionsEngine {
                         &parent,
                         crate::completion_notices::PendingOutcome {
                             side_chat_id: chat_id.clone(),
+                            settle,
                             outcome: crate::completion_notices::Outcome::Interrupted {
                                 reason: Some(
                                     crate::completion_notices::INTERRUPTED_REASON.into(),
@@ -2967,7 +3039,9 @@ fn run_notifiable_parent(inner: &Inner, chat_id: &str, run_id: &str) -> Option<S
 }
 
 /// Record a completion-notice outcome, fire-and-forget: the side chat's
-/// event stream never waits on the parent's notice turn. Engine teardown
+/// event stream never waits on the parent's notice turn. `settle` is the
+/// side chat's settle serial stamped before its settled status published
+/// (ticket 14) — the acknowledgement compares against it. Engine teardown
 /// records nothing — the runs it kills were not user-visible outcomes;
 /// a restart's lost runs are covered at boot (interrupted outcomes),
 /// where the crash state is durable enough to read.
@@ -2975,6 +3049,7 @@ fn spawn_notice_record(
     inner: Arc<Inner>,
     side_chat: String,
     parent: String,
+    settle: u64,
     outcome: crate::completion_notices::Outcome,
 ) {
     if inner
@@ -2985,7 +3060,7 @@ fn spawn_notice_record(
     }
     let engine = SessionsEngine { inner };
     tokio::spawn(async move {
-        crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, outcome).await;
+        crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, settle, outcome).await;
     });
 }
 
@@ -3017,13 +3092,15 @@ fn spawn_notice_delivery(inner: &Arc<Inner>, chat_id: &str) {
 /// Record the outcome of a turn that settled INSIDE the run loop (a parked
 /// persistent session, the quiesce watchdog): only real turn ends record —
 /// an internal handoff (a pending steer or a sent message owns the
-/// continuation) notifies nothing.
+/// continuation) notifies nothing. `settle` is the settle serial the
+/// caller stamped before the settled status published (ticket 14).
 fn record_parked_turn(
     inner: &Arc<Inner>,
     chat_id: &str,
     run_id: &str,
     completed: bool,
     stopped_in_place: bool,
+    settle: u64,
 ) {
     let outcome = if stopped_in_place {
         Some(crate::completion_notices::Outcome::Stopped)
@@ -3035,7 +3112,7 @@ fn record_parked_turn(
     if let Some(outcome) = outcome
         && let Some(parent) = run_notifiable_parent(inner, chat_id, run_id)
     {
-        spawn_notice_record(inner.clone(), chat_id.to_string(), parent, outcome);
+        spawn_notice_record(inner.clone(), chat_id.to_string(), parent, settle, outcome);
     }
 }
 
@@ -3267,11 +3344,14 @@ async fn drive_run(
             );
             // Completion notices (orchestration v2): a notifiable turn that
             // never started is still a turn the parent is owed — it errored.
+            // The settle serial stamps before the errored status publishes
+            // (ticket 14): a wait resolving off that flip observes it.
+            let settle = inner.notices.settle(&chat_id);
             if let Some(parent) = run_notifiable_parent(&inner, &chat_id, &run_id) {
                 let outcome = crate::completion_notices::Outcome::Errored {
                     reason: crate::completion_notices::one_line(Some(message.as_str())),
                 };
-                spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
+                spawn_notice_record(inner.clone(), chat_id.clone(), parent, settle, outcome);
             }
             inner.remove_run(&chat_id, &run_id);
             inner.set_status(&chat_id, SessionStatus::Errored, false);
@@ -3653,6 +3733,7 @@ async fn drive_run(
                     idle_since = Some(tokio::time::Instant::now());
                     reap_deferred_until = None;
                     self_continued_turn = false;
+                    let settle = inner.notices.settle(&chat_id);
                     inner.set_status_with_completion(
                         &chat_id, SessionStatus::Idle, false, completed_turn.clone(),
                     );
@@ -3664,6 +3745,7 @@ async fn drive_run(
                         &run_id,
                         completed_turn.is_some(),
                         false,
+                        settle,
                     );
                     // The watchdog-finalized turn is over: notices that
                     // piled up while the chat worked start its next turn
@@ -4157,11 +4239,17 @@ async fn drive_run(
                 let was_awaiting = lock(&inner.statuses)
                     .get(&chat_id)
                     .is_some_and(|s| s.status == SessionStatus::AwaitingInput);
+                // Stamp the settle serial before the awaiting status
+                // publishes (ticket 14): a wait resolving at this flip — or
+                // a read after it — has observed the question this outcome
+                // reports. Only a NEW awaiting stretch settles; a twin
+                // question does not.
+                let settle = (!was_awaiting).then(|| inner.notices.settle(&chat_id));
                 inner.set_status(&chat_id, SessionStatus::AwaitingInput, false);
                 // A notifiable turn reaching awaiting input owes its parent a
                 // notice with a one-line summary of the question — once per
                 // awaiting stretch, not per twin question.
-                if !was_awaiting
+                if let Some(settle) = settle
                     && let Some(parent) = run_notifiable_parent(&inner, &chat_id, &run_id)
                 {
                     let summary = crate::completion_notices::question_summary(questions);
@@ -4169,6 +4257,7 @@ async fn drive_run(
                         inner.clone(),
                         chat_id.clone(),
                         parent,
+                        settle,
                         crate::completion_notices::Outcome::WaitingForInput { summary },
                     );
                 }
@@ -4304,6 +4393,10 @@ async fn drive_run(
                 idle_since = Some(tokio::time::Instant::now());
                 reap_deferred_until = None;
                 self_continued_turn = false;
+                // The settle serial stamps before the idle status publishes
+                // (ticket 14): an observer of the parked turn's completion
+                // has observed this settle.
+                let settle = inner.notices.settle(&chat_id);
                 inner.set_status_with_completion(
                     &chat_id,
                     SessionStatus::Idle,
@@ -4319,6 +4412,7 @@ async fn drive_run(
                     &run_id,
                     completed_turn.is_some(),
                     stopped_in_place,
+                    settle,
                 );
                 // The parked turn is over: notices that piled up while the
                 // chat worked start its next turn (ticket 13).
@@ -4390,8 +4484,11 @@ async fn drive_run(
     }
     // Completion notices (orchestration v2): the run's final turn ended —
     // read the notifiable parent before the handle goes away, then record
-    // the outcome the engine's own state observed.
+    // the outcome the engine's own state observed. The settle serial stamps
+    // before the final status publishes (ticket 14): a wait resolving off
+    // that flip — or a read after it — has observed this turn's outcome.
     let notifiable = run_notifiable_parent(&inner, &chat_id, &run_id);
+    let final_settle = inner.notices.settle(&chat_id);
     inner.remove_run(&chat_id, &run_id);
     let final_turn_completed = final_completed_turn.is_some();
     let auto_arm_limit = limit.clone();
@@ -4410,7 +4507,7 @@ async fn drive_run(
     if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
         let completed_turn = final_turn_completed;
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
-            spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
+            spawn_notice_record(inner.clone(), chat_id.clone(), parent, final_settle, outcome);
         }
     }
     // A busy parent's notices waited — never steered mid-turn (ticket 13):

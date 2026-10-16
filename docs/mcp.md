@@ -157,6 +157,13 @@ Watch streams are the engine's only read surface (there is no one-shot "get
 transcript" RPC); a snapshot is "subscribe, take the first item, drop" — drop
 cancels server-side, exactly what the sidebar does on attach.
 
+`wait_for_turn`, `send_message` with `wait`, `read_chat` and `get_chat` all
+report the observation to the engine for the calling chat afterwards
+(`AckSideChat {chatId, originChatId}`): a side chat's outcome the caller just
+saw owes no completion notice. A wait that timed out reports nothing, and a
+human at a terminal (no calling chat) never reports — the user reading a chat
+is not the parent agent that would process the notice.
+
 `send_message` mode `auto` starts idle (or errored) chats and delivers into
 working chats without interrupting the run: mid-turn where the harness accepts
 prompts mid-run (Claude Code, Codex, Cursor, Pi, OpenCode), otherwise held in
