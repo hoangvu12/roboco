@@ -437,6 +437,17 @@ export function ConversationPage() {
     [chatId],
   );
 
+  // A completion notice's side row (ticket 15): open the side chat — the
+  // route select, the web shape of the desktop's `open_chat`
+  // (shell/tabs.rs:205). A chat that left the list still owns its transcript,
+  // so the route is always the target.
+  const onOpenChat = useCallback(
+    (target: string) => {
+      void navigate({ to: "/chat/$chatId", params: { chatId: target } });
+    },
+    [navigate],
+  );
+
   const crStore = useMemo(() => {
     if (session === null) {
       return null;
@@ -1376,6 +1387,7 @@ export function ConversationPage() {
                   indicator={row?.status ?? "idle"}
                   turnStartedAt={turnStartedAt}
                   onOpenSubagent={onOpenSubagent}
+                  onOpenChat={onOpenChat}
                   deliveryDegraded={deliveryDegraded}
                 />
               )}

@@ -462,6 +462,13 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   // the web shape of the desktop's side-chat panel), `/rename` targets THIS
   // side chat, and the globals navigate like the chat page's.
   const navigate = useNavigate();
+  // A completion notice's side row (ticket 15): open the side chat it
+  // reports — the route select, the web shape of the desktop's `open_chat`
+  // (shell/tabs.rs:205). A notice inside a side chat's own pane points at
+  // ITS side chats the same way.
+  const onOpenChat = (target: string): void => {
+    void navigate({ to: "/chat/$chatId", params: { chatId: target } });
+  };
   const workspaceCommands = useMemo<WorkspaceCommandActions>(
     () => ({
       newChat: () => {
@@ -516,6 +523,7 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
               indicator={indicator}
               turnStartedAt={turnStartedAt}
               onOpenSubagent={onOpenSubagent}
+              onOpenChat={onOpenChat}
               deliveryDegraded={deliveryDegraded}
             />
           )}
