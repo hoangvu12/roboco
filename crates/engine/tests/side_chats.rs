@@ -9,8 +9,10 @@
 //!   with main chats, and resets provider-session continuity so the copy
 //!   never resumes the parent's conversation;
 //! - a side chat's first send bootstraps the provider session with the
-//!   conversation it lacks (the copied history), once per provider session,
-//!   never in front of a native command;
+//!   transcript it lacks — budgeted (t3-orchestration-v2 ticket 01): a
+//!   16k-byte selection of the copied transcript with a coverage header
+//!   naming the omitted messages and the `read_chat` source chat — once per
+//!   provider session, never in front of a native command;
 //! - a fork whose first turn was a native command owes its copied history to
 //!   the first ordinary send — warm dispatch, steer, or a cold resume —
 //!   exactly once, recorded durably per provider session.
@@ -20,7 +22,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::sync::{Arc, Mutex};
 use roboco_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use roboco_engine::{EngineCore, HarnessRegistry};
+use roboco_engine::{transcript_budget::TRANSCRIPT_BUDGET_BYTES, EngineCore, HarnessRegistry};
 use roboco_harness::{Harness, HarnessError, RunControls};
 use roboco_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
@@ -883,3 +885,243 @@ async fn orphaned_history_steer_still_owes_the_history() {
     );
     core.shutdown().await;
 }
+
+// ── budgeted fork transcript (t3-orchestration-v2 ticket 01) ─────────────────
+
+/// The count inside the coverage header's "N messages were omitted".
+fn omitted_count(prompt: &str) -> usize {
+    let at = prompt
+        .find(" messages were omitted")
+        .expect("coverage header");
+    let start = prompt[..at]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i + 1)
+        .unwrap_or(0);
+    prompt[start..at].parse().expect("omitted count")
+}
+
+/// A fork of a long chat no longer pastes the whole transcript: what goes
+/// in front of the new message is a 16k-byte selection that keeps the first
+/// and latest user messages and the latest assistant message, fills with
+/// the newest remainder, and carries a coverage header with the omitted
+/// count and the `read_chat` pointer to the source chat. The new user
+/// message rides whole at the end.
+#[tokio::test]
+async fn a_long_fork_sends_budgeted_transcript_with_a_coverage_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    for (id, role, text) in [
+        (
+            "u0",
+            MessageRole::User,
+            "FIRSTASK: build the budgeted fork transcript",
+        ),
+        ("a0", MessageRole::Assistant, "FIRSTANS: on it"),
+    ] {
+        source
+            .doc()
+            .push_message(&message(id, role, text, MessageStatus::Complete))
+            .unwrap();
+    }
+    for i in 1..=30 {
+        source
+            .doc()
+            .push_message(&message(
+                &format!("u{i}"),
+                MessageRole::User,
+                &format!("FILLER-{i}: {}", "x".repeat(900)),
+                MessageStatus::Complete,
+            ))
+            .unwrap();
+        source
+            .doc()
+            .push_message(&message(
+                &format!("a{i}"),
+                MessageRole::Assistant,
+                &format!("FILLERA-{i}: {}", "y".repeat(500)),
+                MessageStatus::Complete,
+            ))
+            .unwrap();
+    }
+    for (id, role, text) in [
+        ("u99", MessageRole::User, "LASTASK: ship it"),
+        ("a99", MessageRole::Assistant, "LASTANS: done"),
+    ] {
+        source
+            .doc()
+            .push_message(&message(id, role, text, MessageStatus::Complete))
+            .unwrap();
+    }
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "fork", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+    let new_message = "What did I ask you to do first?";
+    let request = side_turn(&core, &requests, "fork", new_message, "f1").await;
+    let prompt = request.prompt;
+    // The new user message is never shortened and always last.
+    assert!(prompt.ends_with(new_message), "{prompt}");
+    // The priorities survive every budget.
+    for marker in ["FIRSTASK", "LASTASK", "LASTANS"] {
+        assert!(prompt.contains(marker), "missing {marker}: {prompt}");
+    }
+    // Recent context is preferred over the middle of the transcript.
+    assert!(prompt.contains("FILLER-30:"), "{prompt}");
+    assert!(!prompt.contains("FILLER-2:"), "{prompt}");
+    // The coverage header: omitted count, read_chat, the source chat id.
+    assert!(omitted_count(&prompt) >= 1);
+    assert!(prompt.contains("read_chat"), "{prompt}");
+    assert!(prompt.contains("chat id \"main\""), "{prompt}");
+    // Everything in front of the new message fits the budget.
+    let delivered = &prompt[..prompt.len() - new_message.len()];
+    assert!(
+        delivered.len() <= TRANSCRIPT_BUDGET_BYTES,
+        "delivered {} bytes",
+        delivered.len()
+    );
+    core.shutdown().await;
+}
+
+/// A fork of a chat whose whole transcript fits the budget sends it complete
+/// — every message verbatim, no omission note, no truncation.
+#[tokio::test]
+async fn a_short_fork_sends_its_whole_transcript_without_an_omission_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    for (id, role, text) in [
+        ("u1", MessageRole::User, "Remember PINEAPPLE"),
+        ("a1", MessageRole::Assistant, "I remember PINEAPPLE"),
+        ("u2", MessageRole::User, "And the code?"),
+        ("a2", MessageRole::Assistant, "Checked in"),
+    ] {
+        source
+            .doc()
+            .push_message(&message(id, role, text, MessageStatus::Complete))
+            .unwrap();
+    }
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "fork", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+    let new_message = "What did I ask you to remember?";
+    let request = side_turn(&core, &requests, "fork", new_message, "f1").await;
+    let prompt = request.prompt;
+    assert!(prompt.ends_with(new_message), "{prompt}");
+    assert!(prompt.contains("<transcript>"), "{prompt}");
+    // Complete means complete.
+    for text in [
+        "Remember PINEAPPLE",
+        "I remember PINEAPPLE",
+        "And the code?",
+        "Checked in",
+    ] {
+        assert!(prompt.contains(text), "missing {text}: {prompt}");
+    }
+    assert!(!prompt.contains("omitted"), "{prompt}");
+    assert!(!prompt.contains("read_chat"), "{prompt}");
+    assert!(!prompt.contains("…[truncated]"), "{prompt}");
+    core.shutdown().await;
+}
+
+/// A single message larger than the whole budget is truncated — present,
+/// marked, bounded — while the rest of the transcript and the new user
+/// message ride along whole.
+#[tokio::test]
+async fn an_oversized_fork_message_is_truncated_not_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    let big = format!("BIGMARK {}", "z".repeat(30_000));
+    for (id, role, text) in [
+        ("u0", MessageRole::User, "FIRST: the original request"),
+        ("a0", MessageRole::Assistant, "acknowledged"),
+        ("u1", MessageRole::User, big.as_str()),
+        ("a1", MessageRole::Assistant, "done"),
+    ] {
+        source
+            .doc()
+            .push_message(&message(id, role, text, MessageStatus::Complete))
+            .unwrap();
+    }
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "fork", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+    let new_message = "Summarize what I asked for.";
+    let request = side_turn(&core, &requests, "fork", new_message, "f1").await;
+    let prompt = request.prompt;
+    // The oversized message is present but cut, visibly.
+    assert!(prompt.contains("BIGMARK"), "{prompt}");
+    assert!(prompt.contains("…[truncated]"), "{prompt}");
+    assert!(prompt.contains(&"z".repeat(4000)), "{prompt}");
+    assert!(!prompt.contains(&"z".repeat(5000)), "{prompt}");
+    // The other messages still ride along.
+    assert!(prompt.contains("FIRST: the original request"), "{prompt}");
+    assert!(prompt.contains("done"), "{prompt}");
+    // Nothing was omitted, but the truncation still points at read_chat.
+    assert!(!prompt.contains("messages were omitted"), "{prompt}");
+    assert!(prompt.contains("read_chat"), "{prompt}");
+    assert!(prompt.contains("chat id \"main\""), "{prompt}");
+    // Bounded, and the new message whole at the end.
+    let delivered = &prompt[..prompt.len() - new_message.len()];
+    assert!(
+        delivered.len() <= TRANSCRIPT_BUDGET_BYTES,
+        "delivered {} bytes",
+        delivered.len()
+    );
+    assert!(prompt.ends_with(new_message), "{prompt}");
+    core.shutdown().await;
+}
+

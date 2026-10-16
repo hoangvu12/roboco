@@ -1602,11 +1602,13 @@ fn note_fork_history_session(doc: &SessionDoc, carried: bool, session_id: &str) 
 }
 
 impl Inner {
-    /// `prompt` with the conversation a side chat's provider session lacks in
+    /// `prompt` with the transcript a side chat's provider session lacks in
     /// front of it, or `None` when it lacks nothing. A fresh session gets the
-    /// whole transcript (`current` excluded); a continued one only the fork's
-    /// copied history before the seam, until that went out to that session.
-    /// Native commands are never wrapped: providers route a leading `/name`.
+    /// budgeted transcript (`current` excluded); a continued one only the
+    /// fork's copied transcript before the seam, until that went out to that
+    /// session. The budget and the selection rules live in
+    /// [`crate::transcript_budget`]. Native commands are never wrapped:
+    /// providers route a leading `/name`.
     fn fork_history_prompt(
         &self,
         chat_id: &str,
@@ -1628,7 +1630,13 @@ impl Inner {
             .read_entries()
             .unwrap_or_default()
             .into_iter()
-            .filter(|entry| Some(entry.id.as_str()) != current)
+            // `current` — and any continuation fragment of it — belongs to
+            // the turn being sent, never to the transcript in front of it.
+            .filter(|entry| {
+                !current.is_some_and(|current| {
+                    entry.id == current || entry.continuation_of.as_deref() == Some(current)
+                })
+            })
             .collect();
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
@@ -1637,44 +1645,40 @@ impl Inner {
                 if session.is_some() && delivered.as_deref() == session {
                     return None;
                 }
-                entries.iter().position(|entry| {
-                    entry
-                        .parts
-                        .iter()
-                        .any(|part| matches!(part, roboco_doc::MessagePart::Fork { .. }))
-                })?
+                entries.iter().position(is_fork_seam)?
             }
         };
-        let history: Vec<_> = entries[..end]
+        // The chat the omitted messages are readable in: the newest fork
+        // seam names the chat this transcript was copied from (its
+        // transcript holds everything above the seam); a seam-less side
+        // chat points at itself.
+        let source = entries
             .iter()
-            .map(|entry| {
-                let text = entry
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        roboco_doc::MessagePart::Text { text, .. } => Some(text.clone()),
-                        roboco_doc::MessagePart::Tool { call, output, .. } => Some(format!(
-                            "Tool: {}\n{}",
-                            serde_json::to_string(call).unwrap_or_default(),
-                            output.clone().unwrap_or_default()
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (entry.role, text)
-            })
-            .filter(|(_, text)| !text.is_empty())
-            .map(|(role, text)| serde_json::json!({ "role": role, "text": text }))
-            .collect();
-        (!history.is_empty()).then(|| {
-            format!(
-                "Continue this side conversation using the following prior conversation as context.\n<conversation>\n{}\n</conversation>\n\n{}",
-                serde_json::to_string(&history).unwrap_or_default(),
-                prompt
-            )
-        })
+            .rev()
+            .find_map(fork_seam_source)
+            .unwrap_or_else(|| chat_id.to_owned());
+        crate::transcript_budget::budgeted_transcript_prompt(&entries[..end], Some(&source), prompt)
     }
+}
+
+/// A fork seam entry: the transcript divider above which messages were
+/// copied from another chat.
+fn is_fork_seam(entry: &SessionMessageEntry) -> bool {
+    entry
+        .parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::Fork { .. }))
+}
+
+/// The chat a fork seam copied its transcript from.
+fn fork_seam_source(entry: &SessionMessageEntry) -> Option<String> {
+    entry
+        .parts
+        .iter()
+        .find_map(|part| match part {
+            MessagePart::Fork { source_chat_id, .. } => Some(source_chat_id.clone()),
+            _ => None,
+        })
 }
 
 /// Whether the provider routes this prompt as a native command: its delivered
