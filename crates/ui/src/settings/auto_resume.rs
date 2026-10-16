@@ -118,7 +118,7 @@ impl Render for AutoResumeCard {
             .ready()
             .is_some_and(|settings| settings.auto_resume_limited);
         let control: AnyElement = match &self.settings {
-            Loadable::Ready(_) => widgets::toggle_switch(theme, enabled, "auto-resume-limited")
+            Loadable::Ready(_) => widgets::toggle_switch(&theme, enabled, "auto-resume-limited")
                 .id("auto-resume-limited-toggle")
                 .tab_index(0)
                 .role(gpui::Role::Switch)

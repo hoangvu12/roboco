@@ -13,4 +13,4 @@ export type ResumeOnAccountOutcome = { "type": "switched", accountId: string,
 /**
  * The row's email (or display name) — the "Resumed on …" label.
  */
-accountEmail?: string | null, } | { "type": "noCandidates" } | { "type": "failed", reason: string };
+accountEmail?: string | null, } | { "type": "noCandidates" } | { "type": "failed", reason: string, };

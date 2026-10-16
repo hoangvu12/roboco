@@ -4743,7 +4743,7 @@ impl Shell {
                             // same "resets in …" phrasing the banner
                             // uses, one per shown meter.
                             .children(
-                                candidate_reset_caption(account, now).map(|caption| {
+                                candidate_reset_caption(&account, now).map(|caption| {
                                     div()
                                         .text_size(px(10.5))
                                         .text_color(theme.text_muted)
