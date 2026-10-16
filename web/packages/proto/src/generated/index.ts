@@ -101,6 +101,7 @@ export * from "./SessionCommandKind";
 export * from "./SessionCommandPayload";
 export * from "./SessionCommandStatus";
 export * from "./SessionGrant";
+export * from "./SessionLimit";
 export * from "./SessionMessageEntry";
 export * from "./SessionStatus";
 export * from "./SessionTail";

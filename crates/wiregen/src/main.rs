@@ -131,6 +131,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ChatIndicator,
         roboco_proto::SessionStatus,
         roboco_proto::Session,
+        roboco_proto::SessionLimit,
         roboco_proto::Repo,
         roboco_proto::RepoRef,
         roboco_proto::GitHistoryRefKind,

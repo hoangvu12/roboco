@@ -30,8 +30,8 @@ use roboco_doc::{
 };
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
-    UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionLimit,
+    SessionStatus, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -205,6 +205,12 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// The harness-accounts store, wired at engine assembly: where a usage
+    /// limit record's missing reset time and account come from (the active
+    /// login's cached usage windows). Swappable so integration tests can
+    /// mount an isolated fake store; `None` in bare session-only tests —
+    /// limits then record without an account or reset fill.
+    agent_accounts: Mutex<Option<crate::agent_accounts::AgentAccounts>>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -244,6 +250,7 @@ impl SessionsEngine {
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                agent_accounts: Mutex::new(None),
             }),
         }
     }
@@ -292,6 +299,14 @@ impl SessionsEngine {
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
+    }
+
+    /// Wire (or, in tests, swap) the harness-accounts store the engine reads
+    /// usage-limit context from — the active account and its cached usage
+    /// windows (see [`Inner::limit_record`]). Engine assembly wires the
+    /// engine's own store; tests mount an isolated one.
+    pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
+        *lock(&self.inner.agent_accounts) = Some(accounts);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -1385,6 +1400,57 @@ impl Inner {
         self.set_status_with_completion(chat_id, status, fresh_start, None);
     }
 
+    /// Complete a usage-limit record for a turn that ended on one: which
+    /// harness account it hit (the active login — resolved when the turn
+    /// settles; warm runtimes keep the token they started with, so that is
+    /// the login the run used in practice), and — when the harness's own
+    /// error carried no reset time — the fill from that account's cached
+    /// usage windows: the window whose LABEL matches the limit's, else the
+    /// one with the highest usage (ties: the soonest reset). Engines
+    /// without an accounts store (bare tests) record without either.
+    /// `None` when the classification was not a usage limit.
+    async fn limit_record(
+        &self,
+        harness: HarnessId,
+        kind: AgentErrorKind,
+    ) -> Option<SessionLimit> {
+        let AgentErrorKind::UsageLimit { window, resets_at } = kind else {
+            return None;
+        };
+        let accounts = lock(&self.agent_accounts).clone();
+        let active = match accounts {
+            Some(accounts) => accounts.active_account(harness).await,
+            None => None,
+        };
+        let resets_at = resets_at.or_else(|| {
+            let windows = &active.as_ref()?.usage_windows;
+            // Same window, when the account's meters name it (Codex's labels
+            // match the driver's; Claude's do not, so the fallback matters).
+            let by_label = windows
+                .iter()
+                .find(|w| w.resets_at.is_some() && w.label.eq_ignore_ascii_case(&window));
+            let pick = by_label.or_else(|| {
+                windows
+                    .iter()
+                    .filter(|w| w.resets_at.is_some())
+                    // Highest usage first, soonest reset as the tiebreak: the
+                    // exhausted window is the blocker, not a fresh one.
+                    .max_by(|a, b| {
+                        a.used_fraction
+                            .total_cmp(&b.used_fraction)
+                            .then_with(|| b.resets_at.cmp(&a.resets_at))
+                    })
+            });
+            pick.and_then(|w| w.resets_at).map(|at| at.timestamp_millis())
+        });
+        Some(SessionLimit {
+            harness,
+            window,
+            resets_at,
+            account_id: active.map(|account| account.id),
+        })
+    }
+
     fn has_pending_steers(&self, chat_id: &str, run_id: &str) -> bool {
         lock(&self.runs)
             .get(chat_id)
@@ -1401,6 +1467,23 @@ impl Inner {
         fresh_start: bool,
         completed_turn: Option<String>,
     ) {
+        self.set_status_with_limit(chat_id, status, fresh_start, completed_turn, None);
+    }
+
+    /// The full status transition: everything above, plus the usage-limit
+    /// record a limited turn ends with. `None` CLEARS any previous record —
+    /// the marker lives exactly as long as the errored status that recorded
+    /// it, so a new turn (any Working transition) or any other settled
+    /// outcome drops it. Only the run task's limit-errored exit passes
+    /// `Some`.
+    fn set_status_with_limit(
+        &self,
+        chat_id: &str,
+        status: SessionStatus,
+        fresh_start: bool,
+        completed_turn: Option<String>,
+        limit: Option<SessionLimit>,
+    ) {
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
@@ -1413,6 +1496,7 @@ impl Inner {
                     status,
                     started_at: None,
                     updated_at: now,
+                    limit: None,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -1429,6 +1513,7 @@ impl Inner {
             }
             entry.status = status;
             entry.updated_at = now;
+            entry.limit = limit;
             match status {
                 SessionStatus::Working if fresh_start || !was_active => {
                     entry.started_at = Some(now);
@@ -2398,6 +2483,11 @@ async fn drive_run(
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
 
     let mut final_completed_turn = None;
+    // The run's LAST error classification. Harnesses emit the classified
+    // `AgentEvent::Error` (usage limit / signed out) before their terminal
+    // `Done`; when that Done is Errored, this is what turns the settled row
+    // into a Limited one (the record on the session status).
+    let mut last_error_kind: Option<AgentErrorKind> = None;
     let final_status = loop {
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
@@ -3076,6 +3166,12 @@ async fn drive_run(
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
             }
+            AgentEvent::Error { kind, .. } => {
+                // Track the latest classification; a later unclassified
+                // error supersedes an earlier limit one (the turn then ended
+                // on that failure, not the limit).
+                last_error_kind = kind.clone();
+            }
             _ => {}
         }
 
@@ -3246,8 +3342,29 @@ async fn drive_run(
         .filter(|h| h.run_id == run_id)
         .map(|h| std::mem::take(&mut *lock(&h.routed_steers)).into())
         .unwrap_or_default();
+    // A turn that ended on a usage limit records the additive limit row
+    // (account + reset-time fill) while this run still owns the chat — the
+    // accounts lookup is the only await in the exit path, so it runs before
+    // the handle goes away rather than racing a fresh dispatch's status.
+    let limit = match (final_status, last_error_kind) {
+        (SessionStatus::Errored, Some(kind)) => {
+            inner.limit_record(harness_id, kind).await
+        }
+        _ => None,
+    };
+    if limit.is_some() {
+        // Queued messages wait BEHIND the continuation instead of dispatching
+        // into the same wall: a limited chat holds its queue exactly like a
+        // Stop does, and the next explicit prompt (Resume's continue prompt,
+        // or the user's own message) thaws it when its run dispatches.
+        if let Some(host) = inner.doc_host()
+            && let Ok(handle) = host.open(&chat_id)
+        {
+            handle.pause_queue();
+        }
+    }
     inner.remove_run(&chat_id, &run_id);
-    inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
+    inner.set_status_with_limit(&chat_id, final_status, false, final_completed_turn, limit);
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.
     let orphans: Vec<RoutedSteer> = if inner

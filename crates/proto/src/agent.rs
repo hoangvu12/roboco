@@ -29,6 +29,12 @@ pub enum HarnessId {
     Mock,
 }
 
+/// The continue prompt a Limited chat's **Resume** sends as a normal run
+/// (orchestration v2): one shared spelling so a resumed transcript reads
+/// the same from every surface that sends it (the desktop banner today;
+/// the engine's scheduled resumes join it in later tickets).
+pub const RESUME_CONTINUE_PROMPT: &str = "Continue where you left off.";
+
 /// Durable user preference for one agent's independently-installed CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]

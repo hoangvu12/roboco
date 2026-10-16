@@ -393,6 +393,15 @@ impl ChatDocHandle {
         rx
     }
 
+    /// Hold queued rows until an explicit prompt thaws them (the same state
+    /// a Stop leaves): the sessions engine arms this when a turn ends on a
+    /// usage limit, so a Limited chat's queued messages wait behind the
+    /// continuation instead of dispatching into the same limit. A queued row
+    /// inserted afterwards also waits — nothing dispatches while paused.
+    pub fn pause_queue(&self) {
+        self.queue_paused.store(true, Ordering::Release);
+    }
+
     /// Where a newly steered row goes: after the rows already steered, ahead
     /// of every ordinary row. Records `id` as steered.
     fn steer_slot(&self, id: &str) -> Result<usize, DocError> {

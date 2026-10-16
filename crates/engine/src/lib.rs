@@ -269,6 +269,9 @@ impl EngineCore {
         // login between engines, so no route is registered in production.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        // Usage-limit records read the active login's cached windows from the
+        // accounts store (which account the limit hit, reset-time fill).
+        sessions.set_agent_accounts(agent_accounts.clone());
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();

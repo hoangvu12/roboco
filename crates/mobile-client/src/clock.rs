@@ -83,6 +83,7 @@ mod tests {
             status,
             started_at: Some(updated - TimeDelta::minutes(5)),
             updated_at: updated,
+            limit: None,
         }
     }
 

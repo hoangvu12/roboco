@@ -50,7 +50,8 @@ use crate::settings::{
     platform_combo, sidebar_pin_profile_key,
 };
 use crate::state::{
-    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_time_ago,
+    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_limit_reset,
+    format_time_ago,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
@@ -6393,18 +6394,24 @@ impl Shell {
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the
         // pending pill tells the truth instead of faking a spinner.
-        let (queued, undelivered) = {
+        let (queued, undelivered, limited) = {
             let now = Utc::now();
             let state = self.state.read(cx);
             (
                 state.send_queued(&id, now),
                 state.send_undelivered(&id, now),
+                state.is_limited(&id, now),
             )
         };
         let status_color = if undelivered {
             theme.danger
         } else if queued {
             theme.warning
+        } else if limited {
+            // LIMITED (orchestration v2): amber, not the failure red — the
+            // row says a usage limit stopped the chat, not a crash.
+            let (l, c, h) = roboco_proto::view::dot::LIMITED;
+            crate::theme::oklch(l, c, h)
         } else {
             spaces::status_dot_color(status, theme)
         };
@@ -6412,6 +6419,8 @@ impl Shell {
             Some("Failed")
         } else if queued {
             Some("Queued")
+        } else if limited {
+            Some("Limited")
         } else {
             match status {
                 roboco_proto::ChatIndicator::Working => Some("Working"),
@@ -9514,6 +9523,60 @@ impl Shell {
                 .text_color(theme.danger)
                 .child(SharedString::from("Run failed"))
                 .into_any_element(),
+            // LIMITED (orchestration v2): the run ended on a harness usage
+            // limit. The banner names the window and its reset (from the
+            // harness's own error, else the account's cached windows), and
+            // Resume sends the continue prompt as a normal run — queued
+            // messages stay behind it.
+            Indicator::Limited => {
+                let limit = state.limit_for(&chat_id, now);
+                let label: SharedString = match &limit {
+                    Some(limit) => {
+                        let reset = limit
+                            .resets_at
+                            .map(|at| format_limit_reset(at, now))
+                            .unwrap_or_else(|| "reset time unknown".into());
+                        format!("{} limit · {reset}", limit.window).into()
+                    }
+                    None => "Usage limit reached".into(),
+                };
+                strip
+                    .text_color(theme.warning)
+                    .child(div()
+                        .flex()
+                        .items_center()
+                        .gap(px(Theme::SPACE_SM))
+                        .child(div()
+                            .size(px(6.0))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(theme.warning))
+                        .child(label))
+                    .child(
+                        div()
+                            .id("limited-resume")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                            .px(px(Theme::SPACE_SM + 2.0))
+                            .py(px(1.0))
+                            .text_color(theme.warning.opacity(0.9))
+                            .border_1()
+                            .border_color(theme.warning.opacity(0.45))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.composer
+                                    .update(cx, |composer, cx| composer.resume_limited(cx));
+                            }))
+                            .tooltip(crate::settings::widgets::text_tooltip(
+                                "Send the continue prompt now",
+                            ))
+                            .child(SharedString::from("Resume")),
+                    )
+                    .into_any_element()
+            }
             Indicator::None if sending => strip
                 .child(loaders::gradient_spinner(
                     "sending-indicator",
@@ -11849,6 +11912,7 @@ mod tests {
             status,
             started_at: Some(updated_at),
             updated_at,
+            limit: None,
         }
     }
 
