@@ -196,12 +196,13 @@ fn render_parts(parts: &[MessagePart]) -> String {
             MessagePart::Error { message, .. } => format!("Error: {message}"),
             MessagePart::Tool { .. } => render_command_run(part),
             // Reasoning is the model's private scratchpad; images are
-            // attachments; input requests and fork seams are structure —
-            // none of them belong in a budgeted summary.
+            // attachments; input requests, fork seams and completion notices
+            // are structure — none of them belong in a budgeted summary.
             MessagePart::Reasoning { .. }
             | MessagePart::Image { .. }
             | MessagePart::Input { .. }
-            | MessagePart::Fork { .. } => continue,
+            | MessagePart::Fork { .. }
+            | MessagePart::CompletionNotice { .. } => continue,
         };
         blocks.push(block);
     }
@@ -361,6 +362,7 @@ mod tests {
             device_id: "device".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            origin_chat_id: None,
         }
     }
 

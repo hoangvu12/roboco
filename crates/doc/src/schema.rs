@@ -10,8 +10,8 @@
 //! - `queue`:    LoroMovableList of LoroMap {
 //!   id, text, attachments?, issuedBy, issuedAt, editedAt? }        (any device writes)
 //!
-//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error"|"image", text?: LoroText,
-//! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
+//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error"|"image"|"fork"|"completionNotice",
+//! text?: LoroText, reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
 //! Text bodies are **LoroText** so streaming appends RLE-merge (1.03x oplog overhead vs
 //! 125x for whole-value rewrites).
 
@@ -133,6 +133,11 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// Completion-notice rows (kind: "completionNotice", additive): the
+    /// side chats and their recorded outcomes an engine-authored notice
+    /// reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sides: Option<serde_json::Value>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -231,6 +236,12 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
+        MessagePart::CompletionNotice { id, sides } => DocPartJson {
+            id: id.clone(),
+            kind: "completionNotice".into(),
+            sides: Some(serde_json::to_value(sides)?),
+            ..Default::default()
+        },
     })
 }
 
@@ -285,6 +296,13 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             source_chat_id: p.source_chat_id.unwrap_or_default(),
             source_title: p.source_title.unwrap_or_default(),
+        },
+        "completionNotice" => MessagePart::CompletionNotice {
+            id: p.id,
+            sides: p
+                .sides
+                .and_then(|s| serde_json::from_value(s).ok())
+                .unwrap_or_default(),
         },
         _ => MessagePart::Text {
             id: p.id,
@@ -907,6 +925,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(sides) = &doc_part.sides {
+        map.insert("sides", loro_value_from_json(sides))?;
+    }
     Ok(())
 }
 
@@ -1440,6 +1461,74 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].role, MessageRole::System);
         assert_eq!(entries[0].parts, vec![seam]);
+    }
+
+    /// The engine-authored completion notice: a SYSTEM entry whose marker
+    /// part (sides + outcomes) round-trips through the doc beside the plain
+    /// text that keeps older layouts readable. Wire names stay camelCase and
+    /// additive (ADR 0005): a row from an older writer carries no sides and
+    /// degrades to an empty text part, never a decode failure.
+    #[test]
+    fn completion_notice_round_trips_through_the_doc() {
+        let doc = SessionDoc::init("notice").unwrap();
+        let marker = MessagePart::CompletionNotice {
+            id: "n0".into(),
+            sides: vec![
+                NoticeSide {
+                    chat_id: "chat-side-1234".into(),
+                    title: "Implement login".into(),
+                    outcome: NoticeOutcome::Completed,
+                    detail: None,
+                },
+                NoticeSide {
+                    chat_id: "chat-side-5678".into(),
+                    title: "Flaky test".into(),
+                    outcome: NoticeOutcome::Errored,
+                    detail: Some("build timed out".into()),
+                },
+            ],
+        };
+        let text = MessagePart::Text {
+            id: "t0".into(),
+            text: "2 side chats reached outcomes:".into(),
+        };
+        doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
+            duration_ms: None,
+            id: "notice:1".into(),
+            role: MessageRole::System,
+            parts: vec![marker.clone(), text.clone()],
+            created_at: 1,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, MessageRole::System);
+        assert_eq!(entries[0].parts, vec![marker, text]);
+
+        // The wire shape: camelCase, additive, tag "completionNotice".
+        let value = serde_json::to_value(entries[0].parts.clone()).unwrap();
+        assert_eq!(value[0]["kind"], "completionNotice");
+        assert_eq!(value[0]["sides"][0]["chatId"], "chat-side-1234");
+        assert_eq!(value[0]["sides"][0]["outcome"], "completed");
+        assert_eq!(value[0]["sides"][1]["outcome"], "errored");
+        assert_eq!(value[0]["sides"][1]["detail"], "build timed out");
+        assert!(value[0]["sides"][0].get("detail").is_none());
+        // An older writer's marker (no sides) degrades to empty rows.
+        let legacy = serde_json::json!({
+            "kind": "completionNotice",
+            "id": "n0",
+        });
+        assert_eq!(
+            serde_json::from_value::<MessagePart>(legacy).unwrap(),
+            MessagePart::CompletionNotice {
+                id: "n0".into(),
+                sides: Vec::new(),
+            }
+        );
     }
 
     #[test]

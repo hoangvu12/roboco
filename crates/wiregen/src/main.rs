@@ -264,6 +264,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_doc::ToolDiffStat,
         roboco_doc::MessageStatus,
         roboco_doc::SubagentStatus,
+        roboco_doc::NoticeOutcome,
+        roboco_doc::NoticeSide,
         roboco_doc::MessagePart,
         roboco_doc::SessionCommandKind,
         roboco_doc::SessionCommandStatus,
