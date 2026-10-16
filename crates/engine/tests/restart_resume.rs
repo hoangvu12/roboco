@@ -11,7 +11,11 @@
 //! - a startup crash retries once with the resume kept, and a helper that is
 //!   down hard never tombstones the stored session id;
 //! - a steer with no live run after a restart dispatches as a new turn that
-//!   still resumes the prior conversation.
+//!   still resumes the prior conversation;
+//! - a chat auto-resumed at boot re-delivers only input its harness had not
+//!   yet consumed — a consumed steer never replays (it revives the turn with
+//!   the continue prompt instead), while an accepted-but-undelivered steer
+//!   is still delivered, exactly once.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1175,6 +1179,431 @@ async fn a_crash_recovers_the_conversation_through_a_symlinked_folder() {
         revived.resume.as_deref(),
         Some("hs-crash"),
         "the same conversation, through the symlink"
+    );
+    core.shutdown().await;
+}
+
+// ── Restart correctness: no steer replay after a restart (ticket 04) ────────
+//
+// The user's incident (orchestrator chat ff441279, 2026-10-15): a parent
+// steered the working orchestrator mid-run, the harness consumed the steer,
+// the engine restarted, and boot auto-resume re-sent the steer as the
+// revival prompt — the model saw the same instruction twice and answered it
+// twice ("Acknowledged again (my session restarted)"). A chat auto-resumed
+// at boot must re-deliver only input its harness had not yet consumed.
+
+/// The steer the orchestrator's parent sent mid-run.
+const STEER_TEXT: &str = "actually, use glm-5.3 everywhere";
+
+/// Manufacture the on-disk state a kill -9 leaves behind when a run was
+/// steered mid-turn: the starting message and its partial reply, the steer
+/// (its user entry was written at acceptance), and — when `consumed` — the
+/// reply that streamed after the harness confirmed consuming the steer.
+///
+/// `consumed = true` also journals the `Steered` boundary and records the
+/// steer's consumption durably, exactly the way the live engine does when
+/// the harness confirms delivery: that record is what lets boot recovery
+/// tell a consumed steer from one still sitting in a dead mailbox.
+fn manufacture_crashed_steer_turn(dir: &std::path::Path, consumed: bool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    fn entry(
+        id: &str,
+        role: MessageRole,
+        text: &str,
+        created_at: i64,
+        status: Option<MessageStatus>,
+    ) -> SessionMessageEntry {
+        SessionMessageEntry {
+            origin_chat_id: None,
+            id: id.into(),
+            role,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.into(),
+            }],
+            created_at,
+            device_id: "dev-crash".into(),
+            status,
+            continuation_of: None,
+            provider_turn: None,
+            duration_ms: None,
+        }
+    };
+    {
+        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let doc = SessionDoc::init(CHAT).unwrap();
+        doc.push_message(entry(
+            "msg-user-1",
+            MessageRole::User,
+            "long task",
+            now - 60_000,
+            Some(MessageStatus::Complete),
+        ))
+        .unwrap();
+        doc.push_message(entry(
+            "msg-assistant-1",
+            MessageRole::Assistant,
+            "partial…",
+            now - 30_000,
+            Some(MessageStatus::Streaming),
+        ))
+        .unwrap();
+        doc.push_message(entry(
+            "msg-user-2",
+            MessageRole::User,
+            STEER_TEXT,
+            now - 20_000,
+            Some(MessageStatus::Complete),
+        ))
+        .unwrap();
+        if consumed {
+            // The harness consumed the steer and the model kept working —
+            // the reply after the steer is what was streaming at the kill.
+            doc.push_message(entry(
+                "msg-assistant-2",
+                MessageRole::Assistant,
+                "after the steer…",
+                now - 10_000,
+                Some(MessageStatus::Streaming),
+            ))
+            .unwrap();
+        }
+        store
+            .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
+            .unwrap();
+
+        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::SessionStarted {
+                    harness: HarnessId::Mock,
+                    model: "mock-1".into(),
+                    tools: vec![],
+                    cwd: "/tmp".into(),
+                    session_id: "hs-crash".into(),
+                    assistant_message_id: "msg-assistant-1".into(),
+                },
+            )
+            .unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::TextDelta {
+                    text: "partial…".into(),
+                },
+            )
+            .unwrap();
+        if consumed {
+            journal
+                .append(
+                    CHAT,
+                    &AgentEvent::Steered {
+                        assistant_message_id: Some("msg-assistant-1".into()),
+                        next_assistant_message_id: Some("msg-assistant-2".into()),
+                    },
+                )
+                .unwrap();
+            journal
+                .append(
+                    CHAT,
+                    &AgentEvent::TextDelta {
+                        text: "after the steer…".into(),
+                    },
+                )
+                .unwrap();
+            // The durable consumed-steer record the boundary writes — one
+            // message id per line, written directly (see
+            // `consumed_steers_path`) so this state compiles on the pre-fix
+            // engine too.
+            std::fs::write(consumed_steers_path(dir), "msg-user-2\n").unwrap();
+        }
+    }
+}
+
+/// The durable consumed-steer record's file, as the engine lays it out
+/// beside the chat's journal. The tests write and read it directly (not
+/// through `RunJournal`) so the reproduction below also compiles — and goes
+/// red — against the pre-fix engine, which has no record at all and re-sends
+/// the consumed steer as its revival prompt.
+fn consumed_steers_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("orgs/dev-org/dev-user/journals")
+        .join(format!("{CHAT}.steers"))
+}
+
+fn user_texts(core: &EngineCore) -> Vec<String> {
+    entries_now(core)
+        .iter()
+        .filter(|e| e.role == MessageRole::User)
+        .filter_map(|e| {
+            e.parts.iter().find_map(|p| match p {
+                MessagePart::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// The replay, reproduced: the steer was consumed before the kill, so the
+/// boot auto-resume must NOT re-send it — the revival continues the crashed
+/// turn with the engine's continue prompt instead, on the same harness
+/// conversation, with every other revival behaviour intact.
+#[tokio::test]
+async fn an_auto_resumed_chat_never_replays_a_consumed_steer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("device-id"), "dev-crash").unwrap();
+    manufacture_crashed_steer_turn(&dir, true);
+
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-crash".into(),
+            fail_starts: Default::default(),
+        },
+    );
+    pre_title(&core);
+
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "auto-resumed turn to complete",
+    )
+    .await;
+
+    // THE fix: the consumed steer never reaches the harness again.
+    let recorded = requests.lock().unwrap().clone();
+    assert!(
+        !recorded.iter().any(|r| r.prompt == STEER_TEXT),
+        "a steer the harness already consumed must not be re-delivered: {recorded:#?}"
+    );
+    // The revival continues the crashed turn with the engine's continue
+    // prompt, on the crashed run's own harness conversation.
+    let revived = recorded
+        .iter()
+        .find(|r| r.prompt == roboco_proto::RESUME_CONTINUE_PROMPT)
+        .expect("the revival continues the turn with the continue prompt");
+    assert_eq!(revived.resume.as_deref(), Some("hs-crash"));
+
+    // The transcript: the steer appears exactly once, and the engine's
+    // continue prompt is its own entry — never a duplicate of the steer.
+    assert_eq!(
+        user_texts(&core),
+        vec![
+            "long task".to_string(),
+            STEER_TEXT.to_string(),
+            roboco_proto::RESUME_CONTINUE_PROMPT.to_string(),
+        ]
+    );
+    // The crash note still says the run is being picked back up.
+    let entries = entries_now(&core);
+    let aborted = entries
+        .iter()
+        .find(|e| e.status == Some(MessageStatus::Aborted))
+        .expect("crashed entries stay, stamped aborted");
+    assert!(aborted.parts.iter().any(|p| matches!(
+        p,
+        MessagePart::Error { message, .. }
+            if message.contains("engine restart") && message.contains("resuming")
+    )));
+    core.shutdown().await;
+}
+
+/// A steer that was accepted but NOT yet consumed when the engine died is
+/// still delivered after the resume — exactly once, under its own message
+/// id, so the transcript never shows a duplicate.
+#[tokio::test]
+async fn a_steer_accepted_but_not_consumed_is_delivered_once_after_resume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("device-id"), "dev-crash").unwrap();
+    // No `Steered` boundary, no consumption record: the steer sat accepted
+    // in the dead run's mailbox and the harness never saw it.
+    manufacture_crashed_steer_turn(&dir, false);
+
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-crash".into(),
+            fail_starts: Default::default(),
+        },
+    );
+    pre_title(&core);
+
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "the steer's turn to be delivered and complete",
+    )
+    .await;
+
+    // The steer IS the revival prompt — delivered exactly once, on the
+    // crashed run's harness conversation.
+    let recorded = requests.lock().unwrap().clone();
+    let deliveries = recorded.iter().filter(|r| r.prompt == STEER_TEXT).count();
+    assert_eq!(
+        deliveries, 1,
+        "an accepted-but-unconsumed steer is delivered exactly once: {recorded:#?}"
+    );
+    let revived = recorded
+        .iter()
+        .find(|r| r.prompt == STEER_TEXT)
+        .expect("the steer's delivery");
+    assert_eq!(revived.resume.as_deref(), Some("hs-crash"));
+    // No duplicate user entry, and no engine continue prompt this time.
+    assert_eq!(
+        user_texts(&core),
+        vec!["long task".to_string(), STEER_TEXT.to_string()]
+    );
+    core.shutdown().await;
+}
+
+/// A steerable harness that keeps turns in flight: the first prompt parks
+/// without a Done, and a steer into it confirms consumption (its `Steered`
+/// boundary) and keeps working — the exact shape a crash interrupts. A
+/// steer containing `release` finishes the turn instead.
+struct HoldingHarness;
+
+#[async_trait]
+impl Harness for HoldingHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Holding"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn deterministic_turn_end(&self) -> bool {
+        true
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[ReasoningLevel::Medium]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        mut controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(32);
+        let mut steering = controls.steering;
+        tokio::spawn(async move {
+            let send = |event: AgentEvent| {
+                let tx = tx.clone();
+                async move { tx.send(Ok(event)).await.is_ok() }
+            };
+            if !send(AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "hs-holding".into(),
+                assistant_message_id: "a-1".into(),
+            })
+            .await
+            {
+                return;
+            }
+            if !send(AgentEvent::TextDelta {
+                text: format!("on it: {}", request.prompt),
+            })
+            .await
+            {
+                return;
+            }
+            // Holding: no Done — the turn stays in flight (the crash shape).
+            while let Some(steer) = steering.recv().await {
+                let boundary = AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: steer.message_id.map(|id| format!("a-{id}")),
+                };
+                if !send(boundary).await
+                    || !send(AgentEvent::TextDelta { text: format!("on it: {}", steer.prompt) }).await
+                {
+                    return;
+                }
+                if steer.prompt.contains("release")
+                    && !send(AgentEvent::Done {
+                        status: DoneStatus::Completed,
+                        result: None,
+                        error: None,
+                        session_id: Some("hs-holding".into()),
+                    })
+                    .await
+                {
+                    return;
+                }
+            }
+        });
+        Ok(futures::stream::unfold(
+            rx,
+            |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) },
+        )
+        .boxed())
+    }
+}
+
+/// The write side of the fix, live: a steer the harness confirms consuming
+/// mid-turn is recorded durably right at the boundary — while the engine is
+/// still running — so the boot path the tests above exercise can tell. This
+/// is the record `an_auto_resumed_chat_never_replays_a_consumed_steer`
+/// manufactures.
+#[tokio::test]
+async fn a_consumed_steer_is_recorded_durably_while_the_engine_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(HoldingHarness));
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock)
+        .expect("engine core assembles");
+    pre_title(&core);
+
+    queue_run(&core, "hold the line", "/tmp", "msg-user-1");
+    wait_for(|| entries_now(&core).len() == 2, "the holding turn to stream").await;
+
+    // The steer: accepted into the live run's mailbox, then confirmed
+    // consumed by the harness's `Steered` boundary.
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Steer {
+                prompt: "hold the detail too".into(),
+                message_id: Some("msg-user-2".into()),
+            },
+        )
+        .expect("queue steer command");
+
+    // Read the record the engine writes, in the engine's own layout.
+    let steers = consumed_steers_path(&dir);
+    wait_for(
+        || {
+            std::fs::read_to_string(&steers)
+                .is_ok_and(|record| record.lines().any(|line| line.trim() == "msg-user-2"))
+        },
+        "the consumed steer to be recorded durably",
+    )
+    .await;
+
+    // The steer is on the transcript once, delivered into the live turn.
+    assert_eq!(
+        user_texts(&core),
+        vec!["hold the line".to_string(), "hold the detail too".to_string()]
     );
     core.shutdown().await;
 }

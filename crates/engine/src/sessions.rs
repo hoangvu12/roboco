@@ -1363,9 +1363,7 @@ impl SessionsEngine {
                 self.inner
                     .remember_harness_session(&chat_id, &session_id, &cwd);
             }
-            // The revival prompt: the last user message (idempotent re-dispatch
-            // under the SAME id — `write_user_message` dedupes by id, so the
-            // transcript never shows a duplicate). Its structured origin
+            // The revival prompt: the last user message. Its structured origin
             // rides along, so a parent-started turn that is revived stays
             // notifiable for its completion notice (orchestration v2).
             let prompt = handle.doc().read_entries().ok().and_then(|entries| {
@@ -1384,6 +1382,33 @@ impl SessionsEngine {
                         })
                     })
             });
+            // Restart correctness (orchestration v2, ticket 04): a steer the
+            // harness had already confirmed consuming before the crash is
+            // NOT re-delivered — the model answered it once, and a replay
+            // makes it answer twice (the user's orchestrator chat
+            // acknowledged the same steer again after a restart). The durable
+            // consumed-steer record tells; the revival then continues the
+            // crashed turn with the engine's continue prompt — the same one
+            // Resume and Resume-at-reset send — under a deterministic id
+            // (`write_user_message` dedupes by id, so a crash between the
+            // revival's dispatch and its persistence re-lands as one entry).
+            // Everything else about the revival is unchanged: budget,
+            // staggering, the "— resuming" note, the resumed harness session,
+            // and the consumed steer's own structured origin, so a parent's
+            // revived turn still notifies when it ends.
+            let steer_consumed = prompt.as_ref().is_some_and(|(user_id, _, _)| {
+                self.inner.journal.steer_consumed(&chat_id, user_id)
+            });
+            let prompt = match prompt {
+                Some((user_id, _text, origin)) if steer_consumed => Some((
+                    format!("auto-resume-continue:{chat_id}:{user_id}"),
+                    roboco_proto::RESUME_CONTINUE_PROMPT.to_string(),
+                    origin,
+                )),
+                // Idempotent re-dispatch under the SAME id — `write_user_message`
+                // dedupes by id, so the transcript never shows a duplicate.
+                other => other,
+            };
             let attempts = self.inner.journal.resume_attempts(&chat_id);
             let fresh = handle
                 .doc()
@@ -3988,6 +4013,20 @@ async fn drive_run(
             ..
         } = &event
         {
+            // The boundary confirms delivery of the oldest accepted steer —
+            // retire its at-least-once ledger entry FIRST, and record the
+            // consumption durably before the boundary is even journaled: the
+            // harness has already consumed this input, so a crash from here
+            // on must leave boot auto-resume able to tell — or the revival
+            // would replay the steer and the model would answer it twice
+            // (restart correctness, orchestration v2 ticket 04).
+            let confirmed = lock(&inner.runs)
+                .get(&chat_id)
+                .filter(|h| h.run_id == run_id)
+                .and_then(|h| lock(&h.routed_steers).pop_front());
+            if let Some(steer) = &confirmed {
+                inner.journal.note_steer_consumed(&chat_id, &steer.message_id);
+            }
             inner.publish(&chat_id, &event);
             // A steer boundary means a real prompt owns the turn again — its
             // Done will come; the short self-continued window stands down.
@@ -4017,12 +4056,6 @@ async fn drive_run(
             // steer boundary restarts it (matches the parked-resume path and
             // the composer's optimistic overlay, which already reads 0:00).
             inner.set_status(&chat_id, SessionStatus::Working, true);
-            // The boundary confirms delivery of the oldest accepted steer —
-            // retire its at-least-once ledger entry.
-            let confirmed = lock(&inner.runs)
-                .get(&chat_id)
-                .filter(|h| h.run_id == run_id)
-                .and_then(|h| lock(&h.routed_steers).pop_front());
             // Consumed: a steer carrying the fork history delivered it to
             // this runtime's provider session.
             if confirmed.is_some_and(|steer| steer.fork_history)
@@ -4161,6 +4194,10 @@ async fn drive_run(
                 // A cleanly completed turn resets the auto-resume revival
                 // budget: only consecutive crash-revive-crash cycles spend it.
                 inner.journal.clear_resume_attempts(&chat_id);
+                // …and closes the consumed-steer record with it: the record
+                // only ever speaks for the turn a crash interrupts, so it
+                // stays bounded by one turn's steers.
+                inner.journal.clear_consumed_steers(&chat_id);
             }
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
