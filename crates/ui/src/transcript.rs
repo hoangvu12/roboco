@@ -39,7 +39,10 @@ use gpui::{
     TextAlign, TextRun, Window, canvas, div, img, list, point, prelude::*, px, quad, size,
 };
 
-use roboco_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
+use roboco_doc::{
+    MessagePart, MessageRole, MessageStatus, NoticeOutcome, NoticeSide, SessionMessageEntry,
+    SubagentStatus,
+};
 use roboco_proto::ToolCall;
 
 use crate::markdown::mermaid_cache::{self, MermaidCache};
@@ -1059,6 +1062,16 @@ pub enum RowKind {
         /// harness renders as, resolved once when the row is built.
         label: SharedString,
     },
+    /// The engine's completion notice (orchestration v2 ticket 15): a
+    /// distinct system-notice card — one row per side chat, each naming it
+    /// by title and short id with its outcome and one-line reason and
+    /// opening that chat on click. Built from the entry's
+    /// [`MessagePart::CompletionNotice`] marker; the notice's plain-text
+    /// sibling part stays in the doc (older layouts' fallback) but renders
+    /// no row beside this one.
+    CompletionNotice {
+        sides: Arc<Vec<NoticeSide>>,
+    },
 }
 
 /// A transcript row: stable id + content version (diff key) + block payload.
@@ -1114,6 +1127,31 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x1_0000_01b3);
     }
     hash
+}
+
+/// The completion-notice row's diff key (ticket 15): every field a notice
+/// side carries presentationally — chat id, title, outcome kind, and the
+/// one-line detail — hashed together, so a re-delivery re-keys nothing but a
+/// changed outcome, a renamed side chat or an edited detail re-splices the
+/// card.
+fn notice_fingerprint(sides: &[NoticeSide]) -> u64 {
+    let mut acc = Vec::new();
+    for side in sides {
+        acc.extend_from_slice(side.chat_id.as_bytes());
+        acc.push(0);
+        acc.extend_from_slice(side.title.as_bytes());
+        acc.push(0);
+        acc.push(match side.outcome {
+            NoticeOutcome::Completed => 0,
+            NoticeOutcome::Errored => 1,
+            NoticeOutcome::Stopped => 2,
+            NoticeOutcome::Interrupted => 3,
+            NoticeOutcome::WaitingForInput => 4,
+        });
+        acc.extend_from_slice(side.detail.as_deref().unwrap_or("").as_bytes());
+        acc.push(0);
+    }
+    fnv1a(&acc)
 }
 
 fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
@@ -1369,6 +1407,16 @@ pub fn rows_for_entry(
     // position of the FIRST foldable part, so Input/Error chips ahead of it
     // keep their doc order.
     let mut compact_group_pos: Option<usize> = None;
+    // The engine's completion notice (orchestration v2 ticket 15): an entry
+    // carrying a marker with sides renders as ONE distinct system-notice
+    // card, and its plain-text sibling part — the same notice as prose, kept
+    // in the doc so older layouts stay readable — renders no row beside it.
+    // A marker with no sides (a partial row off a lenient doc decode) is not
+    // a notice renderable here; its text sibling carries the notice as plain
+    // text, exactly like an older build.
+    let has_notice = entry.parts.iter().any(|part| {
+        matches!(part, MessagePart::CompletionNotice { sides, .. } if !sides.is_empty())
+    });
 
     let flush_group =
         |rows: &mut Vec<Row>, group: &mut Vec<ToolItem>, group_ix: &mut usize, last_ix: usize| {
@@ -1484,8 +1532,10 @@ pub fn rows_for_entry(
             other => {
                 // Compact mode: narration text folds into the single group as
                 // a "Wrote" chip — only the reply (the trailing text run)
-                // stays a row.
+                // stays a row. A notice's text sibling never folds either:
+                // the card replaces it in every mode.
                 if compact
+                    && !has_notice
                     && let MessagePart::Text { id: part_id, text } = other
                     && !text.trim().is_empty()
                     && reply_start.is_none_or(|start| part_ix < start)
@@ -1507,7 +1557,7 @@ pub fn rows_for_entry(
                 }
                 match other {
                     MessagePart::Text { id: part_id, text } => {
-                        if text.trim().is_empty() {
+                        if text.trim().is_empty() || has_notice {
                             continue;
                         }
                         let key = format!("{}#{}", entry.id, part_id);
@@ -1648,11 +1698,33 @@ pub fn rows_for_entry(
                     // intake landed first): the part persists in the doc and
                     // simply renders no row here until the UI port lands.
                     MessagePart::Image { .. } => {}
-                    // The engine's completion notice renders through its
-                    // plain-text sibling part for now (orchestration v2
-                    // ticket 15 owns the distinct system-notice row); the
-                    // marker itself is structure, not content.
-                    MessagePart::CompletionNotice { .. } => {}
+                    // The engine's completion notice (orchestration v2
+                    // ticket 15): a marker with sides renders as ONE distinct
+                    // system-notice card — per-side outcome rows that open the
+                    // side chat (the render arm). Its plain-text sibling part
+                    // never renders a row here (`has_notice` above): the text
+                    // stays in the doc for older layouts, so the notice reads
+                    // once, not twice. A marker without sides renders nothing
+                    // — the text sibling then carries the notice as plain
+                    // prose, the older layout's fallback.
+                    MessagePart::CompletionNotice { id: part_id, sides } => {
+                        if sides.is_empty() {
+                            continue;
+                        }
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: notice_fingerprint(sides),
+                            turn_start: false,
+                            kind: RowKind::CompletionNotice {
+                                sides: Arc::new(sides.clone()),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                            compact_fold: None,
+                            fork_entry: None,
+                        });
+                    }
                 }
             }
         }
@@ -1743,7 +1815,9 @@ pub fn rows_for_entry(
         && let Some(last) = rows.last_mut()
         && !matches!(
             last.kind,
-            RowKind::ForkMarker { .. } | RowKind::HarnessSwitchMarker { .. }
+            RowKind::ForkMarker { .. }
+                | RowKind::HarnessSwitchMarker { .. }
+                | RowKind::CompletionNotice { .. }
         )
     {
         last.timestamp = Some(entry.created_at);
@@ -3458,6 +3532,12 @@ pub enum TranscriptEvent {
     ForkFromEntry {
         chat_id: String,
         entry_id: String,
+    },
+    /// A completion notice's side row (orchestration v2 ticket 15): open
+    /// the side chat the row reports — select it in the shell, exactly like
+    /// a sidebar click. `chat_id` is the side chat's full id.
+    OpenSideChat {
+        chat_id: String,
     },
 }
 
@@ -7168,6 +7248,9 @@ impl Transcript {
             RowKind::HarnessSwitchMarker { label } => {
                 harness_switch_marker(label.clone(), &theme)
             }
+            RowKind::CompletionNotice { sides } => {
+                self.render_completion_notice(&row.id, sides, &theme, cx)
+            }
         };
         // Diagram fences this row just requested start rendering after layout.
         self.ensure_diagram_worker(cx);
@@ -7409,6 +7492,145 @@ impl Transcript {
                 )
                 .absolute()
                 .inset_0(),
+            )
+            .into_any_element()
+    }
+
+    /// The engine's completion notice (orchestration v2 ticket 15): a
+    /// distinct system-notice card — never a user bubble, never markdown
+    /// prose. A quiet header announces the notice; below it one row per side
+    /// chat, the row itself the control that opens the chat: the title and
+    /// short id on the first line, the colored outcome verb with its
+    /// one-line reason (the error, the restart reason, the question) on the
+    /// second, and the spawn chip's trailing "opens elsewhere" glyph at the
+    /// end. The card is engine structure like the fork and switch seams —
+    /// no hover timestamp, no copy action, no fork action.
+    fn render_completion_notice(
+        &mut self,
+        row_id: &SharedString,
+        sides: &Arc<Vec<NoticeSide>>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(20.0))
+                    .rounded(px(6.0))
+                    .bg(crate::theme::ink(0.09))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        crate::icons::icon(crate::icons::INFO_CIRCLE)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .child("Completion notice"),
+            );
+        let side_rows = sides.iter().enumerate().map(|(ix, side)| {
+            let chat_id = side.chat_id.clone();
+            let title: SharedString = single_line(&side.title).into();
+            let short_id: SharedString = short_chat_id(&side.chat_id).into();
+            let outcome =
+                notice_outcome_line(notice_outcome_verb(side.outcome), side.detail.as_deref());
+            let outcome_color = notice_outcome_color(side.outcome, theme);
+            let full_title = title.clone();
+            let side_id = SharedString::from(format!("{row_id}#side{ix}"));
+            div()
+                .id(side_id.clone())
+                .debug_selector(move || side_id.to_string())
+                .min_w_0()
+                .overflow_hidden()
+                .rounded(px(6.0))
+                .px(px(6.0))
+                .py(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .text_size(px(12.0))
+                .cursor_pointer()
+                .hover(|style| style.bg(crate::theme::ink(0.06)))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(TranscriptEvent::OpenSideChat {
+                        chat_id: chat_id.clone(),
+                    });
+                }))
+                .tooltip(crate::settings::widgets::text_tooltip(format!(
+                    "Open side chat — {full_title}"
+                )))
+                // First line: the side chat's name — title (truncating) with
+                // its short id, and the "opens elsewhere" glyph at the end.
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_color(theme.text.opacity(0.9))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.text_muted.opacity(0.7))
+                                .child(short_id),
+                        )
+                        .child(
+                            crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted.opacity(0.6)),
+                        ),
+                )
+                // Second line: the outcome — its verb and one-line reason in
+                // the outcome's color (the reason truncates; `read_chat`,
+                // which the agent already saw, carries the full text).
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(outcome_color)
+                        .child(outcome),
+                )
+        });
+        div()
+            .py(px(4.0))
+            .w_full()
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(crate::theme::hairline(0.08))
+                    .bg(crate::theme::ink(0.045))
+                    .px(px(8.0))
+                    .py(px(8.0))
+                    .child(header)
+                    .children(side_rows),
             )
             .into_any_element()
     }
@@ -8571,6 +8793,53 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                 .child(source_title),
         )
         .into_any_element()
+}
+
+/// Eight-char id prefix — the sidebar's convention, and the form the
+/// notice's own text names a side chat by. A shorter id still reads whole,
+/// and the cut never splits a character.
+fn short_chat_id(id: &str) -> &str {
+    let mut cut = id.len().min(8);
+    while cut > 0 && !id.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &id[..cut]
+}
+
+/// The outcome verb a notice side row shows — the same vocabulary the
+/// notice's plain text uses (`side_line` in the engine), so the card and
+/// the prose an agent reads agree.
+fn notice_outcome_verb(outcome: NoticeOutcome) -> &'static str {
+    match outcome {
+        NoticeOutcome::Completed => "finished",
+        NoticeOutcome::Errored => "failed",
+        NoticeOutcome::Stopped => "stopped",
+        NoticeOutcome::Interrupted => "interrupted",
+        NoticeOutcome::WaitingForInput => "waiting for input",
+    }
+}
+
+/// `<verb>: <detail>` when the row carries a one-liner, else `<verb>` — the
+/// second line of a notice side row. The detail truncates in the layout;
+/// the notice text (and `read_chat`) carries the full reason.
+fn notice_outcome_line(verb: &str, detail: Option<&str>) -> String {
+    match detail {
+        Some(text) if !text.trim().is_empty() => format!("{verb}: {text}"),
+        _ => verb.to_owned(),
+    }
+}
+
+/// The color a notice outcome renders in: finished is success, failed is
+/// danger, waiting for input is warning, and the user-chosen or
+/// restart-lost stops stay muted — quiet, never alarming, exactly like the
+/// chip text tones they share a family with.
+fn notice_outcome_color(outcome: NoticeOutcome, theme: &Theme) -> gpui::Hsla {
+    match outcome {
+        NoticeOutcome::Completed => theme.success_muted,
+        NoticeOutcome::Errored => theme.danger_muted,
+        NoticeOutcome::WaitingForInput => theme.warning_muted,
+        NoticeOutcome::Stopped | NoticeOutcome::Interrupted => theme.text_muted,
+    }
 }
 
 /// A quiet harness-switch seam (t3-orchestration-v2 ticket 24): the same
@@ -10012,6 +10281,282 @@ mod tests {
                 assert!(rows[0].copy_text.is_none());
             });
         });
+    }
+
+    /// A notice entry's shape (ticket 12's writer): a SYSTEM entry carrying
+    /// the structured marker plus the same notice as a plain text part — the
+    /// fallback older layouts read.
+    fn notice_entry(id: &str, sides: Vec<NoticeSide>, text: &str) -> SessionMessageEntry {
+        SessionMessageEntry {
+            origin_chat_id: None,
+            duration_ms: None,
+            provider_turn: None,
+            id: id.into(),
+            role: MessageRole::System,
+            parts: vec![
+                MessagePart::CompletionNotice {
+                    id: "n0".into(),
+                    sides,
+                },
+                MessagePart::Text {
+                    id: "t0".into(),
+                    text: text.into(),
+                },
+            ],
+            created_at: 0,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        }
+    }
+
+    fn notice_side(chat_id: &str, title: &str, outcome: NoticeOutcome) -> NoticeSide {
+        NoticeSide {
+            chat_id: chat_id.into(),
+            title: title.into(),
+            outcome,
+            detail: None,
+        }
+    }
+
+    /// The completion notice (orchestration v2 ticket 15): the marker's
+    /// sides render as ONE distinct system-notice card — one row per side
+    /// chat — and the plain-text sibling renders nothing beside it: the
+    /// notice reads once, not twice.
+    #[gpui::test]
+    fn a_completion_notice_renders_as_one_card_row_not_markdown(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat-a".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![notice_entry(
+                    "notice:1",
+                    vec![
+                        notice_side("chat-side-1234", "Implement login", NoticeOutcome::Completed),
+                        NoticeSide {
+                            detail: Some("the build command timed out".into()),
+                            ..notice_side("chat-side-5678", "Flaky test", NoticeOutcome::Errored)
+                        },
+                    ],
+                    "2 side chats reached outcomes:\n- \"Implement login\" (chat-si) finished.\n- \"Flaky test\" (chat-si) failed: the build command timed out.\nRead each chat's full result with the Roboco `read_chat` tool.",
+                )];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, _| {
+                // One notice row, and nothing else: no markdown rows from the
+                // text sibling.
+                assert_eq!(this.rows.len(), 1, "one row — the notice card");
+                let RowKind::CompletionNotice { sides } = &this.rows[0].kind else {
+                    panic!("expected a completion notice row");
+                };
+                assert_eq!(sides.len(), 2);
+                assert_eq!(sides[0].chat_id, "chat-side-1234");
+                assert_eq!(sides[0].title, "Implement login");
+                assert_eq!(sides[0].outcome, NoticeOutcome::Completed);
+                assert_eq!(sides[1].outcome, NoticeOutcome::Errored);
+                assert_eq!(
+                    sides[1].detail.as_deref(),
+                    Some("the build command timed out")
+                );
+                // The row id keys on the marker part, so replays keep identity.
+                assert_eq!(this.rows[0].id.as_ref(), "notice:1#n0");
+                // A notice is engine structure: no hover timestamp, no copy,
+                // no fork action.
+                assert!(this.rows[0].timestamp.is_none());
+                assert!(this.rows[0].copy_text.is_none());
+                assert!(this.rows[0].fork_entry.is_none());
+            });
+        });
+    }
+
+    /// A marker with no sides (a partial row off a lenient doc decode — the
+    /// shape an older layout effectively reads) is not a notice this build
+    /// can render as a card: its text sibling still renders, so the notice
+    /// stays readable as plain text.
+    #[test]
+    fn a_notice_without_sides_falls_back_to_its_plain_text() {
+        let entry = notice_entry(
+            "notice:2",
+            Vec::new(),
+            "Side chat \"Migration\" (chat-si) was stopped.\nRead the full result with the Roboco `read_chat` tool, chat chat-si.",
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        assert!(!rows.is_empty(), "the notice text still renders");
+        assert!(
+            rows.iter()
+                .all(|row| matches!(row.kind, RowKind::Markdown { .. })),
+            "no notice card without sides — plain markdown rows only"
+        );
+        // The settled last row carries the metadata strip again, exactly
+        // like any text-bearing system entry.
+        assert!(rows.last().is_some_and(|row| row.timestamp.is_some()));
+    }
+
+    /// The card's version re-keys when a side changes — a renamed side chat,
+    /// a different outcome, a new one-line reason — so the row re-splices
+    /// instead of painting stale sides.
+    #[test]
+    fn a_notice_row_re_keys_when_its_sides_change() {
+        let entry = notice_entry(
+            "notice:3",
+            vec![notice_side("chat-side-1234", "Implement login", NoticeOutcome::Completed)],
+            "text",
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        let version = rows[0].version;
+        assert_eq!(
+            version,
+            notice_fingerprint(&[notice_side(
+                "chat-side-1234",
+                "Implement login",
+                NoticeOutcome::Completed
+            )])
+        );
+
+        let renamed = notice_entry(
+            "notice:3",
+            vec![notice_side("chat-side-1234", "Renamed", NoticeOutcome::Completed)],
+            "text",
+        );
+        assert_ne!(rows_for_entry(&renamed, false, false, &mut parse)[0].version, version);
+
+        let errored = notice_entry(
+            "notice:3",
+            vec![NoticeSide {
+                detail: Some("provider 502".into()),
+                ..notice_side("chat-side-1234", "Implement login", NoticeOutcome::Errored)
+            }],
+            "text",
+        );
+        assert_ne!(rows_for_entry(&errored, false, false, &mut parse)[0].version, version);
+
+        // Identical sides re-key identically: a replay is a no-op splice.
+        assert_eq!(rows_for_entry(&entry, false, false, &mut parse)[0].version, version);
+    }
+
+    /// Compact mode never folds the notice into the work accordion: the card
+    /// is its own row in every mode, and its text sibling stays hidden
+    /// there too.
+    #[test]
+    fn a_notice_row_stays_unfolded_in_compact_mode() {
+        let entry = notice_entry(
+            "notice:4",
+            vec![notice_side("chat-side-1234", "Implement login", NoticeOutcome::WaitingForInput)],
+            "Side chat \"Implement login\" (chat-si) is waiting for input.",
+        );
+        let rows = rows_for_entry(&entry, false, true, &mut parse);
+        assert_eq!(rows.len(), 1, "one card row, no work group");
+        assert!(matches!(rows[0].kind, RowKind::CompletionNotice { .. }));
+        assert!(rows[0].compact_fold.is_none());
+    }
+
+    /// The side-row helpers: the short id never splits a character, the
+    /// outcome line appends its reason, and every outcome has a verb.
+    #[test]
+    fn notice_side_row_helpers_shape_the_card_lines() {
+        assert_eq!(short_chat_id("chat-side-1234"), "chat-si");
+        assert_eq!(short_chat_id("short"), "short");
+        // A multibyte id boundary never panics and still yields whole
+        // characters.
+        let wide = "ééééééé";
+        assert!(short_chat_id(wide).chars().count() <= 8);
+
+        assert_eq!(
+            notice_outcome_line("failed", Some("provider 502: bad gateway")),
+            "failed: provider 502: bad gateway"
+        );
+        assert_eq!(notice_outcome_line("finished", None), "finished");
+        // A blank reason reads as no reason.
+        assert_eq!(notice_outcome_line("failed", Some("   ")), "failed");
+
+        for (outcome, verb) in [
+            (NoticeOutcome::Completed, "finished"),
+            (NoticeOutcome::Errored, "failed"),
+            (NoticeOutcome::Stopped, "stopped"),
+            (NoticeOutcome::Interrupted, "interrupted"),
+            (NoticeOutcome::WaitingForInput, "waiting for input"),
+        ] {
+            assert_eq!(notice_outcome_verb(outcome), verb);
+        }
+    }
+
+    /// Ticket 15's control: clicking a notice's side row opens that side
+    /// chat — the row emits `TranscriptEvent::OpenSideChat` carrying THAT
+    /// row's chat id (the shell routes the event to `open_chat`, exactly
+    /// like a sidebar click).
+    #[gpui::test]
+    fn clicking_a_notice_side_row_opens_that_side_chat(cx: &mut gpui::TestAppContext) {
+        use gpui::Modifiers;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (state, transcript) = cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            (state, transcript)
+        });
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat-a".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![notice_entry(
+                    "notice:5",
+                    vec![
+                        notice_side("chat-side-1234", "Implement login", NoticeOutcome::Completed),
+                        NoticeSide {
+                            detail: Some("the build command timed out".into()),
+                            ..notice_side("chat-side-5678", "Flaky test", NoticeOutcome::Errored)
+                        },
+                    ],
+                    "2 side chats reached outcomes.",
+                )];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+        });
+        struct NoticeHost {
+            transcript: Entity<Transcript>,
+        }
+        impl Render for NoticeHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.transcript.clone())
+            }
+        }
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let recorded = opened.clone();
+        let (_host, window) =
+            cx.add_window_view(|_, _| NoticeHost {
+                transcript: transcript.clone(),
+            });
+        let _sub = window.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                if let TranscriptEvent::OpenSideChat { chat_id } = event {
+                    recorded.borrow_mut().push(chat_id.clone());
+                }
+            })
+        });
+        window.update(|window, cx| window.draw(cx).clear());
+        // The SECOND side chat's row: each row carries its own chat id, not
+        // the notice's or the first side's.
+        let row = window
+            .debug_bounds("notice:5#n0#side1")
+            .expect("the notice's second side row renders");
+        window.simulate_click(row.center(), Modifiers::default());
+        assert_eq!(
+            opened.borrow().as_slice(),
+            ["chat-side-5678".to_string()].as_slice()
+        );
     }
 
     fn with_tool_group_navigation(

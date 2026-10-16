@@ -3830,6 +3830,13 @@ impl Shell {
                     .unwrap_or_else(|| source.id.clone());
                 self.open_fork_dialog(source, parent, Some(entry_id.clone()), cx);
             }
+            // A completion notice's side row (ticket 15): open the side chat
+            // it reports — the same path a sidebar click takes, so the
+            // notice works from the main transcript and from an open side
+            // chat's pane alike.
+            TranscriptEvent::OpenSideChat { chat_id } => {
+                self.open_chat(chat_id.clone(), cx);
+            }
         }
     }
 

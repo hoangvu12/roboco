@@ -11466,6 +11466,141 @@ button.files-save-pill:hover {
   color: var(--rb-text-muted);
 }
 
+/*
+ * The engine's completion notice (orchestration v2 ticket 15) — the web
+ * port of `render_completion_notice` (transcript.rs): a 4px-block wrapper,
+ * then the card — 10px radius, hairline border, the input chip's quiet ink
+ * wash (0.045), 8px padding, 4px stack gap. The header is the input chip's
+ * tile + a 12px medium muted label. Each side row is a two-line control
+ * (6px radius, 6px/4px padding, 0.06 ink hover wash): title + short id +
+ * the spawn chip's "opens elsewhere" glyph on the first line, the outcome
+ * verb and one-line reason on the second — colored by outcome (success for
+ * finished, danger for failed, warning for waiting for input, muted for
+ * the stops). Without a host handler (the read-only subagent pane) the
+ * rows render inert, so only the button form carries the hover.
+ */
+.completion-notice-row {
+  padding-block: 4px;
+  width: 100%;
+}
+
+.completion-notice-card {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 10px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.045);
+  padding: 8px;
+}
+
+.completion-notice-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.completion-notice-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.09);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+}
+
+.completion-notice-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+.completion-notice-side {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+}
+
+button.completion-notice-side {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+}
+
+button.completion-notice-side:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+}
+
+.completion-notice-side-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.completion-notice-side-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.completion-notice-side-id {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.completion-notice-side-glyph {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.completion-notice-side-outcome {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.completion-notice-side-completed .completion-notice-side-outcome {
+  color: var(--rb-success-muted);
+}
+
+.completion-notice-side-errored .completion-notice-side-outcome {
+  color: var(--rb-danger-muted);
+}
+
+.completion-notice-side-waitingForInput .completion-notice-side-outcome {
+  color: var(--rb-warning-muted);
+}
+
+.completion-notice-side-stopped .completion-notice-side-outcome,
+.completion-notice-side-interrupted .completion-notice-side-outcome {
+  color: var(--rb-text-muted);
+}
+
 /* ── Transcript responsive + reduced motion ─────────────────────────── */
 
 @media (max-width: 768px) {
