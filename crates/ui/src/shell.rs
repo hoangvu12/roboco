@@ -64,6 +64,7 @@ mod chat_dropzone_tests;
 #[cfg(test)]
 mod chat_rename_tests;
 mod command_palette;
+mod continue_on_harness;
 mod file_mutations;
 mod files_panel;
 mod fork_dialog;
@@ -1713,6 +1714,11 @@ pub struct Shell {
     /// model a pending fork runs on. `Some` while open; the confirm hands
     /// the fork to `fork_chat` with the chosen overrides.
     fork_dialog: Option<fork_dialog::ForkDialog>,
+    /// The "Continue on another harness" dialog (t3-orchestration-v2
+    /// ticket 25): the harness and model a LIMITED chat's continuation
+    /// switches to. `Some` while open; the confirm performs ticket 24's
+    /// one-way switch and then sends the continue prompt.
+    continue_dialog: Option<continue_on_harness::ContinueOnHarnessDialog>,
     /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
     /// The New project palette's collapsed-breadcrumbs (`…`) menu.
@@ -2121,6 +2127,7 @@ impl Shell {
             section_menu_active: None,
             delete_space_confirm: None,
             fork_dialog: None,
+            continue_dialog: None,
             add_space: None,
             command_palette: None,
             pending_workspace_command: None,
@@ -5253,6 +5260,7 @@ impl Shell {
             || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.fork_dialog.is_some()
+            || self.continue_dialog.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
             || self.open_side_chat_pickers(cx).is_some()
     }
@@ -8264,6 +8272,12 @@ impl Shell {
             self.close_fork_dialog(cx);
             return true;
         }
+        if self.continue_dialog.is_some() {
+            // The continue-on-harness dialog is a modal over everything else
+            // open here (t3-orchestration-v2 ticket 25).
+            self.close_continue_dialog(cx);
+            return true;
+        }
         if self.add_space.is_some() {
             self.add_space = None;
             cx.notify();
@@ -8666,6 +8680,9 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_fork_dialog(viewport, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_continue_on_harness(viewport, cx) {
             overlays.push(overlay);
         }
 
@@ -9615,6 +9632,36 @@ impl Shell {
                                 "Send the continue prompt now",
                             ))
                             .child(SharedString::from("Resume")),
+                    )
+                    // CONTINUE ON ANOTHER HARNESS (orchestration v2 ticket
+                    // 25): a separate action — the escape hatch spec story
+                    // 55 asks for. It opens a small dialog listing the
+                    // enabled harnesses OTHER than the current one (plus a
+                    // model pick); confirming performs ticket 24's one-way
+                    // switch and then sends the same continue prompt, so
+                    // the new agent picks the work up from the budgeted
+                    // history above the "Switched to" seam.
+                    .child(
+                        div()
+                            .id("limited-continue-harness")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                            .px(px(Theme::SPACE_SM + 2.0))
+                            .py(px(1.0))
+                            .text_color(theme.warning.opacity(0.9))
+                            .border_1()
+                            .border_color(theme.warning.opacity(0.45))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_continue_on_harness(cx);
+                            }))
+                            .tooltip(crate::settings::widgets::text_tooltip(
+                                "Switch this chat to another harness and continue there",
+                            ))
+                            .child(SharedString::from("Continue on another harness")),
                     )
                     .into_any_element()
             }
