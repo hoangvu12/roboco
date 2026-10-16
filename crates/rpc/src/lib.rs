@@ -53,6 +53,12 @@ pub mod methods {
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
+    /// The engine's own user-facing settings (Settings → General on desktop;
+    /// orchestration v2, ticket 07): `autoResumeLimited` — arm Resume-at-reset
+    /// automatically whenever a chat becomes Limited. `{}` → EngineSettings;
+    /// Set takes the full EngineSettings and replies with the stored one.
+    pub const GET_ENGINE_SETTINGS: &str = "GetEngineSettings";
+    pub const SET_ENGINE_SETTINGS: &str = "SetEngineSettings";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_SKILLS: &str = "ListSkills";

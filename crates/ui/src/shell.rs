@@ -51,7 +51,7 @@ use crate::settings::{
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_limit_reset,
-    format_time_ago,
+    format_scheduled_resume, format_time_ago,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
@@ -64,6 +64,7 @@ mod chat_dropzone_tests;
 #[cfg(test)]
 mod chat_rename_tests;
 mod command_palette;
+mod continue_on_harness;
 mod file_mutations;
 mod files_panel;
 mod fork_dialog;
@@ -1787,6 +1788,11 @@ pub struct Shell {
     /// model a pending fork runs on. `Some` while open; the confirm hands
     /// the fork to `fork_chat` with the chosen overrides.
     fork_dialog: Option<fork_dialog::ForkDialog>,
+    /// The "Continue on another harness" dialog (t3-orchestration-v2
+    /// ticket 25): the harness and model a LIMITED chat's continuation
+    /// switches to. `Some` while open; the confirm performs ticket 24's
+    /// one-way switch and then sends the continue prompt.
+    continue_dialog: Option<continue_on_harness::ContinueOnHarnessDialog>,
     /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
     /// The New project palette's collapsed-breadcrumbs (`…`) menu.
@@ -2196,6 +2202,7 @@ impl Shell {
             section_menu_active: None,
             delete_space_confirm: None,
             fork_dialog: None,
+            continue_dialog: None,
             add_space: None,
             command_palette: None,
             pending_workspace_command: None,
@@ -5420,6 +5427,32 @@ impl Shell {
         self.archive_chat(chat_id, cx);
     }
 
+    /// **Resume at reset** on a Limited chat (orchestration v2, ticket 07):
+    /// arm the engine's durable continuation — at the limit's reset time the
+    /// engine sends the continue prompt like the manual Resume, and the
+    /// banner flips to "Resumes at …" with Cancel. The engine owns the
+    /// schedule; this only expresses the user's intent.
+    pub(crate) fn schedule_resume_at_reset(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let op = serde_json::json!({
+            "op": "scheduleResumeAtReset",
+            "chatId": chat_id,
+        });
+        self.mutate(&chat_id, op, cx);
+        cx.notify();
+    }
+
+    /// Cancel a Limited chat's armed Resume-at-reset continuation — the
+    /// banner's Cancel action. A new message, archive or delete cancels it
+    /// on its own; this is the explicit withdrawal.
+    pub(crate) fn cancel_scheduled_resume(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let op = serde_json::json!({
+            "op": "cancelScheduledResume",
+            "chatId": chat_id,
+        });
+        self.mutate(&chat_id, op, cx);
+        cx.notify();
+    }
+
     pub(super) fn set_chat_archived(
         &mut self,
         chat_id: String,
@@ -5609,6 +5642,7 @@ impl Shell {
             || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.fork_dialog.is_some()
+            || self.continue_dialog.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
             || self.open_side_chat_pickers(cx).is_some()
     }
@@ -8620,6 +8654,12 @@ impl Shell {
             self.close_fork_dialog(cx);
             return true;
         }
+        if self.continue_dialog.is_some() {
+            // The continue-on-harness dialog is a modal over everything else
+            // open here (t3-orchestration-v2 ticket 25).
+            self.close_continue_dialog(cx);
+            return true;
+        }
         if self.add_space.is_some() {
             self.add_space = None;
             cx.notify();
@@ -9022,6 +9062,9 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_fork_dialog(viewport, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_continue_on_harness(viewport, cx) {
             overlays.push(overlay);
         }
 
@@ -9939,20 +9982,29 @@ impl Shell {
                 .into_any_element(),
             // LIMITED (orchestration v2): the run ended on a harness usage
             // limit. The banner names the window and its reset (from the
-            // harness's own error, else the account's cached windows), and
+            // harness's own error, else the account's cached windows).
             // Resume sends the continue prompt as a normal run — queued
-            // messages stay behind it.
+            // messages stay behind it. Resume at reset arms the engine's
+            // durable continuation; once armed the banner shows when it
+            // fires and offers Cancel instead (ticket 07).
             Indicator::Limited => {
                 let limit = state.limit_for(&chat_id, now);
-                let label: SharedString = match &limit {
-                    Some(limit) => {
+                let scheduled = state.scheduled_resume_for(&chat_id, now);
+                let label: SharedString = match (&limit, &scheduled) {
+                    (Some(limit), Some(scheduled)) => format!(
+                        "{} limit · {}",
+                        limit.window,
+                        format_scheduled_resume(scheduled.fire_at, now)
+                    )
+                    .into(),
+                    (Some(limit), None) => {
                         let reset = limit
                             .resets_at
                             .map(|at| format_limit_reset(at, now))
                             .unwrap_or_else(|| "reset time unknown".into());
                         format!("{} limit · {reset}", limit.window).into()
                     }
-                    None => "Usage limit reached".into(),
+                    (None, _) => "Usage limit reached".into(),
                 };
                 // "Resume on another account" (ticket 09) — only for the
                 // harnesses whose logins switch. An EMPTY candidate list
@@ -9978,6 +10030,16 @@ impl Shell {
                     this.failover.popup.note_trigger_press();
                 });
                 let toggle = cx.listener(|this, _, _, cx| this.toggle_failover(cx));
+                // Resume at reset is offered only when there is a reset time
+                // still ahead to wait for; a due or unknown reset leaves the
+                // honest offer as plain Resume.
+                let armable = scheduled.is_none()
+                    && limit
+                        .as_ref()
+                        .and_then(|limit| limit.resets_at)
+                        .is_some_and(|at| at > now.timestamp_millis());
+                let arm_chat_id = chat_id.clone();
+                let cancel_chat_id = chat_id.clone();
                 strip
                     .text_color(theme.warning)
                     .child(div()
@@ -9990,6 +10052,57 @@ impl Shell {
                             .rounded_full()
                             .bg(theme.warning))
                         .child(label))
+                    .when(armable, |strip| {
+                        strip.child(
+                            div()
+                                .id("limited-schedule-resume")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.schedule_resume_at_reset(
+                                        arm_chat_id.clone(),
+                                        cx,
+                                    );
+                                }))
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Continue automatically when the limit resets",
+                                ))
+                                .child(SharedString::from("Resume at reset")),
+                        )
+                    })
+                    .when_some(scheduled, |strip, _| {
+                        strip.child(
+                            div()
+                                .id("limited-cancel-resume")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_scheduled_resume(cancel_chat_id.clone(), cx);
+                                }))
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Stop the automatic continuation",
+                                ))
+                                .child(SharedString::from("Cancel")),
+                        )
+                    })
                     .child(
                         div()
                             .id("limited-resume")
@@ -10053,6 +10166,36 @@ impl Shell {
                                 .child(notice),
                         )
                     })
+                    // CONTINUE ON ANOTHER HARNESS (orchestration v2 ticket
+                    // 25): a separate action — the escape hatch spec story
+                    // 55 asks for. It opens a small dialog listing the
+                    // enabled harnesses OTHER than the current one (plus a
+                    // model pick); confirming performs ticket 24's one-way
+                    // switch and then sends the same continue prompt, so
+                    // the new agent picks the work up from the budgeted
+                    // history above the "Switched to" seam.
+                    .child(
+                        div()
+                            .id("limited-continue-harness")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                            .px(px(Theme::SPACE_SM + 2.0))
+                            .py(px(1.0))
+                            .text_color(theme.warning.opacity(0.9))
+                            .border_1()
+                            .border_color(theme.warning.opacity(0.45))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_continue_on_harness(cx);
+                            }))
+                            .tooltip(crate::settings::widgets::text_tooltip(
+                                "Switch this chat to another harness and continue there",
+                            ))
+                            .child(SharedString::from("Continue on another harness")),
+                    )
                     .into_any_element()
             }
             Indicator::None if sending => strip
@@ -12469,6 +12612,7 @@ mod tests {
             started_at: Some(updated_at),
             updated_at,
             limit: None,
+            scheduled_resume: None,
         }
     }
 

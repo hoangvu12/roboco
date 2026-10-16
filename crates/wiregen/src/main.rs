@@ -140,6 +140,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::SessionStatus,
         roboco_proto::Session,
         roboco_proto::SessionLimit,
+        roboco_proto::ScheduledResume,
         roboco_proto::Repo,
         roboco_proto::RepoRef,
         roboco_proto::GitHistoryRefKind,
@@ -302,6 +303,7 @@ fn export_all(cfg: &Config) -> Result<()> {
     export!(
         roboco_engine::registry::HarnessDescriptor,
         roboco_engine::registry::TitleSettings,
+        roboco_engine::EngineSettings,
         roboco_engine::uploads::AttachmentChunk,
         roboco_engine::uploads::AttachmentTransfer,
         roboco_engine::doc_host::BeginQueueEditOutcome,

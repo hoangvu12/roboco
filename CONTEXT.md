@@ -57,8 +57,13 @@ A chat's live run state: idle, working, awaiting input, or errored.
 _Avoid_: Session, state (when it means chat status)
 
 **Limited**:
-An errored chat whose last run ended on a harness usage limit — the additive limit record (harness, window, reset time, account) on its status row. Offers Resume (and, on a switchable harness, Resume on another account); queued messages wait behind the continuation. Not a separate wire status: the chat stays errored.
+An errored chat whose last run ended on a harness usage limit — the additive limit record (harness, window, reset time, account) on its status row. Offers Resume, Resume at reset, Resume on another account, and Continue on another harness (a one-way harness switch followed by the same continue prompt); queued messages wait behind the continuation. Not a separate wire status: the chat stays errored.
+
 _Avoid_: Rate-limited (that is the harness event), throttled, capped
+
+**Resume at reset**:
+A pending continuation the engine owns for a Limited chat: at the limit's reset time it sends the continue prompt like a manual Resume. Durable across engine restarts (an overdue one fires after boot); cancelled by a new message, archive, or delete. Armed by the banner action or the "Auto-resume limited chats" engine setting.
+_Avoid_: Scheduled task, retry, snooze
 
 **Chat doc**:
 The chat's durable document — transcript, command ledger, and message queue in one doc, owned by the engine.

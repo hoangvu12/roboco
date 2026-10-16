@@ -402,6 +402,14 @@ impl ChatDocHandle {
         self.queue_paused.store(true, Ordering::Release);
     }
 
+    /// Release the hold [`Self::pause_queue`] armed: the explicit prompt —
+    /// the manual Resume's run, the user's own message, or the engine's
+    /// Resume-at-reset continuation — dispatched successfully, so the queued
+    /// rows may follow it (the drain still waits out the turn in flight).
+    pub fn thaw_queue(&self) {
+        self.queue_paused.store(false, Ordering::Release);
+    }
+
     /// Where a newly steered row goes: after the rows already steered, ahead
     /// of every ordinary row. Records `id` as steered.
     fn steer_slot(&self, id: &str) -> Result<usize, DocError> {
@@ -1046,7 +1054,13 @@ impl DocHost {
     /// Drop a chat's doc unconditionally and delete its local snapshot — the
     /// chat is gone (DeleteChat / DeleteSpace cascade). Watchers see the
     /// stream end; a racing writer keeps its orphaned doc until the run ends.
+    /// Cancels the chat's pending Resume-at-reset continuation (ticket 07):
+    /// deleting the chat is the last word — locally, without re-mirroring a
+    /// sessions row that is going away with the chat.
     pub fn purge_chat(&self, chat_id: &str) {
+        if let Some(sessions) = self.sessions() {
+            sessions.cancel_scheduled_resume_with_chat(chat_id);
+        }
         let removed = lock(&self.inner.handles).remove(chat_id);
         drop(removed);
         if let Err(err) = self.inner.store.delete_snapshot(chat_id) {
@@ -1109,6 +1123,14 @@ impl DocHost {
         // effort — the command itself is durable regardless.
         if is_message {
             self.unarchive_on_send(chat_id);
+            // And it cancels any pending Resume-at-reset continuation
+            // (orchestration v2, ticket 07): the newer intent wins. The
+            // engine's own continuations never queue commands — they
+            // dispatch directly — so this hook only ever sees user and
+            // agent messages.
+            if let Some(sessions) = self.sessions() {
+                sessions.cancel_scheduled_resume(chat_id);
+            }
         }
         Ok(id)
     }
@@ -1170,6 +1192,11 @@ impl DocHost {
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
         self.unarchive_on_send(chat_id);
+        // And their newer intent cancels any pending Resume-at-reset
+        // continuation (orchestration v2, ticket 07).
+        if let Some(sessions) = self.sessions() {
+            sessions.cancel_scheduled_resume(chat_id);
+        }
         Ok(id)
     }
 

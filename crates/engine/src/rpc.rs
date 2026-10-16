@@ -746,6 +746,16 @@ pub enum MutateParams {
         #[ts(optional)]
         at: Option<i64>,
     },
+    /// **Resume at reset** (orchestration v2, ticket 07): arm the durable
+    /// continuation for a Limited chat — at the limit's reset time the
+    /// engine sends the continue prompt like the manual Resume. Requires
+    /// the chat to be Limited with a reset time still ahead.
+    #[serde(rename_all = "camelCase")]
+    ScheduleResumeAtReset { chat_id: String },
+    /// Cancel the chat's pending Resume-at-reset continuation (the banner's
+    /// Cancel action). No-op when nothing is armed.
+    #[serde(rename_all = "camelCase")]
+    CancelScheduledResume { chat_id: String },
 }
 
 pub struct EngineRpc {
@@ -1105,11 +1115,19 @@ impl EngineRpc {
                 .set_chat_host(&chat_id, &device_id)
                 .map_err(failed)
                 .map(drop),
-            MutateParams::SetChatArchived { chat_id, archived } => self
-                .workspace
-                .set_chat_archived(&chat_id, archived)
-                .map_err(failed)
-                .map(drop),
+            MutateParams::SetChatArchived { chat_id, archived } => {
+                let result = self
+                    .workspace
+                    .set_chat_archived(&chat_id, archived)
+                    .map_err(failed);
+                // Archiving a Limited chat cancels its pending Resume-at-reset
+                // continuation (orchestration v2, ticket 07): the user put the
+                // work away — it must not resume on its own overnight.
+                if archived {
+                    self.sessions.cancel_scheduled_resume(&chat_id);
+                }
+                result.map(drop)
+            }
             MutateParams::SetChatConfig { chat_id, config } => self
                 .workspace
                 .set_chat_config(&chat_id, &config)
@@ -1133,6 +1151,16 @@ impl EngineRpc {
                     .mark_chat_seen(&chat_id, at)
                     .map_err(failed)
                     .map(drop)
+            }
+            MutateParams::ScheduleResumeAtReset { chat_id } => {
+                self.sessions
+                    .schedule_resume_at_reset(&chat_id)
+                    .map_err(failed)
+                    .map(drop)
+            }
+            MutateParams::CancelScheduledResume { chat_id } => {
+                self.sessions.cancel_scheduled_resume(&chat_id);
+                Ok(())
             }
         }
     }
@@ -1398,6 +1426,14 @@ impl RpcService for EngineRpc {
                     .set_title_settings(p)
                     .map_err(RpcError::Failed)?;
                 RpcReply::value(&self.registry.title_settings())
+            }
+            methods::GET_ENGINE_SETTINGS => RpcReply::value(&self.sessions.engine_settings()),
+            methods::SET_ENGINE_SETTINGS => {
+                let p: crate::engine_settings::EngineSettings = parse_params(params)?;
+                self.sessions
+                    .set_engine_settings(p)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&self.sessions.engine_settings())
             }
             methods::SET_HARNESS_ENABLED => {
                 let p: SetHarnessEnabledParams = parse_params(params)?;

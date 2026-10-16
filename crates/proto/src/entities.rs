@@ -285,6 +285,19 @@ pub struct SessionLimit {
     pub account_id: Option<String>,
 }
 
+/// A pending **Resume at reset** continuation (orchestration v2): the
+/// engine will send the continue prompt to the Limited chat at `fire_at`
+/// — its limit's reset time — unless a newer message, archive or delete
+/// cancels it first. Durable: it survives engine restarts, and one whose
+/// time passed while the engine was down fires after boot. Absent from
+/// every other status row; cleared with the record it armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledResume {
+    /// Epoch millis when the continuation fires.
+    pub fire_at: i64,
+}
+
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.
 /// Staleness-checked client-side against `updated_at` so a crashed backend never shows
 /// an eternal "Working".
@@ -306,6 +319,11 @@ pub struct Session {
     /// [`SessionLimit`]). Absent on rows from older engines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<SessionLimit>,
+    /// The pending Resume-at-reset continuation, when one is armed for this
+    /// Limited chat (see [`ScheduledResume`]). Absent on rows from older
+    /// engines and on chats with nothing armed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_resume: Option<ScheduledResume>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -1944,6 +1962,7 @@ mod tests {
             started_at: None,
             updated_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
             limit: None,
+            scheduled_resume: None,
         }
     }
 
@@ -1989,5 +2008,40 @@ mod tests {
         assert_eq!(old.limit, None);
         let encoded = serde_json::to_value(&old).unwrap();
         assert!(encoded.get("limit").is_none());
+    }
+
+    /// The scheduled-resume record is additive on the session row exactly
+    /// like the limit one (ADR 0005): stable camelCase, omitted when absent,
+    /// and rows from older engines still parse with nothing armed.
+    #[test]
+    fn session_scheduled_resume_row_is_additive_and_round_trips() {
+        let mut armed = session_row(SessionStatus::Errored);
+        armed.scheduled_resume = Some(ScheduledResume {
+            fire_at: 1_762_675_400_000,
+        });
+        let value = serde_json::to_value(&armed).unwrap();
+        assert_eq!(value["scheduledResume"]["fireAt"], 1_762_675_400_000);
+        assert_eq!(serde_json::from_value::<Session>(value).unwrap(), armed);
+
+        // Nothing armed: the field is omitted, not null.
+        let idle = session_row(SessionStatus::Idle);
+        let value = serde_json::to_value(&idle).unwrap();
+        assert!(value.get("scheduledResume").is_none());
+
+        // Older engines never wrote `scheduledResume`; nothing parses as armed.
+        let legacy = serde_json::json!({
+            "chatId": "chat-1",
+            "deviceId": "device-1",
+            "status": "errored",
+            "limit": {
+                "harness": "claude-code",
+                "window": "5-hour",
+                "resetsAt": 1_762_675_400_000,
+            },
+            "updatedAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Session>(legacy).unwrap();
+        assert!(old.limit.is_some());
+        assert_eq!(old.scheduled_resume, None);
     }
 }

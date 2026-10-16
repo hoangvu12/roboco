@@ -6175,6 +6175,7 @@ mod tests {
                 started_at: None,
                 updated_at: chrono::Utc::now(),
                 limit: None,
+                scheduled_resume: None,
             }]);
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -6240,6 +6241,7 @@ mod tests {
                     started_at: None,
                     updated_at: chrono::Utc::now(),
                     limit: None,
+                    scheduled_resume: None,
                 }]);
             });
             pickers.update(cx, |pickers, cx| {
