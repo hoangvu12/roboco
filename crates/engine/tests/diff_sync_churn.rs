@@ -484,6 +484,7 @@ async fn archived_chats_get_no_entry_and_archiving_drops_it() {
 }
 
 fn chat_row(core: &EngineCore, chat_id: &str) -> roboco_proto::Chat {
+    agent_origin: None,
     core.workspace
         .watch_chats()
         .borrow()

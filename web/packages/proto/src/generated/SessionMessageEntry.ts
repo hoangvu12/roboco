@@ -18,4 +18,11 @@ createdAt: number, deviceId: string, status?: MessageStatus | null, continuation
  * finishes. Absent on user rows, live streams, and docs written before
  * the field existed.
  */
-durationMs?: number | null, };
+durationMs?: number | null, 
+/**
+ * The chat this user entry was sent BY through the Roboco MCP server —
+ * structured attribution (additive; ADR 0005), the durable record the
+ * completion-notice rules key on. None on typed messages and entries
+ * written before the field existed.
+ */
+originChatId?: string | null, };

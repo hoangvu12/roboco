@@ -176,7 +176,7 @@ mod tests {
         core.doc_host
             .open("same-chat")
             .unwrap()
-            .write_user_message("message", "cached history", 123)
+            .write_user_message("message", "cached history", 123, None)
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());

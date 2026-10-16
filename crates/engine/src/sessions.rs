@@ -439,15 +439,28 @@ impl SessionsEngine {
     /// - A live steerable run receives the prompt as its next turn via the mailbox
     ///   (roboco's persistent-session routing); otherwise any live run is interrupted
     ///   first — never two runtimes driving one chat.
+    ///
+    /// `origin_chat_id` is the structured attribution when a chat sent this
+    /// through the Roboco MCP server; the doc-host command path has usually
+    /// written the entry already (idempotent by id), and the queue-drain
+    /// path relies on this write to stamp it.
     pub async fn dispatch(
         &self,
         chat_id: &str,
         harness_id: HarnessId,
         request: RunRequest,
         message_id: Option<String>,
+        origin_chat_id: Option<String>,
     ) -> Result<String, EngineError> {
-        self.dispatch_with(chat_id, harness_id, request, message_id, false)
-            .await
+        self.dispatch_with(
+            chat_id,
+            harness_id,
+            request,
+            message_id,
+            origin_chat_id,
+            false,
+        )
+        .await
     }
 
     /// [`Self::dispatch`] with the startup-crash retry marker: the retry
@@ -461,9 +474,17 @@ impl SessionsEngine {
         harness_id: HarnessId,
         request: RunRequest,
         message_id: Option<String>,
+        origin_chat_id: Option<String>,
         startup_retry: bool,
     ) -> futures::future::BoxFuture<'a, Result<String, EngineError>> {
-        Box::pin(self.dispatch_inner(chat_id, harness_id, request, message_id, startup_retry))
+        Box::pin(self.dispatch_inner(
+            chat_id,
+            harness_id,
+            request,
+            message_id,
+            origin_chat_id,
+            startup_retry,
+        ))
     }
 
     async fn dispatch_inner(
@@ -472,6 +493,7 @@ impl SessionsEngine {
         harness_id: HarnessId,
         mut request: RunRequest,
         mut message_id: Option<String>,
+        origin_chat_id: Option<String>,
         startup_retry: bool,
     ) -> Result<String, EngineError> {
         // Project-less chats store cwd `~` (the creating device can't know the
@@ -558,7 +580,12 @@ impl SessionsEngine {
                     lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
                 }
                 let handle = self.doc_handle(chat_id)?;
-                handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                handle.write_user_message(
+                    &user_id,
+                    &request.prompt,
+                    now_ms(),
+                    origin_chat_id.as_deref(),
+                )?;
                 // A turn counts from acceptance — a prompt deferred behind an
                 // update must not snapshot a turn that has not started.
                 self.note_turn_start(chat_id, &request.cwd);
@@ -617,7 +644,12 @@ impl SessionsEngine {
         let harness = self.inner.registry.resolve(harness_id)?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
-        handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+        handle.write_user_message(
+            &user_id,
+            &request.prompt,
+            now_ms(),
+            origin_chat_id.as_deref(),
+        )?;
 
         // Engine-owned resume (roboco sessions.ts:736 — every dispatch read the
         // chat's stored harness session): callers always send `resume: None`;
@@ -779,18 +811,23 @@ impl SessionsEngine {
         chat_id: &str,
         prompt: &str,
         message_id: Option<String>,
+        origin_chat_id: Option<String>,
     ) -> Result<SteerOutcome, EngineError> {
-        self.steer_at(chat_id, prompt, message_id, now_ms()).await
+        self.steer_at(chat_id, prompt, message_id, now_ms(), origin_chat_id)
+            .await
     }
 
     /// [`Self::steer`] with the prompt's issue time: a queued row promoted
     /// into a live run keeps its original send time on the transcript.
+    /// `origin_chat_id` is the structured attribution when a chat sent this
+    /// through the Roboco MCP server; the user entry it writes keeps it.
     pub(crate) async fn steer_at(
         &self,
         chat_id: &str,
         prompt: &str,
         message_id: Option<String>,
         issued_at: i64,
+        origin_chat_id: Option<String>,
     ) -> Result<SteerOutcome, EngineError> {
         let target = lock(&self.inner.runs)
             .get(chat_id)
@@ -857,7 +894,12 @@ impl SessionsEngine {
             });
         };
         let handle = self.doc_handle(chat_id)?;
-        handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
+        handle.write_user_message(
+            &user_id,
+            prompt,
+            issued_at.min(now_ms()),
+            origin_chat_id.as_deref(),
+        )?;
         // A routed steer is a turn too. Fired here (not only on the confirmed
         // path) — a reclaim falls back to dispatch, which just re-snapshots.
         if let Some(request) = self.last_request(chat_id) {
@@ -1818,6 +1860,7 @@ impl SubagentSink {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent segment close failed");
         }
         let entry = SessionMessageEntry {
+            origin_chat_id: None,
             id: new_id(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -2942,7 +2985,7 @@ async fn drive_run(
                 // The user entry write inside dispatch is idempotent by
                 // message id; `startup_retry` makes this attempt final.
                 if let Err(err) = engine
-                    .dispatch_with(&chat, harness_id, retry, Some(message_id), true)
+                    .dispatch_with(&chat, harness_id, retry, Some(message_id), None, true)
                     .await
                 {
                     tracing::error!(chat = %chat, error = %err, "startup-crash retry dispatch failed");
@@ -3377,6 +3420,7 @@ mod tests {
         .link();
         let previous = format!("Previous {skill}\nSecond line with \\ and \"quotes\"");
         doc.push_message(&roboco_doc::SessionMessageEntry {
+            origin_chat_id: None,
             id: "u1".into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![roboco_doc::MessagePart::Text {
@@ -3418,6 +3462,7 @@ mod tests {
             ("u3", roboco_doc::MessageRole::User, "future pending request"),
         ] {
             doc.push_message(&roboco_doc::SessionMessageEntry {
+                origin_chat_id: None,
                 id: id.into(),
                 role,
                 parts: vec![roboco_doc::MessagePart::Text {
@@ -3808,7 +3853,7 @@ mod tests {
                 .unwrap();
         let chat = "chat-sink-spin";
         core.sessions
-            .dispatch(chat, HarnessId::Mock, request(), None)
+            .dispatch(chat, HarnessId::Mock, request(), None, None)
             .await
             .unwrap();
         feed.send(AgentEvent::SessionStarted {
