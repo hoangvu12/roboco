@@ -126,6 +126,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::Space,
         roboco_proto::ChatConfig,
         roboco_proto::ConversationSourceContext,
+        roboco_proto::AgentOrigin,
         roboco_proto::Chat,
         roboco_proto::ChatIndicator,
         roboco_proto::SessionStatus,
@@ -234,6 +235,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::UserInputQuestion,
         roboco_proto::UserInputAnswer,
         roboco_proto::DoneStatus,
+        roboco_proto::AgentErrorKind,
         roboco_proto::AgentEvent,
         roboco_proto::ContextUsage,
         // invocation.rs

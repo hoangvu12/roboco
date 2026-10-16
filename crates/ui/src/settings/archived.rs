@@ -348,6 +348,7 @@ mod tests {
 
     fn chat(id: &str, archived: bool) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "d".into(),
             title: None,

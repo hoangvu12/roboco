@@ -3676,6 +3676,7 @@ async fn run_session(session: Session) {
                         &event_tx,
                         AgentEvent::Error {
                             message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
+                            kind: None,
                         },
                     )
                     .await;
@@ -4639,7 +4640,7 @@ async fn run_session(session: Session) {
                                     assistant_message_id: Some(prev),
                                     next_assistant_message_id: Some(next),
                                 }).await
-                                    || !send(&event_tx, AgentEvent::Error { message: message.clone() }).await
+                                    || !send(&event_tx, AgentEvent::Error { message: message.clone(), kind: None }).await
                                     || !send(&event_tx, AgentEvent::Done {
                                         status: DoneStatus::Errored,
                                         result: None,
@@ -4807,6 +4808,7 @@ async fn run_session(session: Session) {
                             prompt_stall.map(|d| d.as_secs()).unwrap_or(0),
                             stall_hint,
                         ),
+                        kind: None,
                     },
                 )
                 .await;

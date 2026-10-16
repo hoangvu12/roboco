@@ -295,18 +295,21 @@ impl Roboco {
     }
 
     /// Durable command into the chat doc; the host device drains it.
+    /// `origin_chat_id` is the structured attribution when a chat is sending
+    /// this through the Roboco MCP server (Run/Steer commands); `None` for
+    /// control commands (interrupt, respond-input).
     pub async fn queue_command(
         &self,
         chat_id: &str,
         payload: &SessionCommandPayload,
+        origin_chat_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let command = serde_json::to_value(payload).context("serialize command")?;
-        let reply = self
-            .call(
-                methods::QUEUE_COMMAND,
-                json!({ "chatId": chat_id, "command": command }),
-            )
-            .await?;
+        let mut params = json!({ "chatId": chat_id, "command": command });
+        if let Some(origin_chat_id) = origin_chat_id {
+            params["originChatId"] = json!(origin_chat_id);
+        }
+        let reply = self.call(methods::QUEUE_COMMAND, params).await?;
         Ok(reply
             .get("commandId")
             .and_then(Value::as_str)
@@ -315,14 +318,24 @@ impl Roboco {
     }
 
     /// Queue-row send for a busy chat whose harness cannot steer mid-turn:
-    /// the host promotes it when the live turn ends.
-    pub async fn queue_message(&self, chat_id: &str, text: &str) -> anyhow::Result<String> {
-        let reply = self
-            .call(
-                methods::QUEUE_MESSAGE,
-                json!({ "chatId": chat_id, "text": text, "holdForTurnEnd": true }),
-            )
-            .await?;
+    /// the host promotes it when the live turn ends. `origin_chat_id` is the
+    /// structured attribution when a chat is sending this through the Roboco
+    /// MCP server.
+    pub async fn queue_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        origin_chat_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let mut params = json!({
+            "chatId": chat_id,
+            "text": text,
+            "holdForTurnEnd": true,
+        });
+        if let Some(origin_chat_id) = origin_chat_id {
+            params["originChatId"] = json!(origin_chat_id);
+        }
+        let reply = self.call(methods::QUEUE_MESSAGE, params).await?;
         Ok(reply
             .get("id")
             .and_then(Value::as_str)
@@ -686,6 +699,7 @@ mod tests {
 
     fn chat(id: &str, title: Option<&str>) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev".into(),
             title: title.map(str::to_owned),

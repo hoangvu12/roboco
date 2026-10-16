@@ -156,6 +156,7 @@ mod tests {
 
     fn fat_entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts: vec![
@@ -195,6 +196,7 @@ mod tests {
 
     fn command(id: &str, status: SessionCommandStatus) -> SessionCommandEntry {
         SessionCommandEntry {
+            origin_chat_id: None,
             id: id.into(),
             payload: SessionCommandPayload::Interrupt {},
             issued_by: "dev-b".into(),

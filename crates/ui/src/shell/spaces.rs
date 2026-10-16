@@ -6800,6 +6800,7 @@ mod tests {
 
     fn chat(id: &str) -> roboco_proto::Chat {
         roboco_proto::Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "device".into(),
             title: None,

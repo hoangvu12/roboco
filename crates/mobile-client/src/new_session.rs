@@ -104,6 +104,7 @@ impl PendingChat {
     /// merged engine row so `build_row` needs no special case.
     pub(crate) fn synthetic_chat(&self, chat_id: &str) -> roboco_proto::Chat {
         roboco_proto::Chat {
+            agent_origin: None,
             id: chat_id.to_owned(),
             device_id: self.device_id.clone(),
             title: None,

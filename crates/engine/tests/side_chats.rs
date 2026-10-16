@@ -73,6 +73,7 @@ impl Harness for Capture {
 }
 fn message(id: &str, role: MessageRole, text: &str, status: MessageStatus) -> SessionMessageEntry {
     SessionMessageEntry {
+        origin_chat_id: None,
         duration_ms: None,
         id: id.into(),
         role,
@@ -192,6 +193,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
                 worktree: None,
             },
             Some("side-user".into()),
+            None,
         )
         .await
         .unwrap();
@@ -438,6 +440,7 @@ async fn side_turn(
                 worktree: None,
             },
             Some(message_id.into()),
+            None,
         )
         .await
         .unwrap();
@@ -479,6 +482,7 @@ async fn native_commands_and_empty_side_chats_skip_the_history_wrapper() {
                 None,
                 Some("/tmp".into()),
                 parent.map(str::to_owned),
+                None,
             )
             .unwrap();
     }
@@ -666,7 +670,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
     };
     let dispatch = |prompt: &'static str, id: &'static str| {
         core.sessions
-            .dispatch("fork", HarnessId::Mock, request(prompt), Some(id.into()))
+            .dispatch("fork", HarnessId::Mock, request(prompt), Some(id.into()), None)
     };
     dispatch("/review", "f1").await.unwrap();
     assert_eq!(settle(1).await, "/review");
@@ -688,7 +692,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
     );
     // Delivered: an explicit steer and later sends go out bare.
     core.sessions
-        .steer("fork", "And now?", Some("f3".into()))
+        .steer("fork", "And now?", Some("f3".into()), None)
         .await
         .unwrap();
     assert_eq!(settle(3).await, "And now?");
@@ -836,6 +840,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
             HarnessId::Mock,
             request("/review"),
             Some("f1".into()),
+            None,
         )
         .await
         .unwrap();
@@ -858,6 +863,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
             HarnessId::Mock,
             request("What should you remember?"),
             Some("f2".into()),
+            None,
         )
         .await
         .unwrap();

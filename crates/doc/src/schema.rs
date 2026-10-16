@@ -60,6 +60,12 @@ pub struct SessionMessageEntry {
     /// the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
+    /// The chat this user entry was sent BY through the Roboco MCP server —
+    /// structured attribution (additive; ADR 0005), the durable record the
+    /// completion-notice rules key on. None on typed messages and entries
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_chat_id: Option<String>,
 }
 
 /// The doc-resident flat part map (`DocMessagePart` in TS). Distinct from the app-layer
@@ -554,6 +560,9 @@ impl SessionDoc {
                 .as_str()
                 .ok_or_else(|| DocError::Schema("status not a string".into()))?,
         )?;
+        if let Some(origin_chat_id) = &entry.origin_chat_id {
+            map.insert("originChatId", origin_chat_id.as_str())?;
+        }
         self.doc.commit();
         Ok(())
     }
@@ -815,6 +824,9 @@ fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Resu
     if let Some(duration_ms) = entry.duration_ms {
         map.insert("durationMs", duration_ms)?;
     }
+    if let Some(origin_chat_id) = &entry.origin_chat_id {
+        map.insert("originChatId", origin_chat_id.as_str())?;
+    }
     Ok(())
 }
 
@@ -914,6 +926,8 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
         continuation_of: Option<String>,
         #[serde(default)]
         duration_ms: Option<i64>,
+        #[serde(default)]
+        origin_chat_id: Option<String>,
     }
     match serde_json::from_value::<RawEntry>(v.clone()) {
         Ok(raw) => Ok(SessionMessageEntry {
@@ -925,6 +939,7 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
             status: raw.status,
             continuation_of: raw.continuation_of,
             duration_ms: raw.duration_ms,
+            origin_chat_id: raw.origin_chat_id,
         }),
         // 2026-08-10 incident rule: a missing field must cost AT MOST what
         // the field carried — never the entry, never the transcript. Rooms
@@ -990,6 +1005,7 @@ fn salvage_entry(
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
         continuation_of: str_field("continuationOf"),
         duration_ms: obj.get("durationMs").and_then(|x| x.as_i64()),
+        origin_chat_id: str_field("originChatId"),
     })
 }
 
@@ -1126,6 +1142,7 @@ impl<'a> SegmentWriter<'a> {
         write_entry_scalar_fields(
             &map,
             &SessionMessageEntry {
+                origin_chat_id: None,
                 id: entry_id.into(),
                 role: MessageRole::Assistant,
                 parts: vec![],
@@ -1408,6 +1425,7 @@ mod tests {
             source_title: "Main conversation".into(),
         };
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
             id: "fork:side".into(),
             role: MessageRole::System,
@@ -1468,6 +1486,7 @@ mod tests {
 
     fn user_entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -1487,6 +1506,7 @@ mod tests {
         let doc = SessionDoc::init("whale").unwrap();
         for segment in 0..4 {
             doc.push_message(&SessionMessageEntry {
+                origin_chat_id: None,
                 id: format!("segment-{segment}"),
                 role: MessageRole::Assistant,
                 parts: (0..100)
@@ -1732,6 +1752,7 @@ mod tests {
     fn resolve_input_stamps_the_part_in_place() {
         let doc = SessionDoc::init("chat-1").unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Input {
@@ -1981,6 +2002,7 @@ mod tests {
     fn pre_strip_doc_parts_still_round_trip() {
         let doc = SessionDoc::init("chat-3").unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Tool {
@@ -2046,6 +2068,7 @@ mod tests {
         use crate::commands::{SessionCommandPayload, SessionCommandStatus};
         let doc = SessionDoc::init("chat-1").unwrap();
         let entry = SessionCommandEntry {
+            origin_chat_id: None,
             id: "c1".into(),
             payload: SessionCommandPayload::Steer {
                 prompt: "focus".into(),

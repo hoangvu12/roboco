@@ -152,6 +152,10 @@ pub(crate) struct RateLimitInfo {
     pub status: String,
     #[serde(rename = "rateLimitType", default)]
     pub rate_limit_type: Option<String>,
+    /// Unix seconds when the rejected window resets — the CLI reports it on
+    /// the blocking event (live-verified 2.1.228); absent when unknown.
+    #[serde(rename = "resetsAt", default)]
+    pub resets_at: Option<u64>,
     /// `allowed`/`allowed_warning` when the account may spend provisioned
     /// overage past a rejected window.
     #[serde(rename = "overageStatus", default)]

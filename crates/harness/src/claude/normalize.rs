@@ -1,7 +1,9 @@
 //! Frame → [`AgentEvent`] normalization (init dedupe, subagent tagging, tool
 //! decoding, error-code mapping).
 
-use roboco_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall};
+use roboco_proto::{
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall,
+};
 use serde_json::Value;
 
 use super::wire::{ContentBlock, Frame};
@@ -35,6 +37,24 @@ fn rate_window_label(kind: &str) -> &'static str {
         "seven_day_sonnet" => "weekly (Sonnet)",
         "overage" => "overage",
         _ => "usage",
+    }
+}
+
+/// Structured classification for an assistant-level error code: the CLI's
+/// terse `rate_limit` says a plan window blocked the turn but not which one
+/// (the accompanying `rate_limit_event` usually does, and carries the reset);
+/// `authentication_failed` means the login is gone. Everything else stays
+/// unclassified.
+fn assistant_error_kind(code: &str) -> Option<AgentErrorKind> {
+    match code {
+        "rate_limit" => Some(AgentErrorKind::UsageLimit {
+            // Which window was hit is unknown at this surface — the plain
+            // "usage" label (the fallback window wording).
+            window: "usage".into(),
+            resets_at: None,
+        }),
+        "authentication_failed" => Some(AgentErrorKind::SignedOut),
+        _ => None,
     }
 }
 
@@ -501,6 +521,7 @@ impl Normalizer {
                             parent,
                             AgentEvent::Error {
                                 message: assistant_error_text(code),
+                                kind: assistant_error_kind(code),
                             },
                         ));
                     }
@@ -593,6 +614,7 @@ impl Normalizer {
                 if let Some(code) = &f.error {
                     out.push(AgentEvent::Error {
                         message: assistant_error_text(code),
+                        kind: assistant_error_kind(code),
                     });
                 }
                 // The enclosing assistant frame closes the streamed message
@@ -667,6 +689,15 @@ impl Normalizer {
                     message: format!(
                         "Claude {window} limit reached — the turn was blocked. Try again after it resets."
                     ),
+                    kind: Some(AgentErrorKind::UsageLimit {
+                        window: window.into(),
+                        // The CLI reports the reset in unix seconds
+                        // (live-verified 2.1.228); the kind carries millis.
+                        resets_at: f
+                            .rate_limit_info
+                            .resets_at
+                            .map(|secs| (secs as i64).saturating_mul(1000)),
+                    }),
                 }]
             }
 
@@ -1439,7 +1470,109 @@ mod tests {
             assert!(normalize_one(&raw).is_empty(), "{overage}");
         }
     }
+
+    #[test]
+    fn a_blocking_limit_event_carries_the_window_and_reset_time() {
+        // The blocking event yields kind usage-limit with the window label
+        // and the CLI's own reset time — unix seconds on the wire (the live
+        // 2.1.228 capture carries seconds), millis in the kind. The message
+        // is unchanged, so older clients render exactly as before.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude 5-hour limit reached — the turn was blocked. Try again after it resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "5-hour".into(),
+                    resets_at: Some(1_762_675_400_000),
+                }),
+            }]
+        );
+        // No reset time reported: the kind still lands, without one.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day"}}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude weekly limit reached — the turn was blocked. Try again after it resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "weekly".into(),
+                    resets_at: None,
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn assistant_error_codes_classify_limits_and_auth() {
+        // The error message also completes its (empty) assistant message;
+        // only the error event is under test here.
+        let errors = |line: &str| {
+            normalize_one(line)
+                .into_iter()
+                .filter(|event| matches!(event, AgentEvent::Error { .. }))
+                .collect::<Vec<_>>()
+        };
+        // The terse `rate_limit` code: a usage limit, window unknown (the
+        // accompanying rate_limit_event usually carries the details).
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude usage limit reached — try again after the limit resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "usage".into(),
+                    resets_at: None,
+                }),
+            }]
+        );
+        // Authentication failed: signed out, distinct from a limit.
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"authentication_failed"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Authentication failed — sign in to Claude again.".into(),
+                kind: Some(AgentErrorKind::SignedOut),
+            }]
+        );
+        // Other codes stay unclassified.
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"billing_error"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Billing error — check your Claude plan or payment method.".into(),
+                kind: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn subagent_error_codes_carry_the_classification_too() {
+        let events = normalize_one(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_sub","message":{"content":[]},"error":"authentication_failed"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Subagent {
+                parent_tool_use_id: "toolu_sub".into(),
+                event: Box::new(AgentEvent::Error {
+                    message: "Authentication failed — sign in to Claude again.".into(),
+                    kind: Some(AgentErrorKind::SignedOut),
+                }),
+            }]
+        );
+    }
 }
+
 #[cfg(test)]
 mod context_tests {
     use super::*;

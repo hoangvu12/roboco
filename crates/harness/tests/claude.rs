@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use roboco_harness::{
     CancellationToken, ClaudeHarness, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
-    UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall,
+    UserInputAnswer, UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -484,7 +484,7 @@ async fn error_codes_map_to_readable_messages() {
     let errors: Vec<&str> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::Error { message } => Some(message.as_str()),
+            AgentEvent::Error { message, .. } => Some(message.as_str()),
             _ => None,
         })
         .collect();
@@ -499,6 +499,30 @@ async fn error_codes_map_to_readable_messages() {
         "rejected rate_limit_event not mapped: {errors:?}"
     );
 
+    // Both limit surfaces carry kind usage-limit: the blocking event with
+    // the window and the CLI's own reset time, the terse assistant code
+    // without either.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, kind: Some(AgentErrorKind::UsageLimit { window, resets_at }) }
+            if message == "Claude 5-hour limit reached — the turn was blocked. Try again after it resets."
+                && window == "5-hour"
+                && *resets_at == Some(1_762_675_400_000)
+        )),
+        "blocking limit event not classified: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, kind: Some(AgentErrorKind::UsageLimit { window, resets_at }) }
+            if message == "Claude usage limit reached — try again after the limit resets."
+                && window == "usage"
+                && resets_at.is_none()
+        )),
+        "assistant rate_limit code not classified: {events:?}"
+    );
+
     // Empty `errors` array on the result falls back to subtype wording.
     assert_eq!(
         events.last(),
@@ -509,6 +533,33 @@ async fn error_codes_map_to_readable_messages() {
             session_id: Some("sess-err".into()),
         })
     );
+}
+
+#[tokio::test]
+async fn an_authentication_failure_is_signed_out() {
+    let (controls, _steer, _token) = controls("A");
+    let events = run_to_end(&harness(), request("scenario:auth"), controls).await;
+
+    // Exactly one error: the message stays human-readable, and the kind says
+    // sign in again — distinct from waiting out a usage limit.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![(
+            "Authentication failed — sign in to Claude again.".to_owned(),
+            Some(AgentErrorKind::SignedOut),
+        )],
+        "exactly one error, and it is signed-out: {events:?}"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Done { status: DoneStatus::Errored, .. })
+    ));
 }
 
 #[tokio::test]

@@ -21,6 +21,7 @@ fn run_request_attachments_survive_command_round_trip() {
         resume: None,
     };
     doc.queue_command(&SessionCommandEntry {
+        origin_chat_id: None,
         id: "c1".into(),
         payload: SessionCommandPayload::Run {
             request,

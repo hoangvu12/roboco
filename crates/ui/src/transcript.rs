@@ -1626,6 +1626,7 @@ pub fn rows_for_entry(
                 Vec::new()
             } else {
                 let work_entry = SessionMessageEntry {
+                    origin_chat_id: None,
                     parts: work_parts,
                     duration_ms: None,
                     continuation_of: None,
@@ -11867,6 +11868,7 @@ mod tests {
 
     fn assistant(id: &str, status: MessageStatus, parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts,
@@ -15605,6 +15607,7 @@ mod tests {
 
         // User entries carry the strip on their single row (pending too).
         let user = SessionMessageEntry {
+            origin_chat_id: None,
             id: "u1".into(),
             role: MessageRole::User,
             parts: vec![text_part("p1", "hi")],

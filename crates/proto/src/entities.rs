@@ -123,6 +123,28 @@ pub struct ConversationSourceContext {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Durable record that an AGENT created a chat through the Roboco MCP
+/// `create_chat` / `create_chats` tools: the chat whose agent ran the tool,
+/// and whether that chat wants completion notices for this one. Written once
+/// at creation; the engine's completion-notice machinery (spec: orchestration
+/// v2) keys on it. Absent on user-created chats (UI forks, blank side chats,
+/// human CLI sends) and on standalone chats — those never notify.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOrigin {
+    /// The chat whose agent created this one (the Roboco MCP origin chat).
+    pub chat_id: String,
+    /// Whether the creator is notified when this chat's turns settle.
+    /// Defaults to on; `notify: false` opts out at creation. A missing flag
+    /// (an older writer) reads as on.
+    #[serde(default = "default_true")]
+    pub notify: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -178,6 +200,12 @@ pub struct Chat {
     /// deleted) is tolerated rather than cascaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_chat_id: Option<String>,
+    /// Set when an agent — not the user — created this chat through the
+    /// Roboco MCP tools: which chat ran `create_chat`, and whether it is owed
+    /// completion notices. Additive (ADR 0005): rows from older writers read
+    /// as not agent-created and never notify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_origin: Option<AgentOrigin>,
 }
 
 impl Chat {
@@ -1664,5 +1692,80 @@ mod tests {
                 .unwrap(),
             account
         );
+    }
+
+    #[test]
+    fn agent_origin_is_camel_case_additive_and_defaults_notify_on() {
+        let origin = AgentOrigin {
+            chat_id: "chat-origin-1".into(),
+            notify: false,
+        };
+        let value = serde_json::to_value(&origin).unwrap();
+        assert_eq!(value["chatId"], "chat-origin-1");
+        assert_eq!(value["notify"], false);
+        assert_eq!(
+            serde_json::from_value::<AgentOrigin>(value).unwrap(),
+            origin
+        );
+        // A missing flag (older writer) reads as notify: on.
+        assert_eq!(
+            serde_json::from_value::<AgentOrigin>(serde_json::json!({
+                "chatId": "chat-origin-1"
+            }))
+            .unwrap()
+            .notify,
+            true
+        );
+    }
+
+    #[test]
+    fn chat_row_carries_agent_origin_and_omits_it_when_absent() {
+        let chat = Chat {
+            id: "chat-side-1".into(),
+            device_id: "device-1".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            parent_chat_id: Some("chat-parent-1".into()),
+            agent_origin: Some(AgentOrigin {
+                chat_id: "chat-parent-1".into(),
+                notify: true,
+            }),
+        };
+        let value = serde_json::to_value(&chat).unwrap();
+        assert_eq!(value["agentOrigin"]["chatId"], "chat-parent-1");
+        assert_eq!(value["agentOrigin"]["notify"], true);
+        assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), chat);
+        // Additive: a row from an older writer carries no agentOrigin and
+        // reads as not agent-created.
+        let legacy = serde_json::json!({
+            "id": "chat-old-1",
+            "deviceId": "device-1",
+            "title": null,
+            "archived": false,
+            "cwd": null,
+            "branch": null,
+            "checkoutId": null,
+            "config": null,
+            "lastMessagePreview": null,
+            "lastMessageAt": null,
+            "createdAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Chat>(legacy).unwrap();
+        assert_eq!(old.agent_origin, None);
+        let encoded = serde_json::to_value(&old).unwrap();
+        assert!(encoded.get("agentOrigin").is_none());
     }
 }

@@ -42,4 +42,11 @@ editedAt?: number | null,
  * agent while a client has an edit open. Expired edits fail closed into
  * `ReviewRequired`; they never silently become sendable again.
  */
-deliveryGate?: QueueDeliveryGate | null, };
+deliveryGate?: QueueDeliveryGate | null, 
+/**
+ * The chat this row was sent BY through the Roboco MCP server —
+ * structured attribution (additive; ADR 0005). None for user-typed rows
+ * and rows written before the field existed. The promoted user message
+ * entry keeps it.
+ */
+originChatId?: string | null, };

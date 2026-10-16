@@ -270,6 +270,7 @@ async fn rig_with_background(
             }),
             Some("/checkout/parent".into()),
             None,
+            None,
         )
         .unwrap();
     let listener = serve(&core, engine_dir.path()).await;
@@ -691,6 +692,7 @@ async fn the_subagent_doc_streams_and_counts_while_it_runs() {
         .unwrap()
         .doc()
         .push_message(&roboco_doc::schema::SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
             id: "resumed".into(),
             role: roboco_doc::MessageRole::Assistant,
