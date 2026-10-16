@@ -1002,6 +1002,158 @@ impl AgentAccounts {
             .find(|account| account.harness == harness && account.active)
     }
 
+    /// The ranked failover candidates for `harness` (orchestration v2,
+    /// ticket 09) — the CACHED rows, no network: the forced probe is the
+    /// engine's call on the CHOSEN candidate only ([`Self::probe_account`]).
+    /// `limited_account_id` names the account the chat's limit hit (the
+    /// limit record's account, else the harness's active login when the
+    /// record carried none). See [`rank_failover_candidates`] for the
+    /// exclusion and ranking rules.
+    /// The harness's OTHER accounts that are signed out (ticket 09's
+    /// picker): never switch targets — the ranking excludes them — but the
+    /// picker lists them with a "Sign in again" action (the existing login
+    /// flow ticket 08 drives) so a dead login can be revived in place
+    /// (spec stories 47 and 50). Cached rows, no network; the live login is
+    /// never listed (it is the account the picker says it switches FROM).
+    pub async fn failover_signed_out(&self, harness: HarnessId) -> Vec<AgentAccount> {
+        self.list(false)
+            .await
+            .map(|snapshot| {
+                snapshot
+                    .accounts
+                    .into_iter()
+                    .filter(|row| {
+                        row.harness == harness
+                            && !row.active
+                            && row.sign_in_state == AgentSignInState::SignedOut
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub async fn failover_candidates(
+        &self,
+        harness: HarnessId,
+        limited_account_id: Option<&str>,
+    ) -> Vec<AgentAccount> {
+        let Ok(snapshot) = self.list(false).await else {
+            return Vec::new();
+        };
+        // The org/workspace group of every row the ranker demotes by. The
+        // Codex row carries no account key on the wire, so the groups come
+        // from the slots (id → key); Claude's group IS the row's
+        // organization field.
+        let slot_groups: HashMap<String, Option<String>> = self
+            .read_slots(harness)
+            .into_iter()
+            .map(|slot| {
+                let group = failover_group(
+                    harness,
+                    slot.profile.organization.as_deref(),
+                    &slot.account_key,
+                );
+                (slot.id, group)
+            })
+            .collect();
+        let rows: Vec<FailoverCandidate> = snapshot
+            .accounts
+            .into_iter()
+            .filter(|row| row.harness == harness)
+            .map(|row| {
+                let group = match harness {
+                    HarnessId::ClaudeCode => {
+                        failover_group(harness, row.organization.as_deref(), "")
+                    }
+                    _ => slot_groups.get(&row.id).cloned().flatten(),
+                };
+                FailoverCandidate { row, group }
+            })
+            .collect();
+        // The account the limit hit: by id when the record names it, else
+        // the live login. Its group demotes its same-pool peers.
+        let limited = rows.iter().find(|candidate| {
+            limited_account_id.is_some_and(|id| id == candidate.row.id)
+                || (limited_account_id.is_none() && candidate.row.active)
+        });
+        let (limited_id, limited_group) = match limited {
+            Some(candidate) => (Some(candidate.row.id.clone()), candidate.group.clone()),
+            None => (None, None),
+        };
+        rank_failover_candidates(rows, limited_id.as_deref(), limited_group.as_deref())
+    }
+
+    /// One candidate's usage probe (ticket 09): refresh ONLY this account's
+    /// cached meters — honoring the cache's own backoff and freshness gates,
+    /// so a rate-limited usage endpoint is never re-probed to death — and
+    /// return the fresh row. The engine probes the chosen candidate once
+    /// before switching: a hard rejection (`SignedOut`) or a newly-exhausted
+    /// window tells it to move to the next candidate instead. Never touches
+    /// the other accounts' cache entries (the sweep that forgets removed
+    /// slots belongs to [`Self::refresh_usage`], which sees every slot).
+    pub async fn probe_account(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<AgentAccount, EngineError> {
+        let _ops = self.inner.ops.lock().await;
+        let slot = self
+            .read_slots(harness)
+            .into_iter()
+            .find(|s| s.id == account_id)
+            .ok_or_else(|| {
+                EngineError::Other(
+                    "That saved login no longer exists — refresh and try again.".into(),
+                )
+            })?;
+        let active = self
+            .live_account_key(harness, slot.store_key.as_deref())
+            .await
+            .as_deref()
+            == Some(slot.account_key.as_str());
+        let key = usage_key(harness, &slot.account_key);
+        let credentials = credentials_fingerprint(&slot.credentials);
+        let now = now_ms();
+        let due = lock(&self.inner.usage)
+            .get(&key)
+            .is_none_or(|entry| entry.probe_due(&credentials, now));
+        if due && lock(&self.inner.inflight_probes).insert(key.clone()) {
+            let result = self.probe_usage(harness, &slot, active).await;
+            lock(&self.inner.inflight_probes).remove(&key);
+            let mut usage = lock(&self.inner.usage);
+            usage
+                .entry(key)
+                .or_default()
+                .record(result, credentials, now);
+            self.persist_usage(&usage);
+        }
+        self.list_locked(false)
+            .await?
+            .accounts
+            .into_iter()
+            .find(|row| row.harness == harness && row.id == account_id)
+            .ok_or_else(|| {
+                EngineError::Other("The account vanished while probing it.".into())
+            })
+    }
+
+    /// Fingerprint of the CLI store's live login for `harness` — a digest of
+    /// the credential bytes every new run on this harness would use. The
+    /// sessions engine stamps it on every warm runtime it starts, so a
+    /// runtime launched under another login is never reused after a switch
+    /// (ticket 09). `None` for a harness whose live store roboco does not
+    /// read — and for a Claude Keychain login, which has no file: no
+    /// fingerprint, no forced retirement.
+    pub fn live_credentials_fingerprint(&self, harness: HarnessId) -> Option<String> {
+        let file = match harness {
+            HarnessId::ClaudeCode => self.inner.config.claude_creds_file(),
+            HarnessId::Codex => self.inner.config.codex_auth_file(),
+            _ => return None,
+        };
+        let bytes = std::fs::read(&file).ok()?;
+        Some(crate::repos::hex(&Sha256::digest(&bytes))[..16].to_string())
+    }
+
     /// Caller holds [`Inner::ops`].
     async fn list_locked(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
         let mut warnings: Vec<AgentAccountWarning> = Vec::new();
@@ -2844,8 +2996,13 @@ impl AgentAccounts {
             .map(|(harness, slot, _)| usage_key(*harness, &slot.account_key))
             .collect();
         usage.retain(|key, _| live.contains(key));
-        // Persist under the lock: overlapping lists must not interleave
-        // writes of the same file.
+        self.persist_usage(&usage);
+    }
+
+    /// Write the usage cache to disk under its lock: overlapping probes and
+    /// lists must not interleave writes of the same file. Best-effort — a
+    /// failed write keeps the in-memory state (the next change retries).
+    fn persist_usage(&self, usage: &HashMap<String, UsageEntry>) {
         let file = UsageCacheFile {
             entries: usage.clone(),
         };
@@ -3620,6 +3777,109 @@ fn parse_when(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
 
 fn usage_key(harness: HarnessId, account_key: &str) -> String {
     format!("{}:{account_key}", harness_slug(harness))
+}
+
+/// One row in the failover ranking (ticket 09): the wire account plus the
+/// engine-local org/workspace group the ranking demotes shared-limit pools
+/// by (see [`failover_group`]).
+struct FailoverCandidate {
+    row: AgentAccount,
+    group: Option<String>,
+}
+
+/// The org or workspace an account may share a limit pool with (ticket 09):
+/// Claude's organization name, Codex's ChatGPT workspace (the account key's
+/// `user::workspace` tail — team seats share the workspace id; personal
+/// logins keep their own key and share nothing). `None` when the account
+/// names no group. Lower-cased: it is an identity, not a display value.
+fn failover_group(
+    harness: HarnessId,
+    organization: Option<&str>,
+    account_key: &str,
+) -> Option<String> {
+    match harness {
+        HarnessId::ClaudeCode => organization
+            .map(str::trim)
+            .filter(|org| !org.is_empty())
+            .map(|org| org.to_ascii_lowercase()),
+        HarnessId::Codex => Some(
+            account_key
+                .split_once("::")
+                .map(|(_, workspace)| workspace)
+                .unwrap_or(account_key)
+                .to_ascii_lowercase(),
+        ),
+        _ => None,
+    }
+}
+
+/// Rank the failover candidates for a Limited chat's "Resume on another
+/// account" (ticket 09). Pure.
+///
+/// **Excluded:**
+/// - the account that hit the limit (`limited_id`, the row named by the
+///   chat's limit record) — and every ACTIVE row (the login the next run
+///   would use anyway; switching to it is a no-op);
+/// - non-switchable rows (Hermes' own pool, credentials roboco could not
+///   read, single-login agents);
+/// - API-key logins (no plan windows — a switch has nothing to fail over
+///   to);
+/// - accounts marked signed out (ticket 08 — they offer "Sign in again"
+///   instead);
+/// - accounts still limited (`limited_until` in the future).
+///
+/// **Ranked:** lowest usage first — the account's most-used window
+/// (`0.0` when the meters are unknown); among equals, accounts OUTSIDE the
+/// limited account's org/workspace rank first (a shared pool may hit the
+/// same wall again). The pre-rank order (slot creation order) breaks the
+/// remaining ties so the ranking is deterministic.
+fn rank_failover_candidates(
+    candidates: Vec<FailoverCandidate>,
+    limited_id: Option<&str>,
+    limited_group: Option<&str>,
+) -> Vec<AgentAccount> {
+    let now = Utc::now();
+    let mut ranked: Vec<(bool, f32, usize, AgentAccount)> = Vec::new();
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let row = candidate.row;
+        if row.active || limited_id.is_some_and(|id| id == row.id) {
+            continue; // the account the limit hit / the live login
+        }
+        if !row.switchable {
+            continue; // Hermes' pool, unreadable credentials, single logins
+        }
+        if row.auth_kind == Some(AgentAuthKind::ApiKey) {
+            continue; // API keys have no plan windows to fail over to
+        }
+        if row.sign_in_state == AgentSignInState::SignedOut {
+            continue; // dead login — "Sign in again", not a candidate
+        }
+        if row
+            .limited_until
+            .is_some_and(|until| until > now)
+        {
+            continue; // still limited
+        }
+        // Lowest usage first: the account's most-used window (an account
+        // without meters has no cached evidence of exhaustion).
+        let usage = row
+            .usage_windows
+            .iter()
+            .map(|window| window.used_fraction.clamp(0.0, 1.0))
+            .fold(0.0_f32, f32::max);
+        let shares_pool = candidate
+            .group
+            .as_deref()
+            .zip(limited_group)
+            .is_some_and(|(mine, limited)| mine == limited);
+        ranked.push((shares_pool, usage, index, row));
+    }
+    ranked.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.total_cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    ranked.into_iter().map(|(_, _, _, row)| row).collect()
 }
 
 /// A short digest of a slot's credential blob — tells "same token that was
@@ -5125,6 +5385,124 @@ mod probe_tests {
             1,
             "the transport-failed probe must not be followed by a refresh POST"
         );
+    }
+
+    // ── failover ranking (orchestration v2, ticket 09) ────────────────────
+
+    fn candidate(
+        id: &str,
+        used: Option<f32>,
+        group: Option<&str>,
+        mut row: AgentAccount,
+    ) -> FailoverCandidate {
+        row.id = id.into();
+        row.usage_windows = used
+            .map(|fraction| {
+                vec![AgentUsageWindow {
+                    label: "Session".into(),
+                    used_fraction: fraction,
+                    resets_at: None,
+                }]
+            })
+            .unwrap_or_default();
+        FailoverCandidate {
+            row,
+            group: group.map(str::to_owned),
+        }
+    }
+
+    fn plain_row() -> AgentAccount {
+        serde_json::from_value(serde_json::json!({
+            "id": "row",
+            "harness": "claude-code",
+            "email": null,
+            "planLabel": null,
+            "active": false,
+            "switchable": true,
+            "authKind": "oauth",
+        }))
+        .unwrap()
+    }
+
+    fn ids(rows: &[AgentAccount]) -> Vec<&str> {
+        rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    /// The exclusions, one per row: the limit's own account and the active
+    /// login, non-switchable rows, API keys, signed-out accounts, and
+    /// accounts still limited never surface as candidates.
+    #[test]
+    fn failover_ranking_excludes_dead_and_current_rows() {
+        let mut active = plain_row();
+        active.active = true;
+        let mut unswitchable = plain_row();
+        unswitchable.switchable = false;
+        let mut api_key = plain_row();
+        api_key.auth_kind = Some(AgentAuthKind::ApiKey);
+        let mut signed_out = plain_row();
+        signed_out.sign_in_state = AgentSignInState::SignedOut;
+        let mut still_limited = plain_row();
+        still_limited.limited_until = Some(Utc::now() + TimeDelta::hours(3));
+        let expired_limit = {
+            // A limited_until in the PAST: the window lifted.
+            let mut row = plain_row();
+            row.limited_until = Some(Utc::now() - TimeDelta::hours(1));
+            row
+        };
+        let rows = vec![
+            candidate("a-active", Some(0.1), None, active),
+            candidate("b-limited-id", Some(0.2), None, plain_row()),
+            candidate("c-unswitchable", Some(0.3), None, unswitchable),
+            candidate("d-api-key", Some(0.4), None, api_key),
+            candidate("e-signed-out", Some(0.5), None, signed_out),
+            candidate("f-still-limited", Some(0.6), None, still_limited),
+            candidate("g-lifted", Some(0.7), None, expired_limit),
+            candidate("h-healthy", Some(0.8), None, plain_row()),
+        ];
+        let ranked = rank_failover_candidates(rows, Some("b-limited-id"), None);
+        assert_eq!(ids(&ranked), vec!["g-lifted", "h-healthy"]);
+    }
+
+    /// Lowest usage first (unknown meters read as nothing used), and among
+    /// equals the accounts OUTSIDE the limited account's org or workspace
+    /// rank first.
+    #[test]
+    fn failover_ranking_prefers_low_usage_then_other_pools() {
+        let rows = vec![
+            candidate("high", Some(0.9), Some("acme"), plain_row()),
+            candidate("low", Some(0.1), Some("acme"), plain_row()),
+            candidate("other-pool", Some(0.1), Some("globex"), plain_row()),
+            candidate("unknown", None, Some("acme"), plain_row()),
+        ];
+        let ranked = rank_failover_candidates(rows, Some("limited"), Some("acme"));
+        assert_eq!(
+            ids(&ranked),
+            vec!["other-pool", "unknown", "low", "high"],
+            "lowest usage first (no meters read as nothing used); a different pool wins ties"
+        );
+    }
+
+    /// The org/workspace group: Claude's organization (case-insensitive),
+    /// Codex's workspace tail of the account key, absent elsewhere.
+    #[test]
+    fn failover_groups_map_claude_orgs_and_codex_workspaces() {
+        assert_eq!(
+            failover_group(HarnessId::ClaudeCode, Some("Acme Corp "), ""),
+            Some("acme corp".into())
+        );
+        assert_eq!(failover_group(HarnessId::ClaudeCode, Some(""), ""), None);
+        assert_eq!(failover_group(HarnessId::ClaudeCode, None, ""), None);
+        assert_eq!(
+            failover_group(HarnessId::Codex, None, "user-1::ws-9"),
+            Some("ws-9".into())
+        );
+        // A personal login (no workspace tail) shares nothing: its whole key
+        // IS its identity.
+        assert_eq!(
+            failover_group(HarnessId::Codex, None, "dev@example.com"),
+            Some("dev@example.com".into())
+        );
+        assert_eq!(failover_group(HarnessId::Pi, Some("Acme"), "k"), None);
     }
 }
 

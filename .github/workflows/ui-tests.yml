@@ -66,7 +66,8 @@ jobs:
         run: |
           cargo test --locked -p roboco-sync --lib
           cargo test --locked -p roboco-update --lib
-          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings --test side_chats --test agent_origin --test account_sign_in_state --test completion_notices --test limited_chats --test harness_switch --test continue_on_harness --test resume_at_reset
+          cargo test --locked -p roboco-engine --lib --test account_failover --test account_sign_in_state --test agent_origin --test codex_subagents --test completion_notices --test continue_on_harness --test engine_local --test harness_switch --test limited_chats --test local_profiles --test project_action_commands --test project_actions_remote --test project_actions_rpc --test remote_settings --test restart_resume --test resume_at_reset --test side_chats
+
 
   # Mobile Rust core (spec D1, android-app#02): the crates the Android app's
   # Kotlin painter leans on. Pure Rust, no GPUI system deps.

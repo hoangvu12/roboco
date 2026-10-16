@@ -98,6 +98,8 @@ export * from "./RemoteAccessStatus";
 export * from "./RenewQueueEditOutcome";
 export * from "./Repo";
 export * from "./RepoRef";
+export * from "./ResumeAccountCandidates";
+export * from "./ResumeOnAccountOutcome";
 export * from "./RunRequest";
 export * from "./SandboxLevel";
 export * from "./ScheduledResume";

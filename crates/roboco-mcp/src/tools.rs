@@ -1167,6 +1167,7 @@ impl Tools {
                     auto_approve: false,
                     resume: None,
                     provider_fork: None,
+                    resume_fallback_history: None,
                     attachments: Vec::new(),
                     worktree: None,
                 };

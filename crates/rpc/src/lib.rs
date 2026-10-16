@@ -219,6 +219,21 @@ pub mod methods {
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
     pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
+    /// The ranked switch targets for one Limited chat's "Resume on another
+    /// account" (t3-orchestration-v2 ticket 09): the cached harness accounts
+    /// of the chat's harness, best first — switchable, not an API key, not
+    /// signed out, not still limited, not the account that hit the limit.
+    /// Empty when only Resume at reset remains. Params `{chatId}` →
+    /// `ResumeAccountCandidates`.
+    pub const LIST_RESUME_ACCOUNT_CANDIDATES: &str = "ListResumeAccountCandidates";
+    /// **Resume on another account** (t3-orchestration-v2 ticket 09): probe
+    /// the chosen account (or the best-ranked), activate it, retire the
+    /// chat's warm runtime, and resume the chat's harness session with the
+    /// continue prompt — falling back to a fresh session with the budgeted
+    /// history when the harness refuses. A signed-out failure after the
+    /// switch moves to the next candidate, else restores the previous
+    /// account. Params `{chatId, accountId?}` → `ResumeOnAccountOutcome`.
+    pub const RESUME_ON_ANOTHER_ACCOUNT: &str = "ResumeOnAnotherAccount";
     pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";

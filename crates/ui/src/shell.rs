@@ -192,6 +192,115 @@ struct ChatMenuState {
     page: ChatMenuPage,
 }
 
+/// "Resume on another account" (orchestration v2, ticket 09): the Limited
+/// banner's failover picker. The candidates come from the ENGINE's ranking
+/// RPC (`ListResumeAccountCandidates`) so desktop and web share one rule;
+/// the load re-runs on the TTL and on every popover open (meters move as
+/// turns run), the popover offers the rows best-first with the recommended
+/// one marked, and a click runs the failover RPC whose reply becomes the
+/// outcome line — a failed switch surfaces on the composer's failure chip.
+#[derive(Default)]
+struct FailoverState {
+    /// The chat whose candidates are held, when they were loaded, and the
+    /// ranked rows (the first is the recommendation).
+    loaded: Option<(
+        String,
+        std::time::Instant,
+        roboco_proto::ResumeAccountCandidates,
+    )>,
+    /// The chat whose candidate load is in flight.
+    loading: Option<String>,
+    /// The chat whose switch is in flight (the popover's rows disable).
+    switching: Option<String>,
+    popup: popover::Popup<()>,
+    /// The last switch outcome — a warning-toned strip line ("Resumed on
+    /// …", "no other account", …) that lives until the next switch or the
+    /// chat's own state supersedes it.
+    notice: Option<SharedString>,
+}
+
+/// How long a loaded candidate list stays fresh while the banner shows.
+const FAILOVER_LIST_TTL: Duration = Duration::from_secs(30);
+
+/// One row of the failover picker (ticket 09): a switchable candidate, or
+/// a signed-out account offered "Sign in again" instead (stories 47/50 —
+/// a dead login is listed, never switched to).
+#[derive(Clone, Debug, PartialEq)]
+enum FailoverRow {
+    /// A ranked switch target; `recommended` marks the best one.
+    Candidate {
+        account: roboco_proto::AgentAccount,
+        recommended: bool,
+    },
+    /// A dead login the picker can revive in place (the existing login
+    /// flow, on the composer's account ring).
+    SignedOut {
+        account: roboco_proto::AgentAccount,
+    },
+}
+
+/// The picker's row model: the ranked candidates (best first, the first
+/// recommended) followed by the signed-out accounts. Pure.
+fn failover_rows(list: &roboco_proto::ResumeAccountCandidates) -> Vec<FailoverRow> {
+    let mut rows: Vec<FailoverRow> = list
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(ix, account)| FailoverRow::Candidate {
+            account: account.clone(),
+            recommended: ix == 0,
+        })
+        .collect();
+    rows.extend(
+        list.signed_out
+            .iter()
+            .map(|account| FailoverRow::SignedOut {
+                account: account.clone(),
+            }),
+    );
+    rows
+}
+
+/// The strip line for a failover outcome (ticket 09, view-model):
+/// `Switched` names the account the chat resumed on, `NoCandidates` says
+/// why nothing else was offered, `Failed` surfaces the reason (which also
+/// rides the composer's failure chip — see `switch_failover`). Pure.
+fn failover_outcome_notice(outcome: &roboco_proto::ResumeOnAccountOutcome) -> SharedString {
+    use roboco_proto::ResumeOnAccountOutcome as Outcome;
+    match outcome {
+        Outcome::Switched { account_email, .. } => {
+            let who = account_email.as_deref().unwrap_or("another account");
+            format!("Resumed on {who} — continuing where the chat left off.").into()
+        }
+        Outcome::NoCandidates => "No other account is available right now.".into(),
+        Outcome::Failed { reason } => reason.clone().into(),
+    }
+}
+
+/// The reset caption under one candidate row's usage meters (story 49):
+/// "session resets in 45m · week resets in 2h 05m" — the same phrasing the
+/// banner uses, one entry per shown window that knows its reset. Pure.
+fn candidate_reset_caption(
+    account: &roboco_proto::AgentAccount,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let resets: Vec<String> = account
+        .usage_windows
+        .iter()
+        .take(2)
+        .filter_map(|window| {
+            window.resets_at.map(|at| {
+                format!(
+                    "{} {}",
+                    window.label.to_lowercase(),
+                    format_limit_reset(at.timestamp_millis(), now)
+                )
+            })
+        })
+        .collect();
+    (!resets.is_empty()).then(|| resets.join(" · "))
+}
+
 /// The Changes pane's trash button flow: the confirmation the shell shows on
 /// click, or the failure card after the RPC rejects the discard.
 #[derive(Debug, Clone)]
@@ -1691,6 +1800,10 @@ pub struct Shell {
     appearance_settings_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
     chat_menu: popover::Popup<ChatMenuState>,
+    /// "Resume on another account" (orchestration v2, ticket 09): the
+    /// Limited banner's account failover — the engine-ranked candidates
+    /// for the banner's chat, the picker popover, and the switch outcome.
+    failover: FailoverState,
     /// The chat title being edited in place on its row.
     chat_rename: Option<ChatRename>,
     /// Chat id awaiting delete confirmation.
@@ -2114,6 +2227,7 @@ impl Shell {
             files_settings_sub: None,
             appearance_settings_sub: None,
             chat_menu: popover::Popup::default(),
+            failover: FailoverState::default(),
             chat_rename: None,
             delete_confirm: None,
             discard_working_tree: None,
@@ -4351,6 +4465,342 @@ impl Shell {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.chat_menu);
             cx.notify();
         }
+    }
+
+    // ── Resume on another account (orchestration v2, ticket 09) ─────────────
+
+    /// Load or refresh the banner's candidate list through the engine's
+    /// ranking RPC. Cheap enough to call from the strip's render: a chat
+    /// change or an expired TTL re-loads, everything else is a no-op. A
+    /// load failure clears the cache so the next pass retries — the banner
+    /// keeps offering plain Resume either way.
+    fn track_failover(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let fresh = self.failover.loaded.as_ref().is_some_and(|(chat, at, _)| {
+            chat == chat_id && at.elapsed() < FAILOVER_LIST_TTL
+        });
+        if fresh || self.failover.loading.as_deref() == Some(chat_id) {
+            return;
+        }
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok()
+        else {
+            return;
+        };
+        self.failover.loading = Some(chat_id.to_string());
+        let chat = chat_id.to_string();
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .call(
+                    methods::LIST_RESUME_ACCOUNT_CANDIDATES,
+                    serde_json::json!({ "chatId": chat }),
+                )
+                .await
+                .and_then(|value| {
+                    serde_json::from_value::<roboco_proto::ResumeAccountCandidates>(value)
+                        .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
+                });
+            this.update(cx, |shell, cx| {
+                shell.failover.loading = None;
+                match result {
+                    Ok(candidates) => {
+                        shell.failover.loaded =
+                            Some((chat, std::time::Instant::now(), candidates));
+                    }
+                    Err(err) => {
+                        shell.failover.loaded = None;
+                        tracing::debug!(error = %err, "failover candidates failed to load");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The banner's candidate list for `chat_id`, when it is loaded and
+    /// offers something: healthy candidates, signed-out rows to sign back
+    /// in (stories 47/50), or both. `None` while a load is in flight, or
+    /// when both lists are empty — then only Resume (and Resume at reset)
+    /// remain and the chip hides.
+    fn failover_list(&self, chat_id: &str) -> Option<&roboco_proto::ResumeAccountCandidates> {
+        let (chat, _, list) = self.failover.loaded.as_ref()?;
+        (chat == chat_id
+            && (!list.candidates.is_empty() || !list.signed_out.is_empty()))
+        .then_some(list)
+    }
+
+    /// Open (or close) the failover picker. Opening re-ranks: usage meters
+    /// move as turns run, so the list re-loads on every open.
+    fn toggle_failover(&mut self, cx: &mut Context<Self>) {
+        if self.failover.popup.take_press_was_open()
+            || self.failover.popup.is_open()
+        {
+            self.close_failover(cx);
+            return;
+        }
+        if let Some(chat) = self.state.read(cx).selected_chat.clone() {
+            self.failover.loaded = self
+                .failover
+                .loaded
+                .take_if(|(loaded, _, _)| *loaded != chat);
+            self.failover.popup.open(());
+            self.track_failover(&chat, cx);
+            cx.notify();
+        }
+    }
+
+    fn close_failover(&mut self, cx: &mut Context<Self>) {
+        if self.failover.popup.begin_close() {
+            popover::reap_popup(cx, |shell: &mut Self| &mut shell.failover.popup);
+        }
+        cx.notify();
+    }
+
+    /// Run the failover for `account_id` (the engine probes it first, then
+    /// activates, retires the warm runtime and dispatches the
+    /// continuation). The reply becomes the strip's outcome line; a FAILED
+    /// outcome also rides the composer's failure chip so it survives the
+    /// banner disappearing.
+    fn switch_failover(&mut self, account_id: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
+        if self.failover.switching.is_some() {
+            return;
+        }
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok()
+        else {
+            return;
+        };
+        self.failover.switching = Some(chat.clone());
+        self.failover.notice = None;
+        let params = serde_json::json!({ "chatId": chat, "accountId": account_id });
+        cx.spawn(async move |this, cx| {
+            let result = engine
+                .call(methods::RESUME_ON_ANOTHER_ACCOUNT, params)
+                .await
+                .and_then(|value| {
+                    serde_json::from_value::<roboco_proto::ResumeOnAccountOutcome>(value)
+                        .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
+                });
+            this.update(cx, |shell, cx| {
+                shell.failover.switching = None;
+                shell.close_failover(cx);
+                let composer = shell.composer.clone();
+                let notice = match &result {
+                    Ok(outcome) => failover_outcome_notice(outcome),
+                    Err(err) => format!("Could not switch account: {err}").into(),
+                };
+                shell.failover.notice = Some(notice);
+                // A FAILED switch also rides the composer's failure chip: it
+                // survives the banner disappearing (the chip is chat-scoped
+                // and dismissable) while the strip line is transient.
+                let failure: Option<SharedString> = match &result {
+                    Ok(roboco_proto::ResumeOnAccountOutcome::Failed { reason }) => {
+                        Some(format!("Could not switch account: {reason}").into())
+                    }
+                    Err(err) => Some(format!("Could not switch account: {err}").into()),
+                    _ => None,
+                };
+                if let Some(failure) = failure {
+                    composer.update(cx, |composer, cx| {
+                        composer.show_error(failure, cx);
+                    });
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The failover picker popover: the ranked candidate rows (usage meters
+    /// with their reset times, the recommended one first), the signed-out
+    /// accounts with a "Sign in again" action (stories 47/50), and the
+    /// all-chats warning the spec asks the switch to state.
+    fn failover_card(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = Theme::of(cx).for_popup();
+        let now = Utc::now();
+        let chat = self.state.read(cx).selected_chat.clone();
+        let switching = self.failover.switching.is_some();
+        let list = chat
+            .as_deref()
+            .and_then(|chat| self.failover_list(chat))
+            .cloned();
+        let loading = self.failover.loading.is_some();
+        let harness = list
+            .as_ref()
+            .map(|list| list.harness)
+            .unwrap_or(roboco_proto::HarnessId::ClaudeCode);
+        let rows = list.as_ref().map(failover_rows).unwrap_or_default();
+        let title: SharedString = match harness {
+            roboco_proto::HarnessId::Codex => "Resume on another Codex account".into(),
+            _ => "Resume on another Claude account".into(),
+        };
+        popover::popover_card(&theme)
+            .w(px(400.0))
+            .flex()
+            .flex_col()
+            .child(popover::menu_heading(&theme, &title))
+            .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                let (account, recommended, signed_out) = match row {
+                    FailoverRow::Candidate {
+                        account,
+                        recommended,
+                    } => (account, recommended, false),
+                    FailoverRow::SignedOut { account } => (account, false, true),
+                };
+                let email: SharedString = account
+                    .email
+                    .clone()
+                    .or_else(|| account.display_name.clone())
+                    .unwrap_or_else(|| "Unknown account".into())
+                    .into();
+                let mut meta: Vec<gpui::AnyElement> = account
+                    .plan_label
+                    .iter()
+                    .map(|plan| {
+                        div()
+                            .child(SharedString::from(plan.clone()))
+                            .into_any_element()
+                    })
+                    .collect();
+                if recommended {
+                    meta.push(
+                        div()
+                            .text_color(theme.accent)
+                            .child(SharedString::from("Recommended"))
+                            .into_any_element(),
+                    );
+                }
+                if signed_out {
+                    // The mark that keeps a dead login from reading healthy
+                    // (ticket 08) — the row never switches, it signs in.
+                    meta.push(
+                        div()
+                            .text_color(theme.danger)
+                            .child(SharedString::from("Signed out"))
+                            .into_any_element(),
+                    );
+                }
+                let switch_to = account.id.clone();
+                let sign_in = account.clone();
+                popover::menu_row(&theme, false, format!("failover-row-{ix}"))
+                    .id(("failover-row", ix))
+                    .when(switching, |row| row.opacity(0.6))
+                    // A signed-out row is listed, never selected.
+                    .when(signed_out, |row| row.cursor_default())
+                    .when(!signed_out, |row| {
+                        row.on_click(cx.listener(move |shell, _, _, cx| {
+                            if shell.failover.switching.is_none() {
+                                shell.switch_failover(&switch_to, cx);
+                            }
+                        }))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(email),
+                            )
+                            .when(!meta.is_empty(), |el| {
+                                el.child(crate::settings::widgets::meta_line(
+                                    &theme, meta,
+                                ))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap(px(2.0))
+                            .children(
+                                account
+                                    .usage_windows
+                                    .iter()
+                                    .take(2)
+                                    .map(|window| {
+                                        crate::settings::accounts::render_usage_meter(
+                                            window, &theme,
+                                        )
+                                    }),
+                            )
+                            // The windows' reset times (story 49): the
+                            // same "resets in …" phrasing the banner
+                            // uses, one per shown meter.
+                            .children(
+                                candidate_reset_caption(account, now).map(|caption| {
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(caption))
+                                }),
+                            )
+                            // The signed-out row's own action (story 47): the
+                            // same login flow the account ring drives, so
+                            // the flow's progress shows right below the
+                            // picker where the user already looks.
+                            .when(signed_out, |el| {
+                                el.child(
+                                    div()
+                                        .id(("failover-sign-in", ix))
+                                        .mt(px(2.0))
+                                        .px(px(8.0))
+                                        .py(px(3.0))
+                                        .rounded(px(6.0))
+                                        .bg(theme.accent.opacity(0.14))
+                                        .text_size(px(11.5))
+                                        .text_color(theme.accent)
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|_, _, _, cx| {
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .on_click(cx.listener(move |shell, _, _, cx| {
+                                            shell.composer.update(cx, |composer, cx| {
+                                                composer.sign_in_account(&sign_in, cx);
+                                            });
+                                        }))
+                                        .child(SharedString::from("Sign in again")),
+                                )
+                            }),
+                    )
+            }))
+            .when(loading, |el| {
+                el.child(
+                    div()
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from("Checking accounts…")),
+                )
+            })
+            // The all-chats warning (spec story 53): switching is per
+            // HARNESS, not per chat.
+            .child(
+                div()
+                    .mx(px(8.0))
+                    .my(px(6.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .rounded(px(6.0))
+                    .bg(theme.wash(0.06))
+                    .text_size(px(11.5))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(
+                        "Switching applies to every chat on this harness, not just this one.",
+                    )),
+            )
     }
 
     fn open_chat_copy_menu(&mut self, cx: &mut Context<Self>) {
@@ -9557,6 +10007,23 @@ impl Shell {
     fn render_status_strip(&mut self, composer_width: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
+        // "Resume on another account" (ticket 09): keep the banner's
+        // candidate list warm BEFORE the state borrow — a no-op unless the
+        // selected chat reads as Limited on a switchable harness.
+        if let Some(chat) = self.state.read(cx).selected_chat.clone() {
+            let limited = self.state.read(cx).session_for(&chat).is_some_and(|s| {
+                s.status == roboco_proto::SessionStatus::Errored
+                    && s.limit.as_ref().is_some_and(|limit| {
+                        matches!(
+                            limit.harness,
+                            roboco_proto::HarnessId::ClaudeCode | roboco_proto::HarnessId::Codex
+                        )
+                    })
+            });
+            if limited {
+                self.track_failover(&chat, cx);
+            }
+        }
         let state = self.state.read(cx);
 
         // Keep notices aligned with the current composer width, including
@@ -9633,6 +10100,31 @@ impl Shell {
                     }
                     (None, _) => "Usage limit reached".into(),
                 };
+                // "Resume on another account" (ticket 09) — only for the
+                // harnesses whose logins switch. The chip hides when the
+                // engine's list offers nothing: no healthy candidate AND no
+                // signed-out row to sign back in (every other account
+                // limited, an API key, or in use) — then only Resume (and,
+                // with ticket 07, Resume at reset) remains.
+                let has_candidates = limit.as_ref().is_some_and(|limit| {
+                    matches!(
+                        limit.harness,
+                        roboco_proto::HarnessId::ClaudeCode | roboco_proto::HarnessId::Codex
+                    )
+                }) && self.failover_list(&chat_id).is_some();
+                let notice = self.failover.notice.clone();
+                let popup_open = self.failover.popup.is_open();
+                let failover_menu = popup_open.then(|| {
+                    self.failover_card(cx)
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.close_failover(cx);
+                        }))
+                        .into_any_element()
+                });
+                let press_notes_trigger = cx.listener(|this, _, _, _| {
+                    this.failover.popup.note_trigger_press();
+                });
+                let toggle = cx.listener(|this, _, _, cx| this.toggle_failover(cx));
                 // Resume at reset is offered only when there is a reset time
                 // still ahead to wait for; a due or unknown reset leaves the
                 // honest offer as plain Resume.
@@ -9729,6 +10221,46 @@ impl Shell {
                             ))
                             .child(SharedString::from("Resume")),
                     )
+                    .when(has_candidates, |el| {
+                        el.child(
+                            div()
+                                .id("limited-failover")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_mouse_down(gpui::MouseButton::Left, press_notes_trigger)
+                                .on_click(toggle)
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Continue on another account of this harness",
+                                ))
+                                .child(SharedString::from("Resume on another account"))
+                                .when_some(failover_menu, |chip, menu| {
+                                    chip.child(popover::anchored_menu_below_end(
+                                        "limited-failover-menu",
+                                        menu,
+                                        self.failover.popup.closing_since(),
+                                    ))
+                                }),
+                        )
+                    })
+                    .when_some(notice, |el, notice| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.warning_muted)
+                                .child(notice),
+                        )
+                    })
                     // CONTINUE ON ANOTHER HARNESS (orchestration v2 ticket
                     // 25): a separate action — the escape hatch spec story
                     // 55 asks for. It opens a small dialog listing the
@@ -11816,6 +12348,145 @@ mod tests {
             let chat = chat_with_path(cwd, None);
             assert_eq!(chat_copy_path(&chat), None);
         }
+    }
+
+    /// The failover picker's row model (ticket 09, stories 47/50): the
+    /// ranked candidates lead (the first recommended), the signed-out
+    /// accounts follow as Sign-in-again rows — listed, never switched to —
+    /// and a list offering nothing renders nothing.
+    #[test]
+    fn failover_rows_list_candidates_first_then_signed_out_accounts() {
+        fn account(id: &str, state: roboco_proto::AgentSignInState) -> roboco_proto::AgentAccount {
+            let mut row: roboco_proto::AgentAccount = serde_json::from_value(serde_json::json!({
+                "id": id, "harness": "claude-code",
+                "email": format!("{id}@example.com"),
+                "planLabel": null, "active": false, "switchable": true,
+            }))
+            .unwrap();
+            row.sign_in_state = state;
+            row
+        }
+        let list = roboco_proto::ResumeAccountCandidates {
+            chat_id: "chat-9".into(),
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            limited_account_id: Some("slot-alice".into()),
+            candidates: vec![
+                account("slot-carol", roboco_proto::AgentSignInState::SignedIn),
+                account("slot-bob", roboco_proto::AgentSignInState::SignedIn),
+            ],
+            signed_out: vec![
+                account("slot-dave", roboco_proto::AgentSignInState::SignedOut),
+                account("slot-erin", roboco_proto::AgentSignInState::SignedOut),
+            ],
+        };
+        let rows = failover_rows(&list);
+        assert_eq!(rows.len(), 4);
+        // Candidates first, rank order, the best one recommended.
+        assert!(matches!(
+            &rows[0],
+            FailoverRow::Candidate { account, recommended }
+                if account.id == "slot-carol" && *recommended
+        ));
+        assert!(matches!(
+            &rows[1],
+            FailoverRow::Candidate { account, recommended }
+                if account.id == "slot-bob" && !*recommended
+        ));
+        // The signed-out accounts follow — never candidates, never the
+        // limited account itself.
+        assert!(matches!(
+            &rows[2],
+            FailoverRow::SignedOut { account } if account.id == "slot-dave"
+        ));
+        assert!(matches!(
+            &rows[3],
+            FailoverRow::SignedOut { account } if account.id == "slot-erin"
+        ));
+        // A list offering nothing renders nothing.
+        let empty = roboco_proto::ResumeAccountCandidates {
+            candidates: Vec::new(),
+            signed_out: Vec::new(),
+            ..list
+        };
+        assert!(failover_rows(&empty).is_empty());
+    }
+
+    /// The failover outcome lines (ticket 09, checklist 6): the switch names
+    /// the account it resumed on, no-candidates explains itself, a failure
+    /// surfaces its reason verbatim (the failure chip prefixes it).
+    #[test]
+    fn failover_outcome_notice_names_the_switch_and_its_failures() {
+        use roboco_proto::ResumeOnAccountOutcome as Outcome;
+        let switched = Outcome::Switched {
+            account_id: "slot-carol".into(),
+            account_email: Some("carol@example.com".into()),
+        };
+        assert_eq!(
+            failover_outcome_notice(&switched).as_ref(),
+            "Resumed on carol@example.com — continuing where the chat left off."
+        );
+        // No email on the row: still names what happened.
+        let anonymous = Outcome::Switched {
+            account_id: "slot-x".into(),
+            account_email: None,
+        };
+        assert_eq!(
+            failover_outcome_notice(&anonymous).as_ref(),
+            "Resumed on another account — continuing where the chat left off."
+        );
+        assert_eq!(
+            failover_outcome_notice(&Outcome::NoCandidates).as_ref(),
+            "No other account is available right now."
+        );
+        assert_eq!(
+            failover_outcome_notice(&Outcome::Failed {
+                reason: "the slot vanished".into()
+            })
+            .as_ref(),
+            "the slot vanished"
+        );
+    }
+
+    /// The candidate rows' reset caption (story 49): the shown windows'
+    /// reset times in the banner's own phrasing, one per meter that knows
+    /// its reset; nothing when the meters carry no resets.
+    #[test]
+    fn candidate_reset_caption_lists_the_windows_reset_times() {
+        let now = Utc::now();
+        let account = roboco_proto::AgentAccount {
+            usage_windows: vec![
+                roboco_proto::AgentUsageWindow {
+                    label: "Session".into(),
+                    used_fraction: 0.4,
+                    resets_at: Some(now + chrono::TimeDelta::minutes(45)),
+                },
+                roboco_proto::AgentUsageWindow {
+                    label: "Week".into(),
+                    used_fraction: 0.1,
+                    resets_at: Some(now + chrono::TimeDelta::hours(2)),
+                },
+                roboco_proto::AgentUsageWindow {
+                    label: "Month".into(),
+                    used_fraction: 0.0,
+                    resets_at: None,
+                },
+            ],
+            ..serde_json::from_value(serde_json::json!({
+                "id": "slot-1", "harness": "claude-code", "email": null,
+                "planLabel": null, "active": false, "switchable": true,
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            candidate_reset_caption(&account, now).as_deref(),
+            Some("session resets in 45m · week resets in 2h")
+        );
+        // No resets known: no caption — the meters still show.
+        let bare = roboco_proto::AgentAccount {
+            usage_windows: vec![],
+            ..account
+        };
+        assert_eq!(candidate_reset_caption(&bare, now), None);
     }
 
     #[test]

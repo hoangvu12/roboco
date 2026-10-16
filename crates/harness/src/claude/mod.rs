@@ -103,6 +103,34 @@ fn mcp_config_arg(mcp: &roboco_proto::McpServer) -> String {
     .to_string()
 }
 
+/// Whether the CLI's own session store knows `session_id` — one
+/// `<config>/projects/*/{session_id}.jsonl` file (the same walk
+/// `Normalizer::for_resume` restores subagent chips from). A resume the
+/// CLI would refuse is what triggers the account-failover fallback
+/// (ticket 09): the driver starts a fresh session with the engine's
+/// budgeted history instead of passing an id `--resume` will reject.
+async fn session_known(config_root: &std::path::Path, session_id: &str) -> bool {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return false;
+    }
+    let config_root = config_root.to_owned();
+    let session_id = session_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Ok(projects) = std::fs::read_dir(config_root.join("projects")) else {
+            return false;
+        };
+        projects
+            .flatten()
+            .any(|project| project.path().join(format!("{session_id}.jsonl")).exists())
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// The `--model` value: the 1M context window is selected via a model-id
 /// suffix (`sonnet[1m]`), exactly how the CLI itself does it.
 fn model_arg(request: &RunRequest) -> Option<String> {
@@ -578,11 +606,33 @@ impl Harness for ClaudeHarness {
 impl ClaudeHarness {
     async fn run_with_mode(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         controls: RunControls,
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
+        let config_root = crate::model_context::root(
+            "CLAUDE_CONFIG_DIR",
+            crate::executable::home_or_current_dir().join(".claude"),
+        );
+        // A resume the CLI will REFUSE — its session store has no such id —
+        // starts a fresh session instead when the engine attached a
+        // fallback history (the account-failover continuation, ticket 09):
+        // the budgeted transcript rides in front of the prompt, so the
+        // fresh session still knows the conversation. Plain resumes carry
+        // no fallback and keep today's behavior: pass `--resume` and let
+        // the CLI report the bad id itself.
+        if let (Some(resume), Some(history)) =
+            (request.resume.clone(), request.resume_fallback_history.clone())
+            && !session_known(&config_root, &resume).await
+        {
+            tracing::debug!(
+                target: "roboco_harness::claude",
+                "resume of {resume} has no session file; starting fresh with the budgeted history"
+            );
+            request.resume = None;
+            request.prompt = format!("{history}{}", request.prompt);
+        }
         let mut cmd = self.build_command(&exe, &request);
         if title_only {
             cmd.args([
@@ -603,11 +653,7 @@ impl ClaudeHarness {
             cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
         }
         let normalizer = if let Some(session_id) = &request.resume {
-            let config = crate::model_context::root(
-                "CLAUDE_CONFIG_DIR",
-                crate::executable::home_or_current_dir().join(".claude"),
-            );
-            Normalizer::for_resume(&config, session_id).await
+            Normalizer::for_resume(&config_root, session_id).await
         } else {
             Normalizer::new()
         };

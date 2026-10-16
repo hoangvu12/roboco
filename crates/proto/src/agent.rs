@@ -238,6 +238,16 @@ pub struct RunRequest {
     pub auto_approve: bool,
     /// Harness-native session id to resume, if any.
     pub resume: Option<String>,
+    /// The budgeted transcript (ticket 01's builder) delivered in front of
+    /// the prompt ONLY when the harness refuses the native resume of
+    /// `resume` and starts a fresh session instead (account failover,
+    /// orchestration v2 ticket 09: cross-account resumes usually keep working,
+    /// but a session the harness will not continue must still carry the chat's
+    /// prior context). Only the engine sets it — a plain resume carries none,
+    /// and a resumed session that never refuses never sees it. Additive +
+    /// serde-defaulted for wire compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_fallback_history: Option<String>,
     /// A native fork to perform instead of a plain resume or fresh start
     /// (t3-orchestration-v2 ticket 17): the driver forks the source provider
     /// session at `last_turn` (inclusive) — Codex `thread/fork {threadId,
@@ -1056,6 +1066,30 @@ mod tests {
         let bare = serde_json::json!({ "sessionId": "s", "lastTurn": "t" });
         let fork: ProviderFork = serde_json::from_value(bare).unwrap();
         assert_eq!(fork.fallback_history, None);
+    }
+
+    #[test]
+    fn run_request_resume_fallback_history_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.resume_fallback_history.is_none());
+        // …and `None` serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("resumeFallbackHistory").is_none());
+        // The engine attaches the budgeted transcript only to a failover's
+        // continuation: it rides beside `resume`, camelCased.
+        let req = RunRequest {
+            resume: Some("sess-42".into()),
+            resume_fallback_history: Some("<transcript>…".into()),
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["resume"], "sess-42");
+        assert_eq!(json["resumeFallbackHistory"], "<transcript>…");
+        let round: RunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round.resume, req.resume);
+        assert_eq!(round.resume_fallback_history, req.resume_fallback_history);
     }
 
     #[test]

@@ -8639,6 +8639,7 @@ impl Composer {
                         auto_approve: false,
                         resume: None,
                         provider_fork: None,
+                        resume_fallback_history: None,
                         attachments: attachment_paths,
                         worktree: run_worktree.clone(),
                         mcp: None,
@@ -8837,6 +8838,22 @@ impl Composer {
             return;
         };
         self.interrupt_chat(chat_id, cx);
+    }
+
+    /// Start the "Sign in again" flow for one harness account from outside
+    /// the footer's account ring — the Limited banner's failover picker
+    /// (ticket 09, stories 47/50) lists signed-out accounts with this
+    /// action. The SAME login flow ticket 08's switcher drives, on the SAME
+    /// `AccountUsage` entity, so the ring's popover shows the progress right
+    /// where the user already looks (browser flow, paste-code fallback and
+    /// all).
+    pub(crate) fn sign_in_account(
+        &mut self,
+        account: &roboco_proto::AgentAccount,
+        cx: &mut Context<Self>,
+    ) {
+        self.account_usage
+            .update(cx, |usage, cx| usage.sign_in_again(account, cx));
     }
 
     /// **Resume** on a Limited chat (orchestration v2): send the fixed

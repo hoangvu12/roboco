@@ -50,6 +50,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -866,6 +867,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     let assemble_real = || {
         EngineCore::assemble(

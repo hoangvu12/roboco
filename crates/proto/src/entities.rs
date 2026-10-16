@@ -1091,6 +1091,64 @@ pub struct AgentAccountsSnapshot {
     pub warnings: Vec<AgentAccountWarning>,
 }
 
+/// The ranked switch targets for one Limited chat's "Resume on another
+/// account" (orchestration v2, ticket 09): the cached harness accounts of
+/// the chat's harness, filtered and ranked by the engine's failover rules —
+/// switchable, not an API key, not signed out, not still limited, and not
+/// the account that hit the limit; lowest usage first, accounts sharing the
+/// limited account's org or workspace ranked lower. The first entry is the
+/// recommended one. Signed-out accounts ride `signed_out` — the picker
+/// lists them with a "Sign in again" action instead of a switch (stories
+/// 47/50). Both lists empty leaves only Resume (and Resume at reset).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeAccountCandidates {
+    pub chat_id: String,
+    pub harness: HarnessId,
+    /// The account the chat's limit hit (the record's account id, else the
+    /// harness's active login) — named so the picker can say what it is
+    /// switching FROM. Never a candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited_account_id: Option<String>,
+    /// The candidate rows in rank order, best first. Usage windows and
+    /// limited-until ride the rows themselves.
+    pub candidates: Vec<AgentAccount>,
+    /// The harness's OTHER accounts that are signed out (ticket 08's mark):
+    /// never switch targets, but the picker lists them with a "Sign in
+    /// again" action (the existing login flow) so a dead login can be
+    /// revived in place — stories 47 and 50. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signed_out: Vec<AgentAccount>,
+}
+
+/// The synchronous outcome of "Resume on another account" (ticket 09): the
+/// account switch, warm-runtime retirement and continuation dispatch the
+/// engine performed — or why it could not. The continuation turn's own
+/// result arrives through the chat's status; a signed-out failure after the
+/// switch is handled by the engine (next candidate, else the previous
+/// account restored) before the chat settles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ResumeOnAccountOutcome {
+    /// The switch landed and the continuation was dispatched: the chat
+    /// resumes its harness session under `account_id`.
+    Switched {
+        account_id: String,
+        /// The row's email (or display name) — the "Resumed on …" label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_email: Option<String>,
+    },
+    /// No healthy candidate: every other account of the harness is limited,
+    /// signed out, an API key, or unswitchable. Only Resume at reset remains.
+    NoCandidates,
+    /// The switch itself failed (the chosen account vanished, the probe
+    /// failed hard, the activation was refused); the previous account is
+    /// untouched.
+    Failed {
+        reason: String,
+    },
+}
+
 /// `InstallHarness` / `CancelInstall` request — the explicit, user-requested
 /// install (or its cancellation) for one harness on the engine this call
 /// reaches. Catalog probes never install; only this request does.
@@ -1739,6 +1797,119 @@ mod tests {
             serde_json::from_value::<AgentAccount>(serde_json::to_value(&account).unwrap())
                 .unwrap(),
             account
+        );
+    }
+
+    /// The failover candidates and the switch outcome (ticket 09) ride the
+    /// wire additively: camelCase field names, a tagged outcome, `None`
+    /// optionals serializing away, and legacy payloads (no limited account)
+    /// parsing.
+    #[test]
+    fn resume_account_candidates_and_outcome_round_trip() {
+        let account = AgentAccount {
+            id: "slot-2".into(),
+            harness: HarnessId::Codex,
+            email: Some("b@example.com".into()),
+            plan_label: Some("Plus".into()),
+            active: false,
+            usage_windows: vec![AgentUsageWindow {
+                label: "Week".into(),
+                used_fraction: 0.2,
+                resets_at: None,
+            }],
+            usage_fetched_at: None,
+            usage_error: None,
+            sign_in_state: AgentSignInState::SignedIn,
+            limited_until: None,
+            display_name: None,
+            organization: None,
+            auth_kind: Some(AgentAuthKind::Oauth),
+            switchable: true,
+            saved_at: None,
+            provider: None,
+        };
+        let candidates = ResumeAccountCandidates {
+            chat_id: "chat-9".into(),
+            harness: HarnessId::Codex,
+            limited_account_id: Some("slot-1".into()),
+            candidates: vec![account.clone()],
+            signed_out: Vec::new(),
+        };
+        let value = serde_json::to_value(&candidates).unwrap();
+        assert_eq!(value["chatId"], "chat-9");
+        assert_eq!(value["harness"], "codex");
+        assert_eq!(value["limitedAccountId"], "slot-1");
+        assert_eq!(value["candidates"][0]["id"], "slot-2");
+        assert_eq!(
+            serde_json::from_value::<ResumeAccountCandidates>(value).unwrap(),
+            candidates
+        );
+        // No limited account on record: the optional serializes away.
+        let bare = ResumeAccountCandidates {
+            limited_account_id: None,
+            candidates: Vec::new(),
+            ..candidates.clone()
+        };
+        let value = serde_json::to_value(&bare).unwrap();
+        assert!(value.get("limitedAccountId").is_none());
+
+        // The signed-out rows the picker offers "Sign in again" for ride
+        // their own additive list, camelCased, serializing away when empty.
+        let mut signed_out = account.clone();
+        signed_out.id = "slot-3".into();
+        signed_out.sign_in_state = AgentSignInState::SignedOut;
+        let with_signed_out = ResumeAccountCandidates {
+            signed_out: vec![signed_out.clone()],
+            ..candidates.clone()
+        };
+        let value = serde_json::to_value(&with_signed_out).unwrap();
+        assert_eq!(value["signedOut"][0]["id"], "slot-3");
+        assert_eq!(value["signedOut"][0]["signInState"], "signed-out");
+        assert_eq!(
+            serde_json::from_value::<ResumeAccountCandidates>(value).unwrap(),
+            with_signed_out
+        );
+        // An empty signed-out list is omitted, not null — older payloads
+        // parse with nothing to sign in.
+        let value = serde_json::to_value(&candidates).unwrap();
+        assert!(value.get("signedOut").is_none());
+        let legacy = serde_json::json!({
+            "chatId": "chat-9",
+            "harness": "codex",
+            "candidates": [],
+        });
+        let legacy: ResumeAccountCandidates = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.signed_out.is_empty());
+
+        let switched = ResumeOnAccountOutcome::Switched {
+            account_id: "slot-2".into(),
+            account_email: Some("b@example.com".into()),
+        };
+        let value = serde_json::to_value(&switched).unwrap();
+        assert_eq!(value["type"], "switched");
+        assert_eq!(value["accountId"], "slot-2");
+        assert_eq!(value["accountEmail"], "b@example.com");
+        assert_eq!(
+            serde_json::from_value::<ResumeOnAccountOutcome>(value).unwrap(),
+            switched
+        );
+        assert_eq!(
+            serde_json::to_value(ResumeOnAccountOutcome::NoCandidates).unwrap(),
+            serde_json::json!({"type": "noCandidates"})
+        );
+        let failed = ResumeOnAccountOutcome::Failed {
+            reason: "the slot vanished".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(failed.clone()).unwrap(),
+            serde_json::json!({"type": "failed", "reason": "the slot vanished"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ResumeOnAccountOutcome>(
+                serde_json::to_value(&failed).unwrap()
+            )
+            .unwrap(),
+            failed
         );
     }
 

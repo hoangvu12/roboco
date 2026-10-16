@@ -152,6 +152,7 @@ impl Suite {
             worktree: None,
             resume: None,
             provider_fork: None,
+            resume_fallback_history: None,
         }
     }
 
@@ -1217,6 +1218,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         worktree: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

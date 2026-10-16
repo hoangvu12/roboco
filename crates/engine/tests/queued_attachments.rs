@@ -133,6 +133,7 @@ fn run_payload(message_id: &str, pending_ref: &str) -> SessionCommandPayload {
             mcp: None,
             resume: None,
             provider_fork: None,
+            resume_fallback_history: None,
         },
         message_id: message_id.into(),
     }

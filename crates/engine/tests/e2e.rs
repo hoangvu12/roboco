@@ -40,6 +40,7 @@ fn run_request(prompt: &str) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -2451,6 +2452,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         attachments: vec![path],
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
         worktree: None,
         mcp: None,
     };

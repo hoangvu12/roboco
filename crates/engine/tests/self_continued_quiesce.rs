@@ -61,6 +61,7 @@ fn run_request(prompt: &str) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

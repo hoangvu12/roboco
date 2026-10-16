@@ -244,6 +244,7 @@ fn queue_run(
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     core.doc_host
         .queue_command(

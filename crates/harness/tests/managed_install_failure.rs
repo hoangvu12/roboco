@@ -61,6 +61,7 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
 
     let err = match harness.run(request, controls).await {

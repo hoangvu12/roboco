@@ -164,6 +164,7 @@ fn run_request(prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

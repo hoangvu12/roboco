@@ -302,7 +302,9 @@ impl AccountUsage {
     /// Start the existing login flow for a signed-out account's provider
     /// group — the same `StartAgentLogin` Settings → Accounts runs. The
     /// browser opens at once; the card shows the flow until it lands.
-    fn sign_in_again(&mut self, account: &AgentAccount, cx: &mut Context<Self>) {
+    /// `pub(crate)` so the Limited banner's failover picker (ticket 09)
+    /// drives the same flow through the composer's account ring.
+    pub(crate) fn sign_in_again(&mut self, account: &AgentAccount, cx: &mut Context<Self>) {
         let Some(engine) =
             crate::request_routing::device_target(self.state.read(cx), self.target.as_deref()).ok()
         else {

@@ -294,6 +294,7 @@ async fn exercise_projectless(command_first: bool) {
                         mcp: None,
                         resume: None,
                         provider_fork: None,
+                        resume_fallback_history: None,
                     },
                     message_id: message_id.into(),
                 },

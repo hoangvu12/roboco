@@ -404,6 +404,20 @@ case "$turnline" in
   emit '{"method":"turn/completed","params":{"threadId":"th-fresh","turn":{"id":"t-f2","status":"completed"}}}'
   ;;
 
+*scenario:resume-fallback*)
+  # A REFUSED RESUME (ticket 09's account-failover continuation) fell back
+  # to a fresh thread: the input must carry the engine's budgeted history
+  # in front of the user message, exactly like the refused fork.
+  has "$turnline" '"threadId":"th-fresh"' || { fail_turn "$tid" "turn not on the fresh thread"; exit 0; }
+  for want in 'PINEAPPLE' 'scenario:resume-fallback'; do
+    has "$turnline" "$want" || { fail_turn "$tid" "fallback prompt missing: $want"; exit 0; }
+  done
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-rf\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-fresh","turn":{"id":"t-rf"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-fresh","itemId":"m1","delta":"resumed with history"}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-fresh","turn":{"id":"t-rf","status":"completed"}}}'
+  ;;
+
 # NOTE: steer-race before steer — `case` takes the first matching glob.
 *scenario:steer-race*)
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"

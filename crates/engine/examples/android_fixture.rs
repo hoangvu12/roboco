@@ -579,6 +579,7 @@ fn seed_request(repo: &Path, chat: &SeedChat) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

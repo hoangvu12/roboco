@@ -84,6 +84,14 @@ const LEGACY_NOTES: &[(&str, &str)] = &[
         "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
     ),
     (
+        "ResumeAccountCandidates",
+        "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
+    ),
+    (
+        "ResumeOnAccountOutcome",
+        "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
+    ),
+    (
         "AgentLoginStart",
         "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
     ),
@@ -193,6 +201,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::AgentAuthKind,
         roboco_proto::AgentSignInState,
         roboco_proto::AgentAccountsSnapshot,
+        roboco_proto::ResumeAccountCandidates,
+        roboco_proto::ResumeOnAccountOutcome,
         roboco_proto::AgentAccountWarning,
         roboco_proto::AgentLoginStart,
         roboco_proto::AgentLoginMode,

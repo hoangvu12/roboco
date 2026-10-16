@@ -31,8 +31,9 @@ use roboco_doc::{
 };
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, ScheduledResume, Session,
-    SessionLimit, SessionStatus, UserInputAnswer, UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ResumeAccountCandidates,
+    ResumeOnAccountOutcome, RunRequest, ScheduledResume, Session, SessionLimit,
+    SessionStatus, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -144,6 +145,14 @@ struct RunHandle {
     /// This runtime's provider session holds the fork's copied history (a
     /// side chat's bootstrap went out on its run or on one of its steers).
     fork_history_sent: Arc<std::sync::atomic::AtomicBool>,
+    /// The credential fingerprint of the harness login this runtime's
+    /// processes were launched under (account failover, orchestration v2
+    /// ticket 09): warm runtimes keep the token they started with, so a
+    /// dispatch whose fresh read of the live credentials differs never
+    /// routes into this runtime — it replaces it. `None` when the harness's
+    /// login is not fingerprinted (no account store, a Keychain login, a
+    /// harness roboco never reads).
+    credential_fingerprint: Option<String>,
     /// The parent chat this run's CURRENT turn owes a completion notice to
     /// (orchestration v2): set when the turn's starting message or a steer
     /// within it came from the notifying parent that created the chat,
@@ -335,6 +344,48 @@ impl SessionsEngine {
     /// and runs that fail signed-out mark the live login on them.
     pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
         *lock(&self.inner.agent_accounts) = Some(accounts);
+    }
+
+    /// The engine's harness-account store (crate-internal): the account
+    /// failover (orchestration v2, ticket 09) ranks, probes and switches
+    /// accounts on it, and every dispatch fingerprints the live login.
+    pub(crate) fn agent_accounts(&self) -> Option<crate::agent_accounts::AgentAccounts> {
+        lock(&self.inner.agent_accounts).clone()
+    }
+
+    /// The harness-native session a run of `chat_id` from `cwd` would
+    /// resume (crate-internal; the failover's continuation names it
+    /// explicitly so its fallback history can pair with it).
+    pub(crate) fn harness_session_to_resume(&self, chat_id: &str, cwd: &str) -> Option<String> {
+        self.inner.resume_for(chat_id, cwd)
+    }
+
+    /// The ranked switch targets for one Limited chat's "Resume on another
+    /// account" (orchestration v2, ticket 09): the cached harness accounts
+    /// of the chat's harness, best first, plus the harness's signed-out
+    /// rows (listed with a "Sign in again" offer — stories 47/50). Both
+    /// lists empty when every other account is limited, an API key, or
+    /// unswitchable — then only Resume at reset is offered.
+    pub async fn resume_account_candidates(
+        &self,
+        chat_id: &str,
+    ) -> Result<ResumeAccountCandidates, EngineError> {
+        crate::account_failover::candidates(self, chat_id).await
+    }
+
+    /// **Resume on another account** (ticket 09): rank the cached harness
+    /// accounts, probe the chosen one (or the best), activate it, retire the
+    /// chat's warm runtime, and queue the continuation — the same harness
+    /// session resumed with the continue prompt, the budgeted history
+    /// (ticket 01) riding as the fallback for a refused native resume. A
+    /// signed-out failure after the switch moves to the next candidate;
+    /// any other failure restores the previously active account.
+    pub async fn resume_on_another_account(
+        &self,
+        chat_id: &str,
+        chosen: Option<&str>,
+    ) -> Result<ResumeOnAccountOutcome, EngineError> {
+        crate::account_failover::resume_on_another_account(self, chat_id, chosen).await
     }
 
     /// Persist the Resume-at-reset store under `path`, loading anything
@@ -664,11 +715,29 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         roboco_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // The live login's fingerprint, fresh from the CLI store (no value
+        // when the harness's login is not fingerprinted). Compared against
+        // the warm runtime's stamp below: a runtime started under another
+        // login is never reused — it holds the old token in memory (ticket 09).
+        let live_login = self.inner.live_login_fingerprint(harness_id);
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
+            // A fingerprint mismatch (a switch the engine observed since this
+            // runtime launched) downgrades ANY route — including an in-place
+            // reconfiguration — to "replace the runtime": the warm process
+            // must not run the next turn on the old token.
+            let same_login = h.credential_fingerprint.as_deref().is_none_or(
+                |fingerprint| {
+                    live_login
+                        .as_deref()
+                        .is_none_or(|live| live == fingerprint)
+                },
+            );
             (
                 h.run_id.clone(),
                 h.steerable && !h.retiring.load(std::sync::atomic::Ordering::Acquire),
-                h.runtime_config.route(harness_id, &request),
+                h.runtime_config
+                    .route(harness_id, &request)
+                    .filter(|_| same_login),
                 h.steer_tx.clone(),
                 h.routed_steers.clone(),
                 h.fork_history_sent.clone(),
@@ -915,6 +984,10 @@ impl SessionsEngine {
                 pending_inputs,
                 routed_steers: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 fork_history_sent: fork_history_sent.clone(),
+                // Stamped at launch with the login the runtime's processes
+                // start under: later dispatches compare against a fresh read
+                // and replace this runtime when the login has changed.
+                credential_fingerprint: live_login.clone(),
                 notifiable: Mutex::new(
                     self.notifiable_parent_for(chat_id, origin_chat_id.as_deref()),
                 ),
@@ -1491,6 +1564,7 @@ impl SessionsEngine {
                             attachments: Vec::new(),
                             resume: None,
                             provider_fork: None,
+                            resume_fallback_history: None,
                             worktree: None,
                             mcp: None,
                         })
@@ -2185,6 +2259,16 @@ impl Inner {
 
     fn workspace(&self) -> Option<crate::workspace_host::WorkspaceHost> {
         self.doc_host().and_then(|host| host.workspace().cloned())
+    }
+
+    /// The harness login's current credential fingerprint, read fresh from
+    /// the CLI store (account failover, orchestration v2 ticket 09). `None`
+    /// when no account store is wired or the harness's login is not
+    /// file-readable — then no runtime is ever retired by fingerprint.
+    fn live_login_fingerprint(&self, harness: HarnessId) -> Option<String> {
+        lock(&self.agent_accounts)
+            .clone()
+            .and_then(|accounts| accounts.live_credentials_fingerprint(harness))
     }
 
     /// Sidebar freshness: push a message-persist preview into the chat's workspace row.
@@ -3105,10 +3189,17 @@ async fn drive_run(
                         // pasted prompt would get (Codex: file mentions), so a
                         // refused fork's fresh session reads a transcript as
                         // close to the native paste as the driver can deliver.
+                        // The resume fallback (ticket 09's account-failover
+                        // continuation) converts the same way.
                         if let Some(fork) = wire_request.provider_fork.as_mut()
                             && let Some(history) = fork.fallback_history.clone()
                         {
                             fork.fallback_history = Some(
+                                roboco_proto::invocation::harness_prompt(&history, harness_id),
+                            );
+                        }
+                        if let Some(history) = wire_request.resume_fallback_history.clone() {
+                            wire_request.resume_fallback_history = Some(
                                 roboco_proto::invocation::harness_prompt(&history, harness_id),
                             );
                         }
@@ -4743,6 +4834,7 @@ mod tests {
             auto_approve: true,
             resume: None,
             provider_fork: None,
+            resume_fallback_history: None,
             attachments: Vec::new(),
             worktree: None,
             mcp: None,

@@ -171,6 +171,7 @@ fn run_request(prompt: &str, harness: HarnessId) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

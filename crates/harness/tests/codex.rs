@@ -105,6 +105,7 @@ fn request(prompt: &str) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -855,6 +856,44 @@ async fn resume_falls_back_to_fresh_thread() {
         )),
         "fresh thread expected: {events:?}"
     );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-fresh".into()),
+        })
+    );
+}
+
+/// A refused resume with the engine's budgeted fallback (ticket 09's
+/// account-failover continuation): the fresh thread's first turn carries
+/// the history in front of the user message — the fake fails the turn
+/// unless both reach the input.
+#[tokio::test]
+async fn a_refused_resume_falls_back_with_the_budgeted_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:resume-fallback");
+    req.resume = Some("resume-fail".into());
+    req.resume_fallback_history = Some(
+        "Continue this side chat using the following prior transcript as context.\n\
+         <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+            .into(),
+    );
+    let events = run_to_end(&harness(), req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-fresh"
+        )),
+        "refused resume fell back to a fresh thread: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "resumed with history"
+    )));
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {

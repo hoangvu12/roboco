@@ -558,6 +558,16 @@ struct AgentAccountParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ResumeOnAccountParams {
+    chat_id: String,
+    /// The account the user picked; `None` takes the engine's
+    /// recommendation (the best-ranked candidate).
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StartAgentLoginParams {
     harness: HarnessId,
     /// For agents that keep a login per model provider (OpenCode, Pi,
@@ -3186,6 +3196,24 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::LIST_RESUME_ACCOUNT_CANDIDATES => {
+                let p: ChatParams = parse_params(params)?;
+                let candidates = self
+                    .sessions
+                    .resume_account_candidates(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&candidates)
+            }
+            methods::RESUME_ON_ANOTHER_ACCOUNT => {
+                let p: ResumeOnAccountParams = parse_params(params)?;
+                let outcome = self
+                    .sessions
+                    .resume_on_another_account(&p.chat_id, p.account_id.as_deref())
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&outcome)
             }
             methods::FORGET_AGENT_ACCOUNT => {
                 let p: AgentAccountParams = parse_params(params)?;
