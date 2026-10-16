@@ -357,10 +357,18 @@ case "$first" in
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-err"}'
   # Terse assistant-level error code with no content.
   emit '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}'
-  # Hard-rejected claude.ai usage window.
-  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}'
+  # Hard-rejected claude.ai usage window, with the CLI's own reset time
+  # (unix millis).
+  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400000}}'
   # Result error with an EMPTY errors array: needs fallback wording.
   emit '{"type":"result","subtype":"error_max_turns","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-err"}'
+  ;;
+
+*scenario:auth*)
+  # A turn killed by an expired login: signed out, not a limit.
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-auth"}'
+  emit '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"authentication_failed"}'
+  emit '{"type":"result","subtype":"error_during_execution","errors":[],"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-auth"}'
   ;;
 
 *)

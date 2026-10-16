@@ -545,6 +545,31 @@ pub enum DoneStatus {
     Errored,
 }
 
+/// Structured classification for an [`AgentEvent::Error`], so engines and
+/// clients can act on usage limits and sign-outs instead of parsing the
+/// error text. The `message` stays the rendering source of truth; a `None`
+/// kind means the emitting harness could not classify the failure.
+///
+/// Wire names are frozen (ADR 0005): this whole type is additive — older
+/// clients ignore the `kind` field and keep rendering the message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentErrorKind {
+    /// A harness account's plan usage limit blocked the turn. The window is
+    /// the harness's own label ("5-hour", "weekly", …); `resets_at` is the
+    /// epoch-millis instant the harness reported, when it reported one.
+    #[serde(rename_all = "camelCase")]
+    UsageLimit {
+        window: String,
+        /// Epoch millis when the window resets, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<i64>,
+    },
+    /// The harness's login is gone — the user must sign in again, not wait
+    /// for a limit to reset.
+    SignedOut,
+}
+
 /// The normalized streaming event every harness emits.
 ///
 /// Mirrors roboco's `AgentEvent` tagged enum.
@@ -620,6 +645,11 @@ pub enum AgentEvent {
     },
     Error {
         message: String,
+        /// Structured classification (usage limit, signed out). Additive on
+        /// the wire (ADR 0005): `None` (and a missing key) for every
+        /// unclassified error, so older payloads and clients are unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<AgentErrorKind>,
     },
     #[serde(rename_all = "camelCase")]
     InputRequested {
@@ -738,6 +768,64 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    /// The structured error kind is additive on the wire (ADR 0005): new
+    /// payloads carry it under stable camelCase names, unclassified errors
+    /// serialize exactly as before, and legacy payloads without it parse.
+    #[test]
+    fn error_kind_is_additive_on_the_wire() {
+        let limited = AgentEvent::Error {
+            message: "Claude 5-hour limit reached — the turn was blocked. Try again after it resets.".into(),
+            kind: Some(AgentErrorKind::UsageLimit {
+                window: "5-hour".into(),
+                resets_at: Some(1_762_675_400_000),
+            }),
+        };
+        let json = serde_json::to_value(&limited).unwrap();
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["kind"]["type"], "usageLimit");
+        assert_eq!(json["kind"]["window"], "5-hour");
+        assert_eq!(json["kind"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), limited);
+
+        let signed_out = AgentEvent::Error {
+            message: "Authentication failed — sign in to Claude again.".into(),
+            kind: Some(AgentErrorKind::SignedOut),
+        };
+        let json = serde_json::to_value(&signed_out).unwrap();
+        assert_eq!(json["kind"], serde_json::json!({"type": "signedOut"}));
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), signed_out);
+
+        // An unknown reset time is omitted, not null.
+        let unknown_reset = AgentEvent::Error {
+            message: "limit".into(),
+            kind: Some(AgentErrorKind::UsageLimit {
+                window: "usage".into(),
+                resets_at: None,
+            }),
+        };
+        let json = serde_json::to_value(&unknown_reset).unwrap();
+        assert!(json["kind"].get("resetsAt").is_none());
+
+        // Unclassified errors serialize byte-identically to the old shape …
+        let plain = serde_json::to_value(AgentEvent::Error {
+            message: "boom".into(),
+            kind: None,
+        })
+        .unwrap();
+        assert_eq!(plain, serde_json::json!({"type": "error", "message": "boom"}));
+        // … and payloads from before the field exist still parse.
+        let legacy =
+            serde_json::from_value::<AgentEvent>(serde_json::json!({"type": "error", "message": "boom"}))
+                .unwrap();
+        assert_eq!(
+            legacy,
+            AgentEvent::Error {
+                message: "boom".into(),
+                kind: None
+            }
+        );
     }
 
     /// Drivers spell the key differently; the chip must not care which one

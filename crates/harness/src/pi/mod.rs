@@ -871,6 +871,7 @@ async fn run_session(session: Session) {
                      without the previous context",
                     request.resume.as_deref().unwrap_or_default()
                 ),
+                kind: None,
             },
         )
         .await;
@@ -1062,7 +1063,7 @@ async fn run_session(session: Session) {
                     Err(e) => {
                         let _ = send(
                             &event_tx,
-                            AgentEvent::Error { message: format!("Steering failed: {e}") },
+                            AgentEvent::Error { message: format!("Steering failed: {e}"), kind: None },
                         )
                         .await;
                     }
@@ -1128,6 +1129,7 @@ async fn run_session(session: Session) {
                             if let Some(error) = message_end_error(&event) {
                                 let _ = send(&event_tx, AgentEvent::Error {
                                     message: error.clone(),
+                                    kind: None,
                                 })
                                 .await;
                                 turn_error = Some(error);
@@ -1206,6 +1208,7 @@ async fn run_session(session: Session) {
                                         "pi hit a transient error and is retrying \
                                          (attempt {attempt}/{max}): {message}"
                                     ),
+                                    kind: None,
                                 },
                             )
                             .await;

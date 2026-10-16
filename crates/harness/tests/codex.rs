@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use roboco_harness::{
     CancellationToken, CodexHarness, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoItem,
-    TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel,
+    TodoItem, TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -612,6 +612,124 @@ async fn turn_failed_maps_to_errored_done() {
             status: DoneStatus::Errored,
             result: None,
             error: Some("boom".into()),
+            session_id: Some("th-1".into()),
+        })
+    );
+    // An unclassified failure keeps its historical shape: the text rides
+    // the Done and no Error event (and no kind) is minted for it.
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "unclassified failure minted an error event: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_usage_limited_turn_carries_the_reset_from_the_latest_notification() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:usage-limit"), controls).await;
+
+    // The turn-level usage-limit error classifies as a usage limit and
+    // carries the reset time of the exhausted window from the rate-limit
+    // notification that preceded it (seconds on the wire, millis in the
+    // kind).
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "You have exceeded your usage limit".to_owned(),
+                Some(AgentErrorKind::UsageLimit {
+                    window: "5-hour".into(),
+                    resets_at: Some(1_735_689_600_000),
+                }),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    // The failure text rides the Error event; the Done keeps the errored
+    // status without duplicating the text.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_turn_completing_with_the_error_also_classifies() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:rate-limit-completed"), controls).await;
+
+    // turn/completed (rather than turn/failed) carrying a rate-limit error:
+    // the weekly window is the exhausted one, so its reset is reported.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "rate limited, retry later".to_owned(),
+                Some(AgentErrorKind::UsageLimit {
+                    window: "weekly".into(),
+                    resets_at: Some(1_736_208_000_000),
+                }),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_auth_failure_is_signed_out() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:auth-fail"), controls).await;
+
+    // A dead login is signed out — distinct from a usage limit, so the user
+    // knows to sign in rather than wait for a reset.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "Token is expired or invalid".to_owned(),
+                Some(AgentErrorKind::SignedOut),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
             session_id: Some("th-1".into()),
         })
     );
@@ -1567,7 +1685,7 @@ async fn ordinary_followup_cannot_overtake_a_queued_native_command() {
                 assert_eq!(status, DoneStatus::Completed, "{error:?}");
                 events.push("done".into());
             }
-            AgentEvent::Error { message } => panic!("{message}"),
+            AgentEvent::Error { message, .. } => panic!("{message}"),
             _ => {}
         }
     }

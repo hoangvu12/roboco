@@ -233,6 +233,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::UserInputQuestion,
         roboco_proto::UserInputAnswer,
         roboco_proto::DoneStatus,
+        roboco_proto::AgentErrorKind,
         roboco_proto::AgentEvent,
         roboco_proto::ContextUsage,
         // invocation.rs

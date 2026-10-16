@@ -70,8 +70,9 @@ use crate::process::{Child, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls};
 use catalog::{REASONING_LEVELS, sandbox_mode, sandbox_policy_value, static_models, to_effort};
 use normalize::{
-    ChildRoute, Phase, ReasoningStream, delta_text, item_id, item_type, notification_thread_id,
-    route_child_notification, turn_error_message, turn_id, usage_event,
+    ChildRoute, Phase, RateLimitReset, ReasoningStream, delta_text, item_id, item_type,
+    notification_thread_id, rate_limit_reset, route_child_notification, turn_error_kind,
+    turn_error_message, turn_id, usage_event,
 };
 
 /// Locate the device's installed Codex CLI: `CODEX_EXECUTABLE`, then our own
@@ -1264,6 +1265,10 @@ async fn run_session(session: Session) {
     let mut accepted_steers: VecDeque<String> = VecDeque::new();
     // A turn stop waiting for the app-server to announce the turn.
     let mut stop_when_announced = false;
+    // The latest `account/rateLimits/updated` snapshot reduced to the window
+    // it reports exhausted. Turn-level usage-limit errors attach this reset
+    // time; the notifications themselves stay otherwise unconsumed.
+    let mut limit_reset: Option<RateLimitReset> = None;
     // Commands the parent thread started and the app-server has not reported
     // finished, with their process id and the turn that started them. One
     // still open after its turn is background work (a dev server, a
@@ -1487,6 +1492,14 @@ async fn run_session(session: Session) {
                         }
                     }
 
+                    // The account's usage meters, pushed on token-count
+                    // events. Nothing is surfaced directly: the snapshot is
+                    // held so a turn-level usage-limit error can carry the
+                    // reset time the error itself omits.
+                    "account/rateLimits/updated" => {
+                        limit_reset = rate_limit_reset(&params);
+                    }
+
                     // Codex's `update_plan` tool: the whole checklist, replaced
                     // on every call, with an in-progress step.
                     "turn/plan/updated" => {
@@ -1539,6 +1552,22 @@ async fn run_session(session: Session) {
                                 == Some("failed"))
                             .then(|| "Codex turn failed".to_owned())
                         });
+                        // A classified failure (usage limit, signed out)
+                        // surfaces as an Error event ahead of the Done so the
+                        // kind reaches engine and clients; its text moves off
+                        // the Done so the transcript keeps exactly ONE error
+                        // part. Unclassified failures keep their historical
+                        // Done-only shape.
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        if let (Some(message), Some(kind)) = (&error, &kind) {
+                            let classified = AgentEvent::Error {
+                                message: message.clone(),
+                                kind: Some(kind.clone()),
+                            };
+                            if !send(&event_tx, classified).await {
+                                break 'main;
+                            }
+                        }
                         let status = if interrupted || stopping {
                             DoneStatus::Interrupted
                         } else if error.is_some() {
@@ -1560,7 +1589,7 @@ async fn run_session(session: Session) {
                             AgentEvent::Done {
                                 status,
                                 result: None,
-                                error,
+                                error: if kind.is_some() { None } else { error },
                                 session_id: Some(thread_id.clone()),
                             },
                         )
@@ -1634,6 +1663,22 @@ async fn run_session(session: Session) {
                         if interrupted {
                             done_after_interrupt = true;
                         }
+                        let error =
+                            turn_error_message(&params).unwrap_or_else(|| "Codex turn failed".into());
+                        // Same classified-failure shape as turn/completed: the
+                        // kind rides an Error event ahead of the Done, which
+                        // then carries no error text of its own — one rendered
+                        // error part either way.
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        if let Some(kind) = &kind {
+                            let classified = AgentEvent::Error {
+                                message: error.clone(),
+                                kind: Some(kind.clone()),
+                            };
+                            if !send(&event_tx, classified).await {
+                                break 'main;
+                            }
+                        }
                         let _ = send(
                             &event_tx,
                             AgentEvent::Done {
@@ -1643,10 +1688,7 @@ async fn run_session(session: Session) {
                                     DoneStatus::Errored
                                 },
                                 result: None,
-                                error: Some(
-                                    turn_error_message(&params)
-                                        .unwrap_or_else(|| "Codex turn failed".into()),
-                                ),
+                                error: if kind.is_none() { Some(error) } else { None },
                                 session_id: Some(thread_id.clone()),
                             },
                         )
@@ -1707,7 +1749,8 @@ async fn run_session(session: Session) {
                             .or_else(|| params.get("message").and_then(Value::as_str))
                             .unwrap_or("Codex error")
                             .to_owned();
-                        if !send(&event_tx, AgentEvent::Error { message }).await {
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        if !send(&event_tx, AgentEvent::Error { message, kind }).await {
                             break 'main;
                         }
                     }
@@ -2007,6 +2050,7 @@ async fn steer_as_new_turn(
                 event_tx,
                 AgentEvent::Error {
                     message: format!("Steering failed: {e}"),
+                    kind: None,
                 },
             )
             .await;
