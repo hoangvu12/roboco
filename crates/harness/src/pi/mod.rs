@@ -1075,7 +1075,7 @@ async fn run_session(session: Session) {
                 exit_drain_deadline.unwrap_or_else(tokio::time::Instant::now)
             ), if exit_drain_deadline.is_some() => break 'main,
 
-            res = async { armed.as_mut().expect("guarded by if").acceptance.await }, if armed.is_some() => {
+            res = async { (&mut armed.as_mut().expect("guarded by if").acceptance).await }, if armed.is_some() => {
                 let Armed { message: mailbox, .. } = armed.take().expect("guarded by if");
                 match res {
                     Ok(data) => {
