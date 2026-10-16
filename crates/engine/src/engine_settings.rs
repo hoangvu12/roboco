@@ -45,6 +45,15 @@ impl EngineSettingsStore {
         }
     }
 
+    /// Point an existing store at `path` and load what is persisted there
+    /// (engine assembly; the store lives on the shared sessions engine, so
+    /// it is wired in place rather than replaced).
+    pub(crate) fn attach(&self, path: PathBuf) {
+        let settings = load_file(&path).unwrap_or_default();
+        *lock(&self.settings) = settings;
+        *lock(&self.path) = Some(path);
+    }
+
     pub(crate) fn get(&self) -> EngineSettings {
         *lock(&self.settings)
     }

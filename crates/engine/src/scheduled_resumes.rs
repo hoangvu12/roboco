@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use roboco_proto::ScheduledResume;
+use serde::{Deserialize, Serialize};
 
 use crate::now_ms;
 
@@ -230,8 +231,10 @@ impl ScheduledResumes {
 
 fn load_file(path: &Path) -> ScheduledResumeFile {
     std::fs::read(path)
-        .map_err(Into::into)
-        .and_then(|bytes| serde_json::from_slice(&bytes))
+        .map_err(|err| err.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice::<ScheduledResumeFile>(&bytes).map_err(|err| err.to_string())
+        })
         .unwrap_or_else(|err| {
             // Missing file = fresh engine; broken file = keep going with
             // nothing armed (never refuse the engine over one feature).

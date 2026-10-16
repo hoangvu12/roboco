@@ -345,10 +345,11 @@ impl SessionsEngine {
         self.inner.scheduled_resumes.set_path(path);
     }
 
-    /// Wire the engine settings store (engine assembly; a bare engine keeps
-    /// the in-memory default — auto-resume off).
-    pub fn set_engine_settings_store(&self, store: crate::engine_settings::EngineSettingsStore) {
-        self.inner.engine_settings = store;
+    /// Persist the engine settings under `path`, loading anything already
+    /// there (engine assembly; a bare engine keeps the in-memory default —
+    /// auto-resume off).
+    pub fn set_engine_settings_path(&self, path: std::path::PathBuf) {
+        self.inner.engine_settings.attach(path);
     }
 
     /// The engine's settings (see [`crate::engine_settings::EngineSettings`]).
@@ -1592,7 +1593,7 @@ impl SessionsEngine {
             // fleet of overdue continuations re-dispatches spaced out, not
             // as one boot burst of CLI spawns.
             let delay = std::time::Duration::from_millis(ix as u64 * RESUME_STAGGER_MS);
-            self.spawn_resume_timer(chat_id, fire_at, disarmed, delay);
+            self.spawn_resume_timer(chat_id.clone(), fire_at, disarmed, delay);
             tracing::info!(
                 chat = %chat_id,
                 fire_at,
@@ -1659,9 +1660,8 @@ impl SessionsEngine {
             }
             // Clock skew and a reset time minted on a lagging client clamp
             // to "due now": never a panic, never a negative sleep.
-            let target = std::time::SystemTime::UNIX_EPOCH
-                + std::time::Duration::from_millis(fire_at.max(0) as u64);
-            tokio::time::sleep_until(tokio::time::Instant::from_std(target)).await;
+            let wait_ms = fire_at.saturating_sub(now_ms()).max(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
             if disarmed.load(std::sync::atomic::Ordering::Acquire) {
                 return;
             }

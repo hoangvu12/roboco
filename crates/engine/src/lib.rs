@@ -245,9 +245,7 @@ impl EngineCore {
         // Resume-at-reset store both live under the engine data dir; the
         // continuations' timers arm after `recover_stale` (firing needs the
         // wired doc host) — orchestration v2, ticket 07.
-        sessions.set_engine_settings_store(crate::engine_settings::EngineSettingsStore::open(
-            Some(data_dir.join("engine-settings.json")),
-        ));
+        sessions.set_engine_settings_path(data_dir.join("engine-settings.json"));
         sessions.set_scheduled_resumes_path(data_dir.join("scheduled-resumes.json"));
         match sessions.recover_stale() {
             Ok(0) => {}
