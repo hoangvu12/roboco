@@ -312,6 +312,7 @@ async fn agent_process_survives_sends_and_cancel() {
                 &cwd,
             ),
             Some("m-2b-steer".into()),
+            None,
         )
         .await
         .unwrap();

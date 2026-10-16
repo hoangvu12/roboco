@@ -335,6 +335,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
         let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-user-1".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -350,6 +351,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
         })
         .unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-assistant-1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -585,6 +587,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-user-1".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -600,6 +603,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         })
         .unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-assistant-1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -1004,6 +1008,7 @@ async fn a_crash_before_the_reply_reached_disk_still_auto_resumes() {
         let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-user-1".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -1105,6 +1110,7 @@ async fn a_crash_recovers_the_conversation_through_a_symlinked_folder() {
         let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "msg-user-1".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {

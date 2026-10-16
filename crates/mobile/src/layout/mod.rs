@@ -541,6 +541,7 @@ pub(crate) fn debug_input(entries: Vec<DebugEntry>, working: bool) -> Transcript
             .into_iter()
             .map(|e| {
                 Arc::new(SessionMessageEntry {
+                    origin_chat_id: None,
                     parts: vec![MessagePart::Text {
                         id: "t0".into(),
                         text: e.text,

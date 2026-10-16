@@ -39,7 +39,7 @@ async fn pi_idle_crash_next_dispatch_resumes_the_stored_session() {
             provider_fork: None,
         };
         core.sessions
-            .dispatch(chat, HarnessId::Pi, req, None)
+            .dispatch(chat, HarnessId::Pi, req, None, None)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {

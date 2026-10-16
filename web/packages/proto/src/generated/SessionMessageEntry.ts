@@ -21,6 +21,13 @@ createdAt: number, deviceId: string, status?: MessageStatus | null, continuation
  */
 durationMs?: number | null, 
 /**
+ * The chat this user entry was sent BY through the Roboco MCP server —
+ * structured attribution (additive; ADR 0005), the durable record the
+ * completion-notice rules key on. None on typed messages and entries
+ * written before the field existed.
+ */
+originChatId?: string | null, 
+/**
  * The provider turn that produced this assistant entry (additive,
  * t3-orchestration-v2 ticket 17): harness, provider session id, and the
  * harness's own turn ref. A fork continues the provider session at

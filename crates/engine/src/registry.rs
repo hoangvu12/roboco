@@ -726,15 +726,17 @@ pub fn default_registry() -> HarnessRegistry {
     );
     // pi over its NATIVE RPC mode (`pi --mode rpc`, the maintainer-supported
     // embedding path), same lazy pattern: the static descriptor mirrors
-    // PiHarness exactly — turn-boundary steering via pi's own steer queue,
-    // pi's thinking ladder minus its "off" tier, deterministic turn ends
-    // (agent_settled).
+    // PiHarness exactly — STEP-boundary steering via pi's own steer queue
+    // (prompt + steer behavior, mode "all" at session start), pi's thinking
+    // ladder minus its "off" tier, deterministic turn ends (agent_settled).
+    // Orchestration v2 ticket 03 flipped this from turn-boundary; the
+    // harness declaration and this descriptor must always agree.
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Pi,
             name: "Pi".into(),
             supports_steering: true,
-            steering_mode: SteeringMode::TurnBoundary,
+            steering_mode: SteeringMode::StepBoundary,
             reasoning_levels: vec![
                 ReasoningLevel::Minimal,
                 ReasoningLevel::Low,
@@ -991,7 +993,7 @@ mod tests {
         let pi = registry.resolve(HarnessId::Pi).unwrap();
         assert_eq!(pi.id(), HarnessId::Pi);
         assert_eq!(pi.display_name(), "Pi");
-        assert_eq!(pi.steering_mode(), SteeringMode::TurnBoundary);
+        assert_eq!(pi.steering_mode(), SteeringMode::StepBoundary);
         assert_eq!(
             pi.reasoning_levels(),
             &[
@@ -1003,6 +1005,44 @@ mod tests {
                 ReasoningLevel::Max
             ]
         );
+    }
+
+    /// The static descriptor a lazy slot carries must mirror the harness it
+    /// resolves to — the descriptor-stability rule, checked for every slot
+    /// at once. A disagreement on `steering_mode` is exactly the bug
+    /// orchestration v2 ticket 03 guards against: the engine routes
+    /// mid-turn sends (queue holds, row actions, MCP `send_message`) off the
+    /// DESCRIPTOR while the driver speaks for itself, so the two must flip
+    /// together. (`installed`/`can_install`/`enabled` differ by design —
+    /// they are per-device, re-probed on `descriptors()`.)
+    #[test]
+    fn registry_descriptors_mirror_their_harness_declarations() {
+        let registry = default_registry();
+        let descriptors = registry.descriptors();
+        assert!(!descriptors.is_empty());
+        for descriptor in descriptors {
+            let harness = registry
+                .resolve(descriptor.id)
+                .expect("every default slot resolves (construction never probes a CLI)");
+            let described = describe(harness.as_ref());
+            assert_eq!(descriptor.id, described.id, "slot identity");
+            assert_eq!(
+                descriptor.steering_mode, described.steering_mode,
+                "{:?}: the descriptor and the harness declaration disagree on the steering mode",
+                descriptor.id
+            );
+            assert_eq!(
+                descriptor.supports_steering, described.supports_steering,
+                "{:?}: steering support disagrees",
+                descriptor.id
+            );
+            assert_eq!(
+                descriptor.reasoning_levels, described.reasoning_levels,
+                "{:?}: the reasoning ladder disagrees",
+                descriptor.id
+            );
+            assert_eq!(descriptor.name, described.name, "{:?}: the display name disagrees", descriptor.id);
+        }
     }
 
     /// Catalogs serialized by engines that predate the `installed`/`enabled`

@@ -592,6 +592,7 @@ async fn batched_remote_steers_preserve_every_message_in_order_exactly_once() {
         handle
             .doc()
             .queue_command(&roboco_doc::SessionCommandEntry {
+                origin_chat_id: None,
                 id: format!("remote-command-{i}"),
                 payload: SessionCommandPayload::Steer {
                     prompt: prompt.clone(),
@@ -655,7 +656,7 @@ async fn queued_text_waits_for_a_steerable_turn_even_with_legacy_policy() {
         .queue_message(CHAT, "first queued", Vec::new())
         .unwrap();
     core.doc_host
-        .queue_message_with_behavior(CHAT, "second queued", Vec::new(), false)
+        .queue_message_with_behavior(CHAT, "second queued", Vec::new(), false, None)
         .unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(queue_texts(&core), vec!["first queued", "second queued"]);
@@ -1147,7 +1148,7 @@ async fn explicit_queue_delivery_is_rejected_off_host_without_taking_the_row() {
         .expect("move chat host");
     let id = core
         .doc_host
-        .queue_message_with_behavior(CHAT, "remote-only", Vec::new(), true)
+        .queue_message_with_behavior(CHAT, "remote-only", Vec::new(), true, None)
         .expect("queue held row");
 
     let send_error = core

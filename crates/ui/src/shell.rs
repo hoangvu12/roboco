@@ -2395,6 +2395,7 @@ impl Shell {
                     std::slice::from_ref(&pending_path),
                 );
                 let echo = roboco_doc::SessionMessageEntry {
+                    origin_chat_id: None,
                     id: "demo-upload-echo".into(),
                     role: roboco_doc::MessageRole::User,
                     parts: vec![roboco_doc::MessagePart::Text {
@@ -11496,6 +11497,7 @@ mod tests {
         source: Option<(&str, &str)>,
     ) -> roboco_proto::Chat {
         roboco_proto::Chat {
+            agent_origin: None,
             id: "chat".into(),
             device_id: "remote-device".into(),
             title: None,
@@ -12584,6 +12586,7 @@ mod exit_regressions {
                 shell.state.update(cx, |state, cx| {
                     state.apply_spaces(vec![space("mine", "local"), space("other", "remote")]);
                     state.apply_chats(vec![roboco_proto::Chat {
+                        agent_origin: None,
                         id: "elsewhere".into(),
                         device_id: "remote".into(),
                         title: None,

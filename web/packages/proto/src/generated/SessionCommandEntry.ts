@@ -13,4 +13,11 @@ issuedAt: number, basedOn: CommandBasedOn | null,
 /**
  * Epoch millis; defaults to issued_at + COMMAND_DEFAULT_TTL_MS when absent.
  */
-expiresAt: number | null, status: SessionCommandStatus, resolution: string | null, };
+expiresAt: number | null, status: SessionCommandStatus, resolution: string | null, 
+/**
+ * The chat this Run/Steer was sent BY through the Roboco MCP server —
+ * structured attribution (additive; ADR 0005). None for user-typed
+ * sends and for rows written before the field existed. Executing it
+ * stamps the same origin on the user message entry it writes.
+ */
+originChatId?: string | null, };

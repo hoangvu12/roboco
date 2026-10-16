@@ -433,6 +433,7 @@ async fn side_chats_never_emit() {
                 None,
                 None,
                 Some("same-chat".to_owned()),
+                None,
             )
             .unwrap();
         let side = rig.client.scope(&rig.engine_id, "side-chat");

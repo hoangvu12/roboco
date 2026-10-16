@@ -435,11 +435,14 @@ impl ChatDocHandle {
 
     /// Write a complete user message entry, idempotent by id (the client-minted message
     /// id — a re-executed command or optimistic echo never duplicates the entry).
+    /// `origin_chat_id` is the structured attribution for messages sent by a
+    /// chat through the Roboco MCP server; `None` for typed messages.
     pub fn write_user_message(
         &self,
         message_id: &str,
         text: &str,
         created_at: i64,
+        origin_chat_id: Option<&str>,
     ) -> Result<(), DocError> {
         if self.doc.read_entries()?.iter().any(|e| e.id == message_id) {
             return Ok(());
@@ -457,6 +460,7 @@ impl ChatDocHandle {
             continuation_of: None,
             provider_turn: None,
             duration_ms: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
         })
     }
 
@@ -1049,7 +1053,7 @@ impl DocHost {
         chat_id: &str,
         payload: SessionCommandPayload,
     ) -> Result<String, EngineError> {
-        self.queue_command_with_transfers(chat_id, payload, Vec::new())
+        self.queue_command_with_transfers(chat_id, payload, Vec::new(), None)
     }
 
     /// [`Self::queue_command`] plus queued-attachment transfers: the command's
@@ -1057,12 +1061,16 @@ impl DocHost {
     /// dir; when another device hosts the chat, a background task pushes them
     /// over the peer link (retry until they land) while the command is
     /// already durably queued. The send is a local write — attachment bytes
-    /// chase it, never gate it (2026-08-19 incident).
+    /// chase it, never gate it (2026-08-19 incident). `origin_chat_id` is the
+    /// structured attribution when a chat sent this through the Roboco MCP
+    /// server (Run/Steer commands only); it survives the relay and retry
+    /// paths and is stamped on the user message entry the command writes.
     pub fn queue_command_with_transfers(
         &self,
         chat_id: &str,
         payload: SessionCommandPayload,
         _transfers: Vec<crate::uploads::AttachmentTransfer>,
+        origin_chat_id: Option<&str>,
     ) -> Result<String, EngineError> {
         let handle = self.open(chat_id)?;
         let id = new_id();
@@ -1084,6 +1092,7 @@ impl DocHost {
             expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
             status: SessionCommandStatus::Pending,
             resolution: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
         };
         handle.doc.queue_command(&entry)?;
         // Sending a message revives an archived chat: the user is acting in it
@@ -1120,18 +1129,21 @@ impl DocHost {
         text: &str,
         attachments: Vec<String>,
     ) -> Result<String, EngineError> {
-        self.queue_message_with_behavior(chat_id, text, attachments, false)
+        self.queue_message_with_behavior(chat_id, text, attachments, false, None)
     }
 
     /// Append a message while preserving the submitter's active-turn policy
     /// on the synchronized row. This matters when another device hosts the
     /// chat: the host, not the submitting UI, decides when to drain it.
+    /// `origin_chat_id` is the structured attribution when a chat queued this
+    /// through the Roboco MCP server; the promoted user message entry keeps it.
     pub fn queue_message_with_behavior(
         &self,
         chat_id: &str,
         text: &str,
         attachments: Vec<String>,
         hold_for_turn_end: bool,
+        origin_chat_id: Option<&str>,
     ) -> Result<String, EngineError> {
         let handle = self.open(chat_id)?;
         let id = new_id();
@@ -1144,6 +1156,7 @@ impl DocHost {
             issued_at: now_ms(),
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
         })?;
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
@@ -1885,7 +1898,12 @@ impl DocHost {
                 continue;
             };
             changed = true;
-            if let Err(err) = handle.write_user_message(&row.id, &row.text, row.issued_at) {
+            if let Err(err) = handle.write_user_message(
+                &row.id,
+                &row.text,
+                row.issued_at,
+                row.origin_chat_id.as_deref(),
+            ) {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "cancelled held send write failed");
             }
         }
@@ -1927,7 +1945,12 @@ impl DocHost {
         self.resolve_attachment_refs(&mut prompt, &mut attachments);
         if send == QueueSend::Steer {
             match sessions
-                .steer(chat_id, &prompt, Some(message_id.clone()))
+                .steer(
+                    chat_id,
+                    &prompt,
+                    Some(message_id.clone()),
+                    item.origin_chat_id.clone(),
+                )
                 .await?
             {
                 SteerOutcome::Accepted => return Ok(()),
@@ -1970,8 +1993,15 @@ impl DocHost {
         request.resume = None; // dispatch re-derives the harness session
         request.attachments = attachments;
         let harness = self.harness_for_request(chat_id, &request);
-        self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
-            .await?;
+        self.dispatch_with_source_context(
+            &sessions,
+            chat_id,
+            harness,
+            request,
+            Some(message_id),
+            item.origin_chat_id.clone(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -2070,6 +2100,9 @@ impl DocHost {
                 expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
                 status: SessionCommandStatus::Pending,
                 resolution: None,
+                // The re-issue speaks for the same message: it keeps the
+                // origin of the send it re-sends.
+                origin_chat_id: old.origin_chat_id.clone(),
             };
             tracing::info!(chat = %chat_id, old = %old.id, new = %reissue.id,
                 "retry re-issues a dead send attempt");
@@ -2553,9 +2586,12 @@ impl DocHost {
                 SessionCommandPayload::Steer { prompt, .. } => prompt.clone(),
                 _ => String::new(),
             };
-            if let Err(err) =
-                handle.write_user_message(&message_id, &prompt, entry.issued_at.min(now_ms()))
-            {
+            if let Err(err) = handle.write_user_message(
+                &message_id,
+                &prompt,
+                entry.issued_at.min(now_ms()),
+                entry.origin_chat_id.as_deref(),
+            ) {
                 tracing::warn!(chat = %chat_id, error = %err, "cancelled message write failed");
             }
             tracing::info!(chat = %chat_id, "prompt sent before a Stop that has acted: cancelled");
@@ -2650,6 +2686,7 @@ impl DocHost {
                         entry.issued_at,
                         false,
                         Some(&request),
+                        entry.origin_chat_id.clone(),
                     )?;
                     return Ok((
                         SessionCommandStatus::Applied,
@@ -2666,6 +2703,7 @@ impl DocHost {
                     message_id,
                     &request.prompt,
                     entry.issued_at.min(now_ms()),
+                    entry.origin_chat_id.as_deref(),
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
                 }
@@ -2675,6 +2713,7 @@ impl DocHost {
                     harness,
                     request,
                     Some(message_id.clone()),
+                    entry.origin_chat_id.clone(),
                 )
                 .await?;
                 // A fresh user-authored turn is the deliberate action that
@@ -2690,6 +2729,7 @@ impl DocHost {
                     prompt,
                     message_id.clone(),
                     entry.issued_at,
+                    entry.origin_chat_id.clone(),
                 )
                 .await
             }
@@ -2780,8 +2820,15 @@ impl DocHost {
                         "orphaned input resolve failed");
                 }
                 let harness = self.harness_for_request(chat_id, &request);
-                self.dispatch_with_source_context(sessions, chat_id, harness, request, None)
-                    .await?;
+                self.dispatch_with_source_context(
+                    sessions,
+                    chat_id,
+                    harness,
+                    request,
+                    None,
+                    None,
+                )
+                .await?;
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("answered as new turn".into()),
@@ -2806,12 +2853,19 @@ impl DocHost {
         prompt: &str,
         message_id: Option<String>,
         issued_at: i64,
+        origin_chat_id: Option<String>,
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
         // Keep upstream's queued-attachment rewrite and send-time canonical
         // history while preserving the personal cut's turn-boundary queue.
         let prompt = self.resolve_prompt_attachments(prompt);
-        if self.held_until_turn_end(sessions, chat_id, &prompt, message_id.as_deref())? {
+        if self.held_until_turn_end(
+            sessions,
+            chat_id,
+            &prompt,
+            message_id.as_deref(),
+            origin_chat_id.clone(),
+        )? {
             return Ok((
                 SessionCommandStatus::Applied,
                 Some("held until the turn ends".into()),
@@ -2822,13 +2876,23 @@ impl DocHost {
         // transcript copy would duplicate it until the update finishes.
         if !sessions.live_run_update_pending(chat_id)
             && let Some(message_id) = message_id.as_deref()
-            && let Err(err) =
-                handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
+            && let Err(err) = handle.write_user_message(
+                message_id,
+                &prompt,
+                issued_at.min(now_ms()),
+                origin_chat_id.as_deref(),
+            )
         {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
         match sessions
-            .steer_at(chat_id, &prompt, message_id.clone(), issued_at)
+            .steer_at(
+                chat_id,
+                &prompt,
+                message_id.clone(),
+                issued_at,
+                origin_chat_id.clone(),
+            )
             .await?
         {
             SteerOutcome::Accepted => {
@@ -2837,7 +2901,12 @@ impl DocHost {
             }
             SteerOutcome::NotSteerable => {
                 if let Some(message_id) = message_id.as_deref() {
-                    handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;
+                    handle.write_user_message(
+                        message_id,
+                        &prompt,
+                        issued_at.min(now_ms()),
+                        origin_chat_id.as_deref(),
+                    )?;
                 }
                 let request = sessions
                     .last_request(chat_id)
@@ -2854,8 +2923,15 @@ impl DocHost {
                 // images; this prompt's own refs (if any) ride its text.
                 request.attachments = Vec::new();
                 let harness = self.harness_for_request(chat_id, &request);
-                self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
-                    .await?;
+                self.dispatch_with_source_context(
+                    sessions,
+                    chat_id,
+                    harness,
+                    request,
+                    message_id,
+                    origin_chat_id,
+                )
+                .await?;
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((
                     SessionCommandStatus::Applied,
@@ -2864,7 +2940,7 @@ impl DocHost {
             }
             SteerOutcome::DeferredByUpdate => {
                 let id = message_id.unwrap_or_else(new_id);
-                self.hold_until_update_ends(handle, &id, &prompt, issued_at)?;
+                self.hold_until_update_ends(handle, &id, &prompt, issued_at, origin_chat_id)?;
                 // The completed turn's status publication normally re-drains
                 // this queue. Also cover completion racing the enqueue itself.
                 self.drain_queue(handle).await;
@@ -2894,6 +2970,7 @@ impl DocHost {
         chat_id: &str,
         prompt: &str,
         message_id: Option<&str>,
+        origin_chat_id: Option<String>,
     ) -> Result<bool, EngineError> {
         // A persistent session parked BETWEEN turns DOES take the next prompt
         // through its mailbox (the warm-child fast path), so the question is
@@ -2922,6 +2999,7 @@ impl DocHost {
             now_ms(),
             true,
             None,
+            origin_chat_id,
         )?;
         Ok(true)
     }
@@ -2938,6 +3016,7 @@ impl DocHost {
         issued_at: i64,
         steer: bool,
         request: Option<&roboco_proto::RunRequest>,
+        origin_chat_id: Option<String>,
     ) -> Result<(), EngineError> {
         let item = QueuedMessage {
             id: message_id.to_string(),
@@ -2948,6 +3027,7 @@ impl DocHost {
             issued_at: issued_at.min(now_ms()),
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id,
         };
         if handle.doc.read_queue()?.iter().any(|row| row.id == item.id) {
             return Ok(()); // a redelivered command: already held
@@ -2977,8 +3057,9 @@ impl DocHost {
         id: &str,
         prompt: &str,
         issued_at: i64,
+        origin_chat_id: Option<String>,
     ) -> Result<(), EngineError> {
-        self.hold_until_turn_end(handle, id, prompt, issued_at, true, None)
+        self.hold_until_turn_end(handle, id, prompt, issued_at, true, None, origin_chat_id)
     }
 
     async fn capture_source_context(&self, cwd: &str) -> Option<ConversationSourceContext> {
@@ -3009,6 +3090,7 @@ impl DocHost {
         harness: HarnessId,
         request: roboco_proto::RunRequest,
         message_id: Option<String>,
+        origin_chat_id: Option<String>,
     ) -> Result<String, EngineError> {
         if let Some(workspace) = self.workspace()
             && let Some(context) = self.capture_source_context(&request.cwd).await
@@ -3017,7 +3099,7 @@ impl DocHost {
             tracing::warn!(chat = %chat_id, error = %err, "conversation source stamp failed");
         }
         sessions
-            .dispatch(chat_id, harness, request, message_id)
+            .dispatch(chat_id, harness, request, message_id, origin_chat_id)
             .await
     }
 
@@ -3273,6 +3355,7 @@ mod transcript_revisit_tests {
         for i in 0..2000 {
             source
                 .push_message(&roboco_doc::SessionMessageEntry {
+                    origin_chat_id: None,
                     id: format!("row-{i}"),
                     role: roboco_doc::MessageRole::User,
                     parts: vec![roboco_doc::MessagePart::Text {
@@ -3311,7 +3394,7 @@ mod transcript_revisit_tests {
         let (_dir, host) = host();
         let handle = host.open("cached").unwrap();
         handle
-            .write_user_message("row", "locally persisted transcript", 0)
+            .write_user_message("row", "locally persisted transcript", 0, None)
             .unwrap();
         let rx = handle.watch_messages();
         assert_eq!(rx.borrow().entries.len(), 1);

@@ -73,6 +73,7 @@ async fn check_persistence(
             HarnessId::Codex,
             request.clone(),
             Some("user-prompt".into()),
+            None,
         )
         .await
         .unwrap();
@@ -178,6 +179,7 @@ async fn check_persistence(
             HarnessId::Codex,
             request,
             Some("user-followup".into()),
+            None,
         )
         .await
         .unwrap();

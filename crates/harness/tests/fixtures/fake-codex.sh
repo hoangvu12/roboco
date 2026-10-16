@@ -557,6 +557,32 @@ case "$turnline" in
   emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"boom"}}}}'
   ;;
 
+*scenario:usage-limit*)
+  # A turn killed by the account's usage limit. The rate-limit snapshot
+  # (pushed before the failure) carries the reset the error itself omits;
+  # the 5-hour window is exhausted, the weekly one is not.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1735689600},"secondary":{"usedPercent":61,"windowDurationMins":10080,"resetsAt":1736208000}}}}'
+  emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"You have exceeded your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}'
+  ;;
+
+*scenario:rate-limit-completed*)
+  # Same classification on turn/completed (status failed + error), with the
+  # weekly window as the exhausted one and no primary window reported.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1736208000}}}}'
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-1","status":"failed","error":{"message":"rate limited, retry later","codexErrorInfo":"rateLimitExceeded"}}}}'
+  ;;
+
+*scenario:auth-fail*)
+  # A turn killed by an expired login: signed out, not a limit.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"Token is expired or invalid","codexErrorInfo":"unauthorized"}}}}'
+  ;;
+
 *scenario:resumed-child*)
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-2\"}}}"
   emit '{"method":"turn/started","params":{"threadId":"child-alpha","turn":{"id":"alpha-resumed"}}}'

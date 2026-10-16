@@ -1179,6 +1179,7 @@ mod tests {
 
     fn entry(parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
             id: "e1".into(),
             role: MessageRole::Assistant,
@@ -1236,6 +1237,7 @@ mod tests {
     #[test]
     fn subagent_rows_are_most_recently_updated_first() {
         let at = |id: &str, minutes_ago: i64, parts| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             created_at: (Utc::now() - chrono::Duration::minutes(minutes_ago)).timestamp_millis(),
             ..entry(parts)
@@ -1294,6 +1296,7 @@ mod tests {
     #[test]
     fn running_subagents_lead_longest_running_first() {
         let at = |id: &str, minutes_ago: i64, parts| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             created_at: (Utc::now() - chrono::Duration::minutes(minutes_ago)).timestamp_millis(),
             ..entry(parts)

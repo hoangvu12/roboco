@@ -138,6 +138,7 @@ fn catalog() -> Vec<ToolDef> {
                     "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
                     "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
+                    "notify": { "type": "boolean", "default": true, "description": "For side chats you create: whether you want a completion notice when the chat finishes, fails, stops or needs input (default on). Pass false for fire-and-forget children." },
                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
                 }
             }),
@@ -309,6 +310,10 @@ struct CreateChatArgs {
     prompt: Option<String>,
     #[serde(default)]
     wait: bool,
+    /// Opt out of completion notices for this side chat (default on). Only
+    /// meaningful when an agent is the creator; user-made chats never notify.
+    #[serde(default)]
+    notify: Option<bool>,
     timeout_secs: Option<u64>,
 }
 
@@ -719,6 +724,19 @@ impl Tools {
                 "Cannot create a child of a side chat. Choose a top-level parent chat."
             );
         }
+
+        // Agent-created side chats record their creator durably: the engine's
+        // completion notices key on it. Only when THIS server speaks for a
+        // chat (an agent ran the tool) — a human at a CLI or the UI never
+        // marks a chat, so forks and blank side chats never notify. The
+        // origin check above already proved that chat is top-level.
+        let agent_origin = match (kind, self.roboco.origin().chat_id.as_deref()) {
+            (ChatKind::Side, Some(origin_id)) => Some(roboco_proto::AgentOrigin {
+                chat_id: origin_id.to_owned(),
+                notify: args.notify.unwrap_or(true),
+            }),
+            _ => None,
+        };
         // Engine-local target resolution: the project within the selected
         // device (the local engine when neither is given). Upstream validates
         // the *remote* host's catalogs here; ours is always this engine, so
@@ -789,6 +807,12 @@ impl Tools {
         if let Some(parent) = &parent_chat_id {
             mutate["parentChatId"] = json!(parent);
         }
+        if let Some(origin) = &agent_origin {
+            mutate["agentOrigin"] = json!({
+                "chatId": origin.chat_id,
+                "notify": origin.notify,
+            });
+        }
         if let Some(branch) = args
             .branch
             .as_deref()
@@ -822,11 +846,13 @@ impl Tools {
             "reasoning": reasoning,
             "title": args.title,
             "parentChatId": parent_chat_id,
+            "agentOrigin": agent_origin,
         });
         if let Some(prompt) = args.prompt.filter(|p| !p.trim().is_empty()) {
             // The row may not have folded into WatchChats yet; build the
             // chat locally from what we just wrote rather than re-reading.
             let chat = Chat {
+                agent_origin: agent_origin.clone(),
                 id: chat_id.clone(),
                 device_id: device_id.clone(),
                 title: args.title.clone(),
@@ -989,7 +1015,7 @@ impl Tools {
         let chat = self.roboco.resolve_chat(&args.chat).await?;
         let command_id = self
             .roboco
-            .queue_command(&chat.id, &SessionCommandPayload::Interrupt {})
+            .queue_command(&chat.id, &SessionCommandPayload::Interrupt {}, None)
             .await?;
         Ok(json!({ "chatId": chat.id, "commandId": command_id }))
     }
@@ -1031,6 +1057,7 @@ impl Tools {
                     request_id: request_id.clone(),
                     answers,
                 },
+                None,
             )
             .await?;
         Ok(json!({ "chatId": chat.id, "requestId": request_id, "commandId": command_id }))
@@ -1064,7 +1091,10 @@ impl Tools {
         )
     }
 
-    /// Pick and perform the delivery the composer would.
+    /// Pick and perform the delivery the composer would. Run and steer
+    /// commands (and queue rows) carry this server's origin chat as
+    /// structured attribution — the durable record the engine's completion
+    /// notices key on — in addition to the text attribution in `text`.
     async fn deliver(
         &self,
         chat: &Chat,
@@ -1131,6 +1161,7 @@ impl Tools {
                             request,
                             message_id: uuid::Uuid::new_v4().to_string(),
                         },
+                        self.roboco.origin().chat_id.as_deref(),
                     )
                     .await?
             }
@@ -1142,10 +1173,19 @@ impl Tools {
                             prompt: text,
                             message_id: Some(uuid::Uuid::new_v4().to_string()),
                         },
+                        self.roboco.origin().chat_id.as_deref(),
                     )
                     .await?
             }
-            _ => self.roboco.queue_message(&chat.id, &text).await?,
+            _ => {
+                self.roboco
+                    .queue_message(
+                        &chat.id,
+                        &text,
+                        self.roboco.origin().chat_id.as_deref(),
+                    )
+                    .await?
+            }
         };
         Ok(json!({
             "delivery": chosen,
@@ -1517,6 +1557,186 @@ mod tests {
         assert_eq!(writes[1].1["op"], "renameChat");
         assert_eq!(writes[2].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[2].1["command"]["request"]["prompt"], "go");
+    }
+
+    #[tokio::test]
+    async fn create_chat_marks_agent_created_side_chats_with_the_creator_and_notify() {
+        let world = Arc::new(World::default());
+        let agent = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        // An agent's side chat records the creator and the notify default (on).
+        let created = agent
+            .call("create_chat", json!({ "project": "space-1" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            created["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": true })
+        );
+        assert_eq!(
+            world.writes.lock().unwrap()[0].1["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": true })
+        );
+
+        // `notify: false` opts out at creation.
+        let created = agent
+            .call(
+                "create_chat",
+                json!({ "project": "space-1", "notify": false }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": false })
+        );
+        assert_eq!(
+            world.writes.lock().unwrap()[1].1["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": false })
+        );
+
+        // A standalone chat has no parent, so no agent origin either.
+        let created = agent
+            .call("create_chat", json!({ "kind": "chat" }))
+            .await
+            .unwrap();
+        assert_eq!(created["kind"], "chat");
+        assert!(created["agentOrigin"].is_null());
+        assert!(world.writes.lock().unwrap()[2].1.get("agentOrigin").is_none());
+
+        // A human at a terminal (no origin) never marks a chat, even when a
+        // parent is named: user-made side chats never notify.
+        let human = tools(world.clone(), Origin::default());
+        let created = human
+            .call(
+                "create_chat",
+                json!({ "project": "space-1", "parent": "Alpha" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["parentChatId"], "chat-alpha-1");
+        assert!(created["agentOrigin"].is_null());
+        assert!(world.writes.lock().unwrap()[3].1.get("agentOrigin").is_none());
+
+        // The notify option rides each create_chats request.
+        let batch = agent
+            .call(
+                "create_chats",
+                json!({ "requests": [
+                    { "project": "space-1" },
+                    { "project": "space-1", "notify": false }
+                ]}),
+            )
+            .await
+            .unwrap();
+        let results = batch["results"].as_array().unwrap();
+        assert_eq!(results[0]["isError"], false);
+        assert_eq!(
+            results[0]["result"]["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": true })
+        );
+        assert_eq!(results[1]["isError"], false);
+        assert_eq!(
+            results[1]["result"]["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": false })
+        );
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(
+            writes[4].1["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": true })
+        );
+        assert_eq!(
+            writes[5].1["agentOrigin"],
+            json!({ "chatId": "chat-beta-2", "notify": false })
+        );
+    }
+
+    #[tokio::test]
+    async fn sends_carry_the_origin_chat_as_structured_data() {
+        let world = Arc::new(World::default());
+        let agent = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        // Run command.
+        let sent = agent
+            .call(
+                "send_message",
+                json!({ "chat": "alpha", "text": "please review" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent["sent"]["delivery"], "run");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[0].0, methods::QUEUE_COMMAND);
+        assert_eq!(writes[0].1["chatId"], "chat-alpha-1");
+        assert_eq!(writes[0].1["originChatId"], "chat-beta-2");
+        assert_eq!(writes[0].1["command"]["kind"], "run");
+        drop(writes);
+
+        // Steer command.
+        let sent = agent
+            .call(
+                "send_message",
+                json!({ "chat": "alpha", "text": "mid-run course fix", "mode": "steer" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent["sent"]["delivery"], "steer");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[1].0, methods::QUEUE_COMMAND);
+        assert_eq!(writes[1].1["originChatId"], "chat-beta-2");
+        assert_eq!(writes[1].1["command"]["kind"], "steer");
+        drop(writes);
+
+        // Held queue row.
+        let sent = agent
+            .call(
+                "send_message",
+                json!({ "chat": "alpha", "text": "for later", "mode": "queue" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sent["sent"]["delivery"], "queue");
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[2].0, methods::QUEUE_MESSAGE);
+        assert_eq!(writes[2].1["chatId"], "chat-alpha-1");
+        assert_eq!(writes[2].1["originChatId"], "chat-beta-2");
+        drop(writes);
+
+        // Control commands carry no origin: they are not user messages.
+        agent
+            .call("interrupt_chat", json!({ "chat": "alpha" }))
+            .await
+            .unwrap();
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[3].0, methods::QUEUE_COMMAND);
+        assert_eq!(writes[3].1["command"]["kind"], "interrupt");
+        assert!(writes[3].1.get("originChatId").is_none());
+        drop(writes);
+
+        // A human at a terminal sends without structured attribution (the
+        // text stays as typed).
+        let human = tools(world.clone(), Origin::default());
+        human
+            .call("send_message", json!({ "chat": "alpha", "text": "typed" }))
+            .await
+            .unwrap();
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[4].0, methods::QUEUE_COMMAND);
+        assert!(writes[4].1.get("originChatId").is_none());
+        let prompt = writes[4].1["command"]["request"]["prompt"]
+            .as_str()
+            .unwrap();
+        assert_eq!(prompt, "typed");
     }
 
     #[tokio::test]

@@ -279,7 +279,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let (_tmp, core, _harness, mut rx) = setup(id).await;
         let (raw, readable) = rich_text("first");
         core.sessions
-            .dispatch(CHAT, id, request(&raw), None)
+            .dispatch(CHAT, id, request(&raw), None, None)
             .await
             .unwrap();
         let Delivery::Run(run) = receive(&mut rx).await else {
@@ -291,7 +291,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
 
         let (warm, readable) = rich_text("warm");
         core.sessions
-            .dispatch(CHAT, id, request(&warm), None)
+            .dispatch(CHAT, id, request(&warm), None, None)
             .await
             .unwrap();
         let Delivery::Steer(text, _) = receive(&mut rx).await else {
@@ -302,7 +302,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
 
         let (steer, readable) = rich_text("steer");
         assert!(matches!(
-            core.sessions.steer(CHAT, &steer, None).await.unwrap(),
+            core.sessions.steer(CHAT, &steer, None, None).await.unwrap(),
             SteerOutcome::Accepted
         ));
         let Delivery::Steer(text, _) = receive(&mut rx).await else {
@@ -317,7 +317,7 @@ async fn rich_selections_survive_fresh_warm_steer_and_attachment_delivery_for_ev
         let mut req = request(&attached);
         req.attachments.push(path.to_string_lossy().into_owned());
         core.sessions
-            .dispatch(CHAT, id, req.clone(), None)
+            .dispatch(CHAT, id, req.clone(), None, None)
             .await
             .unwrap();
         let Delivery::Steer(text, attachments) = receive(&mut rx).await else {
@@ -339,7 +339,7 @@ async fn rich_selections_are_converted_once_on_startup_retry_for_every_harness()
         // Startup retries are intentionally limited to an engine-injected
         // resume: establish a real prior session before simulating its crash.
         core.sessions
-            .dispatch(CHAT, id, request("seed session"), None)
+            .dispatch(CHAT, id, request("seed session"), None, None)
             .await
             .unwrap();
         let Delivery::Run(_) = receive(&mut rx).await else {
@@ -363,7 +363,7 @@ async fn rich_selections_are_converted_once_on_startup_retry_for_every_harness()
         harness.fail_start.store(true, Ordering::SeqCst);
         let (raw, readable) = rich_text("retry");
         core.sessions
-            .dispatch(CHAT, id, request(&raw), Some("same-user".into()))
+            .dispatch(CHAT, id, request(&raw), Some("same-user".into()), None)
             .await
             .unwrap();
         for _ in 0..2 {
@@ -383,7 +383,7 @@ async fn queue_edits_preserve_reselected_skills_until_delivery_for_every_harness
     for id in HARNESSES {
         let (_tmp, core, _harness, mut rx) = setup(id).await;
         core.sessions
-            .dispatch(CHAT, id, request("opening"), None)
+            .dispatch(CHAT, id, request("opening"), None, None)
             .await
             .unwrap();
         let Delivery::Run(_) = receive(&mut rx).await else {

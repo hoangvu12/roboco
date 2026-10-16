@@ -50,6 +50,12 @@ pub struct QueuedMessage {
     /// `ReviewRequired`; they never silently become sendable again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_gate: Option<QueueDeliveryGate>,
+    /// The chat this row was sent BY through the Roboco MCP server —
+    /// structured attribution (additive; ADR 0005). None for user-typed rows
+    /// and rows written before the field existed. The promoted user message
+    /// entry keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_chat_id: Option<String>,
 }
 
 /// Why a queued row is not currently eligible for automatic or explicit
@@ -97,6 +103,7 @@ impl QueuedMessage {
             issued_at: 0,
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id: None,
         }
     }
 }
@@ -360,6 +367,9 @@ fn write_queued_map(map: &loro::LoroMap, item: &QueuedMessage) -> Result<(), Doc
             crate::schema::loro_value_from_json(&serde_json::to_value(gate)?),
         )?;
     }
+    if let Some(origin_chat_id) = &item.origin_chat_id {
+        map.insert("originChatId", origin_chat_id.as_str())?;
+    }
     Ok(())
 }
 
@@ -403,6 +413,10 @@ fn queued_from_json(v: serde_json::Value) -> Option<QueuedMessage> {
                 })
             }),
         },
+        origin_chat_id: v
+            .get("originChatId")
+            .and_then(|o| o.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -424,6 +438,7 @@ mod tests {
             issued_at: 1_000,
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id: None,
         }
     }
 
@@ -480,6 +495,26 @@ mod tests {
         let rows = doc.read_queue().unwrap();
         assert!(rows[0].hold_for_turn_end);
         assert!(!rows[1].hold_for_turn_end);
+    }
+
+    #[test]
+    fn origin_round_trips_and_old_rows_read_as_unattributed() {
+        let doc = doc();
+        let mut sent = item("q1", "from an agent");
+        sent.origin_chat_id = Some("chat-origin-1".into());
+        doc.push_queued(&sent).unwrap();
+        doc.push_queued(&item("q2", "typed by the user")).unwrap();
+
+        let rows = doc.read_queue().unwrap();
+        assert_eq!(rows[0].origin_chat_id.as_deref(), Some("chat-origin-1"));
+        assert_eq!(rows[1].origin_chat_id, None);
+        // The wire name is camelCase and additive: an old writer's row
+        // (simulated by dropping the field) keeps reading.
+        let json = serde_json::to_value(rows).unwrap();
+        assert_eq!(json[0]["originChatId"], "chat-origin-1");
+        assert!(json[1].get("originChatId").is_none());
+        let legacy = serde_json::from_value::<Vec<QueuedMessage>>(json).unwrap();
+        assert_eq!(legacy[0].origin_chat_id.as_deref(), Some("chat-origin-1"));
     }
 
     #[test]

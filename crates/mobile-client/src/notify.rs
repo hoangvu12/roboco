@@ -697,6 +697,7 @@ mod tests {
 
     fn chat(raw: &str, title: Option<&str>, parent: Option<&str>) -> Chat {
         Chat {
+            agent_origin: None,
             id: raw.into(),
             device_id: "engine".into(),
             created_at: Utc::now(),

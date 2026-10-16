@@ -304,6 +304,7 @@ mod tests {
 
     fn chat(id: &str, branch: Option<&str>, archived: bool) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev-1".into(),
             title: None,

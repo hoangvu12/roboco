@@ -8250,6 +8250,7 @@ impl Composer {
         // Optimistic echo (client-minted id doubles as the persisted message id,
         // so the doc frame dedups it away).
         let echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: message_id.clone(),
             role: roboco_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -8417,6 +8418,7 @@ impl Composer {
                     // its queue row is the only representation until dispatch.
                     if should_publish_optimistic_echo(queue) {
                         let refreshed = SessionMessageEntry {
+                            origin_chat_id: None,
                             id: message_id.clone(),
                             role: roboco_doc::MessageRole::User,
                             parts: vec![MessagePart::Text {
@@ -15135,6 +15137,7 @@ mod tests {
             resolved: false,
         };
         let entry = |status: Option<MessageStatus>, parts: Vec<MessagePart>| SessionMessageEntry {
+            origin_chat_id: None,
             id: "m".into(),
             role: MessageRole::Assistant,
             parts,
@@ -15170,6 +15173,7 @@ mod tests {
         let t = vec![
             entry(Some(MessageStatus::Aborted), vec![input_part.clone()]),
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m2".into(),
                 role: MessageRole::Assistant,
                 parts: vec![MessagePart::Text {
@@ -15204,6 +15208,7 @@ mod tests {
         // found (a last-entry-only read vanished the panel exactly when the
         // user typed, bricking the answer flow).
         let user_echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: "u2".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {

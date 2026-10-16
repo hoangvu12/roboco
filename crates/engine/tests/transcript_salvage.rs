@@ -25,6 +25,7 @@ fn entry(
     status: Option<MessageStatus>,
 ) -> SessionMessageEntry {
     SessionMessageEntry {
+        origin_chat_id: None,
         id: id.into(),
         role,
         parts: vec![MessagePart::Text {

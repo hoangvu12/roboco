@@ -61,12 +61,12 @@ jobs:
       - name: Pi native driver integration tests
         run: |
           cargo test --locked -p roboco-harness --test pi
-          cargo test --locked -p roboco-engine --test pi_resume
+          cargo test --locked -p roboco-engine --test pi_resume --test pi_steering
       - name: Engine-local storage and recovery
         run: |
           cargo test --locked -p roboco-sync --lib
           cargo test --locked -p roboco-update --lib
-          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings --test side_chats
+          cargo test --locked -p roboco-engine --lib --test engine_local --test restart_resume --test codex_subagents --test local_profiles --test project_actions_rpc --test project_action_commands --test project_actions_remote --test remote_settings --test side_chats --test agent_origin
 
   # Mobile Rust core (spec D1, android-app#02): the crates the Android app's
   # Kotlin painter leans on. Pure Rust, no GPUI system deps.

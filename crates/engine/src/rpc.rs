@@ -237,6 +237,11 @@ where
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
+    /// The chat this Run/Steer is sent BY through the Roboco MCP server —
+    /// structured attribution (additive). Absent for user-typed sends; the
+    /// command entry and its user message entry keep it.
+    #[serde(default)]
+    origin_chat_id: Option<String>,
     /// Queued attachments (bytes already committed locally as `pending://`
     /// refs) the engine delivers to a remote host AFTER the command is
     /// durably queued — never as a gate in front of it.
@@ -264,6 +269,10 @@ struct QueueMessageParams {
     /// supports mid-turn steering.
     #[serde(default)]
     hold_for_turn_end: bool,
+    /// The chat this row is sent BY through the Roboco MCP server —
+    /// structured attribution (additive). Absent for user-typed rows.
+    #[serde(default)]
+    origin_chat_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -645,6 +654,13 @@ pub enum MutateParams {
         #[serde(default)]
         #[ts(optional)]
         parent_chat_id: Option<String>,
+        /// Set when an AGENT is creating this one through the Roboco MCP
+        /// `create_chat` / `create_chats` tools: the creating chat and its
+        /// notify preference (default on). Absent on UI creations — forks
+        /// and blank side chats never notify.
+        #[serde(default)]
+        #[ts(optional)]
+        agent_origin: Option<roboco_proto::AgentOrigin>,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
     /// duplicate `(deviceId, path)` no-ops. `gitDetected` is seeded from the
@@ -997,6 +1013,7 @@ impl EngineRpc {
                 branch,
                 cwd,
                 parent_chat_id,
+                agent_origin,
             } => {
                 self.workspace
                     .create_chat_with_parent(
@@ -1006,6 +1023,7 @@ impl EngineRpc {
                         config,
                         cwd,
                         parent_chat_id,
+                        agent_origin,
                     )
                     .map_err(failed)?;
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
@@ -1462,7 +1480,12 @@ impl RpcService for EngineRpc {
                 let p: QueueCommandParams = parse_params(params)?;
                 let command_id = self
                     .doc_host
-                    .queue_command_with_transfers(&p.chat_id, p.command, p.transfers)
+                    .queue_command_with_transfers(
+                        &p.chat_id,
+                        p.command,
+                        p.transfers,
+                        p.origin_chat_id.as_deref(),
+                    )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
             }
@@ -1587,6 +1610,7 @@ impl RpcService for EngineRpc {
                     target
                         .doc()
                         .push_message(&roboco_doc::SessionMessageEntry {
+                            origin_chat_id: None,
                             duration_ms: None,
                             provider_turn: None,
                             id: marker_id.clone(),
@@ -1720,6 +1744,7 @@ impl RpcService for EngineRpc {
                         &p.text,
                         p.attachments,
                         p.hold_for_turn_end,
+                        p.origin_chat_id.as_deref(),
                     )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "id": id }))
@@ -3331,6 +3356,7 @@ mod tests {
         handle
             .doc()
             .push_message(&roboco_doc::SessionMessageEntry {
+                origin_chat_id: None,
                 id: "turn".into(),
                 role: roboco_doc::MessageRole::Assistant,
                 parts: (0..500)
@@ -3374,14 +3400,14 @@ mod tests {
         assert_eq!(preview["reset"][0]["parts"][0]["id"], "part-372");
         // Changes between preview and subscribe must appear in the full reset.
         handle
-            .write_user_message("arrived", "new local message", 1)
+            .write_user_message("arrived", "new local message", 1, None)
             .unwrap();
         let full = stream.next().await.unwrap();
         assert!(full.get("historyPending").is_none());
         assert_eq!(full["reset"][0]["parts"].as_array().unwrap().len(), 500);
         assert_eq!(full["reset"][1]["id"], "arrived");
         handle
-            .write_user_message("live", "after attach", 2)
+            .write_user_message("live", "after attach", 2, None)
             .unwrap();
         let live = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
             .await
@@ -3529,6 +3555,7 @@ mod context_usage_tests {
         let append = |id: &str| {
             source
                 .push_message(&roboco_doc::SessionMessageEntry {
+                    origin_chat_id: None,
                     id: id.into(),
                     role: roboco_doc::MessageRole::Assistant,
                     parts: vec![roboco_doc::MessagePart::Text {
@@ -3663,6 +3690,7 @@ mod context_usage_tests {
                 .unwrap();
         });
         let entry = |id: &str| roboco_doc::SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::Assistant,
             parts: vec![roboco_doc::MessagePart::Text {

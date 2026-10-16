@@ -3930,6 +3930,7 @@ mod tests {
             .unwrap()
             .to_utc();
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev".into(),
             title: None,
@@ -3986,6 +3987,7 @@ mod tests {
 
     fn user_entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::User,
             parts: Vec::new(),
@@ -5328,6 +5330,7 @@ mod tests {
         let mut state = AppState::new();
         state.selected_chat = Some("c1".into());
         let echo = |id: &str| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![],
@@ -5339,6 +5342,7 @@ mod tests {
             duration_ms: None,
         };
         let row = |id: &str| roboco_doc::QueuedMessage {
+            origin_chat_id: None,
             id: id.into(),
             text: "held".into(),
             attachments: vec![],
@@ -5367,6 +5371,7 @@ mod tests {
         let mut state = AppState::new();
         state.selected_chat = Some("c1".into());
         let echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![],
@@ -5386,6 +5391,7 @@ mod tests {
         assert_eq!(state.pending_echoes().len(), 1);
         // The confirming frame prunes it.
         state.apply_transcript(vec![SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             ..echo.clone()
         }]);
@@ -5394,6 +5400,7 @@ mod tests {
         state.push_echo(
             "c1",
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m2".into(),
                 ..echo.clone()
             },
@@ -5404,6 +5411,7 @@ mod tests {
         state.push_echo(
             "other",
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m3".into(),
                 ..echo
             },

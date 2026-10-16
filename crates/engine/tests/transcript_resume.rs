@@ -25,6 +25,7 @@ const ENTRY_TEXT: usize = 300;
 
 fn assistant_entry(id: &str, text: &str) -> SessionMessageEntry {
     SessionMessageEntry {
+        origin_chat_id: None,
         id: id.into(),
         role: MessageRole::Assistant,
         parts: vec![MessagePart::Text {
@@ -133,7 +134,7 @@ async fn transcript_resume_over_the_real_listener() {
     let handle = core.doc_host.open(CHAT).unwrap();
     for i in 0..250 {
         handle
-            .write_user_message(&format!("u{i}"), &text(i), i as i64)
+            .write_user_message(&format!("u{i}"), &text(i), i as i64, None)
             .unwrap();
         handle
             .doc()
@@ -255,7 +256,7 @@ async fn transcript_resume_over_the_real_listener() {
 
     // 5. Live updates keep carrying digests, and the client map stays exact.
     handle
-        .write_user_message("u-after", &text(999), 2_000)
+        .write_user_message("u-after", &text(999), 2_000, None)
         .unwrap();
     let live_value = next_value(&mut resumed, "live delta after a write").await;
     let live = decode(&live_value, "live delta");
@@ -372,7 +373,7 @@ async fn transcript_resume_over_the_real_listener() {
     let compat_reset_value = next_value(&mut compat_rx, "compat reset").await;
     assert!(compat_reset_value.get("digests").is_none());
     let doc = core.doc_host.open(CHAT).unwrap();
-    doc.write_user_message("u-compat", &text(998), 3_000).unwrap();
+    doc.write_user_message("u-compat", &text(998), 3_000, None).unwrap();
     let compat_delta_value = next_value(&mut compat_rx, "compat live delta").await;
     assert!(
         compat_delta_value.get("digests").is_none(),

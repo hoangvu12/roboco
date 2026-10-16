@@ -20,16 +20,40 @@
 //!   `get_state.sessionFile` (a bare id can hit pi's global session search,
 //!   which prompts interactively on stdin — the protocol channel). The
 //!   resume pointer rides `SessionStarted/Done.session_id`.
-//! - **Prompting**: `prompt` while idle (response = preflight acceptance);
-//!   a mid-run steer goes through pi's `steer` queue (delivered after the
-//!   current assistant turn's tool calls); `abort` interrupts, waiting for
-//!   idle before responding. `follow_up` stays unused: a parked session's
-//!   next message is a fresh `prompt` in roboco's model.
-//! - **Turn settlement**: `agent_settled` is the authoritative end — every
-//!   turn shape ends with a deterministic `Done` (the engine retires its
+//! - **Prompting**: every prompt — turn starts and mid-run steers alike —
+//!   goes out as `prompt` with `streamingBehavior: "steer"`: pi starts a
+//!   run when idle and queues the prompt when an extension run is
+//!   streaming, atomically against settlement, so a prompt can never strand
+//!   against the end of a run. The acknowledgement's `disposition` reports
+//!   what became of it (`started` / `queued` / `handled`; pi < 0.99 reports
+//!   none and the driver infers from whether a run starts). The acceptance
+//!   is unbounded: pi's preflight (extensions, the Roboco MCP bridge,
+//!   compaction) may take arbitrarily long, and only Stop interrupts it. A
+//!   rejected prompt never ends the session — the message returns to the
+//!   driver queue and the rejection surfaces. A mid-run steer carries its
+//!   staged images inline, exactly like a turn-start prompt. Pi is a
+//!   STEP-BOUNDARY harness (the engine registry descriptor agrees): the
+//!   steering mode is set to `"all"` at session start unless the user
+//!   already configured one (agent-dir or project `.pi/settings.json`),
+//!   so a burst of steers is delivered together, in order, at the next
+//!   step boundary. `abort` interrupts, waiting for idle before
+//!   responding. `follow_up` stays unused: a parked session's next message
+//!   is a fresh prompt in roboco's model.
+//! - **Turn settlement**: `agent_settled`, then a state probe: the turn
+//!   ends only once pi reports it is not streaming, not compacting and
+//!   holds no pending messages, and the settle generation is unchanged
+//!   (`agent_start`, `compaction_start`, every prompt or steer, and every
+//!   settle bump it). Busy and stale probes re-arm; a probe that keeps
+//!   failing ends the turn errored — never a silent kill. Every turn shape
+//!   still ends with a deterministic `Done` (the engine retires its
 //!   quiesce watchdogs). Turn errors reject the prompt: a final assistant
 //!   error (`stopReason: "error"`), exhausted `auto_retry_*`, or a failed
-//!   `compaction_end` without `willRetry` produce `Done { Errored }`.
+//!   `compaction_end` without `willRetry` produce `Done { Errored }` — and
+//!   a successful compaction retry clears the error state, so a run that
+//!   recovered through compaction ends completed. Stop sends `clear_queue`
+//!   before `abort`: steers pi queued but never consumed are cancelled
+//!   with the turn (the engine's at-least-once ledger already owns their
+//!   fate), never delivered into the aborted run.
 //! - **Stats**: `get_session_stats.contextUsage` feeds the context meter
 //!   after each settle; `message_update.usage` rides per-turn `Usage`
 //!   passthrough — first-party replacements for the pi-acp fork's
@@ -121,6 +145,37 @@ const INSTALL_HINT: &str = "pi (searched PATH, the login shell's PATH, npm globa
      and fnm/nvm/volta/pnpm/bun install dirs; install with \
      `npm install -g @earendil-works/pi-coding-agent` — Node.js >= 24; set \
      PI_EXECUTABLE to override)";
+
+/// pi's settings directory: an explicit override (tests), else
+/// `PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
+fn pi_agent_dir(explicit: Option<&Path>) -> PathBuf {
+    explicit.map(Path::to_path_buf).unwrap_or_else(|| {
+        crate::model_context::root(
+            "PI_CODING_AGENT_DIR",
+            crate::executable::home_or_current_dir().join(".pi").join("agent"),
+        )
+    })
+}
+
+/// Whether a steering mode is already set in the settings pi loads for
+/// `cwd` (the agent directory's global settings, then the project's):
+/// `set_steering_mode "all"` at session start must never overwrite an
+/// explicit choice — the user's, or `/steering` picked inside a chat
+/// (pi persists that in the same files). A missing, unreadable, or
+/// malformed file simply means "not configured".
+fn steering_mode_configured(agent_dir: Option<&Path>, cwd: &str) -> bool {
+    [
+        pi_agent_dir(agent_dir).join("settings.json"),
+        Path::new(cwd).join(".pi").join("settings.json"),
+    ]
+    .into_iter()
+    .any(|settings| {
+        std::fs::read(&settings)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|settings| settings.get("steeringMode").is_some())
+    })
+}
 
 /// pi accepts both spellings for its npm-global install locations.
 fn pi_install_paths() -> Vec<PathBuf> {
@@ -280,6 +335,11 @@ async fn apply_model(client: &PiClient, model: &str) -> Result<(), HarnessError>
 /// fixture RPC process with [`PiHarness::with_executable`].
 pub struct PiHarness {
     executable: Option<PathBuf>,
+    /// The pi agent directory the steering-mode default reads settings
+    /// from: `PI_CODING_AGENT_DIR` / `~/.pi/agent` unless overridden. Only
+    /// the steering-mode check consults it — model contexts keep hashing
+    /// `auth.json` alone (see [`PiHarness::model_context`]).
+    agent_dir: Option<PathBuf>,
     /// Grace between `abort` and SIGTERM.
     interrupt_grace: Duration,
     /// Grace between SIGTERM and SIGKILL.
@@ -299,6 +359,7 @@ impl Default for PiHarness {
     fn default() -> Self {
         Self {
             executable: None,
+            agent_dir: None,
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_secs(3),
             startup_timeout: Duration::from_secs(120),
@@ -315,6 +376,14 @@ impl PiHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Pin the pi agent directory the steering-mode default reads
+    /// `settings.json` from (tests: a temp dir makes the "user configured
+    /// a mode" check hermetic against the real `~/.pi/agent`).
+    pub fn with_agent_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.agent_dir = Some(path.into());
         self
     }
 
@@ -505,6 +574,12 @@ impl PiHarness {
 
         let (client, incoming) = PiClient::new(stdin, stdout);
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+        // Steering mode "all" at session start unless the user configured
+        // one: pi defaults to one-at-a-time, and a burst of roboco steers
+        // belongs together at the next step boundary, in order. Title runs
+        // never steer, so the one-shot sandbox never touches the setting.
+        let steering_mode_all =
+            !title_only && !steering_mode_configured(self.agent_dir.as_deref(), &request.cwd);
         tokio::spawn(run_session(Session {
             child,
             client,
@@ -514,6 +589,7 @@ impl PiHarness {
             request,
             resume_path,
             mcp_scratch,
+            steering_mode_all,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             startup_timeout: self.startup_timeout,
@@ -538,10 +614,13 @@ impl Harness for PiHarness {
     fn supports_steering(&self) -> bool {
         true
     }
-    /// pi's `steer` queue delivers after the current assistant turn's tool
-    /// calls — turn boundaries, matching the registry descriptor.
+    /// pi's steer queue (reached through `prompt` + steer behavior, with the
+    /// mode set to "all") delivers after the current assistant turn's tool
+    /// calls — the next STEP boundary inside the live turn — matching the
+    /// registry descriptor exactly (both must flip together; orchestration
+    /// v2 ticket 03).
     fn steering_mode(&self) -> SteeringMode {
-        SteeringMode::TurnBoundary
+        SteeringMode::StepBoundary
     }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &REASONING_LEVELS
@@ -643,6 +722,9 @@ struct Session {
     /// The scratch dir holding the MCP bridge file for exactly this run
     /// (dropped after the pi child shuts down, when the file is closed).
     mcp_scratch: Option<crate::scratch::ScratchDir>,
+    /// Send `set_steering_mode "all"` once pi answers `get_state` — armed
+    /// in `run_with_mode` only when no mode is configured (see there).
+    steering_mode_all: bool,
     interrupt_grace: Duration,
     kill_grace: Duration,
     startup_timeout: Duration,
@@ -668,11 +750,20 @@ type RequestInputFn = Box<
     dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync,
 >;
 
-/// Bound on the prompt/steer acceptance responses (pi answers at preflight —
-/// fast); a hang past it is a wedged process, not a slow one.
-const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Bound on the post-settle `clear_queue` + `get_session_stats` round trips.
+/// Bound on the post-settle `get_session_stats` round trip (best-effort:
+/// a failure skips the context meter, never the turn).
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bound on one settle-probe round (`get_state`, `clear_queue`): pi answers
+/// in milliseconds; a hang past it is one failed attempt.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Settle-probe attempts before the turn ends errored: a failed probe is
+/// retried, and after this many the turn fails visibly instead of the
+/// process being killed silently.
+const PROBE_ATTEMPTS: u32 = 3;
+/// Delay before a re-armed probe (a busy report, or the inference after an
+/// acknowledgement that carries no disposition): the probe must never
+/// hot-loop while pi streams.
+const PROBE_REARM_DELAY: Duration = Duration::from_millis(500);
 /// Drain window for frames already written when the child exits: a crash
 /// right after the final response must still surface that response.
 const EXIT_DRAIN: Duration = Duration::from_millis(200);
@@ -681,46 +772,144 @@ const EXIT_DRAIN: Duration = Duration::from_millis(200);
 /// see EOF first.
 const EOF_DRAIN: Duration = Duration::from_millis(50);
 
-/// A steer request in flight: (text, already-retried-as-prompt, response).
-type SteerCall = BoxFuture<'static, (String, bool, Result<Value, HarnessError>)>;
+/// A mid-run steer in flight: the mailbox message and its `prompt`
+/// acknowledgement.
+type SteerCall = BoxFuture<'static, (SteerMessage, Result<Value, HarnessError>)>;
 
-/// The post-`agent_settled` sequence: recover any steers stranded in pi's
-/// queue (the settle race), then fetch the session stats for the context
-/// meter. Resolves with (recovered steer texts, stats data).
-type SettleOutcome = (Vec<String>, Option<Value>);
+/// One armed prompt: its acceptance future and the mailbox message it
+/// delivers (None = the run's own first prompt). The pair always travels
+/// together — the message is owed a `Steered` boundary once pi accepts the
+/// prompt, and returns to the queue if pi rejects it.
+struct Armed {
+    acceptance: BoxFuture<'static, Result<Value, HarnessError>>,
+    message: Option<SteerMessage>,
+}
 
-fn settle_future(client: &PiClient, pending_steers: usize) -> BoxFuture<'static, SettleOutcome> {
+/// pi's answer to a `prompt`: what became of it. Pi ≥ 0.99 reports
+/// `disposition` on the acknowledgement; older builds report nothing and
+/// the driver infers (see [`Disposition::Unknown`]).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Disposition {
+    /// A run began with the prompt.
+    Started,
+    /// Accepted into pi's steer queue: delivered (consumed) when its user
+    /// `message_start` echo arrives.
+    Queued,
+    /// pi handled the prompt without starting a run (an extension
+    /// command): the turn ends once pi reports it is not streaming.
+    Handled,
+    /// pi < 0.99 reported nothing: infer from whether a run starts — the
+    /// settle probe ends the turn when nothing does.
+    Unknown,
+}
+
+fn disposition_of(data: &Value) -> Disposition {
+    match data.get("disposition").and_then(Value::as_str) {
+        Some("started") => Disposition::Started,
+        Some("queued") => Disposition::Queued,
+        Some("handled") => Disposition::Handled,
+        _ => Disposition::Unknown,
+    }
+}
+
+/// One settle-probe round: read pi's state and decide whether the turn may
+/// end. Pi is at rest only when it is neither streaming nor compacting and
+/// holds no pending messages; messages left in pi's queue while it is idle
+/// (steers stranded by the settle race) are cleared and handed back — they
+/// re-deliver as the next turn's prompts.
+enum ProbeRound {
+    /// pi is streaming or compacting: the turn cannot end yet.
+    Busy,
+    /// pi is idle with messages still queued: they were cleared; the texts
+    /// return for re-delivery.
+    Recovered(Vec<String>),
+    /// pi is at rest: the turn may end (stats for the context meter are
+    /// best-effort).
+    Quiescent(Option<Value>),
+    /// The probe itself failed (the request was rejected or timed out).
+    Failed(String),
+}
+
+/// The texts pi's `clear_queue` handed back (its steering + followUp
+/// queues).
+fn queue_texts(data: &Value) -> Vec<String> {
+    ["steering", "followUp"]
+        .iter()
+        .flat_map(|key| {
+            data.get(*key)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// One probe round. Bounded: a request pi never answers counts as one
+/// failed attempt.
+fn probe_round(client: &PiClient) -> BoxFuture<'static, ProbeRound> {
     let client = client.clone();
     Box::pin(async move {
-        // A steer accepted while the run was active can land in pi's queue
-        // during the settle window (the queue check happened first): the
-        // queue would then sit undelivered while the session parks.
-        // `clear_queue` hands the texts back; they redeliver as prompts.
-        let recovered = if pending_steers > 0 {
-            match client.request("clear_queue", json!({})).await {
-                Ok(data) => ["steering", "followUp"]
-                    .iter()
-                    .flat_map(|key| {
-                        data.get(*key)
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default()
-                    })
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect(),
-                Err(e) => {
-                    tracing::debug!(
-                        target: "roboco_harness::pi",
-                        "clear_queue failed (stranded steers ride the next prompt): {e}"
-                    );
-                    Vec::new()
-                }
+        let state = match tokio::time::timeout(
+            PROBE_TIMEOUT,
+            client.request("get_state", json!({})),
+        )
+        .await
+        {
+            Ok(Ok(state)) => state,
+            Ok(Err(e)) => return ProbeRound::Failed(e.to_string()),
+            Err(_) => {
+                return ProbeRound::Failed(
+                    "get_state did not answer within the probe budget".into(),
+                )
             }
-        } else {
-            Vec::new()
         };
-        let stats = client.request("get_session_stats", json!({})).await.ok();
-        (recovered, stats)
+        let busy = |key: &str| state.get(key).and_then(Value::as_bool).unwrap_or(false);
+        if busy("isStreaming") || busy("isCompacting") {
+            return ProbeRound::Busy;
+        }
+        let pending = state
+            .get("pendingMessageCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if pending > 0 {
+            return match tokio::time::timeout(
+                PROBE_TIMEOUT,
+                client.request("clear_queue", json!({})),
+            )
+            .await
+            {
+                Ok(Ok(data)) => ProbeRound::Recovered(queue_texts(&data)),
+                Ok(Err(e)) => ProbeRound::Failed(e.to_string()),
+                Err(_) => ProbeRound::Failed(
+                    "clear_queue did not answer within the probe budget".into(),
+                ),
+            };
+        }
+        let stats = match tokio::time::timeout(
+            SETTLE_TIMEOUT,
+            client.request("get_session_stats", json!({})),
+        )
+        .await
+        {
+            Ok(Ok(stats)) => Some(stats),
+            // Best-effort: a failed read skips the context meter, never
+            // the turn.
+            _ => None,
+        };
+        ProbeRound::Quiescent(stats)
+    })
+}
+
+/// Arm one more probe round, optionally after the re-arm delay: a busy
+/// report must not hot-loop the probe while pi streams.
+fn rearm_probe(client: &PiClient, delay: bool) -> BoxFuture<'static, ProbeRound> {
+    let client = client.clone();
+    Box::pin(async move {
+        if delay {
+            tokio::time::sleep(PROBE_REARM_DELAY).await;
+        }
+        probe_round(&client).await
     })
 }
 
@@ -739,6 +928,7 @@ async fn run_session(session: Session) {
         // Held for the whole run: dropping it removes the bridge file, so it
         // must outlive the pi child (shut down before this function ends).
         mcp_scratch: _mcp_scratch,
+        steering_mode_all,
         interrupt_grace,
         kill_grace,
         startup_timeout,
@@ -756,6 +946,21 @@ async fn run_session(session: Session) {
     // ---- startup: get_state (interruptible, bounded) ----------------------
     let setup = async {
         let state = client.request("get_state", json!({})).await?;
+        // The steering mode rides the same startup: pi defaults to
+        // one-at-a-time and roboco's steers belong together. Best-effort —
+        // a pi old enough to lack the command logs and runs on its own
+        // default (the mode is a delivery-batching preference, never a
+        // run-shape contract).
+        if steering_mode_all
+            && let Err(e) = client
+                .request("set_steering_mode", json!({ "mode": "all" }))
+                .await
+        {
+            tracing::debug!(
+                target: "roboco_harness::pi",
+                "set_steering_mode all rejected (pi default runs): {e}"
+            );
+        }
         // Apply the run's model and thinking level (pi clamps to the model's
         // own ladder; a rejected switch logs and the agent default runs,
         // pi-acp parity). Best-effort: an unavailable model or level is not
@@ -871,6 +1076,7 @@ async fn run_session(session: Session) {
                      without the previous context",
                     request.resume.as_deref().unwrap_or_default()
                 ),
+                kind: None,
             },
         )
         .await;
@@ -880,17 +1086,29 @@ async fn run_session(session: Session) {
     // Agent activity since the last settle (extension-initiated runs deliver
     // output with no prompt of ours; their settle still emits a Done).
     let mut saw_activity = false;
-    // Steers accepted into pi's queue (or retried as steer-behavior prompts)
-    // whose delivery pi confirms with a user message.
-    let mut pending_steer_deliveries: usize = 0;
+    // Mailbox prompts accepted into pi's steer queue (disposition `queued`,
+    // or an acknowledgement without one on pi < 0.99) whose delivery pi
+    // confirms with a user message echo — the consumed signal.
+    let mut pending_echo_deliveries: usize = 0;
     let mut steer_calls: FuturesUnordered<SteerCall> = FuturesUnordered::new();
-    // Steers the driver itself owns (stranded in pi's queue at settle, or
-    // queued while the settle sequence runs) — delivered as fresh prompts
-    // once the current turn's Done is out, carrying their attachments and
-    // run config.
+    // Messages the driver itself owns — rejected by pi, stranded in pi's
+    // queue at settle, or queued while the settle probe winds down —
+    // delivered as fresh prompts once the current turn's Done is out,
+    // carrying their attachments and run config.
     let mut driver_steers: VecDeque<SteerMessage> = VecDeque::new();
-    // The post-settle sequence (clear_queue + stats), then the Done.
-    let mut settle: Option<BoxFuture<'static, SettleOutcome>> = None;
+    // The settle probe: armed at `agent_settled` (and after a handled or
+    // undispositioned acknowledgement, or a rejection), re-armed while pi
+    // reports busy. The turn ends only when a round reports pi at rest with
+    // an unchanged generation.
+    let mut probe: Option<BoxFuture<'static, ProbeRound>> = None;
+    // The generation the in-flight probe was armed at: `agent_start`,
+    // `compaction_start`, every prompt or steer sent, and every settle bump
+    // the counter; a probe result armed at a superseded generation is
+    // stale (a prompt acknowledgement raced it) and re-arms.
+    let mut probe_generation: u64 = 0;
+    // Consecutive failed probe rounds (any success resets it).
+    let mut probe_failures: u32 = 0;
+    let mut generation: u64 = 0;
     // Per-turn token usage: the latest cumulative provider usage, emitted
     // at each turn boundary (codex parity).
     let mut last_usage: Option<Value> = None;
@@ -907,15 +1125,23 @@ async fn run_session(session: Session) {
     let mut child_exit: Option<Option<std::process::ExitStatus>> = None;
     let mut exit_drain_deadline: Option<tokio::time::Instant> = None;
 
-    // Arm the first prompt. Prompt acceptance (preflight) — set when a
-    // prompt is armed, cleared when its response lands (Ok = run started,
-    // Err = rejected). A prompt sent while idle makes pi emit its own user
-    // message first — the echo, not a steer delivery. A prompt-owned run is
-    // between acceptance and its Done.
+    // Arm the first prompt. The acceptance — pi's preflight — is set when a
+    // prompt is armed and cleared when its response lands (Ok = accepted,
+    // read by disposition; Err = rejected). A prompt that starts a run
+    // makes pi emit its own user message first — the echo, not a steer
+    // delivery; a prompt pi queues delivers at that echo instead. A
+    // prompt-owned run is between acceptance and its Done.
     let images = load_image_contents(&request.attachments).await;
-    let mut acceptance: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some(
-        prompt_acceptance(&client, &request.prompt, images, None),
-    );
+    let mut armed = Some(Armed {
+        acceptance: prompt_acceptance(&client, &request.prompt, images),
+        message: None,
+    });
+    // Whether the current acceptance cycle has already spent its one
+    // immediate at-rest re-delivery of a rejected message: a pi that keeps
+    // rejecting falls back to the probe path (bounded by its re-arm delay)
+    // instead of hot-looping round trips.
+    let mut retried_at_rest = false;
+    generation += 1; // the prompt went out
     let mut awaiting_prompt_echo = true;
     let mut run_active = true;
     let mut done_current = false;
@@ -933,138 +1159,391 @@ async fn run_session(session: Session) {
                 exit_drain_deadline.unwrap_or_else(tokio::time::Instant::now)
             ), if exit_drain_deadline.is_some() => break 'main,
 
-            res = async { acceptance.as_mut().expect("guarded by if").await }, if acceptance.is_some() => {
-                acceptance = None;
+            res = async { (&mut armed.as_mut().expect("guarded by if").acceptance).await }, if armed.is_some() => {
+                let Armed { message: mailbox, .. } = armed.take().expect("guarded by if");
                 match res {
-                    Ok(_) => { /* accepted: the run streams until agent_settled */ }
-                    Err(e) => {
-                        // Pre-acceptance rejection: the prompt never ran —
-                        // the turn errors with pi's own reason (an
-                        // interrupt in flight still wins, ACP parity).
-                        let (status, error) = if interrupted {
-                            (DoneStatus::Interrupted, None)
-                        } else {
-                            (DoneStatus::Errored, Some(e.to_string()))
-                        };
-                        done_current = true;
-                        if interrupted {
-                            done_after_interrupt = true;
+                    Ok(data) => {
+                        // A prompt acknowledgement bumps the settle
+                        // generation: a probe whose reading predates it must
+                        // re-arm — the steer it accepted may have landed in
+                        // pi queue after the probe read it (T3 bug 16846).
+                        generation += 1;
+                        // A new acceptance cycle earns a fresh immediate
+                        // re-delivery budget.
+                        retried_at_rest = false;
+                        match disposition_of(&data) {
+                            Disposition::Started => {
+                                // A run began: it streams until
+                                // agent_settled, where the settle probe
+                                // takes over. A mailbox message is delivered
+                                // at acceptance.
+                                if mailbox.is_some()
+                                    && !confirm_delivery(
+                                        &event_tx,
+                                        &mut assistant_message_id,
+                                    )
+                                    .await
+                                {
+                                    break 'main;
+                                }
+                                awaiting_prompt_echo = true;
+                                run_active = true;
+                            }
+                            Disposition::Queued => {
+                                // Accepted into pi steer queue: delivery
+                                // (and the boundary) land at the user
+                                // message echo; a strand is recovered by the
+                                // settle probe clear_queue.
+                                if mailbox.is_some() {
+                                    pending_echo_deliveries += 1;
+                                }
+                                // The run own first prompt queued behind an
+                                // extension run: awaiting_prompt_echo
+                                // already covers its echo.
+                                run_active = true;
+                            }
+                            Disposition::Handled => {
+                                // pi handled the prompt without a run (an
+                                // extension command): the boundary is owed
+                                // now, and the turn ends once pi reports it
+                                // is not streaming.
+                                if mailbox.is_some()
+                                    && !confirm_delivery(
+                                        &event_tx,
+                                        &mut assistant_message_id,
+                                    )
+                                    .await
+                                {
+                                    break 'main;
+                                }
+                                awaiting_prompt_echo = false;
+                                run_active = false;
+                                if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, false));
+                                }
+                            }
+                            Disposition::Unknown => {
+                                // pi < 0.99 reports no disposition:
+                                // acceptance still confirms delivery, but
+                                // whether a run started is inferred — the
+                                // probe (after a grace, so a starting run
+                                // can flip isStreaming) ends the turn if
+                                // nothing runs.
+                                if mailbox.is_some()
+                                    && !confirm_delivery(
+                                        &event_tx,
+                                        &mut assistant_message_id,
+                                    )
+                                    .await
+                                {
+                                    break 'main;
+                                }
+                                awaiting_prompt_echo = true;
+                                if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, true));
+                                }
+                            }
                         }
-                        if !send(
-                            &event_tx,
-                            AgentEvent::Done {
-                                status,
-                                result: None,
-                                error,
-                                session_id: Some(session_pointer.clone()),
-                            },
-                        )
-                        .await
-                        {
-                            break 'main;
+                    },
+                    Err(e) => match mailbox {
+                        Some(msg) => {
+                            // A rejected mailbox prompt never ends the
+                            // session: the rejection surfaces, the message
+                            // returns to the queue, and it re-delivers once
+                            // the turn ends — immediately when the session
+                            // is already at rest, else after the probe
+                            // closes the turn.
+                            let _ = send(
+                                &event_tx,
+                                AgentEvent::Error {
+                                    message: format!("pi rejected the message: {e}"),
+                                    kind: None,
+                                },
+                            )
+                            .await;
+                            driver_steers.push_front(msg);
+                            run_active = false;
+                            let at_rest = !saw_activity
+                                && probe.is_none()
+                                && steer_calls.is_empty();
+                            if at_rest && !retried_at_rest {
+                                // One immediate re-delivery per acceptance
+                                // cycle; a pi that keeps rejecting an idle
+                                // prompt falls back to the probe path below,
+                                // whose re-arm delay bounds the retry rate.
+                                retried_at_rest = true;
+                                if let Some(msg) = driver_steers.pop_front()
+                                    && !deliver_parked_steer(
+                                        &client,
+                                        &mut armed,
+                                        &mut awaiting_prompt_echo,
+                                        &mut run_active,
+                                        &mut done_current,
+                                        &mut generation,
+                                        msg,
+                                    )
+                                    .await
+                                {
+                                    break 'main;
+                                }
+                            } else if probe.is_none() {
+                                probe_generation = generation;
+                                probe = Some(rearm_probe(&client, true));
+                            }
                         }
-                        break 'main;
-                    }
+                        None => {
+                            // The run's own first prompt: the turn errors
+                            // with pi's own reason (an interrupt in flight
+                            // still wins, ACP parity). The session itself
+                            // parks — the consumer decides its fate.
+                            let (status, error) = if interrupted {
+                                (DoneStatus::Interrupted, None)
+                            } else {
+                                (DoneStatus::Errored, Some(e.to_string()))
+                            };
+                            done_current = true;
+                            if interrupted {
+                                done_after_interrupt = true;
+                            }
+                            if !send(
+                                &event_tx,
+                                AgentEvent::Done {
+                                    status,
+                                    result: None,
+                                    error,
+                                    session_id: Some(session_pointer.clone()),
+                                },
+                            )
+                            .await
+                            {
+                                break 'main;
+                            }
+                            run_active = false;
+                        }
+                    },
                 }
             },
 
-            outcome = async { settle.as_mut().expect("guarded by if").await }, if settle.is_some() => {
-                settle = None;
-                let (recovered, stats) = outcome;
-                if !recovered.is_empty() {
-                    let stranded = pending_steer_deliveries.saturating_sub(recovered.len());
-                    pending_steer_deliveries = stranded;
-                    let mut queue: Vec<SteerMessage> = driver_steers.drain(..).collect();
-                    queue.extend(recovered.into_iter().map(SteerMessage::text));
-                    driver_steers = queue.into();
-                } else {
-                    pending_steer_deliveries = 0;
-                }
-                if let Some(stats) = stats.as_ref().and_then(|stats| context_usage_event(stats))
-                    && !send(&event_tx, stats).await
-                {
-                    break 'main;
-                }
-                let status = if turn_error.is_some() {
-                    DoneStatus::Errored
-                } else {
-                    DoneStatus::Completed
-                };
-                let error = turn_error.take();
-                done_current = true;
-                if interrupted {
-                    done_after_interrupt = true;
-                }
-                if !send(
-                    &event_tx,
-                    AgentEvent::Done {
-                        status,
-                        result: None,
-                        error,
-                        session_id: Some(session_pointer.clone()),
-                    },
-                )
-                .await
-                {
-                    break 'main;
-                }
-                if interrupted {
-                    break 'main;
-                }
-                // Agent activity during the settle round-trip (an
-                // extension-initiated run) needs its own settle + Done.
-                if saw_activity {
-                    saw_activity = false;
-                    let settle_client = client.clone();
-                    settle = Some(Box::pin(async move {
-                        match tokio::time::timeout(SETTLE_TIMEOUT, settle_future(&settle_client, 0)).await {
-                            Ok(outcome) => outcome,
-                            Err(_) => (Vec::new(), None),
+            round = async { probe.as_mut().expect("guarded by if").await }, if probe.is_some() => {
+                probe = None;
+                match round {
+                    ProbeRound::Busy => {
+                        // pi is streaming or compacting: re-arm after the
+                        // delay (the probe must never hot-loop while pi
+                        // streams).
+                        probe_failures = 0;
+                        probe_generation = generation;
+                        probe = Some(rearm_probe(&client, true));
+                    }
+                    ProbeRound::Recovered(texts) => {
+                        // pi is idle yet still held messages (steers
+                        // stranded by the settle race): they were cleared
+                        // and re-queue, in send order, as the next turn's
+                        // prompts.
+                        probe_failures = 0;
+                        pending_echo_deliveries =
+                            pending_echo_deliveries.saturating_sub(texts.len());
+                        for text in texts.into_iter().rev() {
+                            driver_steers.push_front(SteerMessage::text(text));
                         }
-                    }));
-                }
-                // A stranded steer becomes the next turn; otherwise the
-                // session parks — the caller owns teardown.
-                if settle.is_none()
-                    && let Some(msg) = driver_steers.pop_front()
-                    && !deliver_parked_steer(
-                        &client,
-                        &event_tx,
-                        &mut assistant_message_id,
-                        &mut acceptance,
-                        &mut awaiting_prompt_echo,
-                        &mut run_active,
-                        &mut done_current,
-                        &msg,
-                    )
-                    .await
-                {
-                    break 'main;
+                        probe_generation = generation;
+                        probe = Some(rearm_probe(&client, false));
+                    }
+                    ProbeRound::Quiescent(stats) => {
+                        if generation != probe_generation {
+                            // A prompt, steer or settle bumped since arming:
+                            // this reading is stale — re-probe. This is what
+                            // re-arms the probe after a prompt
+                            // acknowledgement that raced it.
+                            probe_failures = 0;
+                            probe_generation = generation;
+                            probe = Some(rearm_probe(&client, false));
+                        } else {
+                            probe_failures = 0;
+                            if let Some(usage) = stats
+                                .as_ref()
+                                .and_then(|stats| context_usage_event(stats))
+                                && !send(&event_tx, usage).await
+                            {
+                                break 'main;
+                            }
+                            let status = if turn_error.is_some() {
+                                DoneStatus::Errored
+                            } else {
+                                DoneStatus::Completed
+                            };
+                            let error = turn_error.take();
+                            done_current = true;
+                            if interrupted {
+                                done_after_interrupt = true;
+                            }
+                            if !send(
+                                &event_tx,
+                                AgentEvent::Done {
+                                    status,
+                                    result: None,
+                                    error,
+                                    session_id: Some(session_pointer.clone()),
+                                },
+                            )
+                            .await
+                            {
+                                break 'main;
+                            }
+                            if interrupted {
+                                break 'main;
+                            }
+                            // A queued message becomes the next turn;
+                            // otherwise the session parks — the caller owns
+                            // teardown.
+                            if let Some(msg) = driver_steers.pop_front()
+                                && !deliver_parked_steer(
+                                    &client,
+                                    &mut armed,
+                                    &mut awaiting_prompt_echo,
+                                    &mut run_active,
+                                    &mut done_current,
+                                    &mut generation,
+                                    msg,
+                                )
+                                .await
+                            {
+                                break 'main;
+                            }
+                        }
+                    }
+                    ProbeRound::Failed(reason) => {
+                        probe_failures += 1;
+                        if probe_failures >= PROBE_ATTEMPTS {
+                            // The probe failed repeatedly: end the turn
+                            // errored — visibly, with the reason — never a
+                            // silent kill. The session parks; the queued
+                            // messages' ledger entries survive for the
+                            // engine's re-dispatch. The counter resets so
+                            // the next turn's probe starts a fresh budget.
+                            probe_failures = 0;
+                            done_current = true;
+                            if !send(
+                                &event_tx,
+                                AgentEvent::Done {
+                                    status: DoneStatus::Errored,
+                                    result: None,
+                                    error: Some(format!(
+                                        "pi's settle probe failed after \
+                                         {PROBE_ATTEMPTS} attempts: {reason}"
+                                    )),
+                                    session_id: Some(session_pointer.clone()),
+                                },
+                            )
+                            .await
+                            {
+                                break 'main;
+                            }
+                        } else {
+                            probe_generation = generation;
+                            probe = Some(rearm_probe(&client, true));
+                        }
+                    }
                 }
             },
 
             res = steer_calls.next(), if !steer_calls.is_empty() => match res {
-                Some((text, retried, res)) => match res {
-                    Ok(_) => { /* queued in pi; delivery shows as a user message */ }
+                Some((msg, res)) => match res {
+                    Ok(data) => {
+                        // The steer acknowledgement bumps the settle
+                        // generation: a probe whose reading predates it must
+                        // re-arm — the steer may have landed in pi queue
+                        // after the probe read it (T3 bug 16846).
+                        generation += 1;
+                        match disposition_of(&data) {
+                            Disposition::Started => {
+                                // The steer raced the run end and pi started
+                                // a run with it: delivered now, and the run
+                                // streams to its own settle.
+                                if !confirm_delivery(
+                                    &event_tx,
+                                    &mut assistant_message_id,
+                                )
+                                .await
+                                {
+                                    break 'main;
+                                }
+                                run_active = true;
+                            }
+                            Disposition::Queued => {
+                                // Accepted into pi steer queue: the boundary
+                                // lands at the user message echo.
+                                pending_echo_deliveries += 1;
+                            }
+                            Disposition::Handled => {
+                                // pi handled it without starting a run: the
+                                // message is delivered.
+                                if !confirm_delivery(
+                                    &event_tx,
+                                    &mut assistant_message_id,
+                                )
+                                .await
+                                {
+                                    break 'main;
+                                }
+                            }
+                            Disposition::Unknown => {
+                                // pi < 0.99: delivery lands at the echo, if
+                                // one ever comes.
+                                pending_echo_deliveries += 1;
+                            }
+                        }
+                    },
                     Err(e) if client.is_closed() => {
                         tracing::debug!(target: "roboco_harness::pi", "steer lost to exit: {e}");
                     }
-                    Err(e) if !retried => {
-                        // Rejection (pi errors on extension-command text in
-                        // a steer): redeliver as a prompt with steer
-                        // behavior — pi runs extension commands immediately.
-                        tracing::debug!(
-                            target: "roboco_harness::pi",
-                            "steer rejected (retrying as a steer-behavior prompt): {e}"
-                        );
-                        steer_calls.push(steer_request(&client, &text, true));
-                    }
                     Err(e) => {
+                        // Rejected: surface it and hand the message back to
+                        // the queue — it re-delivers once the turn ends
+                        // (immediately when the session is already at
+                        // rest, else when the settle probe closes the
+                        // turn).
                         let _ = send(
                             &event_tx,
-                            AgentEvent::Error { message: format!("Steering failed: {e}") },
+                            AgentEvent::Error {
+                                message: format!("pi rejected the steer: {e}"),
+                                kind: None,
+                            },
                         )
                         .await;
+                        driver_steers.push_front(msg);
+                        let at_rest = !run_active
+                            && !saw_activity
+                            && probe.is_none()
+                            && armed.is_none()
+                            && steer_calls.is_empty();
+                        if at_rest && !retried_at_rest {
+                            // Same one-shot immediate re-delivery budget as a
+                            // rejected parked prompt: bounded by the probe
+                            // re-arm delay if pi keeps rejecting.
+                            retried_at_rest = true;
+                            if let Some(msg) = driver_steers.pop_front()
+                                && !deliver_parked_steer(
+                                    &client,
+                                    &mut armed,
+                                    &mut awaiting_prompt_echo,
+                                    &mut run_active,
+                                    &mut done_current,
+                                    &mut generation,
+                                    msg,
+                                )
+                                .await
+                            {
+                                break 'main;
+                            }
+                        } else if at_rest && probe.is_none() {
+                            // The immediate budget is spent: the probe ends
+                            // the turn and its Done pops the message back.
+                            probe_generation = generation;
+                            probe = Some(rearm_probe(&client, true));
+                        }
                     }
                 },
                 None => {}
@@ -1076,6 +1555,10 @@ async fn run_session(session: Session) {
                     let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
                     match kind {
                         "agent_start" => {
+                            // Agent activity: bumps the settle generation
+                            // (an in-flight probe would read stale) and
+                            // marks the turn active until its settle.
+                            generation += 1;
                             saw_activity = true;
                         }
                         "message_start" => {
@@ -1083,19 +1566,17 @@ async fn run_session(session: Session) {
                             if role == Some("assistant") {
                                 tracker.reset();
                             } else if role == Some("user") {
-                                // Our idle prompt's own echo, or a steer
+                                // Our prompt's own echo, or a queued steer's
                                 // delivery out of pi's queue.
                                 if awaiting_prompt_echo {
                                     awaiting_prompt_echo = false;
-                                } else if pending_steer_deliveries > 0 {
-                                    pending_steer_deliveries -= 1;
-                                    let (prev, next) = rotate(&mut assistant_message_id);
-                                    if !send(
+                                } else if pending_echo_deliveries > 0 {
+                                    // A queued steer's consumed signal: its
+                                    // user echo is what delivers it.
+                                    pending_echo_deliveries -= 1;
+                                    if !confirm_delivery(
                                         &event_tx,
-                                        AgentEvent::Steered {
-                                            assistant_message_id: Some(prev),
-                                            next_assistant_message_id: Some(next),
-                                        },
+                                        &mut assistant_message_id,
                                     )
                                     .await
                                     {
@@ -1128,6 +1609,7 @@ async fn run_session(session: Session) {
                             if let Some(error) = message_end_error(&event) {
                                 let _ = send(&event_tx, AgentEvent::Error {
                                     message: error.clone(),
+                                    kind: None,
                                 })
                                 .await;
                                 turn_error = Some(error);
@@ -1206,6 +1688,7 @@ async fn run_session(session: Session) {
                                         "pi hit a transient error and is retrying \
                                          (attempt {attempt}/{max}): {message}"
                                     ),
+                                    kind: None,
                                 },
                             )
                             .await;
@@ -1227,8 +1710,13 @@ async fn run_session(session: Session) {
                         }
                         "compaction_end" => {
                             // A failed compaction that will not retry ends
-                            // the run as an error; success (manual, threshold,
-                            // overflow-retry) just continues or re-prompts.
+                            // the run as an error; success (manual,
+                            // threshold, overflow-retry) just continues or
+                            // re-prompts. A compaction retry that SUCCEEDED
+                            // recovered the turn: the error that triggered
+                            // it (the overflow error message, an exhausted
+                            // auto-retry) no longer rejects the prompt — the
+                            // retried run may still complete it.
                             let will_retry = event.get("willRetry").and_then(Value::as_bool).unwrap_or(false);
                             let aborted = event.get("aborted").and_then(Value::as_bool).unwrap_or(false);
                             let failed = event.get("result").map(Value::is_null).unwrap_or(true)
@@ -1241,6 +1729,8 @@ async fn run_session(session: Session) {
                                         .unwrap_or("pi's compaction failed.")
                                         .to_owned(),
                                 );
+                            } else if will_retry && !failed && !aborted {
+                                turn_error = None;
                             }
                         }
                         "extension_ui_request" => {
@@ -1255,7 +1745,15 @@ async fn run_session(session: Session) {
                                 .unwrap_or_default();
                             tracing::debug!(target: "roboco_harness::pi", "pi extension error: {detail}");
                         }
+                        "compaction_start" => {
+                            // Compaction is agent activity too: it bumps
+                            // the settle generation — the probe confirms
+                            // rest only after compaction_end.
+                            generation += 1;
+                        }
                         "agent_settled" => {
+                            // Every settle bumps the generation.
+                            generation += 1;
                             if interrupted {
                                 // abort() landed: close out as Interrupted
                                 // without waiting for anything else.
@@ -1273,21 +1771,20 @@ async fn run_session(session: Session) {
                                 .await;
                                 break 'main;
                             }
-                            if (run_active || saw_activity) && settle.is_none() {
+                            if run_active || saw_activity {
                                 run_active = false;
                                 saw_activity = false;
-                                let settle_client = client.clone();
-                                let pending = pending_steer_deliveries;
-                                settle = Some(Box::pin(async move {
-                                    match tokio::time::timeout(SETTLE_TIMEOUT, settle_future(&settle_client, pending)).await {
-                                        Ok(outcome) => outcome,
-                                        Err(_) => (Vec::new(), None),
-                                    }
-                                }));
+                                if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, false));
+                                }
+                                // A probe already in flight (armed after a
+                                // handled or undispositioned acknowledgement,
+                                // or a rejection): its generation check
+                                // re-arms it for this settle.
                             }
-                            // A settle with no run behind it (spurious, a
-                            // settle already in flight — its completion
-                            // re-arms for any activity seen meanwhile — or
+                            // A settle with no run behind it (spurious, one
+                            // already covered by an in-flight probe, or
                             // post-abort) is ignored.
                         }
                         // turn_start, queue_update, bash_execution_update
@@ -1300,16 +1797,17 @@ async fn run_session(session: Session) {
                     }
                 }
                 Some(PiIncoming::Eof) | None => {
-                    // The settle sequence and the acceptance both race EOF
-                    // through the pending map: a response that already
+                    // The settle probe and the acceptance both race EOF
+                    // through the pending map: a result that already
                     // resolved must still close out the turn. Give each a
                     // short drain before falling to crash bookkeeping.
-                    if let Some(mut fut) = settle.take() {
-                        if let Ok((recovered, stats)) =
+                    if let Some(mut fut) = probe.take() {
+                        if let Ok(ProbeRound::Quiescent(stats)) =
                             tokio::time::timeout(EOF_DRAIN, &mut fut).await
                         {
-                            let _ = recovered;
-                            if let Some(usage) = stats.as_ref().and_then(|s| context_usage_event(s)) {
+                            if let Some(usage) =
+                                stats.as_ref().and_then(|s| context_usage_event(s))
+                            {
                                 let _ = send(&event_tx, usage).await;
                             }
                             done_current = true;
@@ -1329,18 +1827,30 @@ async fn run_session(session: Session) {
                             .await;
                         }
                     }
-                    if let Some(mut fut) = acceptance.take() {
+                    if let Some(mut armed_prompt) = armed.take() {
                         // A resolved REJECTION carries pi's own reason; a
                         // resolved acceptance (or a request failed by the
                         // EOF cleanup) falls through to the crash message.
-                        if let Ok(Err(e)) = tokio::time::timeout(EOF_DRAIN, &mut fut).await {
+                        // A Stop that killed pi before the answer still wins
+                        // (ACP parity) — one Interrupted Done, never two.
+                        if let Ok(Err(e)) =
+                            tokio::time::timeout(EOF_DRAIN, &mut armed_prompt.acceptance).await
+                        {
                             done_current = true;
+                            let (status, error) = if interrupted {
+                                (DoneStatus::Interrupted, None)
+                            } else {
+                                (DoneStatus::Errored, Some(e.to_string()))
+                            };
+                            if interrupted {
+                                done_after_interrupt = true;
+                            }
                             let _ = send(
                                 &event_tx,
                                 AgentEvent::Done {
-                                    status: DoneStatus::Errored,
+                                    status,
                                     result: None,
-                                    error: Some(e.to_string()),
+                                    error,
                                     session_id: Some(session_pointer.clone()),
                                 },
                             )
@@ -1360,28 +1870,29 @@ async fn run_session(session: Session) {
                         // current configuration runs (startup parity).
                         let _ = configure_live(&client, next).await;
                     }
-                    let text = msg.prompt.clone();
-                    if run_active || acceptance.is_some() {
-                        // Live turn: pi's own steer queue (delivered after
-                        // the current assistant turn's tool calls). The
-                        // attachments' path refs ride the text; the parked
-                        // delivery inlines them as images.
-                        steer_calls.push(steer_request(&client, &text, false));
-                        pending_steer_deliveries += 1;
-                    } else if settle.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
-                        // The settle sequence or a steer acknowledgement is
+                    if run_active || armed.is_some() {
+                        // Live turn: the prompt rides steer behavior — pi
+                        // queues it while streaming (delivered after the
+                        // current assistant turn's tool calls, all queued
+                        // steers together in mode "all") and starts a run
+                        // when idle, atomically against settlement. The
+                        // staged attachments inline as images, exactly like
+                        // a turn-start prompt.
+                        generation += 1; // the prompt goes out
+                        steer_calls.push(steer_request(&client, msg));
+                    } else if probe.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
+                        // The settle probe or a steer acknowledgement is
                         // still winding down: FIFO behind it.
                         driver_steers.push_back(msg);
                     } else {
                         if !deliver_parked_steer(
                             &client,
-                            &event_tx,
-                            &mut assistant_message_id,
-                            &mut acceptance,
+                            &mut armed,
                             &mut awaiting_prompt_echo,
                             &mut run_active,
                             &mut done_current,
-                            &msg,
+                            &mut generation,
+                            msg,
                         )
                         .await
                         {
@@ -1394,8 +1905,8 @@ async fn run_session(session: Session) {
                     // finish once nothing is in flight.
                     steering_open = false;
                     if !run_active
-                        && acceptance.is_none()
-                        && settle.is_none()
+                        && armed.is_none()
+                        && probe.is_none()
                         && steer_calls.is_empty()
                         && driver_steers.is_empty()
                     {
@@ -1407,10 +1918,10 @@ async fn run_session(session: Session) {
             _ = interrupt.cancelled(), if !interrupt_sent => {
                 interrupt_sent = true;
                 interrupted = true;
-                if settle.is_some() {
-                    // The turn already settled; the stats round-trip was the
-                    // only thing in flight. Close out as interrupted.
-                    let _ = settle.take();
+                if probe.is_some() {
+                    // The turn already settled; the probe was the only thing
+                    // in flight. Close out as interrupted.
+                    let _ = probe.take();
                     done_current = true;
                     done_after_interrupt = true;
                     let _ = send(
@@ -1425,13 +1936,23 @@ async fn run_session(session: Session) {
                     .await;
                     break 'main;
                 }
-                let in_flight = run_active || acceptance.is_some() || saw_activity;
+                let in_flight = run_active || armed.is_some() || saw_activity;
                 if in_flight {
-                    // abort() waits for idle before responding; do not block
-                    // the loop on it — the agent_settled it triggers (or the
-                    // signal escalation below) ends the run.
+                    // clear_queue FIRST: steers pi accepted but never
+                    // consumed must not survive into the abort — they are
+                    // cancelled with the turn (the engine's at-least-once
+                    // ledger drops them on the interrupted exit, their user
+                    // entries already sit in the transcript), never
+                    // delivered into the aborted run. abort() waits for
+                    // idle before responding; neither request blocks the
+                    // loop — the agent_settled abort triggers (or the
+                    // signal escalation below) ends the run. The wire keeps
+                    // the order: both ride the client's single writer.
                     let client = client.clone();
                     tokio::spawn(async move {
+                        if let Err(e) = client.request("clear_queue", json!({})).await {
+                            tracing::debug!(target: "roboco_harness::pi", "clear_queue failed (escalation will reap): {e}");
+                        }
                         if let Err(e) = client.request("abort", json!({})).await {
                             tracing::debug!(target: "roboco_harness::pi", "abort failed (escalation will reap): {e}");
                         }
@@ -1497,69 +2018,59 @@ async fn run_session(session: Session) {
     }
 }
 
-/// Arm a prompt and return its acceptance future. `streaming_behavior` is
-/// set only for the steer-rejection retry (a prompt arriving while pi is
-/// streaming must declare its queue behavior or pi rejects it).
+/// Arm a prompt and return its acceptance future. Every prompt — turn
+/// starts included — goes out with `streamingBehavior: "steer"`: pi starts
+/// a run when idle and queues the prompt when an extension run is
+/// streaming, atomically against settlement, so a prompt can never strand
+/// against the end of a run. The acceptance is unbounded on purpose: pi's
+/// preflight (input handlers, `before_agent_start` hooks including the
+/// Roboco MCP bridge, and pre-prompt compaction) may take arbitrarily
+/// long, and only Stop interrupts a slow acceptance.
 fn prompt_acceptance(
     client: &PiClient,
     text: &str,
     images: Vec<Value>,
-    streaming_behavior: Option<&str>,
 ) -> BoxFuture<'static, Result<Value, HarnessError>> {
     let client = client.clone();
     let text = text.to_owned();
-    let mut params = json!({ "message": text });
+    let mut params = json!({ "message": text, "streamingBehavior": "steer" });
     if !images.is_empty() {
         params["images"] = Value::Array(images);
     }
-    if let Some(behavior) = streaming_behavior {
-        params["streamingBehavior"] = Value::String(behavior.to_owned());
-    }
-    Box::pin(async move {
-        match tokio::time::timeout(ACCEPT_TIMEOUT, client.request("prompt", params)).await {
-            Ok(result) => result,
-            Err(_) => Err(HarnessError::Protocol(
-                "pi did not accept the prompt within 30s (the process is likely wedged)".into(),
-            )),
-        }
-    })
+    Box::pin(async move { client.request("prompt", params).await })
 }
 
-/// One steer request, optionally retrying a rejected steer as a
-/// steer-behavior prompt (pi rejects extension-command text in `steer`
-/// but runs it immediately as a prompt).
-fn steer_request(client: &PiClient, text: &str, as_prompt: bool) -> SteerCall {
+/// One mid-run steer: the same `prompt` with steer behavior (pi queues it
+/// while streaming and starts a run when idle). Carries the mailbox
+/// message so a rejection can hand it back to the queue verbatim, and
+/// stages the message's attachments as inline images — a steer delivers
+/// its images exactly like a turn-start prompt (the path refs ride the
+/// text as a fallback either way).
+fn steer_request(client: &PiClient, msg: SteerMessage) -> SteerCall {
     let client = client.clone();
-    let text = text.to_owned();
     Box::pin(async move {
-        let result = if as_prompt {
-            let params = json!({ "message": text, "streamingBehavior": "steer" });
-            client.request("prompt", params).await
-        } else {
-            client.request("steer", json!({ "message": text })).await
-        };
-        (text, as_prompt, result)
+        let images = load_image_contents(&msg.attachments).await;
+        let mut params = json!({
+            "message": msg.prompt.clone(),
+            "streamingBehavior": "steer",
+        });
+        if !images.is_empty() {
+            params["images"] = Value::Array(images);
+        }
+        let result = client.request("prompt", params).await;
+        (msg, result)
     })
 }
 
-/// A parked session's next message: confirm the boundary, then arm the
-/// prompt (the mailbox's FIFO ledger retires on the Steered boundary) with
-/// the message's attachments inlined and its run config applied.
-#[allow(clippy::too_many_arguments)]
-async fn deliver_parked_steer(
-    client: &PiClient,
+/// Emit the `Steered` boundary that confirms a mailbox message's delivery:
+/// the engine retires its at-least-once ledger entry here and splits the
+/// assistant entry at the boundary.
+async fn confirm_delivery(
     event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
     assistant_message_id: &mut String,
-    acceptance: &mut Option<BoxFuture<'static, Result<Value, HarnessError>>>,
-    awaiting_prompt_echo: &mut bool,
-    run_active: &mut bool,
-    done_current: &mut bool,
-    msg: &SteerMessage,
 ) -> bool {
-    // Confirm the boundary FIRST (the mailbox ledger retires here), then
-    // arm the prompt — ACP parity for the between-turns delivery path.
     let (prev, next) = rotate(assistant_message_id);
-    if !send(
+    send(
         event_tx,
         AgentEvent::Steered {
             assistant_message_id: Some(prev),
@@ -1567,17 +2078,40 @@ async fn deliver_parked_steer(
         },
     )
     .await
-    {
-        return false;
-    }
+}
+
+/// A parked session's next message: apply its run config, then arm the
+/// prompt with the message's attachments inlined. The delivery boundary
+/// (`Steered`) is owed only once pi ACCEPTS the prompt — at the
+/// acknowledgement for a run or a handled command, at the user message
+/// echo for a queued steer — so a rejected prompt leaves the message
+/// undelivered and recoverable.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_parked_steer(
+    client: &PiClient,
+    armed: &mut Option<Armed>,
+    awaiting_prompt_echo: &mut bool,
+    run_active: &mut bool,
+    done_current: &mut bool,
+    generation: &mut u64,
+    msg: SteerMessage,
+) -> bool {
     if let Some(next) = &msg.config {
+        // Best-effort: a rejected switch logs inside and the current
+        // configuration runs (startup parity).
         let _ = configure_live(client, next).await;
     }
     let images = load_image_contents(&msg.attachments).await;
-    *acceptance = Some(prompt_acceptance(client, &msg.prompt, images, None));
-    *awaiting_prompt_echo = true;
+    *armed = Some(Armed {
+        acceptance: prompt_acceptance(client, &msg.prompt, images),
+        message: Some(msg),
+    });
+    // Set per disposition once pi answers: a started run echoes its own
+    // user message; a queued acceptance delivers at the echo instead.
+    *awaiting_prompt_echo = false;
     *run_active = true;
     *done_current = false;
+    *generation += 1; // the prompt goes out
     true
 }
 
@@ -1671,4 +2205,68 @@ fn image_mime_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str>
         ] => Some("image/webp"),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::steering_mode_configured;
+    use std::path::Path;
+
+    fn write_settings(dir: &Path, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("settings.json"), body).unwrap();
+    }
+
+    /// No settings anywhere: the driver selects the mode itself.
+    #[test]
+    fn steering_mode_is_unconfigured_without_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// A mode in the agent directory (the user's own, or `/steering` written
+    /// globally) is an explicit choice: never overwritten.
+    #[test]
+    fn agent_dir_settings_count_as_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(home.path(), r#"{"steeringMode": "one-at-a-time"}"#);
+        assert!(steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// A mode in the project `.pi/settings.json` counts the same way.
+    #[test]
+    fn project_settings_count_as_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(&project.path().join(".pi"), r#"{"steeringMode": "all"}"#);
+        assert!(steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
+
+    /// Settings without the key (or unreadable JSON) are not a choice.
+    #[test]
+    fn settings_without_the_key_are_not_configured() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write_settings(home.path(), r#"{"defaultModel": "x/y"}"#);
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+        write_settings(home.path(), "not json");
+        assert!(!steering_mode_configured(
+            Some(home.path()),
+            &project.path().display().to_string(),
+        ));
+    }
 }

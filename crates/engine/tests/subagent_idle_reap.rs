@@ -196,7 +196,7 @@ async fn park_after_spawn() -> Parked {
     let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock)
         .expect("engine core assembles");
     core.sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("fan out"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("fan out"), None, None)
         .await
         .expect("dispatch");
 

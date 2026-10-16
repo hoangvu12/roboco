@@ -279,7 +279,7 @@ async fn sends_with_images_or_respelled_options_join_the_live_runtime() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None, None)
         .await
         .unwrap();
     settle(&rig, 1).await;
@@ -293,7 +293,7 @@ async fn sends_with_images_or_respelled_options_join_the_live_runtime() {
     follow_up.attachments = vec!["/tmp/shot.png".into()];
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, follow_up, None)
+        .dispatch(CHAT, HarnessId::Mock, follow_up, None, None)
         .await
         .unwrap();
     settle(&rig, 2).await;
@@ -324,7 +324,7 @@ async fn sends_with_images_or_respelled_options_join_the_live_runtime() {
     other_model.model = Some("process-2".into());
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, other_model, None)
+        .dispatch(CHAT, HarnessId::Mock, other_model, None, None)
         .await
         .unwrap();
     settle(&rig, 4).await;
@@ -340,7 +340,7 @@ async fn a_model_switch_is_adopted_by_the_live_runtime() {
     let rig = rig_with(true);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None, None)
         .await
         .unwrap();
     settle(&rig, 1).await;
@@ -350,7 +350,7 @@ async fn a_model_switch_is_adopted_by_the_live_runtime() {
     other_model.reasoning = Some(ReasoningLevel::Medium);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, other_model, None)
+        .dispatch(CHAT, HarnessId::Mock, other_model, None, None)
         .await
         .unwrap();
     settle(&rig, 2).await;
@@ -362,7 +362,7 @@ async fn a_model_switch_is_adopted_by_the_live_runtime() {
     again.reasoning = Some(ReasoningLevel::Medium);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, again, None)
+        .dispatch(CHAT, HarnessId::Mock, again, None, None)
         .await
         .unwrap();
     settle(&rig, 3).await;
@@ -379,7 +379,7 @@ async fn a_model_switch_is_adopted_by_the_live_runtime() {
     elsewhere.cwd = "/var".into();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, elsewhere, None)
+        .dispatch(CHAT, HarnessId::Mock, elsewhere, None, None)
         .await
         .unwrap();
     settle(&rig, 4).await;
@@ -395,7 +395,7 @@ async fn a_message_orphaned_by_a_dying_runtime_replays_as_sent() {
     let rig = rig_with(true);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -409,7 +409,7 @@ async fn a_message_orphaned_by_a_dying_runtime_replays_as_sent() {
     sent.attachments = vec!["/tmp/shot.png".into()];
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, sent, Some("m-orphan".into()))
+        .dispatch(CHAT, HarnessId::Mock, sent, Some("m-orphan".into()), None)
         .await
         .unwrap();
     settle(&rig, 2).await;
@@ -490,7 +490,7 @@ async fn a_send_held_for_the_turn_end_runs_as_sent_without_a_ping() {
     let (pings, recorder) = record_pings(&rig);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("wait: first"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("wait: first"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -566,7 +566,7 @@ async fn stop_cancels_sends_held_for_the_stopped_turn() {
     let rig = rig_full(false, true);
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("wait: first"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("wait: first"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -646,7 +646,7 @@ async fn a_message_the_stop_cancelled_never_reaches_a_fresh_runtime() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -667,6 +667,7 @@ async fn a_message_the_stop_cancelled_never_reaches_a_fresh_runtime() {
             HarnessId::Mock,
             request("hold: sent before the stop"),
             Some("m-late".into()),
+            None,
         )
         .await
         .unwrap();
@@ -685,6 +686,7 @@ async fn a_message_the_stop_cancelled_never_reaches_a_fresh_runtime() {
             HarnessId::Mock,
             request("after the stop"),
             Some("m-next".into()),
+            None,
         )
         .await
         .unwrap();
@@ -701,7 +703,7 @@ async fn send_now_keeps_the_runtime_and_stop_tears_it_down() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: build it"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: build it"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -736,7 +738,7 @@ async fn send_now_keeps_the_runtime_and_stop_tears_it_down() {
     );
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: again"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: again"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -770,7 +772,7 @@ async fn send_now_keeps_the_runtime_and_stop_tears_it_down() {
     // The next message starts a fresh process.
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("status?"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("status?"), None, None)
         .await
         .unwrap();
     settle(&rig, 3).await;
@@ -820,7 +822,7 @@ async fn a_send_right_after_stop_runs_in_a_fresh_runtime() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -871,7 +873,7 @@ async fn a_send_accepted_by_a_stopping_runtime_is_redispatched() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -883,7 +885,7 @@ async fn a_send_accepted_by_a_stopping_runtime_is_redispatched() {
         rig.core.sessions.interrupt(CHAT),
         rig.core
             .sessions
-            .dispatch(CHAT, HarnessId::Mock, request("racing the stop"), None)
+            .dispatch(CHAT, HarnessId::Mock, request("racing the stop"), None, None)
     );
     stop.unwrap();
     send.unwrap();
@@ -917,7 +919,7 @@ async fn a_steer_sent_before_stop_is_cancelled_with_it() {
     let rig = rig();
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None)
+        .dispatch(CHAT, HarnessId::Mock, request("hold: working"), None, None)
         .await
         .unwrap();
     wait_for(
@@ -969,6 +971,7 @@ async fn stop_ends_a_parked_runtime_holding_background_work() {
             HarnessId::Mock,
             request("launch a background scout"),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1005,6 +1008,7 @@ async fn the_idle_reaper_spares_a_runtime_holding_background_work() {
             CHAT,
             HarnessId::Mock,
             request("launch a background scout"),
+            None,
             None,
         )
         .await
