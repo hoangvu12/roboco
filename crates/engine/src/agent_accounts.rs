@@ -5283,7 +5283,8 @@ mod probe_tests {
     /// windows and resets already past count for nothing.
     #[test]
     fn limited_until_is_the_latest_reset_of_exhausted_windows() {
-        let at = |hours: i64| Utc.with_ymd_and_hms(2026, 10, 17, 9, 0, 0).unwrap() + TimeDelta::hours(hours);
+        use chrono::{TimeDelta, TimeZone};
+        let at =|hours: i64| Utc.with_ymd_and_hms(2026, 10, 17, 9, 0, 0).unwrap() + TimeDelta::hours(hours);
         let window = |label: &str, used: f32, reset: Option<DateTime<Utc>>| AgentUsageWindow {
             label: label.into(),
             used_fraction: used,

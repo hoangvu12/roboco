@@ -1051,6 +1051,14 @@ pub enum RowKind {
         source_chat_id: SharedString,
         source_title: SharedString,
     },
+    /// The harness-switch seam (t3-orchestration-v2 ticket 24): a labeled
+    /// divider under which the chat runs on the harness the switch named;
+    /// everything above it belonged to the dropped provider session.
+    HarnessSwitchMarker {
+        /// The full divider line ("Switched to Codex") — the label the
+        /// harness renders as, resolved once when the row is built.
+        label: SharedString,
+    },
 }
 
 /// A transcript row: stable id + content version (diff key) + block payload.
@@ -1610,6 +1618,29 @@ pub fn rows_for_entry(
                             fork_entry: None,
                         });
                     }
+                    MessagePart::HarnessSwitch { id: part_id, harness } => {
+                        // The divider line, resolved once at row build: the
+                        // seam is fixed, so the row's version only moves
+                        // when the label does.
+                        let label: SharedString = format!(
+                            "Switched to {}",
+                            crate::settings::accounts::provider_name(*harness)
+                        )
+                        .into();
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(label.as_bytes()),
+                            turn_start: false,
+                            kind: RowKind::HarnessSwitchMarker {
+                                label: label.clone(),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
+                            copy_text: None,
+                            compact_fold: None,
+                            fork_entry: None,
+                        });
+                    }
                     // Tools and thoughts are grouped by the outer arms;
                     // nothing reaches here.
                     MessagePart::Tool { .. } | MessagePart::Reasoning { .. } => {}
@@ -1710,7 +1741,10 @@ pub fn rows_for_entry(
     // change when streaming flips off (chips).
     if !streaming
         && let Some(last) = rows.last_mut()
-        && !matches!(last.kind, RowKind::ForkMarker { .. })
+        && !matches!(
+            last.kind,
+            RowKind::ForkMarker { .. } | RowKind::HarnessSwitchMarker { .. }
+        )
     {
         last.timestamp = Some(entry.created_at);
         last.copy_text = assistant_copy_text(entry);
@@ -7131,6 +7165,9 @@ impl Transcript {
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
+            RowKind::HarnessSwitchMarker { label } => {
+                harness_switch_marker(label.clone(), &theme)
+            }
         };
         // Diagram fences this row just requested start rendering after layout.
         self.ensure_diagram_worker(cx);
@@ -7180,7 +7217,7 @@ impl Transcript {
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(TranscriptEvent::ForkFromEntry {
                             chat_id: chat_id.clone(),
-                            entry_id: entry_id.clone(),
+                            entry_id: entry_id.to_string(),
                         });
                     }))
                     .tooltip(crate::settings::widgets::text_tooltip(
@@ -8329,16 +8366,24 @@ fn agent_message_display(text: &str) -> String {
     let Some((header, body)) = rest.split_once("]\n\n") else {
         return text.to_owned();
     };
-    let Some((label, id)) =
+    // Chat-to-chat message: the header invites a reply and repeats the
+    // short id in the instruction, so the label is stripped with it.
+    let name = if let Some((label, id)) =
         header.rsplit_once(". Reply to it with the Roboco `send_message` tool, chat ")
-    else {
+        && let Some(id) = id.strip_suffix('.')
+    {
+        let suffix = format!(" ({id})");
+        label.strip_suffix(&suffix).unwrap_or(label)
+    } else if let Some(label) = header.strip_suffix(
+        ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.",
+    ) {
+        // A parent's message to its notifying side chat (orchestration
+        // v2): the header teaches the notice flow instead of inviting a
+        // reply, and carries no separate id — the label holds it.
+        label.rsplit_once(" (").map_or(label, |(name, _)| name)
+    } else {
         return text.to_owned();
     };
-    let Some(id) = id.strip_suffix('.') else {
-        return text.to_owned();
-    };
-    let suffix = format!(" ({id})");
-    let name = label.strip_suffix(&suffix).unwrap_or(label);
     format!("Message from {name}\n\n{body}")
 }
 
@@ -8525,6 +8570,35 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                 .text_color(theme.text_muted)
                 .child(source_title),
         )
+        .into_any_element()
+}
+
+/// A quiet harness-switch seam (t3-orchestration-v2 ticket 24): the same
+/// divider treatment as the fork seam, one line — the label arrives
+/// pre-resolved ("Switched to Codex") so nothing here needs a catalog. No
+/// message metadata lane.
+fn harness_switch_marker(label: SharedString, theme: &Theme) -> AnyElement {
+    let rule = || div().flex_1().min_w_0().h(px(1.0)).bg(theme.border_strong);
+    div()
+        .py(px(14.0))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(rule())
+        .child(
+            div()
+                .flex_none()
+                .min_w_0()
+                .truncate()
+                .text_size(crate::typography::ui_rems(13.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+        .child(rule())
         .into_any_element()
 }
 
@@ -9874,6 +9948,71 @@ mod tests {
         });
     }
     use roboco_doc::MessagePart;
+
+    /// The harness-switch seam (t3-orchestration-v2 ticket 24) renders as a
+    /// "Switched to <harness>" divider row — system entry, no timestamp or
+    /// copy actions, one row per seam.
+    #[gpui::test]
+    fn a_harness_switch_seam_renders_as_a_switched_to_divider(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat-a".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![
+                    assistant(
+                        "before",
+                        MessageStatus::Complete,
+                        vec![text_part("before-t", "the old harness's reply")],
+                    ),
+                    SessionMessageEntry {
+                        origin_chat_id: None,
+                        duration_ms: None,
+                        provider_turn: None,
+                        id: "switch:1".into(),
+                        role: MessageRole::System,
+                        parts: vec![MessagePart::HarnessSwitch {
+                            id: "switch:1".into(),
+                            harness: roboco_proto::HarnessId::Codex,
+                        }],
+                        created_at: 0,
+                        device_id: "dev".into(),
+                        status: Some(MessageStatus::Complete),
+                        continuation_of: None,
+                    },
+                    assistant(
+                        "after",
+                        MessageStatus::Complete,
+                        vec![text_part("after-t", "the new harness's reply")],
+                    ),
+                ];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+            transcript.update(cx, |this, _| {
+                let rows: Vec<&Row> = this
+                    .rows
+                    .iter()
+                    .filter(|row| matches!(row.kind, RowKind::HarnessSwitchMarker { .. }))
+                    .collect();
+                assert_eq!(rows.len(), 1, "one seam, one divider");
+                let RowKind::HarnessSwitchMarker { label } = &rows[0].kind else {
+                    unreachable!()
+                };
+                assert_eq!(label.as_ref(), "Switched to Codex");
+                // A seam is structure: no hover timestamp, no copy action.
+                assert!(rows[0].timestamp.is_none());
+                assert!(rows[0].copy_text.is_none());
+            });
+        });
+    }
 
     fn with_tool_group_navigation(
         cx: &mut gpui::TestAppContext,
@@ -16036,6 +16175,36 @@ mod tests {
             vec![text_part("t0", ""), text_part("t1", "   ")],
         );
         assert!(rows_for_entry(&entry, false, false, &mut parse).is_empty());
+    }
+
+    #[test]
+    fn agent_attribution_headers_display_concisely() {
+        // Ordinary chat-to-chat message: the reply invitation is dropped and
+        // the label's short id with it.
+        let reply_line = "[Message from Roboco chat Alpha (chat-alp). Reply to it with the Roboco `send_message` tool, chat chat-alp.]\n\nplease review";
+        assert_eq!(
+            agent_message_display(reply_line),
+            "Message from Alpha\n\nplease review"
+        );
+        // A parent's message to its notifying side chat (orchestration v2):
+        // the header teaches the notice flow, and still collapses.
+        let notice_line = "[Message from Roboco chat Alpha (chat-alp). You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\nthe task";
+        assert_eq!(
+            agent_message_display(notice_line),
+            "Message from Alpha\n\nthe task"
+        );
+        // An untitled sender keeps its short id as the name.
+        let untitled = "[Message from Roboco chat chat-alp. You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\nthe task";
+        assert_eq!(
+            agent_message_display(untitled),
+            "Message from chat-alp\n\nthe task"
+        );
+        // Anything else stays verbatim.
+        assert_eq!(agent_message_display("plain text"), "plain text");
+        assert_eq!(
+            agent_message_display("[Message from Roboco chat Alpha. unknown suffix.]\n\nbody"),
+            "[Message from Roboco chat Alpha. unknown suffix.]\n\nbody"
+        );
     }
 }
 

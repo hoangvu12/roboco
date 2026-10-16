@@ -17,8 +17,7 @@ chatId: string,
  * The side chat's title as of the notice, so the transcript reads it
  * without a registry lookup (a later rename never rewrites history).
  */
-title: string, 
-outcome: NoticeOutcome, 
+title: string, outcome: NoticeOutcome, 
 /**
  * The one-line detail for errored (reason), interrupted (restart
  * reason) and waiting-for-input (question summary) rows; absent

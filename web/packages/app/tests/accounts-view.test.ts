@@ -369,6 +369,7 @@ function ringAccount(harness: HarnessId, active: boolean, used: number[]): Agent
     planLabel: null,
     active,
     switchable: true,
+    signInState: "unknown",
     usageWindows: used.map((fraction) => ({ label: "5h", usedFraction: fraction, resetsAt: null })),
   };
 }
