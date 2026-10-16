@@ -7,11 +7,14 @@
 # (orchestration v2, ticket 02): prompt dispositions (started / queued /
 # handled / none for old pi), a rejection while pi streams, a slow
 # preflight, the settle probe (busy re-arm, failure, the settle race) and
-# clear_queue strand recovery.
+# clear_queue strand recovery — and the mid-turn steering surface
+# (orchestration v2, ticket 03): set_steering_mode all at session start,
+# steer bursts delivered together in order, images riding a steer, and
+# clear_queue-before-abort when a Stop finds steers pi never consumed.
 # NOTE: the python below is embedded in a sh single-quoted string - it must
 # never contain an apostrophe (a stray one splits the script into argv).
 exec python3 -u -c '
-import json, os, signal, subprocess, sys, time
+import base64, json, os, signal, subprocess, sys, time
 
 def emit(value):
     # CRLF on purpose: the driver must tolerate it (371d79b1 lessons).
@@ -109,6 +112,7 @@ if session_file is not None:
 session_id = "pi-fixture-session"
 thinking_level_seen = None
 set_model_seen = None
+steering_mode_seen = None
 steering_queue = []
 # pi isStreaming flag, scripted by the scenarios that need a run in
 # flight (an extension-initiated run).
@@ -323,6 +327,10 @@ def run_prompt(req):
         # pi order: the queue_update precedes the acknowledgement.
         emit({"type": "queue_update", "steering": list(steering_queue), "followUp": []})
         response(steer, {"disposition": "queued"})
+        # The current assistant turn keeps running a while before the
+        # boundary delivers the steer (realistic pacing; also widens the
+        # window engine tests use to observe the steer landing mid-run).
+        time.sleep(0.4)
         emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
         # pi delivers the steer at the boundary: queue drains, then the user
         # message arrives (the consumed signal), then the reply to it.
@@ -330,6 +338,95 @@ def run_prompt(req):
         emit({"type": "queue_update", "steering": [], "followUp": []})
         user_message(steer["message"])
         turn_and_settle("reply-to-steer")
+        return
+    if text == "steer-burst":
+        # Several quick steers (steering mode all): pi queues each while
+        # streaming and delivers them TOGETHER at the next step boundary,
+        # in send order — none dropped, none reordered.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["first part "])
+        steers = []
+        for _ in range(3):
+            steer = read_command()
+            assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+            steers.append(steer["message"])
+            steering_queue.append(steer["message"])
+            emit({"type": "queue_update", "steering": list(steering_queue), "followUp": []})
+            response(steer, {"disposition": "queued"})
+        assert steers == ["burst one", "burst two", "burst three"], steers
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        del steering_queue[:]
+        emit({"type": "queue_update", "steering": [], "followUp": []})
+        for message in steers:
+            user_message(message)
+        turn_and_settle("reply-to-burst")
+        return
+    if text == "steer-image":
+        # A steer carries its attached images: the prompt command must ride
+        # the same inline ImageContent blocks a turn-start prompt does.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["first part "])
+        steer = read_command()
+        assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+        images = steer.get("images")
+        assert isinstance(images, list) and len(images) == 1, steer
+        assert images[0]["type"] == "image", images
+        assert images[0]["mimeType"] == "image/png", images
+        expected = b"\x89PNG\r\n\x1a\n" + b"roboco steer image"
+        assert base64.b64decode(images[0]["data"]) == expected, images
+        steering_queue.append(steer["message"])
+        emit({"type": "queue_update", "steering": list(steering_queue), "followUp": []})
+        response(steer, {"disposition": "queued"})
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        del steering_queue[:]
+        emit({"type": "queue_update", "steering": [], "followUp": []})
+        user_message(steer["message"])
+        turn_and_settle("reply-to-image-steer")
+        return
+    if text == "stop-clears-queue":
+        # A steer accepted into pi queue but never consumed when Stop lands:
+        # the driver must clear pi queue BEFORE the abort, so the steer is
+        # cancelled with the turn instead of delivering into the aborted run.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["working"])
+        steer = read_command()
+        assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+        steering_queue.append(steer["message"])
+        emit({"type": "queue_update", "steering": list(steering_queue), "followUp": []})
+        response(steer, {"disposition": "queued"})
+        # The marker: the steer is accepted (pi queue holds it) and the run
+        # is still streaming — this is the Stop window.
+        assistant_chunks(["steer queued"])
+        cleared = read_command()
+        assert cleared["type"] == "clear_queue", cleared
+        assert steering_queue == ["stranded steer"], steering_queue
+        del steering_queue[:]
+        response(cleared, {"steering": [], "followUp": []})
+        abort = read_command()
+        assert abort["type"] == "abort", abort
+        emit({"type": "agent_settled"})
+        response(abort)
+        return
+    if text == "compaction-recover":
+        # An overflow error triggers compaction with a retry; the compaction
+        # succeeds and the turn is retried: the run must end COMPLETED —
+        # the recovered error no longer rejects the prompt.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["doomed"], stop="error", error="context window overflow")
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "error"}, "toolResults": []})
+        emit({"type": "compaction_start", "reason": "overflow"})
+        emit({"type": "compaction_end", "reason": "overflow",
+              "result": {"summary": "s", "firstKeptEntryId": "e1", "tokensBefore": 10, "estimatedTokensAfter": 5},
+              "aborted": False, "willRetry": True})
+        emit({"type": "turn_start"})
+        assistant_chunks(["recovered"])
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        emit({"type": "agent_end", "messages": [], "willRetry": False})
+        emit({"type": "agent_settled"})
         return
     if text == "steer-strand":
         # The steer is accepted mid-run but never delivered: pi queue
@@ -531,6 +628,18 @@ while True:
         # the wire command carried the requested reasoning level.
         with open(session_file, "a") as handle:
             handle.write("thinking:" + command["level"] + "\n")
+        response(command)
+    elif kind == "set_steering_mode":
+        # The driver selects mode all at session start unless the user
+        # configured one. Title runs never steer, so the sandbox must never
+        # touch the setting. Recorded in the session file so tests can
+        # prove the command was sent (or not, when configured).
+        assert not title_mode, "title runs never set a steering mode"
+        assert command["mode"] == "all", command
+        steering_mode_seen = command["mode"]
+        if session_file is not None:
+            with open(session_file, "a") as handle:
+                handle.write("steering-mode:" + command["mode"] + "\n")
         response(command)
     elif kind == "get_session_stats":
         response(command, stats_data())
