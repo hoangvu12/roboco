@@ -1150,6 +1150,86 @@ impl SessionsEngine {
         Ok(true)
     }
 
+    /// One-way harness switch between turns (t3-orchestration-v2 ticket 24).
+    /// Writes the "Switched to <harness>" seam into the transcript, drops
+    /// the chat's harness session (the tombstone also blocks the journal
+    /// scan from resurrecting the old harness's id), retires any stale
+    /// native-fork intent, and saves `config` — the caller's resolved picks
+    /// (model options reset to the new harness's defaults unless the user
+    /// chose them; the engine only stores what arrived). A warm runtime from
+    /// the old harness is torn down by the next dispatch (its run
+    /// configuration no longer routes). The next send starts a fresh
+    /// provider session on the new harness and carries the budgeted history
+    /// of everything above the seam. Switching back is just another switch.
+    ///
+    /// Refused while a turn is in flight (the picker stays locked while the
+    /// chat works), for an unknown chat, and for a switch onto the harness
+    /// the chat already runs.
+    pub async fn switch_harness(
+        &self,
+        chat_id: &str,
+        config: roboco_proto::ChatConfig,
+    ) -> Result<(), EngineError> {
+        let Some(ws) = self.workspace() else {
+            return Err(EngineError::Other("workspace unavailable".into()));
+        };
+        let chat = ws
+            .chat(chat_id)?
+            .ok_or_else(|| EngineError::Other("Chat no longer exists".into()))?;
+        if !ws.is_host(chat_id) {
+            return Err(EngineError::Other(
+                "Harness switch must run on the chat's host device".into(),
+            ));
+        }
+        if self.turn_in_flight(chat_id) {
+            return Err(EngineError::Other(
+                "The chat is working; switch harnesses between turns".into(),
+            ));
+        }
+        // The target harness must resolve first: the switch is pointless (and
+        // the next dispatch would fail) against an unregistered harness, and
+        // its display name names it in the refusal below.
+        let harness = self.inner.registry.resolve(config.harness)?;
+        if chat.config.as_ref().is_some_and(|existing| existing.harness == config.harness) {
+            return Err(EngineError::Other(format!(
+                "Chat is already on {}",
+                harness.display_name()
+            )));
+        }
+        // The seam first: once the row names the new harness, a crash between
+        // the two writes would at worst dispatch the next send on the new
+        // harness with the history still riding (the seam is what arms it).
+        let handle = self.doc_handle(chat_id)?;
+        handle.doc().clear_provider_fork();
+        let marker_id = format!("switch:{}", new_id());
+        handle
+            .doc()
+            .push_message(&SessionMessageEntry {
+                origin_chat_id: None,
+                duration_ms: None,
+                provider_turn: None,
+                id: marker_id.clone(),
+                role: MessageRole::System,
+                parts: vec![MessagePart::HarnessSwitch {
+                    id: marker_id,
+                    harness: config.harness,
+                }],
+                created_at: now_ms(),
+                device_id: self.inner.device_id.clone(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+            })
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+        // Drop the session from every resume source: the live cache, the
+        // durable row (the empty-string tombstone also stops the journal
+        // scan — the old harness's session ids must never ride a resume on
+        // the new harness), and the native-fork intent above.
+        lock(&self.inner.harness_sessions).remove(chat_id);
+        ws.set_chat_harness_session(chat_id, "", "");
+        ws.set_chat_config(chat_id, &config)?;
+        Ok(())
+    }
+
     /// Resolve a pending `request_input` question set. Returns `false` when no such
     /// request is pending (unknown id, or the run already settled).
     pub fn respond_input(
@@ -1784,13 +1864,16 @@ fn note_fork_history_session(doc: &SessionDoc, carried: bool, session_id: &str) 
 }
 
 impl Inner {
-    /// `prompt` with the transcript a side chat's provider session lacks in
-    /// front of it, or `None` when it lacks nothing. A fresh session gets the
-    /// budgeted transcript (`current` excluded); a continued one only the
-    /// fork's copied transcript before the seam, until that went out to that
+    /// `prompt` with the transcript a provider session lacks in front of it,
+    /// or `None` when it lacks nothing. A side chat's fresh session gets its
+    /// budgeted copied transcript (`current` excluded); a main chat's fresh
+    /// session gets the budgeted transcript only after a harness switch (the
+    /// seam marks what the dropped session held); a continued one only the
+    /// history above the chat's newest seam, until that went out to that
     /// session. The budget and the selection rules live in
-    /// [`crate::transcript_budget`]. Native commands are never wrapped:
-    /// providers route a leading `/name`.
+    /// [`crate::transcript_budget`]. Native commands are never wrapped —
+    /// providers route a leading `/name`, so their history rides the first
+    /// ordinary send instead.
     fn fork_history_prompt(
         &self,
         chat_id: &str,
@@ -1818,12 +1901,7 @@ impl Inner {
         current: Option<&str>,
         provider: ProviderSession<'_>,
     ) -> Option<String> {
-        if native_command(prompt, harness_id)
-            || !self
-                .workspace()
-                .and_then(|ws| ws.chat(chat_id).ok().flatten())
-                .is_some_and(|chat| chat.parent_chat_id.is_some())
-        {
+        if native_command(prompt, harness_id) {
             return None;
         }
         let entries: Vec<_> = doc
@@ -1838,6 +1916,20 @@ impl Inner {
                 })
             })
             .collect();
+        // A side chat owes its copied transcript to any session that lacks
+        // it. A main chat owes its transcript only after a one-way harness
+        // switch (t3-orchestration-v2 ticket 24): the seam marks the
+        // conversation the new harness's fresh session never saw, so the
+        // first send after the switch carries the budgeted history of
+        // everything above it; without a seam a main chat's fresh session
+        // starts empty (nothing was copied, nothing was dropped).
+        let side_chat = self
+            .workspace()
+            .and_then(|ws| ws.chat(chat_id).ok().flatten())
+            .is_some_and(|chat| chat.parent_chat_id.is_some());
+        if !side_chat && !entries.iter().any(is_harness_switch_seam) {
+            return None;
+        }
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
             ProviderSession::Continued(session) => {
@@ -1845,7 +1937,14 @@ impl Inner {
                 if session.is_some() && delivered.as_deref() == session {
                     return None;
                 }
-                entries.iter().position(is_fork_seam)?
+                // The owed unit ends at the NEWEST seam, whichever kind: a
+                // fork's copied transcript above its seam, or the dropped
+                // conversation above a harness-switch seam (ticket 24). A
+                // session that changed below the newest seam lacks
+                // everything above it — including the case where the first
+                // post-switch send was a native command (never wrapped), so
+                // the history rides the first ordinary send instead.
+                entries.iter().rposition(is_history_seam)?
             }
         };
         // The chat the omitted messages are readable in: the newest fork
@@ -1868,6 +1967,25 @@ fn is_fork_seam(entry: &SessionMessageEntry) -> bool {
         .parts
         .iter()
         .any(|part| matches!(part, MessagePart::Fork { .. }))
+}
+
+/// A history seam of either kind: the divider below which the chat's
+/// provider session started fresh — a fork's copy boundary or a harness
+/// switch's drop boundary. The newest one bounds what a changed session is
+/// owed.
+fn is_history_seam(entry: &SessionMessageEntry) -> bool {
+    is_fork_seam(entry) || is_harness_switch_seam(entry)
+}
+
+/// A harness-switch seam entry (t3-orchestration-v2 ticket 24): the divider
+/// below which the chat runs on the harness the switch named. Everything
+/// above it belongs to the provider session the switch dropped, so it is
+/// the history the new harness's first session is owed.
+fn is_harness_switch_seam(entry: &SessionMessageEntry) -> bool {
+    entry
+        .parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::HarnessSwitch { .. }))
 }
 
 /// The chat a fork seam copied its transcript from.
