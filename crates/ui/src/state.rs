@@ -607,8 +607,9 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // this crate reads them as `state::…`.
 pub use roboco_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
-    chat_location, display_status, effective_indicator, format_limit_reset, format_time_ago,
-    gate_phase, group_chats, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    chat_location, display_status, effective_indicator, format_limit_reset,
+    format_scheduled_resume, format_time_ago, gate_phase, group_chats, project_label,
+    sort_active, sort_chats, sort_spaces, sort_tabs,
 };
 
 // ---------------------------------------------------------------------------
@@ -2184,6 +2185,21 @@ impl AppState {
         let session = self.session_for(chat_id)?;
         (self.indicator_for(chat_id, now) == Indicator::Limited)
             .then(|| session.limit.clone())
+            .flatten()
+    }
+
+    /// The pending **Resume at reset** continuation for `chat_id`, when its
+    /// status row reads as Limited and one is armed: the fire time the
+    /// banner's "Resumes at …" segment and Cancel action act on. `None`
+    /// when nothing is armed (the banner then offers Resume at reset).
+    pub fn scheduled_resume_for(
+        &self,
+        chat_id: &str,
+        now: DateTime<Utc>,
+    ) -> Option<roboco_proto::ScheduledResume> {
+        let session = self.session_for(chat_id)?;
+        (self.indicator_for(chat_id, now) == Indicator::Limited)
+            .then(|| session.scheduled_resume)
             .flatten()
     }
 
@@ -4015,6 +4031,7 @@ mod tests {
             started_at: None,
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
             limit: None,
+            scheduled_resume: None,
         }
     }
 
@@ -4058,6 +4075,7 @@ mod tests {
             started_at: Some(now),
             updated_at: now,
             limit: None,
+            scheduled_resume: None,
         };
         assert!(state.apply_sessions_at(vec![row.clone()], now));
         row.updated_at = now + TimeDelta::seconds(30);
@@ -4090,6 +4108,7 @@ mod tests {
             started_at: Some(now),
             updated_at: now,
             limit: None,
+            scheduled_resume: None,
         }];
         let mut row = device("host", "Host");
         row.last_seen_at = Some(now);
@@ -4369,6 +4388,49 @@ mod tests {
         state.sessions = vec![limited];
         assert_eq!(state.indicator_for("c", now), Indicator::Errored);
         assert_eq!(state.limit_for("c", now), None);
+    }
+
+    /// A Limited chat with an armed Resume-at-reset continuation exposes
+    /// it through the state derivation — the banner's "Resumes at …"
+    /// segment and Cancel action — and only while the row reads Limited: a
+    /// row that is working again (the continuation fired, or a new turn)
+    /// shows nothing scheduled, record or no record.
+    #[test]
+    fn limited_rows_expose_their_armed_scheduled_resume() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut limited = session("c", SessionStatus::Errored, 10, now);
+        limited.limit = Some(roboco_proto::SessionLimit {
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some((now + TimeDelta::hours(2)).timestamp_millis()),
+            account_id: None,
+        });
+        // Nothing armed: the banner offers Resume at reset, no scheduled
+        // state to show.
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Limited);
+        assert_eq!(state.scheduled_resume_for("c", now), None);
+
+        // Armed: the continuation rides the same row.
+        let armed = roboco_proto::ScheduledResume {
+            fire_at: (now + TimeDelta::hours(2)).timestamp_millis(),
+        };
+        limited.scheduled_resume = Some(armed);
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.scheduled_resume_for("c", now), Some(armed));
+
+        // The new turn clears both records: a Working row shows nothing
+        // scheduled (the engine cancels the continuation on the send).
+        limited.status = SessionStatus::Working;
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Working);
+        assert_eq!(state.scheduled_resume_for("c", now), None);
+        // A cancelled continuation on a still-errored row is also nothing.
+        limited.status = SessionStatus::Errored;
+        limited.scheduled_resume = None;
+        state.sessions = vec![limited];
+        assert_eq!(state.scheduled_resume_for("c", now), None);
     }
 
     #[test]

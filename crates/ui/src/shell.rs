@@ -51,7 +51,7 @@ use crate::settings::{
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, format_limit_reset,
-    format_time_ago,
+    format_scheduled_resume, format_time_ago,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
@@ -5064,6 +5064,32 @@ impl Shell {
         self.archive_chat(chat_id, cx);
     }
 
+    /// **Resume at reset** on a Limited chat (orchestration v2, ticket 07):
+    /// arm the engine's durable continuation — at the limit's reset time the
+    /// engine sends the continue prompt like the manual Resume, and the
+    /// banner flips to "Resumes at …" with Cancel. The engine owns the
+    /// schedule; this only expresses the user's intent.
+    pub(crate) fn schedule_resume_at_reset(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let op = serde_json::json!({
+            "op": "scheduleResumeAtReset",
+            "chatId": chat_id,
+        });
+        self.mutate(&chat_id, op, cx);
+        cx.notify();
+    }
+
+    /// Cancel a Limited chat's armed Resume-at-reset continuation — the
+    /// banner's Cancel action. A new message, archive or delete cancels it
+    /// on its own; this is the explicit withdrawal.
+    pub(crate) fn cancel_scheduled_resume(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let op = serde_json::json!({
+            "op": "cancelScheduledResume",
+            "chatId": chat_id,
+        });
+        self.mutate(&chat_id, op, cx);
+        cx.notify();
+    }
+
     pub(super) fn set_chat_archived(
         &mut self,
         chat_id: String,
@@ -9566,21 +9592,40 @@ impl Shell {
                 .into_any_element(),
             // LIMITED (orchestration v2): the run ended on a harness usage
             // limit. The banner names the window and its reset (from the
-            // harness's own error, else the account's cached windows), and
+            // harness's own error, else the account's cached windows).
             // Resume sends the continue prompt as a normal run — queued
-            // messages stay behind it.
+            // messages stay behind it. Resume at reset arms the engine's
+            // durable continuation; once armed the banner shows when it
+            // fires and offers Cancel instead (ticket 07).
             Indicator::Limited => {
                 let limit = state.limit_for(&chat_id, now);
-                let label: SharedString = match &limit {
-                    Some(limit) => {
+                let scheduled = state.scheduled_resume_for(&chat_id, now);
+                let label: SharedString = match (&limit, &scheduled) {
+                    (Some(limit), Some(scheduled)) => format!(
+                        "{} limit · {}",
+                        limit.window,
+                        format_scheduled_resume(scheduled.fire_at, now)
+                    )
+                    .into(),
+                    (Some(limit), None) => {
                         let reset = limit
                             .resets_at
                             .map(|at| format_limit_reset(at, now))
                             .unwrap_or_else(|| "reset time unknown".into());
                         format!("{} limit · {reset}", limit.window).into()
                     }
-                    None => "Usage limit reached".into(),
+                    (None, _) => "Usage limit reached".into(),
                 };
+                // Resume at reset is offered only when there is a reset time
+                // still ahead to wait for; a due or unknown reset leaves the
+                // honest offer as plain Resume.
+                let armable = scheduled.is_none()
+                    && limit
+                        .as_ref()
+                        .and_then(|limit| limit.resets_at)
+                        .is_some_and(|at| at > now.timestamp_millis());
+                let arm_chat_id = chat_id.clone();
+                let cancel_chat_id = chat_id.clone();
                 strip
                     .text_color(theme.warning)
                     .child(div()
@@ -9593,6 +9638,57 @@ impl Shell {
                             .rounded_full()
                             .bg(theme.warning))
                         .child(label))
+                    .when(armable, |strip| {
+                        strip.child(
+                            div()
+                                .id("limited-schedule-resume")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.schedule_resume_at_reset(
+                                        arm_chat_id.clone(),
+                                        cx,
+                                    );
+                                }))
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Continue automatically when the limit resets",
+                                ))
+                                .child(SharedString::from("Resume at reset")),
+                        )
+                    })
+                    .when_some(scheduled, |strip, _| {
+                        strip.child(
+                            div()
+                                .id("limited-cancel-resume")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_scheduled_resume(cancel_chat_id.clone(), cx);
+                                }))
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Stop the automatic continuation",
+                                ))
+                                .child(SharedString::from("Cancel")),
+                        )
+                    })
                     .child(
                         div()
                             .id("limited-resume")
@@ -11954,6 +12050,7 @@ mod tests {
             started_at: Some(updated_at),
             updated_at,
             limit: None,
+            scheduled_resume: None,
         }
     }
 

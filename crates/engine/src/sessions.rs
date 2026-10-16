@@ -18,6 +18,7 @@
 //! spawn failure, stream error, engine-restart recovery).
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use chrono::Utc;
@@ -30,8 +31,8 @@ use roboco_doc::{
 };
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionLimit,
-    SessionStatus, UserInputAnswer, UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, ScheduledResume, Session,
+    SessionLimit, SessionStatus, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -214,6 +215,13 @@ struct Inner {
     /// engine-local ledger so undelivered outcomes survive restarts
     /// (ticket 13).
     notices: crate::completion_notices::CompletionNotices,
+    /// Pending Resume-at-reset continuations (orchestration v2, ticket 07):
+    /// the durable entries + disarm flags, persisted under the engine data
+    /// dir. Arming, firing and cancellation live on [`SessionsEngine`].
+    scheduled_resumes: crate::scheduled_resumes::ScheduledResumes,
+    /// Engine settings the engine itself acts on (auto-resume limited
+    /// chats, …) — loaded at assembly, persisted under the data dir.
+    engine_settings: crate::engine_settings::EngineSettingsStore,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
@@ -265,6 +273,8 @@ impl SessionsEngine {
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
                 notices: crate::completion_notices::CompletionNotices::default(),
+                scheduled_resumes: crate::scheduled_resumes::ScheduledResumes::default(),
+                engine_settings: crate::engine_settings::EngineSettingsStore::default(),
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
@@ -325,6 +335,37 @@ impl SessionsEngine {
     /// and runs that fail signed-out mark the live login on them.
     pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
         *lock(&self.inner.agent_accounts) = Some(accounts);
+    }
+
+    /// Persist the Resume-at-reset store under `path`, loading anything
+    /// already there (engine assembly — `EngineCore::assemble`). The
+    /// entries carry no timers until [`Self::recover_scheduled_resumes`]
+    /// arms them, because firing needs the doc host this runs before.
+    pub fn set_scheduled_resumes_path(&self, path: std::path::PathBuf) {
+        self.inner.scheduled_resumes.set_path(path);
+    }
+
+    /// Wire the engine settings store (engine assembly; a bare engine keeps
+    /// the in-memory default — auto-resume off).
+    pub fn set_engine_settings_store(&self, store: crate::engine_settings::EngineSettingsStore) {
+        self.inner.engine_settings = store;
+    }
+
+    /// The engine's settings (see [`crate::engine_settings::EngineSettings`]).
+    pub fn engine_settings(&self) -> crate::engine_settings::EngineSettings {
+        self.inner.engine_settings.get()
+    }
+
+    /// Update the engine's settings, persisting them when a store path is
+    /// wired. A failed disk write still applies in memory (and is reported).
+    pub fn set_engine_settings(
+        &self,
+        settings: crate::engine_settings::EngineSettings,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .engine_settings
+            .set(settings)
+            .map_err(|err| EngineError::Other(format!("engine settings write failed: {err}")))
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -1484,6 +1525,280 @@ impl SessionsEngine {
         Ok(recovered)
     }
 
+    // ── Resume at reset (orchestration v2, ticket 07) ─────────────────────
+
+    /// The chat's pending Resume-at-reset continuation, when one is armed.
+    /// (The session row carries the same record for clients; this is the
+    /// engine-side read.)
+    pub fn scheduled_resume(&self, chat_id: &str) -> Option<ScheduledResume> {
+        self.inner.scheduled_resumes.scheduled(chat_id)
+    }
+
+    /// **Resume at reset**: arm the durable continuation for a Limited chat,
+    /// firing the continue prompt at its limit's reset time. Requires the
+    /// chat to be Limited with a reset time still ahead — otherwise the
+    /// honest offer is the manual Resume, and the caller is told so.
+    pub fn schedule_resume_at_reset(&self, chat_id: &str) -> Result<(), EngineError> {
+        let limit = lock(&self.inner.statuses)
+            .get(chat_id)
+            .and_then(|row| row.limit.clone())
+            .ok_or_else(|| {
+                EngineError::Other(format!("chat {chat_id} is not Limited: no limit record"))
+            })?;
+        let fire_at = limit
+            .resets_at
+            .ok_or_else(|| EngineError::Other(
+                "the limit's reset time is unknown — use Resume instead".into(),
+            ))?;
+        if fire_at <= now_ms() {
+            return Err(EngineError::Other(
+                "the limit has already reset — use Resume instead".into(),
+            ));
+        }
+        self.arm_scheduled_resume(chat_id, fire_at);
+        Ok(())
+    }
+
+    /// Cancel the chat's pending Resume-at-reset continuation. A new message
+    /// to the chat, archiving it or deleting it all land here — the user's
+    /// newer intent wins. `true` when there was one to cancel.
+    pub fn cancel_scheduled_resume(&self, chat_id: &str) -> bool {
+        let cancelled = self.inner.scheduled_resumes.cancel(chat_id);
+        if cancelled {
+            self.inner.set_scheduled_resume_row(chat_id, None);
+            tracing::info!(chat = %chat_id, "scheduled resume cancelled");
+        }
+        cancelled
+    }
+
+    /// Cancel the continuation as the chat is DELETED: the store entry and
+    /// timer go, the in-memory row clears, but nothing mirrors into the
+    /// workspace doc — its sessions row is being deleted with the chat, and
+    /// a mirror would resurrect it.
+    pub(crate) fn cancel_scheduled_resume_with_chat(&self, chat_id: &str) {
+        if self.inner.scheduled_resumes.cancel(chat_id) {
+            self.inner.set_scheduled_resume_row_local(chat_id, None);
+            tracing::info!(chat = %chat_id, "scheduled resume cancelled with the deleted chat");
+        }
+    }
+
+    /// Boot recovery: arm timers for every continuation that survived the
+    /// restart — an overdue one fires now, after the engine is up. Called
+    /// from assembly once the doc host is wired (firing needs it).
+    pub fn recover_scheduled_resumes(&self) {
+        let pending = self.inner.scheduled_resumes.pending();
+        for (ix, (chat_id, fire_at, disarmed)) in pending.into_iter().enumerate() {
+            // Same stagger discipline as the crashed-run auto-resume: a
+            // fleet of overdue continuations re-dispatches spaced out, not
+            // as one boot burst of CLI spawns.
+            let delay = std::time::Duration::from_millis(ix as u64 * RESUME_STAGGER_MS);
+            self.spawn_resume_timer(chat_id, fire_at, disarmed, delay);
+            tracing::info!(
+                chat = %chat_id,
+                fire_at,
+                overdue = fire_at <= now_ms(),
+                "scheduled resume armed at boot"
+            );
+        }
+    }
+
+    /// Arm (or re-arm) the chat's Resume-at-reset continuation at `fire_at`:
+    /// store it durably, publish it on the status row, spawn its timer.
+    fn arm_scheduled_resume(&self, chat_id: &str, fire_at: i64) {
+        let disarmed = self.inner.scheduled_resumes.arm(chat_id, fire_at);
+        self.inner
+            .set_scheduled_resume_row(chat_id, Some(ScheduledResume { fire_at }));
+        self.spawn_resume_timer(
+            chat_id.to_string(),
+            fire_at,
+            disarmed,
+            std::time::Duration::ZERO,
+        );
+    }
+
+    /// The **Auto-resume limited chats** setting's arm: a fresh limit record
+    /// re-arms the continuation only when its reset time is still ahead AND
+    /// advances past the last continuation this chat fired — the loop guard.
+    /// A record whose reset does not beat it is the same wall, and re-arming
+    /// would fire straight back into the limit in a loop (T3's model: the
+    /// scheduler only ever works from a fresh persisted limit record).
+    fn maybe_auto_arm_resume(&self, chat_id: &str, limit: &SessionLimit) {
+        if !self.inner.engine_settings.get().auto_resume_limited {
+            return;
+        }
+        let Some(resets_at) = limit.resets_at else {
+            return;
+        };
+        if !self.inner.scheduled_resumes.advances(chat_id, resets_at) {
+            return;
+        }
+        tracing::info!(
+            chat = %chat_id,
+            resets_at,
+            "auto-resume limited chats: arming the continuation"
+        );
+        self.arm_scheduled_resume(chat_id, resets_at);
+    }
+
+    /// One continuation's timer: wait out the delay plus the remaining time
+    /// to `fire_at`, then hand the firing to the engine — unless the entry
+    /// was replaced or cancelled while it slept (the flag). `consume`
+    /// re-checks under the store's lock either way, so an obsolete timer can
+    /// never fire.
+    fn spawn_resume_timer(
+        &self,
+        chat_id: String,
+        fire_at: i64,
+        disarmed: Arc<AtomicBool>,
+        delay: std::time::Duration,
+    ) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            // Clock skew and a reset time minted on a lagging client clamp
+            // to "due now": never a panic, never a negative sleep.
+            let target = std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_millis(fire_at.max(0) as u64);
+            tokio::time::sleep_until(tokio::time::Instant::from_std(target)).await;
+            if disarmed.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            engine.fire_scheduled_resume(&chat_id, fire_at).await;
+        });
+    }
+
+    /// Fire one armed continuation: send the continue prompt exactly like
+    /// the manual Resume — a normal run, the queued messages behind it.
+    /// Owned by the timer task spawned in [`Self::spawn_resume_timer`].
+    async fn fire_scheduled_resume(&self, chat_id: &str, fire_at: i64) {
+        // A shutdown that began before the timer woke leaves the record
+        // armed for the next boot — shutting down never consumes one.
+        if self
+            .inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        // Consume BEFORE anything async: the record is gone before the run
+        // starts, so a crash mid-fire can never double-schedule it.
+        if !self.inner.scheduled_resumes.consume(chat_id, fire_at) {
+            return; // cancelled or replaced while this timer slept
+        }
+        // The chat fired this continuation — the loop guard's progress
+        // floor (a new limit record must beat it to re-arm).
+        self.inner.scheduled_resumes.note_fired(chat_id, fire_at);
+        self.inner.set_scheduled_resume_row(chat_id, None);
+        // A shutdown that raced the consume: put the record back — the next
+        // boot fires it overdue instead of losing the armed continuation.
+        if self
+            .inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.inner.scheduled_resumes.requeue(chat_id, fire_at);
+            return;
+        }
+        // A turn already in flight is the user's newer intent — its send
+        // cancelled this continuation on the way in and the timer raced
+        // the cancellation. Ours loses.
+        if self.turn_in_flight(chat_id) {
+            tracing::info!(
+                chat = %chat_id,
+                "scheduled resume dropped: a turn is already in flight"
+            );
+            return;
+        }
+        let Some(host) = self.inner.doc_host() else {
+            tracing::warn!(chat = %chat_id, "scheduled resume dropped: no doc host");
+            return;
+        };
+        // The chat row is gone — deleted here or on another device (the
+        // row syncs through the workspace doc), or swept with its space —
+        // or the chat was archived, possibly from another device whose
+        // sync never ran the archive RPC here: the continuation dies with
+        // the chat either way, and archived work must not resume on its
+        // own overnight. A bare host with no workspace to ask falls
+        // through to the last-request configuration below.
+        let chat = host.workspace().and_then(|ws| ws.chat(chat_id).ok());
+        match chat {
+            Some(None) => {
+                tracing::info!(chat = %chat_id, "scheduled resume dropped: the chat is gone");
+                return;
+            }
+            Some(Some(chat)) if chat.archived => {
+                tracing::info!(chat = %chat_id, "scheduled resume dropped: the chat is archived");
+                return;
+            }
+            _ => {}
+        }
+        // The continuation runs on the chat's own configuration, like the
+        // completion-notice turn: the chat row when there is one, else the
+        // last live request. `dispatch` re-derives the harness session, so
+        // the continuation continues the same harness conversation.
+        let prompt = roboco_proto::RESUME_CONTINUE_PROMPT;
+        let request = host.request_from_chat_row(chat_id, prompt).or_else(|| {
+            self.last_request(chat_id).map(|mut request| {
+                request.prompt = prompt.to_string();
+                // Dispatch re-injects the chat's remembered harness session —
+                // never carry a stale resume ref into the continuation.
+                request.resume = None;
+                request.attachments = Vec::new();
+                request
+            })
+        });
+        let Some(request) = request else {
+            tracing::warn!(
+                chat = %chat_id,
+                "scheduled resume dropped: no run configuration for the chat"
+            );
+            return;
+        };
+        let harness = host.harness_for_request(chat_id, &request);
+        // Deterministic id: a re-fire after a crash between consume and
+        // persistence lands as the same transcript entry (dedupe by id).
+        let message_id = format!("resume-at-reset:{fire_at}:{chat_id}");
+        tracing::info!(chat = %chat_id, fire_at, "scheduled resume firing");
+        match host
+            .dispatch_with_source_context(
+                self,
+                chat_id,
+                harness,
+                request,
+                Some(message_id),
+                None,
+            )
+            .await
+        {
+            Ok(_) => {
+                // The continuation is the explicit prompt that thaws the
+                // queue the limited chat holds — the same deliberate action
+                // the manual Resume's run is (queued messages follow it).
+                if let Ok(handle) = host.open(chat_id) {
+                    handle.thaw_queue();
+                }
+            }
+            Err(err) => {
+                if self
+                    .inner
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    // The engine went down under the dispatch: requeue for
+                    // the next boot rather than drop the armed continuation.
+                    self.inner.scheduled_resumes.requeue(chat_id, fire_at);
+                }
+                tracing::warn!(
+                    chat = %chat_id,
+                    error = %err,
+                    "scheduled resume turn failed to start"
+                );
+            }
+        }
+    }
+
     /// Graceful shutdown: interrupt every live run so streaming entries settle.
     pub async fn shutdown(&self) {
         self.inner
@@ -1755,6 +2070,7 @@ impl Inner {
                     started_at: None,
                     updated_at: now,
                     limit: None,
+                    scheduled_resume: None,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -1794,6 +2110,40 @@ impl Inner {
         if let Some(ws) = self.workspace() {
             ws.record_session(&session);
         }
+    }
+
+    /// Publish the chat's pending Resume-at-reset continuation onto its
+    /// status row (arming and cancellation both land here), leaving the
+    /// status itself untouched, and mirror it into the workspace doc so
+    /// remote devices' banners see it. No row yet — nothing armed, nothing
+    /// to clear; the arm paths only ever run for a chat with a row.
+    fn set_scheduled_resume_row(&self, chat_id: &str, scheduled: Option<ScheduledResume>) {
+        if let Some(session) = self.set_scheduled_resume_row_local(chat_id, scheduled) {
+            if let Some(ws) = self.workspace() {
+                ws.record_session(&session);
+            }
+        }
+    }
+
+    /// [`set_scheduled_resume_row`] without the workspace mirror: the
+    /// in-memory row and the watch list only. The delete paths use this —
+    /// they are deleting the chat's sessions row, which a mirror would
+    /// resurrect. Returns the updated row when there was one.
+    fn set_scheduled_resume_row_local(
+        &self,
+        chat_id: &str,
+        scheduled: Option<ScheduledResume>,
+    ) -> Option<Session> {
+        let now = Utc::now();
+        let mut statuses = lock(&self.statuses);
+        let entry = statuses.get_mut(chat_id)?;
+        entry.scheduled_resume = scheduled;
+        entry.updated_at = now;
+        let session = entry.clone();
+        let mut list: Vec<Session> = statuses.values().cloned().collect();
+        list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+        self.sessions_tx.send_replace(list);
+        Some(session)
     }
 
     /// The doc host, once wired. `None` before assembly or after retirement.
@@ -3953,7 +4303,19 @@ async fn drive_run(
     let notifiable = run_notifiable_parent(&inner, &chat_id, &run_id);
     inner.remove_run(&chat_id, &run_id);
     let final_turn_completed = final_completed_turn.is_some();
+    let auto_arm_limit = limit.clone();
     inner.set_status_with_limit(&chat_id, final_status, false, final_completed_turn, limit);
+    if let Some(limit) = auto_arm_limit
+        .as_ref()
+        .filter(|_| final_status == SessionStatus::Errored)
+    {
+        // Auto-resume limited chats (orchestration v2, ticket 07): the fresh
+        // limit record arms the continuation when the setting is on — only
+        // ever via a NEW record whose reset advances past the last fired
+        // continuation (the loop guard), never from the failure of the
+        // continuation itself.
+        SessionsEngine { inner: inner.clone() }.maybe_auto_arm_resume(&chat_id, limit);
+    }
     if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
         let completed_turn = final_turn_completed;
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {

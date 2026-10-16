@@ -499,6 +499,13 @@ impl WorkspaceDoc {
             )?,
             None => row.delete("limit")?,
         }
+        match &session.scheduled_resume {
+            Some(scheduled) => row.insert(
+                "scheduledResume",
+                LoroValue::from(serde_json::to_value(scheduled)?),
+            )?,
+            None => row.delete("scheduledResume")?,
+        }
         self.doc.commit();
         Ok(())
     }
@@ -796,6 +803,8 @@ pub(crate) struct RawSession {
     updated_at: i64,
     #[serde(default)]
     limit: Option<roboco_proto::SessionLimit>,
+    #[serde(default)]
+    scheduled_resume: Option<roboco_proto::ScheduledResume>,
 }
 
 impl From<RawSession> for Session {
@@ -808,6 +817,7 @@ impl From<RawSession> for Session {
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
             limit: raw.limit,
+            scheduled_resume: raw.scheduled_resume,
         }
     }
 }
@@ -917,6 +927,7 @@ mod tests {
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
             limit: None,
+            scheduled_resume: None,
         }
     }
 

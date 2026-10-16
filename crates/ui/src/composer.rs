@@ -12118,6 +12118,7 @@ mod tests {
                 started_at: Some(updated),
                 updated_at: updated,
                 limit: None,
+                scheduled_resume: None,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);
