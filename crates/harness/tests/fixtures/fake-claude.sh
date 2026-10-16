@@ -35,6 +35,21 @@ case "$first" in
   emit '{"type":"result","subtype":"success","result":"echoed","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-command-echo"}'
   ;;
 
+*scenario:resume-missing*)
+  # The account-failover fallback (ticket 09): the session file is unknown
+  # to the CLI store, so the driver must start FRESH -- no --resume flag --
+  # with the budgeted history in front of the prompt. Seeing --resume here
+  # fails the run.
+  for arg in "$@"; do
+    case "$arg" in
+      --resume=*) echo "refused resume still passed --resume" >&2; exit 1 ;;
+    esac
+  done
+  content=$(printf '%s\n' "$first" | sed 's/.*"content":"\([^"]*\)".*/\1/')
+  emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"$content\"}}}"
+  emit '{"type":"result","subtype":"success","result":"echoed","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-resume-missing"}'
+  ;;
+
 *scenario:title*)
   tools_off=false
   system_set=false

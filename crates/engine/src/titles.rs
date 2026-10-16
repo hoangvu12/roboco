@@ -211,6 +211,7 @@ impl TitleGenerator {
                 attachments: Vec::new(),
                 resume: None,
                 provider_fork: None,
+                resume_fallback_history: None,
                 worktree: None,
                 mcp: None,
             };
@@ -382,6 +383,7 @@ mod tests {
             attachments: vec![],
             worktree: None,
             provider_fork: None,
+            resume_fallback_history: None,
             mcp: None,
         };
         let result = collect_text(&harness, request, None).await;

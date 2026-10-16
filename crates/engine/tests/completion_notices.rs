@@ -259,6 +259,8 @@ fn run_request(prompt: &str) -> RunRequest {
         auto_approve: false,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
+        resume_fallback_history: None,
         attachments: vec![],
         worktree: None,
     }

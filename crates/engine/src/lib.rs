@@ -15,6 +15,7 @@ use roboco_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use roboco_sync::DocsStore;
 
+pub mod account_failover;
 pub mod agent_accounts;
 pub mod change_requests;
 mod chat_persistence;

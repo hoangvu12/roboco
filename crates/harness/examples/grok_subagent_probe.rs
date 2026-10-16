@@ -52,6 +52,7 @@ async fn main() {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     let mut stream = AcpHarness::grok()
         .run(request, controls)

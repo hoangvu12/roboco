@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
         model_options: Default::default(), cwd: workspace.path().to_string_lossy().into_owned(),
         sandbox: SandboxLevel::DangerFullAccess, auto_approve: true,
         provider_fork: None,
+        resume_fallback_history: None,
         attachments: vec![], worktree: None, resume: None, mcp: None,
     };
     let mut stream = CursorHarness::new()

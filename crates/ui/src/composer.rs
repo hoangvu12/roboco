@@ -8639,6 +8639,7 @@ impl Composer {
                         auto_approve: false,
                         resume: None,
                         provider_fork: None,
+                        resume_fallback_history: None,
                         attachments: attachment_paths,
                         worktree: run_worktree.clone(),
                         mcp: None,

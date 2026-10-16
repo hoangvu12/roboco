@@ -66,6 +66,7 @@ async fn check_persistence(
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
         .dispatch(

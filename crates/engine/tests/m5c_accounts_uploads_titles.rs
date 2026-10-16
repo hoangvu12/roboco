@@ -968,6 +968,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None, None)
@@ -1015,6 +1016,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None, None)

@@ -1119,6 +1119,10 @@ async fn run_session(session: Session) {
     // The budgeted transcript the engine attached for a refused fork; the
     // interrupted-start path leaves it unset (nothing was attempted).
     let mut fork_fallback: Option<String> = None;
+    // The same for a REFUSED RESUME (account failover, ticket 09): the
+    // engine attaches the chat's budgeted history to the continuation so a
+    // fresh thread still knows the conversation.
+    let mut resume_fallback: Option<String> = None;
     let setup = async {
         client
             .request(
@@ -1192,6 +1196,10 @@ async fn run_session(session: Session) {
                         target: "roboco_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
+                    // A refused resume with the engine's budgeted fallback
+                    // history (ticket 09's account-failover continuation):
+                    // the fresh thread still owes the chat its context.
+                    resume_fallback = request.resume_fallback_history.clone();
                     client
                         .request("thread/start", Value::Object(start_params.clone()))
                         .await?
@@ -1241,10 +1249,11 @@ async fn run_session(session: Session) {
     // the budgeted transcript rides in front of the prompt, exactly as the
     // engine would have pasted it for a fresh session. The prompt itself
     // still governs native-command routing below (a native command never
-    // carries a fallback — the engine attaches none).
-    let delivered_prompt = match &fork_fallback {
-        Some(history) => format!("{history}{}", request.prompt),
-        None => request.prompt.clone(),
+    // carries a fallback — the engine attaches none). A refused RESUME
+    // delivers the same way (ticket 09).
+    let delivered_prompt = match (&fork_fallback, &resume_fallback) {
+        (Some(history), _) | (_, Some(history)) => format!("{history}{}", request.prompt),
+        (None, None) => request.prompt.clone(),
     };
     // Model, effort and service tier ride every `turn/start` (each sticks
     // for later turns): a steer's in-place `config` takes effect from the

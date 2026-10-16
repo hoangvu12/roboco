@@ -70,6 +70,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
                 mcp: None,
                 resume: None,
                 provider_fork: None,
+                resume_fallback_history: None,
             },
         },
     );

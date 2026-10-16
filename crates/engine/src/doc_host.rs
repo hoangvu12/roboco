@@ -3264,6 +3264,7 @@ impl DocHost {
             attachments: Vec::new(),
             resume: None,
             provider_fork: None,
+            resume_fallback_history: None,
             worktree: None,
             mcp: None,
         })

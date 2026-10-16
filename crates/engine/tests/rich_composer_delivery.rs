@@ -160,6 +160,7 @@ fn request(prompt: &str) -> RunRequest {
         auto_approve: true,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
         attachments: vec![],
         worktree: None,
         mcp: None,

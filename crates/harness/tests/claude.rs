@@ -50,6 +50,7 @@ fn request(prompt: &str) -> RunRequest {
         mcp: None,
         resume: None,
         provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -92,6 +93,39 @@ async fn run_to_end(
     )
     .await
     .expect("run finished in time")
+}
+
+/// A resume whose session file the CLI store does not know, carrying the
+/// engine's budgeted fallback (ticket 09's account-failover continuation):
+/// the driver starts FRESH — no `--resume` reaches the CLI (the fake fails
+/// the run if it does) — with the history in front of the prompt.
+#[tokio::test]
+async fn a_resume_without_a_session_file_starts_fresh_with_the_history() {
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-missing");
+    // An id no real Claude session store knows (the check only READS the
+    // store — no login, no write).
+    req.resume = Some("roboco-missing-3f9c".into());
+    req.resume_fallback_history = Some("HISTORY PINEAPPLE ".into());
+    let events = run_to_end(&harness(), req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TextDelta { text }
+                if text.contains("HISTORY PINEAPPLE") && text.contains("scenario:resume-missing")
+        )),
+        "the budgeted history rode in front of the prompt: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("sess-resume-missing".into()),
+        })
+    );
 }
 
 #[tokio::test]
