@@ -24,7 +24,11 @@
 //!   transcript rides the request as the refused-fork fallback. A missing
 //!   ref or a changed harness keeps the ticket-01 budgeted paste. The turn
 //!   refs themselves ride assistant entries via a harness event the engine
-//!   stamps at segment finish.
+//!   stamps at segment finish. Claude Code (ticket 18) speaks the same
+//!   contract with its own ref shape — the provider session id plus the
+//!   uuid of the turn's last top-level message frame — and its stand-in
+//!   tests pin that shape and the consumed-once intent on a ClaudeCode
+//!   harness.
 //! - "Fork from here" (t3-orchestration-v2 ticket 21): the RPC's optional
 //!   `boundary` picks the reply to fork at — any settled assistant entry,
 //!   an earlier, errored or interrupted one — and the copy (and the budgeted
@@ -536,6 +540,263 @@ async fn a_fork_with_a_provider_turn_ref_forks_the_source_session() {
     let request = side_turn(&core, &requests, "side", "And now?", "s2").await;
     assert_eq!(request.provider_fork, None);
     assert_eq!(request.resume.as_deref(), Some("side-provider-session"));
+    assert_eq!(request.prompt, "And now?", "{}", request.prompt);
+    core.shutdown().await;
+}
+
+/// A Claude Code stand-in (t3-orchestration-v2 ticket 18): one run that
+/// reports the fork's NEW session id (what the CLI's init frame carries)
+/// and a provider turn ref — the uuid of the last top-level message frame
+/// of the turn, exactly the event the Claude driver emits — capturing the
+/// request it ran on.
+struct ClaudeCapture(Arc<Mutex<Vec<RunRequest>>>);
+#[async_trait]
+impl Harness for ClaudeCapture {
+    fn id(&self) -> HarnessId {
+        HarnessId::ClaudeCode
+    }
+    fn display_name(&self) -> &str {
+        "ClaudeCapture"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        _: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.0.lock().unwrap().push(request);
+        Ok(futures::stream::iter(vec![
+            Ok(AgentEvent::SessionStarted {
+                harness: HarnessId::ClaudeCode,
+                model: "claude-fable-5".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "claude-fork-new-session".into(),
+                assistant_message_id: uuid::Uuid::new_v4().to_string(),
+            }),
+            Ok(AgentEvent::TurnRef {
+                reference: roboco_proto::ProviderTurnRef {
+                    harness: HarnessId::ClaudeCode,
+                    session_id: "claude-fork-new-session".into(),
+                    turn_id: "msg-uuid-9".into(),
+                },
+            }),
+            Ok(AgentEvent::TextDelta {
+                text: "Claude fork answer".into(),
+            }),
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some("claude-fork-new-session".into()),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+/// Claude Code assistant entries carry the provider turn reference
+/// (ticket 18): the harness event rides the stream and the engine stamps
+/// it on the entry the turn streamed into — the session id plus the uuid
+/// of the turn's last top-level message frame — so a later fork finds its
+/// boundary there.
+#[tokio::test]
+async fn claude_assistant_entries_record_the_provider_turn_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ClaudeCapture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::ClaudeCode).unwrap();
+    core.workspace
+        .create_chat(
+            "chat",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.sessions
+        .dispatch(
+            "chat",
+            HarnessId::ClaudeCode,
+            RunRequest {
+                mcp: None,
+                prompt: "turn one".into(),
+                harness: Some(HarnessId::ClaudeCode),
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                cwd: "/tmp".into(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                auto_approve: true,
+                resume: None,
+                provider_fork: None,
+                resume_fallback_history: None,
+                attachments: vec![],
+                worktree: None,
+            },
+            Some("u1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while requests.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while core
+            .sessions
+            .session_status("chat")
+            .is_some_and(|s| s.status != roboco_proto::SessionStatus::Idle)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let entries = core
+        .doc_host
+        .open("chat")
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap();
+    let assistant: Vec<_> = entries
+        .iter()
+        .filter(|e| e.role == MessageRole::Assistant)
+        .collect();
+    assert_eq!(assistant.len(), 1, "{entries:?}");
+    assert_eq!(
+        assistant[0].provider_turn.as_ref(),
+        Some(&roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "claude-fork-new-session".into(),
+            turn_id: "msg-uuid-9".into(),
+        }),
+        "the turn ref rides the entry it streamed into: {entries:?}"
+    );
+    core.shutdown().await;
+}
+
+/// A Claude Code fork's first run carries the source session and the
+/// boundary message uuid to the driver (ticket 18): `--resume <source>
+/// --fork-session` (plus `--resume-session-at <uuid>` at the driver when the
+/// boundary is an earlier turn), nothing pasted, the budgeted transcript as
+/// the refused-fork fallback — and the intent is consumed once, with the
+/// fork's own NEW session resuming afterwards.
+#[tokio::test]
+async fn a_claude_fork_carries_the_source_session_and_boundary_uuid_to_its_first_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(ClaudeCapture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::ClaudeCode).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "claude-source-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    // The boundary reply, stamped the way a Claude run does: the provider
+    // session plus the uuid of the turn's last top-level message frame.
+    let mut boundary = message(
+        "a1",
+        MessageRole::Assistant,
+        "I remember PINEAPPLE",
+        MessageStatus::Complete,
+    );
+    boundary.provider_turn = Some(roboco_proto::ProviderTurnRef {
+        harness: HarnessId::ClaudeCode,
+        session_id: "claude-source-session".into(),
+        turn_id: "msg-uuid-7".into(),
+    });
+    source.doc().push_message(&boundary).unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+
+    // The fork's first run: the native-fork directive names the source
+    // session and the boundary message uuid, and the delivered prompt
+    // carries no transcript — the forked session holds the history.
+    let request = side_turn_on_harness(
+        &core,
+        &requests,
+        "side",
+        "What did I ask?",
+        "s1",
+        HarnessId::ClaudeCode,
+    )
+    .await;
+    assert_eq!(
+        request.resume, None,
+        "the fork never resumes the source session as a plain resume"
+    );
+    let fork = request
+        .provider_fork
+        .expect("native fork directive rides the run");
+    assert_eq!(fork.session_id, "claude-source-session");
+    assert_eq!(fork.last_turn, "msg-uuid-7");
+    assert_eq!(request.prompt, "What did I ask?", "{}", request.prompt);
+    // The budgeted transcript rides the request as the refused-fork
+    // fallback (what the driver pastes onto the fresh session the CLI
+    // starts when it rejects the flags or the session is gone).
+    let fallback = fork.fallback_history.expect("fallback history attached");
+    assert!(fallback.contains("PINEAPPLE"), "{fallback}");
+    assert!(fallback.ends_with("\n\n"), "{fallback}");
+
+    // The second run: the intent is spent, and the fork's own NEW session
+    // (the init frame's id) resumes — nothing pasted.
+    let request = side_turn_on_harness(
+        &core,
+        &requests,
+        "side",
+        "And now?",
+        "s2",
+        HarnessId::ClaudeCode,
+    )
+    .await;
+    assert_eq!(request.provider_fork, None);
+    assert_eq!(
+        request.resume.as_deref(),
+        Some("claude-fork-new-session"),
+        "the fork's own session resumes"
+    );
     assert_eq!(request.prompt, "And now?", "{}", request.prompt);
     core.shutdown().await;
 }
@@ -1297,6 +1558,19 @@ async fn side_turn(
     prompt: &str,
     message_id: &str,
 ) -> RunRequest {
+    side_turn_on_harness(core, requests, chat, prompt, message_id, HarnessId::Mock).await
+}
+
+/// [`side_turn`] on an explicit harness — the Claude Code fork tests
+/// dispatch on the stand-in registered under that id.
+async fn side_turn_on_harness(
+    core: &EngineCore,
+    requests: &Arc<Mutex<Vec<RunRequest>>>,
+    chat: &str,
+    prompt: &str,
+    message_id: &str,
+    harness: HarnessId,
+) -> RunRequest {
     let before = requests.lock().unwrap().len();
     let resume = core
         .workspace
@@ -1307,11 +1581,11 @@ async fn side_turn(
     core.sessions
         .dispatch(
             chat,
-            HarnessId::Mock,
+            harness,
             RunRequest {
                 mcp: None,
                 prompt: prompt.into(),
-                harness: Some(HarnessId::Mock),
+                harness: Some(harness),
                 model: None,
                 reasoning: None,
                 model_options: Default::default(),

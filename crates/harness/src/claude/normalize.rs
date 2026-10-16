@@ -2,7 +2,8 @@
 //! decoding, error-code mapping).
 
 use roboco_proto::{
-    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ProviderTurnRef, TodoItem, TodoStatus,
+    ToolCall,
 };
 use serde_json::Value;
 
@@ -228,6 +229,12 @@ pub(crate) struct Normalizer {
     assistant_message_id: String,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
+    /// The uuid of the last TOP-LEVEL (untagged) assistant/user frame seen
+    /// — the turn ref of the turn a `result` closes (t3-orchestration-v2
+    /// ticket 18): a fork resumes the provider session at exactly that
+    /// message (`--resume-session-at`, inclusive). Tagged subagent frames
+    /// never count (their uuids name the subagent's own nested turns).
+    last_message_uuid: Option<String>,
 }
 
 impl Normalizer {
@@ -240,6 +247,7 @@ impl Normalizer {
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
             session_id: None,
+            last_message_uuid: None,
         }
     }
 
@@ -351,6 +359,39 @@ impl Normalizer {
     pub fn rotate_for_steer(&mut self) -> (String, String) {
         let prev = std::mem::replace(&mut self.assistant_message_id, new_message_id());
         (prev, self.assistant_message_id.clone())
+    }
+
+    /// Record the uuid of a top-level (untagged) message frame: the
+    /// candidate turn ref of the turn a later `result` closes — the LAST
+    /// one before the result wins (see [`Self::turn_ref`]).
+    fn note_message_uuid(&mut self, uuid: Option<&str>) {
+        if let Some(uuid) = uuid.filter(|u| !u.is_empty()) {
+            self.last_message_uuid = Some(uuid.to_owned());
+        }
+    }
+
+    /// The provider turn reference a `result` frame closes (ticket 18):
+    /// the session id plus the uuid of the last top-level assistant/user
+    /// frame before the result — what a fork resumes the provider session
+    /// at (`--resume <session> --fork-session`, `--resume-session-at
+    /// <uuid>` for an earlier boundary, inclusive). `None` when either
+    /// half is unknown (no message frame carried a uuid, or no session id
+    /// ever arrived): the engine then records no ref and a later fork
+    /// falls back to the budgeted paste.
+    fn turn_ref(&self, result_session: &Option<String>) -> Option<ProviderTurnRef> {
+        let session_id = result_session
+            .clone()
+            .or_else(|| self.session_id.clone())
+            .filter(|id| !id.is_empty())?;
+        let turn_id = self
+            .last_message_uuid
+            .clone()
+            .filter(|id| !id.is_empty())?;
+        Some(ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id,
+            turn_id,
+        })
     }
 
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
@@ -527,6 +568,12 @@ impl Normalizer {
                     }
                     return out;
                 }
+                // A top-level message frame: its uuid is the candidate turn
+                // ref (ticket 18) — the last one before the turn's result
+                // is what a fork resumes at. Recorded even when the frame
+                // yields no events (a tool-result-only user frame still
+                // names a turn boundary).
+                self.note_message_uuid(f.uuid.as_deref());
                 // Record spawn tool ids up front: `task_notification` keys on
                 // them; a task may finish before a `task_started` arrives.
                 for b in f.message.blocks() {
@@ -664,6 +711,10 @@ impl Normalizer {
                     );
                     return out;
                 }
+                // A top-level user frame (tool results, or the CLI's echo of
+                // a line we wrote): its uuid is the candidate turn ref
+                // (ticket 18), same as an assistant frame's.
+                self.note_message_uuid(f.uuid.as_deref());
                 f.message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_result")
@@ -791,6 +842,14 @@ impl Normalizer {
                     }
                 };
                 let mut out = Vec::new();
+                // The provider turn ref (ticket 18) rides FIRST, before the
+                // result's own events: the engine holds it while the entry
+                // the turn streamed into finishes, and the Done below —
+                // Usage and ContextUsage never close a segment — closes it,
+                // so the ref is stamped on exactly that entry.
+                if let Some(reference) = self.turn_ref(&f.session_id) {
+                    out.push(AgentEvent::TurnRef { reference });
+                }
                 if let Some(window) = window {
                     out.push(AgentEvent::ContextUsage {
                         tokens: None,
@@ -1393,6 +1452,108 @@ mod tests {
                 })
             ),
             "wake turn settles with its own Done"
+        );
+    }
+
+    /// The provider turn ref (t3-orchestration-v2 ticket 18): every
+    /// `result` closes the turn with the session id plus the uuid of the
+    /// LAST top-level assistant/user frame before it — tagged subagent
+    /// frames never count — emitted ahead of the result's own events so
+    /// the engine stamps it on the entry the turn streamed into.
+    #[test]
+    fn result_frames_emit_the_last_top_level_message_uuid_as_the_turn_ref() {
+        let mut norm = Normalizer::new();
+        let init = r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"sess-t"}"#;
+        norm.normalize(crate::claude::wire::parse_frame(init).unwrap(), false);
+        let frames = [
+            r#"{"type":"assistant","uuid":"msg-a","message":{"content":[{"type":"text","text":"a"}]}}"#,
+            // Tagged (subagent) frames carry uuids too — they name the
+            // subagent's own nested turns and must never become the ref.
+            r#"{"type":"assistant","uuid":"msg-sub","parent_tool_use_id":"toolu_s","message":{"content":[{"type":"text","text":"sub"}]}}"#,
+            r#"{"type":"user","uuid":"msg-b","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":false}]}}"#,
+            r#"{"type":"result","subtype":"success","result":"done","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-t"}"#,
+        ];
+        let mut events = Vec::new();
+        for raw in frames {
+            events.extend(norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false));
+        }
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, AgentEvent::TurnRef { .. })).count(),
+            1,
+            "one ref per turn: {events:?}"
+        );
+        assert!(events.contains(&AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::ClaudeCode,
+                session_id: "sess-t".into(),
+                turn_id: "msg-b".into(),
+            }
+        }));
+        // The ref rides ahead of the result's own events — the Done closes
+        // the entry it must be stamped on.
+        let done_at = events
+            .iter()
+            .rposition(|e| matches!(e, AgentEvent::Done { .. }))
+            .expect("done");
+        let ref_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TurnRef { .. }))
+            .expect("turn ref");
+        assert!(ref_at < done_at);
+    }
+
+    /// A result whose own frame carries no session id falls back to the
+    /// last one seen (the init's); frames without uuids, or a session id
+    /// that never arrived, record no ref at all — a later fork then falls
+    /// back to the budgeted paste instead.
+    #[test]
+    fn turn_refs_need_a_uuid_and_a_session_id() {
+        let mut norm = Normalizer::new();
+        let init = r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"sess-fb"}"#;
+        norm.normalize(crate::claude::wire::parse_frame(init).unwrap(), false);
+        // No uuid on the message frames, and none on the result: no ref.
+        for raw in [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}]}}"#,
+            r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+        ] {
+            let events = norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false);
+            assert!(
+                !events.iter().any(|e| matches!(e, AgentEvent::TurnRef { .. })),
+                "{events:?}"
+            );
+        }
+        // A uuid arrives; the result still names no session, so the ref
+        // falls back to the init's — the session a fork must resume.
+        let frame = r#"{"type":"assistant","uuid":"msg-late","message":{"content":[]}}"#;
+        norm.normalize(crate::claude::wire::parse_frame(frame).unwrap(), false);
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.contains(&AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::ClaudeCode,
+                session_id: "sess-fb".into(),
+                turn_id: "msg-late".into(),
+            }
+        }));
+        // No session id ever seen: a uuid alone is not a ref.
+        let mut fresh = Normalizer::new();
+        let frame = r#"{"type":"assistant","uuid":"msg-2","message":{"content":[]}}"#;
+        fresh.normalize(crate::claude::wire::parse_frame(frame).unwrap(), false);
+        let events = fresh.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, AgentEvent::TurnRef { .. })),
+            "{events:?}"
         );
     }
 

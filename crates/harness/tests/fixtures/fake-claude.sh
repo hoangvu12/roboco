@@ -8,6 +8,37 @@
 # 2.1.286). Driven by crates/harness/tests/claude.rs.
 
 read -r first || exit 1
+
+# Fork launches (t3-orchestration-v2 ticket 18): the driver resumes the
+# source session with --fork-session (and --resume-session-at <uuid> for a
+# boundary at an earlier turn). The source session id picks the behavior:
+# acceptance, or a CLI that REJECTS the flags outright — exiting before it
+# ever speaks, which is the refusal the driver's launch probe turns into
+# the budgeted-paste fallback. Routed off argv because a refusing CLI never
+# reads the prompt line.
+fork_src=
+for arg in "$@"; do
+  case "$arg" in
+    --resume=fork-latest-src) fork_src=fork-latest-src ;;
+    --resume=fork-earlier-src) fork_src=fork-earlier-src ;;
+    --resume=fork-refused-src) fork_src=fork-refused-src ;;
+  esac
+done
+if [ -n "$fork_src" ]; then
+  case " $* " in
+    *" --fork-session "*) ;;
+    *) echo "fork launch without --fork-session" >&2; exit 21 ;;
+  esac
+  case "$fork_src" in
+    fork-refused-src)
+      # An unknown hidden flag: the CLI exits before answering anything
+      # (no stdout at all — the probe reads EOF).
+      echo "error: unknown option '--resume-session-at'" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 # A run opens with an `initialize` control request (perTaskStopAffordance);
 # the real CLI answers it before the first user line. (Command discovery
 # sends its own initialize as the only line — matched by its scenario arm
@@ -50,6 +81,85 @@ case "$first" in
   emit '{"type":"result","subtype":"success","result":"echoed","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-resume-missing"}'
   ;;
 
+*scenario:fork-latest*)
+  # A native fork at the LATEST turn (ticket 18): --resume + --fork-session,
+  # no --resume-session-at, and a BARE prompt — the copied history rides
+  # the forked session (any pasted transcript fails the turn).
+  [ -n "$fork_src" ] || { echo "scenario reached without a fork launch" >&2; exit 22; }
+  case " $* " in
+    *"--resume-session-at"*) echo "resume-session-at on a latest-turn fork" >&2; exit 22 ;;
+  esac
+  for bad in 'PINEAPPLE' '<transcript>'; do
+    case "$first" in *"$bad"*) echo "history pasted into a native fork: $bad" >&2; exit 22 ;; esac
+  done
+  fid=$(uuid_of "$first")
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"queued\"}"
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-latest-new"}'
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"forked latest answer"}}}'
+  # Top-level frames with uuids (the forked session's own turn): the LAST
+  # one before the result is the turn ref, tagged frames never count.
+  emit '{"type":"assistant","uuid":"msg-fork-thinking","parent_tool_use_id":null,"message":{"content":[{"type":"thinking","thinking":"hmm"}]}}'
+  emit '{"type":"assistant","uuid":"msg-fork-sub","parent_tool_use_id":"sub-x","message":{"content":[{"type":"text","text":"sub interior"}]}}'
+  emit '{"type":"assistant","uuid":"msg-fork-last","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"forked latest answer"}]}}'
+  emit '{"type":"result","subtype":"success","result":"forked latest","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-latest-new"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"completed\"}"
+  ;;
+
+*scenario:fork-earlier*)
+  # A native fork at an EARLIER turn (ticket 21's boundary): the hidden
+  # --resume-session-at with the boundary uuid, inclusive, and a bare
+  # prompt like every native fork.
+  [ -n "$fork_src" ] || { echo "scenario reached without a fork launch" >&2; exit 23; }
+  case " $* " in
+    *"--resume-session-at=msg-uuid-7"*) ;;
+    *) echo "resume-session-at missing or mismatched: $*" >&2; exit 23 ;;
+  esac
+  for bad in 'PINEAPPLE' '<transcript>'; do
+    case "$first" in *"$bad"*) echo "history pasted into a native fork: $bad" >&2; exit 23 ;; esac
+  done
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-earlier-new"}'
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"forked earlier answer"}}}'
+  emit '{"type":"assistant","uuid":"msg-fork-earlier-last","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"forked earlier answer"}]}}'
+  emit '{"type":"result","subtype":"success","result":"forked earlier","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-earlier-new"}'
+  ;;
+
+*scenario:fork-refused*)
+  # The CLI REFUSED the fork flags (it exited before speaking), so the
+  # driver fell back to a fresh session: no session flags at all, and the
+  # budgeted history rides in front of the prompt.
+  for arg in "$@"; do
+    case "$arg" in
+      --resume=*|--fork-session|--resume-session-at=*) echo "fallback still carries session flags: $arg" >&2; exit 24 ;;
+    esac
+  done
+  for want in 'PINEAPPLE' 'scenario:fork-refused'; do
+    case "$first" in *"$want"*) ;; *) echo "fallback prompt missing: $want" >&2; exit 24 ;; esac
+  done
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-fresh"}'
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"fresh fallback answer"}}}'
+  emit '{"type":"assistant","uuid":"msg-fork-fresh","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"fresh fallback answer"}]}}'
+  emit '{"type":"result","subtype":"success","result":"fresh fallback","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-fresh"}'
+  ;;
+
+*scenario:fork-missing*)
+  # The source session's file is gone from the CLI's store: the driver
+  # skips the fork launch outright — no session flags, the budgeted history
+  # in front of the prompt (the fallback is mandatory, never a failed send).
+  for arg in "$@"; do
+    case "$arg" in
+      --resume=*|--fork-session|--resume-session-at=*) echo "missing-session fallback still carries session flags: $arg" >&2; exit 25 ;;
+    esac
+  done
+  for want in 'PINEAPPLE' 'scenario:fork-missing'; do
+    case "$first" in *"$want"*) ;; *) echo "missing-session prompt missing: $want" >&2; exit 25 ;; esac
+  done
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-missing-fresh"}'
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"missing session fallback answer"}}}'
+  emit '{"type":"assistant","uuid":"msg-fork-missing","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"missing session fallback answer"}]}}'
+  emit '{"type":"result","subtype":"success","result":"missing session fallback","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-missing-fresh"}'
+  ;;
+
 *scenario:title*)
   tools_off=false
   system_set=false
@@ -83,11 +193,13 @@ case "$first" in
   emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"pondering"}}}'
   emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}'
   # Subagent frames (parent_tool_use_id set): tagged, never in the parent feed.
+  # The tagged frames carry uuids too — they name the subagent's own nested
+  # turns and must never become the parent's turn ref.
   emit '{"type":"stream_event","parent_tool_use_id":"sub-1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"SUBAGENT"}}}'
-  emit '{"type":"assistant","parent_tool_use_id":"sub-1","message":{"content":[{"type":"tool_use","id":"sub-tool","name":"Bash","input":{"command":"echo sub"}}]}}'
-  emit '{"type":"user","parent_tool_use_id":"sub-1","message":{"content":[{"type":"tool_result","tool_use_id":"sub-tool","is_error":false}]}}'
-  emit '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls -la"}},{"type":"tool_use","id":"tool-2","name":"mcp__linear__search","input":{"q":"bug"}}]}}'
-  emit '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":false},{"type":"tool_result","tool_use_id":"tool-2","is_error":true}]}}'
+  emit '{"type":"assistant","uuid":"msg-sub","parent_tool_use_id":"sub-1","message":{"content":[{"type":"tool_use","id":"sub-tool","name":"Bash","input":{"command":"echo sub"}}]}}'
+  emit '{"type":"user","uuid":"msg-sub-user","parent_tool_use_id":"sub-1","message":{"content":[{"type":"tool_result","tool_use_id":"sub-tool","is_error":false}]}}'
+  emit '{"type":"assistant","uuid":"msg-happy-1","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Hello"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls -la"}},{"type":"tool_use","id":"tool-2","name":"mcp__linear__search","input":{"q":"bug"}}]}}'
+  emit '{"type":"user","uuid":"msg-happy-2","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":false},{"type":"tool_result","tool_use_id":"tool-2","is_error":true}]}}'
   # Informational rate-limit status: stays quiet.
   emit '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}'
   emit '{"type":"result","subtype":"success","result":"done!","errors":[],"usage":{"input_tokens":10,"output_tokens":20},"session_id":"sess-1","total_cost_usd":0.01}'
