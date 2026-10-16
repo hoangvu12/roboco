@@ -2,6 +2,7 @@
 // Legacy wire name (ADR 0005): the canonical term is "Harness account" — see CONTEXT.md.
 
 import type { AgentAuthKind } from "./AgentAuthKind";
+import type { AgentSignInState } from "./AgentSignInState";
 import type { AgentUsageWindow } from "./AgentUsageWindow";
 import type { HarnessId } from "./HarnessId";
 
@@ -17,7 +18,22 @@ usageFetchedAt?: number | null,
  * "Sign in again", …), shown instead of a bare "Usage unavailable" — or
  * beside stale windows. `None` when the last probe succeeded or none ran.
  */
-usageError?: string | null, displayName?: string | null, organization?: string | null, 
+usageError?: string | null, 
+/**
+ * Whether the login is known to work: `SignedIn` after the last usage
+ * probe (or sign-in) succeeded, `SignedOut` after a hard rejection (a
+ * refused refresh, a signed-out run error). Ambiguous "session expired"
+ * outcomes never claim `SignedOut` — they stay `Unknown`, as does an
+ * account never probed. Additive (ADR 0005): older payloads default to
+ * `Unknown`.
+ */
+signInState: AgentSignInState, 
+/**
+ * The latest reset among the account's exhausted (100% used) windows —
+ * when it is in the future, the account is still limited. `None` when
+ * no window is exhausted (or none knows its reset). Additive (ADR 0005).
+ */
+limitedUntil?: string | null, displayName?: string | null, organization?: string | null, 
 /**
  * How the CLI is signed in (`oauth` account vs raw `api-key`).
  */

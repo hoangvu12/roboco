@@ -515,6 +515,7 @@ describe("AccountRow (settings) — the Forget affordance (wpn-09)", () => {
       active: false,
       usageWindows: [],
       switchable: true,
+      signInState: "unknown",
       ...fields,
     };
   }

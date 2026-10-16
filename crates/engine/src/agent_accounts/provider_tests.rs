@@ -1,6 +1,9 @@
 //! Grok / Devin / OpenCode / Pi / Hermes accounts against fake credential
 //! stores in temp dirs, fake CLIs and a local mock of every provider
-//! endpoint — never a real login, token or network call.
+//! endpoint — never a real login, token or network call. The Claude
+//! sign-in-state tests live here too: they need the same mocked usage /
+//! token endpoints to drive a hard (refused-refresh) rejection against a
+//! saved slot.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -33,10 +36,12 @@ fn chatgpt_access(email: &str, account_id: &str, plan: &str) -> String {
     }))
 }
 
-type Handler = dyn Fn(&str, &str, &str) -> (u16, String) + Send + Sync;
+type Handler = dyn Fn(&str, &str, &str, &str) -> (u16, String) + Send + Sync;
 
 /// A local stand-in for provider endpoints: `handler(method, path+query,
-/// body)` answers every request; `hits` records `"METHOD path"`.
+/// body, bearer)` answers every request (the bearer is the Authorization
+/// header's credential, `""` when none was sent); `hits` records
+/// `"METHOD path"`.
 struct MockServer {
     base: String,
     hits: Arc<Mutex<Vec<String>>>,
@@ -45,7 +50,7 @@ struct MockServer {
 
 impl MockServer {
     async fn start(
-        handler: impl Fn(&str, &str, &str) -> (u16, String) + Send + Sync + 'static,
+        handler: impl Fn(&str, &str, &str, &str) -> (u16, String) + Send + Sync + 'static,
     ) -> Self {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -89,8 +94,19 @@ impl MockServer {
                     let mut first = head.lines().next().unwrap_or("").split_whitespace();
                     let method = first.next().unwrap_or("").to_string();
                     let path = first.next().unwrap_or("").to_string();
+                    // The bearer's credential, when the request carried one —
+                    // handlers branch on WHICH account probed (hyper sends
+                    // lowercase header names).
+                    let bearer = head
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("authorization:"))
+                        .and_then(|l| l.split_once(':'))
+                        .map(|(_, v)| v.trim())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                        .map(str::to_string)
+                        .unwrap_or_default();
                     lock(&hits).push(format!("{method} {path}"));
-                    let (status, reply) = handler(&method, &path, &body);
+                    let (status, reply) = handler(&method, &path, &body, &bearer);
                     let response = http_response(
                         &format!("{status} X"),
                         &[("Content-Type", "application/json")],
@@ -415,7 +431,7 @@ async fn forgetting_a_live_login_signs_out_only_that_login() {
 async fn a_rejected_saved_grok_token_refreshes_once_against_its_issuer() {
     let issuer_hits = Arc::new(AtomicUsize::new(0));
     let hits = issuer_hits.clone();
-    let server = MockServer::start(move |method, path, body| match (method, path) {
+    let server = MockServer::start(move |method, path, body, _| match (method, path) {
         ("GET", p) if p.starts_with("/v1/billing") => {
             // Only the refreshed token is accepted.
             (200, r#"{"config":{"creditUsagePercent":30}}"#.to_string())
@@ -432,7 +448,7 @@ async fn a_rejected_saved_grok_token_refreshes_once_against_its_issuer() {
     })
     .await;
     // Billing rejects every token but "fresh".
-    let billing = MockServer::start(|_, _, _| (401, String::new())).await;
+    let billing = MockServer::start(|_, _, _, _| (401, String::new())).await;
     let tmp = tempfile::tempdir().unwrap();
     let mut endpoints = mocked(&server.base);
     endpoints.grok_usage = format!("{}/v1/billing?format=credits", billing.base);
@@ -459,9 +475,11 @@ async fn a_rejected_saved_grok_token_refreshes_once_against_its_issuer() {
     // A saved one is — once — and the rotated pair lands in its slot.
     let saved = accounts.grok_usage(&slot, false).await;
     assert_eq!(issuer_hits.load(Ordering::SeqCst), 1);
+    // The issuer minted a fresh token and billing STILL rejects it: the
+    // login is dead — the hard signed-out signal, not an ambiguous expiry.
     assert!(
-        matches!(saved, Err(ProbeError::Unauthorized { .. })),
-        "billing mock rejects all"
+        matches!(saved, Err(ProbeError::SignedOut { .. })),
+        "billing mock rejects all: {saved:?}"
     );
     let stored = accounts.read_slot(HarnessId::Grok, &slot.id).unwrap();
     assert_eq!(stored.credentials["key"], "fresh");
@@ -576,7 +594,7 @@ fn devin_usage_inverts_remaining_quota_and_names_the_account() {
 
 #[tokio::test]
 async fn devin_swaps_and_learns_its_identity_from_the_usage_probe() {
-    let server = MockServer::start(|method, path, body| {
+    let server = MockServer::start(|method, path, body, _| {
         assert_eq!(method, "POST");
         assert!(
             path.ends_with("SeatManagementService/GetUserStatus"),
@@ -785,7 +803,7 @@ async fn pi_swaps_under_its_lockfile_and_groups_rows_per_provider() {
 
 #[tokio::test]
 async fn an_opaque_pi_claude_token_is_identified_once_then_matched_by_token() {
-    let server = MockServer::start(|_, path, _| match path {
+    let server = MockServer::start(|_, path, _, _| match path {
         "/api/oauth/profile" => (
             200,
             serde_json::json!({
@@ -826,7 +844,7 @@ async fn an_opaque_pi_claude_token_is_identified_once_then_matched_by_token() {
 
 #[tokio::test]
 async fn an_unidentifiable_live_token_is_listed_but_not_switchable() {
-    let server = MockServer::start(|_, _, _| (401, String::new())).await;
+    let server = MockServer::start(|_, _, _, _| (401, String::new())).await;
     let tmp = tempfile::tempdir().unwrap();
     let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
     write(
@@ -850,7 +868,7 @@ async fn an_unidentifiable_live_token_is_listed_but_not_switchable() {
 
 #[tokio::test]
 async fn chatgpt_sign_in_for_pi_lands_on_the_loopback_and_connects_the_first_login() {
-    let server = MockServer::start(|method, path, body| match (method, path) {
+    let server = MockServer::start(|method, path, body, _| match (method, path) {
         ("POST", "/oauth/token") => {
             assert!(body.contains("grant_type=authorization_code"), "{body}");
             assert!(body.contains("code=good-code"), "{body}");
@@ -936,7 +954,7 @@ async fn chatgpt_sign_in_for_pi_lands_on_the_loopback_and_connects_the_first_log
 /// stores too).
 #[tokio::test]
 async fn re_signing_in_the_live_chatgpt_account_replaces_its_dead_tokens() {
-    let server = MockServer::start(|method, path, _| match (method, path) {
+    let server = MockServer::start(|method, path, _, _| match (method, path) {
         ("POST", "/oauth/token") => (
             200,
             serde_json::json!({
@@ -991,7 +1009,7 @@ async fn re_signing_in_the_live_chatgpt_account_replaces_its_dead_tokens() {
 async fn a_new_login_never_replaces_an_unidentified_live_one() {
     let user_calls = Arc::new(AtomicUsize::new(0));
     let calls = user_calls.clone();
-    let server = MockServer::start(move |method, path, _| match (method, path) {
+    let server = MockServer::start(move |method, path, _, _| match (method, path) {
         ("POST", "/login/device/code") => (
             200,
             r#"{"device_code":"dc","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":1}"#.into(),
@@ -1063,7 +1081,7 @@ async fn a_new_chatgpt_sign_in_supersedes_one_holding_the_same_port() {
 async fn copilot_device_sign_in_for_opencode_shows_the_code_and_connects() {
     let polls = Arc::new(AtomicUsize::new(0));
     let polled = polls.clone();
-    let server = MockServer::start(move |method, path, body| match (method, path) {
+    let server = MockServer::start(move |method, path, body, _| match (method, path) {
         ("POST", "/login/device/code") => {
             assert!(body.contains("client_id=Ov23li8tweQw6odWQebz"), "{body}");
             (
@@ -1148,7 +1166,7 @@ fn copilot_usage_reads_metered_quotas_and_the_plan() {
 
 #[tokio::test]
 async fn keyed_logins_probe_the_vendor_behind_them() {
-    let server = MockServer::start(|method, path, _| match (method, path) {
+    let server = MockServer::start(|method, path, _, _| match (method, path) {
         ("GET", "/backend-api/wham/usage") => (
             200,
             r#"{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":40,"limit_window_seconds":18000}}}"#.into(),
@@ -1222,7 +1240,7 @@ fn hermes_auth() -> serde_json::Value {
 
 #[tokio::test]
 async fn hermes_lists_its_own_pool_read_only() {
-    let server = MockServer::start(|_, path, _| match path {
+    let server = MockServer::start(|_, path, _, _| match path {
         "/api/oauth/account" => (
             200,
             r#"{"user":{"email":"nous@example.com"},"subscription":{"plan":"plus","monthly_credits":100,"credits_remaining":25,"current_period_end":"2030-02-01T00:00:00Z"}}"#.into(),
@@ -1610,7 +1628,7 @@ fn devin_sign_in_urls_must_be_devins_own_pages() {
 
 #[tokio::test]
 async fn untrusted_endpoints_in_credentials_are_never_sent_a_secret() {
-    let server = MockServer::start(|_, _, _| (200, "{}".into())).await;
+    let server = MockServer::start(|_, _, _, _| (200, "{}".into())).await;
     let tmp = tempfile::tempdir().unwrap();
     // Production endpoints: a loopback url in a credential is NOT trusted.
     let (accounts, config) = accounts_with(tmp.path(), ProbeEndpoints::default());
@@ -1721,7 +1739,7 @@ fn the_accounts_root_and_sign_in_homes_are_owner_only() {
 /// any network call, and restored byte-for-byte after switching away.
 #[tokio::test]
 async fn a_self_hosted_ghes_login_switches_away_and_back_without_the_network() {
-    let server = MockServer::start(|_, path, _| match path {
+    let server = MockServer::start(|_, path, _, _| match path {
         "/user" => (
             200,
             r#"{"id":42,"login":"octo","email":"octo@example.com"}"#.into(),
@@ -1897,4 +1915,295 @@ async fn a_failed_sign_ins_output_is_redacted_before_the_ui_sees_it() {
         message,
         "failed at https://auth.x.ai/device?… with code [code] token=[redacted]"
     );
+}
+
+// ── Claude: the harness account sign-in state (ticket 08) ───────────────────
+
+/// Write a Claude login (config + credentials) for `uuid` with `token`.
+fn write_claude_login(config: &AgentAccountsConfig, uuid: &str, email: &str, token: &str) {
+    write(
+        &config.claude_config_file,
+        &serde_json::json!({
+            "oauthAccount": {
+                "accountUuid": uuid,
+                "emailAddress": email,
+                "displayName": "Test User",
+            },
+        })
+        .to_string(),
+    );
+    write(
+        &config.claude_creds_file(),
+        &serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": token,
+                "refreshToken": format!("refresh-{token}"),
+                // Far-future expiry: probes must never try to rotate it.
+                "expiresAt": 4_102_444_800_000i64,
+            }
+        })
+        .to_string(),
+    );
+}
+
+/// Claude's `/api/oauth/usage` reply for two windows at the given percents.
+fn claude_usage_body(session: f64, week: f64) -> String {
+    serde_json::json!({
+        "five_hour": { "utilization": session, "resets_at": "2026-10-18T08:00:00Z" },
+        "seven_day": { "utilization": week, "resets_at": "2026-10-20T16:00:00Z" },
+    })
+    .to_string()
+}
+
+/// A live login that a run refused: an expired access token the CLI refreshes
+/// itself is AMBIGUOUS — unknown, never signed out — and no refresh is ever
+/// attempted for the live login.
+#[tokio::test]
+async fn an_expired_active_claude_login_is_unknown_not_signed_out() {
+    let server = MockServer::start(|_method, path, _body, _bearer| match path {
+        "/api/oauth/usage" => (401, String::new()),
+        _ => (404, String::new()),
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].sign_in_state, AgentSignInState::Unknown);
+    assert_eq!(
+        rows[0].usage_error.as_deref(),
+        Some("Session expired — it refreshes the next time claude runs")
+    );
+    // The active login is the CLI's to rotate: no refresh was attempted.
+    assert_eq!(server.hits("POST /v1/oauth/token"), 0);
+}
+
+/// A hard rejection — the saved slot's refresh was refused (invalid_grant) —
+/// marks the account signed out, and the reason shows BESIDE the cached
+/// meters instead of being hidden by them (the display bug: stale windows
+/// made a signed-out account look healthy).
+#[tokio::test]
+async fn a_refused_claude_refresh_marks_the_slot_signed_out_beside_cached_windows() {
+    let server = MockServer::start(|_method, path, _body, bearer| match path {
+        "/api/oauth/usage" => {
+            if bearer == "alice-token" {
+                (200, claude_usage_body(6.0, 35.0))
+            } else {
+                (401, String::new())
+            }
+        }
+        // The refused refresh: 400 invalid_grant means the login is dead.
+        "/v1/oauth/token" => (400, r#"{"error":"invalid_grant"}"#.into()),
+        _ => (404, String::new()),
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
+
+    // Alice is live; Bob is a saved, inactive slot.
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    accounts.list(false).await.unwrap();
+    write_claude_login(&config, "uuid-bob", "bob@example.com", "bob-token");
+    accounts.list(false).await.unwrap();
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    accounts.list(false).await.unwrap();
+
+    // Bob's meters were right a while ago: the cache serves them until a
+    // probe lands. Age the entry so the forced list below re-probes him.
+    lock(&accounts.inner.usage).insert(
+        usage_key(HarnessId::ClaudeCode, "uuid-bob"),
+        UsageEntry {
+            usage: Some(UsageSnapshot {
+                windows: vec![AgentUsageWindow {
+                    label: "Session".into(),
+                    used_fraction: 0.4,
+                    resets_at: None,
+                }],
+                plan_label: None,
+            }),
+            fetched_at: Some(1),
+            checked_at: 1,
+            ..Default::default()
+        },
+    );
+
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    let bob = rows
+        .iter()
+        .find(|a| a.email.as_deref() == Some("bob@example.com"))
+        .unwrap();
+    assert_eq!(bob.sign_in_state, AgentSignInState::SignedOut);
+    // The stale meters survive the failure — and no longer hide the reason.
+    assert!(!bob.usage_windows.is_empty());
+    assert_eq!(bob.usage_error.as_deref(), Some("Signed out — sign in again"));
+    // The live account's own probe is green.
+    let alice = rows
+        .iter()
+        .find(|a| a.email.as_deref() == Some("alice@example.com"))
+        .unwrap();
+    assert_eq!(alice.sign_in_state, AgentSignInState::SignedIn);
+    assert!(alice.usage_error.is_none());
+}
+
+/// "Sign in again": completing the login replaces the dead slot's
+/// credentials, the next forced list re-probes them right away (fresh
+/// credentials lift the freshness gate), and the account reads signed in —
+/// with its exhausted window's reset as `limited_until`.
+#[tokio::test]
+async fn signing_in_again_marks_the_account_signed_in() {
+    let server = MockServer::start(|_method, path, body, bearer| match path {
+        "/api/oauth/usage" => match bearer.as_str() {
+            "alice-token" => (200, claude_usage_body(6.0, 35.0)),
+            "bob-fresh" => (200, claude_usage_body(100.0, 35.0)),
+            _ => (401, String::new()),
+        },
+        "/v1/oauth/token" => {
+            // The slot-refresh POST (JSON: grant_type refresh_token) is
+            // refused; the sign-in's code exchange succeeds.
+            if body.contains("refresh_token") {
+                (400, r#"{"error":"invalid_grant"}"#.into())
+            } else {
+                (
+                    200,
+                    serde_json::json!({
+                        "access_token": "bob-fresh",
+                        "refresh_token": "refresh-bob-fresh",
+                        "expires_in": 3600,
+                        "account": {
+                            "email_address": "bob@example.com",
+                            "uuid": "uuid-bob",
+                        },
+                    })
+                    .to_string(),
+                )
+            }
+        }
+        _ => (404, String::new()),
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
+
+    // Alice live, Bob a saved slot whose probe is hard-rejected.
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    accounts.list(false).await.unwrap();
+    write_claude_login(&config, "uuid-bob", "bob@example.com", "bob-token");
+    accounts.list(false).await.unwrap();
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    let bob = rows
+        .iter()
+        .find(|a| a.email.as_deref() == Some("bob@example.com"))
+        .unwrap();
+    assert_eq!(bob.sign_in_state, AgentSignInState::SignedOut);
+
+    // "Sign in again" — the existing login flow, finishing in the browser.
+    let start = accounts.start_login(HarnessId::ClaudeCode).await.unwrap();
+    let state = query_param(&start.url, "state");
+    let port = start.callback_port.unwrap();
+    let page = browser_get(port, &format!("/callback?code=good-code&state={state}")).await;
+    assert!(page.starts_with("HTTP/1.1 302"), "{page}");
+    let polls = settle(&accounts, &start.login_id).await;
+    assert_eq!(polls.last().unwrap().status, AgentLoginStatus::Done);
+
+    // The post-login reload re-probes Bob immediately: his slot now holds
+    // fresh credentials, so the old rejection no longer applies.
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    let bob = rows
+        .iter()
+        .find(|a| a.email.as_deref() == Some("bob@example.com"))
+        .unwrap();
+    assert_eq!(bob.sign_in_state, AgentSignInState::SignedIn);
+    assert!(bob.usage_error.is_none());
+    assert!(!bob.usage_windows.is_empty());
+    // His session window is exhausted (100%): the account is limited until
+    // that window's reset — the latest reset among exhausted windows.
+    assert_eq!(
+        bob.limited_until,
+        Some(
+            DateTime::parse_from_rfc3339("2026-10-18T08:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        )
+    );
+    // Alice stays signed in too.
+    let alice = rows
+        .iter()
+        .find(|a| a.email.as_deref() == Some("alice@example.com"))
+        .unwrap();
+    assert_eq!(alice.sign_in_state, AgentSignInState::SignedIn);
+    assert_eq!(alice.limited_until, None);
+}
+
+/// The run-error path's recording seam: `mark_account_signed_out` writes a
+/// durable mark for a slot (ticket 05's wiring calls it with the structured
+/// signed-out error's harness), and a later successful probe clears it.
+/// An unknown account is refused.
+#[tokio::test]
+async fn a_run_error_sign_out_mark_lands_and_a_later_probe_clears_it() {
+    let server = MockServer::start(|_method, path, _body, _bearer| match path {
+        "/api/oauth/usage" => (200, claude_usage_body(6.0, 35.0)),
+        _ => (404, String::new()),
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    let alice_id = rows(&accounts.list(false).await.unwrap(), HarnessId::ClaudeCode)
+        .remove(0)
+        .id;
+
+    // A run failed with a signed-out error on the active account.
+    accounts
+        .mark_account_signed_out(HarnessId::ClaudeCode, &alice_id)
+        .unwrap();
+    let rows = rows(&accounts.list(false).await.unwrap(), HarnessId::ClaudeCode);
+    assert_eq!(rows[0].sign_in_state, AgentSignInState::SignedOut);
+    assert!(rows[0].usage_error.is_none(), "no probe ran to fail");
+    assert_eq!(server.hits("GET /api/oauth/usage"), 0, "the mark is offline");
+
+    // The next successful probe re-establishes the account.
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    assert_eq!(rows[0].sign_in_state, AgentSignInState::SignedIn);
+
+    // An unknown slot id is refused, not silently ignored.
+    let error = accounts
+        .mark_account_signed_out(HarnessId::ClaudeCode, "0123456789abcdef")
+        .unwrap_err();
+    assert!(error.to_string().contains("Unknown account"));
+}
+
+/// Devin's keys never lapse: a rejected status call is a revocation — the
+/// hard signed-out signal — and reads as such on the row.
+#[tokio::test]
+async fn a_rejected_devin_key_marks_the_account_signed_out() {
+    let server = MockServer::start(|method, path, _body, _bearer| {
+        assert_eq!(method, "POST");
+        assert!(
+            path.ends_with("SeatManagementService/GetUserStatus"),
+            "{path}"
+        );
+        (401, String::new())
+    })
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (accounts, config) = accounts_with(tmp.path(), mocked(&server.base));
+    write(
+        &config.devin_credentials_file,
+        &format!(
+            "windsurf_api_key = \"key-a\"
+api_server_url = \"{}\"
+",
+            server.base
+        ),
+    );
+
+    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::Devin);
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].sign_in_state, AgentSignInState::SignedOut);
+    assert_eq!(rows[0].usage_error.as_deref(), Some("Signed out — sign in again"));
 }
