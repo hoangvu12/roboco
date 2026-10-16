@@ -323,6 +323,10 @@ fn notice_entry(device_id: &str, sides: &[NoticeSide], text: &str) -> SessionMes
         continuation_of: None,
         duration_ms: None,
         origin_chat_id: None,
+        // A notice is an engine-authored message: no provider turn backs
+        // it (a fork of the parent falls back to the budgeted paste for
+        // it, exactly like the fork seam — ticket 17).
+        provider_turn: None,
     }
 }
 

@@ -151,6 +151,7 @@ impl Suite {
             attachments: vec![],
             worktree: None,
             resume: None,
+            provider_fork: None,
         }
     }
 
@@ -245,7 +246,6 @@ impl Suite {
             })
         };
         Chat {
-            agent_origin: None,
             suite: self,
             id,
             sends: Default::default(),
@@ -1216,6 +1216,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         resume: None,
+        provider_fork: None,
     }
 }
 

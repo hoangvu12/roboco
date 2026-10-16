@@ -55,6 +55,7 @@ fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -162,7 +163,10 @@ fn pi_surfaces_match_registry_expectations() {
     assert_eq!(pi.id(), HarnessId::Pi);
     assert_eq!(pi.display_name(), "Pi");
     assert!(pi.supports_steering());
-    assert_eq!(pi.steering_mode(), SteeringMode::TurnBoundary);
+    // Step-boundary (orchestration v2 ticket 03): pi's steer queue delivers
+    // after the current assistant turn's tool calls — the engine registry
+    // descriptor must agree (its own tests check the pair).
+    assert_eq!(pi.steering_mode(), SteeringMode::StepBoundary);
     assert_eq!(
         pi.reasoning_levels(),
         &[
@@ -1170,9 +1174,9 @@ async fn a_failing_settle_probe_ends_the_turn_errored() {
 /// the turn instead of sticking on Working forever.
 #[tokio::test]
 async fn old_pi_without_disposition_is_inferred_not_assumed() {
-    let (controls, steer, _token) = controls();
+    let (first, steer, _token) = controls();
     drop(steer);
-    let events = run_to_end(&harness(), request("old-pi"), controls).await;
+    let events = run_to_end(&harness(), request("old-pi"), first).await;
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
     assert_eq!(text_of(&events), "reply:old-pi");
 
@@ -1187,4 +1191,210 @@ async fn old_pi_without_disposition_is_inferred_not_assumed() {
     until_done(&mut stream, &mut tail, Duration::from_secs(15)).await;
     assert_eq!(dones(&tail), vec![(DoneStatus::Completed, None)], "{tail:?}");
     assert_eq!(text_of(&tail), "reply:revived");
+}
+
+// ---------------------------------------------------------------------------
+// Mid-turn steering (orchestration v2, ticket 03): pi is a step-boundary
+// harness — steering mode "all" at session start, steers carrying images,
+// clear_queue before abort, compaction recovery, bursts in order.
+// ---------------------------------------------------------------------------
+
+/// The steering mode is set to "all" at session start unless the user
+/// configured one: pi's one-at-a-time default would deliver a burst of
+/// steers one assistant turn at a time; roboco's steers belong together.
+#[tokio::test]
+async fn steering_mode_defaults_to_all_at_session_start() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The fixture records the wire selection in its session file.
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("steering-mode:all"), "{recorded}");
+}
+
+/// A steering mode the user already configured (the agent directory's
+/// settings — their own edit, or `/steering` picked globally) is never
+/// overwritten: the driver sends no `set_steering_mode` at all.
+#[tokio::test]
+async fn a_configured_steering_mode_is_never_overwritten() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("settings.json"),
+        r#"{"steeringMode": "one-at-a-time"}"#,
+    )
+    .unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("steering-mode:"), "{recorded}");
+}
+
+/// A mode configured in the project `.pi/settings.json` counts the same:
+/// an explicit choice, never overwritten.
+#[tokio::test]
+async fn project_settings_count_as_a_configured_steering_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(cwd.path().join(".pi")).unwrap();
+    std::fs::write(
+        cwd.path().join(".pi").join("settings.json"),
+        r#"{"steeringMode": "all"}"#,
+    )
+    .unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("steering-mode:"), "{recorded}");
+}
+
+/// A mid-run steer carries its staged images inline — the same
+/// `ImageContent` blocks a turn-start prompt rides — so steering with a
+/// screenshot reaches pi. The fixture asserts the wire block itself.
+#[tokio::test]
+async fn steers_carry_their_attached_images() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("shot.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco steer image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-image"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer
+                .send(SteerMessage {
+                    prompt: "look at this".into(),
+                    message_id: None,
+                    attachments: vec![png.display().to_string()],
+                    config: None,
+                })
+                .await
+                .unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+    assert!(text_of(&events).contains("reply-to-image-steer"), "{events:?}");
+}
+
+/// Stop sends `clear_queue` before `abort`: steers pi queued but never
+/// consumed are cancelled with the turn — never delivered into the aborted
+/// run. The fixture asserts the wire order and that the cleared queue held
+/// the stranded steer; here the run ends interrupted, exactly once.
+#[tokio::test]
+async fn stop_clears_pi_queue_before_abort() {
+    let (controls, steer, token) = controls();
+    let mut stream = harness().run(request("stop-clears-queue"), controls).await.unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        let mut sent = false;
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            let steer_now =
+                matches!(&event, AgentEvent::TextDelta { text } if text == "working") && !sent;
+            let stop_now = matches!(&event, AgentEvent::TextDelta { text } if text == "steer queued");
+            events.push(event);
+            if steer_now {
+                sent = true;
+                steer.send(SteerMessage::text("stranded steer")).await.unwrap();
+            }
+            if stop_now {
+                token.cancel();
+            }
+            if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+                break;
+            }
+        }
+        events
+    })
+    .await
+    .expect("stop must settle");
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{events:?}");
+}
+
+/// A run that recovered from an error through a successful compaction retry
+/// ends completed, not errored: the recovered error no longer rejects the
+/// prompt.
+#[tokio::test]
+async fn a_compaction_recovered_run_completes() {
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(&harness(), request("compaction-recover"), controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The overflow error surfaced (as a transient notice) and the retried
+    // turn still completed the run.
+    assert!(text_of(&events).contains("doomed"), "{events:?}");
+    assert!(text_of(&events).contains("recovered"), "{events:?}");
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("overflow"))),
+        "{events:?}"
+    );
+}
+
+/// Several quick steers are all delivered, in order: pi (steering mode
+/// "all") queues each while streaming and delivers them together at the
+/// next step boundary. The fixture asserts the send order on the wire;
+/// here every steer folds in with its own boundary and one turn ends.
+#[tokio::test]
+async fn a_burst_of_steers_is_delivered_in_order() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-burst"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            for text in ["burst one", "burst two", "burst three"] {
+                steer.send(SteerMessage::text(text)).await.unwrap();
+            }
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let steered = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Steered { .. }))
+        .count();
+    assert_eq!(steered, 3, "{events:?}");
+    assert!(text_of(&events).contains("reply-to-burst"), "{events:?}");
 }

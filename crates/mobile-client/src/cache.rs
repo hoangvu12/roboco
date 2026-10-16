@@ -281,7 +281,6 @@ mod tests {
     use super::*;
 
     fn stub_chat(id: &str) -> roboco_proto::Chat {
-        agent_origin: None,
         serde_json::from_value(serde_json::json!({
             "id": id,
             "deviceId": "dev",
@@ -362,6 +361,7 @@ mod tests {
                         device_id: String::new(),
                         status: None,
                         continuation_of: None,
+                        provider_turn: None,
                         duration_ms: None,
                     }],
                 )

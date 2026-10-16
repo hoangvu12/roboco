@@ -1300,13 +1300,13 @@ mod tests {
         );
         assert_eq!(rate_limit_reset(&json!({"message": "x"})), None);
         // An exhausted window whose reset the snapshot omits is skipped, not
-        // fatal; an unknown duration falls back to the usage label.
+        // fatal; a missing duration falls back to the slot's usual window.
         assert_eq!(
             rate_limit_reset(&json!({"rateLimits": {
                 "primary": {"usedPercent": 100},
                 "secondary": {"usedPercent": 100, "resetsAt": 1736208000}
             }})),
-            Some(RateLimitReset { window: "usage".into(), resets_at: 1_736_208_000_000 })
+            Some(RateLimitReset { window: "weekly".into(), resets_at: 1_736_208_000_000 })
         );
     }
 

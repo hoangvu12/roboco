@@ -126,6 +126,7 @@ fn run_request(prompt: &str) -> RunRequest {
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: false,
         resume: None,
+        provider_fork: None,
         attachments: vec![],
         worktree: None,
     }
@@ -334,6 +335,7 @@ async fn user_created_chats_are_never_marked_agent_created() {
             status: Some(roboco_doc::MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         })
         .unwrap();
     drop(source);

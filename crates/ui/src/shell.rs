@@ -2406,6 +2406,7 @@ impl Shell {
                     device_id: "local".into(),
                     status: None,
                     continuation_of: None,
+                    provider_turn: None,
                     duration_ms: None,
                 };
                 state.update(cx, |s, cx| {

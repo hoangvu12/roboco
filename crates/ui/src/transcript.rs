@@ -11881,6 +11881,7 @@ mod tests {
             device_id: "dev".into(),
             status: Some(status),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }
@@ -15620,6 +15621,7 @@ mod tests {
             device_id: "dev".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         let rows = rows_for_entry(&user, true, false, &mut parse);

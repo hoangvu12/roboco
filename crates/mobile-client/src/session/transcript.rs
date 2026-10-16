@@ -546,6 +546,7 @@ mod tests {
             device_id: String::new(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }

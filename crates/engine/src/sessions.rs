@@ -740,6 +740,19 @@ impl SessionsEngine {
             request.resume = self.inner.resume_for(chat_id, &request.cwd);
             resume_injected = request.resume.is_some();
         }
+        // A fork's first run continues the SOURCE's provider session
+        // natively (t3-orchestration-v2 ticket 17): the ForkSideChat RPC
+        // recorded the fork source and boundary on the chat, and the driver
+        // forks the provider session there — the copied history rides the
+        // provider, so nothing is pasted. The intent is consumed once; a
+        // missing ref (old chats), a changed harness, or a refused fork
+        // falls back to the budgeted transcript from ticket 01. Consumed
+        // even when the harness mismatches: the native path never re-arms.
+        if request.provider_fork.is_none() && request.resume.is_none() {
+            if let Some(fork) = handle.doc().take_provider_fork(harness_id) {
+                request.provider_fork = Some(fork);
+            }
+        }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
 
         let run_id = new_id();
@@ -1278,6 +1291,7 @@ impl SessionsEngine {
                             auto_approve: false,
                             attachments: Vec::new(),
                             resume: None,
+                            provider_fork: None,
                             worktree: None,
                             mcp: None,
                         })
@@ -1753,6 +1767,24 @@ impl Inner {
         current: Option<&str>,
         provider: ProviderSession<'_>,
     ) -> Option<String> {
+        self.fork_history_prefix(chat_id, doc, harness_id, prompt, current, provider)
+            .map(|prefix| format!("{prefix}{prompt}"))
+    }
+
+    /// The transcript prefix [`Self::fork_history_prompt`] would deliver —
+    /// the budgeted selection alone, without the prompt appended. The
+    /// native-fork path (ticket 17) rides this as the request's fallback
+    /// history: the driver pastes it in front of the prompt only when the
+    /// harness refuses the fork, so a successful fork delivers nothing.
+    fn fork_history_prefix(
+        &self,
+        chat_id: &str,
+        doc: &SessionDoc,
+        harness_id: HarnessId,
+        prompt: &str,
+        current: Option<&str>,
+        provider: ProviderSession<'_>,
+    ) -> Option<String> {
         if native_command(prompt, harness_id)
             || !self
                 .workspace()
@@ -1792,7 +1824,7 @@ impl Inner {
             .rev()
             .find_map(fork_seam_source)
             .unwrap_or_else(|| chat_id.to_owned());
-        crate::transcript_budget::budgeted_transcript_prompt(&entries[..end], Some(&source), prompt)
+        crate::transcript_budget::budgeted_transcript_prefix(&entries[..end], Some(&source))
     }
 }
 
@@ -1964,6 +1996,7 @@ impl SubagentSink {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         if let Err(err) = self.doc.push_message(&entry) {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent steer write failed");
@@ -2088,6 +2121,7 @@ fn sync_segment<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_segment<'a>(
     doc: &'a SessionDoc,
     writer: Option<SegmentWriter<'a>>,
@@ -2096,15 +2130,26 @@ fn finish_segment<'a>(
     started_at: i64,
     folded: &[MessagePart],
     status: MessageStatus,
+    turn_ref: Option<&roboco_proto::ProviderTurnRef>,
 ) -> Result<(), DocError> {
     let rendered = render_parts(folded);
-    match writer {
+    let outcome = match writer {
         Some(w) => w.finish(&rendered, status),
         None if !folded.is_empty() => {
             SegmentWriter::begin(doc, entry_id, device_id, started_at)?.finish(&rendered, status)
         }
         None => Ok(()),
+    }?;
+    // The provider turn the finished entry belongs to (ticket 17): stamped
+    // after the write, a no-op for an entry that never streamed. A failure
+    // here costs the ref (a fork falls back to the budgeted paste), never
+    // the segment.
+    if let Some(reference) = turn_ref
+        && let Err(err) = doc.stamp_provider_turn(entry_id, reference)
+    {
+        tracing::warn!(chat = %doc.chat_id().unwrap_or_default(), error = %err, "provider turn ref stamp failed");
     }
+    Ok(outcome)
 }
 
 /// Resume bookkeeping for one run task: which user entry the run answers (so
@@ -2289,7 +2334,9 @@ async fn drive_run(
     }
     // Kept whole for the startup-crash retry (same user entry; dispatch
     // re-injects the stored resume id). Option so the retry branch (inside
-    // the event loop) can take ownership.
+    // the event loop) can take ownership. The native-fork directive spreads
+    // in from `request` — a startup crash is transient, so the retry
+    // re-attempts the fork and re-derives the fallback history.
     let mut retry_request = Some(RunRequest {
         resume: None,
         ..request.clone()
@@ -2297,23 +2344,51 @@ async fn drive_run(
     // A side chat owns a fresh provider session. Bootstrap it from the frozen
     // conversation, never resume (and mutate) the parent's provider session.
     let mut carried_history = false;
-    let provider = match request.resume.as_deref() {
-        None => ProviderSession::Fresh,
-        resumed => ProviderSession::Continued(resumed),
-    };
-    if let Some(prompt) = inner.fork_history_prompt(
-        &chat_id,
-        &doc,
-        harness_id,
-        &request.prompt,
-        Some(&resume_state.user_message_id),
-        provider,
-    ) {
-        request.prompt = prompt;
+    if let Some(fork) = request.provider_fork.as_mut() {
+        // A native fork (t3-orchestration-v2 ticket 17): the driver forks the
+        // source provider session at the boundary, so the copied history
+        // rides the provider and the delivered prompt carries nothing. The
+        // budgeted transcript still rides the request — the driver pastes it
+        // in front of the prompt on the fresh session it starts when the
+        // harness refuses the fork. Either way the session this run reports
+        // holds the copied history, so warm sends never re-deliver it.
+        if fork.fallback_history.is_none() {
+            // The Fresh selection: a session the fork refused to continue
+            // knows nothing of the chat, so the fallback is the whole
+            // budgeted transcript (the seam and everything after it are
+            // structure, not transcript).
+            fork.fallback_history = inner.fork_history_prefix(
+                &chat_id,
+                &doc,
+                harness_id,
+                &request.prompt,
+                Some(&resume_state.user_message_id),
+                ProviderSession::Fresh,
+            );
+        }
         carried_history = true;
         resume_state
             .fork_history_sent
             .store(true, std::sync::atomic::Ordering::Release);
+    } else {
+        let provider = match request.resume.as_deref() {
+            None => ProviderSession::Fresh,
+            resumed => ProviderSession::Continued(resumed),
+        };
+        if let Some(prompt) = inner.fork_history_prompt(
+            &chat_id,
+            &doc,
+            harness_id,
+            &request.prompt,
+            Some(&resume_state.user_message_id),
+            provider,
+        ) {
+            request.prompt = prompt;
+            carried_history = true;
+            resume_state
+                .fork_history_sent
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
     // Startup can stop before the SDK saves user text, with no new session
     // ID or receipt. Bridge that unacknowledged tail from our transcript;
@@ -2355,6 +2430,17 @@ async fn drive_run(
                     if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
                         wire_request.prompt =
                             roboco_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+                        // The fork fallback rides the same conversion the
+                        // pasted prompt would get (Codex: file mentions), so a
+                        // refused fork's fresh session reads a transcript as
+                        // close to the native paste as the driver can deliver.
+                        if let Some(fork) = wire_request.provider_fork.as_mut()
+                            && let Some(history) = fork.fallback_history.clone()
+                        {
+                            fork.fallback_history = Some(
+                                roboco_proto::invocation::harness_prompt(&history, harness_id),
+                            );
+                        }
                     }
                     harness.run(wire_request, controls).await
                 }
@@ -2396,6 +2482,8 @@ async fn drive_run(
                 now_ms(),
                 &parts,
                 MessageStatus::Complete,
+                // The run never started: no provider turn ever streamed.
+                None,
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "start failure entry failed");
             }
@@ -2452,6 +2540,11 @@ async fn drive_run(
     let mut prepared_events = std::collections::VecDeque::new();
     let mut entry_id = new_id();
     let mut segment_started = now_ms();
+    // The provider turn the entry currently streaming belongs to (ticket 17):
+    // set by a TurnRef event, stamped onto the entry when its segment
+    // finishes, so a fork can continue the provider session at exactly that
+    // turn. Survives steer boundaries — a steer mid-turn keeps the turn.
+    let mut turn_ref: Option<roboco_proto::ProviderTurnRef> = None;
     let mut writer: Option<SegmentWriter<'_>> = None;
     let mut dirty = false;
     let mut flush_at = tokio::time::Instant::now();
@@ -2772,6 +2865,7 @@ async fn drive_run(
                             segment_started,
                             &folded,
                             MessageStatus::Complete,
+                            turn_ref.as_ref(),
                         ) {
                             tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                         }
@@ -3207,6 +3301,11 @@ async fn drive_run(
                 segment_started,
                 &folded,
                 MessageStatus::Complete,
+                // The segment closes at the steer, but the provider turn it
+                // belongs to carries on: the ref survives the rotation so the
+                // NEXT segment of the same turn keeps it (a new turn's TurnRef
+                // replaces it before that segment finishes).
+                turn_ref.as_ref(),
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
@@ -3247,6 +3346,13 @@ async fn drive_run(
                 // session) scopes the stored id, not the request's.
                 inner.remember_harness_session(&chat_id, session_id, cwd);
                 note_fork_history_session(&doc, carried_history, session_id);
+            }
+            AgentEvent::TurnRef { reference } => {
+                // The provider turn now streaming into `entry_id`: held for
+                // the stamp at segment finish (below). Like SessionStarted,
+                // it is engine bookkeeping — the fold below renders nothing
+                // for it.
+                turn_ref = Some(reference.clone());
             }
             AgentEvent::Done {
                 session_id: Some(session_id),
@@ -3340,6 +3446,7 @@ async fn drive_run(
                     segment_started,
                     &folded,
                     message_status,
+                    turn_ref.as_ref(),
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
@@ -3661,6 +3768,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         })
         .unwrap();
         let current = format!("Current {skill}\nKeep **Markdown**");
@@ -3703,6 +3811,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                provider_turn: None,
             })
             .unwrap();
         }
@@ -3884,6 +3993,7 @@ mod tests {
             sandbox: SandboxLevel::WorkspaceWrite,
             auto_approve: true,
             resume: None,
+            provider_fork: None,
             attachments: Vec::new(),
             worktree: None,
             mcp: None,

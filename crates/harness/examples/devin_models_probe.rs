@@ -50,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     };
     println!("Running real Devin ACP with {model}");
     let mut stream = harness.run(request, controls).await?;

@@ -1508,9 +1508,17 @@ mod tests {
 
     #[test]
     fn assistant_error_codes_classify_limits_and_auth() {
+        // The error message also completes its (empty) assistant message;
+        // only the error event is under test here.
+        let errors = |line: &str| {
+            normalize_one(line)
+                .into_iter()
+                .filter(|event| matches!(event, AgentEvent::Error { .. }))
+                .collect::<Vec<_>>()
+        };
         // The terse `rate_limit` code: a usage limit, window unknown (the
         // accompanying rate_limit_event usually carries the details).
-        let events = normalize_one(
+        let events = errors(
             r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}"#,
         );
         assert_eq!(
@@ -1524,7 +1532,7 @@ mod tests {
             }]
         );
         // Authentication failed: signed out, distinct from a limit.
-        let events = normalize_one(
+        let events = errors(
             r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"authentication_failed"}"#,
         );
         assert_eq!(
@@ -1535,7 +1543,7 @@ mod tests {
             }]
         );
         // Other codes stay unclassified.
-        let events = normalize_one(
+        let events = errors(
             r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"billing_error"}"#,
         );
         assert_eq!(

@@ -235,6 +235,7 @@ mod tests {
             created_at: 1_700_000_000_000,
             device_id: "dev-a".into(),
             status: Some(MessageStatus::Complete),
+            provider_turn: None,
             continuation_of: None,
         }
     }

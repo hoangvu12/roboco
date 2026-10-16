@@ -49,6 +49,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -345,6 +346,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -360,6 +362,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Streaming),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -595,6 +598,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -610,6 +614,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Streaming),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -860,6 +865,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     };
     let assemble_real = || {
         EngineCore::assemble(
@@ -1013,6 +1019,7 @@ async fn a_crash_before_the_reply_reached_disk_still_auto_resumes() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();
@@ -1114,6 +1121,7 @@ async fn a_crash_recovers_the_conversation_through_a_symlinked_folder() {
             device_id: "dev-crash".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
         .unwrap();

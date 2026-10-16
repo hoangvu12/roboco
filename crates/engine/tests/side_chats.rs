@@ -15,7 +15,16 @@
 //!   provider session, never in front of a native command;
 //! - a fork whose first turn was a native command owes its copied history to
 //!   the first ordinary send — warm dispatch, steer, or a cold resume —
-//!   exactly once, recorded durably per provider session.
+//!   exactly once, recorded durably per provider session;
+//! - the fork of a chat whose boundary entry carries a provider turn ref
+//!   continues the SOURCE's provider session natively instead
+//!   (t3-orchestration-v2 ticket 17): the RPC records the fork source and
+//!   boundary, the first run's request carries them (Codex `thread/fork
+//!   {threadId, lastTurnId}`), nothing is pasted, and the budgeted
+//!   transcript rides the request as the refused-fork fallback. A missing
+//!   ref or a changed harness keeps the ticket-01 budgeted paste. The turn
+//!   refs themselves ride assistant entries via a harness event the engine
+//!   stamps at segment finish.
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -84,6 +93,7 @@ fn message(id: &str, role: MessageRole, text: &str, status: MessageStatus) -> Se
         created_at: 1,
         device_id: "device".into(),
         status: Some(status),
+        provider_turn: None,
         continuation_of: None,
     }
 }
@@ -189,6 +199,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
                 sandbox: SandboxLevel::WorkspaceWrite,
                 auto_approve: true,
                 resume: None,
+                provider_fork: None,
                 attachments: vec![],
                 worktree: None,
             },
@@ -263,6 +274,327 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     assert!(entries.iter().any(|e| e.id == "a1"));
     assert!(!entries.iter().any(|e| e.id == "a2"));
     restarted.shutdown().await;
+}
+
+/// A harness that reports the provider turn ref the Codex driver emits
+/// (ticket 17): one turn whose events name the provider session and turn.
+struct RefCapture(Arc<Mutex<Vec<RunRequest>>>);
+#[async_trait]
+impl Harness for RefCapture {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "RefCapture"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        _: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.0.lock().unwrap().push(request);
+        Ok(futures::stream::iter(vec![
+            Ok(AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "ref-provider-session".into(),
+                assistant_message_id: uuid::Uuid::new_v4().to_string(),
+            }),
+            Ok(AgentEvent::TurnRef {
+                reference: roboco_proto::ProviderTurnRef {
+                    harness: HarnessId::Mock,
+                    session_id: "ref-provider-session".into(),
+                    turn_id: "turn-42".into(),
+                },
+            }),
+            Ok(AgentEvent::TextDelta {
+                text: "Ref answer".into(),
+            }),
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some("ref-provider-session".into()),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+/// Codex assistant entries carry a provider turn reference (ticket 17): the
+/// harness event rides the stream and the engine stamps it on the entry the
+/// turn streamed into, so a later fork finds its boundary there.
+#[tokio::test]
+async fn assistant_entries_record_the_provider_turn_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(RefCapture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "chat",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.sessions
+        .dispatch(
+            "chat",
+            HarnessId::Mock,
+            RunRequest {
+                mcp: None,
+                prompt: "turn one".into(),
+                harness: Some(HarnessId::Mock),
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                cwd: "/tmp".into(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                auto_approve: true,
+                resume: None,
+                provider_fork: None,
+                attachments: vec![],
+                worktree: None,
+            },
+            Some("u1".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while requests.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while core
+            .sessions
+            .session_status("chat")
+            .is_some_and(|s| s.status != roboco_proto::SessionStatus::Idle)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let entries = core
+        .doc_host
+        .open("chat")
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap();
+    let assistant: Vec<_> = entries
+        .iter()
+        .filter(|e| e.role == MessageRole::Assistant)
+        .collect();
+    assert_eq!(assistant.len(), 1, "{entries:?}");
+    assert_eq!(
+        assistant[0].provider_turn.as_ref(),
+        Some(&roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Mock,
+            session_id: "ref-provider-session".into(),
+            turn_id: "turn-42".into(),
+        }),
+        "the turn ref rides the entry it streamed into: {entries:?}"
+    );
+    core.shutdown().await;
+}
+
+/// The boundary entry's ref drives the fork: the RPC records the source
+/// provider session and boundary, the first dispatch carries them to the
+/// harness (Codex's `thread/fork {threadId, lastTurnId}`), nothing is
+/// pasted, and the budgeted transcript rides the request as the refused-fork
+/// fallback.
+#[tokio::test]
+async fn a_fork_with_a_provider_turn_ref_forks_the_source_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    // The boundary entry: complete, and carrying the provider turn ref a
+    // Codex run would have stamped (harness = the chat's own harness here,
+    // so the dispatch below takes the native path).
+    let mut boundary = message(
+        "a1",
+        MessageRole::Assistant,
+        "I remember PINEAPPLE",
+        MessageStatus::Complete,
+    );
+    boundary.provider_turn = Some(roboco_proto::ProviderTurnRef {
+        harness: HarnessId::Mock,
+        session_id: "parent-provider-session".into(),
+        turn_id: "turn-1".into(),
+    });
+    source.doc().push_message(&boundary).unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+
+    // The fork's first run: the native-fork directive rides the request and
+    // the delivered prompt carries no transcript.
+    let request = side_turn(&core, &requests, "side", "What did I ask?", "s1").await;
+    assert_eq!(
+        request.resume, None,
+        "the fork never resumes the source thread"
+    );
+    let fork = request
+        .provider_fork
+        .expect("native fork directive rides the run");
+    assert_eq!(fork.session_id, "parent-provider-session");
+    assert_eq!(fork.last_turn, "turn-1");
+    // Nothing pasted: the forked session carries the history natively.
+    assert_eq!(request.prompt, "What did I ask?", "{}", request.prompt);
+    // The budgeted transcript still rides the request as the refused-fork
+    // fallback (what the driver pastes onto a fresh session).
+    let fallback = fork.fallback_history.expect("fallback history attached");
+    assert!(fallback.contains("PINEAPPLE"), "{fallback}");
+    assert!(fallback.ends_with("\n\n"), "{fallback}");
+    // The copied boundary keeps its ref, so a later fork of the fork still
+    // finds a boundary.
+    let copied = core
+        .doc_host
+        .open("side")
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap();
+    assert_eq!(
+        copied.iter().find(|e| e.id == "a1").unwrap().provider_turn,
+        boundary.provider_turn
+    );
+
+    // The second run: the intent is spent, the fork's own session resumes,
+    // and nothing is pasted (the session already holds the history).
+    let request = side_turn(&core, &requests, "side", "And now?", "s2").await;
+    assert_eq!(request.provider_fork, None);
+    assert_eq!(request.resume.as_deref(), Some("side-provider-session"));
+    assert_eq!(request.prompt, "And now?", "{}", request.prompt);
+    core.shutdown().await;
+}
+
+/// Old chats (no refs) and a changed harness fall back to the budgeted paste
+/// from ticket 01: no native-fork directive, history in front of the prompt.
+#[tokio::test]
+async fn forks_without_refs_or_with_a_changed_harness_paste_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "plain",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("plain").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "a1",
+            MessageRole::Assistant,
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    // An old chat: no provider turn ref on the boundary entry.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "old-fork", "sourceChatId": "plain" }),
+        )
+        .await
+        .unwrap();
+    let request = side_turn(&core, &requests, "old-fork", "What did I ask?", "o1").await;
+    assert_eq!(request.provider_fork, None, "no ref, no native fork");
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(request.prompt.ends_with("What did I ask?"));
+
+    // A ref recorded for a DIFFERENT harness: the run's harness spends the
+    // intent without ever taking the native path.
+    let mut boundary = message(
+        "a2",
+        MessageRole::Assistant,
+        "answer with a foreign ref",
+        MessageStatus::Complete,
+    );
+    boundary.provider_turn = Some(roboco_proto::ProviderTurnRef {
+        harness: HarnessId::Codex,
+        session_id: "codex-thread".into(),
+        turn_id: "turn-9".into(),
+    });
+    source.doc().push_message(&boundary).unwrap();
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "switched-fork", "sourceChatId": "plain" }),
+        )
+        .await
+        .unwrap();
+    let request = side_turn(&core, &requests, "switched-fork", "What did I ask?", "c1").await;
+    assert_eq!(request.provider_fork, None, "a changed harness never forks");
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    core.shutdown().await;
 }
 
 #[tokio::test]
@@ -436,6 +768,7 @@ async fn side_turn(
                 sandbox: SandboxLevel::WorkspaceWrite,
                 auto_approve: true,
                 resume,
+                provider_fork: None,
                 attachments: vec![],
                 worktree: None,
             },
@@ -646,6 +979,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
         resume: None,
+        provider_fork: None,
         attachments: vec![],
         worktree: None,
     };
@@ -831,6 +1165,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
         resume: None,
+        provider_fork: None,
         attachments: vec![],
         worktree: None,
     };

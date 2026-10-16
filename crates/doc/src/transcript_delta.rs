@@ -372,6 +372,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         }
     }
 
@@ -558,6 +559,7 @@ mod context_update_tests {
             status: Some(crate::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         let baseline = TranscriptBaseline::capture(&[entry.clone()]);
         assert!(baseline.covers(&entry));

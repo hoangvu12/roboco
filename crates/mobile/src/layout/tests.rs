@@ -252,6 +252,7 @@ fn thinking_renders_styled_markdown_not_markers() {
             device_id: String::new(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })],
         ..Default::default()
@@ -293,6 +294,7 @@ fn thinking_renders_styled_markdown_not_markers() {
                 device_id: String::new(),
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
+                provider_turn: None,
                 duration_ms: None,
             })],
             ..Default::default()
@@ -327,6 +329,7 @@ fn streaming_thought_markdown_settles_to_the_fresh_parse() {
             device_id: String::new(),
             status: Some(status),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
     };
@@ -378,6 +381,7 @@ fn thought_input(text: &str, streaming: bool) -> TranscriptInput {
             device_id: String::new(),
             status: Some(if streaming { MessageStatus::Streaming } else { MessageStatus::Complete }),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })],
         ..Default::default()
@@ -521,6 +525,7 @@ fn bench_layout_passes() {
             device_id: String::new(),
             status: Some(MessageStatus::Streaming),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }));
         w.input = TranscriptInput { entries: e, pending: vec![], working: true, working_since_ms: None, streaming: true };
@@ -655,6 +660,7 @@ fn running_subagent_shows_a_spinner_after_its_spawn_resolves() {
                 device_id: String::new(),
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
+                provider_turn: None,
                 duration_ms: None,
             })],
             ..Default::default()
@@ -707,6 +713,7 @@ fn spawn_cards_with_a_doc_ref_become_subagent_links() {
                 device_id: String::new(),
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
+                provider_turn: None,
                 duration_ms: None,
             })],
             ..Default::default()
