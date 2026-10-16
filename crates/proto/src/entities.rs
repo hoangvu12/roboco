@@ -998,6 +998,19 @@ pub struct AgentAccount {
     /// beside stale windows. `None` when the last probe succeeded or none ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_error: Option<String>,
+    /// Whether the login is known to work: `SignedIn` after the last usage
+    /// probe (or sign-in) succeeded, `SignedOut` after a hard rejection (a
+    /// refused refresh, a signed-out run error). Ambiguous "session expired"
+    /// outcomes never claim `SignedOut` — they stay `Unknown`, as does an
+    /// account never probed. Additive (ADR 0005): older payloads default to
+    /// `Unknown`.
+    #[serde(default)]
+    pub sign_in_state: AgentSignInState,
+    /// The latest reset among the account's exhausted (100% used) windows —
+    /// when it is in the future, the account is still limited. `None` when
+    /// no window is exhausted (or none knows its reset). Additive (ADR 0005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited_until: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1029,6 +1042,27 @@ pub struct AgentAccount {
 pub enum AgentAuthKind {
     Oauth,
     ApiKey,
+}
+
+/// Whether a harness account's login is known to work. `Unknown` is a real
+/// state, not an absence: an account that was never probed, or whose last
+/// probe was ambiguous (an expired token the CLI refreshes itself, a
+/// rate-limited probe), is `Unknown` — never `SignedOut`. The engine flips
+/// the state only on hard evidence: a successful probe or sign-in →
+/// `SignedIn`, a hard rejection (refused refresh, signed-out run error) →
+/// `SignedOut`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentSignInState {
+    SignedIn,
+    SignedOut,
+    Unknown,
+}
+
+impl Default for AgentSignInState {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 /// Everything the Accounts settings page renders, rebuilt after every mutation.
@@ -1621,6 +1655,73 @@ mod tests {
         assert!(encoded.get("setupAction").is_none());
         assert!(encoded.get("setupError").is_none());
         assert!(serde_json::from_value::<Worktree>(encoded).is_ok());
+    }
+
+    /// A harness account's sign-in state and limited-until are additive on
+    /// the wire (ADR 0005): new payloads carry them under stable camelCase /
+    /// kebab-case names, a payload from before they existed parses (Unknown /
+    /// absent), and the state serializes as one of its three kebab-case
+    /// names — never null.
+    #[test]
+    fn agent_account_sign_in_state_is_additive_on_the_wire() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 17, 9, 30, 0).unwrap();
+        let account = AgentAccount {
+            id: "slot-1".into(),
+            harness: HarnessId::ClaudeCode,
+            email: Some("a@example.com".into()),
+            plan_label: None,
+            active: false,
+            usage_windows: Vec::new(),
+            usage_fetched_at: None,
+            usage_error: Some("Signed out — sign in again".into()),
+            sign_in_state: AgentSignInState::SignedOut,
+            limited_until: Some(at),
+            display_name: None,
+            organization: None,
+            auth_kind: None,
+            switchable: true,
+            saved_at: None,
+            provider: None,
+        };
+        let value = serde_json::to_value(&account).unwrap();
+        assert_eq!(value["signInState"], "signed-out");
+        assert_eq!(value["limitedUntil"], serde_json::to_value(at).unwrap());
+        // Unknown + no reset serialize without null placeholders.
+        let plain = AgentAccount {
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
+            ..account.clone()
+        };
+        let plain = serde_json::to_value(&plain).unwrap();
+        assert_eq!(plain["signInState"], "unknown");
+        assert!(plain.get("limitedUntil").is_none());
+        for (state, name) in [
+            (AgentSignInState::SignedIn, "signed-in"),
+            (AgentSignInState::SignedOut, "signed-out"),
+            (AgentSignInState::Unknown, "unknown"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), name);
+        }
+        // A payload from before the fields existed still parses, as Unknown.
+        let legacy = serde_json::json!({
+            "id": "slot-1",
+            "harness": "claude-code",
+            "email": null,
+            "planLabel": null,
+            "active": true,
+            "usageWindows": [],
+            "switchable": false,
+        });
+        let legacy: AgentAccount = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.sign_in_state, AgentSignInState::Unknown);
+        assert_eq!(legacy.limited_until, None);
+        assert!(legacy.active);
+        // Round trip.
+        assert_eq!(
+            serde_json::from_value::<AgentAccount>(serde_json::to_value(&account).unwrap())
+                .unwrap(),
+            account
+        );
     }
 
     #[test]

@@ -238,6 +238,16 @@ pub struct RunRequest {
     pub auto_approve: bool,
     /// Harness-native session id to resume, if any.
     pub resume: Option<String>,
+    /// A native fork to perform instead of a plain resume or fresh start
+    /// (t3-orchestration-v2 ticket 17): the driver forks the source provider
+    /// session at `last_turn` (inclusive) — Codex `thread/fork {threadId,
+    /// lastTurnId}` — so the forked session carries the copied history and
+    /// nothing is pasted into the prompt. Only the engine sets it: the fork's
+    /// first dispatch injects it from the intent the ForkSideChat RPC
+    /// recorded. Additive + serde-defaulted for wire compat — an old host
+    /// ignores it and starts fresh (the budgeted-history fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_fork: Option<ProviderFork>,
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
@@ -260,6 +270,41 @@ pub struct RunRequest {
     /// no Roboco tools; title runs never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpServer>,
+}
+
+/// One side of a native fork riding [`RunRequest`]: the source provider
+/// session, the inclusive boundary to fork at, and the budgeted transcript
+/// to deliver instead when the harness refuses the fork (ticket 01's
+/// builder produces it; the driver pastes it in front of the prompt on the
+/// fresh session it starts). The engine fills `fallback_history` at run
+/// time — it is never persisted in the command payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFork {
+    /// The provider session being forked (the fork's source).
+    pub session_id: String,
+    /// The per-harness turn ref of the last copied assistant entry — the
+    /// boundary the fork continues the source session at, inclusive (Codex
+    /// `lastTurnId`).
+    pub last_turn: String,
+    /// The budgeted transcript prefix delivered in front of the prompt only
+    /// when the harness refuses the fork. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_history: Option<String>,
+}
+
+/// A provider turn reference (t3-orchestration-v2 ticket 17): the harness,
+/// the provider session the turn belongs to, and the harness's own turn ref
+/// (Codex: the turn id; Claude/Pi/OpenCode later). Transcript entries
+/// record it so a fork can continue the provider session at exactly the
+/// turn that produced the entry. The session id is part of the ref because
+/// a chat's provider session can change (fresh-start fallbacks).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTurnRef {
+    pub harness: HarnessId,
+    pub session_id: String,
+    pub turn_id: String,
 }
 
 /// A stdio MCP server the harness should add to the agent's session, on top
@@ -692,6 +737,17 @@ pub enum AgentEvent {
     UserMessage {
         text: String,
     },
+    /// The provider turn reference for the assistant entry currently
+    /// streaming (t3-orchestration-v2 ticket 17): the engine records it on
+    /// the transcript entry when the segment finishes, so a fork can
+    /// continue the provider session at exactly that turn. Codex emits it
+    /// when the app-server adopts a turn id; other harnesses follow. A
+    /// consumer that does not know the variant drops it — the pre-fork
+    /// behavior. Additive on the wire.
+    #[serde(rename_all = "camelCase")]
+    TurnRef {
+        reference: ProviderTurnRef,
+    },
     /// An event belonging to a SUBAGENT's nested transcript, attributed to
     /// the spawning tool call (`parent_tool_use_id` = the parent-feed
     /// `ToolCall::id` that launched it). Never folded into the parent chat
@@ -970,6 +1026,64 @@ mod tests {
         assert!(spec.space_id.is_none());
         let encoded = serde_json::to_value(&spec).unwrap();
         assert!(encoded.get("spaceId").is_none());
+    }
+
+    #[test]
+    fn run_request_provider_fork_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.provider_fork.is_none());
+        // …and `None` serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("providerFork").is_none());
+        // A populated fork round-trips camelCased, boundary and fallback; a
+        // fork without a fallback parses (the driver then has none to paste).
+        let req = RunRequest {
+            provider_fork: Some(ProviderFork {
+                session_id: "th-source".into(),
+                last_turn: "turn-7".into(),
+                fallback_history: Some("<transcript>…".into()),
+            }),
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["providerFork"]["sessionId"], "th-source");
+        assert_eq!(json["providerFork"]["lastTurn"], "turn-7");
+        assert_eq!(json["providerFork"]["fallbackHistory"], "<transcript>…");
+        let round: RunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round.provider_fork, req.provider_fork);
+        let bare = serde_json::json!({ "sessionId": "s", "lastTurn": "t" });
+        let fork: ProviderFork = serde_json::from_value(bare).unwrap();
+        assert_eq!(fork.fallback_history, None);
+    }
+
+    #[test]
+    fn turn_ref_event_round_trips_and_must_be_droppable_by_old_consumers() {
+        let event = AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Codex,
+                session_id: "th-1".into(),
+                turn_id: "t-1".into(),
+            },
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "turnRef");
+        assert_eq!(json["reference"]["harness"], "codex");
+        assert_eq!(json["reference"]["sessionId"], "th-1");
+        assert_eq!(json["reference"]["turnId"], "t-1");
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(json).unwrap(),
+            event
+        );
+        // Additive compat: the same shape a future harness may extend parses.
+        let parsed: ProviderTurnRef = serde_json::from_value(serde_json::json!({
+            "harness": "claude-code",
+            "sessionId": "s",
+            "turnId": "uuid"
+        }))
+        .unwrap();
+        assert_eq!(parsed.harness, HarnessId::ClaudeCode);
     }
 
     #[test]

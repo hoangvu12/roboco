@@ -357,6 +357,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         }
     }
 

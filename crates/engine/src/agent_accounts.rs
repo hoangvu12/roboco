@@ -77,6 +77,19 @@
 //! (shown instead of "Usage unavailable"), and backs off — honouring
 //! `Retry-After` — before that account is probed again. Only 401/403 counts
 //! as a rejected token (and only then is a saved Claude slot refreshed).
+//!
+//! Sign-in state (ticket 08): every account row reports whether its login is
+//! known to work — `signed-in` after the last successful probe, `signed-out`
+//! after a HARD rejection, `unknown` otherwise. A rejection is hard only when
+//! it proves the login is dead: the slot's own refresh was refused (Claude,
+//! Grok: 400 invalid_grant) or the just-refreshed token was rejected again, or
+//! a provider whose keys never lapse refused one (Devin). An expired access
+//! token the CLI refreshes itself stays `unknown` — ambiguous, never
+//! signed-out. The engine also marks an account signed out when a run fails
+//! with ticket 05's structured `signed-out` error
+//! ([`AgentAccounts::mark_account_signed_out`]); a later successful probe or
+//! sign-in clears the mark. Each row also carries the latest reset among its
+//! exhausted windows (`limited_until`), the moment a limit is known to lift.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -92,7 +105,8 @@ use sha2::{Digest, Sha256};
 
 use roboco_proto::{
     AgentAccount, AgentAccountWarning, AgentAccountsSnapshot, AgentAuthKind, AgentLoginMode,
-    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentUsageWindow, HarnessId,
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentSignInState, AgentUsageWindow,
+    HarnessId,
 };
 
 use crate::repos::home_dir;
@@ -495,6 +509,16 @@ enum ProbeError {
     /// 401/403 — the token was rejected; the ONLY status worth a refresh.
     #[serde(rename_all = "camelCase")]
     Unauthorized { status: u16 },
+    /// A rejection that PROVES the login is dead, not merely stale: the
+    /// slot's own refresh was refused (Claude, Grok: 400 invalid_grant) or
+    /// the just-refreshed token was rejected too, or a provider whose keys
+    /// never lapse on their own refused one (Devin: a rejection means the
+    /// key was revoked). Distinct from [`ProbeError::Unauthorized`], which an
+    /// expired access token also produces and only the CLI's own refresh can
+    /// settle — this is the hard signal that marks the account signed out
+    /// until a sign-in or a successful probe clears it.
+    #[serde(rename_all = "camelCase")]
+    SignedOut { status: u16 },
     /// 429 — `retry_after_secs` from the `Retry-After` header when sent.
     #[serde(rename_all = "camelCase")]
     RateLimited { retry_after_secs: Option<u64> },
@@ -535,6 +559,7 @@ impl ProbeError {
     fn class(&self) -> &'static str {
         match self {
             ProbeError::Unauthorized { .. } => "unauthorized",
+            ProbeError::SignedOut { .. } => "signed-out",
             ProbeError::RateLimited { .. } => "rate-limited",
             ProbeError::Http { status, .. } if *status >= 500 => "server-error",
             ProbeError::Http { .. } => "http-error",
@@ -548,7 +573,9 @@ impl ProbeError {
 
     fn status(&self) -> Option<u16> {
         match self {
-            ProbeError::Unauthorized { status } | ProbeError::Http { status, .. } => Some(*status),
+            ProbeError::Unauthorized { status }
+            | ProbeError::SignedOut { status }
+            | ProbeError::Http { status, .. } => Some(*status),
             ProbeError::RateLimited { .. } => Some(429),
             _ => None,
         }
@@ -575,6 +602,7 @@ impl ProbeError {
             // Lifted early when the slot's credentials change (re-login, the
             // CLI refreshing its token) — see `UsageEntry::probe_due`.
             ProbeError::Unauthorized { .. }
+            | ProbeError::SignedOut { .. }
             | ProbeError::NoCredentials { .. }
             | ProbeError::UntrustedEndpoint => Duration::from_secs(10 * 60),
         }
@@ -596,6 +624,13 @@ struct UsageEntry {
     /// The last probe's failure; cleared by the next success.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<ProbeError>,
+    /// Hard sign-in evidence, surviving ambiguous failures: `SignedIn` after
+    /// the last successful probe, `SignedOut` after a hard rejection (see
+    /// [`ProbeError::SignedOut`]) or a run's signed-out error (see
+    /// [`AgentAccounts::mark_account_signed_out`]). `None` = unknown — never
+    /// probed, or only ambiguous outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sign_in: Option<AgentSignInState>,
     /// Last probe attempt, success or failure.
     #[serde(default)]
     checked_at: i64,
@@ -610,7 +645,13 @@ struct UsageEntry {
 impl UsageEntry {
     /// Whether a forced list should probe this account now.
     fn probe_due(&self, credentials: &str, now: i64) -> bool {
-        if now - self.checked_at < FORCED_MIN_INTERVAL.as_millis() as i64 {
+        // The last failure was about OTHER credentials (a sign-in landed, the
+        // CLI rotated its token): the entry knows nothing about the current
+        // ones, so even the freshness gate lifts — the reload right after a
+        // sign-in must re-establish the account's state, not replay the old
+        // rejection. Same principle the backoff arm below encodes.
+        let credentials_changed = self.credentials.as_deref().is_some_and(|c| c != credentials);
+        if !credentials_changed && now - self.checked_at < FORCED_MIN_INTERVAL.as_millis() as i64 {
             return false;
         }
         match (self.retry_at, &self.error) {
@@ -621,9 +662,10 @@ impl UsageEntry {
                 matches!(
                     error,
                     ProbeError::Unauthorized { .. }
+                        | ProbeError::SignedOut { .. }
                         | ProbeError::NoCredentials { .. }
                         | ProbeError::UntrustedEndpoint
-                ) && self.credentials.as_deref() != Some(credentials)
+                ) && credentials_changed
             }
             _ => true,
         }
@@ -638,12 +680,39 @@ impl UsageEntry {
                 self.error = None;
                 self.retry_at = None;
                 self.credentials = None;
+                // A probe that reached the provider and came back green is
+                // proof the login works — it clears any earlier signed-out
+                // mark (the display fix's "later successful probe").
+                self.sign_in = Some(AgentSignInState::SignedIn);
             }
             Err(error) => {
                 self.retry_at = Some(now + error.backoff().as_millis() as i64);
+                // Only a HARD rejection flips the state to signed out; every
+                // other failure (expired-but-CLI-refreshes, rate limit,
+                // network) says nothing about the sign-in and leaves the last
+                // hard evidence standing.
+                if matches!(error, ProbeError::SignedOut { .. }) {
+                    self.sign_in = Some(AgentSignInState::SignedOut);
+                }
                 self.error = Some(error);
                 self.credentials = Some(credentials);
             }
+        }
+    }
+
+    /// The account's sign-in state as of this list. A signed-out mark was
+    /// recorded against the credentials the failure saw; when the slot holds
+    /// different ones now (a sign-in landed, the CLI refreshed the token),
+    /// the mark is stale and reads unknown until the next probe settles it.
+    fn sign_in_state(&self, credentials: &str) -> AgentSignInState {
+        match self.sign_in {
+            Some(AgentSignInState::SignedOut)
+                if self.credentials.as_deref().is_some_and(|c| c != credentials) =>
+            {
+                AgentSignInState::Unknown
+            }
+            Some(state) => state,
+            None => AgentSignInState::Unknown,
         }
     }
 }
@@ -702,6 +771,27 @@ impl Default for ProbeEndpoints {
             allow_slot_refresh: true,
             allow_loopback_http: false,
         }
+    }
+}
+
+/// Every endpoint on one mock server, with slot refresh and loopback http
+/// admitted — the set [`AgentAccounts::with_mocked_endpoints`] and the
+/// in-crate provider tests build their mocks on.
+fn mocked_endpoints(base: &str) -> ProbeEndpoints {
+    ProbeEndpoints {
+        claude_usage: format!("{base}/api/oauth/usage"),
+        claude_token: format!("{base}/v1/oauth/token"),
+        claude_loopback_token: format!("{base}/v1/oauth/token"),
+        claude_profile: format!("{base}/api/oauth/profile"),
+        codex_usage: format!("{base}/backend-api/wham/usage"),
+        grok_usage: format!("{base}/v1/billing?format=credits"),
+        github_api: base.to_string(),
+        github_login: base.to_string(),
+        openai_auth: base.to_string(),
+        openai_port: 0,
+        nous_portal: base.to_string(),
+        allow_slot_refresh: true,
+        allow_loopback_http: true,
     }
 }
 
@@ -858,6 +948,15 @@ impl AgentAccounts {
     #[doc(hidden)]
     pub fn override_cli(&self, harness: HarnessId, path: impl Into<PathBuf>) {
         lock(&self.inner.cli_overrides).insert(harness, path.into());
+    }
+
+    /// Test seam: [`Self::new`] with every provider endpoint pointed at
+    /// `base` (a local mock server) instead of the real providers — the same
+    /// endpoint set the in-crate provider tests use. Integration tests drive
+    /// usage probes and token flows against it; never use in production.
+    #[doc(hidden)]
+    pub fn with_mocked_endpoints(config: AgentAccountsConfig, base: &str) -> Self {
+        Self::with_endpoints(config, mocked_endpoints(base))
     }
 
     /// The ACP harness for `harness`'s CLI, honouring [`Self::override_cli`].
@@ -1027,6 +1126,7 @@ impl AgentAccounts {
                 let active = active_set.is_some_and(|keys| keys.contains(&slot.account_key));
                 let entry = usage.get(&usage_key(harness, &slot.account_key));
                 let snapshot = entry.and_then(|entry| entry.usage.as_ref());
+                let credentials = credentials_fingerprint(&slot.credentials);
                 accounts.push(AgentAccount {
                     id: slot.id.clone(),
                     harness,
@@ -1052,6 +1152,10 @@ impl AgentAccounts {
                             now,
                         )
                     }),
+                    sign_in_state: entry
+                        .map(|entry| entry.sign_in_state(&credentials))
+                        .unwrap_or(AgentSignInState::Unknown),
+                    limited_until: snapshot.and_then(|usage| limited_until(&usage.windows)),
                     display_name: slot.profile.display_name.clone(),
                     organization: slot.profile.organization.clone(),
                     auth_kind: Some(slot.profile.auth_kind),
@@ -1076,6 +1180,9 @@ impl AgentAccounts {
                     usage_windows: Vec::new(),
                     usage_fetched_at: None,
                     usage_error: None,
+                    // The secret couldn't be read, so nothing was ever probed.
+                    sign_in_state: AgentSignInState::Unknown,
+                    limited_until: None,
                     display_name: u.profile.display_name.clone(),
                     organization: u.profile.organization.clone(),
                     auth_kind: Some(u.profile.auth_kind),
@@ -1420,6 +1527,84 @@ impl AgentAccounts {
             std::fs::remove_file(&file)?;
         }
         self.list_locked(false).await
+    }
+
+    // ── sign-in state ──────────────────────────────────────────────────────
+
+    /// Mark one saved account signed out from OUTSIDE the usage probe — a
+    /// run that failed with a signed-out error (ticket 05's structured
+    /// `AgentErrorKind::SignedOut`, on the harness's active account), or an
+    /// account-failover resume whose sign-in failed (ticket 09). The mark is
+    /// durable (the usage cache is rewritten, so it survives restarts) and
+    /// keyed to the slot's current credentials: a sign-in that lands on the
+    /// account, or a later successful probe, clears it.
+    ///
+    /// No network: this only records evidence. The wiring that watches runs
+    /// for signed-out errors resolves the active account and calls this.
+    pub fn mark_account_signed_out(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<(), EngineError> {
+        let slot = self
+            .read_slots(harness)
+            .into_iter()
+            .find(|s| s.id == account_id)
+            .ok_or_else(|| EngineError::Other("Unknown account.".into()))?;
+        let key = usage_key(harness, &slot.account_key);
+        let credentials = credentials_fingerprint(&slot.credentials);
+        {
+            let mut usage = lock(&self.inner.usage);
+            let entry = usage.entry(key).or_default();
+            entry.sign_in = Some(AgentSignInState::SignedOut);
+            // Anchor the mark to these credentials so a re-login (or the
+            // CLI rotating its token) reads back as unknown — see
+            // [`UsageEntry::sign_in_state`].
+            entry.credentials = Some(credentials);
+            let file = UsageCacheFile {
+                entries: usage.clone(),
+            };
+            let persisted = serde_json::to_vec_pretty(&file)
+                .map_err(|e| EngineError::Other(e.to_string()))
+                .and_then(|json| {
+                    self.inner.config.private_root()?;
+                    write_file_atomic(&self.inner.config.usage_cache_file(), &json, true)
+                });
+            if let Err(err) = persisted {
+                tracing::warn!(error = %err, "agent usage cache write failed");
+            }
+        }
+        tracing::info!(
+            provider = harness_slug(harness),
+            slot = %account_id,
+            "harness account marked signed out"
+        );
+        Ok(())
+    }
+
+    /// [`Self::mark_account_signed_out`] for a RUN's signed-out error
+    /// (ticket 05's structured kind, wired by the sessions engine): resolve
+    /// the CLI's LIVE login for `harness` and mark ITS account — the account
+    /// every new run on this harness would use. The list first
+    /// auto-snapshots the live login into its slot, so the row exists even
+    /// when no accounts view ever ran. Single-login agents resolve
+    /// unambiguously; a per-provider agent's login names its provider, which
+    /// the caller must resolve before this can mark anything (no driver
+    /// classifies those signed-out yet).
+    pub async fn mark_live_signed_out(&self, harness: HarnessId) -> Result<(), EngineError> {
+        let snapshot = self.list(false).await?;
+        let row = snapshot
+            .accounts
+            .iter()
+            .find(|account| account.harness == harness && account.active)
+            .ok_or_else(|| {
+                EngineError::Other(format!(
+                    "no live {} login to mark signed out",
+                    harness_slug(harness)
+                ))
+            })?;
+        let account_id = row.id.clone();
+        self.mark_account_signed_out(harness, &account_id)
     }
 
     // ── add-account OAuth flows ─────────────────────────────────────────────
@@ -2736,11 +2921,26 @@ impl AgentAccounts {
             Err(ProbeError::Unauthorized { status })
                 if !is_active && self.inner.endpoints.allow_slot_refresh =>
             {
-                match self.refresh_claude_slot(slot).await? {
-                    Some(fresh) => self.claude_usage_request(&fresh).await,
+                match self.refresh_claude_slot(slot).await {
+                    Ok(Some(fresh)) => match self.claude_usage_request(&fresh).await {
+                        // The token this slot JUST rotated to was rejected
+                        // too: the login is dead, not stale.
+                        Err(ProbeError::Unauthorized { status }) => {
+                            Err(ProbeError::SignedOut { status })
+                        }
+                        result => result,
+                    },
                     // Refresh in flight elsewhere (single-flight) — report
                     // the original rejection; the next probe sees the result.
-                    None => Err(ProbeError::Unauthorized { status }),
+                    Ok(None) => Err(ProbeError::Unauthorized { status }),
+                    // A refused refresh (400 invalid_grant: revoked/used
+                    // token) means this login is dead — the hard signed-out
+                    // signal, not an ambiguous expired token. Every other
+                    // refresh failure (network, 5xx) stays what it was.
+                    Err(ProbeError::Unauthorized { status }) => {
+                        Err(ProbeError::SignedOut { status })
+                    }
+                    Err(other) => Err(other),
                 }
             }
             result => result,
@@ -3063,6 +3263,10 @@ impl AntigravityLogin {
             usage_windows: Vec::new(),
             usage_fetched_at: None,
             usage_error: None,
+            // Roboco never reads Antigravity's token: no probe ever ran, so
+            // its sign-in state stays unknown.
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
             display_name: Some(label.to_string()),
             organization: None,
             auth_kind: Some(kind),
@@ -3425,6 +3629,19 @@ fn credentials_fingerprint(credentials: &serde_json::Value) -> String {
     crate::repos::hex(&Sha256::digest(credentials.to_string().as_bytes()))[..16].to_string()
 }
 
+/// The latest reset among the account's EXHAUSTED windows (100% used): the
+/// moment every blocked window has lifted — while it is in the future, the
+/// account is still limited. Windows that aren't full, or that don't know
+/// their reset, contribute nothing; `None` = not limited by any cached
+/// window. Pure (the row's `limited_until`).
+fn limited_until(windows: &[AgentUsageWindow]) -> Option<DateTime<Utc>> {
+    windows
+        .iter()
+        .filter(|window| window.used_fraction >= 1.0)
+        .filter_map(|window| window.resets_at)
+        .max()
+}
+
 /// Send one probe request and decode its JSON body, classifying every
 /// failure. Logs provider/step/status/class/Retry-After — never the request
 /// (bearer tokens) or the response body (it can echo account details).
@@ -3546,12 +3763,10 @@ fn usage_error_message(
         .map(|at| format!(" — retrying in {}", short_duration(at - now)))
         .unwrap_or_default();
     Some(match error {
+        // A hard rejection — the account is signed out regardless of which
+        // login it is (this is what flipped the sign-in state).
+        ProbeError::SignedOut { .. } => "Signed out — sign in again".to_string(),
         ProbeError::RateLimited { .. } => format!("Rate limited by {provider}{retry}"),
-        // Devin's key never expires on its own: a rejection means it was
-        // revoked, whichever login it is.
-        ProbeError::Unauthorized { .. } if harness == HarnessId::Devin => {
-            "Signed out — sign in again".to_string()
-        }
         ProbeError::Unauthorized { .. } if active => {
             // The CLI owns (and refreshes) the live token; it just hasn't yet.
             format!(
@@ -4217,6 +4432,7 @@ fn stage_file_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeDelta, TimeZone};
 
     #[test]
     fn plan_labels() {
@@ -4699,6 +4915,21 @@ mod probe_tests {
             .as_deref(),
             Some("Signed out — sign in again")
         );
+        // A hard rejection reads as signed out on every login, even the
+        // active one (a run error or a refused refresh marked it).
+        assert_eq!(
+            message(HarnessId::ClaudeCode, true, &ProbeError::SignedOut { status: 400 }).as_deref(),
+            Some("Signed out — sign in again")
+        );
+        assert_eq!(
+            message(HarnessId::Devin, false, &ProbeError::SignedOut { status: 403 }).as_deref(),
+            Some("Signed out — sign in again")
+        );
+        // The ambiguous arms keep their text.
+        assert_eq!(
+            message(HarnessId::ClaudeCode, true, &ProbeError::Unauthorized { status: 401 }).as_deref(),
+            Some("Session expired — it refreshes the next time claude runs")
+        );
         assert_eq!(
             message(
                 HarnessId::Codex,
@@ -4723,8 +4954,126 @@ mod probe_tests {
         let entry = &back.entries["claude-code:acct"];
         assert_eq!(entry.usage, Some(snapshot()));
         assert_eq!(entry.fetched_at, Some(5));
+        assert_eq!(entry.sign_in, Some(AgentSignInState::SignedIn));
         // The fingerprint is a digest, never the credential blob.
         assert!(!json.contains("accessToken"));
+        // A cache from before the sign-in state existed still parses, as
+        // unknown — and a signed-out mark survives the round trip.
+        let legacy: UsageCacheFile =
+            serde_json::from_str(r#"{"entries":{"codex:acct":{"checkedAt":9}}}"#).unwrap();
+        assert_eq!(legacy.entries["codex:acct"].sign_in, None);
+        let mut marked = UsageEntry::default();
+        marked.sign_in = Some(AgentSignInState::SignedOut);
+        marked.credentials = Some("f".into());
+        let file = UsageCacheFile {
+            entries: HashMap::from([("grok:acct".to_string(), marked)]),
+        };
+        let back: UsageCacheFile =
+            serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap();
+        assert_eq!(back.entries["grok:acct"].sign_in, Some(AgentSignInState::SignedOut));
+    }
+
+    /// The sign-in state moves only on hard evidence: a hard rejection
+    /// marks the account signed out, a success marks it signed in, and
+    /// every other failure (an expired token, a rate limit, a network
+    /// blip) leaves the last hard evidence standing.
+    #[test]
+    fn only_hard_rejections_and_successes_move_the_sign_in_state() {
+        let mut entry = UsageEntry::default();
+        assert_eq!(entry.sign_in, None, "never probed is unknown");
+        // An ambiguous rejection (the CLI refreshes such tokens itself).
+        entry.record(
+            Err(ProbeError::Unauthorized { status: 401 }),
+            "c".into(),
+            1_000,
+        );
+        assert_eq!(entry.sign_in, None, "an expired token is not a sign-out");
+        // A rate limit says nothing about the login.
+        entry.record(
+            Err(ProbeError::RateLimited { retry_after_secs: None }),
+            "c".into(),
+            2_000,
+        );
+        assert_eq!(entry.sign_in, None);
+        // A hard rejection — the slot's refresh was refused.
+        entry.record(
+            Err(ProbeError::SignedOut { status: 400 }),
+            "c".into(),
+            3_000,
+        );
+        assert_eq!(entry.sign_in, Some(AgentSignInState::SignedOut));
+        // Later ambiguous failures must not resurrect it as healthy.
+        entry.record(
+            Err(ProbeError::RateLimited { retry_after_secs: None }),
+            "c".into(),
+            4_000,
+        );
+        assert_eq!(entry.sign_in, Some(AgentSignInState::SignedOut));
+        // A successful probe clears it.
+        entry.record(Ok(snapshot()), "c".into(), 5_000);
+        assert_eq!(entry.sign_in, Some(AgentSignInState::SignedIn));
+    }
+
+    /// A signed-out mark is about the credentials it was recorded against:
+    /// once the slot holds different ones (a sign-in landed, the CLI rotated
+    /// its token), the mark reads back as unknown — and the next forced list
+    /// probes right away instead of replaying the old rejection.
+    #[test]
+    fn a_signed_out_mark_for_old_credentials_reads_unknown_and_reprobes() {
+        let mut entry = UsageEntry::default();
+        entry.record(
+            Err(ProbeError::SignedOut { status: 400 }),
+            "old".into(),
+            1_000,
+        );
+        assert_eq!(entry.sign_in_state("old"), AgentSignInState::SignedOut);
+        assert_eq!(entry.sign_in_state("new"), AgentSignInState::Unknown);
+        // Fresh credentials lift even the 30s freshness gate …
+        let soon = 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 - 1;
+        assert!(entry.probe_due("new", soon));
+        // … while the same credentials keep it (the backoff arm also holds).
+        assert!(!entry.probe_due("old", soon));
+        assert!(entry.probe_due("old", 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1));
+        // A mark with no recorded credentials (never failed a probe) reads
+        // as recorded for any credentials.
+        let mut bare = UsageEntry::default();
+        bare.sign_in = Some(AgentSignInState::SignedOut);
+        assert_eq!(bare.sign_in_state("anything"), AgentSignInState::SignedOut);
+    }
+
+    /// `limited_until` is the LATEST reset among the exhausted windows —
+    /// when it is in the future the account is still limited. Not-full
+    /// windows and resets already past count for nothing.
+    #[test]
+    fn limited_until_is_the_latest_reset_of_exhausted_windows() {
+        let at = |hours: i64| Utc.with_ymd_and_hms(2026, 10, 17, 9, 0, 0).unwrap() + TimeDelta::hours(hours);
+        let window = |label: &str, used: f32, reset: Option<DateTime<Utc>>| AgentUsageWindow {
+            label: label.into(),
+            used_fraction: used,
+            resets_at: reset,
+        };
+        // No windows, or none exhausted.
+        assert_eq!(limited_until(&[]), None);
+        assert_eq!(
+            limited_until(&[window("Session", 0.99, Some(at(1))), window("Week", 0.5, Some(at(3)))]),
+            None
+        );
+        // One exhausted window with no reset: nothing knowable.
+        assert_eq!(limited_until(&[window("Session", 1.0, None)]), None);
+        // The latest reset of the exhausted ones wins — not the latest of all.
+        assert_eq!(
+            limited_until(&[
+                window("Session", 1.0, Some(at(1))),
+                window("Week", 1.0, Some(at(3))),
+                window("Day", 0.1, Some(at(8))),
+            ]),
+            Some(at(3))
+        );
+        // Exhausted at 100% exactly — 99% is not exhausted.
+        assert_eq!(
+            limited_until(&[window("Session", 1.0, Some(at(2))), window("Backup", 0.99, Some(at(5)))]),
+            Some(at(2))
+        );
     }
 
     /// A transient DNS failure during the usage probe must surface as a

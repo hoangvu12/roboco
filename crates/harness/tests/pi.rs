@@ -55,6 +55,7 @@ fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -1173,9 +1174,9 @@ async fn a_failing_settle_probe_ends_the_turn_errored() {
 /// the turn instead of sticking on Working forever.
 #[tokio::test]
 async fn old_pi_without_disposition_is_inferred_not_assumed() {
-    let (controls, steer, _token) = controls();
+    let (first, steer, _token) = controls();
     drop(steer);
-    let events = run_to_end(&harness(), request("old-pi"), controls).await;
+    let events = run_to_end(&harness(), request("old-pi"), first).await;
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
     assert_eq!(text_of(&events), "reply:old-pi");
 

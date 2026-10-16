@@ -402,6 +402,7 @@ mod tests {
             worktree: None,
             mcp: None,
             resume: None,
+            provider_fork: None,
         }
     }
 }

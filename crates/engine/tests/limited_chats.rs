@@ -170,6 +170,7 @@ fn run_request(prompt: &str, harness: HarnessId) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 
@@ -395,7 +396,9 @@ async fn a_missing_reset_time_is_filled_from_the_accounts_cached_windows() {
     };
     // A live Claude login (accountUuid uuid-limit-1 → usage key
     // "claude-code:uuid-limit-1") with cached meters: the Session window is
-    // the fuller one, so it is the reset the record should fill.
+    // EXHAUSTED (1.0) so the account reads limited-until its reset; the Week
+    // window has usage left and a later reset — it must contribute nothing
+    // to the fill.
     std::fs::create_dir_all(&config.claude_config_dir).unwrap();
     std::fs::write(
         &config.claude_config_file,
@@ -435,7 +438,7 @@ async fn a_missing_reset_time_is_filled_from_the_accounts_cached_windows() {
                 "claude-code:uuid-limit-1": {
                     "usage": {
                         "windows": [
-                            { "label": "Session", "usedFraction": 0.92, "resetsAt": "2026-11-09T10:30:00Z" },
+                            { "label": "Session", "usedFraction": 1.0, "resetsAt": "2026-11-09T10:30:00Z" },
                             { "label": "Week", "usedFraction": 0.4, "resetsAt": "2026-11-12T09:00:00Z" },
                         ],
                     },
@@ -486,7 +489,8 @@ async fn a_missing_reset_time_is_filled_from_the_accounts_cached_windows() {
         Some(SessionLimit {
             harness: HarnessId::ClaudeCode,
             window: "usage".into(),
-            // Filled from the account's fuller window (the likely blocker).
+            // Filled from the account's limited_until: the exhausted
+            // Session window's reset, not the unexhausted Week's later one.
             resets_at: Some(session_reset.timestamp_millis()),
             account_id: Some(expected_account.id),
         }),

@@ -36,6 +36,7 @@ fn assistant_entry(id: &str, text: &str) -> SessionMessageEntry {
         device_id: "host".into(),
         status: None,
         continuation_of: None,
+        provider_turn: None,
         duration_ms: None,
     }
 }

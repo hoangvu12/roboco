@@ -1693,6 +1693,7 @@ mod tests {
             device_id: "dev".into(),
             status: Some(roboco_doc::MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         })
     }

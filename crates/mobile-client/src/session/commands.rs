@@ -220,6 +220,7 @@ impl SessionCore {
                         // background subagents.
                         auto_approve: false,
                         resume: None,
+                        provider_fork: None,
                         attachments: paths.to_vec(),
                         worktree: request.worktree.clone(),
                         mcp: None,

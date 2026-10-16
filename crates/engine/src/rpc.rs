@@ -1521,6 +1521,15 @@ impl RpcService for EngineRpc {
                     /// side chat's parent so the copy lists as a sibling.
                     #[serde(default)]
                     parent_chat_id: Option<String>,
+                    /// The assistant entry to fork at (t3-orchestration-v2
+                    /// ticket 21, "Fork from here"): the copy stops at that
+                    /// reply, inclusive, and its provider turn ref becomes
+                    /// the native fork boundary. Any SETTLED assistant entry
+                    /// qualifies — an earlier one, an errored one, an
+                    /// interrupted one. Absent (the classic fork button)
+                    /// keeps today's behaviour: the latest complete reply.
+                    #[serde(default)]
+                    boundary: Option<String>,
                 }
                 let p: ForkParams = parse_params(params)?;
                 let parent_chat_id = p
@@ -1550,17 +1559,48 @@ impl RpcService for EngineRpc {
                     .doc()
                     .read_entries()
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let boundary = entries
-                    .iter()
-                    .rposition(|entry| {
-                        entry.role == roboco_doc::MessageRole::Assistant
-                            && entry.status == Some(roboco_doc::MessageStatus::Complete)
-                    })
-                    .ok_or_else(|| {
-                        RpcError::Failed(
-                            "Wait for a completed response before starting a side chat".into(),
-                        )
-                    })?;
+                // The reply the copy stops at, inclusive. An explicit
+                // boundary is any settled assistant entry — never a
+                // streaming one (the run is still writing it, and its turn
+                // ref is not stamped yet); the default stays the latest
+                // COMPLETE assistant reply, exactly as before this change.
+                let chosen = match p
+                    .boundary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(id) => entries
+                        .iter()
+                        .position(|entry| entry.id == id)
+                        .filter(|&ix| {
+                            entries[ix].role == roboco_doc::MessageRole::Assistant
+                                && entries[ix].status != Some(roboco_doc::MessageStatus::Streaming)
+                        })
+                        .ok_or_else(|| {
+                            RpcError::Failed(
+                                "Fork boundary must be a settled assistant reply".into(),
+                            )
+                        })?,
+                    None => entries
+                        .iter()
+                        .rposition(|entry| {
+                            entry.role == roboco_doc::MessageRole::Assistant
+                                && entry.status == Some(roboco_doc::MessageStatus::Complete)
+                        })
+                        .ok_or_else(|| {
+                            RpcError::Failed(
+                                "Wait for a completed response before starting a side chat".into(),
+                            )
+                        })?,
+                };
+                // A logical message can span continuation fragments after
+                // its root (schema capability for oversized replies): the
+                // fork copies the WHOLE message the chosen entry belongs
+                // to, and the native boundary ref comes from its root —
+                // where a turn ref is stamped.
+                let boundary = logical_message_end(&entries, chosen);
+                let ref_entry = logical_message_root(&entries, chosen);
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
@@ -1612,6 +1652,7 @@ impl RpcService for EngineRpc {
                         .push_message(&roboco_doc::SessionMessageEntry {
                             origin_chat_id: None,
                             duration_ms: None,
+                            provider_turn: None,
                             id: marker_id.clone(),
                             role: roboco_doc::MessageRole::System,
                             parts: vec![roboco_doc::MessagePart::Fork {
@@ -1624,6 +1665,33 @@ impl RpcService for EngineRpc {
                             status: Some(roboco_doc::MessageStatus::Complete),
                             continuation_of: None,
                         })
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
+                // Native fork intent (t3-orchestration-v2 tickets 17+21):
+                // when the boundary entry carries a provider turn ref, the
+                // fork records the source provider session and the boundary
+                // on the new chat — its first run asks the harness to fork
+                // the source session at that turn (Codex `thread/fork
+                // {threadId, lastTurnId}`) instead of resuming it, so the
+                // copied history rides the provider and nothing is pasted.
+                // The boundary is whatever reply the caller chose — the
+                // latest by default, an earlier/errored/interrupted one
+                // explicitly — so every harness's driver (17–20) forks at
+                // exactly that turn. No ref — old chats, or a harness that
+                // records none — keeps today's behavior: a fresh session
+                // plus the budgeted paste, cut at the boundary because the
+                // fork's own doc only holds the copied prefix.
+                if let Some(reference) = entries[ref_entry].provider_turn.clone() {
+                    target
+                        .doc()
+                        .set_provider_fork(
+                            reference.harness,
+                            &roboco_proto::ProviderFork {
+                                session_id: reference.session_id,
+                                last_turn: reference.turn_id,
+                                fallback_history: None,
+                            },
+                        )
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
@@ -3054,6 +3122,43 @@ impl RpcService for EngineRpc {
     }
 }
 
+/// The index of the ROOT entry of the logical message `at` belongs to: an
+/// oversized relayed reply can split into continuation fragments
+/// (`root#c1`, …) after its root, and the whole chain is one message
+/// (`join_continuation_entries`). An orphan fragment (root missing) is its
+/// own root.
+fn logical_message_root(entries: &[roboco_doc::SessionMessageEntry], at: usize) -> usize {
+    let mut root = at;
+    loop {
+        let Some(parent) = entries[root].continuation_of.as_deref() else {
+            return root;
+        };
+        match root
+            .checked_sub(1)
+            .filter(|&prev| entries[prev].id.as_str() == parent)
+        {
+            Some(prev) => root = prev,
+            None => return root,
+        }
+    }
+}
+
+/// The inclusive index of the LAST entry of the logical message `at`
+/// belongs to — the end a fork copies through, so a split message never
+/// copies as a truncated prefix of itself.
+fn logical_message_end(entries: &[roboco_doc::SessionMessageEntry], at: usize) -> usize {
+    let root = logical_message_root(entries, at);
+    let root_id = entries[root].id.as_str();
+    let mut end = root;
+    while entries
+        .get(end + 1)
+        .is_some_and(|next| next.continuation_of.as_deref() == Some(root_id))
+    {
+        end += 1;
+    }
+    end.max(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3347,6 +3452,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                provider_turn: None,
             })
             .unwrap();
         // Hold publication blocked: the opening must not await the full mirror.
@@ -3543,6 +3649,7 @@ mod context_usage_tests {
                     status: Some(roboco_doc::MessageStatus::Streaming),
                     continuation_of: None,
                     duration_ms: None,
+                    provider_turn: None,
                 })
                 .unwrap()
         };
@@ -3677,6 +3784,7 @@ mod context_usage_tests {
             status: Some(roboco_doc::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         handle.doc().push_message(&entry("local-before")).unwrap();
         source.update_context_usage(Some(10), Some(100)).unwrap();

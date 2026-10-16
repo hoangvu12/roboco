@@ -9,7 +9,9 @@
 //!   the CLI's to rotate.
 //! - **Devin**: Connect-JSON `SeatManagementService/GetUserStatus` (what
 //!   `devin auth status` calls) — daily/weekly quota, plus the identity the
-//!   key file lacks, written back into the slot. Keys don't refresh.
+//!   key file lacks, written back into the slot. Keys don't refresh and never
+//!   lapse on their own, so a rejection (401/403) means the key was revoked:
+//!   the hard signed-out signal.
 //! - **ChatGPT logins** (OpenCode `openai`, Pi `openai-codex`, Hermes
 //!   `openai-codex`): the Codex usage endpoint — the same token kind.
 //! - **Claude logins** (Pi `anthropic`): Claude's `/api/oauth/usage`.
@@ -51,9 +53,24 @@ impl AgentAccounts {
             Err(ProbeError::Unauthorized { status })
                 if !is_active && self.inner.endpoints.allow_slot_refresh =>
             {
-                match self.refresh_grok_slot(slot).await? {
-                    Some(fresh) => self.grok_usage_request(&fresh).await,
-                    None => Err(ProbeError::Unauthorized { status }),
+                match self.refresh_grok_slot(slot).await {
+                    Ok(Some(fresh)) => match self.grok_usage_request(&fresh).await {
+                        // The issuer refused the token it just minted: the
+                        // login is dead, not stale.
+                        Err(ProbeError::Unauthorized { status }) => {
+                            Err(ProbeError::SignedOut { status })
+                        }
+                        result => result,
+                    },
+                    // Refresh in flight elsewhere (single-flight) — the
+                    // original rejection; the next probe sees the result.
+                    Ok(None) => Err(ProbeError::Unauthorized { status }),
+                    // A refused refresh (invalid_grant: revoked/used token)
+                    // is the hard signed-out signal.
+                    Err(ProbeError::Unauthorized { status }) => {
+                        Err(ProbeError::SignedOut { status })
+                    }
+                    Err(other) => Err(other),
                 }
             }
             result => result,
@@ -162,7 +179,7 @@ impl AgentAccounts {
         )
         .ok_or(ProbeError::UntrustedEndpoint)?;
         let server = server.as_str();
-        let body = probe_json(
+        let body = match probe_json(
             "devin",
             "usage",
             self.inner
@@ -186,7 +203,15 @@ impl AgentAccounts {
                     }
                 })),
         )
-        .await?;
+        .await
+        {
+            // Devin keys never lapse on their own: a rejection means the key
+            // was revoked — the hard signed-out signal, on any login.
+            Err(ProbeError::Unauthorized { status }) => {
+                return Err(ProbeError::SignedOut { status })
+            }
+            other => other?,
+        };
         let (snapshot, identity) =
             devin_usage_snapshot(&body).ok_or_else(|| schema_error("devin", &body))?;
         // Adopt the probed identity (best-effort; a failed write re-probes).

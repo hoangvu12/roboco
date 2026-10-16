@@ -643,6 +643,7 @@ fn dictation_question_takeover_stops_capture_without_losing_draft(cx: &mut TestA
                     multi_select: false,
                 }],
             }],
+            provider_turn: None,
         }];
         cx.notify();
     });

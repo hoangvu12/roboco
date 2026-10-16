@@ -18,6 +18,7 @@ use roboco_sync::DocsStore;
 pub mod agent_accounts;
 pub mod change_requests;
 mod chat_persistence;
+pub mod completion_notices;
 pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
@@ -269,8 +270,11 @@ impl EngineCore {
         // login between engines, so no route is registered in production.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
-        // Usage-limit records read the active login's cached windows from the
-        // accounts store (which account the limit hit, reset-time fill).
+        // The sessions engine reads the accounts store: usage-limit records
+        // take the active login's cached windows (which account the limit
+        // hit, reset-time fill — ticket 06), and runs that fail signed-out
+        // mark the harness's live login on the same store the accounts RPCs
+        // list (ticket 08).
         sessions.set_agent_accounts(agent_accounts.clone());
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());

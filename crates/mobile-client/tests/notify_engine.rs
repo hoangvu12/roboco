@@ -328,6 +328,7 @@ fn run_request(prompt: &str) -> roboco_proto::RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
     }
 }
 

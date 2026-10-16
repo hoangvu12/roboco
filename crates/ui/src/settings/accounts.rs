@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use roboco_proto::{
     AgentAccount, AgentAccountsSnapshot, AgentLoginMode, AgentLoginPoll, AgentLoginStart,
-    AgentLoginStatus, HarnessId,
+    AgentLoginStatus, AgentSignInState, HarnessId,
 };
 use roboco_rpc::methods;
 
@@ -248,6 +248,16 @@ pub fn add_option_label(option: LoginOption, empty: bool) -> String {
     }
 }
 
+/// The model provider a "Sign in again" for `account` signs in to: its own
+/// provider group for per-provider agents, the agent's only login otherwise.
+/// Pure.
+pub(crate) fn sign_in_option_for(account: &AgentAccount) -> Option<&'static str> {
+    login_options(account.harness)
+        .into_iter()
+        .find(|option| option.provider == account.provider.as_deref())
+        .and_then(|option| option.provider)
+}
+
 /// The optimistic half of a switch: `account` becomes the live login of its
 /// group — its agent, or for agents that keep a login per model provider,
 /// that provider — and every other group keeps its own. Pure.
@@ -257,6 +267,60 @@ pub fn mark_switched(snapshot: &mut AgentAccountsSnapshot, account: &AgentAccoun
             row.active = row.id == account.id;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pure: sign-in state (ticket 08)
+// ---------------------------------------------------------------------------
+
+/// Whether the account is KNOWN to be signed out — a hard rejection (the
+/// slot's refresh was refused, a revoked key) or a run's signed-out error
+/// marked it. Ambiguous "session expired" and never-probed accounts are
+/// `Unknown`, not signed out. Pure.
+pub fn signed_out(account: &AgentAccount) -> bool {
+    account.sign_in_state == AgentSignInState::SignedOut
+}
+
+/// The reason line an account row shows: the last probe's failure, or —
+/// when a run error marked the account signed out with no probe behind it —
+/// the sign-out itself. `None` when the account has nothing to complain
+/// about. Shown BESIDE stale meters, never only when they are gone (a
+/// cached meter used to hide the sign-out). Pure.
+pub fn account_note(account: &AgentAccount) -> Option<String> {
+    account
+        .usage_error
+        .clone()
+        .or_else(|| signed_out(account).then(|| "Signed out — sign in again".to_string()))
+}
+
+/// The warning a switch to a signed-out account asks about first: the
+/// account may not work until it is signed in again. Pure.
+pub fn signed_out_switch_warning(account: &AgentAccount) -> String {
+    let who = account
+        .email
+        .clone()
+        .or_else(|| account.display_name.clone())
+        .unwrap_or_else(|| "This account".into());
+    format!(
+        "{who} is signed out. Switching to it now may not work — sign in \
+         again first, or switch anyway and sign in after."
+    )
+}
+
+/// The red-tinged "Signed out" pill a signed-out row carries — the mark
+/// that keeps a dead login from reading healthy beside green meters.
+pub(crate) fn badge_signed_out(theme: &Theme) -> gpui::Div {
+    let danger = theme.danger;
+    let danger_text = theme.danger_muted;
+    div()
+        .flex_none()
+        .px(px(8.0))
+        .py(px(2.0))
+        .rounded_full()
+        .bg(danger.opacity(0.12))
+        .text_size(crate::typography::ui_rems(10.5))
+        .text_color(danger_text.opacity(0.9))
+        .child(SharedString::from("Signed out"))
 }
 
 /// Usage meter columns (upstream accounts.rs): window label, a short bar,
@@ -462,6 +526,9 @@ pub struct AccountsPage {
     snapshot: Loadable<AgentAccountsSnapshot>,
     /// Account id with an in-flight Switch/Forget.
     busy_account: Option<String>,
+    /// A signed-out account whose Switch is asking for confirmation before
+    /// it becomes the CLI's login.
+    confirm_switch: Option<AgentAccount>,
     login: Option<LoginFlow>,
     error: Option<SharedString>,
     code_input: Entity<ComposerInput>,
@@ -488,6 +555,7 @@ impl AccountsPage {
             device_menu: popover::Popup::default(),
             snapshot: Loadable::Idle,
             busy_account: None,
+            confirm_switch: None,
             login: None,
             error: None,
             code_input,
@@ -528,6 +596,7 @@ impl AccountsPage {
         // device's cache is cold).
         self.login = None;
         self.busy_account = None;
+        self.confirm_switch = None;
         self.error = None;
         self.load(force_usage_for(LoadTrigger::Mount), cx);
     }
@@ -1023,6 +1092,11 @@ impl AccountsPage {
     /// Escape that reached Settings unclaimed cancels an open login first,
     /// so it never closes Settings under the dialog. Returns whether it did.
     pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.confirm_switch.is_some() {
+            self.confirm_switch = None;
+            cx.notify();
+            return true;
+        }
         if self.login.is_none() {
             return false;
         }
@@ -1133,6 +1207,10 @@ impl AccountsPage {
             .into();
         let switch_account = account.clone();
         let forget_account = account.clone();
+        let sign_in_account = account.clone();
+        // A signed-out account — marked, offered "Sign in again", and asked
+        // about before a Switch lands on it.
+        let is_signed_out = signed_out(account);
 
         let badges = div()
             .flex()
@@ -1144,38 +1222,48 @@ impl AccountsPage {
             })
             .when_some(account.plan_label.clone(), |el, plan| {
                 el.child(widgets::badge(theme, plan))
-            });
+            })
+            .when(is_signed_out, |el| el.child(badge_signed_out(theme)));
 
-        // Actions only on INACTIVE accounts (roboco `{!account.active && …}`):
+        // Actions on INACTIVE accounts (roboco `{!account.active && …}`):
         // an icon-only Forget (trash, hover → foreground) then Switch, which
-        // reads "Switching…" while the activate round-trips.
-        let actions: Option<gpui::Div> = (!account.active).then(|| {
+        // reads "Switching…" while the activate round-trips — plus "Sign in
+        // again" on any SIGNED-OUT row (active or not): it re-runs the
+        // provider's login flow for this account's provider group.
+        let actions: Option<gpui::Div> =
+            ((!account.active) || is_signed_out).then(|| {
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(4.0))
-                .child(
-                    div()
-                        .id(("account-forget", ix))
-                        .rounded(px(6.0))
-                        .px(px(6.0))
-                        .py(px(4.0))
-                        .text_color(theme.text_muted)
-                        .cursor_pointer()
-                        .when(is_busy, |el| el.opacity(0.5))
-                        .hover(|s| s.bg(crate::theme::ink(0.06)).text_color(theme.text))
-                        .tooltip(widgets::text_tooltip("Forget account"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.account_action(methods::FORGET_AGENT_ACCOUNT, &forget_account, cx);
-                        }))
-                        .child(
-                            crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
-                                .size(px(14.0))
-                                .text_color(theme.text_muted),
-                        ),
-                )
-                .when(account.switchable, |el| {
+                .when(!account.active, |el| {
+                    el.child(
+                        div()
+                            .id(("account-forget", ix))
+                            .rounded(px(6.0))
+                            .px(px(6.0))
+                            .py(px(4.0))
+                            .text_color(theme.text_muted)
+                            .cursor_pointer()
+                            .when(is_busy, |el| el.opacity(0.5))
+                            .hover(|s| s.bg(crate::theme::ink(0.06)).text_color(theme.text))
+                            .tooltip(widgets::text_tooltip("Forget account"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.account_action(
+                                    methods::FORGET_AGENT_ACCOUNT,
+                                    &forget_account,
+                                    cx,
+                                );
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    )
+                })
+                .when(!account.active && account.switchable, |el| {
                     el.child(
                         crate::popover::btn_primary(
                             theme,
@@ -1188,12 +1276,37 @@ impl AccountsPage {
                         .text_size(crate::typography::ui_rems(11.5))
                         .when(is_busy, |el| el.opacity(0.5))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.account_action(
-                                methods::ACTIVATE_AGENT_ACCOUNT,
-                                &switch_account,
-                                cx,
-                            );
+                            // A signed-out switch asks first: the account may
+                            // not work until it is signed in again.
+                            if signed_out(&switch_account) {
+                                this.confirm_switch = Some(switch_account.clone());
+                                cx.notify();
+                            } else {
+                                this.account_action(
+                                    methods::ACTIVATE_AGENT_ACCOUNT,
+                                    &switch_account,
+                                    cx,
+                                );
+                            }
                         })),
+                    )
+                })
+                .when(is_signed_out, |el| {
+                    el.child(
+                        crate::popover::btn_primary(theme, "Sign in again")
+                            .id(("account-sign-in-again", ix))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .rounded(px(6.0))
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .when(is_busy, |el| el.opacity(0.5))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_login(
+                                    sign_in_account.harness,
+                                    sign_in_option_for(&sign_in_account),
+                                    cx,
+                                );
+                            })),
                     )
                 })
         });
@@ -1235,41 +1348,63 @@ impl AccountsPage {
                         // Meters XOR the quiet fallback line — never both
                         // (roboco: `usage ? meters : "Usage unavailable"…`).
                         // The engine's probe reason replaces the bare shrug;
-                        // an unidentified login says so.
+                        // an unidentified login says so. A SIGNED-OUT account
+                        // keeps its reason beside the meters (the display
+                        // fix: stale meters used to hide the sign-out).
                         if account.usage_windows.is_empty() {
                             let note = if !account.switchable && switches_accounts(account.harness)
                             {
                                 match account.harness {
                                     // Keychain denied: the login is there, its secret isn't.
-                                    HarnessId::ClaudeCode => "Credentials unavailable",
+                                    HarnessId::ClaudeCode => "Credentials unavailable".to_string(),
                                     // An opaque token whose account couldn't be looked up.
-                                    _ => "Couldn't identify this login",
+                                    _ => "Couldn't identify this login".to_string(),
                                 }
-                            } else if let Some(reason) = &account.usage_error {
+                            } else if let Some(reason) = account_note(account) {
                                 // "Rate limited by Anthropic — retrying in 2m",
                                 // "Signed out — sign in again".
-                                reason.as_str()
+                                reason
                             } else if refreshing {
-                                "Checking usage…"
+                                "Checking usage…".to_string()
                             } else {
-                                "Usage unavailable"
+                                "Usage unavailable".to_string()
                             };
                             el.child(
                                 div()
                                     .mt(px(6.0))
                                     .truncate()
                                     .text_size(crate::typography::ui_rems(11.5))
-                                    .text_color(theme.text_muted.opacity(0.6))
+                                    .text_color(if is_signed_out {
+                                        theme.danger_muted.opacity(0.85)
+                                    } else {
+                                        theme.text_muted.opacity(0.6)
+                                    })
                                     .child(SharedString::from(note)),
                             )
                         } else {
                             el.child(
-                                div().mt(px(6.0)).flex().flex_col().gap(px(4.0)).children(
-                                    account
-                                        .usage_windows
-                                        .iter()
-                                        .map(|w| self.render_usage_meter(w, theme, now)),
-                                ),
+                                div().mt(px(6.0)).flex().flex_col().gap(px(4.0))
+                                    .children(
+                                        account
+                                            .usage_windows
+                                            .iter()
+                                            .map(|w| self.render_usage_meter(w, theme, now)),
+                                    )
+                                    // The reason line rides BELOW the meters,
+                                    // so a cached meter no longer hides it.
+                                    .when_some(account_note(account), |el, reason| {
+                                        el.child(
+                                            div()
+                                                .truncate()
+                                                .text_size(crate::typography::ui_rems(11.5))
+                                                .text_color(if is_signed_out {
+                                                    theme.danger_muted.opacity(0.85)
+                                                } else {
+                                                    theme.text_muted.opacity(0.6)
+                                                })
+                                                .child(SharedString::from(reason)),
+                                        )
+                                    }),
                             )
                         }
                     }),
@@ -1286,6 +1421,60 @@ impl AccountsPage {
                     .children(actions),
             )
             .into_any_element()
+    }
+
+    /// The "switch to a signed-out account" confirmation: Switch asks before
+    /// making a dead login the CLI's own. Confirm runs the activate; Cancel
+    /// (or Escape via [`Self::dismiss_on_escape`]) keeps the current account.
+    fn render_switch_confirm(
+        &mut self,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = Theme::of(cx).for_popup();
+        let account = self.confirm_switch.clone()?;
+        let warning = signed_out_switch_warning(&account);
+        let card = popover::dialog_card(&theme)
+            .w(px(400.0))
+            .gap(px(12.0))
+            .child(popover::dialog_title(&theme, "Switch to a signed-out account?"))
+            .child(popover::dialog_body(&theme, warning))
+            .child(
+                div()
+                    .mt(px(4.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "switch-sign-out-cancel")
+                            .id("switch-sign-out-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_switch = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        popover::btn_primary(&theme, "Switch anyway")
+                            .id("switch-sign-out-confirm")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let account = this.confirm_switch.take();
+                                if let Some(account) = account {
+                                    this.account_action(
+                                        methods::ACTIVATE_AGENT_ACCOUNT,
+                                        &account,
+                                        cx,
+                                    );
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        Some(popover::modal(
+            "account-switch-confirm",
+            viewport,
+            card.into_any_element(),
+        ))
     }
 
     fn render_login_dialog(
@@ -1565,7 +1754,9 @@ impl Render for AccountsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
-        let dialog = self.render_login_dialog(window.viewport_size(), cx);
+        let viewport = window.viewport_size();
+        let confirm = self.render_switch_confirm(viewport, cx);
+        let dialog = self.render_login_dialog(viewport, cx);
         let refreshing = matches!(self.snapshot, Loadable::Loading);
         let account_count = self
             .snapshot
@@ -1897,6 +2088,7 @@ impl Render for AccountsPage {
             )
             .children(scrollbar)
             .when_some(dialog, |el, dialog| el.child(dialog))
+            .when_some(confirm, |el, confirm| el.child(confirm))
     }
 }
 
@@ -1933,6 +2125,8 @@ mod tests {
             }],
             usage_fetched_at: None,
             usage_error: None,
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
             display_name: None,
             organization: None,
             auth_kind: None,
@@ -2056,6 +2250,8 @@ mod tests {
             usage_windows: vec![],
             usage_fetched_at: None,
             usage_error: None,
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
             display_name: None,
             organization: None,
             auth_kind: None,
@@ -2161,6 +2357,8 @@ mod tests {
             usage_windows: vec![],
             usage_fetched_at: None,
             usage_error: None,
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
             display_name: None,
             organization: None,
             auth_kind: None,
@@ -2216,5 +2414,126 @@ mod tests {
             message: None,
             error: None,
         }
+    }
+
+    // ---- sign-in state (ticket 08) ----
+
+    /// A harness account with the given sign-in state — the wire parses all
+    /// three states, and a payload from before the field existed is unknown.
+    fn state_account(sign_in_state: AgentSignInState) -> AgentAccount {
+        serde_json::from_value(serde_json::json!({
+            "id": "a1",
+            "harness": "claude-code",
+            "email": "user@example.com",
+            "planLabel": null,
+            "active": false,
+            "usageWindows": [],
+            "switchable": true,
+            "signInState": sign_in_state,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_a_signed_out_state_marks_the_account() {
+        assert!(!signed_out(&state_account(AgentSignInState::Unknown)));
+        assert!(!signed_out(&state_account(AgentSignInState::SignedIn)));
+        assert!(signed_out(&state_account(AgentSignInState::SignedOut)));
+        // A payload from before the field existed is unknown, never marked.
+        let legacy: AgentAccount = serde_json::from_value(serde_json::json!({
+            "id": "a1",
+            "harness": "claude-code",
+            "email": null,
+            "planLabel": null,
+            "active": true,
+            "usageWindows": [],
+            "switchable": true,
+        }))
+        .unwrap();
+        assert!(!signed_out(&legacy));
+    }
+
+    /// The reason line survives cached meters and exists even when no probe
+    /// failed (a run error marked the account signed out).
+    #[test]
+    fn the_note_shows_beside_meters_and_covers_run_error_marks() {
+        // A probe failure is the reason, whatever the state.
+        let mut account = state_account(AgentSignInState::SignedIn);
+        account.usage_error = Some("Rate limited by Anthropic — retrying in 2m".into());
+        assert_eq!(
+            account_note(&account).as_deref(),
+            Some("Rate limited by Anthropic — retrying in 2m")
+        );
+        // A signed-out account with no probe behind it still explains itself.
+        let account = state_account(AgentSignInState::SignedOut);
+        assert_eq!(
+            account_note(&account).as_deref(),
+            Some("Signed out — sign in again")
+        );
+        // A healthy account has nothing to say.
+        assert_eq!(account_note(&state_account(AgentSignInState::SignedIn)), None);
+        assert_eq!(account_note(&state_account(AgentSignInState::Unknown)), None);
+    }
+
+    #[test]
+    fn the_switch_warning_names_the_signed_out_account() {
+        let account = state_account(AgentSignInState::SignedOut);
+        assert!(signed_out_switch_warning(&account).contains("user@example.com is signed out"));
+        let mut unnamed = state_account(AgentSignInState::SignedOut);
+        unnamed.email = None;
+        unnamed.display_name = None;
+        assert!(signed_out_switch_warning(&unnamed).starts_with("This account is signed out"));
+    }
+
+    /// "Sign in again" signs in to the account's own provider group, or the
+    /// agent's only login when it isn't a per-provider one.
+    #[test]
+    fn sign_in_again_targets_the_accounts_provider_group() {
+        let mut opencode = state_account(AgentSignInState::SignedOut);
+        opencode.harness = HarnessId::Opencode;
+        opencode.provider = Some("openai".into());
+        assert_eq!(sign_in_option_for(&opencode), Some("openai"));
+        opencode.provider = Some("github-copilot".into());
+        assert_eq!(sign_in_option_for(&opencode), Some("github-copilot"));
+        // Single-login agents: the agent's own (only) sign-in.
+        let claude = state_account(AgentSignInState::SignedOut);
+        assert_eq!(sign_in_option_for(&claude), None);
+        assert_eq!(claude.provider, None);
+    }
+
+    /// A signed-out row renders: the mark beside the meters, the reason under
+    /// them, and the Sign in again action — even on the ACTIVE account (the
+    /// common run-error case). Draw-level smoke; the state transitions are
+    /// the pure tests above.
+    #[gpui::test]
+    fn a_signed_out_row_renders_its_mark_and_reason(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let window = cx.add_window(|window, cx| {
+            let state = cx.new(|_| AppState::new());
+            AccountsPage::new(state, cx)
+        });
+        // Active, signed out, with STALE meters — the display-bug shape.
+        let mut account = state_account(AgentSignInState::SignedOut);
+        account.active = true;
+        account.usage_windows = vec![roboco_proto::AgentUsageWindow {
+            label: "Session".into(),
+            used_fraction: 0.4,
+            resets_at: None,
+        }];
+        account.usage_error = Some("Signed out — sign in again".into());
+        window
+            .update(cx, |page, _, cx| {
+                page.snapshot = Loadable::Ready(AgentAccountsSnapshot {
+                    accounts: vec![account],
+                    warnings: vec![],
+                });
+                assert!(page.confirm_switch.is_none());
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
     }
 }

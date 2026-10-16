@@ -712,6 +712,7 @@ mod tests {
             device_id: "d".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }
@@ -993,6 +994,7 @@ mod composer_tests {
             device_id: "d".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }

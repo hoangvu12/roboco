@@ -148,6 +148,7 @@ function account(
     email: null,
     planLabel: null,
     usageWindows: [],
+    signInState: "unknown",
     ...fields,
   };
 }

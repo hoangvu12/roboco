@@ -3,6 +3,7 @@
 import type { AgentErrorKind } from "./AgentErrorKind";
 import type { DoneStatus } from "./DoneStatus";
 import type { HarnessId } from "./HarnessId";
+import type { ProviderTurnRef } from "./ProviderTurnRef";
 import type { SlashCommand } from "./SlashCommand";
 import type { ToolCall } from "./ToolCall";
 import type { ToolDiff } from "./ToolDiff";
@@ -33,4 +34,4 @@ diff?: ToolDiff | null, } | { "type": "contextUsage", tokens: number | null, win
  * the wire (ADR 0005): `None` (and a missing key) for every
  * unclassified error, so older payloads and clients are unchanged.
  */
-kind?: AgentErrorKind | null, } | { "type": "inputRequested", requestId: string, questions: Array<UserInputQuestion>, } | { "type": "inputResolved", requestId: string, } | { "type": "steered", assistantMessageId: string | null, nextAssistantMessageId: string | null, } | { "type": "done", status: DoneStatus, result: string | null, error: string | null, sessionId: string | null, } | { "type": "userMessage", text: string, } | { "type": "subagent", parentToolUseId: string, event: AgentEvent, };
+kind?: AgentErrorKind | null, } | { "type": "inputRequested", requestId: string, questions: Array<UserInputQuestion>, } | { "type": "inputResolved", requestId: string, } | { "type": "steered", assistantMessageId: string | null, nextAssistantMessageId: string | null, } | { "type": "done", status: DoneStatus, result: string | null, error: string | null, sessionId: string | null, } | { "type": "userMessage", text: string, } | { "type": "turnRef", reference: ProviderTurnRef, } | { "type": "subagent", parentToolUseId: string, event: AgentEvent, };
