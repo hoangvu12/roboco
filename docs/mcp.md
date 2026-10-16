@@ -127,6 +127,27 @@ transcript instead — while a pick of the source's own harness keeps the
 native fork. A source chat that hit a usage limit can still be forked into
 another harness this way.
 
+An additive `agentOrigin` (ticket 23) rides the same RPC when a chat's agent
+forks through the `fork_chat` MCP tool: `{ chatId, notify }` marks the copy
+agent-created, the durable row the engine's completion notices key on
+(`notify: false` is the opt-out). The assignment replaces anything the source
+row carried, so forks made without it — the UI, the web client, a terminal —
+stay user-made and never notify, even when the source itself was
+agent-created.
+
+The `fork_chat` MCP tool drives the same RPC for agents. Its source defaults
+to the calling chat; `reply` is the boundary entry id; `harness` and `model`
+are validated against this engine's catalogs before the RPC (the source's own
+harness stays pickable even when its CLI is gone, mirroring the fork dialog);
+`title`, `prompt`, `wait` and `timeout_secs` behave like `create_chat`'s. The
+copy hangs under the calling chat — `create_chat`'s parent rule, so the fork
+is the agent's side chat and owes it the notices — while a terminal without
+an origin uses the UI's placement: the source, or the source's parent when
+the source is itself a side chat, so the copy lists as a sibling. A first
+prompt baselines its wait on the copied transcript, so a wait reports the
+fork's own replies, never the copied history. Side chats cannot call it, the
+same refusal `create_chat` gives.
+
 ## Tools
 
 Chats are referenced by full id, a unique id prefix, or an exact title.
@@ -145,6 +166,7 @@ name (default: the local engine's device — the engine is device-local, so a
 | `get_chat`         | above + `WatchDocMessages` opening frame (pending input)  |
 | `create_chat`      | `Mutate createChat` (+ `renameChat`; optional first send) |
 | `create_chats`     | Concurrent `create_chat` requests with per-request results |
+| `fork_chat`        | `ForkSideChat` (+ `renameChat`; optional first send)      |
 | `send_messages`    | Concurrent `send_message` requests with per-request results |
 | `read_chat`        | `WatchDocMessages` opening `reset` frame, rendered        |
 | `send_message`     | `QueueCommand` Run / Steer, or `QueueMessage`             |

@@ -1601,6 +1601,16 @@ impl RpcService for EngineRpc {
                     /// run time) is all the copy gets.
                     #[serde(default)]
                     model: Option<String>,
+                    /// Agent-made fork (t3-orchestration-v2 ticket 23, the
+                    /// `fork_chat` MCP tool): the chat whose agent forked
+                    /// this one and whether it wants completion notices
+                    /// (default on). The assignment REPLACES whatever the
+                    /// source row carried, so a user-made fork — the UI, the
+                    /// web client, a terminal — is never marked and never
+                    /// notifies, even when the source itself was
+                    /// agent-created (ticket 11's rule).
+                    #[serde(default)]
+                    agent_origin: Option<roboco_proto::AgentOrigin>,
                 }
                 let p: ForkParams = parse_params(params)?;
                 let parent_chat_id = p
@@ -1723,6 +1733,12 @@ impl RpcService for EngineRpc {
                 chat.harness_session_id = None;
                 chat.harness_session_cwd = None;
                 chat.room_gen = Some(2);
+                // Ticket 23: an agent-made fork records its creator and
+                // notify flag — the durable row the engine's completion
+                // notices key on. The plain assignment also strips any
+                // origin the source row carried, so a fork nobody marked
+                // for the agent stays user-made and never notifies.
+                chat.agent_origin = p.agent_origin;
                 // Ticket 22's override on the row's run config. A
                 // cross-harness fork keeps only harness-agnostic settings:
                 // the sandbox. Model, reasoning and model options are ids in

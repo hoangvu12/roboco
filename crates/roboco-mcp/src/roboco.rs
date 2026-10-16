@@ -343,6 +343,18 @@ impl Roboco {
             .to_owned())
     }
 
+    /// Fork a chat into a new side chat through the same RPC the UI's fork
+    /// button uses (t3-orchestration-v2 ticket 23, the `fork_chat` tool):
+    /// the copy carries the source's transcript up to the boundary and,
+    /// where the harness supports it, the native-fork intent. An
+    /// `agentOrigin` in `params` marks an agent-made fork (the creator and
+    /// its notify flag — the row completion notices key on); a user fork
+    /// sends none and never notifies.
+    pub async fn fork_side_chat(&self, params: Value) -> anyhow::Result<Chat> {
+        let reply = self.call(methods::FORK_SIDE_CHAT, params).await?;
+        serde_json::from_value(reply).context("ForkSideChat: unexpected shape")
+    }
+
     /// Report that the calling chat (`origin_chat_id`) observed `chat_id`
     /// after its last outcome happened — through `wait_for_turn`, a send
     /// with wait, `read_chat` or `get_chat` (ticket 14). Completion-notice

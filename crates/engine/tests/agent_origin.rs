@@ -364,6 +364,154 @@ async fn user_created_chats_are_never_marked_agent_created() {
     core.shutdown().await;
 }
 
+/// A source chat with one settled turn, so the fork RPC has a boundary to
+/// copy through.
+fn settled_turn(core: &EngineCore, chat: &str) {
+    let doc = core.doc_host.open(chat).expect("chat doc");
+    for (id, role, text) in [
+        ("u1", MessageRole::User, "remember this"),
+        ("a1", MessageRole::Assistant, "noted"),
+    ] {
+        doc.doc()
+            .push_message(&SessionMessageEntry {
+                origin_chat_id: None,
+                id: id.into(),
+                role,
+                parts: vec![MessagePart::Text {
+                    id: format!("t-{id}"),
+                    text: text.into(),
+                }],
+                created_at: 1,
+                device_id: core.device_id.clone(),
+                status: Some(roboco_doc::MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+                provider_turn: None,
+            })
+            .expect("push entry");
+    }
+}
+
+/// An agent-made fork (the `fork_chat` MCP tool, ticket 23) stamps the
+/// creator and notify flag on the copy — the row completion notices key on
+/// — while a fork RPC without an `agentOrigin` stays user-made and never
+/// notifies, even when the source row itself was agent-created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_made_forks_notify_and_user_forks_stay_plain() {
+    let (core, harness, _prompts, _data_dir) = setup(SteeringMode::StepBoundary);
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            roboco_rpc::methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": "fork-source",
+                "deviceId": core.device_id,
+            }),
+        )
+        .await
+        .expect("createChat");
+    settled_turn(&core, "fork-source");
+
+    // An agent fork: the agentOrigin param rides the RPC (notify omitted
+    // reads as on, notify: false opts out), and the copy hangs under the
+    // creator the tool names.
+    let fork = client
+        .call_as::<roboco_proto::Chat>(
+            roboco_rpc::methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "agent-fork-on",
+                "sourceChatId": "fork-source",
+                "parentChatId": PARENT,
+                "agentOrigin": { "chatId": PARENT },
+            }),
+        )
+        .await
+        .expect("agent fork");
+    assert_eq!(
+        fork.agent_origin,
+        Some(roboco_proto::AgentOrigin {
+            chat_id: PARENT.into(),
+            notify: true,
+        })
+    );
+    client
+        .call(
+            roboco_rpc::methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "agent-fork-off",
+                "sourceChatId": "fork-source",
+                "parentChatId": PARENT,
+                "agentOrigin": { "chatId": PARENT, "notify": false },
+            }),
+        )
+        .await
+        .expect("agent fork");
+    for (chat, notify) in [("agent-fork-on", true), ("agent-fork-off", false)] {
+        let row = core.workspace.chat(chat).unwrap().unwrap();
+        assert_eq!(
+            row.agent_origin,
+            Some(roboco_proto::AgentOrigin {
+                chat_id: PARENT.into(),
+                notify,
+            }),
+            "{chat} records its creator and notify flag"
+        );
+        assert_eq!(row.parent_chat_id.as_deref(), Some(PARENT));
+    }
+
+    // A fork without the param (the UI's fork button): user-made, hanging
+    // under the source as always.
+    client
+        .call(
+            roboco_rpc::methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "ui-fork", "sourceChatId": "fork-source" }),
+        )
+        .await
+        .expect("ui fork");
+    let row = core.workspace.chat("ui-fork").unwrap().unwrap();
+    assert_eq!(row.agent_origin, None);
+    assert_eq!(row.parent_chat_id.as_deref(), Some("fork-source"));
+
+    // The strip: a USER fork of an agent-created side chat is not marked,
+    // even though the source row carried an origin (ticket 11 — user forks
+    // never notify).
+    client
+        .call(
+            roboco_rpc::methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": "agent-side",
+                "deviceId": core.device_id,
+                "parentChatId": PARENT,
+                "agentOrigin": { "chatId": PARENT },
+            }),
+        )
+        .await
+        .expect("createChat");
+    settled_turn(&core, "agent-side");
+    client
+        .call(
+            roboco_rpc::methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "user-sibling",
+                "sourceChatId": "agent-side",
+                "parentChatId": PARENT,
+            }),
+        )
+        .await
+        .expect("sibling fork");
+    let row = core.workspace.chat("user-sibling").unwrap().unwrap();
+    assert_eq!(
+        row.agent_origin, None,
+        "a user fork never inherits the source's agent origin"
+    );
+    assert_eq!(row.parent_chat_id.as_deref(), Some(PARENT));
+
+    let _ = harness.finish.send(());
+    core.shutdown().await;
+}
+
 /// A Run command sent by a chat through the Roboco MCP surface carries its
 /// origin on the ledger row AND on the user message entry it writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
