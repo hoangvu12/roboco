@@ -30,7 +30,13 @@
 //!   is unbounded: pi's preflight (extensions, the Roboco MCP bridge,
 //!   compaction) may take arbitrarily long, and only Stop interrupts it. A
 //!   rejected prompt never ends the session — the message returns to the
-//!   driver queue and the rejection surfaces. A mid-run steer carries its
+//!   driver queue and the rejection surfaces. Delivery tracking keeps one
+//!   FIFO record per original input, created when the input goes out (the
+//!   acknowledgement is never a consumption receipt, upstream PROTOCOL.md):
+//!   a consumed user `message_start` echo pops the oldest record and emits
+//!   its `Steered` boundary — whichever of the echo or the
+//!   started/handled acknowledgement processes first consumes the record,
+//!   so a burst is never short a boundary. A mid-run steer carries its
 //!   staged images inline, exactly like a turn-start prompt. Pi is a
 //!   STEP-BOUNDARY harness (the engine registry descriptor agrees): the
 //!   steering mode is set to `"all"` at session start unless the user
@@ -774,15 +780,41 @@ const EOF_DRAIN: Duration = Duration::from_millis(50);
 
 /// A mid-run steer in flight: the mailbox message and its `prompt`
 /// acknowledgement.
-type SteerCall = BoxFuture<'static, (SteerMessage, Result<Value, HarnessError>)>;
+type SteerCall = BoxFuture<'static, (u64, SteerMessage, Result<Value, HarnessError>)>;
 
 /// One armed prompt: its acceptance future and the mailbox message it
 /// delivers (None = the run's own first prompt). The pair always travels
 /// together — the message is owed a `Steered` boundary once pi accepts the
-/// prompt, and returns to the queue if pi rejects it.
+/// prompt, and returns to the queue if pi rejects it. `delivery` names the
+/// [`DeliveryRecord`] the arming created, so the acknowledgement (or a
+/// rejection) can retire it.
 struct Armed {
     acceptance: BoxFuture<'static, Result<Value, HarnessError>>,
     message: Option<SteerMessage>,
+    delivery: Option<u64>,
+}
+
+/// One FIFO delivery record per original input sent to pi (upstream
+/// PROTOCOL.md: neither the prompt ACK nor `queue_update` is a consumption
+/// receipt). The record is created when the input GOES OUT, so a user
+/// message echo that races its acknowledgement still consumes it — the
+/// driver's select may process the echo before the ready acceptance
+/// future. Whoever consumes the record first — the echo, or the
+/// Started/Handled acknowledgement that confirms delivery at acceptance —
+/// emits the one `Steered` boundary the input owes; a record pi never
+/// consumes (a steer stranded in its queue at settle) is retired by
+/// clear_queue and re-delivered as the next turn's prompt.
+struct DeliveryRecord {
+    id: u64,
+    text: String,
+}
+
+/// Retire `id`'s delivery record; `true` when it was still pending (the
+/// boundary it owes has not been emitted at the echo yet).
+fn retire_delivery(records: &mut VecDeque<DeliveryRecord>, id: u64) -> bool {
+    let before = records.len();
+    records.retain(|record| record.id != id);
+    before != records.len()
 }
 
 /// pi's answer to a `prompt`: what became of it. Pi ≥ 0.99 reports
@@ -1086,10 +1118,13 @@ async fn run_session(session: Session) {
     // Agent activity since the last settle (extension-initiated runs deliver
     // output with no prompt of ours; their settle still emits a Done).
     let mut saw_activity = false;
-    // Mailbox prompts accepted into pi's steer queue (disposition `queued`,
-    // or an acknowledgement without one on pi < 0.99) whose delivery pi
-    // confirms with a user message echo — the consumed signal.
-    let mut pending_echo_deliveries: usize = 0;
+    // FIFO delivery records for the mailbox inputs sent to pi — the
+    // consumption ledger behind the `Steered` boundaries. One record per
+    // original input, created when it goes out (not when pi acknowledges
+    // it), so an echo racing its acknowledgement still consumes it.
+    let mut sent_deliveries: VecDeque<DeliveryRecord> = VecDeque::new();
+    // The delivery-record id sequence.
+    let mut delivery_seq: u64 = 0;
     let mut steer_calls: FuturesUnordered<SteerCall> = FuturesUnordered::new();
     // Messages the driver itself owns — rejected by pi, stranded in pi's
     // queue at settle, or queued while the settle probe winds down —
@@ -1135,6 +1170,7 @@ async fn run_session(session: Session) {
     let mut armed = Some(Armed {
         acceptance: prompt_acceptance(&client, &request.prompt, images),
         message: None,
+        delivery: None,
     });
     // Whether the current acceptance cycle has already spent its one
     // immediate at-rest re-delivery of a rejected message: a pi that keeps
@@ -1160,7 +1196,13 @@ async fn run_session(session: Session) {
             ), if exit_drain_deadline.is_some() => break 'main,
 
             res = async { (&mut armed.as_mut().expect("guarded by if").acceptance).await }, if armed.is_some() => {
-                let Armed { message: mailbox, .. } = armed.take().expect("guarded by if");
+                let Armed { message: mailbox, delivery, .. } =
+                    armed.take().expect("guarded by if");
+                // The delivery record this prompt created (None = the run's
+                // own first prompt, whose echo is the awaiting one).
+                // Started/Handled retire it — the boundary fires here only
+                // when the echo has not consumed the record yet: the record
+                // is the single owner of the one `Steered` each input owes.
                 match res {
                     Ok(data) => {
                         // A prompt acknowledgement bumps the settle
@@ -1176,8 +1218,11 @@ async fn run_session(session: Session) {
                                 // A run began: it streams until
                                 // agent_settled, where the settle probe
                                 // takes over. A mailbox message is delivered
-                                // at acceptance.
-                                if mailbox.is_some()
+                                // at acceptance — unless its echo already
+                                // consumed the record (the processing race).
+                                let retired = delivery
+                                    .is_some_and(|id| retire_delivery(&mut sent_deliveries, id));
+                                if retired
                                     && !confirm_delivery(
                                         &event_tx,
                                         &mut assistant_message_id,
@@ -1186,17 +1231,20 @@ async fn run_session(session: Session) {
                                 {
                                     break 'main;
                                 }
-                                awaiting_prompt_echo = true;
+                                // Only when the boundary fired here does the
+                                // run's own user echo become the awaiting
+                                // one; otherwise the echo already delivered.
+                                awaiting_prompt_echo |= retired;
                                 run_active = true;
                             }
                             Disposition::Queued => {
-                                // Accepted into pi steer queue: delivery
-                                // (and the boundary) land at the user
-                                // message echo; a strand is recovered by the
+                                // Accepted into pi steer queue: the delivery
+                                // record stays — the user message echo
+                                // consumes it (the delivery signal), in
+                                // whatever order the acknowledgement
+                                // processes. A strand is recovered by the
                                 // settle probe clear_queue.
-                                if mailbox.is_some() {
-                                    pending_echo_deliveries += 1;
-                                }
+                                //
                                 // The run own first prompt queued behind an
                                 // extension run: awaiting_prompt_echo
                                 // already covers its echo.
@@ -1207,7 +1255,9 @@ async fn run_session(session: Session) {
                                 // extension command): the boundary is owed
                                 // now, and the turn ends once pi reports it
                                 // is not streaming.
-                                if mailbox.is_some()
+                                let retired = delivery
+                                    .is_some_and(|id| retire_delivery(&mut sent_deliveries, id));
+                                if retired
                                     && !confirm_delivery(
                                         &event_tx,
                                         &mut assistant_message_id,
@@ -1230,7 +1280,9 @@ async fn run_session(session: Session) {
                                 // probe (after a grace, so a starting run
                                 // can flip isStreaming) ends the turn if
                                 // nothing runs.
-                                if mailbox.is_some()
+                                let retired = delivery
+                                    .is_some_and(|id| retire_delivery(&mut sent_deliveries, id));
+                                if retired
                                     && !confirm_delivery(
                                         &event_tx,
                                         &mut assistant_message_id,
@@ -1239,7 +1291,7 @@ async fn run_session(session: Session) {
                                 {
                                     break 'main;
                                 }
-                                awaiting_prompt_echo = true;
+                                awaiting_prompt_echo |= retired;
                                 if probe.is_none() {
                                     probe_generation = generation;
                                     probe = Some(rearm_probe(&client, true));
@@ -1254,7 +1306,13 @@ async fn run_session(session: Session) {
                             // returns to the queue, and it re-delivers once
                             // the turn ends — immediately when the session
                             // is already at rest, else after the probe
-                            // closes the turn.
+                            // closes the turn. The delivery record retires
+                            // without a boundary: pi never consumed this
+                            // input, so the engine at-least-once ledger
+                            // keeps its entry until the re-delivery.
+                            if let Some(id) = delivery {
+                                retire_delivery(&mut sent_deliveries, id);
+                            }
                             let _ = send(
                                 &event_tx,
                                 AgentEvent::Error {
@@ -1278,6 +1336,8 @@ async fn run_session(session: Session) {
                                     && !deliver_parked_steer(
                                         &client,
                                         &mut armed,
+                                        &mut sent_deliveries,
+                                        &mut delivery_seq,
                                         &mut awaiting_prompt_echo,
                                         &mut run_active,
                                         &mut done_current,
@@ -1341,10 +1401,18 @@ async fn run_session(session: Session) {
                         // pi is idle yet still held messages (steers
                         // stranded by the settle race): they were cleared
                         // and re-queue, in send order, as the next turn's
-                        // prompts.
+                        // prompts. Their delivery records retire — pi will
+                        // never echo them — so the re-delivery's own echo
+                        // consumes the fresh records it creates.
                         probe_failures = 0;
-                        pending_echo_deliveries =
-                            pending_echo_deliveries.saturating_sub(texts.len());
+                        for text in &texts {
+                            if let Some(pos) = sent_deliveries
+                                .iter()
+                                .position(|record| record.text == *text)
+                            {
+                                sent_deliveries.remove(pos);
+                            }
+                        }
                         for text in texts.into_iter().rev() {
                             driver_steers.push_front(SteerMessage::text(text));
                         }
@@ -1402,6 +1470,8 @@ async fn run_session(session: Session) {
                                 && !deliver_parked_steer(
                                     &client,
                                     &mut armed,
+                                    &mut sent_deliveries,
+                                    &mut delivery_seq,
                                     &mut awaiting_prompt_echo,
                                     &mut run_active,
                                     &mut done_current,
@@ -1450,7 +1520,7 @@ async fn run_session(session: Session) {
             },
 
             res = steer_calls.next(), if !steer_calls.is_empty() => match res {
-                Some((msg, res)) => match res {
+                Some((delivery, msg, res)) => match res {
                     Ok(data) => {
                         // The steer acknowledgement bumps the settle
                         // generation: a probe whose reading predates it must
@@ -1461,38 +1531,49 @@ async fn run_session(session: Session) {
                             Disposition::Started => {
                                 // The steer raced the run end and pi started
                                 // a run with it: delivered now, and the run
-                                // streams to its own settle.
-                                if !confirm_delivery(
-                                    &event_tx,
-                                    &mut assistant_message_id,
-                                )
-                                .await
+                                // streams to its own settle — unless its
+                                // echo already consumed the record (the
+                                // processing race).
+                                let retired =
+                                    retire_delivery(&mut sent_deliveries, delivery);
+                                if retired
+                                    && !confirm_delivery(
+                                        &event_tx,
+                                        &mut assistant_message_id,
+                                    )
+                                    .await
                                 {
                                     break 'main;
                                 }
+                                // The started run's own user echo is the
+                                // awaiting one — it must not consume the
+                                // next queued steer's record.
+                                awaiting_prompt_echo |= retired;
                                 run_active = true;
                             }
                             Disposition::Queued => {
-                                // Accepted into pi steer queue: the boundary
-                                // lands at the user message echo.
-                                pending_echo_deliveries += 1;
+                                // Accepted into pi steer queue: the delivery
+                                // record stays — the user message echo
+                                // consumes it, in whatever order this
+                                // acknowledgement processes.
                             }
                             Disposition::Handled => {
                                 // pi handled it without starting a run: the
-                                // message is delivered.
-                                if !confirm_delivery(
-                                    &event_tx,
-                                    &mut assistant_message_id,
-                                )
-                                .await
+                                // message is delivered, at acceptance unless
+                                // an echo already consumed the record.
+                                if retire_delivery(&mut sent_deliveries, delivery)
+                                    && !confirm_delivery(
+                                        &event_tx,
+                                        &mut assistant_message_id,
+                                    )
+                                    .await
                                 {
                                     break 'main;
                                 }
                             }
                             Disposition::Unknown => {
                                 // pi < 0.99: delivery lands at the echo, if
-                                // one ever comes.
-                                pending_echo_deliveries += 1;
+                                // one ever comes — the record stays for it.
                             }
                         }
                     },
@@ -1504,7 +1585,11 @@ async fn run_session(session: Session) {
                         // the queue — it re-delivers once the turn ends
                         // (immediately when the session is already at
                         // rest, else when the settle probe closes the
-                        // turn).
+                        // turn). The delivery record retires without a
+                        // boundary: pi never consumed this input, so the
+                        // engine at-least-once ledger keeps its entry until
+                        // the re-delivery.
+                        retire_delivery(&mut sent_deliveries, delivery);
                         let _ = send(
                             &event_tx,
                             AgentEvent::Error {
@@ -1528,6 +1613,8 @@ async fn run_session(session: Session) {
                                 && !deliver_parked_steer(
                                     &client,
                                     &mut armed,
+                                    &mut sent_deliveries,
+                                    &mut delivery_seq,
                                     &mut awaiting_prompt_echo,
                                     &mut run_active,
                                     &mut done_current,
@@ -1566,14 +1653,19 @@ async fn run_session(session: Session) {
                             if role == Some("assistant") {
                                 tracker.reset();
                             } else if role == Some("user") {
-                                // Our prompt's own echo, or a queued steer's
-                                // delivery out of pi's queue.
+                                // Our prompt's own echo, or a queued input's
+                                // delivery out of pi's queue (upstream
+                                // PROTOCOL.md: message_start for each
+                                // consumed user input emits its own
+                                // Steered; the ACK and queue_update are
+                                // never consumption receipts).
                                 if awaiting_prompt_echo {
                                     awaiting_prompt_echo = false;
-                                } else if pending_echo_deliveries > 0 {
-                                    // A queued steer's consumed signal: its
-                                    // user echo is what delivers it.
-                                    pending_echo_deliveries -= 1;
+                                } else if sent_deliveries.pop_front().is_some() {
+                                    // The consumed signal: this echo
+                                    // delivers the oldest record — whether
+                                    // or not its acknowledgement has been
+                                    // processed yet.
                                     if !confirm_delivery(
                                         &event_tx,
                                         &mut assistant_message_id,
@@ -1879,7 +1971,13 @@ async fn run_session(session: Session) {
                         // staged attachments inline as images, exactly like
                         // a turn-start prompt.
                         generation += 1; // the prompt goes out
-                        steer_calls.push(steer_request(&client, msg));
+                        delivery_seq += 1;
+                        let delivery = delivery_seq;
+                        sent_deliveries.push_back(DeliveryRecord {
+                            id: delivery,
+                            text: msg.prompt.clone(),
+                        });
+                        steer_calls.push(steer_request(&client, msg, delivery));
                     } else if probe.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
                         // The settle probe or a steer acknowledgement is
                         // still winding down: FIFO behind it.
@@ -1888,6 +1986,8 @@ async fn run_session(session: Session) {
                         if !deliver_parked_steer(
                             &client,
                             &mut armed,
+                            &mut sent_deliveries,
+                            &mut delivery_seq,
                             &mut awaiting_prompt_echo,
                             &mut run_active,
                             &mut done_current,
@@ -2042,11 +2142,12 @@ fn prompt_acceptance(
 
 /// One mid-run steer: the same `prompt` with steer behavior (pi queues it
 /// while streaming and starts a run when idle). Carries the mailbox
-/// message so a rejection can hand it back to the queue verbatim, and
-/// stages the message's attachments as inline images — a steer delivers
-/// its images exactly like a turn-start prompt (the path refs ride the
-/// text as a fallback either way).
-fn steer_request(client: &PiClient, msg: SteerMessage) -> SteerCall {
+/// message so a rejection can hand it back to the queue verbatim, its
+/// delivery-record id so the acknowledgement (or a rejection) can retire
+/// it, and stages the message's attachments as inline images — a steer
+/// delivers its images exactly like a turn-start prompt (the path refs
+/// ride the text as a fallback either way).
+fn steer_request(client: &PiClient, msg: SteerMessage, delivery: u64) -> SteerCall {
     let client = client.clone();
     Box::pin(async move {
         let images = load_image_contents(&msg.attachments).await;
@@ -2058,7 +2159,7 @@ fn steer_request(client: &PiClient, msg: SteerMessage) -> SteerCall {
             params["images"] = Value::Array(images);
         }
         let result = client.request("prompt", params).await;
-        (msg, result)
+        (delivery, msg, result)
     })
 }
 
@@ -2090,6 +2191,8 @@ async fn confirm_delivery(
 async fn deliver_parked_steer(
     client: &PiClient,
     armed: &mut Option<Armed>,
+    sent_deliveries: &mut VecDeque<DeliveryRecord>,
+    delivery_seq: &mut u64,
     awaiting_prompt_echo: &mut bool,
     run_active: &mut bool,
     done_current: &mut bool,
@@ -2102,9 +2205,19 @@ async fn deliver_parked_steer(
         let _ = configure_live(client, next).await;
     }
     let images = load_image_contents(&msg.attachments).await;
+    // The delivery record is created when the input goes out: pi's echo
+    // consumes it whether or not the acknowledgement has been processed
+    // yet (upstream PROTOCOL.md: the ACK is not a consumption receipt).
+    *delivery_seq += 1;
+    let delivery = *delivery_seq;
+    sent_deliveries.push_back(DeliveryRecord {
+        id: delivery,
+        text: msg.prompt.clone(),
+    });
     *armed = Some(Armed {
         acceptance: prompt_acceptance(client, &msg.prompt, images),
         message: Some(msg),
+        delivery: Some(delivery),
     });
     // Set per disposition once pi answers: a started run echoes its own
     // user message; a queued acceptance delivers at the echo instead.
