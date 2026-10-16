@@ -71,10 +71,13 @@ pub mod methods {
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
     /// Fork a chat into a side chat: copies the source's completed history,
     /// appends the `fork` seam, and lists the copy under its parent.
-    /// Params `{chatId, sourceChatId, parentChatId?, boundary?}` → `Chat`;
-    /// `boundary` (t3-orchestration-v2 ticket 21) names the assistant entry
-    /// to fork at — any settled reply, not just the latest complete one —
-    /// and the copy stops there, inclusive.
+    /// Params `{chatId, sourceChatId, parentChatId?, boundary?, harness?,
+    /// model?}` → `Chat`; `boundary` (t3-orchestration-v2 ticket 21) names
+    /// the assistant entry to fork at — any settled reply, not just the
+    /// latest complete one — and the copy stops there, inclusive;
+    /// `harness`/`model` (ticket 22) override what the copy runs on — a
+    /// different harness takes the budgeted-transcript path instead of a
+    /// native session fork, the same harness keeps it.
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
