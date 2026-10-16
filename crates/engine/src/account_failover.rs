@@ -102,9 +102,10 @@ pub(crate) async fn candidates(
                 .and_then(|row| row.limit.as_ref())
                 .and_then(|limit| limit.account_id.clone());
             if failover_supported(harness) {
+                let candidates = accounts.failover_candidates(harness, limited.as_deref()).await;
                 (
                     limited,
-                    accounts.failover_candidates(harness, limited.as_deref()).await,
+                    candidates,
                     // The dead logins the picker offers "Sign in again"
                     // for (stories 47/50) — listed, never switched to.
                     accounts.failover_signed_out(harness).await,
@@ -227,7 +228,7 @@ async fn attempt(
                             .into(),
                     );
                 };
-                ranked.remove(at)
+                Some(ranked.remove(at))
             }
             None => ranked.first().cloned(),
         };
@@ -358,6 +359,7 @@ fn dispatch_continuation(
             message_id: new_id(),
         },
     )
+    .map(drop)
     .map_err(|err| err.to_string())
 }
 
