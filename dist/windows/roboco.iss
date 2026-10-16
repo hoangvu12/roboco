@@ -69,8 +69,9 @@ RestartApplications=no
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+; roboco.exe embeds the Tailcat adapter (crates/engine/build.rs); no
+; companion executable ships beside it.
 Source: "{#PackageDir}\roboco.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\roboco-tailcat.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\roboco-update.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -90,6 +91,11 @@ Root: HKCU; Subkey: "Software\Classes\roboco\shell\open\command"; ValueType: str
 
 [Run]
 Filename: "{app}\roboco.exe"; Description: "{cm:LaunchProgram,Roboco}"; Flags: nowait postinstall skipifsilent
+
+[InstallDelete]
+; The companion adapter older installers placed beside roboco.exe; the
+; embedded copy replaces it.
+Type: files; Name: "{app}\roboco-tailcat.exe"
 
 [UninstallDelete]
 ; Leftovers of in-app updates (crates/update/src/windows.rs).

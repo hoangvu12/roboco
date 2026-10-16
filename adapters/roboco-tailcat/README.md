@@ -17,11 +17,15 @@ closes; both the Go adapter and Rust launcher use this Roboco-owned flag.
 Build from this directory with Go 1.27.1 or `GOTOOLCHAIN=auto`:
 
 ```sh
-CGO_ENABLED=0 go build -mod=readonly -trimpath -o ../../target/roboco-tailcat ./cmd/roboco-tailcat
 CGO_ENABLED=0 go test -mod=readonly ./...
 ```
 
+For a source build of the desktop, `cargo xtask tailcat-adapter [--release]`
+builds it beside `target/<debug|release>/roboco[.exe]`, where the engine looks.
+
 The release scripts cross-build the same pinned source for native Linux and
-Windows architectures and install it beside the Roboco executable. Windows
-in-app updates currently replace `roboco.exe` only, not this companion;
-installing a new ZIP or installer upgrades the adapter too.
+Windows architectures. Linux tarballs install it beside the Roboco executable.
+Windows builds embed it in `roboco.exe` (`ROBOCO_TAILCAT_EMBED`, see
+`crates/engine/build.rs`), because in-app updates replace only that file and
+the portable `.exe` is that file alone; the engine unpacks it to the managed
+adapters directory on first use.

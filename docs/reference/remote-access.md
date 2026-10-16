@@ -39,8 +39,11 @@ engine logs the configuration source and the reason for any refusal.
 
 Tailcat publishes the same listener over Tailscale's data plane — WireGuard with
 NAT traversal and public DERP relays — with no account and no control plane. It
-uses the app-owned `roboco-tailcat` adapter, bundled beside Roboco in releases.
-Source builds need to [build that adapter too](../../adapters/roboco-tailcat/README.md);
+uses the app-owned `roboco-tailcat` adapter, bundled beside Roboco in Linux
+releases and embedded in the Windows `roboco.exe` (so in-app updates and the
+portable `.exe` carry it). Source builds need to
+[build that adapter too](../../adapters/roboco-tailcat/README.md) —
+`cargo xtask tailcat-adapter` puts it beside `target/debug/roboco` — and
 `ROBOCO_TAILCAT_ADAPTER` can point to a development build.
 
 On each VM, run just:

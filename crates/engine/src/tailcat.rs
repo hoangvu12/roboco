@@ -50,6 +50,14 @@ pub const ADDRESS_FILE: &str = "tailcat-address.json";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_GRACE: Duration = Duration::from_millis(750);
 
+/// The adapter baked into this binary by `ROBOCO_TAILCAT_EMBED` (see
+/// `build.rs`). Windows releases carry it: in-app updates replace only
+/// `roboco.exe`, and the portable `.exe` is that file alone.
+#[cfg(roboco_tailcat_embedded)]
+static EMBEDDED_ADAPTER: Option<&[u8]> = Some(include_bytes!(env!("ROBOCO_TAILCAT_EMBED_FILE")));
+#[cfg(not(roboco_tailcat_embedded))]
+static EMBEDDED_ADAPTER: Option<&[u8]> = None;
+
 /// Resolve the adapter executable: explicit override first, then the copy shipped
 /// beside the running application binary.
 pub fn resolve_adapter(explicit: Option<&str>, executable_dir: Option<&Path>) -> Result<PathBuf> {
@@ -70,19 +78,68 @@ fn adapter_file_name() -> &'static str {
     }
 }
 
-/// The adapter this process should run.
+/// The adapter this process should run: the explicit override, else the copy
+/// embedded in this binary (always this build's), else the one beside it.
 pub fn adapter_path() -> Result<PathBuf> {
     let explicit = std::env::var(ADAPTER_ENV)
         .ok()
         .or_else(|| std::env::var(LEGACY_ADAPTER_ENV).ok());
+    if explicit.is_none()
+        && let Some(bytes) = EMBEDDED_ADAPTER
+    {
+        let root = roboco_harness::adapters_root().context(
+            "no directory to unpack the bundled tailcat adapter into; set ROBOCO_DATA_DIR",
+        )?;
+        return unpack_adapter(bytes, &root.join(ADAPTER_BINARY));
+    }
     let executable = std::env::current_exe().ok();
     let path = resolve_adapter(explicit.as_deref(), executable.as_deref().and_then(Path::parent))?;
     anyhow::ensure!(
         path.is_file(),
-        "tailcat adapter not found at {}; install {} beside the Roboco executable or set {ADAPTER_ENV}",
+        "tailcat adapter not found at {}; install {} beside the Roboco executable or set {ADAPTER_ENV} \
+         (source builds: cargo xtask tailcat-adapter)",
         path.display(),
         adapter_file_name()
     );
+    Ok(path)
+}
+
+/// Unpack an embedded adapter to `<root>/<digest>/roboco-tailcat[.exe]`, once.
+/// The digest names the build, so an updated Roboco never runs the previous
+/// adapter and a running copy (locked, on Windows) is never rewritten. Other
+/// builds' copies are pruned best-effort when a new one is unpacked.
+pub fn unpack_adapter(bytes: &[u8], root: &Path) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let directory = root.join(&digest[..16]);
+    let path = directory.join(adapter_file_name());
+    let complete = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes.len() as u64)
+    };
+    if complete(&path) {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("cannot create {}", directory.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(bytes)?;
+    #[cfg(unix)]
+    set_mode(temporary.path(), 0o755)?;
+    // Losing a race to a concurrent unpack of the same build is fine.
+    if let Err(error) = temporary.persist(&path)
+        && !complete(&path)
+    {
+        return Err(error.error)
+            .with_context(|| format!("cannot unpack the tailcat adapter to {}", path.display()));
+    }
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.path() != directory && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
     Ok(path)
 }
 
@@ -700,4 +757,55 @@ mod tests {
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// The embedded adapter must reach disk on every platform the desktop ships.
+#[cfg(test)]
+mod embedded_adapter_tests {
+    use super::*;
+
+    fn builds(root: &Path) -> Vec<PathBuf> {
+        let mut builds: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        builds.sort();
+        builds
+    }
+
+    #[test]
+    fn unpacks_once_per_build_and_prunes_older_builds() {
+        let root = tempfile::tempdir().unwrap();
+        let old = unpack_adapter(b"adapter v1", root.path()).unwrap();
+        assert_eq!(old.file_name().unwrap(), adapter_file_name());
+        assert_eq!(std::fs::read(&old).unwrap(), b"adapter v1");
+        assert_eq!(unpack_adapter(b"adapter v1", root.path()).unwrap(), old);
+
+        let new = unpack_adapter(b"adapter v2", root.path()).unwrap();
+        assert_ne!(new, old);
+        assert_eq!(std::fs::read(&new).unwrap(), b"adapter v2");
+        assert_eq!(builds(root.path()), vec![new.parent().unwrap().to_owned()]);
+    }
+
+    #[test]
+    fn a_truncated_copy_is_rewritten() {
+        let root = tempfile::tempdir().unwrap();
+        let path = unpack_adapter(b"complete adapter", root.path()).unwrap();
+        std::fs::write(&path, b"compl").unwrap();
+        assert_eq!(
+            unpack_adapter(b"complete adapter", root.path()).unwrap(),
+            path
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"complete adapter");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_unpacked_adapter_is_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = unpack_adapter(b"#!/bin/sh\n", root.path()).unwrap();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "{mode:o}");
+    }
 }
