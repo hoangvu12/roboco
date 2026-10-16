@@ -231,11 +231,19 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        // Pending completion notices are undelivered outcomes
+        // (orchestration v2, ticket 13): load the previous engine run's
+        // ledger BEFORE boot recovery, so the interrupted outcomes
+        // recovery records for runs the restart lost land in the same
+        // ledger — then deliver everything once recovery has settled the
+        // chats.
+        sessions.load_pending_notices(&profile.store_root().join("completion-notices.json"));
         match sessions.recover_stale() {
             Ok(0) => {}
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
+        sessions.deliver_pending_notices();
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());

@@ -4,4 +4,4 @@
  * What the engine recorded when a notifiable side-chat turn came to rest
  * (orchestration v2). The outcome of one row of a completion notice.
  */
-export type NoticeOutcome = "completed" | "errored" | "stopped" | "waitingForInput";
+export type NoticeOutcome = "completed" | "errored" | "stopped" | "interrupted" | "waitingForInput";

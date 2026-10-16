@@ -210,8 +210,9 @@ struct Inner {
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Completion-notice bookkeeping (orchestration v2): the outcomes
-    /// side-chat turns owe their agent parents. Durability lands with
-    /// ticket 13; this is the in-memory seam.
+    /// side-chat turns owe their agent parents, mirrored to a durable
+    /// engine-local ledger so undelivered outcomes survive restarts
+    /// (ticket 13).
     notices: crate::completion_notices::CompletionNotices,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
@@ -351,9 +352,40 @@ impl SessionsEngine {
         &self.inner.notices
     }
 
+    /// Load the durable completion-notice ledger a previous engine run
+    /// left (ticket 13): outcomes recorded but never delivered survive the
+    /// restart. Called at assembly, BEFORE boot recovery, so the
+    /// interrupted outcomes recovery records for runs the restart lost
+    /// land in the same ledger.
+    pub(crate) fn load_pending_notices(&self, path: &std::path::Path) {
+        self.inner.notices.load(path);
+    }
+
+    /// Boot delivery (ticket 13): every parent the ledger owes gets its
+    /// notice now, unless it is already busy again. A parent whose crashed
+    /// run is auto-resumed may still read idle here — the staggered
+    /// revival lands up to a couple of seconds later — in which case the
+    /// notice turn starts and the revival joins it like any later message;
+    /// either order loses nothing, and the outcome always reaches the
+    /// parent.
+    pub(crate) fn deliver_pending_notices(&self) {
+        for parent in self.inner.notices.parents() {
+            spawn_notice_delivery(&self.inner, &parent);
+        }
+    }
+
     /// The doc host, for the completion-notice delivery path (crate-internal).
     pub(crate) fn host(&self) -> Option<crate::doc_host::DocHost> {
         self.inner.doc_host()
+    }
+
+    /// Whether the engine is tearing down (crate-internal): notice
+    /// delivery defers — outcomes stay durably pending, and the next boot
+    /// delivers them.
+    pub(crate) fn shutting_down(&self) -> bool {
+        self.inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The parent a message from `origin` makes a turn of `chat_id`
@@ -1267,6 +1299,36 @@ impl SessionsEngine {
             recovered += 1;
 
             if !will_resume {
+                // Completion notices (orchestration v2, ticket 13): a
+                // notifiable run lost to the restart with no auto-resume
+                // owes its parent an interrupted outcome — the work never
+                // finished, and the parent may want to restart it. Recorded
+                // synchronously here (not through `spawn_notice_record`)
+                // so the boot delivery that runs after recovery sees it in
+                // the ledger. Archived chats are quiet both ways: an
+                // archived side chat sends nothing, an archived parent is
+                // owed nothing.
+                let notifiable = prompt
+                    .as_ref()
+                    .and_then(|(_, _, origin)| origin.as_deref())
+                    .and_then(|origin| self.notifiable_parent_for(&chat_id, Some(origin)))
+                    .filter(|parent| {
+                        !crate::completion_notices::chat_archived(self, &chat_id)
+                            && !crate::completion_notices::chat_archived(self, parent)
+                    });
+                if let Some(parent) = notifiable {
+                    self.inner.notices.record(
+                        &parent,
+                        crate::completion_notices::PendingOutcome {
+                            side_chat_id: chat_id.clone(),
+                            outcome: crate::completion_notices::Outcome::Interrupted {
+                                reason: Some(
+                                    crate::completion_notices::INTERRUPTED_REASON.into(),
+                                ),
+                            },
+                        },
+                    );
+                }
                 continue;
             }
             let attempt = self.inner.journal.note_resume_attempt(&chat_id);
@@ -2289,8 +2351,9 @@ fn run_notifiable_parent(inner: &Inner, chat_id: &str, run_id: &str) -> Option<S
 
 /// Record a completion-notice outcome, fire-and-forget: the side chat's
 /// event stream never waits on the parent's notice turn. Engine teardown
-/// records nothing — the runs it kills were not user-visible outcomes
-/// (restart semantics are ticket 13's, at boot, not at teardown).
+/// records nothing — the runs it kills were not user-visible outcomes;
+/// a restart's lost runs are covered at boot (interrupted outcomes),
+/// where the crash state is durable enough to read.
 fn spawn_notice_record(
     inner: Arc<Inner>,
     side_chat: String,
@@ -2306,6 +2369,31 @@ fn spawn_notice_record(
     let engine = SessionsEngine { inner };
     tokio::spawn(async move {
         crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, outcome).await;
+    });
+}
+
+/// Deliver the completion notices `chat_id` is owed as a PARENT, now that
+/// its turn has ended (ticket 13's busy-parent rule): the outcomes that
+/// piled up while it worked were never steered in, so they start the
+/// chat's next turn now. Fire-and-forget, like the records: the run loop
+/// never waits on another chat's turn. Delivery re-checks `turn_in_flight`
+/// (a queued user message may have claimed the boundary first — then the
+/// notice waits for that turn's own end) and `shutting_down` (teardown
+/// never starts recovered work). A turn ended by an interrupt is the
+/// user's Stop: no wakeup — ticket 14 owns the stopped-parent rule.
+fn spawn_notice_delivery(inner: &Arc<Inner>, chat_id: &str) {
+    if inner
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
+    let engine = SessionsEngine {
+        inner: inner.clone(),
+    };
+    let chat = chat_id.to_string();
+    tokio::spawn(async move {
+        crate::completion_notices::deliver(&engine, &chat).await;
     });
 }
 
@@ -2563,6 +2651,10 @@ async fn drive_run(
             }
             inner.remove_run(&chat_id, &run_id);
             inner.set_status(&chat_id, SessionStatus::Errored, false);
+            // The chat's own turn is over (it errored before it started):
+            // notices that piled up while it was working start its next
+            // turn now (ticket 13).
+            spawn_notice_delivery(&inner, &chat_id);
             return;
         }
     };
@@ -2944,6 +3036,10 @@ async fn drive_run(
                         completed_turn.is_some(),
                         false,
                     );
+                    // The watchdog-finalized turn is over: notices that
+                    // piled up while the chat worked start its next turn
+                    // (ticket 13).
+                    spawn_notice_delivery(&inner, &chat_id);
                     continue;
                 }
             };
@@ -3589,6 +3685,9 @@ async fn drive_run(
                     completed_turn.is_some(),
                     stopped_in_place,
                 );
+                // The parked turn is over: notices that piled up while the
+                // chat worked start its next turn (ticket 13).
+                spawn_notice_delivery(&inner, &chat_id);
                 continue;
             }
             final_completed_turn = completed_turn;
@@ -3644,6 +3743,13 @@ async fn drive_run(
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
             spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
         }
+    }
+    // A busy parent's notices waited — never steered mid-turn (ticket 13):
+    // its turn is over, so they start its next one now. A turn ended by an
+    // interrupt is the user's Stop: no wakeup (ticket 14 owns the full
+    // stopped-parent rule).
+    if !interrupted {
+        spawn_notice_delivery(&inner, &chat_id);
     }
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.

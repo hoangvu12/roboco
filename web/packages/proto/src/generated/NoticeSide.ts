@@ -4,8 +4,8 @@ import type { NoticeOutcome } from "./NoticeOutcome";
 
 /**
  * One side chat a completion notice reports: its id and title, the
- * recorded outcome, and the one-line reason (error text or question
- * summary) when the outcome carries one.
+ * recorded outcome, and the one-line reason (error text, restart reason or
+ * question summary) when the outcome carries one.
  */
 export type NoticeSide = { 
 /**
@@ -20,7 +20,8 @@ chatId: string,
 title: string, 
 outcome: NoticeOutcome, 
 /**
- * The one-line detail for errored (reason) and waiting-for-input
- * (question summary) rows; absent otherwise.
+ * The one-line detail for errored (reason), interrupted (restart
+ * reason) and waiting-for-input (question summary) rows; absent
+ * otherwise.
  */
 detail?: string | null, };
