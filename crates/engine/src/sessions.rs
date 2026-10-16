@@ -366,8 +366,7 @@ impl SessionsEngine {
         let origin = origin?;
         let agent_origin = self
             .inner
-            .doc_host()
-            .and_then(|host| host.workspace())
+            .workspace()
             .and_then(|ws| ws.chat(chat_id).ok().flatten())
             .and_then(|chat| chat.agent_origin)?;
         agent_origin
@@ -2933,7 +2932,7 @@ async fn drive_run(
                     reap_deferred_until = None;
                     self_continued_turn = false;
                     inner.set_status_with_completion(
-                        &chat_id, SessionStatus::Idle, false, completed_turn,
+                        &chat_id, SessionStatus::Idle, false, completed_turn.clone(),
                     );
                     // The watchdog finalized a completed turn (no native
                     // Done): it owes its parent the same notice a Done would.
@@ -3577,7 +3576,7 @@ async fn drive_run(
                     &chat_id,
                     SessionStatus::Idle,
                     false,
-                    completed_turn,
+                    completed_turn.clone(),
                 );
                 // The parked turn settled: a completed turn notifies its
                 // parent, a stop-in-place notifies as stopped, an internal
@@ -3638,9 +3637,10 @@ async fn drive_run(
     // the outcome the engine's own state observed.
     let notifiable = run_notifiable_parent(&inner, &chat_id, &run_id);
     inner.remove_run(&chat_id, &run_id);
+    let final_turn_completed = final_completed_turn.is_some();
     inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
     if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
-        let completed_turn = final_completed_turn.is_some();
+        let completed_turn = final_turn_completed;
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
             spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
         }

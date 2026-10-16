@@ -86,9 +86,8 @@ impl CompletionNotices {
         if outcomes.is_empty() {
             return;
         }
-        let mut pending = lock(&self.pending)
-            .entry(parent.to_string())
-            .or_default();
+        let mut all = lock(&self.pending);
+        let pending = all.entry(parent.to_string()).or_default();
         for outcome in outcomes.into_iter().rev() {
             pending.insert(0, outcome);
         }

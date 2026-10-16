@@ -687,8 +687,6 @@ impl UsageEntry {
             }
             Err(error) => {
                 self.retry_at = Some(now + error.backoff().as_millis() as i64);
-                self.error = Some(error);
-                self.credentials = Some(credentials);
                 // Only a HARD rejection flips the state to signed out; every
                 // other failure (expired-but-CLI-refreshes, rate limit,
                 // network) says nothing about the sign-in and leaves the last
@@ -696,6 +694,8 @@ impl UsageEntry {
                 if matches!(error, ProbeError::SignedOut { .. }) {
                     self.sign_in = Some(AgentSignInState::SignedOut);
                 }
+                self.error = Some(error);
+                self.credentials = Some(credentials);
             }
         }
     }
