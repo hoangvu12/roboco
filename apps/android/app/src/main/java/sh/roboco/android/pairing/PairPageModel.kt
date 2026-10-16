@@ -34,12 +34,18 @@ sealed interface PairPhase {
 }
 
 /**
- * A user-facing error line. [Res] is a string resource;
+ * A user-facing error line. [Res] is a string resource, with the
+ * failure's own [Res.detail] when it has one;
  * [Verbatim] is one of Rust's four parse messages, shown as is
  * (`crates/ui/src/engine_registry.rs:801-830`).
  */
 sealed interface PairMessage {
-    data class Res(@StringRes val id: Int) : PairMessage
+    /**
+     * [detail] is the failure's own reason, shown under a "Show details"
+     * disclosure beneath the fixed sentence. Only secret-free text goes
+     * here: never the invite, the address or the token.
+     */
+    data class Res(@StringRes val id: Int, val detail: String? = null) : PairMessage
     data class Verbatim(val text: String) : PairMessage
 }
 
@@ -91,16 +97,22 @@ interface PairedEngineSink {
  * `describeRedeemError`, `web/packages/app/src/lib/pairing-errors.ts:10-28`,
  * plus the three Tailcat failures of android-next#02): the fixed
  * sentences, the parse reason verbatim, and `pair_error_failed` for
- * everything else — `Failed`, `Storage` and any non-[PairException]. The
- * Tailcat reasons are never shown (fixed copy only). The store-failure
- * copy is **not** produced here; `submit` emits it directly.
+ * everything else — `Failed`, `Storage` and any non-[PairException].
+ * `TailcatUnreachable` carries its reason as the detail: the adapter's
+ * C-API redacts it (never the address), and the fixed sentence alone
+ * cannot tell an offline engine from a corrupt invite ("invalid Tailcat
+ * address"). The store-failure copy is **not** produced here; `submit`
+ * emits it directly.
  */
 fun describePairError(e: Throwable): PairMessage = when (e) {
     is PairException.Refused -> PairMessage.Res(R.string.pair_error_refused)
     is PairException.Unreachable -> PairMessage.Res(R.string.pair_error_unreachable)
     is PairException.InvalidUrl -> PairMessage.Verbatim(e.reason)
     is PairException.TailcatExpired -> PairMessage.Res(R.string.pair_error_tailcat_expired)
-    is PairException.TailcatUnreachable -> PairMessage.Res(R.string.pair_error_tailcat_unreachable)
+    is PairException.TailcatUnreachable -> PairMessage.Res(
+        R.string.pair_error_tailcat_unreachable,
+        detail = e.reason.trim().ifEmpty { null },
+    )
     is PairException.TailcatUnavailable -> PairMessage.Res(R.string.pair_error_tailcat_unavailable)
     else -> PairMessage.Res(R.string.pair_error_failed)
 }

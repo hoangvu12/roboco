@@ -244,7 +244,6 @@ struct ControlState {
     status: RemoteAccessStatus,
     listener: Option<crate::EngineListener>,
     transport: NetworkTransport,
-    tailcat_address: Option<String>,
     tailcat: Option<crate::tailcat::TailcatServer>,
 }
 
@@ -259,7 +258,6 @@ impl RemoteAccessController {
                 status,
                 listener: None,
                 transport: NetworkTransport::Network,
-                tailcat_address: None,
                 tailcat: None,
             }),
         })
@@ -291,7 +289,6 @@ impl RemoteAccessController {
         }
         // The adapter publishes the listener, so it always comes down first.
         state.tailcat = None;
-        state.tailcat_address = None;
         if let Some(mut listener) = state.listener.take() {
             listener.stop().await;
         }
@@ -337,17 +334,13 @@ impl RemoteAccessController {
                             .map_err(anyhow::Error::from)
                             .and_then(|result| result);
                             match started {
-                                Ok(server) => {
-                                    state.tailcat_address = Some(server.address().to_owned());
-                                    state.tailcat = Some(server);
-                                }
+                                Ok(server) => state.tailcat = Some(server),
                                 Err(error) => {
                                     // No route means no remote access: stay local.
                                     state.status.enabled = false;
                                     state.status.address = None;
                                     state.status.error =
                                         Some(format!("Tailcat route unavailable: {error}"));
-                                    state.tailcat_address = None;
                                     if let Some(mut listener) = state.listener.take() {
                                         listener.stop().await;
                                     }
@@ -419,9 +412,9 @@ impl RemoteAccessController {
             self.apply(&mut state).await;
         }
         anyhow::ensure!(state.status.enabled, "{}", state.status.error.as_deref().unwrap_or("Tailcat route is unavailable"));
-        let address = state.tailcat_address.as_deref().ok_or_else(|| anyhow::anyhow!("Tailcat route is unavailable"))?;
+        let address = state.tailcat.as_ref().map(crate::tailcat::TailcatServer::published_address).ok_or_else(|| anyhow::anyhow!("Tailcat route is unavailable"))?;
         let code = crate::pairing::PairingStore::open(&self.directory)?.create_code("", ttl_seconds)?;
-        let invite = crate::tailcat::TailcatInvite::new(address, &code.credential, code.expires_at)?;
+        let invite = crate::tailcat::TailcatInvite::new(&address, &code.credential, code.expires_at)?;
         let url = invite.encode()?;
         // The same encoder as `create_link`, so the desktop card shows the
         // invite as a scannable QR (Android's scanner accepts
@@ -448,7 +441,7 @@ impl RemoteAccessController {
         if state.transport == NetworkTransport::Tailcat {
             // The client's local listener port exists only on the client, so a
             // Tailcat route is paired with an invite: address plus pair code.
-            let address = state.tailcat_address.clone().ok_or_else(|| {
+            let address = state.tailcat.as_ref().map(crate::tailcat::TailcatServer::published_address).ok_or_else(|| {
                 anyhow::anyhow!("The Tailcat route is not up; enable remote access first")
             })?;
             let code = crate::pairing::PairingStore::open(&self.directory)?
@@ -490,13 +483,12 @@ impl RemoteAccessController {
 
     /// The Tailcat address this engine published, when that transport is up.
     pub async fn tailcat_address(&self) -> Option<String> {
-        self.state.lock().await.tailcat_address.clone()
+        self.state.lock().await.tailcat.as_ref().map(crate::tailcat::TailcatServer::published_address)
     }
 
     pub async fn shutdown(&self) {
         let mut state = self.state.lock().await;
         state.tailcat = None;
-        state.tailcat_address = None;
         if let Some(mut listener) = state.listener.take() {
             listener.stop().await;
         }

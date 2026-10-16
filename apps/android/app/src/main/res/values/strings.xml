@@ -35,6 +35,8 @@
     <string name="pair_error_tailcat_unavailable">Tailcat isn\'t available in this build.</string>
     <string name="pair_error_failed">Pairing failed.</string>
     <string name="pair_error_store">Couldn\'t save the engine\'s credential on this phone.</string>
+    <string name="pair_error_details_show">Show details</string>
+    <string name="pair_error_details_hide">Hide details</string>
 
     <!-- The QR scanner (android-ui-parity #138): the hint, foreign,
          denied and unavailable captions (qr_denied/qr_foreign/qr_hint are
