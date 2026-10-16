@@ -1414,10 +1414,9 @@ pub fn rows_for_entry(
     // A marker with no sides (a partial row off a lenient doc decode) is not
     // a notice renderable here; its text sibling carries the notice as plain
     // text, exactly like an older build.
-    let has_notice = entry
-        .parts
-        .iter()
-        .any(|part| matches!(part, MessagePart::CompletionNotice { sides, .. } if !sides.is_empty()));
+    let has_notice = entry.parts.iter().any(|part| {
+        matches!(part, MessagePart::CompletionNotice { sides, .. } if !sides.is_empty())
+    });
 
     let flush_group =
         |rows: &mut Vec<Row>, group: &mut Vec<ToolItem>, group_ix: &mut usize, last_ix: usize| {
@@ -7544,7 +7543,8 @@ impl Transcript {
             let chat_id = side.chat_id.clone();
             let title: SharedString = single_line(&side.title).into();
             let short_id: SharedString = short_chat_id(&side.chat_id).into();
-            let outcome = notice_outcome_line(notice_outcome_verb(side.outcome), side.detail.as_deref());
+            let outcome =
+                notice_outcome_line(notice_outcome_verb(side.outcome), side.detail.as_deref());
             let outcome_color = notice_outcome_color(side.outcome, theme);
             let full_title = title.clone();
             let side_id = SharedString::from(format!("{row_id}#side{ix}"));
@@ -10553,7 +10553,10 @@ mod tests {
             .debug_bounds("notice:5#n0#side1")
             .expect("the notice's second side row renders");
         window.simulate_click(row.center(), Modifiers::default());
-        assert_eq!(opened.borrow().as_slice(), ["chat-side-5678"]);
+        assert_eq!(
+            opened.borrow().as_slice(),
+            ["chat-side-5678".to_string()].as_slice()
+        );
     }
 
     fn with_tool_group_navigation(
