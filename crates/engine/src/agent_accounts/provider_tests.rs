@@ -2043,7 +2043,7 @@ async fn a_refused_claude_refresh_marks_the_slot_signed_out_beside_cached_window
 #[tokio::test]
 async fn signing_in_again_marks_the_account_signed_in() {
     let server = MockServer::start(|_method, path, body, bearer| match path {
-        "/api/oauth/usage" => match bearer.as_str() {
+        "/api/oauth/usage" => match bearer {
             "alice-token" => (200, claude_usage_body(6.0, 35.0)),
             "bob-fresh" => (200, claude_usage_body(100.0, 35.0)),
             _ => (401, String::new()),
@@ -2099,7 +2099,7 @@ async fn signing_in_again_marks_the_account_signed_in() {
 
     // The post-login reload re-probes Bob immediately: his slot now holds
     // fresh credentials, so the old rejection no longer applies.
-    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    let rows = self::rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
     let bob = rows
         .iter()
         .find(|a| a.email.as_deref() == Some("bob@example.com"))
@@ -2154,7 +2154,7 @@ async fn a_run_error_sign_out_mark_lands_and_a_later_probe_clears_it() {
     assert_eq!(server.hits("GET /api/oauth/usage"), 0, "the mark is offline");
 
     // The next successful probe re-establishes the account.
-    let rows = rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
+    let rows = self::rows(&accounts.list(true).await.unwrap(), HarnessId::ClaudeCode);
     assert_eq!(rows[0].sign_in_state, AgentSignInState::SignedIn);
 
     // An unknown slot id is refused, not silently ignored.

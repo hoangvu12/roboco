@@ -615,7 +615,7 @@ mod tests {
     fn notice_text_names_title_short_id_outcome_and_read_chat() {
         let mut completed = side("chat-side-1234", "Implement login", NoticeOutcome::Completed);
         completed.detail = None;
-        let single = notice_text(&[completed]);
+        let single = notice_text(&[completed.clone()]);
         assert_eq!(
             single,
             "Side chat \"Implement login\" (chat-si) finished.\n\
