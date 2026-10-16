@@ -8162,7 +8162,7 @@ dependencies = [
 
 [[package]]
 name = "roboco"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -8187,7 +8187,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-android-assets"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "resvg",
@@ -8198,7 +8198,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-doc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "chrono",
  "loro",
@@ -8214,7 +8214,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-engine"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8263,7 +8263,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-engine-client"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8284,7 +8284,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-harness"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8311,14 +8311,14 @@ dependencies = [
 
 [[package]]
 name = "roboco-markdown"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "pulldown-cmark",
 ]
 
 [[package]]
 name = "roboco-mcp"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8336,7 +8336,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-mobile"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "roboco-doc",
  "roboco-engine",
@@ -8356,7 +8356,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-mobile-client"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8384,7 +8384,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-preview"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8412,7 +8412,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-proto"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -8428,7 +8428,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-rpc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -8443,7 +8443,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-sync"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "loro",
  "roboco-doc",
@@ -8458,7 +8458,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-syntax"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
@@ -8492,7 +8492,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-text"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
@@ -8509,7 +8509,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-theme"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -8525,7 +8525,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-ui"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -8594,7 +8594,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-update"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -8611,7 +8611,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-voice"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -8628,7 +8628,7 @@ dependencies = [
 
 [[package]]
 name = "roboco-xtask"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -12807,7 +12807,7 @@ dependencies = [
 
 [[package]]
 name = "wiregen"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "roboco-doc",
