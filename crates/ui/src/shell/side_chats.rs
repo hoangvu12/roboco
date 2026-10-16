@@ -39,17 +39,21 @@ impl Shell {
             return;
         };
         let parent = source.id.clone();
-        self.fork_chat(source, parent, cx);
+        self.fork_chat(source, parent, None, cx);
     }
 
-    /// Fork `source` through its latest completed response into a new chat
-    /// hanging under `parent_id`, and open it in the right pane. A side
-    /// chat's own fork button passes its parent so the copy lists as a
-    /// sibling; the picker passes the source itself.
+    /// Fork `source` into a new chat hanging under `parent_id`, and open it
+    /// in the right pane. A side chat's own fork button passes its parent so
+    /// the copy lists as a sibling; the picker passes the source itself.
+    /// `boundary` (t3-orchestration-v2 ticket 21, "Fork from here") forks at
+    /// a chosen assistant reply — any settled one, errored and interrupted
+    /// included — instead of the latest completed response; `None` keeps
+    /// today's behaviour.
     pub(super) fn fork_chat(
         &mut self,
         source: roboco_proto::Chat,
         parent_id: String,
+        boundary: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.side_chat_creating {
@@ -60,12 +64,21 @@ impl Shell {
         };
         let key = self.panel_key(cx);
         self.side_chat_creating = true;
-        let params = serde_json::json!({
+        let mut params = serde_json::json!({
             "chatId": uuid::Uuid::new_v4().to_string(),
             "sourceChatId": source.id,
             "parentChatId": parent_id,
             "targetDeviceId": source.device_id,
         });
+        // Only send the boundary when one was chosen: absent, the engine
+        // forks from the latest complete reply (the classic button).
+        if let Some(boundary) = boundary
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            params["boundary"] = serde_json::Value::String(boundary.to_owned());
+        }
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()

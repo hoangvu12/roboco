@@ -687,8 +687,6 @@ impl UsageEntry {
             }
             Err(error) => {
                 self.retry_at = Some(now + error.backoff().as_millis() as i64);
-                self.error = Some(error);
-                self.credentials = Some(credentials);
                 // Only a HARD rejection flips the state to signed out; every
                 // other failure (expired-but-CLI-refreshes, rate limit,
                 // network) says nothing about the sign-in and leaves the last
@@ -696,6 +694,8 @@ impl UsageEntry {
                 if matches!(error, ProbeError::SignedOut { .. }) {
                     self.sign_in = Some(AgentSignInState::SignedOut);
                 }
+                self.error = Some(error);
+                self.credentials = Some(credentials);
             }
         }
     }
@@ -986,6 +986,20 @@ impl AgentAccounts {
     pub async fn list(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
         let _ops = self.inner.ops.lock().await;
         self.list_locked(force_usage).await
+    }
+
+    /// The ACTIVE account row for `harness` — the login the CLI is running
+    /// under right now, with its cached usage windows (the last good probe;
+    /// no network). The sessions engine reads this to complete a usage-limit
+    /// record: which account the limit hit, and the reset time when the
+    /// harness's own error did not carry one.
+    pub async fn active_account(&self, harness: HarnessId) -> Option<AgentAccount> {
+        self.list(false)
+            .await
+            .ok()?
+            .accounts
+            .into_iter()
+            .find(|account| account.harness == harness && account.active)
     }
 
     /// Caller holds [`Inner::ops`].

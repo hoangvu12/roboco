@@ -1502,6 +1502,7 @@ mod tests {
             started_at: None,
             updated_at: chrono::Utc::now() - chrono::Duration::minutes(10),
             last_completed_turn: None,
+            limit: None,
         };
         // No mid-turn capability is required for a live mailbox delivery.
         let sent = tools

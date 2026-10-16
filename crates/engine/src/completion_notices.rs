@@ -326,10 +326,15 @@ pub(crate) fn question_summary(questions: &[roboco_proto::UserInputQuestion]) ->
 /// active: only a row that says archived silences notices — a row the
 /// engine cannot read must not silently eat a report.
 pub(crate) fn chat_archived(engine: &SessionsEngine, chat_id: &str) -> bool {
-    engine
-        .host()
-        .and_then(|host| host.workspace())
-        .and_then(|workspace| workspace.chat(chat_id).ok().flatten())
+    // Bind the host first: `workspace()` borrows it, and a
+    // `host().and_then(|host| host.workspace())` chain would borrow a
+    // closure-local (the same temporary-borrow trap the ticket-12 merge
+    // left behind in `notifiable_parent_for`).
+    let Some(host) = engine.host() else {
+        return false;
+    };
+    host.workspace()
+        .and_then(|ws| ws.chat(chat_id).ok().flatten())
         .is_some_and(|chat| chat.archived)
 }
 
