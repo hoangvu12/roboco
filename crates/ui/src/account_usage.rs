@@ -487,7 +487,7 @@ impl AccountUsage {
     fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
         let login_id = match &self.sign_in {
             Some(SignInFlow::Browser { start, .. })
-            | Some(SignInFlow::PasteCode { start, .. }) => start.login_id.clone(),
+            | Some(SignInFlow::PasteCode { start, .. }) => Some(start.login_id.clone()),
             _ => None,
         };
         self.sign_in = None;
@@ -918,7 +918,9 @@ impl Render for AccountUsage {
             .children(context)
             .when_some(confirm, |el, confirm| el.child(confirm))
     }
+}
 
+impl AccountUsage {
     /// The "switch to a signed-out account" confirmation, over the popover —
     /// the same warning Settings → Accounts asks with.
     fn render_switch_confirm(

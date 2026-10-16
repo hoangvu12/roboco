@@ -234,6 +234,13 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        // Pending completion notices are undelivered outcomes
+        // (orchestration v2, ticket 13): load the previous engine run's
+        // ledger BEFORE boot recovery, so the interrupted outcomes
+        // recovery records for runs the restart lost land in the same
+        // ledger — then deliver everything once recovery has settled the
+        // chats.
+        sessions.load_pending_notices(&profile.store_root().join("completion-notices.json"));
         // Engine settings (auto-resume limited chats, …) and the durable
         // Resume-at-reset store both live under the engine data dir; the
         // continuations' timers arm after `recover_stale` (firing needs the
@@ -247,6 +254,7 @@ impl EngineCore {
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
+        sessions.deliver_pending_notices();
         // Overdue continuations fire after boot; the rest sleep until their
         // reset time. Staggered with the crashed-run resumes above.
         sessions.recover_scheduled_resumes();

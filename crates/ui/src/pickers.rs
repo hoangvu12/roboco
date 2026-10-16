@@ -922,10 +922,21 @@ impl Pickers {
         &self.config
     }
 
-    /// Harness is locked once the chat exists (feature-inventory §1.7).
+    /// Harness is locked while the chat exists and works (feature-inventory
+    /// §1.7): an unsaved side chat can pick until its first send, and an
+    /// existing chat unlocks BETWEEN turns for a one-way switch
+    /// (t3-orchestration-v2 ticket 24) — the engine writes the
+    /// "Switched to <harness>" seam and drops the old session. Thread
+    /// naming never offers a switch (the title's agent is fixed).
     fn harness_locked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
-        self.title.is_none() && state.selected_chat.is_some() && !state.side_chat_harness_editable()
+        self.title.is_none()
+            && state.selected_chat.is_some()
+            && !state.side_chat_harness_editable()
+            && !state
+                .selected_chat
+                .as_deref()
+                .is_some_and(|chat| state.harness_switchable(chat, chrono::Utc::now()))
     }
 
     /// The harnesses this picker offers: runnable ones for the composer,
@@ -1758,13 +1769,7 @@ impl Pickers {
             // A side-chat draft already has a selected row. Replace its inherited
             // provider settings so both the picker and first createChat use the
             // new harness, even when its model catalog has not loaded yet.
-            let model = self.defaults.model_for(harness).map(|m| m.id.clone());
-            let reasoning = self.defaults.reasoning_for(harness, model.as_deref());
-            let options = model
-                .as_deref()
-                .and_then(|model| self.defaults.model_options_for(harness, model))
-                .cloned()
-                .unwrap_or_default();
+            let (model, reasoning, options) = self.default_picks(harness);
             self.update_chat_config(cx, move |config| {
                 config.harness = harness;
                 config.model = model;
@@ -1779,7 +1784,20 @@ impl Pickers {
             self.config.reasoning = None;
         }
         self.config.harness = Some(harness);
+        // An existing chat's pick is a one-way harness switch
+        // (t3-orchestration-v2 ticket 24): the engine writes the
+        // "Switched to <harness>" seam, drops the old harness session, and
+        // saves this harness with its default picks — the next send carries
+        // the budgeted history of everything above the seam. Unsaved side
+        // chats never reach here (their createChat still owns the harness).
         if self.title.is_none() {
+            let (chat_id, unsaved) = {
+                let state = self.state.read(cx);
+                (state.selected_chat.clone(), state.side_chat_unsaved())
+            };
+            if let Some(chat_id) = chat_id.filter(|_| !unsaved) {
+                self.switch_chat_harness(&chat_id, harness, cx);
+            }
             self.defaults.harness = Some(harness);
             self.save_defaults();
         }
@@ -1907,6 +1925,35 @@ impl Pickers {
             config.sandbox = existing.sandbox;
         }
         change(&mut config);
+        self.clamp_config(&mut config, cx);
+        self.state.update(cx, |state, cx| {
+            state.apply_chat_config(&chat_id, config.clone());
+            cx.notify();
+        });
+        // The first send creates this row. Until then all choices stay local.
+        if self.state.read(cx).side_chat_unsaved() {
+            return;
+        }
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        self.mutate_task = Some(cx.spawn(async move |_, _| {
+            let params = serde_json::json!({
+                "op": "setChatConfig",
+                "chatId": chat_id,
+                "config": config,
+            });
+            if let Err(err) = engine.call(methods::MUTATE, params).await {
+                tracing::warn!(error = %err, "setChatConfig mutate failed");
+            }
+        }));
+    }
+
+    /// Keep a composed config concrete for the model it names: reasoning on
+    /// the model's ladder (else the harness's advertised ladder), and
+    /// options limited to the ones that model offers. No-op while the
+    /// harness's catalog is not loaded.
+    fn clamp_config(&self, config: &mut ChatConfig, cx: &App) {
         // Reasoning must stay concrete for whatever model the row now names —
         // same ladder resolution as [`Self::trait_ladder`] (model levels, else
         // the harness's advertised ladder).
@@ -1939,25 +1986,90 @@ impl Pickers {
                     offered_options(model, std::mem::take(&mut config.model_options));
             }
         }
-        self.state.update(cx, |state, cx| {
-            state.apply_chat_config(&chat_id, config.clone());
-            cx.notify();
-        });
-        // The first send creates this row. Until then all choices stay local.
-        if self.state.read(cx).side_chat_unsaved() {
+    }
+
+    /// The new harness's default picks — "model options reset to the new
+    /// harness's defaults unless the user chose them" (t3-orchestration-v2
+    /// ticket 24): the remembered last-used model at its last-used reasoning
+    /// and options, else the harness's own (empty) ones. Both an unsaved
+    /// side chat's harness pick and an existing chat's one-way switch apply
+    /// the same reset.
+    fn default_picks(
+        &self,
+        harness: HarnessId,
+    ) -> (
+        Option<String>,
+        Option<ReasoningLevel>,
+        serde_json::Map<String, serde_json::Value>,
+    ) {
+        let model = self.defaults.model_for(harness).map(|m| m.id.clone());
+        let reasoning = self.defaults.reasoning_for(harness, model.as_deref());
+        let options = model
+            .as_deref()
+            .and_then(|model| self.defaults.model_options_for(harness, model))
+            .cloned()
+            .unwrap_or_default();
+        (model, reasoning, options)
+    }
+
+    /// The one-way harness switch for an existing chat
+    /// (t3-orchestration-v2 ticket 24): resolve the new harness's default
+    /// picks — model, reasoning, options reset to the harness's remembered
+    /// defaults unless the user chose them — stamp the row optimistically,
+    /// then tell the engine, which writes the "Switched to <harness>" seam,
+    /// drops the old harness session, and arms the budgeted history for the
+    /// next send. A failed switch leaves the engine's row untouched; the
+    /// chats watch reverts the optimistic stamp.
+    fn switch_chat_harness(&mut self, chat_id: &str, harness: HarnessId, cx: &mut Context<Self>) {
+        let busy = {
+            let state = self.state.read(cx);
+            !state.harness_switchable(chat_id, chrono::Utc::now())
+                // Already on it: nothing to seam (a re-pick of the current
+                // harness is a UI noop, not a switch).
+                || state
+                    .selected_chat_row()
+                    .and_then(|chat| chat.config.as_ref())
+                    .is_some_and(|config| config.harness == harness)
+        };
+        if busy {
             return;
         }
+        // Model options reset to the new harness's defaults unless the user
+        // chose them (see [`Self::default_picks`]).
+        let (model, reasoning, model_options) = self.default_picks(harness);
+        let sandbox = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| config.sandbox)
+            .unwrap_or(SandboxLevel::WorkspaceWrite);
+        let mut config = ChatConfig {
+            harness,
+            model,
+            reasoning,
+            model_options,
+            sandbox,
+        };
+        self.clamp_config(&mut config, cx);
+        self.state.update(cx, |state, cx| {
+            state.apply_chat_config(chat_id, config.clone());
+            cx.notify();
+        });
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let chat_id = chat_id.to_string();
         self.mutate_task = Some(cx.spawn(async move |_, _| {
             let params = serde_json::json!({
-                "op": "setChatConfig",
                 "chatId": chat_id,
-                "config": config,
+                "harness": config.harness,
+                "model": config.model,
+                "reasoning": config.reasoning,
+                "modelOptions": config.model_options,
             });
-            if let Err(err) = engine.call(methods::MUTATE, params).await {
-                tracing::warn!(error = %err, "setChatConfig mutate failed");
+            if let Err(err) = engine.call(methods::SWITCH_HARNESS, params).await {
+                tracing::warn!(error = %err, "harness switch failed");
             }
         }));
     }
@@ -1986,7 +2098,8 @@ impl Pickers {
     /// The harness descriptors the picker rail offers, with the committed
     /// harness force-included even when it's outside the offered set (a
     /// dev session's mock harness, or one disabled after the chat existed).
-    /// Existing chats only offer their own harness.
+    /// Working chats only offer their own harness (locked); an idle one
+    /// offers every harness — a pick is a one-way switch.
     fn rail_descriptors(&self, cx: &App) -> Vec<HarnessDescriptor> {
         let Some(list) = self.harnesses.ready() else {
             return Vec::new();
@@ -5938,7 +6051,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn side_chat_favorites_switch_harness_locally_and_lock_after_creation(
+    fn side_chat_favorites_pick_before_the_first_send_and_switch_after_it(
         cx: &mut gpui::TestAppContext,
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -5987,13 +6100,28 @@ mod tests {
 
         cx.update(|cx| {
             // Forks are already persisted when opened, even before their first
-            // own message. Saved empty side chats must have the same lock.
+            // own message. A saved side chat that is idle between turns no
+            // longer locks the picker (ticket 24): picking another harness is
+            // a one-way switch — optimistic row stamp, no RPC without an
+            // engine (the favorites flow above never wired one to this
+            // state).
             let (_, fork) = side_chat_picker(false, cx);
             fork.update(cx, |pickers, cx| {
-                assert!(pickers.harness_locked(cx));
-                assert_eq!(pickers.rail_descriptors(cx).len(), 1);
+                assert!(!pickers.harness_locked(cx));
+                assert_eq!(pickers.rail_descriptors(cx).len(), 2);
                 pickers.pick_harness(HarnessId::Codex, cx);
-                assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::ClaudeCode));
+                assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::Codex));
+                let config = pickers
+                    .state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|chat| chat.config.clone());
+                assert_eq!(config.as_ref().map(|c| c.harness), Some(HarnessId::Codex));
+                // Model options reset to the new harness's defaults (none
+                // remembered): the old harness's model never lingers.
+                assert_eq!(config.as_ref().and_then(|c| c.model.as_deref()), None);
+                assert!(config.as_ref().map(|c| c.model_options.is_empty()).unwrap_or(false));
+                assert!(pickers.mutate_task.is_none(), "no engine — no RPC");
             });
             let (state, pickers) = side_chat_picker(true, cx);
             state.update(cx, |state, _| {
@@ -6013,12 +6141,159 @@ mod tests {
                 "failed creation remains editable"
             );
             state.update(cx, |state, cx| state.side_chat_saved("side", cx));
+            // Saved and idle: the pick stays a switch, not a lock.
+            pickers.update(cx, |pickers, cx| {
+                assert!(!pickers.harness_locked(cx));
+                pickers.pick_harness(HarnessId::Codex, cx);
+                assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::Codex));
+            });
+        });
+    }
+
+    /// An existing main chat with a session row: the lock follows the turn.
+    fn working_chat(
+        status: roboco_proto::SessionStatus,
+        cx: &mut App,
+    ) -> (Entity<AppState>, Entity<Pickers>) {
+        let state = cx.new(|_| AppState::new());
+        let chat: roboco_proto::Chat = serde_json::from_value(serde_json::json!({
+            "id": "main", "deviceId": "local", "cwd": "/tmp", "archived": false,
+            "createdAt": chrono::Utc::now(),
+            "config": {
+                "harness": "claude-code", "model": "saved-model", "sandbox": "read-only"
+            }
+        }))
+        .unwrap();
+        state.update(cx, |state, _| {
+            state.chats.push(chat);
+            state.selected_chat = Some("main".into());
+            state.apply_sessions(vec![roboco_proto::Session {
+                last_completed_turn: None,
+                chat_id: "main".into(),
+                device_id: "local".into(),
+                status,
+                started_at: None,
+                updated_at: chrono::Utc::now(),
+                limit: None,
+                scheduled_resume: None,
+            }]);
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, _| {
+            pickers.harnesses = Loadable::Ready(vec![
+                descriptor(HarnessId::ClaudeCode, "Claude Code"),
+                descriptor(HarnessId::Codex, "Codex"),
+            ]);
+        });
+        (state, pickers)
+    }
+
+    #[gpui::test]
+    fn the_picker_unlocks_between_turns_and_locks_again_while_the_chat_works(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::dark());
+            // Working: locked — a turn is in flight.
+            let (_, pickers) = working_chat(roboco_proto::SessionStatus::Working, cx);
             pickers.update(cx, |pickers, cx| {
                 assert!(pickers.harness_locked(cx));
+                assert_eq!(pickers.rail_descriptors(cx).len(), 1);
                 pickers.pick_harness(HarnessId::Codex, cx);
                 assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::ClaudeCode));
             });
+            // Parked on a question: still a turn in flight.
+            let (_, pickers) = working_chat(roboco_proto::SessionStatus::AwaitingInput, cx);
+            pickers.update(cx, |pickers, cx| {
+                assert!(pickers.harness_locked(cx));
+            });
+            // Idle: unlocked — the pick is a one-way switch.
+            let (state, pickers) = working_chat(roboco_proto::SessionStatus::Idle, cx);
+            pickers.update(cx, |pickers, cx| {
+                assert!(!pickers.harness_locked(cx));
+                assert_eq!(pickers.rail_descriptors(cx).len(), 2);
+                pickers.pick_harness(HarnessId::Codex, cx);
+                assert_eq!(pickers.resolved(cx).harness, Some(HarnessId::Codex));
+                let config = pickers
+                    .state
+                    .read(cx)
+                    .selected_chat_row()
+                    .and_then(|chat| chat.config.clone())
+                    .expect("row stamped");
+                assert_eq!(config.harness, HarnessId::Codex);
+                assert_eq!(config.model, None);
+                assert!(config.model_options.is_empty());
+                assert_eq!(config.sandbox, SandboxLevel::ReadOnly);
+            });
+            // Errored between turns: switchable too — escaping a limit is a
+            // first-class use of the switch.
+            let (_, errored) = working_chat(roboco_proto::SessionStatus::Errored, cx);
+            errored.update(cx, |pickers, cx| {
+                assert!(!pickers.harness_locked(cx));
+            });
+            // Working again after the switch: locked once more.
+            state.update(cx, |state, _| {
+                state.apply_sessions(vec![roboco_proto::Session {
+                    last_completed_turn: None,
+                    chat_id: "main".into(),
+                    device_id: "local".into(),
+                    status: roboco_proto::SessionStatus::Working,
+                    started_at: None,
+                    updated_at: chrono::Utc::now(),
+                    limit: None,
+                    scheduled_resume: None,
+                }]);
+            });
+            pickers.update(cx, |pickers, cx| {
+                assert!(pickers.harness_locked(cx), "the picker re-locks while working");
+            });
         });
+    }
+
+    #[gpui::test]
+    fn switching_an_idle_chat_tells_the_engine_the_resolved_picks(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(256);
+        let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(256);
+        cx.update(|cx| {
+            cx.set_global(Theme::dark());
+            let (state, pickers) = working_chat(roboco_proto::SessionStatus::Idle, cx);
+            state.update(cx, |state, _| {
+                state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                    roboco_rpc::RpcClient::new(out, inbound),
+                ));
+            });
+            pickers.update(cx, |pickers, cx| {
+                // Remembered defaults for the new harness ride the switch;
+                // nothing remembered means the engine resets to the
+                // harness's own defaults.
+                pickers
+                    .defaults
+                    .remember_model(HarnessId::Codex, "codex-remembered".into(), "Codex".into());
+                pickers
+                    .defaults
+                    .model_options_mut(HarnessId::Codex, "codex-remembered")
+                    .insert("context".into(), serde_json::Value::String("1m".into()));
+                pickers.pick_harness(HarnessId::Codex, cx);
+            });
+        });
+        cx.run_until_parked();
+        let frame = requests.try_recv().expect("the switch reached the engine");
+        assert!(frame.contains("SwitchHarness"), "{frame}");
+        assert!(frame.contains("\"chatId\":\"main\""), "{frame}");
+        assert!(frame.contains("\"harness\":\"codex\""), "{frame}");
+        assert!(frame.contains("codex-remembered"), "{frame}");
+        assert!(frame.contains("\"modelOptions\":{\"context\":\"1m\"}"), "{frame}");
+        assert!(
+            requests.try_recv().is_err(),
+            "one pick is one switch — no setChatConfig chaser"
+        );
     }
 
     #[gpui::test]

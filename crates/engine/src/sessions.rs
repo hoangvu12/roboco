@@ -211,8 +211,9 @@ struct Inner {
     /// session id is the "do not resume" tombstone after a rejected resume.
     harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Completion-notice bookkeeping (orchestration v2): the outcomes
-    /// side-chat turns owe their agent parents. Durability lands with
-    /// ticket 13; this is the in-memory seam.
+    /// side-chat turns owe their agent parents, mirrored to a durable
+    /// engine-local ledger so undelivered outcomes survive restarts
+    /// (ticket 13).
     notices: crate::completion_notices::CompletionNotices,
     /// Pending Resume-at-reset continuations (orchestration v2, ticket 07):
     /// the durable entries + disarm flags, persisted under the engine data
@@ -395,9 +396,40 @@ impl SessionsEngine {
         &self.inner.notices
     }
 
+    /// Load the durable completion-notice ledger a previous engine run
+    /// left (ticket 13): outcomes recorded but never delivered survive the
+    /// restart. Called at assembly, BEFORE boot recovery, so the
+    /// interrupted outcomes recovery records for runs the restart lost
+    /// land in the same ledger.
+    pub(crate) fn load_pending_notices(&self, path: &std::path::Path) {
+        self.inner.notices.load(path);
+    }
+
+    /// Boot delivery (ticket 13): every parent the ledger owes gets its
+    /// notice now, unless it is already busy again. A parent whose crashed
+    /// run is auto-resumed may still read idle here — the staggered
+    /// revival lands up to a couple of seconds later — in which case the
+    /// notice turn starts and the revival joins it like any later message;
+    /// either order loses nothing, and the outcome always reaches the
+    /// parent.
+    pub(crate) fn deliver_pending_notices(&self) {
+        for parent in self.inner.notices.parents() {
+            spawn_notice_delivery(&self.inner, &parent);
+        }
+    }
+
     /// The doc host, for the completion-notice delivery path (crate-internal).
     pub(crate) fn host(&self) -> Option<crate::doc_host::DocHost> {
         self.inner.doc_host()
+    }
+
+    /// Whether the engine is tearing down (crate-internal): notice
+    /// delivery defers — outcomes stay durably pending, and the next boot
+    /// delivers them.
+    pub(crate) fn shutting_down(&self) -> bool {
+        self.inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The parent a message from `origin` makes a turn of `chat_id`
@@ -1193,6 +1225,86 @@ impl SessionsEngine {
         Ok(true)
     }
 
+    /// One-way harness switch between turns (t3-orchestration-v2 ticket 24).
+    /// Writes the "Switched to <harness>" seam into the transcript, drops
+    /// the chat's harness session (the tombstone also blocks the journal
+    /// scan from resurrecting the old harness's id), retires any stale
+    /// native-fork intent, and saves `config` — the caller's resolved picks
+    /// (model options reset to the new harness's defaults unless the user
+    /// chose them; the engine only stores what arrived). A warm runtime from
+    /// the old harness is torn down by the next dispatch (its run
+    /// configuration no longer routes). The next send starts a fresh
+    /// provider session on the new harness and carries the budgeted history
+    /// of everything above the seam. Switching back is just another switch.
+    ///
+    /// Refused while a turn is in flight (the picker stays locked while the
+    /// chat works), for an unknown chat, and for a switch onto the harness
+    /// the chat already runs.
+    pub async fn switch_harness(
+        &self,
+        chat_id: &str,
+        config: roboco_proto::ChatConfig,
+    ) -> Result<(), EngineError> {
+        let Some(ws) = self.inner.workspace() else {
+            return Err(EngineError::Other("workspace unavailable".into()));
+        };
+        let chat = ws
+            .chat(chat_id)?
+            .ok_or_else(|| EngineError::Other("Chat no longer exists".into()))?;
+        if !ws.is_host(chat_id) {
+            return Err(EngineError::Other(
+                "Harness switch must run on the chat's host device".into(),
+            ));
+        }
+        if self.turn_in_flight(chat_id) {
+            return Err(EngineError::Other(
+                "The chat is working; switch harnesses between turns".into(),
+            ));
+        }
+        // The target harness must resolve first: the switch is pointless (and
+        // the next dispatch would fail) against an unregistered harness, and
+        // its display name names it in the refusal below.
+        let harness = self.inner.registry.resolve(config.harness)?;
+        if chat.config.as_ref().is_some_and(|existing| existing.harness == config.harness) {
+            return Err(EngineError::Other(format!(
+                "Chat is already on {}",
+                harness.display_name()
+            )));
+        }
+        // The seam first: once the row names the new harness, a crash between
+        // the two writes would at worst dispatch the next send on the new
+        // harness with the history still riding (the seam is what arms it).
+        let handle = self.doc_handle(chat_id)?;
+        handle.doc().clear_provider_fork();
+        let marker_id = format!("switch:{}", new_id());
+        handle
+            .doc()
+            .push_message(&SessionMessageEntry {
+                origin_chat_id: None,
+                duration_ms: None,
+                provider_turn: None,
+                id: marker_id.clone(),
+                role: MessageRole::System,
+                parts: vec![MessagePart::HarnessSwitch {
+                    id: marker_id,
+                    harness: config.harness,
+                }],
+                created_at: now_ms(),
+                device_id: self.inner.device_id.clone(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+            })
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+        // Drop the session from every resume source: the live cache, the
+        // durable row (the empty-string tombstone also stops the journal
+        // scan — the old harness's session ids must never ride a resume on
+        // the new harness), and the native-fork intent above.
+        lock(&self.inner.harness_sessions).remove(chat_id);
+        ws.set_chat_harness_session(chat_id, "", "");
+        ws.set_chat_config(chat_id, &config)?;
+        Ok(())
+    }
+
     /// Resolve a pending `request_input` question set. Returns `false` when no such
     /// request is pending (unknown id, or the run already settled).
     pub fn respond_input(
@@ -1310,6 +1422,36 @@ impl SessionsEngine {
             recovered += 1;
 
             if !will_resume {
+                // Completion notices (orchestration v2, ticket 13): a
+                // notifiable run lost to the restart with no auto-resume
+                // owes its parent an interrupted outcome — the work never
+                // finished, and the parent may want to restart it. Recorded
+                // synchronously here (not through `spawn_notice_record`)
+                // so the boot delivery that runs after recovery sees it in
+                // the ledger. Archived chats are quiet both ways: an
+                // archived side chat sends nothing, an archived parent is
+                // owed nothing.
+                let notifiable = prompt
+                    .as_ref()
+                    .and_then(|(_, _, origin)| origin.as_deref())
+                    .and_then(|origin| self.notifiable_parent_for(&chat_id, Some(origin)))
+                    .filter(|parent| {
+                        !crate::completion_notices::chat_archived(self, &chat_id)
+                            && !crate::completion_notices::chat_archived(self, parent)
+                    });
+                if let Some(parent) = notifiable {
+                    self.inner.notices.record(
+                        &parent,
+                        crate::completion_notices::PendingOutcome {
+                            side_chat_id: chat_id.clone(),
+                            outcome: crate::completion_notices::Outcome::Interrupted {
+                                reason: Some(
+                                    crate::completion_notices::INTERRUPTED_REASON.into(),
+                                ),
+                            },
+                        },
+                    );
+                }
                 continue;
             }
             let attempt = self.inner.journal.note_resume_attempt(&chat_id);
@@ -2199,13 +2341,16 @@ fn note_fork_history_session(doc: &SessionDoc, carried: bool, session_id: &str) 
 }
 
 impl Inner {
-    /// `prompt` with the transcript a side chat's provider session lacks in
-    /// front of it, or `None` when it lacks nothing. A fresh session gets the
-    /// budgeted transcript (`current` excluded); a continued one only the
-    /// fork's copied transcript before the seam, until that went out to that
+    /// `prompt` with the transcript a provider session lacks in front of it,
+    /// or `None` when it lacks nothing. A side chat's fresh session gets its
+    /// budgeted copied transcript (`current` excluded); a main chat's fresh
+    /// session gets the budgeted transcript only after a harness switch (the
+    /// seam marks what the dropped session held); a continued one only the
+    /// history above the chat's newest seam, until that went out to that
     /// session. The budget and the selection rules live in
-    /// [`crate::transcript_budget`]. Native commands are never wrapped:
-    /// providers route a leading `/name`.
+    /// [`crate::transcript_budget`]. Native commands are never wrapped —
+    /// providers route a leading `/name`, so their history rides the first
+    /// ordinary send instead.
     fn fork_history_prompt(
         &self,
         chat_id: &str,
@@ -2233,12 +2378,7 @@ impl Inner {
         current: Option<&str>,
         provider: ProviderSession<'_>,
     ) -> Option<String> {
-        if native_command(prompt, harness_id)
-            || !self
-                .workspace()
-                .and_then(|ws| ws.chat(chat_id).ok().flatten())
-                .is_some_and(|chat| chat.parent_chat_id.is_some())
-        {
+        if native_command(prompt, harness_id) {
             return None;
         }
         let entries: Vec<_> = doc
@@ -2253,6 +2393,20 @@ impl Inner {
                 })
             })
             .collect();
+        // A side chat owes its copied transcript to any session that lacks
+        // it. A main chat owes its transcript only after a one-way harness
+        // switch (t3-orchestration-v2 ticket 24): the seam marks the
+        // conversation the new harness's fresh session never saw, so the
+        // first send after the switch carries the budgeted history of
+        // everything above it; without a seam a main chat's fresh session
+        // starts empty (nothing was copied, nothing was dropped).
+        let side_chat = self
+            .workspace()
+            .and_then(|ws| ws.chat(chat_id).ok().flatten())
+            .is_some_and(|chat| chat.parent_chat_id.is_some());
+        if !side_chat && !entries.iter().any(is_harness_switch_seam) {
+            return None;
+        }
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
             ProviderSession::Continued(session) => {
@@ -2260,7 +2414,14 @@ impl Inner {
                 if session.is_some() && delivered.as_deref() == session {
                     return None;
                 }
-                entries.iter().position(is_fork_seam)?
+                // The owed unit ends at the NEWEST seam, whichever kind: a
+                // fork's copied transcript above its seam, or the dropped
+                // conversation above a harness-switch seam (ticket 24). A
+                // session that changed below the newest seam lacks
+                // everything above it — including the case where the first
+                // post-switch send was a native command (never wrapped), so
+                // the history rides the first ordinary send instead.
+                entries.iter().rposition(is_history_seam)?
             }
         };
         // The chat the omitted messages are readable in: the newest fork
@@ -2283,6 +2444,25 @@ fn is_fork_seam(entry: &SessionMessageEntry) -> bool {
         .parts
         .iter()
         .any(|part| matches!(part, MessagePart::Fork { .. }))
+}
+
+/// A history seam of either kind: the divider below which the chat's
+/// provider session started fresh — a fork's copy boundary or a harness
+/// switch's drop boundary. The newest one bounds what a changed session is
+/// owed.
+fn is_history_seam(entry: &SessionMessageEntry) -> bool {
+    is_fork_seam(entry) || is_harness_switch_seam(entry)
+}
+
+/// A harness-switch seam entry (t3-orchestration-v2 ticket 24): the divider
+/// below which the chat runs on the harness the switch named. Everything
+/// above it belongs to the provider session the switch dropped, so it is
+/// the history the new harness's first session is owed.
+fn is_harness_switch_seam(entry: &SessionMessageEntry) -> bool {
+    entry
+        .parts
+        .iter()
+        .any(|part| matches!(part, MessagePart::HarnessSwitch { .. }))
 }
 
 /// The chat a fork seam copied its transcript from.
@@ -2704,8 +2884,9 @@ fn run_notifiable_parent(inner: &Inner, chat_id: &str, run_id: &str) -> Option<S
 
 /// Record a completion-notice outcome, fire-and-forget: the side chat's
 /// event stream never waits on the parent's notice turn. Engine teardown
-/// records nothing — the runs it kills were not user-visible outcomes
-/// (restart semantics are ticket 13's, at boot, not at teardown).
+/// records nothing — the runs it kills were not user-visible outcomes;
+/// a restart's lost runs are covered at boot (interrupted outcomes),
+/// where the crash state is durable enough to read.
 fn spawn_notice_record(
     inner: Arc<Inner>,
     side_chat: String,
@@ -2721,6 +2902,31 @@ fn spawn_notice_record(
     let engine = SessionsEngine { inner };
     tokio::spawn(async move {
         crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, outcome).await;
+    });
+}
+
+/// Deliver the completion notices `chat_id` is owed as a PARENT, now that
+/// its turn has ended (ticket 13's busy-parent rule): the outcomes that
+/// piled up while it worked were never steered in, so they start the
+/// chat's next turn now. Fire-and-forget, like the records: the run loop
+/// never waits on another chat's turn. Delivery re-checks `turn_in_flight`
+/// (a queued user message may have claimed the boundary first — then the
+/// notice waits for that turn's own end) and `shutting_down` (teardown
+/// never starts recovered work). A turn ended by an interrupt is the
+/// user's Stop: no wakeup — ticket 14 owns the stopped-parent rule.
+fn spawn_notice_delivery(inner: &Arc<Inner>, chat_id: &str) {
+    if inner
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return;
+    }
+    let engine = SessionsEngine {
+        inner: inner.clone(),
+    };
+    let chat = chat_id.to_string();
+    tokio::spawn(async move {
+        crate::completion_notices::deliver(&engine, &chat).await;
     });
 }
 
@@ -2978,6 +3184,10 @@ async fn drive_run(
             }
             inner.remove_run(&chat_id, &run_id);
             inner.set_status(&chat_id, SessionStatus::Errored, false);
+            // The chat's own turn is over (it errored before it started):
+            // notices that piled up while it was working start its next
+            // turn now (ticket 13).
+            spawn_notice_delivery(&inner, &chat_id);
             return;
         }
     };
@@ -3364,6 +3574,10 @@ async fn drive_run(
                         completed_turn.is_some(),
                         false,
                     );
+                    // The watchdog-finalized turn is over: notices that
+                    // piled up while the chat worked start its next turn
+                    // (ticket 13).
+                    spawn_notice_delivery(&inner, &chat_id);
                     continue;
                 }
             };
@@ -4015,6 +4229,9 @@ async fn drive_run(
                     completed_turn.is_some(),
                     stopped_in_place,
                 );
+                // The parked turn is over: notices that piled up while the
+                // chat worked start its next turn (ticket 13).
+                spawn_notice_delivery(&inner, &chat_id);
                 continue;
             }
             final_completed_turn = completed_turn;
@@ -4104,6 +4321,13 @@ async fn drive_run(
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
             spawn_notice_record(inner.clone(), chat_id.clone(), parent, outcome);
         }
+    }
+    // A busy parent's notices waited — never steered mid-turn (ticket 13):
+    // its turn is over, so they start its next one now. A turn ended by an
+    // interrupt is the user's Stop: no wakeup (ticket 14 owns the full
+    // stopped-parent rule).
+    if !interrupted {
+        spawn_notice_delivery(&inner, &chat_id);
     }
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.

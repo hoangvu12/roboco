@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use roboco_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
+use roboco_proto::{AgentEvent, HarnessId, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
 
 use crate::constants::MSG_INLINE_MAX;
 
@@ -128,12 +128,16 @@ pub enum NoticeOutcome {
     Completed,
     Errored,
     Stopped,
+    /// The run was lost to an engine restart without auto-resume (ticket
+    /// 13): the work never finished — distinct from a stop, which the
+    /// user chose.
+    Interrupted,
     WaitingForInput,
 }
 
 /// One side chat a completion notice reports: its id and title, the
-/// recorded outcome, and the one-line reason (error text or question
-/// summary) when the outcome carries one.
+/// recorded outcome, and the one-line reason (error text, restart reason or
+/// question summary) when the outcome carries one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NoticeSide {
@@ -144,8 +148,9 @@ pub struct NoticeSide {
     /// without a registry lookup (a later rename never rewrites history).
     pub title: String,
     pub outcome: NoticeOutcome,
-    /// The one-line detail for errored (reason) and waiting-for-input
-    /// (question summary) rows; absent otherwise.
+    /// The one-line detail for errored (reason), interrupted (restart
+    /// reason) and waiting-for-input (question summary) rows; absent
+    /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -249,10 +254,25 @@ pub enum MessagePart {
         /// source does not rewrite history.
         source_title: String,
     },
+    /// The seam a one-way harness switch leaves in a chat's transcript
+    /// (t3-orchestration-v2 ticket 24): everything above ran on another
+    /// harness whose provider session the switch dropped; the next send on
+    /// `harness` carries the budgeted history of everything above. Written
+    /// once per switch by the engine; renders as a "Switched to <harness>"
+    /// divider. Old desktop builds' unknown-kind fallback yields an empty
+    /// text part (invisible). There is no switch BACK: returning to the old
+    /// harness is just another one-way switch.
+    #[serde(rename_all = "camelCase")]
+    HarnessSwitch {
+        id: String,
+        /// The harness the chat switched TO (wire name, e.g. "codex").
+        harness: HarnessId,
+    },
     /// The engine's completion notice (orchestration v2): an engine-authored
     /// SYSTEM entry in a parent chat reporting the recorded outcomes of its
     /// agent-created side chats' turns — finished, failed (one-line reason),
-    /// stopped, or waiting for input (one-line summary). The entry's sibling
+    /// stopped, interrupted by an engine restart without auto-resume, or
+    /// waiting for input (one-line summary). The entry's sibling
     /// text part carries the same notice as plain text, so older layouts —
     /// whose unknown-kind fallback yields an empty part — stay readable.
     /// Written only by the engine when it delivers a notice; never a user
@@ -279,6 +299,7 @@ impl MessagePart {
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
             | MessagePart::Fork { id, .. }
+            | MessagePart::HarnessSwitch { id, .. }
             | MessagePart::CompletionNotice { id, .. } => id,
         }
     }
@@ -317,6 +338,11 @@ impl MessagePart {
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
+            MessagePart::HarnessSwitch { harness, .. } => {
+                // Fixed-size structure (the wire name): never grows, so it
+                // never drives a continuation split.
+                serde_json::to_vec(harness).map_or(0, |v| v.len())
+            }
             MessagePart::CompletionNotice { sides, .. } => sides
                 .iter()
                 .map(|side| {

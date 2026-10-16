@@ -113,6 +113,11 @@ struct DocPartJson {
     source_chat_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_title: Option<String>,
+    /// Harness-switch seam (`kind: "harnessSwitch"`, additive): the harness
+    /// (wire name) the chat switched to; everything above the seam ran on
+    /// another harness whose provider session the switch dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
     /// Tool output summary (additive — absent on old rows and old writers;
     /// pre-strip writers stored up to 4KB of capped output here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -244,6 +249,14 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
+        MessagePart::HarnessSwitch { id, harness } => DocPartJson {
+            id: id.clone(),
+            kind: "harnessSwitch".into(),
+            harness: serde_json::to_value(harness)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            ..Default::default()
+        },
         MessagePart::CompletionNotice { id, sides } => DocPartJson {
             id: id.clone(),
             kind: "completionNotice".into(),
@@ -305,6 +318,24 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             source_chat_id: p.source_chat_id.unwrap_or_default(),
             source_title: p.source_title.unwrap_or_default(),
         },
+        "harnessSwitch" => {
+            // A harness name this build does not know (a future wire value)
+            // degrades to an invisible empty part rather than failing the doc.
+            let harness = p.harness.and_then(|name| {
+                serde_json::from_value::<roboco_proto::HarnessId>(serde_json::Value::String(name))
+                    .ok()
+            });
+            match harness {
+                Some(harness) => MessagePart::HarnessSwitch {
+                    id: p.id,
+                    harness,
+                },
+                None => MessagePart::Text {
+                    id: p.id,
+                    text: String::new(),
+                },
+            }
+        }
         "completionNotice" => MessagePart::CompletionNotice {
             id: p.id,
             sides: p
@@ -1583,6 +1614,37 @@ mod tests {
             duration_ms: None,
             provider_turn: None,
             id: "fork:side".into(),
+            role: MessageRole::System,
+            parts: vec![seam.clone()],
+            created_at: 1,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, MessageRole::System);
+        assert_eq!(entries[0].parts, vec![seam]);
+    }
+
+    /// The one-way harness switch seam (t3-orchestration-v2 ticket 24): a
+    /// SYSTEM entry whose marker part round-trips through the doc with the
+    /// harness wire name. Additive (ADR 0005): an older reader without the
+    /// kind degrades to an invisible empty part; a row from an older writer
+    /// simply never carries one.
+    #[test]
+    fn harness_switch_seam_round_trips_through_the_doc() {
+        let doc = SessionDoc::init("switch").unwrap();
+        let seam = MessagePart::HarnessSwitch {
+            id: "switch:1".into(),
+            harness: roboco_proto::HarnessId::Codex,
+        };
+        doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
+            duration_ms: None,
+            provider_turn: None,
+            id: "switch:1".into(),
             role: MessageRole::System,
             parts: vec![seam.clone()],
             created_at: 1,

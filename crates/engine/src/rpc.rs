@@ -1566,6 +1566,20 @@ impl RpcService for EngineRpc {
                     /// keeps today's behaviour: the latest complete reply.
                     #[serde(default)]
                     boundary: Option<String>,
+                    /// Harness override (t3-orchestration-v2 ticket 22, "fork
+                    /// into another harness"): the copy runs on this harness
+                    /// instead of the source's, its wire name ("codex",
+                    /// "claude-code", …). A pick of the source's own harness
+                    /// — or no pick at all — keeps the native fork behaviour.
+                    #[serde(default)]
+                    harness: Option<String>,
+                    /// Model override (ticket 22): rides the copy's run
+                    /// config. Without a harness change it replaces only the
+                    /// model; into another harness the old model ids are
+                    /// meaningless, so it (or the new harness's default at
+                    /// run time) is all the copy gets.
+                    #[serde(default)]
+                    model: Option<String>,
                 }
                 let p: ForkParams = parse_params(params)?;
                 let parent_chat_id = p
@@ -1637,6 +1651,45 @@ impl RpcService for EngineRpc {
                 // where a turn ref is stamped.
                 let boundary = logical_message_end(&entries, chosen);
                 let ref_entry = logical_message_root(&entries, chosen);
+                // Ticket 22's overrides: a chosen harness (and model). A
+                // trimmed empty string counts as absent — the web client and
+                // the MCP tool hand through whatever the caller typed. An
+                // unknown harness name is refused rather than silently
+                // ignored: the fork would run on the default harness while
+                // the user believes it runs on the one they picked.
+                let requested_harness = p
+                    .harness
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|harness| !harness.is_empty());
+                let requested_model = p
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty());
+                let override_harness = match requested_harness {
+                    None => None,
+                    Some(name) => Some(
+                        serde_json::from_value::<roboco_proto::HarnessId>(
+                            serde_json::Value::String(name.to_owned()),
+                        )
+                        .map_err(|_| RpcError::Failed(format!("Unknown harness: {name}")))?,
+                    ),
+                };
+                // The harness the source's conversation lives on: the
+                // boundary entry's provider turn ref names it (the
+                // native-fork contract), else the row's config. An override
+                // onto any other harness is a CROSS-harness fork: native
+                // fork only works within one harness, so the copy never
+                // records the intent and its first send carries the budgeted
+                // history instead (ticket 01's builder).
+                let source_harness = entries[ref_entry]
+                    .provider_turn
+                    .as_ref()
+                    .map(|reference| reference.harness)
+                    .or_else(|| source.config.as_ref().map(|config| config.harness));
+                let cross_harness =
+                    override_harness.is_some_and(|harness| source_harness != Some(harness));
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
@@ -1649,6 +1702,41 @@ impl RpcService for EngineRpc {
                 chat.harness_session_id = None;
                 chat.harness_session_cwd = None;
                 chat.room_gen = Some(2);
+                // Ticket 22's override on the row's run config. A
+                // cross-harness fork keeps only harness-agnostic settings:
+                // the sandbox. Model, reasoning and model options are ids in
+                // the OLD harness's vocabulary — the override's model (or
+                // the new harness's own default at run time) is all the copy
+                // gets, mirroring the harness-switch rule. A same-harness
+                // pick (or a model-only override) replaces exactly the
+                // model and inherits the rest, like the composer's own
+                // model change. A chat that never carried a config is
+                // pinned to the harness it actually runs on (the engine
+                // default) so a configless source stays honest.
+                if override_harness.is_some() || requested_model.is_some() {
+                    let base = chat.config.clone().unwrap_or(roboco_proto::ChatConfig {
+                        harness: self.doc_host.harness_for(&p.source_chat_id),
+                        model: None,
+                        reasoning: None,
+                        model_options: Default::default(),
+                        sandbox: roboco_proto::SandboxLevel::WorkspaceWrite,
+                    });
+                    chat.config = Some(roboco_proto::ChatConfig {
+                        harness: override_harness.unwrap_or(base.harness),
+                        model: if cross_harness {
+                            requested_model.map(str::to_owned)
+                        } else {
+                            requested_model.map(str::to_owned).or(base.model)
+                        },
+                        reasoning: if cross_harness { None } else { base.reasoning },
+                        model_options: if cross_harness {
+                            Default::default()
+                        } else {
+                            base.model_options
+                        },
+                        sandbox: base.sandbox,
+                    });
+                }
                 // Missing rows open on chat2. Persist history before publishing
                 // the registry row so a crash cannot leave a discoverable empty fork.
                 let target = self.doc_host.open(&chat.id).map_err(failed)?;
@@ -1713,11 +1801,16 @@ impl RpcService for EngineRpc {
                 // The boundary is whatever reply the caller chose — the
                 // latest by default, an earlier/errored/interrupted one
                 // explicitly — so every harness's driver (17–20) forks at
-                // exactly that turn. No ref — old chats, or a harness that
-                // records none — keeps today's behavior: a fresh session
-                // plus the budgeted paste, cut at the boundary because the
-                // fork's own doc only holds the copied prefix.
-                if let Some(reference) = entries[ref_entry].provider_turn.clone() {
+                // exactly that turn. A CROSS-harness fork (ticket 22) never
+                // records the intent: native fork only works within one
+                // harness, so the copy takes the budgeted-paste path.
+                // No ref — old chats, or a harness that records none —
+                // keeps today's behavior: a fresh session plus the budgeted
+                // paste, cut at the boundary because the fork's own doc only
+                // holds the copied prefix.
+                if !cross_harness
+                    && let Some(reference) = entries[ref_entry].provider_turn.clone()
+                {
                     target
                         .doc()
                         .set_provider_fork(
@@ -1733,6 +1826,43 @@ impl RpcService for EngineRpc {
                 self.doc_host.persist_fork(&target).map_err(failed)?;
                 self.workspace.import_chat_row(&chat).map_err(failed)?;
                 RpcReply::value(&chat)
+            }
+            methods::SWITCH_HARNESS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct SwitchParams {
+                    chat_id: String,
+                    harness: HarnessId,
+                    #[serde(default)]
+                    model: Option<String>,
+                    #[serde(default)]
+                    reasoning: Option<roboco_proto::ReasoningLevel>,
+                    #[serde(default)]
+                    model_options: serde_json::Map<String, serde_json::Value>,
+                }
+                let p: SwitchParams = parse_params(params)?;
+                let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+                // Sandbox is the one field the switch does not own: whatever
+                // the chat already runs stays (the picker never offered it).
+                let sandbox = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(failed)?
+                    .and_then(|chat| chat.config)
+                    .map(|config| config.sandbox)
+                    .unwrap_or(roboco_proto::SandboxLevel::WorkspaceWrite);
+                let config = ChatConfig {
+                    harness: p.harness,
+                    model: p.model,
+                    reasoning: p.reasoning,
+                    model_options: p.model_options,
+                    sandbox,
+                };
+                self.sessions
+                    .switch_harness(&p.chat_id, config)
+                    .await
+                    .map_err(failed)?;
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::RELAY_COMMAND => {
                 let p: RelayCommandParams = parse_params(params)?;

@@ -48,6 +48,10 @@ _Avoid_: Conversation, thread, session (when it means the chat)
 A chat with a parent chat: forked from it in the UI, opened blank next to it, or created by its agent through the Roboco MCP tools. Agent-created side chats record their creator; user-created ones never notify it. Lists under the parent instead of the sidebar's main list.
 _Avoid_: Child chat, subagent (that is a harness-spawned agent inside a run)
 
+**Completion notice**:
+The engine-authored system message that tells an agent-created side chat's creator how a turn it started ended: finished, failed (one-line reason), stopped, interrupted (lost to an engine restart without auto-resume), or waiting for input. One merged notice per delivery; it points the parent at `read_chat` rather than carrying the side chat's output.
+_Avoid_: Report, callback, acknowledgement
+
 **Chat status**:
 A chat's live run state: idle, working, awaiting input, or errored.
 _Avoid_: Session, state (when it means chat status)
@@ -91,6 +95,10 @@ _Avoid_: Message (a command is not a message), request
 **Queued message**:
 A user message waiting in the chat's queue, optionally held until the turn ends, delivered in order.
 _Avoid_: Draft, pending message
+
+**Harness switch**:
+A one-way switch of an existing chat to another harness between turns: the engine records a "Switched to <harness>" seam in the transcript, drops the chat's harness session, and the next send starts a fresh session carrying the budgeted history of everything above the seam. Switching back is another switch, never a resume.
+_Avoid_: Harness handoff, migration, resume (the old session is dropped, not resumed)
 
 ## Harnesses
 

@@ -2153,6 +2153,21 @@ impl AppState {
         self.sessions.iter().find(|s| s.chat_id == chat_id)
     }
 
+    /// Whether the selected chat's harness can be switched in place right
+    /// now (t3-orchestration-v2 ticket 24): an existing chat whose turn is
+    /// not in flight — neither Working nor parked on a question — and whose
+    /// send is not pending. The picker stays locked while the chat works;
+    /// the engine refuses the switch for the same window.
+    pub(crate) fn harness_switchable(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        if self.send_pending(chat_id, now) {
+            return false;
+        }
+        !matches!(
+            self.session_for(chat_id).map(|session| session.status),
+            Some(roboco_proto::SessionStatus::Working | roboco_proto::SessionStatus::AwaitingInput)
+        )
+    }
+
     /// Staleness-checked status dot for a chat row. A send in flight reads as
     /// Working (see [`Self::display_status_for`]).
     pub fn indicator_for(&self, chat_id: &str, now: DateTime<Utc>) -> Indicator {

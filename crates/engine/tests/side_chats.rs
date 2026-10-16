@@ -2015,3 +2015,665 @@ async fn an_oversized_fork_message_is_truncated_not_dropped() {
     core.shutdown().await;
 }
 
+
+// ── Fork into another harness and model (t3-orchestration-v2 ticket 22) ──
+
+/// A capture harness pinned to a chosen harness id and provider session:
+/// the fork's target harness in ticket 22's tests. Like [`Capture`] it never
+/// supports title runs, so the auto-titler's throwaway attempts never touch
+/// the recorded requests.
+struct CaptureOn {
+    id: HarnessId,
+    session: &'static str,
+    requests: Arc<Mutex<Vec<RunRequest>>>,
+}
+
+#[async_trait]
+impl Harness for CaptureOn {
+    fn id(&self) -> HarnessId {
+        self.id
+    }
+    fn display_name(&self) -> &str {
+        "CaptureOn"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        _: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.requests.lock().unwrap().push(request);
+        let session = self.session;
+        Ok(futures::stream::iter(vec![
+            Ok(AgentEvent::TextDelta {
+                text: "Side answer".into(),
+            }),
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some(session.into()),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+/// A harness whose turn hits a plan usage limit (ticket 05's structured
+/// error kind): it streams a little, reports the limit, and ends errored —
+/// the state a Limited chat sits in until ticket 06 gives it its own
+/// status. The boundary ref rides the entry like any turn.
+struct LimitHarness {
+    requests: Arc<Mutex<Vec<RunRequest>>>,
+}
+
+#[async_trait]
+impl Harness for LimitHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Limit"
+    }
+    fn supports_steering(&self) -> bool {
+        false
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::TurnBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        _: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.requests.lock().unwrap().push(request);
+        Ok(futures::stream::iter(vec![
+            Ok(AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "parent-provider-session".into(),
+                assistant_message_id: uuid::Uuid::new_v4().to_string(),
+            }),
+            Ok(AgentEvent::TurnRef {
+                reference: roboco_proto::ProviderTurnRef {
+                    harness: HarnessId::Mock,
+                    session_id: "parent-provider-session".into(),
+                    turn_id: "turn-9".into(),
+                },
+            }),
+            Ok(AgentEvent::TextDelta {
+                text: "half an answer".into(),
+            }),
+            Ok(AgentEvent::Error {
+                message: "Claude 5-hour limit reached — the turn was blocked.".into(),
+                kind: Some(roboco_proto::AgentErrorKind::UsageLimit {
+                    window: "5-hour".into(),
+                    resets_at: Some(4102444800000),
+                }),
+            }),
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Errored,
+                result: None,
+                error: Some("Claude 5-hour limit reached — the turn was blocked.".into()),
+                session_id: Some("parent-provider-session".into()),
+            }),
+        ])
+        .boxed())
+    }
+}
+
+/// Queue a message and let the doc host deliver it — the path a composer
+/// send takes, so the run's harness, model, reasoning and options come from
+/// the chat ROW (the fork's recorded config), not a hand-built request.
+/// Waits for the turn to settle and returns the delivered request.
+async fn queued_side_turn(
+    core: &EngineCore,
+    requests: &Arc<Mutex<Vec<RunRequest>>>,
+    chat: &str,
+    prompt: &str,
+) -> RunRequest {
+    let before = requests.lock().unwrap().len();
+    core.doc_host.queue_message(chat, prompt, Vec::new()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let delivered = requests.lock().unwrap().len() > before;
+            let settled = core
+                .sessions
+                .session_status(chat)
+                .is_none_or(|status| status.status != roboco_proto::SessionStatus::Working);
+            if delivered && settled {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    requests.lock().unwrap()[before].clone()
+}
+
+/// A fork with a harness and model override (ticket 22, spec story 61) runs
+/// on that harness and model: the copy's row carries them, and its first
+/// send goes to the TARGET harness with the budgeted history in front —
+/// never a native fork of the source's provider session, and never a resume
+/// of it. The turn after that resumes the target harness's own session with
+/// nothing pasted again.
+#[tokio::test]
+async fn a_fork_with_a_harness_and_model_override_runs_on_that_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let mock_requests = Arc::new(Mutex::new(Vec::new()));
+    let codex_requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(mock_requests.clone())));
+    registry.register(Arc::new(CaptureOn {
+        id: HarnessId::Codex,
+        session: "codex-provider-session",
+        requests: codex_requests.clone(),
+    }));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    // The source runs on Mock with a pinned model, reasoning level and model
+    // option of its own — a cross-harness fork must inherit none of them
+    // (they are ids in the old harness's vocabulary), while the sandbox is
+    // harness-agnostic and rides along.
+    core.workspace
+        .set_chat_config(
+            "main",
+            &roboco_proto::ChatConfig {
+                harness: HarnessId::Mock,
+                model: Some("mock-9".into()),
+                reasoning: Some(ReasoningLevel::Max),
+                model_options: serde_json::Map::from([(
+                    "contextWindow".to_string(),
+                    serde_json::json!("1m"),
+                )]),
+                sandbox: SandboxLevel::ReadOnly,
+            },
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    let fork = client
+        .call_as::<roboco_proto::Chat>(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "harness": "codex",
+                "model": "gpt-6-codex",
+            }),
+        )
+        .await
+        .unwrap();
+    let config = fork.config.expect("the override writes the run config");
+    assert_eq!(config.harness, HarnessId::Codex);
+    assert_eq!(config.model.as_deref(), Some("gpt-6-codex"));
+    assert_eq!(config.reasoning, None, "the old reasoning never crosses");
+    assert!(
+        config.model_options.is_empty(),
+        "the old model options never cross"
+    );
+    assert_eq!(config.sandbox, SandboxLevel::ReadOnly);
+    assert_eq!(
+        core.workspace.chat("side").unwrap().unwrap().config,
+        Some(config),
+        "the imported row carries the override"
+    );
+
+    // The first send — through the queue, the way a composer send goes, so
+    // the row's config (not a hand-built request) routes the harness.
+    let request = queued_side_turn(&core, &codex_requests, "side", "What did I ask?").await;
+    assert_eq!(
+        request.provider_fork, None,
+        "a cross-harness fork never forks the source provider session"
+    );
+    assert_eq!(request.resume, None, "the target harness starts fresh");
+    assert_eq!(request.model.as_deref(), Some("gpt-6-codex"));
+    assert_eq!(request.reasoning, None);
+    assert!(
+        request.model_options.is_empty(),
+        "the old model options never ride the run"
+    );
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(
+        request.prompt.ends_with("What did I ask?"),
+        "{}",
+        request.prompt
+    );
+    assert!(
+        mock_requests.lock().unwrap().is_empty(),
+        "the fork's sends never touch the source's harness"
+    );
+
+    // The next turn resumes the TARGET harness's own session, and the
+    // budgeted history is never delivered twice.
+    let request = queued_side_turn(&core, &codex_requests, "side", "And now?").await;
+    assert_eq!(request.resume.as_deref(), Some("codex-provider-session"));
+    assert_eq!(request.prompt, "And now?", "{}", request.prompt);
+    core.shutdown().await;
+}
+
+/// A fork whose override names the SAME harness — or overrides only the
+/// model — keeps the native fork behaviour (ticket 22): the boundary
+/// reply's provider turn ref drives the first run, nothing is pasted, and
+/// the model override rides the row's config out with the run.
+#[tokio::test]
+async fn a_same_harness_fork_keeps_the_native_fork_behaviour() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    core.workspace
+        .set_chat_config(
+            "main",
+            &roboco_proto::ChatConfig {
+                harness: HarnessId::Mock,
+                model: Some("mock-9".into()),
+                reasoning: Some(ReasoningLevel::Medium),
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+            },
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+
+    // An explicit override naming the source's own harness.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "harness": "mock",
+                "model": "mock-2",
+            }),
+        )
+        .await
+        .unwrap();
+    let config = core.workspace.chat("side").unwrap().unwrap().config.unwrap();
+    assert_eq!(config.harness, HarnessId::Mock);
+    assert_eq!(config.model.as_deref(), Some("mock-2"));
+    // A same-harness pick inherits the rest of the source's config: only
+    // the model was overridden.
+    assert_eq!(config.reasoning, Some(ReasoningLevel::Medium));
+    let request = queued_side_turn(&core, &requests, "side", "What did I ask?").await;
+    let fork = request
+        .provider_fork
+        .expect("a same-harness fork keeps the native fork");
+    assert_eq!(fork.session_id, "parent-provider-session");
+    assert_eq!(fork.last_turn, "turn-1");
+    assert_eq!(request.resume, None);
+    assert_eq!(request.prompt, "What did I ask?", "{}", request.prompt);
+    assert_eq!(request.model.as_deref(), Some("mock-2"));
+
+    // A model-only override, no harness named: native fork again.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side-model-only",
+                "sourceChatId": "main",
+                "model": "mock-3",
+            }),
+        )
+        .await
+        .unwrap();
+    let config = core
+        .workspace
+        .chat("side-model-only")
+        .unwrap()
+        .unwrap()
+        .config
+        .unwrap();
+    assert_eq!(config.harness, HarnessId::Mock);
+    assert_eq!(config.model.as_deref(), Some("mock-3"));
+    let request = queued_side_turn(&core, &requests, "side-model-only", "And now?").await;
+    let fork = request
+        .provider_fork
+        .expect("a model-only override never disables the native fork");
+    assert_eq!(fork.last_turn, "turn-1");
+    assert_eq!(request.prompt, "And now?", "{}", request.prompt);
+    core.shutdown().await;
+}
+
+/// A source chat whose last turn hit a usage limit can still be forked into
+/// another harness (spec story 64): the errored reply is the boundary, the
+/// copy exists, and its first send carries the budgeted history on the new
+/// harness — no native fork, even though the boundary reply carries the
+/// provider turn ref a same-harness fork would have used.
+#[tokio::test]
+async fn a_limited_source_chat_can_be_forked_into_another_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let limited_requests = Arc::new(Mutex::new(Vec::new()));
+    let codex_requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(LimitHarness {
+        requests: limited_requests.clone(),
+    }));
+    registry.register(Arc::new(CaptureOn {
+        id: HarnessId::Codex,
+        session: "codex-provider-session",
+        requests: codex_requests.clone(),
+    }));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    // The next turn hits the plan limit for real: an Error event with the
+    // structured usage-limit kind, an errored Done. The chat sits errored —
+    // the state a Limited chat occupies before ticket 06's own status.
+    core.sessions
+        .dispatch(
+            "main",
+            HarnessId::Mock,
+            RunRequest {
+                mcp: None,
+                prompt: "keep going".into(),
+                harness: Some(HarnessId::Mock),
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                cwd: "/tmp".into(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                auto_approve: true,
+                resume: Some("parent-provider-session".into()),
+                provider_fork: None,
+                attachments: vec![],
+                worktree: None,
+            },
+            Some("u2".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while core
+            .sessions
+            .session_status("main")
+            .is_none_or(|status| status.status != roboco_proto::SessionStatus::Errored)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let entries = source.doc().read_entries().unwrap();
+    let errored = entries
+        .iter()
+        .find(|entry| entry.id != "a1" && entry.role == MessageRole::Assistant)
+        .expect("the limited turn left an errored reply");
+    assert!(
+        errored
+            .parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::Error { .. })),
+        "the reply carries the limit error: {:?}",
+        errored.parts
+    );
+    assert_eq!(
+        errored.provider_turn.as_ref().map(|r| r.turn_id.as_str()),
+        Some("turn-9")
+    );
+
+    // Fork the limited chat into another harness — the default boundary is
+    // the latest complete reply, which is the errored one.
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    let fork = client
+        .call_as::<roboco_proto::Chat>(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "harness": "codex",
+                "model": "gpt-6-codex",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.config.as_ref().map(|config| config.harness),
+        Some(HarnessId::Codex),
+        "the fork exists despite the source's errored state"
+    );
+    let copied = core
+        .doc_host
+        .open("side")
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap();
+    assert!(copied.iter().any(|entry| entry.id == errored.id));
+
+    // Its first send: budgeted history on the new harness, no native fork
+    // even though the boundary reply carries a ref, and no resume.
+    let request = queued_side_turn(&core, &codex_requests, "side", "What did I ask?").await;
+    assert_eq!(request.provider_fork, None);
+    assert_eq!(request.resume, None);
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(
+        request.prompt.ends_with("What did I ask?"),
+        "{}",
+        request.prompt
+    );
+    core.shutdown().await;
+}
+
+/// "Fork from here" INTO another harness (tickets 21+22 combined): the
+/// boundary cuts the copy, and the cross-harness override rides on top —
+/// no native fork even though the boundary reply carries a provider turn
+/// ref, and the budgeted history the first send carries never mentions
+/// anything after the boundary.
+#[tokio::test]
+async fn forking_from_an_earlier_reply_into_another_harness_cuts_and_pastes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mock_requests = Arc::new(Mutex::new(Vec::new()));
+    let codex_requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(mock_requests.clone())));
+    registry.register(Arc::new(CaptureOn {
+        id: HarnessId::Codex,
+        session: "codex-provider-session",
+        requests: codex_requests.clone(),
+    }));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u2",
+            MessageRole::User,
+            "And the code?",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "the code is fine",
+            MessageStatus::Complete,
+            "turn-2",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    let fork = client
+        .call_as::<roboco_proto::Chat>(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "boundary": "a1",
+                "harness": "codex",
+                "model": "gpt-6-codex",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.config.map(|config| (config.harness, config.model)),
+        Some((HarnessId::Codex, Some("gpt-6-codex".into())))
+    );
+    let ids = |chat: &str| {
+        core.doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids("side"),
+        vec!["u1".to_string(), "a1".to_string(), "fork:side".to_string()],
+        "the copy stops at the boundary, inclusive"
+    );
+    // The first send: budgeted history cut at the boundary, no native fork,
+    // no resume — and nothing from after the boundary rides along.
+    let request = queued_side_turn(&core, &codex_requests, "side", "What did I ask?").await;
+    assert_eq!(request.provider_fork, None);
+    assert_eq!(request.resume, None);
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(
+        !request.prompt.contains("the code is fine"),
+        "{}",
+        request.prompt
+    );
+    assert!(request.prompt.ends_with("What did I ask?"), "{}", request.prompt);
+    core.shutdown().await;
+}
