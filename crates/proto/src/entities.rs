@@ -1132,6 +1132,7 @@ pub struct ResumeAccountCandidates {
 pub enum ResumeOnAccountOutcome {
     /// The switch landed and the continuation was dispatched: the chat
     /// resumes its harness session under `account_id`.
+    #[serde(rename_all = "camelCase")]
     Switched {
         account_id: String,
         /// The row's email (or display name) — the "Resumed on …" label.
