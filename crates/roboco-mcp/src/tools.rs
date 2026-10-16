@@ -121,7 +121,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; the harness and model catalogs are validated before writing. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and wait only after all chats have been started.",
+            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; the harness and model catalogs are validated before writing. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and end your turn: side chats you create send you a completion notice when they finish, fail, stop, or need input (pass notify=false for fire-and-forget children).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -135,7 +135,7 @@ fn catalog() -> Vec<ToolDef> {
                     "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "default": "workspace-write" },
                     "title": { "type": "string", "description": "Sidebar title. Otherwise the engine titles it from the first exchange." },
                     "branch": { "type": "string", "description": "Branch label to record on the chat." },
-                    "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
+                    "cwd": { "type": "string", "description": "Working directory override: an existing worktree path to run in. Defaults to the project folder. Give a side chat that will edit files, commit, or switch branches in a git repo its own worktree (git worktree add) or an existing one here; it never switches branches in the main checkout." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
                     "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
                     "notify": { "type": "boolean", "default": true, "description": "For side chats you create: whether you want a completion notice when the chat finishes, fails, stops or needs input (default on). Pass false for fire-and-forget children." },
@@ -145,7 +145,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_chat",
-            description: "Read a chat's transcript as plain messages (newest window by default). Tool calls are summarized one per line.",
+            description: "Read a chat's transcript as plain messages (newest window by default). Tool calls are summarized one per line. Use it to collect a side chat's result after a completion notice names it.",
             input_schema: chat_key_schema(json!({
                 "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 40, "description": "How many messages, counted from the newest." },
                 "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Skip this many newest messages (paging backwards)." },
@@ -155,7 +155,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "send_message",
-            description: "Send a message to a chat. Messages are attributed to your chat. mode 'auto' starts a turn when the chat is idle, steers a running turn through its live mailbox (at the next supported input boundary without interrupting the agent). Use mode 'queue' only to explicitly hold a message for later. With wait=true, blocks until the turn finishes and returns the assistant's reply. For parallel work use send_messages, or send to all chats with wait=false before waiting.",
+            description: "Send a message to a chat. Messages are attributed to your chat. mode 'auto' starts a turn when the chat is idle or errored; when the chat is working, the message is delivered without interrupting the run — mid-turn where the harness accepts prompts mid-run, otherwise held and delivered when the turn ends. Use mode 'queue' only to explicitly hold a message for later. With wait=true, blocks until the turn finishes and returns the assistant's reply. For parallel work use send_messages, or send to all chats with wait=false and end your turn.",
             input_schema: chat_key_schema(json!({
                 "text": { "type": "string" },
                 "mode": { "type": "string", "enum": ["auto", "run", "steer", "queue"], "default": "auto" },
@@ -165,7 +165,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_turn",
-            description: "Block until a chat is no longer working: returns completed, awaitingInput (answer with respond_to_input), errored, or timedOut, with the newest assistant message.",
+            description: "Block until a chat is no longer working: returns completed, awaitingInput (answer with respond_to_input), errored, or timedOut, with the newest assistant message. It blocks your turn — keep it for quick synchronous asks; side chats you create notify you when they settle, so do not babysit them with waits.",
             input_schema: chat_key_schema(json!({
                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
             })),
@@ -205,12 +205,12 @@ fn catalog() -> Vec<ToolDef> {
         (
             "create_chats",
             "create_chat",
-            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Results preserve request order and include per-request errors; successful requests are not rolled back.",
+            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false, so launch every chat and end your turn — your side chats send you completion notices. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful requests are not rolled back.",
         ),
         (
             "send_messages",
             "send_message",
-            "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
+            "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false, so launch every send and end your turn — the side chats you created notify you when they settle. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
         ),
     ] {
         let item_schema = tools
@@ -1067,7 +1067,12 @@ impl Tools {
 
     /// Prefix the sender's identity when this server speaks for a chat, so
     /// the receiving agent (and the human reading that transcript) can tell
-    /// an agent-to-agent message from a typed one.
+    /// an agent-to-agent message from a typed one. A message to this chat's
+    /// own notifying side chat teaches the notice flow instead of inviting a
+    /// reply: that side chat's final reply is already delivered to its
+    /// creator, and hand-sent reports and acknowledgements only start empty
+    /// turns (orchestration v2). Every other chat-to-chat message keeps the
+    /// reply line, so third-party and opted-out targets can still answer.
     async fn attribute(&self, target: &Chat, text: &str) -> String {
         let Some(origin_id) = self.roboco.origin().chat_id.as_deref() else {
             return text.to_owned();
@@ -1085,10 +1090,21 @@ impl Tools {
             }
             _ => short(origin_id).to_owned(),
         };
-        format!(
-            "[Message from Roboco chat {label}. Reply to it with the Roboco `send_message` tool, chat {}.]\n\n{text}",
-            short(origin_id)
-        )
+        // The same rule the engine's completion notices key on: only the
+        // creator's messages to a side chat that did not opt out.
+        let notifying = target.agent_origin.as_ref().is_some_and(|origin| {
+            origin.chat_id == origin_id && origin.notify
+        });
+        if notifying {
+            format!(
+                "[Message from Roboco chat {label}. You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\n{text}"
+            )
+        } else {
+            format!(
+                "[Message from Roboco chat {label}. Reply to it with the Roboco `send_message` tool, chat {}.]\n\n{text}",
+                short(origin_id)
+            )
+        }
     }
 
     /// Pick and perform the delivery the composer would. Run and steer
@@ -1324,6 +1340,9 @@ mod tests {
         writes: Mutex<Vec<(String, Value)>>,
         dispatch_barrier: Option<tokio::sync::Barrier>,
         beta_parent: Option<String>,
+        /// `Chat.agentOrigin` on the Beta row: which chat's agent created it
+        /// and whether it wants completion notices.
+        beta_agent_origin: Option<roboco_proto::AgentOrigin>,
         catalog_error: Option<&'static str>,
     }
 
@@ -1365,6 +1384,7 @@ mod tests {
                     {
                         "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
                         "parentChatId": self.beta_parent,
+                        "agentOrigin": self.beta_agent_origin,
                         "archived": false, "spaceId": "space-1",
                         "createdAt": "2026-09-02T00:00:00Z"
                     }
@@ -1488,6 +1508,107 @@ mod tests {
         assert_eq!(params["command"]["request"]["cwd"], "/repo/comet");
         assert_eq!(params["command"]["request"]["harness"], "claude-code");
         assert_eq!(params["command"]["request"]["model"], "opus");
+    }
+
+    #[tokio::test]
+    async fn attribution_line_varies_with_the_target_chat() {
+        // Beta as an agent-created side chat: who created it and whether it
+        // notifies are the two halves of the new attribution rule.
+        let world = |creator: &str, notify: bool| {
+            Arc::new(World {
+                beta_parent: Some(creator.into()),
+                beta_agent_origin: Some(roboco_proto::AgentOrigin {
+                    chat_id: creator.into(),
+                    notify,
+                }),
+                ..Default::default()
+            })
+        };
+        let prompt_of = |world: &Arc<World>| {
+            let writes = world.writes.lock().unwrap();
+            writes[0].1["command"]["request"]["prompt"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let origin = Origin {
+            chat_id: Some("chat-alpha-1".into()),
+            device_id: None,
+        };
+
+        // The parent's own notifying side chat: the line teaches the notice
+        // flow and no longer invites a reply.
+        let notifying = world("chat-alpha-1", true);
+        let tools = tools(notifying.clone(), origin.clone());
+        tools
+            .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
+            .await
+            .unwrap();
+        let prompt = prompt_of(&notifying);
+        assert!(
+            prompt.starts_with("[Message from Roboco chat Alpha (chat-alp)."),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("your final reply is delivered to it automatically"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Do not report or acknowledge"), "{prompt}");
+        assert!(!prompt.contains("Reply to it with"), "{prompt}");
+        assert!(prompt.ends_with("the task"), "{prompt}");
+
+        // A side chat that opted out of notices keeps today's reply line.
+        let opted_out = world("chat-alpha-1", false);
+        let tools = tools(opted_out.clone(), origin.clone());
+        tools
+            .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
+            .await
+            .unwrap();
+        let prompt = prompt_of(&opted_out);
+        assert!(
+            prompt.contains(
+                "Reply to it with the Roboco `send_message` tool, chat chat-alp."
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("delivered to it automatically"), "{prompt}");
+
+        // A side chat created by a third chat keeps the reply line too: only
+        // the creator's messages teach the notice flow.
+        let foreign = world("chat-gamma-9", true);
+        let tools = tools(foreign.clone(), origin);
+        tools
+            .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
+            .await
+            .unwrap();
+        let prompt = prompt_of(&foreign);
+        assert!(
+            prompt.contains(
+                "Reply to it with the Roboco `send_message` tool, chat chat-alp."
+            ),
+            "{prompt}"
+        );
+
+        // An ordinary chat (no agent origin) keeps today's line.
+        let plain = Arc::new(World::default());
+        let tools = tools(
+            plain.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        tools
+            .call("send_message", json!({ "chat": "Alpha", "text": "the task" }))
+            .await
+            .unwrap();
+        let prompt = prompt_of(&plain);
+        assert!(
+            prompt.contains(
+                "Reply to it with the Roboco `send_message` tool, chat chat-bet."
+            ),
+            "{prompt}"
+        );
     }
 
     #[tokio::test]
@@ -2377,5 +2498,72 @@ mod tests {
             whoami["result"]["structuredContent"]["localDeviceId"],
             "dev-local"
         );
+    }
+
+    #[tokio::test]
+    async fn instructions_teach_notice_driven_orchestration() {
+        let world = Arc::new(World::default());
+        let tools = tools(world, Origin::default());
+        let init = crate::jsonrpc::handle_request(
+            &tools,
+            json!(1),
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18" }),
+        )
+        .await;
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+
+        // The delegation flow: launch without waiting, end the turn, and let
+        // the engine's completion notices carry the outcomes back.
+        assert!(instructions.contains("launch side chats with `wait: false`"));
+        assert!(instructions.contains("end your turn"));
+        assert!(instructions.contains("completion notice"));
+        assert!(instructions.contains("finishes, fails, stops, is interrupted, or needs input"));
+        assert!(instructions.contains("read_chat"));
+        assert!(instructions.contains("respond_to_input"));
+        assert!(instructions.contains("quick synchronous"));
+        // The old blocking-collect guidance is gone.
+        assert!(!instructions.contains("to collect replies"));
+
+        // The notify opt-out and the side-chat no-report rule.
+        assert!(instructions.contains("notify: false"));
+        assert!(
+            instructions.contains("your final reply is delivered to your parent"),
+            "side chats must be told their reply is delivered automatically"
+        );
+        assert!(instructions.contains("Do not report progress or acknowledge"));
+
+        // The conditional worktree rule.
+        assert!(instructions.contains("git worktree add"));
+        assert!(instructions.contains("never switches branches in the main checkout"));
+        assert!(instructions.contains("Read-only side chats"));
+    }
+
+    #[tokio::test]
+    async fn tool_descriptions_match_the_notice_flow() {
+        let defs = catalog();
+        let find = |name: &str| defs.iter().find(|d| d.name == name).unwrap();
+
+        let create = find("create_chat");
+        assert!(create.description.contains("end your turn"));
+        assert!(create.description.contains("completion notice"));
+        assert!(create.description.contains("notify=false"));
+        let batch = find("create_chats");
+        assert!(batch.description.contains("completion notices"));
+        let send_batch = find("send_messages");
+        assert!(send_batch.description.contains("notify you"));
+        let read = find("read_chat");
+        assert!(read.description.contains("completion notice"));
+
+        // `send_message` claims only behaviour every harness has: mid-turn
+        // delivery is conditional, and the held case is spelled out.
+        let send = find("send_message");
+        assert!(!send.description.contains("live mailbox"));
+        assert!(send.description.contains("idle or errored"));
+        assert!(send.description.contains("held and delivered when the turn ends"));
+
+        let wait = find("wait_for_turn");
+        assert!(wait.description.contains("quick synchronous"));
+        assert!(wait.description.contains("notify you"));
     }
 }
