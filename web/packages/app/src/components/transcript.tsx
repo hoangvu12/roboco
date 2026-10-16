@@ -2010,7 +2010,7 @@ export function estimateRowHeight(
       // the card's own (8+8), the 20px header, the 4px gap, and one 42px
       // two-line row per side — an estimate the measurement corrects on
       // mount.
-      return 40 + kind.sides.length * 42;
+      return 48 + kind.sides.length * 42;
   }
 }
 
@@ -2714,9 +2714,11 @@ function ForkMarkerRow({ sourceTitle }: { sourceTitle: string }) {
  * colored outcome verb with its one-line reason (the error, the restart
  * reason, the question) on the second, and the spawn chip's trailing
  * "opens elsewhere" glyph at the end. Without a host handler (the read-only
- * subagent pane) the rows render inert — no control, no lie.
+ * subagent pane) the rows render inert — no control, no lie. Exported for
+ * its jsdom suite (tests/transcript-completion-notice-control.test.ts),
+ * like the settings page's AccountRow sibling.
  */
-function CompletionNoticeRow({
+export function CompletionNoticeRow({
   sides,
   onOpenChat,
 }: {

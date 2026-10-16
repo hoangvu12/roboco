@@ -7547,8 +7547,10 @@ impl Transcript {
             let outcome = notice_outcome_line(notice_outcome_verb(side.outcome), side.detail.as_deref());
             let outcome_color = notice_outcome_color(side.outcome, theme);
             let full_title = title.clone();
+            let side_id = SharedString::from(format!("{row_id}#side{ix}"));
             div()
-                .id(SharedString::from(format!("{row_id}#side{ix}")))
+                .id(side_id.clone())
+                .debug_selector(move || side_id.to_string())
                 .min_w_0()
                 .overflow_hidden()
                 .rounded(px(6.0))
@@ -10485,6 +10487,73 @@ mod tests {
         ] {
             assert_eq!(notice_outcome_verb(outcome), verb);
         }
+    }
+
+    /// Ticket 15's control: clicking a notice's side row opens that side
+    /// chat — the row emits `TranscriptEvent::OpenSideChat` carrying THAT
+    /// row's chat id (the shell routes the event to `open_chat`, exactly
+    /// like a sidebar click).
+    #[gpui::test]
+    fn clicking_a_notice_side_row_opens_that_side_chat(cx: &mut gpui::TestAppContext) {
+        use gpui::Modifiers;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (state, transcript) = cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            (state, transcript)
+        });
+        cx.update(|cx| {
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat-a".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![notice_entry(
+                    "notice:5",
+                    vec![
+                        notice_side("chat-side-1234", "Implement login", NoticeOutcome::Completed),
+                        NoticeSide {
+                            detail: Some("the build command timed out".into()),
+                            ..notice_side("chat-side-5678", "Flaky test", NoticeOutcome::Errored)
+                        },
+                    ],
+                    "2 side chats reached outcomes.",
+                )];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| this.sync(cx));
+        });
+        struct NoticeHost {
+            transcript: Entity<Transcript>,
+        }
+        impl Render for NoticeHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.transcript.clone())
+            }
+        }
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let recorded = opened.clone();
+        let (_host, window) =
+            cx.add_window_view(|_, _| NoticeHost {
+                transcript: transcript.clone(),
+            });
+        let _sub = window.update(|_, cx| {
+            cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                if let TranscriptEvent::OpenSideChat { chat_id } = event {
+                    recorded.borrow_mut().push(chat_id.clone());
+                }
+            })
+        });
+        window.update(|window, cx| window.draw(cx).clear());
+        // The SECOND side chat's row: each row carries its own chat id, not
+        // the notice's or the first side's.
+        let row = window
+            .debug_bounds("notice:5#n0#side1")
+            .expect("the notice's second side row renders");
+        window.simulate_click(row.center(), Modifiers::default());
+        assert_eq!(opened.borrow().as_slice(), ["chat-side-5678"]);
     }
 
     fn with_tool_group_navigation(
