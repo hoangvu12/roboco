@@ -1743,6 +1743,13 @@ impl DocHost {
             let Ok(Some(head)) = handle.doc.read_queue().map(|q| q.into_iter().next()) else {
                 return;
             };
+            // A pause armed while this drain sat between rows (a capped
+            // completion notice parks its row and freezes the queue in one
+            // step — ticket 14) holds the head too: nothing dispatches
+            // while paused, whenever the pause landed.
+            if handle.queue_paused.load(Ordering::Acquire) {
+                return;
+            }
             match &head.delivery_gate {
                 Some(QueueDeliveryGate::Editing {
                     lease_id,
@@ -2773,6 +2780,13 @@ impl DocHost {
                 self.await_earlier_prompts(sessions, handle, &entry.id)
                     .await;
                 *lock(&handle.stopped_by) = Some(entry.id.clone());
+                // The user's Stop drops the notices this chat is owed as a
+                // parent and suppresses outcomes from side chats whose
+                // notifiable turns are running now (ticket 14). Stopping an
+                // idle chat still drops them — a stopped parent must not
+                // restart on its own — which `interrupt_and_pause_queue`
+                // would skip when there is nothing to stop.
+                crate::completion_notices::stop_parent(sessions, &handle.chat_id);
                 // Sends before this Stop that are still on their way (a slow
                 // dispatch the wait above gave up on) are cancelled with it.
                 if let Ok(commands) = handle.doc.read_commands()

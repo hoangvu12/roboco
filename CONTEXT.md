@@ -49,7 +49,7 @@ A chat with a parent chat: forked from it in the UI, opened blank next to it, or
 _Avoid_: Child chat, subagent (that is a harness-spawned agent inside a run)
 
 **Completion notice**:
-The engine-authored system message that tells an agent-created side chat's creator how a turn it started ended: finished, failed (one-line reason), stopped, interrupted (lost to an engine restart without auto-resume), or waiting for input. One merged notice per delivery; it points the parent at `read_chat` rather than carrying the side chat's output.
+The engine-authored system message that tells an agent-created side chat's creator how a turn it started ended: finished, failed (one-line reason), stopped, interrupted (lost to an engine restart without auto-resume), or waiting for input. One merged notice per delivery; it points the parent at `read_chat` rather than carrying the side chat's output. Outcomes the parent already observed (through `wait_for_turn`, a send with wait, `read_chat` or `get_chat`) owe no notice; stopping the parent drops the notices owed to it; at most 25 consecutive notice-started turns may run without a user message in between — past the cap, notices park in the parent's queue, paused, until the user acts.
 _Avoid_: Report, callback, acknowledgement
 
 **Chat status**:

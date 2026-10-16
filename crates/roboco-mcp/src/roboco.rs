@@ -343,6 +343,19 @@ impl Roboco {
             .to_owned())
     }
 
+    /// Report that the calling chat (`origin_chat_id`) observed `chat_id`
+    /// after its last outcome happened — through `wait_for_turn`, a send
+    /// with wait, `read_chat` or `get_chat` (ticket 14). Completion-notice
+    /// outcomes the parent already observed owe no notice.
+    pub async fn ack_side_chat(&self, chat_id: &str, origin_chat_id: &str) -> anyhow::Result<()> {
+        self.call(
+            methods::ACK_SIDE_CHAT,
+            json!({ "chatId": chat_id, "originChatId": origin_chat_id }),
+        )
+        .await?;
+        Ok(())
+    }
+
     // ---- resolution --------------------------------------------------------
 
     /// Full id, unique id prefix, or exact (case-insensitive) title.

@@ -116,6 +116,14 @@ pub mod methods {
     /// Steer this row into the live turn without interrupting it.
     /// `{ chatId, id }` → `{ sent }`.
     pub const STEER_QUEUED_MESSAGE_NOW: &str = "SteerQueuedMessageNow";
+    /// An agent parent observed a chat after its last outcome happened
+    /// (ticket 14, orchestration v2): the Roboco MCP server reports it for
+    /// its calling chat after `wait_for_turn`, `send_message` with wait,
+    /// `read_chat` or `get_chat`. Params `{ chatId, originChatId }` → `{}`:
+    /// completion-notice outcomes the parent already observed owe no
+    /// notice — they are dropped, and a record that lands right after the
+    /// report raced it is dropped too.
+    pub const ACK_SIDE_CHAT: &str = "AckSideChat";
     /// Pushed edge-connectivity posture (`roboco_proto::Connectivity`):
     /// current value first, then every change — the connection pill /
     /// composer-honesty / queued-badge feed. No params; IPC-only.
