@@ -58,6 +58,13 @@ jobs:
         # the native fork (thread/fork + fallback paste) and provider turn
         # refs; it was previously not run by any workflow.
         run: cargo test --locked -p roboco-harness --test codex
+      - name: Claude native driver integration tests
+        # t3-orchestration-v2 ticket 18: the fake-CLI suite covers the
+        # native fork (--resume + --fork-session + --resume-session-at, the
+        # refused-flag and missing-session budgeted pastes) and provider
+        # turn refs (message uuids); it was previously not run by any
+        # workflow (unix-gated like the fake CLI itself).
+        run: cargo test --locked -p roboco-harness --test claude
       - name: Pi native driver integration tests
         run: |
           cargo test --locked -p roboco-harness --test pi
