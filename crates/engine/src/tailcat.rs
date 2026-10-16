@@ -195,6 +195,9 @@ pub fn read_recorded_address(data_dir: &Path) -> Result<Option<String>> {
 /// A running `serve` adapter: publishes one loopback target over Tailcat.
 pub struct TailcatServer {
     address: String,
+    /// The data directory this server's publication was recorded in, when
+    /// the record write succeeded.
+    recorded_in: Option<PathBuf>,
     _child: AdapterChild,
 }
 
@@ -224,9 +227,13 @@ impl TailcatServer {
         let ready: ServeReadiness = child.read_readiness("serve")?;
         validate_tailcat_address(&ready.address)?;
         // Best effort: a read-only data dir must not take the transport down.
-        if let Err(error) = record_address(data_dir, &ready.address) {
-            tracing::warn!(%error, "tailcat address could not be recorded for the pairing CLI");
-        }
+        let recorded_in = match record_address(data_dir, &ready.address) {
+            Ok(()) => Some(data_dir.to_path_buf()),
+            Err(error) => {
+                tracing::warn!(%error, "tailcat address could not be recorded for the pairing CLI");
+                None
+            }
+        };
         tracing::info!(
             adapter = %adapter.display(),
             target = %target,
@@ -235,6 +242,7 @@ impl TailcatServer {
         );
         Ok(Self {
             address: ready.address,
+            recorded_in,
             _child: child,
         })
     }
@@ -245,6 +253,46 @@ impl TailcatServer {
     }
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// The address to mint an invite from: this server's recorded
+    /// publication, re-read now, else the copy held since startup.
+    ///
+    /// A live engine once minted every invite from an in-memory copy that
+    /// had drifted from the record by single-bit flips while the record
+    /// still dialled; every client's `ParseAddr` refused the drifted one.
+    /// The adapter publishes once per `serve` and persists its identity,
+    /// so the record is this route's address for as long as it runs.
+    pub fn published_address(&self) -> String {
+        current_publication(&self.address, self.recorded_in.as_deref())
+    }
+}
+
+/// [`TailcatServer::published_address`] over its parts: the record in
+/// `recorded_in` when it still reads back, else `held`.
+fn current_publication(held: &str, recorded_in: Option<&Path>) -> String {
+    let Some(data_dir) = recorded_in else {
+        return held.to_owned();
+    };
+    match read_recorded_address(data_dir) {
+        Ok(Some(recorded)) => {
+            if recorded != held {
+                tracing::warn!(
+                    recorded = %describe(&recorded),
+                    held = %describe(held),
+                    "the tailcat address held in memory no longer matches the recorded publication; minting from the record"
+                );
+            }
+            recorded
+        }
+        Ok(None) => {
+            tracing::warn!("the recorded tailcat address is gone; minting from the copy held in memory");
+            held.to_owned()
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the recorded tailcat address is unreadable; minting from the copy held in memory");
+            held.to_owned()
+        }
     }
 }
 
@@ -657,6 +705,12 @@ mod tests {
             read_recorded_address(dir.path()).unwrap().as_deref(),
             Some(ADDRESS)
         );
+        assert_eq!(server.published_address(), ADDRESS);
+        // Minting re-reads the record rather than trusting the copy held
+        // since startup.
+        const REPUBLISHED: &str = "tcBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        record_address(dir.path(), REPUBLISHED).unwrap();
+        assert_eq!(server.published_address(), REPUBLISHED);
         drop(server);
         assert_eq!(wait_for(&marker).trim(), "exited");
     }
@@ -757,6 +811,37 @@ mod tests {
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Invites mint from the recorded publication, not the copy held in memory.
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    const RECORDED: &str = "tcRECORDEDaddress_V_Sqioxl";
+    /// [`RECORDED`] with the live engine's single-bit flips (`q`→`i`, `i`→`m`).
+    const DRIFTED: &str = "tcRECORDEDaddress_V_Simoxl";
+
+    #[test]
+    fn the_record_wins_over_a_drifted_copy_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        record_address(dir.path(), RECORDED).unwrap();
+        assert_eq!(current_publication(DRIFTED, Some(dir.path())), RECORDED);
+        assert_eq!(current_publication(RECORDED, Some(dir.path())), RECORDED);
+    }
+
+    #[test]
+    fn the_copy_in_memory_stands_in_when_there_is_no_usable_record() {
+        let dir = tempfile::tempdir().unwrap();
+        // The record write failed at startup: an older file is not this route's.
+        record_address(dir.path(), RECORDED).unwrap();
+        assert_eq!(current_publication(DRIFTED, None), DRIFTED);
+        // The record vanished or was damaged after startup.
+        std::fs::write(dir.path().join(ADDRESS_FILE), b"{broken").unwrap();
+        assert_eq!(current_publication(DRIFTED, Some(dir.path())), DRIFTED);
+        std::fs::remove_file(dir.path().join(ADDRESS_FILE)).unwrap();
+        assert_eq!(current_publication(DRIFTED, Some(dir.path())), DRIFTED);
+    }
 }
 
 /// The embedded adapter must reach disk on every platform the desktop ships.

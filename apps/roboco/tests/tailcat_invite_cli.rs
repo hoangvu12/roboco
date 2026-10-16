@@ -3,7 +3,7 @@
 //! one readiness JSON line on stdout, then it stays alive until killed or stdin EOF.
 #![cfg(unix)]
 
-use roboco_engine::tailcat::{INVITE_PREFIX, TailcatInvite};
+use roboco_engine::tailcat::{INVITE_PREFIX, TailcatInvite, read_recorded_address};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -14,6 +14,9 @@ use std::{
 };
 
 const FAKE_ADDRESS: &str = "tcZmFrZS1yb3V0ZQ";
+/// What the engine records when the route's publication is rewritten while
+/// it runs: the address the engine holds in memory is then stale.
+const RECORDED_ADDRESS: &str = "tccmVjb3JkZWQtcm91dGU";
 const DEFAULT_IPC_PORT: u16 = 27654;
 
 fn make_fake_adapter(root: &Path) -> PathBuf {
@@ -90,7 +93,8 @@ fn run_invite_with_ipc_port(
     command.output().expect("run actual roboco CLI")
 }
 
-fn successful_invite(output: &Output, ttl_seconds: u64) -> Value {
+/// Every invite carries the address the engine recorded for its route.
+fn successful_invite(data_dir: &Path, output: &Output, ttl_seconds: u64) -> Value {
     assert!(
         output.status.success(),
         "CLI failed (status {}):\nstdout: {}\nstderr: {}",
@@ -102,7 +106,10 @@ fn successful_invite(output: &Output, ttl_seconds: u64) -> Value {
     let url = value["url"].as_str().expect("invite URL in JSON");
     assert!(url.starts_with(INVITE_PREFIX), "unexpected invite: {url}");
     let invite = TailcatInvite::decode(url).expect("CLI emitted a valid Tailcat invite");
-    assert_eq!(invite.address, FAKE_ADDRESS);
+    let recorded = read_recorded_address(data_dir)
+        .expect("readable recorded Tailcat address")
+        .expect("the engine recorded its Tailcat address");
+    assert_eq!(invite.address, recorded, "the invite must carry the recorded address");
     assert!(!invite.token.is_empty());
     let expires_at = value["expiresAt"].as_i64().expect("expiresAt in JSON");
     assert_eq!(invite.expires_at, expires_at);
@@ -345,6 +352,7 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
     .unwrap();
 
     let first = successful_invite(
+        &data_dir,
         &run_invite(
             &data_dir,
             Some(&fake_adapter),
@@ -353,6 +361,10 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
             &["--ttl-seconds", "47", "--json"],
         ),
         47,
+    );
+    assert_eq!(
+        TailcatInvite::decode(first["url"].as_str().unwrap()).unwrap().address,
+        FAKE_ADDRESS
     );
     let endpoint = engine_endpoint(&data_dir);
     let engine_pid = endpoint["pid"].as_u64().unwrap();
@@ -385,6 +397,7 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
     );
 
     let second = successful_invite(
+        &data_dir,
         &run_invite(
             &data_dir,
             Some(&fake_adapter),
@@ -413,6 +426,7 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
         "qrSvg only with --qr: {first}"
     );
     let with_qr = successful_invite(
+        &data_dir,
         &run_invite(
             &data_dir,
             Some(&fake_adapter),
@@ -466,10 +480,42 @@ fn invite_starts_engine_switches_settings_reuses_healthy_route_and_restarts_dead
         "the --qr mints reuse the same healthy route"
     );
 
+    // The live engine minted from the address it held since startup after
+    // that copy had drifted from the record; only the record dialled. A mint
+    // reads the record of the running route, so a rewritten record is what
+    // the next invite carries — from the same engine and the same adapter.
+    fs::write(
+        data_dir.join("tailcat-address.json"),
+        serde_json::to_vec(&json!({ "version": 1, "address": RECORDED_ADDRESS })).unwrap(),
+    )
+    .unwrap();
+    let from_record = successful_invite(
+        &data_dir,
+        &run_invite(
+            &data_dir,
+            Some(&fake_adapter),
+            Some(&adapter_pids_path),
+            Some(&adapter_args_path),
+            &["--ttl-seconds", "47", "--json"],
+        ),
+        47,
+    );
+    assert_eq!(
+        TailcatInvite::decode(from_record["url"].as_str().unwrap()).unwrap().address,
+        RECORDED_ADDRESS
+    );
+    assert_eq!(engine_endpoint(&data_dir)["pid"].as_u64(), Some(engine_pid));
+    assert_eq!(
+        adapter_pids(&adapter_pids_path).len(),
+        1,
+        "minting from the record reuses the same healthy route"
+    );
+
     // A route address that was once ready is not enough: after its adapter dies,
     // the next CLI call must obtain fresh readiness before minting another invite.
     kill_fake_adapter(first_pids[0]);
     let restarted = successful_invite(
+        &data_dir,
         &run_invite(
             &data_dir,
             Some(&fake_adapter),
@@ -504,6 +550,7 @@ fn fresh_invite_uses_ephemeral_ipc_when_default_port_is_occupied() {
     let _engine = DetachedEngineGuard::new(&data_dir, &adapter_pids_path);
 
     let invite = successful_invite(
+        &data_dir,
         &run_invite_with_ipc_port(
             &data_dir,
             Some(&adapter),
