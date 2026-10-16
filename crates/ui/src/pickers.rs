@@ -6116,7 +6116,7 @@ mod tests {
                     .read(cx)
                     .selected_chat_row()
                     .and_then(|chat| chat.config.clone());
-                assert_eq!(config.map(|c| c.harness), Some(HarnessId::Codex));
+                assert_eq!(config.as_ref().map(|c| c.harness), Some(HarnessId::Codex));
                 // Model options reset to the new harness's defaults (none
                 // remembered): the old harness's model never lingers.
                 assert_eq!(config.as_ref().and_then(|c| c.model.as_deref()), None);

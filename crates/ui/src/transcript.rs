@@ -7217,7 +7217,7 @@ impl Transcript {
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(TranscriptEvent::ForkFromEntry {
                             chat_id: chat_id.clone(),
-                            entry_id: entry_id.clone(),
+                            entry_id: entry_id.to_string(),
                         });
                     }))
                     .tooltip(crate::settings::widgets::text_tooltip(
