@@ -192,9 +192,9 @@ impl Harness for MockHarness {
         let (body, tail) = self.script.split_at(done_ix);
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
-            // Same classification the Claude driver attaches to its
-            // `rate_limit` error code, so engine tests can drive Limited
-            // state without a real CLI.
+            // The same classification the Claude driver attaches to its
+            // `rate_limit` error code, so engine-side tests can assert on the
+            // structured kind without a real CLI.
             kind: Some(AgentErrorKind::UsageLimit {
                 window: "usage".into(),
                 resets_at: None,

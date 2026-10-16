@@ -48,7 +48,9 @@ fn rate_window_label(kind: &str) -> &'static str {
 fn assistant_error_kind(code: &str) -> Option<AgentErrorKind> {
     match code {
         "rate_limit" => Some(AgentErrorKind::UsageLimit {
-            window: rate_window_label("").into(),
+            // Which window was hit is unknown at this surface — the plain
+            // "usage" label (the fallback window wording).
+            window: "usage".into(),
             resets_at: None,
         }),
         "authentication_failed" => Some(AgentErrorKind::SignedOut),
@@ -689,7 +691,12 @@ impl Normalizer {
                     ),
                     kind: Some(AgentErrorKind::UsageLimit {
                         window: window.into(),
-                        resets_at: f.rate_limit_info.resets_at.map(|ms| ms as i64),
+                        // The CLI reports the reset in unix seconds
+                        // (live-verified 2.1.228); the kind carries millis.
+                        resets_at: f
+                            .rate_limit_info
+                            .resets_at
+                            .map(|secs| (secs as i64).saturating_mul(1000)),
                     }),
                 }]
             }
@@ -1467,10 +1474,11 @@ mod tests {
     #[test]
     fn a_blocking_limit_event_carries_the_window_and_reset_time() {
         // The blocking event yields kind usage-limit with the window label
-        // and the CLI's own reset time (unix millis); the message is
-        // unchanged, so older clients render exactly as before.
+        // and the CLI's own reset time — unix seconds on the wire (the live
+        // 2.1.228 capture carries seconds), millis in the kind. The message
+        // is unchanged, so older clients render exactly as before.
         let events = normalize_one(
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400000}}"#,
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}"#,
         );
         assert_eq!(
             events,

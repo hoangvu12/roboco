@@ -556,8 +556,9 @@ pub enum DoneStatus {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentErrorKind {
     /// A harness account's plan usage limit blocked the turn. The window is
-    /// the harness's own label ("5-hour", "weekly", …); `resets_at` is the
-    /// epoch-millis instant the harness reported, when it reported one.
+    /// the harness's own label ("5-hour", "weekly", … — "usage" when the
+    /// harness did not name the window); `resets_at` is the epoch-millis
+    /// instant the harness reported, when it reported one.
     #[serde(rename_all = "camelCase")]
     UsageLimit {
         window: String,
@@ -794,7 +795,10 @@ mod tests {
             kind: Some(AgentErrorKind::SignedOut),
         };
         let json = serde_json::to_value(&signed_out).unwrap();
-        assert_eq!(json["kind"], serde_json::json!({"type": "signedOut"}));
+        assert_eq!(
+            json.get("kind"),
+            Some(&serde_json::json!({"type": "signedOut"}))
+        );
         assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), signed_out);
 
         // An unknown reset time is omitted, not null.

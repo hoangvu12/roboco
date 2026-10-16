@@ -1559,6 +1559,7 @@ async fn run_session(session: Session) {
                         // part. Unclassified failures keep their historical
                         // Done-only shape.
                         let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        let mut text_rides_error_event = false;
                         if let (Some(message), Some(kind)) = (&error, &kind) {
                             let classified = AgentEvent::Error {
                                 message: message.clone(),
@@ -1567,6 +1568,7 @@ async fn run_session(session: Session) {
                             if !send(&event_tx, classified).await {
                                 break 'main;
                             }
+                            text_rides_error_event = true;
                         }
                         let status = if interrupted || stopping {
                             DoneStatus::Interrupted
@@ -1589,7 +1591,7 @@ async fn run_session(session: Session) {
                             AgentEvent::Done {
                                 status,
                                 result: None,
-                                error: if kind.is_some() { None } else { error },
+                                error: if text_rides_error_event { None } else { error },
                                 session_id: Some(thread_id.clone()),
                             },
                         )

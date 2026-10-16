@@ -153,8 +153,8 @@ pub(crate) struct RateLimitReset {
     pub resets_at: i64,
 }
 
-/// Which claude.ai-style window label a Codex window duration gets, so both
-/// drivers speak the same window vocabulary.
+/// Which window label a usage-window duration gets — the same 5-hour/weekly
+/// vocabulary the Claude driver uses, so clients see one label scheme.
 fn window_label(minutes: i64) -> &'static str {
     match minutes {
         300 => "5-hour",
