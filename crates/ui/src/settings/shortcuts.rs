@@ -87,6 +87,8 @@ pub struct ShortcutsPage {
     completion_task: Option<gpui::Task<()>>,
     /// Settings → General's thread naming card (its own title-bound picker).
     thread_naming: Entity<crate::settings::thread_naming::ThreadNamingCard>,
+    /// Settings → General's auto-resume card (engine settings RPC).
+    auto_resume: Entity<crate::settings::auto_resume::AutoResumeCard>,
 }
 
 impl EventEmitter<ShortcutsEvent> for ShortcutsPage {}
@@ -130,6 +132,8 @@ impl ShortcutsPage {
             completion_task: None,
             thread_naming: cx
                 .new(|cx| crate::settings::thread_naming::ThreadNamingCard::new(state, cx)),
+            auto_resume: cx
+                .new(|cx| crate::settings::auto_resume::AutoResumeCard::new(state, cx)),
         }
     }
 
@@ -497,7 +501,8 @@ impl ShortcutsPage {
                                         .child(compact_model_picker_row)
                                         .child(escape_behavior_row),
                                 )
-                                .child(self.thread_naming.clone()),
+                                .child(self.thread_naming.clone())
+                                .child(self.auto_resume.clone()),
                         ),
                 )
                 .fade_overflow_y(&self.scroll.scroll),

@@ -21,6 +21,7 @@ mod chat_persistence;
 pub mod completion_notices;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod engine_settings;
 mod fs_watch;
 pub mod harness_updates;
 mod http_error;
@@ -35,6 +36,7 @@ pub mod registry;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
+pub mod scheduled_resumes;
 pub mod sessions;
 pub mod sidebar_state;
 pub mod source_control;
@@ -59,6 +61,7 @@ pub use diff_sync::{
     discard_working_tree, merge_base, read_diff_file_text, snapshot_tree, working_diff_base,
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig};
+pub use engine_settings::EngineSettings;
 pub use instance_lock::InstanceLock;
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
@@ -238,12 +241,23 @@ impl EngineCore {
         // ledger — then deliver everything once recovery has settled the
         // chats.
         sessions.load_pending_notices(&profile.store_root().join("completion-notices.json"));
+        // Engine settings (auto-resume limited chats, …) and the durable
+        // Resume-at-reset store both live under the engine data dir; the
+        // continuations' timers arm after `recover_stale` (firing needs the
+        // wired doc host) — orchestration v2, ticket 07.
+        sessions.set_engine_settings_store(crate::engine_settings::EngineSettingsStore::open(
+            Some(data_dir.join("engine-settings.json")),
+        ));
+        sessions.set_scheduled_resumes_path(data_dir.join("scheduled-resumes.json"));
         match sessions.recover_stale() {
             Ok(0) => {}
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
         sessions.deliver_pending_notices();
+        // Overdue continuations fire after boot; the rest sleep until their
+        // reset time. Staggered with the crashed-run resumes above.
+        sessions.recover_scheduled_resumes();
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());

@@ -737,6 +737,9 @@ mod tests {
                 resets_at: Some(1_762_675_400_000),
                 account_id: None,
             }),
+            // Ticket 07's additive field: nothing armed in this fixture
+            // (the banner's Resume-at-reset offer stays out of the way).
+            scheduled_resume: None,
         };
         (chat, session)
     }

@@ -1083,6 +1083,7 @@ mod tests {
             started_at: None,
             updated_at: at,
             limit: None,
+            scheduled_resume: None,
         }
     }
 

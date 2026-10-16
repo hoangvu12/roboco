@@ -504,7 +504,20 @@ def run_prompt(req):
         # its queue, and re-deliver it once the extension run winds down.
         user_message(text)
         turn_and_settle("reply:" + text)
-        time.sleep(0.3)  # the driver parks: probe + stats + first Done
+        # Close the prompted turn fully (settle probe + stats) before the
+        # wake run starts — the fake is single-threaded and cannot answer
+        # the probe while a scenario sleeps. A probe left unanswered would
+        # both kill this scenario at the prompt assert (the buffered
+        # get_state is what read_command returns) and make the driver queue
+        # the steer behind the in-flight probe instead of delivering it as
+        # the prompt pi rejects.
+        probe = read_command()
+        assert probe["type"] == "get_state", probe
+        response(probe, state_data())
+        stats = read_command()
+        assert stats["type"] == "get_session_stats", stats
+        response(stats, stats_data())
+        time.sleep(0.3)  # the driver parks: the turn Done is out
         streaming = True
         emit({"type": "agent_start"})
         emit({"type": "turn_start"})
