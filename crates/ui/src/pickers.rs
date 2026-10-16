@@ -6270,6 +6270,15 @@ mod tests {
                 ));
             });
             pickers.update(cx, |pickers, cx| {
+                // The Codex catalog the rail would have prefetched, present
+                // up front: the pick below must be exactly one SwitchHarness
+                // frame, with no ListModels prefetch muddying the wire. The
+                // remembered model still rides the switch even though the
+                // fresh catalog no longer lists it.
+                pickers.models.insert(
+                    HarnessId::Codex,
+                    Loadable::Ready(vec![bare_model("codex-refreshed", "Codex")]),
+                );
                 // Remembered defaults for the new harness ride the switch;
                 // nothing remembered means the engine resets to the
                 // harness's own defaults.
@@ -6283,6 +6292,16 @@ mod tests {
                 pickers.pick_harness(HarnessId::Codex, cx);
             });
         });
+        cx.run_until_parked();
+        // `EngineTarget::call` spawns onto the registry's runtime handle —
+        // this current_thread runtime — so the frame lands only once the
+        // runtime is driven; `run_until_parked` alone polls only the GPUI
+        // task up to the spawn point (the sidebar_state_sync pump idiom).
+        for _ in 0..16 {
+            runtime.block_on(async {
+                tokio::task::yield_now().await;
+            });
+        }
         cx.run_until_parked();
         let frame = requests.try_recv().expect("the switch reached the engine");
         assert!(frame.contains("SwitchHarness"), "{frame}");
@@ -8198,6 +8217,21 @@ mod tests {
                 assert_eq!(picker.config.model.as_deref(), Some("codex-model"));
                 picker.state.update(cx, |state, cx| {
                     state.selected_chat = Some("thread".into());
+                    // Ticket 24: an idle chat unlocks the picker for a
+                    // one-way switch, so the restrictions this block probes
+                    // live only while a turn runs — give the thread a
+                    // Working session (the lock-under-work rule the
+                    // standard picker test also covers).
+                    state.apply_sessions(vec![roboco_proto::Session {
+                        last_completed_turn: None,
+                        chat_id: "thread".into(),
+                        device_id: "local".into(),
+                        status: roboco_proto::SessionStatus::Working,
+                        started_at: None,
+                        updated_at: chrono::Utc::now(),
+                        limit: None,
+                        scheduled_resume: None,
+                    }]);
                     cx.notify();
                 });
                 picker.show_compact_models(cx);
@@ -8206,7 +8240,8 @@ mod tests {
                 picker.search.update(cx, |input, cx| input.set_text("Claude", cx));
                 assert_eq!(picker.model_rows_len(cx), 0);
                 picker.search.update(cx, |input, cx| input.set_text("", cx));
-                // A chat's provider is fixed: the provider page stays shut.
+                // A working chat's provider is fixed: the provider page
+                // stays shut.
                 picker.compact_model_list = false;
                 picker.show_compact_providers(cx);
                 assert!(!picker.compact_providers);
