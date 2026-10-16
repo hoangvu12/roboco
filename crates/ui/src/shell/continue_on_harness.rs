@@ -161,12 +161,18 @@ impl Shell {
         };
         let chat_id = dialog.chat.id.clone();
         let model = dialog.model.clone();
-        let selected = self.state.read(cx).selected_chat.clone();
-        self.continue_dialog = None;
         let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok()
         else {
+            // No engine to switch on: say so (the same surface a failed
+            // switch uses) instead of swallowing the click.
+            self.continue_dialog = None;
+            self.composer.update(cx, |composer, cx| {
+                composer.show_error("Engine not connected", cx);
+            });
+            cx.notify();
             return;
         };
+        self.continue_dialog = None;
         // The one field the switch keeps: the chat's sandbox pick stays.
         let sandbox = self
             .state
@@ -201,8 +207,20 @@ impl Shell {
                         // The continue prompt — the same send path, guards and
                         // queue semantics as the banner's Resume. The run
                         // starts on the new harness, clears the limit record,
-                        // and queued messages stay behind it.
-                        if selected.as_deref() == Some(chat_id.as_str()) {
+                        // and queued messages stay behind it. The prompt is
+                        // addressed through the composer's CURRENT selection
+                        // (`resume_limited` sends to the selected chat), so
+                        // re-check it live here: if the selection moved while
+                        // the switch was in flight, the switched chat keeps
+                        // its Limited banner and Resume — never send another
+                        // chat's continuation into it.
+                        let still_selected = shell
+                            .state
+                            .read(cx)
+                            .selected_chat
+                            .as_deref()
+                            == Some(chat_id.as_str());
+                        if still_selected {
                             shell
                                 .composer
                                 .update(cx, |composer, cx| composer.resume_limited(cx));
@@ -915,6 +933,33 @@ mod tests {
                 assert!(shell.render_continue_on_harness(viewport, cx).is_some());
                 shell.close_continue_dialog(cx);
                 assert!(shell.render_continue_on_harness(viewport, cx).is_none());
+            })
+            .unwrap();
+    }
+
+    /// The action appears on Limited chats: the status strip's Limited
+    /// branch builds the banner — window label, ticket 06's Resume pill, and
+    /// the new Continue on another harness pill whose click opens this
+    /// dialog.
+    #[gpui::test]
+    fn the_limited_banner_renders_the_continue_action(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let window = shell_window(dir.path(), cx);
+        let (chat, session) = limited_chat("limited");
+        window
+            .update(cx, |shell, _, cx| {
+                shell.state.update(cx, |state, cx| {
+                    state.chats = vec![chat];
+                    state.sessions = vec![session];
+                    state.select_chat(Some("limited".into()), cx);
+                });
+                // The Limited branch builds — including the new pill.
+                let strip = shell.render_status_strip(640.0, cx);
+                drop(strip);
+                // The pill's click opens this dialog.
+                shell.open_continue_on_harness(cx);
+                assert!(shell.continue_dialog.is_some());
+                shell.close_continue_dialog(cx);
             })
             .unwrap();
     }
