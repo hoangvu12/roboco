@@ -25,8 +25,12 @@ originating chat in the environment:
 When `ROBOCO_CHAT_ID` is set, every `send_message` is prefixed with a
 `[Message from Roboco chat <title> (<id8>) …]` line so the receiving agent and the
 human reading that transcript can tell an agent-to-agent message from a typed
-one, and the server refuses to message its own chat. The transcript renders
-this routing header as "Message from **chat name**", keeping the full routing
+one, and the server refuses to message its own chat. The line comes in two
+variants: an ordinary chat-to-chat message invites a reply with `send_message`;
+a message from a side chat's creator (when that side chat notifies — the
+default) instead tells the side chat its final reply is delivered to the parent
+automatically and not to report or acknowledge by hand. The transcript renders
+both headers as "Message from **chat name**", keeping the full routing
 instructions in the stored prompt for agents.
 
 ### Parent links
@@ -153,10 +157,11 @@ Watch streams are the engine's only read surface (there is no one-shot "get
 transcript" RPC); a snapshot is "subscribe, take the first item, drop" — drop
 cancels server-side, exactly what the sidebar does on attach.
 
-`send_message` mode `auto` starts idle chats and steers working chats through
-their live mailbox without interrupting tools or child processes. Providers
-consume it at their next supported input boundary. Only explicit `queue` mode
-creates a held queue row. `awaitingInput` refuses and points at
+`send_message` mode `auto` starts idle (or errored) chats and delivers into
+working chats without interrupting the run: mid-turn where the harness accepts
+prompts mid-run (Claude Code, Codex, Cursor, Pi, OpenCode), otherwise held in
+the queue and delivered when the turn ends. Only explicit `queue` mode creates a
+held queue row. `awaitingInput` refuses and points at
 `respond_to_input`. Quiet, long-running turns still receive steering; the host
 falls back to starting a turn if the live runtime has already exited.
 
@@ -258,9 +263,14 @@ Only batch independent work, not ordered messages to the same chat. Requests
 may mix `kind: "chat"` and `kind: "side"`; guards run per request.
 
 When using individual tools, launch **all** chats/messages with `wait: false`
-first, then collect replies with `wait_for_turn`. Waiting on each individual
-launch before issuing the next serializes work at the caller, even though
-both the MCP transport and engine support concurrent chat runs.
+and end the turn. Side chats an agent created send it a completion notice when
+they finish, fail, stop, are interrupted, or need input on a turn it started
+or steered (opt out per chat with `notify: false`); `read_chat` collects the
+result and `respond_to_input` answers a waiting side chat. Waiting on each
+individual launch before issuing the next serializes work at the caller, even though
+both the MCP transport and engine support concurrent chat runs, and
+`wait_for_turn` blocks the caller for the whole wait — keep it for quick
+synchronous asks.
 
 ## Smoke recipe
 

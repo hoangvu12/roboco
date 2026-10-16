@@ -8366,16 +8366,24 @@ fn agent_message_display(text: &str) -> String {
     let Some((header, body)) = rest.split_once("]\n\n") else {
         return text.to_owned();
     };
-    let Some((label, id)) =
+    // Chat-to-chat message: the header invites a reply and repeats the
+    // short id in the instruction, so the label is stripped with it.
+    let name = if let Some((label, id)) =
         header.rsplit_once(". Reply to it with the Roboco `send_message` tool, chat ")
-    else {
+        && let Some(id) = id.strip_suffix('.')
+    {
+        let suffix = format!(" ({id})");
+        label.strip_suffix(&suffix).unwrap_or(label)
+    } else if let Some(label) = header.strip_suffix(
+        ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.",
+    ) {
+        // A parent's message to its notifying side chat (orchestration
+        // v2): the header teaches the notice flow instead of inviting a
+        // reply, and carries no separate id — the label holds it.
+        label.rsplit_once(" (").map_or(label, |(name, _)| name)
+    } else {
         return text.to_owned();
     };
-    let Some(id) = id.strip_suffix('.') else {
-        return text.to_owned();
-    };
-    let suffix = format!(" ({id})");
-    let name = label.strip_suffix(&suffix).unwrap_or(label);
     format!("Message from {name}\n\n{body}")
 }
 
@@ -16167,6 +16175,36 @@ mod tests {
             vec![text_part("t0", ""), text_part("t1", "   ")],
         );
         assert!(rows_for_entry(&entry, false, false, &mut parse).is_empty());
+    }
+
+    #[test]
+    fn agent_attribution_headers_display_concisely() {
+        // Ordinary chat-to-chat message: the reply invitation is dropped and
+        // the label's short id with it.
+        let reply_line = "[Message from Roboco chat Alpha (chat-alp). Reply to it with the Roboco `send_message` tool, chat chat-alp.]\n\nplease review";
+        assert_eq!(
+            agent_message_display(reply_line),
+            "Message from Alpha\n\nplease review"
+        );
+        // A parent's message to its notifying side chat (orchestration v2):
+        // the header teaches the notice flow, and still collapses.
+        let notice_line = "[Message from Roboco chat Alpha (chat-alp). You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\nthe task";
+        assert_eq!(
+            agent_message_display(notice_line),
+            "Message from Alpha\n\nthe task"
+        );
+        // An untitled sender keeps its short id as the name.
+        let untitled = "[Message from Roboco chat chat-alp. You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\nthe task";
+        assert_eq!(
+            agent_message_display(untitled),
+            "Message from chat-alp\n\nthe task"
+        );
+        // Anything else stays verbatim.
+        assert_eq!(agent_message_display("plain text"), "plain text");
+        assert_eq!(
+            agent_message_display("[Message from Roboco chat Alpha. unknown suffix.]\n\nbody"),
+            "[Message from Roboco chat Alpha. unknown suffix.]\n\nbody"
+        );
     }
 }
 
