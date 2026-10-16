@@ -321,11 +321,13 @@ export function formatScheduledResume(fireAt: number, now: number): string {
  * rest, days floor-divide the hours.
  */
 function relativeResetText(verb: string, at: number, now: number): string {
-  const untilMs = at - now;
-  if (untilMs <= 0) {
+  // The Rust original gates on `num_seconds() <= 0` (truncating), so a
+  // sub-second positive remainder already reads as due — match it exactly.
+  const untilSecs = Math.floor((at - now) / 1000);
+  if (untilSecs <= 0) {
     return `${verb} now`;
   }
-  const minutes = Math.floor(untilMs / 60_000);
+  const minutes = Math.floor(untilSecs / 60);
   if (minutes < 60) {
     return `${verb} in ${minutes}m`;
   }

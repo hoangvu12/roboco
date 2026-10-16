@@ -196,6 +196,9 @@ const mounted: Array<() => void> = [];
 /** The settings row's `onForget` presses — reset per test. */
 const settingsForgetCalls: AgentAccount[] = [];
 
+/** The settings row's `onSignInAgain` presses — reset per test. */
+const settingsSignInAgainCalls: AgentAccount[] = [];
+
 afterEach(() => {
   while (mounted.length > 0) {
     mounted.pop()!();
@@ -207,6 +210,7 @@ afterEach(() => {
   h.check.release = null;
   h.check.verdict = { kind: "resolve", status: { updateAvailable: false } };
   settingsForgetCalls.length = 0;
+  settingsSignInAgainCalls.length = 0;
 });
 
 function mountAccountRow(): MountedAccountRow {
@@ -542,7 +546,9 @@ describe("AccountRow (settings) — the Forget affordance (wpn-09)", () => {
           onForget: () => {
             settingsForgetCalls.push(account);
           },
-          onSignInAgain: () => {},
+          onSignInAgain: () => {
+            settingsSignInAgainCalls.push(account);
+          },
         }),
       );
     });
@@ -617,5 +623,43 @@ describe("AccountRow (settings) — the Forget affordance (wpn-09)", () => {
       handle.forget().click();
     });
     expect(settingsForgetCalls).toEqual([account]);
+  });
+
+  it("a signed-out row carries the mark, the reason beside its meters, and Sign in again (ticket 08)", () => {
+    const account = settingsAccount({
+      signInState: "signed-out",
+      // Stale cached meters: they used to hide the sign-out.
+      usageWindows: [{ label: "5h", usedFraction: 0.3, resetsAt: null }],
+    });
+    const handle = mountSettingsRow(account);
+    const row = handle.container;
+    // The mark.
+    expect(row.querySelector(".badge-signed-out")!.textContent).toBe("Signed out");
+    // The reason rides below the meters — never only when they're gone.
+    expect(row.querySelector(".usage-list")).not.toBeNull();
+    expect(row.querySelector(".account-note-signed-out")!.textContent).toBe(
+      "Signed out — sign in again",
+    );
+    // The action (active or not — a dead login can be revived in place).
+    const signIn = Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Sign in again",
+    );
+    expect(signIn).not.toBeNull();
+    act(() => {
+      signIn!.click();
+    });
+    expect(settingsSignInAgainCalls).toEqual([account]);
+  });
+
+  it("a healthy row stays quiet: no mark, no note, no sign-in action", () => {
+    const handle = mountSettingsRow(
+      settingsAccount({ signInState: "signed-in", usageWindows: [{ label: "5h", usedFraction: 0.3, resetsAt: null }] }),
+    );
+    const row = handle.container;
+    expect(row.querySelector(".badge-signed-out")).toBeNull();
+    expect(row.querySelector(".account-note")).toBeNull();
+    expect(
+      Array.from(row.querySelectorAll("button")).some((button) => button.textContent === "Sign in again"),
+    ).toBe(false);
   });
 });

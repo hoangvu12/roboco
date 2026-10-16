@@ -4,6 +4,7 @@ import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } 
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
 import { useFleet, useFleetRegistry } from "../state/fleet";
+import { SignedOutSwitchConfirm } from "../components/account-usage";
 import {
   applySettingsTargetChange,
   settingsDeviceSwitcherRows,
@@ -45,7 +46,6 @@ import {
   providerNote,
   PROVIDERS,
   signedOut,
-  signedOutSwitchWarning,
   signInOptionFor,
   startAgentLogin,
   usageColorVar,
@@ -359,29 +359,17 @@ function AccountsSettingsPageBody() {
       {/* The "switch to a signed-out account" ask (ticket 08) — the same
           confirm the desktop's `render_switch_confirm` draws. */}
       {confirmSwitch !== null && (
-        <Dialog ariaLabel="Switch to a signed-out account?" onClose={() => setConfirmSwitch(null)}>
-          <DialogCard>
-            <DialogTitle>Switch to a signed-out account?</DialogTitle>
-            <DialogBody>{signedOutSwitchWarning(confirmSwitch)}</DialogBody>
-            <div className="dialog-actions-row">
-              <BtnGhost type="button" onClick={() => setConfirmSwitch(null)}>
-                Cancel
-              </BtnGhost>
-              <BtnPrimary
-                type="button"
-                onClick={() => {
-                  const account = confirmSwitch;
-                  setConfirmSwitch(null);
-                  if (account !== null) {
-                    accountAction("activate", account, true);
-                  }
-                }}
-              >
-                Switch anyway
-              </BtnPrimary>
-            </div>
-          </DialogCard>
-        </Dialog>
+        <SignedOutSwitchConfirm
+          account={confirmSwitch}
+          onCancel={() => setConfirmSwitch(null)}
+          onConfirm={() => {
+            const account = confirmSwitch;
+            setConfirmSwitch(null);
+            if (account !== null) {
+              accountAction("activate", account, true);
+            }
+          }}
+        />
       )}
     </div>
   );

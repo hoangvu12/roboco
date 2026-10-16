@@ -248,20 +248,11 @@ export function AccountUsageIndicator({ client, harness, targetDeviceId }: Accou
       {/* The "switch to a signed-out account" ask (ticket 08) — the same
           modal-over-popover the desktop's `render_switch_confirm` draws. */}
       {confirmSwitch !== null && (
-        <Dialog ariaLabel="Switch to a signed-out account?" onClose={() => setConfirmSwitch(null)}>
-          <DialogCard>
-            <DialogTitle>Switch to a signed-out account?</DialogTitle>
-            <DialogBody>{signedOutSwitchWarning(confirmSwitch)}</DialogBody>
-            <div className="dialog-actions-row">
-              <BtnGhost type="button" onClick={() => setConfirmSwitch(null)}>
-                Cancel
-              </BtnGhost>
-              <BtnPrimary type="button" onClick={confirmSwitchTo}>
-                Switch anyway
-              </BtnPrimary>
-            </div>
-          </DialogCard>
-        </Dialog>
+        <SignedOutSwitchConfirm
+          account={confirmSwitch}
+          onCancel={() => setConfirmSwitch(null)}
+          onConfirm={confirmSwitchTo}
+        />
       )}
     </>
   );
@@ -275,6 +266,39 @@ export function AccountUsageIndicator({ client, harness, targetDeviceId }: Accou
       void switchTo(account, true);
     }
   }
+}
+
+/**
+ * The "switch to a signed-out account" ask (ticket 08, the desktop's
+ * `render_switch_confirm`): the warning, Cancel, and Switch anyway. One
+ * shared dialog — the footer's account ring and Settings → Accounts ask
+ * with the same words. Exported for the settings page's rows.
+ */
+export function SignedOutSwitchConfirm({
+  account,
+  onCancel,
+  onConfirm,
+}: {
+  readonly account: AgentAccount;
+  readonly onCancel: () => void;
+  readonly onConfirm: () => void;
+}) {
+  return (
+    <Dialog ariaLabel="Switch to a signed-out account?" onClose={onCancel}>
+      <DialogCard>
+        <DialogTitle>Switch to a signed-out account?</DialogTitle>
+        <DialogBody>{signedOutSwitchWarning(account)}</DialogBody>
+        <div className="dialog-actions-row">
+          <BtnGhost type="button" onClick={onCancel}>
+            Cancel
+          </BtnGhost>
+          <BtnPrimary type="button" onClick={onConfirm}>
+            Switch anyway
+          </BtnPrimary>
+        </div>
+      </DialogCard>
+    </Dialog>
+  );
 }
 
 const RING_RADIUS = 6;

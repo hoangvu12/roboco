@@ -143,8 +143,9 @@ export function LimitedBanner({
     }
   }, [chatId, listFor]);
 
-  const rows = list !== null && listFor === chatId ? failoverRows(list) : [];
-  const hasCandidates = list !== null && listFor === chatId && failoverListOffers(list);
+  const failoverList = list !== null && listFor === chatId ? list : null;
+  const rows = failoverList !== null ? failoverRows(failoverList) : [];
+  const showFailover = offersFailover && failoverList !== null && failoverListOffers(failoverList);
 
   /** Run the failover for `accountId` — the reply becomes the strip's
    *  outcome line; a failed switch surfaces the reason right there. */
@@ -224,13 +225,13 @@ export function LimitedBanner({
       >
         Resume
       </button>
-      {offersFailover && hasCandidates && (
+      {showFailover && failoverList !== null && (
         <PickerCard
           open={open}
           onOpenChange={setOpen}
           placement="anchorAboveEnd"
           role="dialog"
-          ariaLabel={failoverCardTitle(list!.harness)}
+          ariaLabel={failoverCardTitle(failoverList.harness)}
           width={400}
           overlaySource="composer-pickers"
           trigger={
@@ -244,7 +245,7 @@ export function LimitedBanner({
           }
         >
           <FailoverCard
-            list={list!}
+            list={failoverList}
             rows={rows}
             loading={loading}
             switching={switching}
