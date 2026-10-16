@@ -408,15 +408,65 @@ export function accountInitial(account: AgentAccount): string {
   return first.length > 0 ? first.toUpperCase() : "?";
 }
 
-/** Fallback line when a row has no usage windows (meters XOR this line). */
+/** Fallback line when a row has no usage windows (meters XOR this
+ *  line). The probe's reason — or the sign-out itself when a run error
+ *  marked the account with no probe behind it — wins over the bare
+ *  shrug (accounts.rs's `account_note` arm). */
 export function usageFallback(account: AgentAccount, refreshing = false): string {
   if (!account.switchable && switchesAccounts(account.harness)) {
     return account.harness === "claude-code" ? "Credentials unavailable" : "Couldn't identify this login";
   }
-  if (account.usageError != null) {
-    return account.usageError;
+  const note = accountNote(account);
+  if (note !== null) {
+    return note;
   }
   return refreshing ? "Checking usage…" : "Usage unavailable";
+}
+
+// ── Sign-in state (ticket 08, settings/accounts.rs's pure half) ─────────
+
+/**
+ * Whether the account is KNOWN to be signed out — a hard rejection (the
+ * slot's refresh was refused, a revoked key) or a run's signed-out error
+ * marked it. Ambiguous "session expired" and never-probed accounts are
+ * `Unknown`, not signed out. Pure.
+ */
+export function signedOut(account: AgentAccount): boolean {
+  return account.signInState === "signed-out";
+}
+
+/**
+ * The reason line an account row shows (accounts.rs `account_note`): the
+ * last probe's failure, or — when a run error marked the account signed out
+ * with no probe behind it — the sign-out itself. `null` when the account
+ * has nothing to complain about. Shown BESIDE stale meters, never only when
+ * they are gone (a cached meter used to hide the sign-out — ticket 08's
+ * display bug). Pure.
+ */
+export function accountNote(account: AgentAccount): string | null {
+  return account.usageError ?? (signedOut(account) ? "Signed out — sign in again" : null);
+}
+
+/**
+ * The warning a switch to a signed-out account asks about first
+ * (accounts.rs `signed_out_switch_warning`): the account may not work until
+ * it is signed in again. Pure.
+ */
+export function signedOutSwitchWarning(account: AgentAccount): string {
+  const who = account.email ?? account.displayName ?? "This account";
+  return `${who} is signed out. Switching to it now may not work — sign in again first, or switch anyway and sign in after.`;
+}
+
+/**
+ * The model provider a "Sign in again" for `account` signs in to
+ * (accounts.rs `sign_in_option_for`): its own provider group for
+ * per-provider agents, the agent's only login otherwise. Pure.
+ */
+export function signInOptionFor(account: AgentAccount): string | null {
+  return (
+    loginOptions(account.harness).find((option) => option.provider === (account.provider ?? null))
+      ?.provider ?? null
+  );
 }
 
 // ── Add-account login flows ─────────────────────────────────────────────

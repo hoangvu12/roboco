@@ -134,8 +134,15 @@ export function spaceDeviceTag(
 
 export type ChatIndicator = "working" | "awaitingInput" | "errored" | "completed" | "idle";
 
-/** The live status dot: none | working | awaitingInput | errored. */
-export type Indicator = "none" | "working" | "awaitingInput" | "errored";
+/**
+ * The live status dot (proto `view::Indicator`): `limited` is the errored
+ * row with a recorded usage limit (`session.limit`) — the same status row,
+ * presented as Limited (reset time known, Resume offered). Not a
+ * `ChatIndicator` variant: the row-level dot stays errored/idle and the
+ * Limited marker overrides at the row's render, exactly as the desktop's
+ * `is_limited` does.
+ */
+export type Indicator = "none" | "working" | "awaitingInput" | "errored" | "limited";
 
 /** One sidebar row, ready to draw: statuses, project line, branch, time. */
 export interface ChatRow {
@@ -190,6 +197,14 @@ export interface ChatRow {
    * in-flight send as `working` (state.rs `display_status_for`).
    */
   readonly sendState: "queued" | "failed" | null;
+  /**
+   * LIMITED (orchestration v2, ticket 06): the row reads as Limited right
+   * now — errored with a recorded usage limit, no send pending — so the
+   * corner shows the amber "Limited" word instead of the plain status
+   * word/time (the desktop's `is_limited` override; the dot color rides
+   * `dot-limited`).
+   */
+  readonly limited: boolean;
 }
 
 /** The view options that shape the sidebar's rows before layout (§2.1). */
@@ -255,7 +270,9 @@ export function unseen(chat: Chat): boolean {
 /**
  * Staleness-checked indicator: a Working/AwaitingInput session row older
  * than SESSION_STALE_MS is dead — a crashed backend must never show an
- * eternal "Working". Errored is exempt; Idle is none.
+ * eternal "Working". Errored is exempt; an errored row carrying a usage-
+ * limit record reads as `limited` (the additive Limited detail, proto
+ * `view::effective_indicator`); Idle is none.
  */
 export function effectiveIndicator(session: ChatStatus | undefined, now: number): Indicator {
   if (session === undefined) {
@@ -265,7 +282,7 @@ export function effectiveIndicator(session: ChatStatus | undefined, now: number)
     case "idle":
       return "none";
     case "errored":
-      return "errored";
+      return session.limit != null ? "limited" : "errored";
     case "working":
     case "awaitingInput": {
       const updated = Date.parse(session.updatedAt);
@@ -275,6 +292,51 @@ export function effectiveIndicator(session: ChatStatus | undefined, now: number)
       return session.status;
     }
   }
+}
+
+/**
+ * Banner text for a Limited chat's reset time (proto `format_limit_reset`):
+ * "resets in 45m", "resets in 2h 05m". A reset already past reads as due —
+ * the honest offer is Resume, not a countdown into the past. Pure.
+ */
+export function formatLimitReset(resetsAt: number, now: number): string {
+  return relativeResetText("resets", resetsAt, now);
+}
+
+/**
+ * Banner text for a chat's armed Resume-at-reset continuation (proto
+ * `format_scheduled_resume`): "resumes in 45m", "resumes in 2h 05m". A fire
+ * time already past reads as due — the continuation is running or about to.
+ * Pure.
+ */
+export function formatScheduledResume(fireAt: number, now: number): string {
+  return relativeResetText("resumes", fireAt, now);
+}
+
+/**
+ * The shared relative countdown behind both Limited banner texts (proto
+ * `relative_reset_text`) — one wall-clock deadline, one phrasing,
+ * verb-parameterized only. Mirrors the Rust rounding exactly: the minutes
+ * bucket truncates (30s → "0m"), hours floor-divide with a zero-padded
+ * rest, days floor-divide the hours.
+ */
+function relativeResetText(verb: string, at: number, now: number): string {
+  // The Rust original gates on `num_seconds() <= 0` (truncating), so a
+  // sub-second positive remainder already reads as due — match it exactly.
+  const untilSecs = Math.floor((at - now) / 1000);
+  if (untilSecs <= 0) {
+    return `${verb} now`;
+  }
+  const minutes = Math.floor(untilSecs / 60);
+  if (minutes < 60) {
+    return `${verb} in ${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) {
+    return rest === 0 ? `${verb} in ${hours}h` : `${verb} in ${hours}h ${String(rest).padStart(2, "0")}m`;
+  }
+  return `${verb} in ${Math.floor(hours / 24)}d`;
 }
 
 /** chat_indicator: live states win, then the seen marker decides. */
@@ -768,9 +830,18 @@ function toChatRow(
   const degraded = options.degradedFor?.(chat.id) ?? false;
   const harness =
     options.showHarness === false ? null : (chat.config?.harness ?? null);
+  // `is_limited` (state.rs): the row's Limited marker reads the RAW session
+  // row, gated by the send overlay the same way `indicator_for` is — a
+  // send in flight is Working, not Limited, and the record itself is
+  // cleared when a new turn starts so a stale row never marks.
+  const session = statusByChat.get(chat.id);
+  const limited =
+    !sendTruthFor(sends, now, degraded).pending &&
+    session !== undefined &&
+    effectiveIndicator(session, now) === "limited";
   return {
     chat,
-    status: sendAwareStatus(chat, statusByChat.get(chat.id), now, sends, degraded),
+    status: sendAwareStatus(chat, session, now, sends, degraded),
     project,
     projectKey:
       space !== undefined && space.repositoryId != null
@@ -788,6 +859,7 @@ function toChatRow(
     changeRequest:
       options.showPullRequest === false ? null : (options.changeRequests?.get(chat.id) ?? null),
     sendState: sendStateChip(sends, now, degraded),
+    limited,
   };
 }
 

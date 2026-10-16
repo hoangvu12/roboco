@@ -65,6 +65,18 @@ test("aRunErrorChimesOnceAndNeverMasqueradesAsCompletion", () => {
   expect(soundSince(errored, errored, false)).toBeNull();
 });
 
+test("aLimitedTransitionChimesAttentionLikeAnyError (proto view.rs)", () => {
+  const working = baseline("working", null);
+  const limited = baseline("limited", null);
+  expect(soundSince(limited, working, false)).toBe("attention");
+  // Staying limited (a heartbeat re-publishing the row) never re-chimes,
+  // and a later plain error is the same attention state.
+  expect(soundSince(limited, limited, false)).toBeNull();
+  const errored = baseline("errored", null);
+  expect(soundSince(errored, limited, false)).toBeNull();
+  expect(soundSince(limited, errored, false)).toBeNull();
+});
+
 test("durableConnectivityDegradationChimesOncePerOutage", () => {
   expect(connectivitySoundSince("connected", "disabled")).toBeNull();
   expect(connectivitySoundSince("reconnecting", "connected")).toBe("attention");

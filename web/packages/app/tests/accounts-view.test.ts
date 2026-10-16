@@ -4,6 +4,7 @@ import type { AgentAccount, AgentAccountsSnapshot, AgentLoginPoll, HarnessId } f
 import {
   accountInitial,
   accountLabel,
+  accountNote,
   activateAgentAccount,
   addOptionLabel,
   activeAccount,
@@ -25,6 +26,9 @@ import {
   providerNote,
   PROVIDERS,
   reportsUsage,
+  signInOptionFor,
+  signedOut,
+  signedOutSwitchWarning,
   signsIn,
   startAgentLogin,
   switchesAccounts,
@@ -405,5 +409,61 @@ describe("signsIn / reportsUsage (the ring's harness gates)", () => {
     expect(signsIn("opencode")).toBe(true);
     expect(reportsUsage("antigravity")).toBe(false);
     expect(reportsUsage("codex")).toBe(true);
+  });
+});
+
+// ── Sign-in state (ticket 08, settings/accounts.rs's pure half) ────────────
+
+describe("signedOut / accountNote / usageFallback (ticket 08)", () => {
+  it("only the hard SignedOut state marks — unknown and legacy rows stay quiet", () => {
+    expect(signedOut(account({ signInState: "signed-out" }))).toBe(true);
+    expect(signedOut(account({ signInState: "unknown" }))).toBe(false);
+    expect(signedOut(account({ signInState: "signed-in" }))).toBe(false);
+    // An older engine's payload without the additive field defaults to
+    // unknown, never signed out.
+    const legacy = account({}) as AgentAccount & { signInState?: unknown };
+    delete legacy.signInState;
+    expect(signedOut(legacy)).toBe(false);
+  });
+
+  it("accountNote: the probe's reason, else the sign-out itself, else nothing", () => {
+    expect(accountNote(account({ usageError: "Rate limited — retrying in 2m" }))).toBe(
+      "Rate limited — retrying in 2m",
+    );
+    // A run error marked the account signed out with no probe behind it.
+    expect(accountNote(account({ signInState: "signed-out" }))).toBe("Signed out — sign in again");
+    expect(accountNote(account({}))).toBeNull();
+  });
+
+  it("usageFallback carries the sign-out when there are no meters to hide it", () => {
+    expect(usageFallback(account({ signInState: "signed-out", switchable: true }))).toBe(
+      "Signed out — sign in again",
+    );
+  });
+});
+
+describe("signedOutSwitchWarning (ticket 08)", () => {
+  it("names the account and what switching means", () => {
+    expect(signedOutSwitchWarning(account({ email: "ada@example.com" }))).toBe(
+      "ada@example.com is signed out. Switching to it now may not work — sign in again first, or switch anyway and sign in after.",
+    );
+    expect(signedOutSwitchWarning(account({ email: null, displayName: "Ada" }))).toContain(
+      "Ada is signed out",
+    );
+    expect(signedOutSwitchWarning(account({ email: null, displayName: null }))).toContain(
+      "This account is signed out",
+    );
+  });
+});
+
+describe("signInOptionFor (the Sign in again provider key)", () => {
+  it("resolves the account's own provider group for per-provider agents", () => {
+    expect(signInOptionFor(account({ harness: "opencode", provider: "openai" }))).toBe("openai");
+    expect(signInOptionFor(account({ harness: "opencode", provider: "github-copilot" }))).toBe("github-copilot");
+    expect(signInOptionFor(account({ harness: "pi", provider: "openai-codex" }))).toBe("openai-codex");
+    expect(signInOptionFor(account({ harness: "hermes", provider: "nous" }))).toBe("nous");
+    // Single-login agents: the agent's only login.
+    expect(signInOptionFor(account({ harness: "claude-code", provider: null }))).toBeNull();
+    expect(signInOptionFor(account({ harness: "codex", provider: null }))).toBeNull();
   });
 });

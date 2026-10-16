@@ -193,6 +193,20 @@ a:focus-visible,
   background: color-mix(in srgb, var(--rb-success) 90%, transparent);
 }
 
+/*
+ * LIMITED (orchestration v2): amber — "waiting out a limit", not the
+ * failure red (proto `view::dot::LIMITED`, oklch(0.766, 0.155, 75)); it
+ * must read differently from Errored at a glance so a limited chat
+ * stands out in the list. Same mix as the queued-send dot.
+ */
+.dot-limited {
+  background: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+.status-limited {
+  color: var(--rb-warning);
+}
+
 .dot-idle {
   background: color-mix(in srgb, var(--rb-text) 14%, transparent);
 }
@@ -9007,6 +9021,236 @@ button.files-save-pill:hover {
   flex: none;
 }
 
+/* ── The Limited banner (orchestration v2, the strip's Limited arm) ──── */
+
+.limited-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-width: 0;
+  color: var(--rb-warning);
+}
+
+.limited-banner-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--rb-warning);
+}
+
+.limited-banner-label {
+  flex: none;
+}
+
+/*
+ * The banner's action chips (shell.rs's bordered strips): the strip itself
+ * is pointer-transparent so the transcript scrolls beneath it — every
+ * interactive element opts back in, and the disabled state keeps the
+ * layout while the engine is unreachable.
+ */
+.limited-banner-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 10px;
+  border-radius: calc(var(--rb-radius-control) * 0.5);
+  border: 1px solid color-mix(in srgb, var(--rb-warning) 45%, transparent);
+  color: color-mix(in srgb, var(--rb-warning) 90%, transparent);
+  font-size: 11px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.limited-banner-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+}
+
+.limited-banner-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.limited-banner-notice {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--rb-warning) 75%, transparent);
+}
+
+/*
+ * The failover picker (`failover_card`): the account ring card's geometry
+ * with the candidate rows' own caption and nested sign-in action.
+ */
+.failover-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+/* While a switch runs, the rows read inert (the desktop's 0.6 opacity). */
+.failover-card [data-switching] .menu-row {
+  opacity: 0.6;
+}
+
+.failover-card .menu-row-static {
+  cursor: default;
+}
+
+.failover-card .menu-row-static:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.failover-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.failover-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.failover-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.failover-row-plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failover-row-recommended {
+  color: var(--rb-accent);
+}
+
+.failover-row-signed-out {
+  color: var(--rb-danger);
+}
+
+.failover-row-reset {
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+}
+
+/* The signed-out row's own action (story 47): the accent wash chip,
+   nested inside an inert row so its click stops there. */
+.failover-row-sign-in {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
+  color: var(--rb-accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.failover-warning {
+  margin: 6px 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgb(var(--rb-wash) / 0.06);
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The inline "Sign in again" progress (the desktop's `sign_in_footer`):
+ * a compact wash card under whichever rows offered the action — the
+ * browser wait, the paste-code field, and the failure all in place.
+ */
+.sign-in-again-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgb(var(--rb-wash) / 0.06);
+  font-size: 11.5px;
+}
+
+.sign-in-again-who {
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign-in-again-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sign-in-again-form input {
+  width: 100%;
+}
+
+.sign-in-again-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sign-in-again-cancel {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sign-in-again-submit {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
+  color: var(--rb-accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sign-in-again-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sign-in-again-pending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--rb-text-muted);
+}
+
+.sign-in-again-error {
+  margin: 0;
+  color: var(--rb-danger);
+}
+
 /* ── MessageRail (rail.rs::render_rail, :411-572) ───────────────────── */
 
 /*
@@ -9507,6 +9751,19 @@ button.files-save-pill:hover {
 
 .account-usage-row-in-use {
   color: var(--rb-accent);
+}
+
+/*
+ * The signed-out mark (ticket 08): danger-toned word + reason line — a dead
+ * login never reads healthy beside green meters, and the reason shows
+ * BESIDE stale meters (the accountNote fix), never only when they're gone.
+ */
+.account-usage-row-signed-out {
+  color: var(--rb-danger);
+}
+
+.account-usage-row-reason-signed-out {
+  color: var(--rb-danger-muted);
 }
 
 /*
@@ -12117,6 +12374,33 @@ button.files-save-pill:hover {
   border-color: transparent;
   background: color-mix(in srgb, var(--rb-success) 12%, transparent);
   color: color-mix(in srgb, var(--rb-success-muted) 90%, transparent);
+}
+
+/*
+ * The signed-out mark (ticket 08, `badge_signed_out`): the danger-tinged
+ * pill that keeps a dead login from reading healthy beside green meters.
+ */
+.badge-signed-out {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+}
+
+/*
+ * The reason line under an account's meters (ticket 08's display fix — a
+ * cached meter no longer hides the sign-out); danger-muted when the row is
+ * signed out, the fallback line's tone otherwise.
+ */
+.account-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.account-note-signed-out {
+  color: color-mix(in srgb, var(--rb-danger-muted) 85%, transparent);
 }
 
 /* Account rows. */

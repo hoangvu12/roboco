@@ -443,5 +443,6 @@ function chatRows(chats: readonly Chat[]): ChatRow[] {
     deviceOffline: false,
     changeRequest: null,
     sendState: null,
+    limited: false,
   }));
 }
