@@ -194,120 +194,125 @@ enum Attempt {
 /// later iterations fall back to the best-ranked. `tried` guards against
 /// a store that keeps offering the same row.
 #[allow(clippy::too_many_arguments)]
-async fn attempt(
-    engine: &SessionsEngine,
-    accounts: &AgentAccounts,
-    chat_id: &str,
+// Boxed with an explicit `Send` bound: `attempt` and `watch` recurse
+// (a signed-out continuation tries the next candidate), and a recursive
+// async fn's future cannot be proven `Send` for `tokio::spawn` otherwise.
+fn attempt<'a>(
+    engine: &'a SessionsEngine,
+    accounts: &'a AgentAccounts,
+    chat_id: &'a str,
     harness: HarnessId,
-    limited_account_id: Option<&str>,
+    limited_account_id: Option<&'a str>,
     previous: Option<String>,
     mut tried: HashSet<String>,
-    mut pick: Option<&str>,
-) -> Attempt {
-    for _ in 0..MAX_ATTEMPTS {
-        if engine.shutting_down() {
-            return Attempt::Failed("the engine is shutting down".into());
-        }
-        let mut ranked = accounts
-            .failover_candidates(harness, limited_account_id)
-            .await;
-        // Rows this chain already tried are out — a probe that failed
-        // transiently (the row never changed) must move ON, not re-pick the
-        // same account and die on the second attempt. Skipped rows (signed
-        // out, still limited) drop out of the ranking on their own: their
-        // probes marked them.
-        ranked.retain(|row| !tried.contains(&row.id));
-        // The user's pick must be a candidate — anything else (the limited
-        // account, a signed-out row, a foreign id) is refused, not silently
-        // replaced by the recommendation.
-        let candidate = match pick.take() {
-            Some(id) => {
-                let Some(at) = ranked.iter().position(|row| row.id == id) else {
-                    return Attempt::Failed(
-                        "That account is not a candidate — it is limited, signed out, or in use."
-                            .into(),
-                    );
-                };
-                Some(ranked.remove(at))
+    mut pick: Option<&'a str>,
+) -> futures::future::BoxFuture<'a, Attempt> {
+    Box::pin(async move {
+        for _ in 0..MAX_ATTEMPTS {
+            if engine.shutting_down() {
+                return Attempt::Failed("the engine is shutting down".into());
             }
-            None => ranked.first().cloned(),
-        };
-        let Some(candidate) = candidate else {
-            return Attempt::NoCandidates;
-        };
-        tried.insert(candidate.id.clone());
-        // The chosen account is probed ONCE before switching: fresh meters,
-        // a hard rejection caught before anything is touched.
-        let row = match accounts.probe_account(harness, &candidate.id).await {
-            Ok(row) => row,
-            Err(err) => {
-                tracing::warn!(
+            let mut ranked = accounts
+                .failover_candidates(harness, limited_account_id)
+                .await;
+            // Rows this chain already tried are out — a probe that failed
+            // transiently (the row never changed) must move ON, not re-pick the
+            // same account and die on the second attempt. Skipped rows (signed
+            // out, still limited) drop out of the ranking on their own: their
+            // probes marked them.
+            ranked.retain(|row| !tried.contains(&row.id));
+            // The user's pick must be a candidate — anything else (the limited
+            // account, a signed-out row, a foreign id) is refused, not silently
+            // replaced by the recommendation.
+            let candidate = match pick.take() {
+                Some(id) => {
+                    let Some(at) = ranked.iter().position(|row| row.id == id) else {
+                        return Attempt::Failed(
+                            "That account is not a candidate — it is limited, signed out, or in use."
+                                .into(),
+                        );
+                    };
+                    Some(ranked.remove(at))
+                }
+                None => ranked.first().cloned(),
+            };
+            let Some(candidate) = candidate else {
+                return Attempt::NoCandidates;
+            };
+            tried.insert(candidate.id.clone());
+            // The chosen account is probed ONCE before switching: fresh meters,
+            // a hard rejection caught before anything is touched.
+            let row = match accounts.probe_account(harness, &candidate.id).await {
+                Ok(row) => row,
+                Err(err) => {
+                    tracing::warn!(
+                        chat = %chat_id,
+                        account = %candidate.id,
+                        error = %err,
+                        "failover probe failed; trying the next candidate"
+                    );
+                    continue;
+                }
+            };
+            if row.sign_in_state == AgentSignInState::SignedOut {
+                tracing::info!(
                     chat = %chat_id,
                     account = %candidate.id,
-                    error = %err,
-                    "failover probe failed; trying the next candidate"
+                    "failover candidate is signed out; trying the next"
                 );
                 continue;
             }
-        };
-        if row.sign_in_state == AgentSignInState::SignedOut {
-            tracing::info!(
-                chat = %chat_id,
-                account = %candidate.id,
-                "failover candidate is signed out; trying the next"
-            );
-            continue;
+            if row.limited_until.is_some_and(|until| until > chrono::Utc::now()) {
+                tracing::info!(
+                    chat = %chat_id,
+                    account = %candidate.id,
+                    "failover candidate is still limited; trying the next"
+                );
+                continue;
+            }
+            // Activate — the swap every chat on this harness now runs under.
+            if let Err(err) = accounts.activate(harness, &row.id).await {
+                tracing::warn!(
+                    chat = %chat_id,
+                    account = %row.id,
+                    error = %err,
+                    "failover activation failed; trying the next candidate"
+                );
+                continue;
+            }
+            // Retire the chat's warm runtime so the continuation starts under
+            // the new login (the fingerprint guard covers every other chat's
+            // warm runtime at its next dispatch).
+            let _ = engine.terminate(chat_id).await;
+            if let Err(reason) = dispatch_continuation(engine, chat_id, harness) {
+                // The switch landed but the continuation could not be queued:
+                // undo it, or the harness is left on an account nothing uses.
+                restore(engine, accounts, chat_id, harness, previous.as_deref()).await;
+                return Attempt::Failed(reason);
+            }
+            // The watcher owns the turn's outcome: signed-out → the next
+            // candidate; other failures → the previous account back.
+            let watcher_engine = engine.clone();
+            let watcher_accounts = accounts.clone();
+            let watcher_chat = chat_id.to_string();
+            let watcher_limited = limited_account_id.map(str::to_owned);
+            let watcher_previous = previous.clone();
+            tokio::spawn(async move {
+                watch(
+                    &watcher_engine,
+                    &watcher_accounts,
+                    &watcher_chat,
+                    harness,
+                    watcher_limited.as_deref(),
+                    watcher_previous,
+                    tried,
+                )
+                .await;
+            });
+            return Attempt::Switched(row);
         }
-        if row.limited_until.is_some_and(|until| until > chrono::Utc::now()) {
-            tracing::info!(
-                chat = %chat_id,
-                account = %candidate.id,
-                "failover candidate is still limited; trying the next"
-            );
-            continue;
-        }
-        // Activate — the swap every chat on this harness now runs under.
-        if let Err(err) = accounts.activate(harness, &row.id).await {
-            tracing::warn!(
-                chat = %chat_id,
-                account = %row.id,
-                error = %err,
-                "failover activation failed; trying the next candidate"
-            );
-            continue;
-        }
-        // Retire the chat's warm runtime so the continuation starts under
-        // the new login (the fingerprint guard covers every other chat's
-        // warm runtime at its next dispatch).
-        let _ = engine.terminate(chat_id).await;
-        if let Err(reason) = dispatch_continuation(engine, chat_id, harness) {
-            // The switch landed but the continuation could not be queued:
-            // undo it, or the harness is left on an account nothing uses.
-            restore(engine, accounts, chat_id, harness, previous.as_deref()).await;
-            return Attempt::Failed(reason);
-        }
-        // The watcher owns the turn's outcome: signed-out → the next
-        // candidate; other failures → the previous account back.
-        let watcher_engine = engine.clone();
-        let watcher_accounts = accounts.clone();
-        let watcher_chat = chat_id.to_string();
-        let watcher_limited = limited_account_id.map(str::to_owned);
-        let watcher_previous = previous.clone();
-        tokio::spawn(async move {
-            watch(
-                &watcher_engine,
-                &watcher_accounts,
-                &watcher_chat,
-                harness,
-                watcher_limited.as_deref(),
-                watcher_previous,
-                tried,
-            )
-            .await;
-        });
-        return Attempt::Switched(row);
-    }
-    Attempt::Failed("too many failover attempts".into())
+        Attempt::Failed("too many failover attempts".into())
+    })
 }
 
 /// Queue the continuation: the same harness session, resumed with the
