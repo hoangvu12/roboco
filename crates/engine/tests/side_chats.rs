@@ -25,6 +25,12 @@
 //!   ref or a changed harness keeps the ticket-01 budgeted paste. The turn
 //!   refs themselves ride assistant entries via a harness event the engine
 //!   stamps at segment finish.
+//! - "Fork from here" (t3-orchestration-v2 ticket 21): the RPC's optional
+//!   `boundary` picks the reply to fork at — any settled assistant entry,
+//!   an earlier, errored or interrupted one — and the copy (and the budgeted
+//!   fallback) stop there, inclusive, while the native fork boundary becomes
+//!   exactly that reply's turn ref. Without it, today's behaviour stays: the
+//!   latest complete reply.
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -96,6 +102,19 @@ fn message(id: &str, role: MessageRole, text: &str, status: MessageStatus) -> Se
         provider_turn: None,
         continuation_of: None,
     }
+}
+
+/// An assistant entry carrying a provider turn ref, as a run that reports
+/// one stamps it (ticket 17): the harness is the chat's own so the dispatch
+/// below takes the native-fork path.
+fn turn_entry(id: &str, text: &str, status: MessageStatus, turn: &str) -> SessionMessageEntry {
+    let mut entry = message(id, MessageRole::Assistant, text, status);
+    entry.provider_turn = Some(roboco_proto::ProviderTurnRef {
+        harness: HarnessId::Mock,
+        session_id: "parent-provider-session".into(),
+        turn_id: turn.into(),
+    });
+    entry
 }
 
 #[tokio::test]
@@ -594,6 +613,536 @@ async fn forks_without_refs_or_with_a_changed_harness_paste_the_budget() {
     let request = side_turn(&core, &requests, "switched-fork", "What did I ask?", "c1").await;
     assert_eq!(request.provider_fork, None, "a changed harness never forks");
     assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    core.shutdown().await;
+}
+
+/// "Fork from here" on an earlier reply (t3-orchestration-v2 ticket 21):
+/// the copy stops at the chosen entry, inclusive, and the first run's
+/// native-fork boundary is THAT entry's turn ref — not the latest one's.
+/// The budgeted fallback history is cut at the boundary too, so the fork
+/// never sees later messages even when the harness refuses the fork.
+#[tokio::test]
+async fn forking_from_an_earlier_reply_cuts_the_copy_and_forks_at_that_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u2",
+            MessageRole::User,
+            "And the code?",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "the code is fine",
+            MessageStatus::Complete,
+            "turn-2",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u3",
+            MessageRole::User,
+            "ship it",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a3",
+            "shipping",
+            MessageStatus::Complete,
+            "turn-3",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+
+    // Fork from the FIRST reply.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side-early", "sourceChatId": "main", "boundary": "a1" }),
+        )
+        .await
+        .unwrap();
+    // The transcript ends at that reply: only u1, a1, and the seam — the
+    // fork never sees u2, a2, u3, or a3.
+    let ids = |chat: &str| {
+        core.doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids("side-early"),
+        vec!["u1".to_string(), "a1".to_string(), "fork:side-early".to_string()],
+        "the copy stops at the boundary, inclusive"
+    );
+    // The copied boundary keeps its ref, so a later fork of the fork still
+    // finds a boundary.
+    let copied = core
+        .doc_host
+        .open("side-early")
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap();
+    assert_eq!(
+        copied.iter().find(|e| e.id == "a1").unwrap().provider_turn,
+        Some(roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Mock,
+            session_id: "parent-provider-session".into(),
+            turn_id: "turn-1".into(),
+        })
+    );
+
+    // The first run forks natively at the CHOSEN boundary…
+    let request = side_turn(&core, &requests, "side-early", "What did I ask?", "s1").await;
+    let fork = request
+        .provider_fork
+        .expect("native fork at the chosen boundary");
+    assert_eq!(fork.session_id, "parent-provider-session");
+    assert_eq!(fork.last_turn, "turn-1");
+    // …nothing is pasted onto the prompt…
+    assert_eq!(request.prompt, "What did I ask?", "{}", request.prompt);
+    // …and the refused-fork fallback is cut at the boundary: it holds the
+    // copied prefix and never a later message.
+    let fallback = fork.fallback_history.expect("fallback history attached");
+    assert!(fallback.contains("PINEAPPLE"), "{fallback}");
+    assert!(!fallback.contains("the code is fine"), "{fallback}");
+    assert!(!fallback.contains("shipping"), "{fallback}");
+
+    // Without a boundary, today's behaviour stays: the fork continues from
+    // the LATEST reply.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side-latest", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ids("side-latest"),
+        vec![
+            "u1".to_string(),
+            "a1".to_string(),
+            "u2".to_string(),
+            "a2".to_string(),
+            "u3".to_string(),
+            "a3".to_string(),
+            "fork:side-latest".to_string(),
+        ],
+        "no boundary copies through the latest reply"
+    );
+    let request = side_turn(&core, &requests, "side-latest", "What next?", "s2").await;
+    let fork = request
+        .provider_fork
+        .expect("the latest reply's ref drives the default fork");
+    assert_eq!(fork.last_turn, "turn-3");
+    core.shutdown().await;
+}
+
+/// Errored and interrupted replies are forkable (ticket 21): an errored
+/// turn is a COMPLETE entry with an error part, an interrupted one an
+/// ABORTED entry — both keep the turn ref the run stamped before it ended,
+/// and a fork at either continues the source session natively at exactly
+/// that turn.
+#[tokio::test]
+async fn errored_and_interrupted_replies_can_be_forked() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "all good",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    // An errored reply: complete status with an error part, ref stamped.
+    let mut errored = turn_entry("a2", "", MessageStatus::Complete, "turn-2");
+    errored.parts = vec![
+        MessagePart::Text {
+            id: "a2-text".into(),
+            text: "half an answer".into(),
+        },
+        MessagePart::Error {
+            id: "a2-err".into(),
+            message: "the model blew up".into(),
+        },
+    ];
+    source.doc().push_message(&errored).unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "retry?",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    // An interrupted reply: aborted status, ref stamped before the stop.
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a3",
+            "partial answer",
+            MessageStatus::Aborted,
+            "turn-3",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+
+    // Fork at the ERRORED reply.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side-err", "sourceChatId": "main", "boundary": "a2" }),
+        )
+        .await
+        .unwrap();
+    let ids = |chat: &str| {
+        core.doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids("side-err"),
+        vec![
+            "a1".to_string(),
+            "a2".to_string(),
+            "fork:side-err".to_string(),
+        ],
+        "the errored reply is the boundary, inclusive"
+    );
+    let request = side_turn(&core, &requests, "side-err", "What went wrong?", "e1").await;
+    let fork = request
+        .provider_fork
+        .expect("the errored turn's ref drives the native fork");
+    assert_eq!(fork.last_turn, "turn-2");
+
+    // Fork at the INTERRUPTED reply — the boundary a default fork would
+    // never pick (it is aborted, not complete).
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side-int", "sourceChatId": "main", "boundary": "a3" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ids("side-int"),
+        vec![
+            "a1".to_string(),
+            "a2".to_string(),
+            "u1".to_string(),
+            "a3".to_string(),
+            "fork:side-int".to_string(),
+        ],
+        "the interrupted reply is the boundary, inclusive"
+    );
+    let request = side_turn(&core, &requests, "side-int", "Continue", "i1").await;
+    let fork = request
+        .provider_fork
+        .expect("the interrupted turn's ref drives the native fork");
+    assert_eq!(fork.last_turn, "turn-3");
+    core.shutdown().await;
+}
+
+/// A boundary that is not a settled assistant reply is refused, and no
+/// chat row appears: an unknown id, a user entry, and a reply still
+/// streaming (its run is writing it, and its turn ref is not stamped yet).
+#[tokio::test]
+async fn an_invalid_boundary_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble(
+        dir.path(),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+    )
+    .unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "hi",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "hello",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "still going…",
+            MessageStatus::Streaming,
+            "turn-2",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    for boundary in ["nope", "u1", "a2"] {
+        let error = client
+            .call(
+                methods::FORK_SIDE_CHAT,
+                serde_json::json!({
+                    "chatId": "side-bad",
+                    "sourceChatId": "main",
+                    "boundary": boundary,
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("settled assistant reply"),
+            "boundary {boundary}: {error}"
+        );
+        assert!(core.workspace.chat("side-bad").unwrap().is_none());
+    }
+    core.shutdown().await;
+}
+
+/// A boundary without a provider turn ref (an old chat, or a run that never
+/// reported one) falls back to the budgeted paste — cut at the boundary,
+/// so the pasted history never carries a later message (ticket 21's rule:
+/// the fork never sees anything after the boundary, whichever path it
+/// takes).
+#[tokio::test]
+async fn a_boundary_without_a_ref_pastes_the_budget_up_to_the_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "a1",
+            MessageRole::Assistant,
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u2",
+            MessageRole::User,
+            "And the code?",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "a2",
+            MessageRole::Assistant,
+            "the code is fine",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side-early", "sourceChatId": "main", "boundary": "a1" }),
+        )
+        .await
+        .unwrap();
+    let request = side_turn(&core, &requests, "side-early", "What did I ask?", "s1").await;
+    assert_eq!(request.provider_fork, None, "no ref, no native fork");
+    assert!(request.prompt.contains("PINEAPPLE"), "{}", request.prompt);
+    assert!(
+        !request.prompt.contains("the code is fine"),
+        "the paste is cut at the boundary: {}",
+        request.prompt
+    );
+    assert!(request.prompt.ends_with("What did I ask?"));
+    core.shutdown().await;
+}
+
+/// A logical message can span continuation fragments after its root
+/// (oversized relayed replies). A boundary on the root copies the WHOLE
+/// message — never a truncated prefix — and the native boundary ref comes
+/// from the root, where a run stamps it.
+#[tokio::test]
+async fn a_split_boundary_entry_copies_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    let root = turn_entry("a1", "first half", MessageStatus::Complete, "turn-1");
+    source.doc().push_message(&root).unwrap();
+    let mut fragment = message(
+        "a1#c1",
+        MessageRole::Assistant,
+        "second half",
+        MessageStatus::Complete,
+    );
+    fragment.continuation_of = Some("a1".into());
+    source.doc().push_message(&fragment).unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "later reply",
+            MessageStatus::Complete,
+            "turn-2",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    // Both the root id and a fragment id resolve to the whole message.
+    for (chat, boundary) in [("side-root", "a1"), ("side-fragment", "a1#c1")] {
+        client
+            .call(
+                methods::FORK_SIDE_CHAT,
+                serde_json::json!({
+                    "chatId": chat,
+                    "sourceChatId": "main",
+                    "boundary": boundary,
+                }),
+            )
+            .await
+            .unwrap();
+        let ids: Vec<String> = core
+            .doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "a1".to_string(),
+                "a1#c1".to_string(),
+                format!("fork:{chat}"),
+            ],
+            "boundary {boundary} copies the whole logical message"
+        );
+        let request = side_turn(&core, &requests, chat, "Continue", "s1").await;
+        let fork = request.provider_fork.expect("the root's ref drives the fork");
+        assert_eq!(fork.last_turn, "turn-1", "boundary {boundary}");
+    }
     core.shutdown().await;
 }
 

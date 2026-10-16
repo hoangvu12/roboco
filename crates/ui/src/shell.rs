@@ -3654,8 +3654,9 @@ impl Shell {
         }
     }
 
-    /// Spawn-chip events from the primary transcript AND from subagent-tab
-    /// transcripts (nested spawns open their own tabs).
+    /// Spawn-chip and fork events from the primary transcript AND from
+    /// side-chat/subagent-tab transcripts (nested spawns open their own
+    /// tabs; a side chat's "Fork from here" forks that chat).
     fn on_transcript_event(
         &mut self,
         _: Entity<Transcript>,
@@ -3676,6 +3677,27 @@ impl Shell {
                     *frozen,
                     cx,
                 );
+            }
+            TranscriptEvent::ForkFromEntry { chat_id, entry_id } => {
+                // The reply may live in the selected chat or in an open side
+                // chat's transcript. The fork hangs under the source — a
+                // side chat's own fork lands as a sibling, like its fork
+                // button — and copies only up to the chosen reply.
+                let Some(source) = self
+                    .state
+                    .read(cx)
+                    .chats
+                    .iter()
+                    .find(|chat| chat.id == *chat_id)
+                    .cloned()
+                else {
+                    return;
+                };
+                let parent = source
+                    .parent_chat_id
+                    .clone()
+                    .unwrap_or_else(|| source.id.clone());
+                self.fork_chat(source, parent, Some(entry_id.clone()), cx);
             }
         }
     }
