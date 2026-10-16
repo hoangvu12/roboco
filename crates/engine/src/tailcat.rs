@@ -479,6 +479,13 @@ impl AdapterChild {
         // Ends the adapter even when native app termination or a crash bypasses
         // destructors; the adapter documents this variable.
         command.env("ROBOCO_TAILCAT_PARENT_PIPE", "1");
+        // The adapter is a console program: started from the desktop (or the
+        // detached CLI engine) it would otherwise open its own console window.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
         let mut child = command
             .spawn()
             .with_context(|| format!("cannot start the tailcat {role} adapter at {}", adapter.display()))?;
