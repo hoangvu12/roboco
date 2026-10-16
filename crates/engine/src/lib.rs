@@ -269,6 +269,9 @@ impl EngineCore {
         // login between engines, so no route is registered in production.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        // Runs that fail signed-out mark the harness's live login on the
+        // same store the accounts RPCs list (ticket 08).
+        sessions.set_agent_accounts(agent_accounts.clone());
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();

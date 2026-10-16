@@ -164,6 +164,7 @@ function account(fields: Partial<AgentAccount>): AgentAccount {
     active: false,
     usageWindows: [],
     switchable: true,
+    signInState: "unknown",
     ...fields,
   };
 }

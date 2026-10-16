@@ -189,6 +189,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::InstallHarnessRequest,
         roboco_proto::AgentAccount,
         roboco_proto::AgentAuthKind,
+        roboco_proto::AgentSignInState,
         roboco_proto::AgentAccountsSnapshot,
         roboco_proto::AgentAccountWarning,
         roboco_proto::AgentLoginStart,

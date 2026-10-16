@@ -11,6 +11,7 @@ export * from "./AgentLoginPoll";
 export * from "./AgentLoginStart";
 export * from "./AgentLoginStatus";
 export * from "./AgentOrigin";
+export * from "./AgentSignInState";
 export * from "./AgentUsageWindow";
 export * from "./AttachmentChunk";
 export * from "./AttachmentTransfer";
