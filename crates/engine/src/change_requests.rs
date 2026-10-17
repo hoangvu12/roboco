@@ -25,6 +25,12 @@ const WITHOUT_CHANGE_REQUEST_TTL: Duration = Duration::from_secs(45);
 const FAILURE_INITIAL_BACKOFF: Duration = Duration::from_secs(20);
 const FAILURE_MAX_BACKOFF: Duration = Duration::from_secs(15 * 60);
 const CONTEXT_POLL_INTERVAL: Duration = Duration::from_secs(15);
+/// An inspection whose Git metadata stamp is unchanged is reused up to this
+/// age. The stamp misses inputs outside the checkout (global config,
+/// loose remote-tracking refs), so it still expires.
+const CONTEXT_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+/// A stamp on a wedged mount degrades to the poll interval instead of hanging.
+const GIT_STAMP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChangeRequestCacheKey {
@@ -41,6 +47,7 @@ struct Timing {
     failure_initial_backoff: Duration,
     failure_max_backoff: Duration,
     context_poll_interval: Duration,
+    context_max_age: Duration,
 }
 
 impl Default for Timing {
@@ -51,6 +58,7 @@ impl Default for Timing {
             failure_initial_backoff: FAILURE_INITIAL_BACKOFF,
             failure_max_backoff: FAILURE_MAX_BACKOFF,
             context_poll_interval: CONTEXT_POLL_INTERVAL,
+            context_max_age: CONTEXT_MAX_AGE,
         }
     }
 }
@@ -67,11 +75,60 @@ struct CacheState {
     last_error: Option<ChangeRequestError>,
 }
 
+/// One checkout's latest Git inspection, shared by every subscription on
+/// that checkout whatever branch it asks about. The lock makes concurrent
+/// pollers wait for one inspection instead of each spawning their own.
+struct CheckoutInspection {
+    latest: AsyncMutex<Option<InspectedCheckout>>,
+}
+
+struct InspectedCheckout {
+    source: Result<CheckoutSourceContext, ChangeRequestError>,
+    started: Instant,
+    stamp: Option<GitStamp>,
+}
+
+/// Size and mtime of the files an inspection reads: the worktree's `HEAD`
+/// (branch switches) and the shared `config` and `packed-refs` (upstream,
+/// remote and push-default changes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitStamp(Vec<Option<(u64, std::time::SystemTime)>>);
+
+impl GitStamp {
+    async fn read(git_dir: &Path) -> Option<Self> {
+        let git_dir = git_dir.to_owned();
+        let read = tokio::task::spawn_blocking(move || Self::read_blocking(&git_dir));
+        tokio::time::timeout(GIT_STAMP_TIMEOUT, read)
+            .await
+            .ok()?
+            .ok()?
+    }
+
+    fn read_blocking(git_dir: &Path) -> Option<Self> {
+        let stat = |path: PathBuf| {
+            let metadata = std::fs::metadata(path).ok()?;
+            Some((metadata.len(), metadata.modified().ok()?))
+        };
+        // A linked worktree's git dir names the shared one in `commondir`.
+        let common_dir = std::fs::read_to_string(git_dir.join("commondir"))
+            .map(|relative| git_dir.join(relative.trim()))
+            .unwrap_or_else(|_| git_dir.to_owned());
+        let head = stat(git_dir.join("HEAD"))?;
+        Some(Self(vec![
+            Some(head),
+            stat(common_dir.join("config")),
+            stat(common_dir.join("packed-refs")),
+        ]))
+    }
+}
+
 struct Inner {
     repos: Repos,
     device_id: String,
     lookup: Arc<dyn CheckoutChangeRequestLookup>,
     entries: Mutex<HashMap<ChangeRequestCacheKey, Arc<CacheEntry>>>,
+    /// Keyed by checkout id; the subscriptions hold the strong references.
+    inspections: Mutex<HashMap<String, Weak<CheckoutInspection>>>,
     timing: Timing,
     shutdown: CancellationToken,
 }
@@ -108,6 +165,7 @@ impl CheckoutChangeRequests {
                 device_id: device_id.to_owned(),
                 lookup,
                 entries: Mutex::new(HashMap::new()),
+                inspections: Mutex::new(HashMap::new()),
                 timing,
                 shutdown: CancellationToken::new(),
             }),
@@ -155,6 +213,7 @@ impl CheckoutChangeRequests {
     ) -> BoxStream<'static, CheckoutChangeRequestStatus> {
         let state = SubscriptionState {
             service: self.clone(),
+            inspection: self.inspection_for(&identity.id),
             cwd,
             identity,
             requested_branch,
@@ -168,9 +227,7 @@ impl CheckoutChangeRequests {
                 }
                 let mut source = match state
                     .service
-                    .inner
-                    .lookup
-                    .inspect_checkout(&state.cwd)
+                    .inspect(&state.inspection, &state.cwd, &state.identity.git_dir)
                     .await
                 {
                     Ok(source) => source,
@@ -216,6 +273,77 @@ impl CheckoutChangeRequests {
             }
         })
         .boxed()
+    }
+
+    fn inspection_for(&self, checkout_id: &str) -> Arc<CheckoutInspection> {
+        let mut inspections = self
+            .inner
+            .inspections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(inspection) = inspections.get(checkout_id).and_then(Weak::upgrade) {
+            return inspection;
+        }
+        inspections.retain(|_, inspection| inspection.strong_count() > 0);
+        let inspection = Arc::new(CheckoutInspection {
+            latest: AsyncMutex::new(None),
+        });
+        inspections.insert(checkout_id.to_owned(), Arc::downgrade(&inspection));
+        inspection
+    }
+
+    /// The checkout's Git context, inspected at most once per poll interval
+    /// for all of its subscribers, and not at all while the stamp of its Git
+    /// metadata is unchanged (up to `context_max_age`).
+    async fn inspect(
+        &self,
+        inspection: &Arc<CheckoutInspection>,
+        cwd: &Path,
+        git_dir: &Path,
+    ) -> Result<CheckoutSourceContext, ChangeRequestError> {
+        // Detached: a subscriber that stops polling mid-inspection keeps its
+        // pending future, and with it the lock every other subscriber on the
+        // checkout waits for. The task always finishes and releases it.
+        let service = self.clone();
+        let inspection = inspection.clone();
+        let (cwd, git_dir) = (cwd.to_owned(), git_dir.to_owned());
+        tokio::spawn(async move { service.inspect_shared(&inspection, &cwd, &git_dir).await })
+            .await
+            .unwrap_or(Err(ChangeRequestError::RepositoryUnavailable))
+    }
+
+    async fn inspect_shared(
+        &self,
+        inspection: &CheckoutInspection,
+        cwd: &Path,
+        git_dir: &Path,
+    ) -> Result<CheckoutSourceContext, ChangeRequestError> {
+        let timing = self.inner.timing;
+        let mut latest = inspection.latest.lock().await;
+        if let Some(previous) = latest.as_ref()
+            && previous.started.elapsed() < timing.context_poll_interval
+        {
+            return previous.source.clone();
+        }
+        let stamp = GitStamp::read(git_dir).await;
+        if let Some(previous) = latest.as_ref()
+            && previous.source.is_ok()
+            && stamp.is_some()
+            && stamp == previous.stamp
+            && previous.started.elapsed() < timing.context_max_age
+        {
+            return previous.source.clone();
+        }
+        // Stamped before inspecting: a change racing the inspection leaves
+        // the stamps different, so the next poll inspects again.
+        let started = Instant::now();
+        let source = self.inner.lookup.inspect_checkout(cwd).await;
+        *latest = Some(InspectedCheckout {
+            source: source.clone(),
+            started,
+            stamp,
+        });
+        source
     }
 
     fn acquire(&self, key: ChangeRequestCacheKey) -> DemandLease {
@@ -340,6 +468,7 @@ impl Drop for DemandLease {
 
 struct SubscriptionState {
     service: CheckoutChangeRequests,
+    inspection: Arc<CheckoutInspection>,
     cwd: PathBuf,
     identity: CheckoutIdentity,
     requested_branch: Option<String>,
@@ -421,6 +550,7 @@ mod tests {
         source: Mutex<CheckoutSourceContext>,
         results: Mutex<VecDeque<Result<Option<ChangeRequestSummary>, ChangeRequestError>>>,
         resolves: AtomicUsize,
+        inspections: AtomicUsize,
     }
 
     impl FakeLookup {
@@ -432,7 +562,14 @@ mod tests {
                 source: Mutex::new(source),
                 results: Mutex::new(results.into_iter().collect()),
                 resolves: AtomicUsize::new(0),
+                inspections: AtomicUsize::new(0),
             })
+        }
+
+        /// Each inspection stands for the ~8 `git` processes the real
+        /// inspector spawns.
+        fn inspection_count(&self) -> usize {
+            self.inspections.load(Ordering::Acquire)
         }
 
         fn set_source(&self, source: CheckoutSourceContext) {
@@ -450,6 +587,7 @@ mod tests {
             &self,
             _cwd: &Path,
         ) -> Result<CheckoutSourceContext, ChangeRequestError> {
+            self.inspections.fetch_add(1, Ordering::AcqRel);
             Ok(self.source.lock().unwrap().clone())
         }
 
@@ -516,6 +654,7 @@ mod tests {
             failure_initial_backoff: Duration::from_secs(1),
             failure_max_backoff: Duration::from_secs(2),
             context_poll_interval: Duration::from_millis(5),
+            context_max_age: Duration::from_millis(5),
         }
     }
 
@@ -655,6 +794,7 @@ mod tests {
             failure_initial_backoff: Duration::from_millis(1),
             failure_max_backoff: Duration::from_millis(1),
             context_poll_interval: Duration::from_millis(1),
+            context_max_age: Duration::from_millis(1),
         };
         let service = service(lookup.clone(), timing);
         let key = cache_key("checkout-1", &source);
@@ -731,5 +871,98 @@ mod tests {
         service.shutdown();
 
         assert!(stream.next().await.is_none());
+    }
+
+    fn no_pull_requests()
+    -> impl Iterator<Item = Result<Option<ChangeRequestSummary>, ChangeRequestError>> {
+        std::iter::repeat_with(|| Ok(None)).take(1_000)
+    }
+
+    /// Drive `streams` in the background so they poll like live RPC
+    /// subscriptions, returning the tasks to join after shutdown.
+    fn drain(
+        streams: impl IntoIterator<Item = BoxStream<'static, CheckoutChangeRequestStatus>>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        streams
+            .into_iter()
+            .map(|mut stream| tokio::spawn(async move { while stream.next().await.is_some() {} }))
+            .collect()
+    }
+
+    /// Several chats on one checkout (an orchestrator's side chats, or a
+    /// desktop and a phone watching the same branch) must not each run the
+    /// checkout's Git inspection: one inspection per poll interval serves
+    /// every subscriber.
+    #[tokio::test(start_paused = true)]
+    async fn watchers_on_one_checkout_share_one_inspection_per_interval() {
+        const WATCHERS: usize = 8;
+        const INTERVALS: u32 = 10;
+        let lookup = FakeLookup::new(source("feature/status"), no_pull_requests());
+        let service = service(lookup.clone(), Timing::default());
+        let tasks = drain((0..WATCHERS).map(|index| {
+            service.watch_checkout_for_branch(
+                PathBuf::from("/checkout"),
+                identity(),
+                Some(format!("feature/{index}")),
+            )
+        }));
+
+        tokio::time::sleep(CONTEXT_POLL_INTERVAL * INTERVALS + Duration::from_secs(1)).await;
+        let inspections = lookup.inspection_count();
+        service.shutdown();
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        assert!(
+            inspections <= INTERVALS as usize + 1,
+            "{WATCHERS} watchers ran {inspections} checkout inspections over {INTERVALS} poll intervals"
+        );
+    }
+
+    /// While HEAD, the config and packed refs are untouched, an idle
+    /// checkout is not re-inspected at all; moving HEAD is picked up on the
+    /// next poll.
+    #[tokio::test(start_paused = true)]
+    async fn unchanged_git_metadata_skips_reinspection_until_head_moves() {
+        let git_dir = tempfile::tempdir().unwrap();
+        std::fs::write(git_dir.path().join("HEAD"), "ref: refs/heads/feature/one\n").unwrap();
+        std::fs::write(git_dir.path().join("config"), "[core]\n").unwrap();
+        let identity = CheckoutIdentity {
+            git_dir: git_dir.path().to_owned(),
+            ..identity()
+        };
+        let lookup = FakeLookup::new(source("feature/one"), no_pull_requests());
+        let service = service(lookup.clone(), Timing::default());
+        let mut live = service.watch_checkout(PathBuf::from("/checkout"), identity.clone());
+        assert_eq!(live.next().await.unwrap().branch, "feature/one");
+        let tasks = drain(
+            (0..3).map(|_| service.watch_checkout(PathBuf::from("/checkout"), identity.clone())),
+        );
+
+        tokio::time::sleep(CONTEXT_POLL_INTERVAL * 10).await;
+        assert_eq!(
+            lookup.inspection_count(),
+            1,
+            "an idle checkout was re-inspected"
+        );
+
+        std::fs::write(
+            git_dir.path().join("HEAD"),
+            "ref: refs/heads/feature/two-and-longer\n",
+        )
+        .unwrap();
+        lookup.set_source(source("feature/two-and-longer"));
+        let switched = tokio::time::timeout(CONTEXT_POLL_INTERVAL * 2, live.next())
+            .await
+            .expect("a HEAD move is seen within one poll interval")
+            .unwrap();
+        assert_eq!(switched.branch, "feature/two-and-longer");
+        assert_eq!(lookup.inspection_count(), 2);
+
+        service.shutdown();
+        for task in tasks {
+            task.await.unwrap();
+        }
     }
 }
