@@ -432,22 +432,15 @@ async fn a_plain_error_records_no_limit_and_flushes_the_queue_as_before() {
         .expect("queue message");
     let _ = harness.finish.send(());
 
-    wait_for(
-        || {
-            core.sessions
-                .session_status(CHAT)
-                .is_some_and(|s| s.status == SessionStatus::Errored)
-        },
-        "the chat to settle errored",
-    )
-    .await;
-    assert_eq!(limit_row(&core), None, "unclassified errors are not Limited");
-    // Today's behavior, unchanged: the turn ended, the queued row goes out.
+    // Today's behavior, unchanged: the turn ended errored and the queued row
+    // goes out at once. The Errored status is only a blip before that next
+    // run starts, so the flush itself is the proof the errored turn ended.
     wait_for(
         || prompts.lock().unwrap().iter().any(|p| p == "follow up"),
         "the queued message to flush after a plain error",
     )
     .await;
+    assert_eq!(limit_row(&core), None, "unclassified errors are not Limited");
     let _ = harness.finish.send(());
     core.shutdown().await;
 }
