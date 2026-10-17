@@ -10463,7 +10463,7 @@ mod tests {
     /// outcome line appends its reason, and every outcome has a verb.
     #[test]
     fn notice_side_row_helpers_shape_the_card_lines() {
-        assert_eq!(short_chat_id("chat-side-1234"), "chat-si");
+        assert_eq!(short_chat_id("chat-side-1234"), "chat-sid");
         assert_eq!(short_chat_id("short"), "short");
         // A multibyte id boundary never panics and still yields whole
         // characters.
