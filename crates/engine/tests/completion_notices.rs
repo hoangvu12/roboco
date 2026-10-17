@@ -2200,7 +2200,7 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
     queue_run(&client, SIDE, "round 27", "m-run-27", Some(PARENT)).await;
     wait_idle(&core, SIDE).await;
     wait_for(
-        || notice_entries(&core, PARENT).len() == 26,
+        || notice_entries(&core, PARENT).len() == 27,
         "the count reset lets the next notice start a turn again",
     )
     .await;

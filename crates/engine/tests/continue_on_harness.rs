@@ -72,8 +72,11 @@ impl Harness for Limit {
     fn display_name(&self) -> &str {
         "Limit"
     }
+    // A turn-boundary agent like the Claude driver it stands in for: a Run
+    // sent mid-turn on the same runtime is held for the turn's end, not
+    // dispatched over the live turn.
     fn supports_steering(&self) -> bool {
-        false
+        true
     }
     fn steering_mode(&self) -> SteeringMode {
         SteeringMode::TurnBoundary
@@ -89,8 +92,10 @@ impl Harness for Limit {
         request: RunRequest,
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        self.prompts.lock().unwrap().push(request.prompt.clone());
+        // Subscribe before recording the prompt: a test that sees the prompt
+        // may send `finish` at once.
         let mut finish = self.finish.subscribe();
+        self.prompts.lock().unwrap().push(request.prompt.clone());
         Ok(futures::stream::once(async move {
             // The turn runs until the test says it ends — then it dies on
             // the usage limit exactly the way the driver reports one.
@@ -173,10 +178,10 @@ impl Harness for Capture {
         request: RunRequest,
         _: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        let mut finish = self.finish.subscribe();
         self.requests.lock().unwrap().push(request.clone());
         let reply = self.reply.to_string();
         let session = self.session.to_string();
-        let mut finish = self.finish.subscribe();
         Ok(futures::stream::once(async move {
             // The turn runs until the test says it ends.
             let _ = finish.recv().await;
@@ -236,7 +241,9 @@ fn queue_run(
         model: model.map(str::to_string),
         reasoning: None,
         model_options: Default::default(),
-        cwd: ".".into(),
+        // The chat row's cwd: queued rows dispatch from the row, and a
+        // harness session only resumes from the cwd it was opened in.
+        cwd: "/tmp".into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
         attachments: Vec::new(),
@@ -521,7 +528,16 @@ async fn continuing_on_another_harness_switches_then_sends_the_continue_prompt()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_request_held_across_the_switch_runs_on_the_new_harness() {
     let (core, limited, limited_prompts, pi, pi_requests, _tmp) = setup();
-    queue_run(&core, "Remember PINEAPPLE", HarnessId::ClaudeCode, None, "m-open");
+    // The opening turn runs the same claude model the held Run is sent
+    // with: only a Run the live runtime would carry is held — any other
+    // config replaces the runtime instead.
+    queue_run(
+        &core,
+        "Remember PINEAPPLE",
+        HarnessId::ClaudeCode,
+        Some("claude-model"),
+        "m-open",
+    );
     start_limited_turn(&limited_prompts).await;
     // A full Run command sent while the turn-boundary run is working: it is
     // HELD for the turn's end with the exact request it was sent with
@@ -533,6 +549,11 @@ async fn a_full_request_held_across_the_switch_runs_on_the_new_harness() {
         Some("claude-model"),
         "m-held",
     );
+    wait_for(
+        || queue_texts(&core) == vec!["queued as a full request"],
+        "the full request to be held for the turn's end",
+    )
+    .await;
     let _ = limited.finish.send(());
     settle_limited(&core).await;
     assert_eq!(queue_texts(&core), vec!["queued as a full request"]);
@@ -607,7 +628,7 @@ async fn a_full_request_held_across_the_switch_runs_on_the_new_harness() {
 /// the new harness, ready to resume.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_switch_alone_keeps_the_chat_limited_until_a_turn_runs() {
-    let (core, limited, limited_prompts, pi, _pi_requests, _tmp) = setup();
+    let (core, limited, limited_prompts, pi, pi_requests, _tmp) = setup();
     queue_run(&core, "Remember PINEAPPLE", HarnessId::ClaudeCode, None, "m-open");
     start_limited_turn(&limited_prompts).await;
     let _ = limited.finish.send(());
@@ -629,12 +650,15 @@ async fn the_switch_alone_keeps_the_chat_limited_until_a_turn_runs() {
     // The user's own next message (a normal send, not the resume prompt)
     // clears it just the same.
     queue_run(&core, "try a different angle", HarnessId::Pi, None, "m-next");
+    // Wait for the harness to hold the run, not just for Working: the
+    // status publishes before run() subscribes to `finish`, so a send in
+    // that window would be lost and the turn would never settle.
     wait_for(
-        || {
-            core.sessions
-                .session_status(CHAT)
-                .is_some_and(|s| s.status == SessionStatus::Working)
-        },
+        || pi_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.prompt.contains("try a different angle")),
         "the new turn to start",
     )
     .await;
