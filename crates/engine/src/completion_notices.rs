@@ -995,12 +995,12 @@ fn read_line(sides: &[NoticeSide]) -> String {
 
 /// `"title" (short id) outcome` — the one-line form for one side chat.
 fn side_line(side: &NoticeSide) -> String {
+    let verb = side.outcome.verb();
     let outcome = match side.outcome {
-        NoticeOutcome::Completed => "finished".into(),
-        NoticeOutcome::Errored => with_detail(side, "failed"),
-        NoticeOutcome::Stopped => "was stopped".into(),
-        NoticeOutcome::Interrupted => with_detail(side, "was interrupted"),
-        NoticeOutcome::WaitingForInput => with_detail(side, "is waiting for input"),
+        NoticeOutcome::Completed | NoticeOutcome::Stopped => verb.into(),
+        NoticeOutcome::Errored
+        | NoticeOutcome::Interrupted
+        | NoticeOutcome::WaitingForInput => with_detail(side, verb),
     };
     format!("\"{}\" ({}) {}", side.title, short_id(&side.chat_id), outcome)
 }

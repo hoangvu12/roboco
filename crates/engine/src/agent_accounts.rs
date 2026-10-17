@@ -1002,13 +1002,6 @@ impl AgentAccounts {
             .find(|account| account.harness == harness && account.active)
     }
 
-    /// The ranked failover candidates for `harness` (orchestration v2,
-    /// ticket 09) — the CACHED rows, no network: the forced probe is the
-    /// engine's call on the CHOSEN candidate only ([`Self::probe_account`]).
-    /// `limited_account_id` names the account the chat's limit hit (the
-    /// limit record's account, else the harness's active login when the
-    /// record carried none). See [`rank_failover_candidates`] for the
-    /// exclusion and ranking rules.
     /// The harness's OTHER accounts that are signed out (ticket 09's
     /// picker): never switch targets — the ranking excludes them — but the
     /// picker lists them with a "Sign in again" action (the existing login
@@ -1032,6 +1025,13 @@ impl AgentAccounts {
             .unwrap_or_default()
     }
 
+    /// The ranked failover candidates for `harness` (orchestration v2,
+    /// ticket 09) — the CACHED rows, no network: the forced probe is the
+    /// engine's call on the CHOSEN candidate only ([`Self::probe_account`]).
+    /// `limited_account_id` names the account the chat's limit hit (the
+    /// limit record's account, else the harness's active login when the
+    /// record carried none). See [`rank_failover_candidates`] for the
+    /// exclusion and ranking rules.
     pub async fn failover_candidates(
         &self,
         harness: HarnessId,
@@ -3894,11 +3894,12 @@ fn failover_group(
 ///   instead);
 /// - accounts still limited (`limited_until` in the future).
 ///
-/// **Ranked:** lowest usage first — the account's most-used window
-/// (`0.0` when the meters are unknown); among equals, accounts OUTSIDE the
-/// limited account's org/workspace rank first (a shared pool may hit the
-/// same wall again). The pre-rank order (slot creation order) breaks the
-/// remaining ties so the ranking is deterministic.
+/// **Ranked:** accounts OUTSIDE the limited account's org/workspace first
+/// (a shared pool may hit the same wall again) — the org penalty is the
+/// PRIMARY key, outranking usage; then lowest usage first — the account's
+/// most-used window (`0.0` when the meters are unknown). The pre-rank order
+/// (slot creation order) breaks the remaining ties so the ranking is
+/// deterministic.
 fn rank_failover_candidates(
     candidates: Vec<FailoverCandidate>,
     limited_id: Option<&str>,
