@@ -284,6 +284,13 @@ struct AckSideChatParams {
     /// (an agent parent). Reported after `wait_for_turn`, a send with
     /// wait, `read_chat` or `get_chat` (ticket 14).
     origin_chat_id: String,
+    /// When the observation started (epoch ms; additive — absent when the
+    /// caller could not say): the engine's acknowledgement watermark covers
+    /// only the side chat's settles that had happened by then, so an
+    /// outcome that landed between the read and this report — the parent's
+    /// UNSEEN work — still owes its notice.
+    #[serde(default)]
+    observed_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1133,9 +1140,19 @@ impl EngineRpc {
                     .map_err(failed);
                 // Archiving a Limited chat cancels its pending Resume-at-reset
                 // continuation (orchestration v2, ticket 07): the user put the
-                // work away — it must not resume on its own overnight.
-                if archived {
+                // work away — it must not resume on its own overnight. Only
+                // on a SUCCESSFUL archive: a refused write (the registry row
+                // unreadable, the doc busy) leaves the chat exactly as it
+                // was, continuation armed — cancelling beside a failed
+                // write would strand an unarchived chat with no continuation.
+                if archived && result.is_ok() {
                     self.sessions.cancel_scheduled_resume(&chat_id);
+                    // An archived parent is owed nothing (ticket 13): its
+                    // pending completion notices go now, and the loop cap's
+                    // parked rows — the notice's waiting form — go with them,
+                    // or they would sit in the archived chat's queue forever
+                    // (nothing drains an archived parent).
+                    crate::completion_notices::stop_parent(&self.sessions, &chat_id);
                 }
                 result.map(drop)
             }
@@ -1750,6 +1767,15 @@ impl RpcService for EngineRpc {
                 // model change. A chat that never carried a config is
                 // pinned to the harness it actually runs on (the engine
                 // default) so a configless source stays honest.
+                //
+                // The same drop applies when the copy's harness differs
+                // from the SOURCE'S CURRENT CONFIG — not just from the
+                // boundary's turn-ref harness `cross_harness` judges
+                // against: forking an older Claude reply of a chat that has
+                // since switched to Codex, back onto Claude, inherits
+                // Codex's model ids on a Claude copy. The copy's harness
+                // versus the config it inherits is the mismatch that
+                // matters; the sandbox always survives.
                 if override_harness.is_some() || requested_model.is_some() {
                     let base = chat.config.clone().unwrap_or(roboco_proto::ChatConfig {
                         harness: self.doc_host.harness_for(&p.source_chat_id),
@@ -1758,15 +1784,21 @@ impl RpcService for EngineRpc {
                         model_options: Default::default(),
                         sandbox: roboco_proto::SandboxLevel::WorkspaceWrite,
                     });
+                    let copy_harness = override_harness.unwrap_or(base.harness);
+                    let config_cross = chat
+                        .config
+                        .as_ref()
+                        .is_some_and(|config| config.harness != copy_harness);
+                    let drop_vocab = cross_harness || config_cross;
                     chat.config = Some(roboco_proto::ChatConfig {
-                        harness: override_harness.unwrap_or(base.harness),
-                        model: if cross_harness {
+                        harness: copy_harness,
+                        model: if drop_vocab {
                             requested_model.map(str::to_owned)
                         } else {
                             requested_model.map(str::to_owned).or(base.model)
                         },
-                        reasoning: if cross_harness { None } else { base.reasoning },
-                        model_options: if cross_harness {
+                        reasoning: if drop_vocab { None } else { base.reasoning },
+                        model_options: if drop_vocab {
                             Default::default()
                         } else {
                             base.model_options
@@ -1845,8 +1877,16 @@ impl RpcService for EngineRpc {
                 // keeps today's behavior: a fresh session plus the budgeted
                 // paste, cut at the boundary because the fork's own doc only
                 // holds the copied prefix.
+                //
+                // A boundary that is NOT the last segment of its turn gets
+                // the paste too (story 60): a steer-split reply's segments
+                // share the turn's ref, and the native fork cuts at the
+                // WHOLE turn — content the boundary excluded would ride the
+                // copy through the provider. Only the turn's last segment
+                // names a boundary the harness can actually cut at.
                 if !cross_harness
                     && let Some(reference) = entries[ref_entry].provider_turn.clone()
+                    && !turn_continues_past(&entries, boundary, &reference)
                 {
                     target
                         .doc()
@@ -2003,7 +2043,8 @@ impl RpcService for EngineRpc {
                 // the Roboco MCP server dials this engine's loopback, and
                 // both chats live here.
                 let p: AckSideChatParams = parse_params(params)?;
-                self.sessions.ack_notice(&p.origin_chat_id, &p.chat_id);
+                self.sessions
+                    .ack_notice(&p.origin_chat_id, &p.chat_id, p.observed_at);
                 RpcReply::value(&serde_json::json!({}))
             }
             methods::UPDATE_QUEUED_MESSAGE => {
@@ -3355,22 +3396,26 @@ impl RpcService for EngineRpc {
 /// The index of the ROOT entry of the logical message `at` belongs to: an
 /// oversized relayed reply can split into continuation fragments
 /// (`root#c1`, …) after its root, and the whole chain is one message
-/// (`join_continuation_entries`). An orphan fragment (root missing) is its
-/// own root.
+/// (`join_continuation_entries`). Fragments name their ROOT (`root#c2`
+/// points at `root`, not at `root#c1`), so the walk resolves the named id
+/// directly rather than stepping back one entry at a time — a three-plus
+/// fragment chain would otherwise stop at the first fragment and lose the
+/// root (and the root's provider turn ref, where a fork boundary is
+/// stamped). An orphan fragment (root missing, or named forward) is its
+/// own root; the walk can only move backwards, so a corrupt cycle cannot
+/// spin it.
 fn logical_message_root(entries: &[roboco_doc::SessionMessageEntry], at: usize) -> usize {
     let mut root = at;
-    loop {
-        let Some(parent) = entries[root].continuation_of.as_deref() else {
-            return root;
-        };
-        match root
-            .checked_sub(1)
-            .filter(|&prev| entries[prev].id.as_str() == parent)
+    while let Some(parent) = entries[root].continuation_of.as_deref() {
+        match entries
+            .iter()
+            .position(|entry| entry.id.as_str() == parent)
         {
-            Some(prev) => root = prev,
-            None => return root,
+            Some(prev) if prev < root => root = prev,
+            _ => return root,
         }
     }
+    root
 }
 
 /// The inclusive index of the LAST entry of the logical message `at`
@@ -3387,6 +3432,22 @@ fn logical_message_end(entries: &[roboco_doc::SessionMessageEntry], at: usize) -
         end += 1;
     }
     end.max(at)
+}
+
+/// Whether the provider turn the boundary entry belongs to CONTINUES past
+/// the copy's end (story 60): a steer-split reply's later segments carry
+/// the same turn ref, and a native fork cuts at the whole turn — so a
+/// boundary that is not its turn's last segment must fall back to the
+/// budgeted paste (later entries the boundary excluded would otherwise
+/// reach the copy through the provider session).
+fn turn_continues_past(
+    entries: &[roboco_doc::SessionMessageEntry],
+    boundary: usize,
+    reference: &roboco_proto::ProviderTurnRef,
+) -> bool {
+    entries[boundary.saturating_add(1)..]
+        .iter()
+        .any(|entry| entry.provider_turn.as_ref() == Some(reference))
 }
 
 #[cfg(test)]

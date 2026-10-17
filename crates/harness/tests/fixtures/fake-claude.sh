@@ -482,11 +482,15 @@ case "$first" in
 
 *scenario:error*)
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-err"}'
+  # Hard-rejected claude.ai usage window, with the CLI's own reset time
+  # (unix seconds, as the live 2.1.228 capture carries it) — FIRST, matching
+  # the live capture's order: the event lands before the terse
+  # assistant-level error code below, so the engine's limit merge (the
+  # later, windowless `rate_limit` code must not overwrite this window and
+  # reset) is what the fixture exercises.
+  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}'
   # Terse assistant-level error code with no content.
   emit '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}'
-  # Hard-rejected claude.ai usage window, with the CLI's own reset time
-  # (unix seconds, as the live 2.1.228 capture carries it).
-  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}'
   # Result error with an EMPTY errors array: needs fallback wording.
   emit '{"type":"result","subtype":"error_max_turns","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-err"}'
   ;;

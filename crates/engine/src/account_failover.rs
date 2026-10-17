@@ -37,7 +37,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use roboco_doc::SessionCommandPayload;
+use roboco_doc::{MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionMessageEntry};
 use roboco_proto::{
     AgentAccount, AgentSignInState, HarnessId, ResumeAccountCandidates, ResumeOnAccountOutcome,
     RESUME_CONTINUE_PROMPT,
@@ -45,7 +45,7 @@ use roboco_proto::{
 
 use crate::agent_accounts::AgentAccounts;
 use crate::sessions::SessionsEngine;
-use crate::{new_id, EngineError};
+use crate::{new_id, now_ms, EngineError};
 
 /// Only these harnesses fail over: each keeps one switchable account login
 /// whose sessions survive a switch (research 03). Pure.
@@ -69,6 +69,19 @@ const TURN_START_WINDOW: Duration = Duration::from_secs(30);
 /// Cap on how many candidates one failover chain tries: the ranked list is
 /// short, but a store that keeps returning the same row must never spin.
 const MAX_ATTEMPTS: usize = 8;
+
+/// How long the watcher waits for the continuation turn to SETTLE after it
+/// started: the wait is driven by the status watch (no polling), so a long
+/// turn costs nothing — the bound only stops a watcher leaking forever on
+/// a run that never settles (a chat parked on a question for days counts as
+/// never here; the switch itself stands, only the chain ends).
+const SETTLE_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long the watcher re-checks the signed-out mark for after a settle
+/// (bounded): the run's own marking is spawned, not awaited (it queues
+/// behind the accounts ops lock a usage probe can hold), so the mark can
+/// land a beat after the turn errored.
+const MARK_GRACE: Duration = Duration::from_secs(2);
 
 /// The ranked switch targets for `chat_id` (ticket 09): the cached rows of
 /// the chat's harness, best first, plus the account the chat's limit hit.
@@ -330,7 +343,7 @@ fn dispatch_continuation(
     let last = engine
         .last_request(chat_id)
         .ok_or_else(|| "the chat has no run configuration to continue".to_string())?;
-    let resume = engine.harness_session_to_resume(chat_id, &last.cwd);
+    let resume = engine.harness_session_to_resume(chat_id, &last.cwd, harness);
     let fallback = fallback_history(engine, chat_id);
     let request = roboco_proto::RunRequest {
         prompt: RESUME_CONTINUE_PROMPT.into(),
@@ -378,12 +391,21 @@ fn fallback_history(engine: &SessionsEngine, chat_id: &str) -> Option<String> {
     crate::transcript_budget::budgeted_transcript_prefix(&entries, Some(chat_id))
 }
 
-/// Watch the continuation turn (fire-and-forget): once it settles,
-/// a signed-out failure moves to the next candidate (the run's error has
+/// Watch the continuation turn (fire-and-forget): once it settles, a
+/// signed-out failure moves to the next candidate (the run's error has
 /// already marked the account — ticket 08); any other failure restores the
-/// previously active account. A turn the user stopped, or a chat that
+/// previously active account and REPORTS it (ticket 09) — the chat's
+/// transcript gains a System entry saying the switch failed and the
+/// previous account is active again, so the user (and the web client, which
+/// renders System entries) sees it. A turn the user stopped, or a chat that
 /// vanished, ends the chain and leaves the switch standing — the user's
 /// stop is not a failed failover.
+///
+/// Driven by the session status watch, not polling (the old 100ms/250ms
+/// loops could miss a fast Working→Errored flip entirely and spun forever
+/// while a question waited): the watcher sleeps until a row it cares about
+/// changes, wakes on the engine's own transitions, and bounds itself by
+/// [`TURN_START_WINDOW`] (the start) and [`SETTLE_WINDOW`] (the settle).
 async fn watch(
     engine: &SessionsEngine,
     accounts: &AgentAccounts,
@@ -393,50 +415,112 @@ async fn watch(
     previous: Option<String>,
     tried: HashSet<String>,
 ) {
+    // The row the pre-switch chat settled on (Limited: Errored with a
+    // written-at). A status row is only "the continuation's outcome" when
+    // it is newer than this moment — the chat sat Errored before the turn
+    // ever started, so the old row must not read as the turn's failure.
+    let began = chrono::Utc::now();
     // Phase 1: the continuation starts. The queued command dispatches
-    // within milliseconds; the bound only covers a held queue.
+    // within milliseconds; the bound only covers a held queue. The watch
+    // wakes on every transition — including a turn that errors before it
+    // ever reads Working, which the old poller could sleep straight through.
+    let mut rows = engine.watch_sessions();
     let start_by = tokio::time::Instant::now() + TURN_START_WINDOW;
-    loop {
+    let started = loop {
         if engine.shutting_down() {
             return;
         }
-        match engine.session_status(chat_id).map(|row| row.status) {
-            Some(roboco_proto::SessionStatus::Working) => break,
-            _ if tokio::time::Instant::now() >= start_by => {
+        let row = engine.session_status(chat_id);
+        match row.map(|row| (row.status, row.updated_at)) {
+            Some((roboco_proto::SessionStatus::Working | roboco_proto::SessionStatus::AwaitingInput, _)) => {
+                break true;
+            }
+            // Errored again (or idle) on a row WRITTEN after we began: the
+            // turn ran and settled within the window — watch it as settled.
+            Some((roboco_proto::SessionStatus::Idle | roboco_proto::SessionStatus::Errored, at))
+                if at > began =>
+            {
+                break false;
+            }
+            // No row yet (or the chat's pre-switch row: Errored with a
+            // written-at before we began) — the command is still on its way.
+            _ => {}
+        }
+        tokio::select! {
+            changed = rows.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            _ = tokio::time::sleep_until(start_by) => {
                 tracing::info!(
                     chat = %chat_id,
                     "failover continuation never started; leaving the queued command to drain"
                 );
                 return;
             }
-            _ => tokio::time::sleep(Duration::from_millis(100)).await,
         }
-    }
-    // Phase 2: settle. AwaitingInput is still the user's turn in progress.
-    let settled = loop {
-        if engine.shutting_down() {
-            return;
+    };
+    // Phase 2: settle. AwaitingInput is still the user's turn in progress —
+    // the watcher stays (for free) until the turn ends one way or another.
+    let settled = if started {
+        let settle_by = tokio::time::Instant::now() + SETTLE_WINDOW;
+        let mut settled = None;
+        loop {
+            if engine.shutting_down() {
+                return;
+            }
+            let status = engine.session_status(chat_id).map(|row| row.status);
+            match status {
+                Some(roboco_proto::SessionStatus::Idle)
+                | Some(roboco_proto::SessionStatus::Errored)
+                | None => {
+                    settled = status;
+                    break;
+                }
+                // Working | AwaitingInput: keep waiting on the watch.
+                _ => {}
+            }
+            tokio::select! {
+                changed = rows.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep_until(settle_by) => {
+                    tracing::info!(
+                        chat = %chat_id,
+                        "failover continuation never settled; leaving the switch standing"
+                    );
+                    return;
+                }
+            }
         }
-        let status = engine.session_status(chat_id).map(|row| row.status);
-        match status {
-            Some(roboco_proto::SessionStatus::Idle)
-            | Some(roboco_proto::SessionStatus::Errored)
-            | None => break status,
-            Some(
-                roboco_proto::SessionStatus::Working
-                | roboco_proto::SessionStatus::AwaitingInput,
-            ) => tokio::time::sleep(Duration::from_millis(250)).await,
-        }
+        settled
+    } else {
+        // The turn already settled during phase 1: read its final state.
+        engine.session_status(chat_id).map(|row| row.status)
     };
     match settled {
         Some(roboco_proto::SessionStatus::Errored) => {
             // Why did it fail? A signed-out error has already marked the
             // switched-to account (the run's own wiring, ticket 08): the
-            // ACTIVE row reading SignedOut is that mark.
-            let active = accounts.active_account(harness).await;
-            let signed_out = active
-                .as_ref()
-                .is_some_and(|row| row.sign_in_state == AgentSignInState::SignedOut);
+            // ACTIVE row reading SignedOut is that mark. The mark is
+            // spawned (it queues behind the accounts ops lock), so it can
+            // land a beat after the settle — re-check it for a bounded
+            // grace before concluding the failure was something else.
+            let mut signed_out = false;
+            let deadline = tokio::time::Instant::now() + MARK_GRACE;
+            loop {
+                let active = accounts.active_account(harness).await;
+                signed_out = active
+                    .as_ref()
+                    .is_some_and(|row| row.sign_in_state == AgentSignInState::SignedOut);
+                if signed_out || tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
             if signed_out {
                 tracing::info!(
                     chat = %chat_id,
@@ -456,17 +540,69 @@ async fn watch(
                 // The chain ran out of candidates (or the store broke): the
                 // failover failed as a whole — put the previous account
                 // back so the harness is not left on a login whose turn
-                // just failed and nothing uses.
+                // just failed and nothing uses, and say so on the chat.
                 if matches!(next, Attempt::NoCandidates | Attempt::Failed(_)) {
+                    let reason = match next {
+                        Attempt::NoCandidates => {
+                            "every other account is limited, signed out, or in use".to_string()
+                        }
+                        Attempt::Failed(reason) => reason,
+                        Attempt::Switched(_) => unreachable!("matched above"),
+                    };
                     restore(engine, accounts, chat_id, harness, previous.as_deref()).await;
+                    note_failed_failover(engine, chat_id, previous.as_deref(), &reason);
                 }
             } else {
                 restore(engine, accounts, chat_id, harness, previous.as_deref()).await;
+                note_failed_failover(
+                    engine,
+                    chat_id,
+                    previous.as_deref(),
+                    "the resumed turn failed",
+                );
             }
         }
         // Completed, interrupted (the user's stop — not a failed
         // failover), or the chat went away: the chain ends here.
         _ => {}
+    }
+}
+
+/// Write the failed-failover report into the chat's transcript (ticket 09:
+/// "restore the previously active account and report the failure"): a
+/// System entry, rendered by every client, saying what failed and which
+/// account the harness is back on. Best-effort — a failed write costs the
+/// note, never the switch.
+fn note_failed_failover(engine: &SessionsEngine, chat_id: &str, previous: Option<&str>, reason: &str) {
+    let Some(host) = engine.host() else {
+        return;
+    };
+    let Some(handle) = host.open(chat_id).ok() else {
+        return;
+    };
+    let account = previous
+        .map(|id| format!("account {id}"))
+        .unwrap_or_else(|| "its previous login".into());
+    let text = format!(
+        "Resume on another account failed: {reason}. The harness is back on {account}."
+    );
+    let entry = SessionMessageEntry {
+        id: format!("failover:{}", new_id()),
+        role: MessageRole::System,
+        parts: vec![MessagePart::Text {
+            id: "t0".into(),
+            text,
+        }],
+        created_at: now_ms(),
+        device_id: host.device_id().to_owned(),
+        status: Some(MessageStatus::Complete),
+        continuation_of: None,
+        duration_ms: None,
+        origin_chat_id: None,
+        provider_turn: None,
+    };
+    if let Err(err) = handle.doc().push_message(&entry) {
+        tracing::warn!(chat = %chat_id, error = %err, "failed-failover note write failed");
     }
 }
 

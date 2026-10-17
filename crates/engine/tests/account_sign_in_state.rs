@@ -247,7 +247,7 @@ async fn a_signed_out_run_error_marks_the_active_account_until_a_probe_clears_it
     assert_eq!(claude_sign_in_state(&client, false).await, "unknown");
 
     core.sessions
-        .dispatch(CHAT, HarnessId::ClaudeCode, run_request("hello"), None, None)
+        .dispatch(CHAT, HarnessId::ClaudeCode, run_request("hello"), None, None, None)
         .await
         .expect("dispatch");
     wait_for_status(&core, CHAT, SessionStatus::Errored).await;
@@ -270,7 +270,7 @@ async fn a_subagents_signed_out_error_marks_the_shared_login_too() {
 
     assert_eq!(claude_sign_in_state(&client, false).await, "unknown");
     core.sessions
-        .dispatch(CHAT, HarnessId::ClaudeCode, run_request("hello"), None, None)
+        .dispatch(CHAT, HarnessId::ClaudeCode, run_request("hello"), None, None, None)
         .await
         .expect("dispatch");
     wait_for_status(&core, CHAT, SessionStatus::Errored).await;

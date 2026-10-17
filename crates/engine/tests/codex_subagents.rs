@@ -75,7 +75,7 @@ async fn check_persistence(
             request.clone(),
             Some("user-prompt".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -181,7 +181,7 @@ async fn check_persistence(
             request,
             Some("user-followup".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {

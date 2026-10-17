@@ -34,6 +34,11 @@ const CHAT: &str = "chat-limited";
 struct LimitHarness {
     id: HarnessId,
     kind: Option<AgentErrorKind>,
+    /// A second classified error the doomed run emits AFTER the first —
+    /// Claude's live shape (a detailed `rate_limit_event`, then the CLI's
+    /// terse `rate_limit` assistant code), which the engine's limit merge
+    /// must survive.
+    second_kind: Option<AgentErrorKind>,
     finish: tokio::sync::broadcast::Sender<()>,
     prompts: Arc<Mutex<Vec<String>>>,
     runs: std::sync::atomic::AtomicUsize,
@@ -41,12 +46,21 @@ struct LimitHarness {
 
 impl LimitHarness {
     fn new(id: HarnessId, kind: Option<AgentErrorKind>) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
+        Self::with_second_kind(id, kind, None)
+    }
+
+    fn with_second_kind(
+        id: HarnessId,
+        kind: Option<AgentErrorKind>,
+        second_kind: Option<AgentErrorKind>,
+    ) -> (Arc<Self>, Arc<Mutex<Vec<String>>>) {
         let (finish, _) = tokio::sync::broadcast::channel(16);
         let prompts = Arc::new(Mutex::new(Vec::new()));
         (
             Arc::new(Self {
                 id,
                 kind,
+                second_kind,
                 finish,
                 prompts: prompts.clone(),
                 runs: std::sync::atomic::AtomicUsize::new(0),
@@ -84,6 +98,7 @@ impl Harness for LimitHarness {
         self.prompts.lock().unwrap().push(request.prompt.clone());
         let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let kind = self.kind.clone();
+        let second_kind = self.second_kind.clone();
         let session = format!("sess-{run}");
         let mut finish = self.finish.subscribe();
         let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
@@ -98,29 +113,39 @@ impl Harness for LimitHarness {
             // The turn runs until the test says it ends.
             let _ = finish.recv().await;
             if run == 0 {
-                // The classified limit error, then the errored Done — the
-                // driver shape ticket 05 landed. `None` kind = a plain,
-                // unclassified failure (the not-Limited control case).
+                // The classified limit error (then an optional second one —
+                // `second_kind`, Claude's live shape), then the errored Done
+                // — the driver shape ticket 05 landed. `None` kind = a
+                // plain, unclassified failure (the not-Limited control
+                // case).
                 let (message, kind) = match kind {
                     Some(kind @ AgentErrorKind::UsageLimit { .. }) => (
-                        "Claude usage limit reached — try again after the limit resets.",
+                        "Claude 5-hour limit reached — the turn was blocked.",
                         Some(kind),
                     ),
                     Some(kind) => ("The agent failed its login.", Some(kind)),
                     None => ("The agent child crashed.", None),
                 };
-                vec![
+                let mut events = vec![
                     Ok(AgentEvent::Error {
                         message: message.into(),
                         kind,
                     }),
-                    Ok(AgentEvent::Done {
-                        status: DoneStatus::Errored,
-                        result: None,
-                        error: Some("the turn failed".into()),
-                        session_id: Some(session),
-                    }),
-                ]
+                ];
+                if let Some(kind) = second_kind {
+                    events.push(Ok(AgentEvent::Error {
+                        message: "Claude usage limit reached — try again after the limit resets."
+                            .into(),
+                        kind: Some(kind),
+                    }));
+                }
+                events.push(Ok(AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: Some("the turn failed".into()),
+                    session_id: Some(session),
+                }));
+                events
             } else {
                 vec![
                     Ok(AgentEvent::TextDelta {
@@ -272,6 +297,55 @@ fn limit_row(core: &EngineCore) -> Option<SessionLimit> {
     core.sessions
         .session_status(CHAT)
         .and_then(|s| s.limit.clone())
+}
+
+/// **The terse code never overwrites the detailed event** (Claude's live
+/// order): a turn that first reports a rejected window WITH its reset, then
+/// the CLI's terse `rate_limit` assistant code (window unknown, no reset)
+/// ends Limited on the DETAILED classification — the later, windowless
+/// limit merges into the earlier one instead of replacing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terse_limit_code_does_not_overwrite_the_detailed_event() {
+    let (core, harness, prompts) = setup(LimitHarness::with_second_kind(
+        HarnessId::ClaudeCode,
+        Some(AgentErrorKind::UsageLimit {
+            window: "5-hour".into(),
+            resets_at: Some(1_762_675_400_000),
+        }),
+        // The terse code: window unknown ("usage"), no reset.
+        Some(AgentErrorKind::UsageLimit {
+            window: "usage".into(),
+            resets_at: None,
+        }),
+    ))
+    .await;
+
+    queue_run(&core, "do the work", HarnessId::ClaudeCode, "m-open");
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "do the work"),
+        "the limited run to start",
+    )
+    .await;
+    let _ = harness.finish.send(());
+
+    wait_for(
+        || {
+            core.sessions
+                .session_status(CHAT)
+                .is_some_and(|s| s.status == SessionStatus::Errored && s.limit.is_some())
+        },
+        "the chat to go Limited",
+    )
+    .await;
+    let limit = limit_row(&core).expect("the limit record");
+    assert_eq!(limit.harness, HarnessId::ClaudeCode);
+    assert_eq!(limit.window, "5-hour", "the detailed window survives the terse code");
+    assert_eq!(
+        limit.resets_at,
+        Some(1_762_675_400_000),
+        "the reported reset survives the terse code"
+    );
+    core.shutdown().await;
 }
 
 /// A run ending on a classified usage-limit error leaves the additive limit

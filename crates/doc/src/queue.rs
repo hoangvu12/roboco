@@ -56,6 +56,14 @@ pub struct QueuedMessage {
     /// entry keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_chat_id: Option<String>,
+    /// The loop cap's parked completion notice (orchestration v2, ticket 14,
+    /// additive; ADR 0005): the sides the notice reports, so the row — the
+    /// notice's durable carrier while it waits for the user — releases as
+    /// the same System completion-notice entry a direct delivery writes,
+    /// never as a user message. `None` for every other row. A later capped
+    /// delivery merges its sides into the existing row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_notice: Option<Vec<roboco_proto::NoticeSide>>,
 }
 
 /// Why a queued row is not currently eligible for automatic or explicit
@@ -104,6 +112,7 @@ impl QueuedMessage {
             edited_at: None,
             delivery_gate: None,
             origin_chat_id: None,
+            completion_notice: None,
         }
     }
 }
@@ -370,6 +379,12 @@ fn write_queued_map(map: &loro::LoroMap, item: &QueuedMessage) -> Result<(), Doc
     if let Some(origin_chat_id) = &item.origin_chat_id {
         map.insert("originChatId", origin_chat_id.as_str())?;
     }
+    if let Some(sides) = &item.completion_notice {
+        map.insert(
+            "completionNotice",
+            crate::schema::loro_value_from_json(&serde_json::to_value(sides)?),
+        )?;
+    }
     Ok(())
 }
 
@@ -417,6 +432,9 @@ fn queued_from_json(v: serde_json::Value) -> Option<QueuedMessage> {
             .get("originChatId")
             .and_then(|o| o.as_str())
             .map(str::to_string),
+        completion_notice: v
+            .get("completionNotice")
+            .and_then(|sides| serde_json::from_value(sides.clone()).ok()),
     })
 }
 
@@ -439,6 +457,7 @@ mod tests {
             edited_at: None,
             delivery_gate: None,
             origin_chat_id: None,
+            completion_notice: None,
         }
     }
 
@@ -515,6 +534,32 @@ mod tests {
         assert!(json[1].get("originChatId").is_none());
         let legacy = serde_json::from_value::<Vec<QueuedMessage>>(json).unwrap();
         assert_eq!(legacy[0].origin_chat_id.as_deref(), Some("chat-origin-1"));
+    }
+
+    #[test]
+    fn completion_notice_sides_round_trip_and_old_rows_read_as_plain() {
+        let doc = doc();
+        let mut parked = item("notice:1", "Side chat reached outcomes.");
+        parked.completion_notice = Some(vec![roboco_proto::NoticeSide {
+            chat_id: "chat-side-1234".into(),
+            title: "Implement login".into(),
+            outcome: roboco_proto::NoticeOutcome::Completed,
+            detail: None,
+        }]);
+        doc.push_queued(&parked).unwrap();
+        doc.push_queued(&item("q1", "typed by the user")).unwrap();
+
+        let rows = doc.read_queue().unwrap();
+        assert_eq!(rows[0].completion_notice, parked.completion_notice);
+        assert_eq!(rows[1].completion_notice, None);
+        // The wire name is camelCase and additive: an old writer's row
+        // (simulated by dropping the field) keeps reading as a plain row.
+        let json = serde_json::to_value(rows).unwrap();
+        assert_eq!(json[0]["completionNotice"][0]["chatId"], "chat-side-1234");
+        assert!(json[1].get("completionNotice").is_none());
+        let legacy = serde_json::from_value::<Vec<QueuedMessage>>(json).unwrap();
+        assert_eq!(legacy[0].completion_notice, parked.completion_notice);
+        assert_eq!(legacy[1].completion_notice, None);
     }
 
     #[test]

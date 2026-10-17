@@ -432,11 +432,11 @@ impl Iterator for RevEvents {
     }
 }
 
-/// Journal (`.jsonl`) and resume-budget (`.resume`) paths for `chat_id` under an
-/// arbitrary journals directory — profile import copies these files between
-/// profiles without opening a `RunJournal`. The consumed-steer record
-/// (`.steers`, restart correctness) belongs in that copy too: a journal
-/// imported without it replays a steer its harness had already consumed.
+/// Journal (`.jsonl`) and resume-budget (`.resume`) paths for `chat_id` under
+/// an arbitrary journals directory. Only those two: the consumed-steer record
+/// (`.steers`, restart correctness) is a separate file that this helper does
+/// NOT name — copy it alongside these when moving a profile, or an imported
+/// journal replays a steer its harness had already consumed.
 pub fn journal_paths(dir: &Path, chat_id: &str) -> (PathBuf, PathBuf) {
     let stem = sanitize_id(chat_id);
     (

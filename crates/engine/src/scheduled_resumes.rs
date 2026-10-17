@@ -210,18 +210,29 @@ impl ScheduledResumes {
     }
 
     fn persist(&self) {
-        let Some(path) = lock(&self.path).clone() else {
-            return;
+        // Snapshot under the locks (both maps in one acquisition, so an
+        // arming racing this persist cannot write a file that mixes
+        // pre- and post-arm state), then write outside them.
+        let (path, file) = {
+            let path = lock(&self.path).clone();
+            let file = {
+                let entries = lock(&self.entries);
+                let fired = lock(&self.fired);
+                ScheduledResumeFile {
+                    resumes: entries
+                        .iter()
+                        .map(|(chat, entry)| ScheduledResumeRecord {
+                            chat_id: chat.clone(),
+                            fire_at: entry.fire_at,
+                        })
+                        .collect(),
+                    fired: fired.clone(),
+                }
+            };
+            (path, file)
         };
-        let file = ScheduledResumeFile {
-            resumes: lock(&self.entries)
-                .iter()
-                .map(|(chat, entry)| ScheduledResumeRecord {
-                    chat_id: chat.clone(),
-                    fire_at: entry.fire_at,
-                })
-                .collect(),
-            fired: lock(&self.fired).clone(),
+        let Some(path) = path else {
+            return;
         };
         if let Err(err) = write_file(&path, &file) {
             tracing::warn!(path = %path.display(), error = %err, "scheduled-resume persist failed");
@@ -245,10 +256,26 @@ fn load_file(path: &Path) -> ScheduledResumeFile {
         })
 }
 
+/// Write atomically (temp file + rename): a crash or power loss mid-write
+/// must never leave a truncated `scheduled-resumes.json` that boots as
+/// "unreadable — nothing armed", silently dropping every pending
+/// continuation. The rename lands whole or not at all.
 fn write_file(path: &Path, file: &ScheduledResumeFile) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(file)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    std::fs::write(path, bytes)
+    write_file_atomic(path, &bytes)
+}
+
+/// Temp-file-then-rename, with the temp file in the target's directory so
+/// the rename stays on one filesystem.
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| path.as_path());
+    let mut staged = tempfile::NamedTempFile::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.flush()?;
+    staged.as_file().sync_all()?;
+    staged.persist(path).map_err(|err| err.error)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -703,6 +703,11 @@ impl Tools {
 
     async fn get_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
         let chat = self.roboco.resolve_chat(&args.chat).await?;
+        // The observation this call makes begins here (the rows and the
+        // transcript it reads are fetched next): the engine's ack covers
+        // what had settled by this moment — conservative, never an outcome
+        // the caller has not seen.
+        let observed_at = chrono::Utc::now().timestamp_millis();
         let (spaces, sessions, entries) = tokio::try_join!(
             self.roboco.spaces(),
             self.roboco.sessions(),
@@ -710,7 +715,7 @@ impl Tools {
         )?;
         // The caller just read the chat's status, question and transcript —
         // an observation (ticket 14): outcomes it already saw owe no notice.
-        self.acknowledge_observed(&chat.id).await;
+        self.acknowledge_observed(&chat.id, Some(observed_at)).await;
         let rendered = render_entries(&entries, RenderOptions::default());
         let mut summary = summarize_chat(&chat, &spaces, &sessions);
         summary["messageCount"] = json!(rendered.len());
@@ -1150,10 +1155,14 @@ impl Tools {
 
     async fn read_chat(&self, args: ReadChatArgs) -> anyhow::Result<Value> {
         let chat = self.roboco.resolve_chat(&args.chat).await?;
+        // The observation begins before the transcript read: the engine's
+        // ack covers the settles that had happened by this moment, so a
+        // turn settling during the read still owes its notice.
+        let observed_at = chrono::Utc::now().timestamp_millis();
         let entries = self.roboco.transcript(&chat.id).await?;
         // The caller just read the transcript — an observation (ticket 14):
         // outcomes for turns that already settled owe no notice.
-        self.acknowledge_observed(&chat.id).await;
+        self.acknowledge_observed(&chat.id, Some(observed_at)).await;
         let rendered = render_entries(
             &entries,
             RenderOptions {
@@ -1329,7 +1338,13 @@ impl Tools {
     /// it already saw — a wait that timed out saw nothing. No calling chat
     /// (a human at a CLI) reports nothing: the user reading a chat is not
     /// the parent agent that would process the notice.
-    async fn acknowledge_observed(&self, chat_id: &str) {
+    ///
+    /// `observed_at` is the moment the observation STARTED (epoch ms): the
+    /// engine's watermark covers only the settles that had happened by then,
+    /// so an outcome that landed between the read and this report — the
+    /// parent's unseen work — still reaches it. `None` when the caller
+    /// cannot say; the engine then uses its own current serial.
+    async fn acknowledge_observed(&self, chat_id: &str, observed_at: Option<i64>) {
         let Some(origin) = self.roboco.origin().chat_id.clone() else {
             return;
         };
@@ -1337,7 +1352,11 @@ impl Tools {
             // A chat cannot observe itself into silence — `whoami`'s rule.
             return;
         }
-        if let Err(err) = self.roboco.ack_side_chat(chat_id, &origin).await {
+        if let Err(err) = self
+            .roboco
+            .ack_side_chat(chat_id, &origin, observed_at)
+            .await
+        {
             tracing::warn!(chat = chat_id, error = %err, "observation report failed");
         }
     }
@@ -1578,9 +1597,14 @@ impl Tools {
         // The wait resolved on a settle the caller now knows (ticket 14):
         // report the observation — a timed-out wait observed nothing. This
         // covers `wait_for_turn`, `send_message` with wait, and `create_chat`
-        // with wait, which all resolve through here.
+        // with wait, which all resolve through here. The row the wait
+        // resolved on carries its own moment: the ack covers exactly the
+        // settles that row already names, never a later one.
         if outcome != TurnOutcome::TimedOut {
-            self.acknowledge_observed(&chat.id).await;
+            let observed_at = session
+                .as_ref()
+                .map(|row: &Session| row.updated_at.timestamp_millis());
+            self.acknowledge_observed(&chat.id, observed_at).await;
         }
         Ok(json!({
             "outcome": outcome,

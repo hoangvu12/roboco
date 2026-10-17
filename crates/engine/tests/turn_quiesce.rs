@@ -262,7 +262,7 @@ async fn parked_self_continuation_folds_and_requiesces() {
             run_request("pull the app and benchmark it"),
             None,
             None,
-        )
+        None)
         .await
         .expect("dispatch");
 
@@ -343,7 +343,7 @@ async fn missing_turn_end_settles_instead_of_working_forever() {
             run_request("pull the app and benchmark it"),
             None,
             None,
-        )
+        None)
         .await
         .expect("dispatch");
 
@@ -406,7 +406,7 @@ async fn open_tool_call_never_quiesces() {
             run_request("run the slow build"),
             None,
             None,
-        )
+        None)
         .await
         .expect("dispatch");
 
@@ -462,7 +462,7 @@ async fn stale_tool_echo_stays_parked() {
     let rig = assemble("do a thing");
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("do a thing"), None, None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("do a thing"), None, None, None)
         .await
         .expect("dispatch");
 

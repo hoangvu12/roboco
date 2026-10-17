@@ -229,7 +229,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
             },
             Some("side-user".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -400,7 +400,7 @@ async fn assistant_entries_record_the_provider_turn_ref() {
             },
             Some("u1".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -649,7 +649,7 @@ async fn claude_assistant_entries_record_the_provider_turn_ref() {
             },
             Some("u1".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1331,6 +1331,201 @@ async fn a_boundary_without_a_ref_pastes_the_budget_up_to_the_boundary() {
 /// (oversized relayed replies). A boundary on the root copies the WHOLE
 /// message — never a truncated prefix — and the native boundary ref comes
 /// from the root, where a run stamps it.
+/// "Fork from here" on a segment that is NOT its turn's last (story 60: a
+/// steer-split reply): the turn's later segments share the boundary's
+/// provider turn ref, and a native fork cuts at the WHOLE turn — content
+/// the boundary excluded would ride the copy through the provider. The
+/// mid-turn boundary falls back to the budgeted paste; the turn's LAST
+/// segment forks natively.
+#[tokio::test]
+async fn a_fork_from_a_mid_turn_segment_falls_back_to_the_budgeted_paste() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    core.workspace
+        .set_chat_harness_session("main", "parent-provider-session", "/tmp");
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    // A steer-split reply: two entries, ONE provider turn (the same ref on
+    // both — what the engine stamps when a steer splits the reply).
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "first half of the reply",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a2",
+            "second half after the steer",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    // Fork from the EARLIER segment: the turn continues past it, so no
+    // native intent — the budgeted paste carries the prefix instead.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side-mid",
+                "sourceChatId": "main",
+                "boundary": "a1",
+            }),
+        )
+        .await
+        .unwrap();
+    let request = side_turn(&core, &requests, "side-mid", "Continue", "s1").await;
+    assert_eq!(
+        request.provider_fork, None,
+        "a mid-turn boundary must not take the native fork: the later \n         content would ride the provider session"
+    );
+    assert!(
+        request.prompt.contains("PINEAPPLE"),
+        "the budgeted paste covers the copy: {}",
+        request.prompt
+    );
+    assert!(
+        !request.prompt.contains("second half after the steer"),
+        "the copy stops at the boundary: {}",
+        request.prompt
+    );
+    // Fork from the turn's LAST segment: native, at that turn.
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side-last",
+                "sourceChatId": "main",
+                "boundary": "a2",
+            }),
+        )
+        .await
+        .unwrap();
+    let request = side_turn(&core, &requests, "side-last", "Continue", "s2").await;
+    let fork = request.provider_fork.expect("the last segment forks natively");
+    assert_eq!(fork.session_id, "parent-provider-session");
+    assert_eq!(fork.last_turn, "turn-1");
+    core.shutdown().await;
+}
+
+/// A fork whose copy lands on the BOUNDARY's harness while the source's
+/// CURRENT config runs another (a chat that switched since the boundary
+/// turn): the config the copy inherits belongs to the current harness, so
+/// its model/reasoning/options ids are the wrong vocabulary — they drop,
+/// exactly like a cross-harness fork (the sandbox survives).
+#[tokio::test]
+async fn a_fork_onto_the_boundarys_harness_drops_the_current_configs_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(Capture(requests.clone())));
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
+    core.workspace
+        .create_chat(
+            "main",
+            None,
+            Some(&core.device_id),
+            None,
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    // The source's CURRENT config: another harness, with a model only that
+    // harness knows.
+    core.workspace
+        .set_chat_config(
+            "main",
+            &roboco_proto::ChatConfig {
+                harness: HarnessId::ClaudeCode,
+                model: Some("claude-sonnet".into()),
+                reasoning: Some(roboco_proto::ReasoningLevel::High),
+                model_options: serde_json::Map::from([(
+                    "claudeOption".into(),
+                    serde_json::json!("on"),
+                )]),
+                sandbox: roboco_proto::SandboxLevel::WorkspaceWrite,
+            },
+        )
+        .unwrap();
+    let source = core.doc_host.open("main").unwrap();
+    source
+        .doc()
+        .push_message(&message(
+            "u1",
+            MessageRole::User,
+            "Remember PINEAPPLE",
+            MessageStatus::Complete,
+        ))
+        .unwrap();
+    // The boundary's ref names the chat's OWN (registered) harness — the
+    // override onto it is NOT a cross-harness fork by the ref's judgement,
+    // but the config it inherits is the claude one.
+    source
+        .doc()
+        .push_message(&turn_entry(
+            "a1",
+            "I remember PINEAPPLE",
+            MessageStatus::Complete,
+            "turn-1",
+        ))
+        .unwrap();
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({
+                "chatId": "side",
+                "sourceChatId": "main",
+                "harness": "mock",
+            }),
+        )
+        .await
+        .unwrap();
+    // The copy's config: the boundary's harness, none of the current
+    // config's vocabulary, sandbox kept.
+    let row = core.workspace.chat("side").unwrap().unwrap();
+    let config = row.config.expect("the copy carries a config");
+    assert_eq!(config.harness, HarnessId::Mock);
+    assert_eq!(
+        config.model, None,
+        "the claude model must not ride the mock copy"
+    );
+    assert_eq!(config.reasoning, None, "the claude reasoning drops with it");
+    assert!(
+        config.model_options.is_empty(),
+        "the claude-only option ids drop with it"
+    );
+    assert_eq!(config.sandbox, roboco_proto::SandboxLevel::WorkspaceWrite);
+    // The run asks for no model the mock harness does not know.
+    let request = side_turn(&core, &requests, "side", "Continue", "s1").await;
+    assert_eq!(request.model, None, "the run inherits the dropped pick");
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_split_boundary_entry_copies_whole() {
     let dir = tempfile::tempdir().unwrap();
@@ -1360,6 +1555,18 @@ async fn a_split_boundary_entry_copies_whole() {
     );
     fragment.continuation_of = Some("a1".into());
     source.doc().push_message(&fragment).unwrap();
+    // A second fragment — fragments name the ROOT, not the fragment before
+    // them, so a walk that steps back one entry at a time stops at the
+    // first fragment and loses the root (and its turn ref). Three entries
+    // make the chain long enough to tell.
+    let mut second_fragment = message(
+        "a1#c2",
+        MessageRole::Assistant,
+        "third half",
+        MessageStatus::Complete,
+    );
+    second_fragment.continuation_of = Some("a1".into());
+    source.doc().push_message(&second_fragment).unwrap();
     source
         .doc()
         .push_message(&turn_entry(
@@ -1370,8 +1577,12 @@ async fn a_split_boundary_entry_copies_whole() {
         ))
         .unwrap();
     let client = roboco_rpc::memory_client(core.rpc_service());
-    // Both the root id and a fragment id resolve to the whole message.
-    for (chat, boundary) in [("side-root", "a1"), ("side-fragment", "a1#c1")] {
+    // The root id and EITHER fragment id resolve to the whole message.
+    for (chat, boundary) in [
+        ("side-root", "a1"),
+        ("side-fragment", "a1#c1"),
+        ("side-second-fragment", "a1#c2"),
+    ] {
         client
             .call(
                 methods::FORK_SIDE_CHAT,
@@ -1398,6 +1609,7 @@ async fn a_split_boundary_entry_copies_whole() {
             vec![
                 "a1".to_string(),
                 "a1#c1".to_string(),
+                "a1#c2".to_string(),
                 format!("fork:{chat}"),
             ],
             "boundary {boundary} copies the whole logical message"
@@ -1600,7 +1812,7 @@ async fn side_turn_on_harness(
             },
             Some(message_id.into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1831,7 +2043,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
     };
     let dispatch = |prompt: &'static str, id: &'static str| {
         core.sessions
-            .dispatch("fork", HarnessId::Mock, request(prompt), Some(id.into()), None)
+            .dispatch("fork", HarnessId::Mock, request(prompt), Some(id.into()), None, None)
     };
     dispatch("/review", "f1").await.unwrap();
     assert_eq!(settle(1).await, "/review");
@@ -2004,7 +2216,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
             request("/review"),
             Some("f1".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     let idle = || {
@@ -2027,7 +2239,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
             request("What should you remember?"),
             Some("f2".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     let doc = core.doc_host.open("fork").unwrap();
@@ -2768,7 +2980,7 @@ async fn a_limited_source_chat_can_be_forked_into_another_harness() {
             },
             Some("u2".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {

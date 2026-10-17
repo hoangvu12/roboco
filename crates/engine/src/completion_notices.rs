@@ -22,19 +22,20 @@
 //!   auto-resume. An auto-resumed run owes nothing at boot — the
 //!   re-dispatch keeps the starting message's origin, so the notice
 //!   follows the resumed turn's own end.
-//! - **Archived chats are quiet both ways:** an archived side chat records
-//!   nothing for its parent, and an archived parent is owed nothing.
+//! - **Archived and deleted chats are quiet both ways:** an archived side
+//!   chat records nothing for its parent, an archived or deleted parent is
+//!   owed nothing (the delete paths drop the parent's notices; a deletion
+//!   that raced a record finds the row gone and stays quiet).
 //!
 //! Ticket 14's rules on top:
 //!
 //! - **Acknowledgement:** an outcome is dropped when the parent observed it
 //!   after it happened — through `wait_for_turn`, `send_message` with wait,
 //!   `read_chat` or `get_chat`. The MCP server reports such observations to
-//!   the engine ([`CompletionNotices::ack`]); each side chat carries a
-//!   monotonic settle serial advanced before its settled status publishes,
-//!   so an observation covers every outcome at or below the serial it
-//!   observed — including a record that lands right after the report raced
-//!   it — and never one for a later turn.
+//!   the engine ([`CompletionNotices::ack`]) with the moment the
+//!   observation started, so the watermark covers the settles THAT
+//!   observation saw — never one that landed between the read and the
+//!   report, which is the parent's unseen outcome.
 //! - **Stop and interrupt:** stopping or interrupting the parent drops the
 //!   notices owed to it and suppresses outcomes from side chats whose
 //!   notifiable turns were running at that moment ([`stop_parent`] — T3's
@@ -43,9 +44,15 @@
 //!   (`mark_notifiable` in `sessions.rs`).
 //! - **Loop cap:** at most [`NOTICE_LOOP_CAP`] consecutive parent turns may
 //!   be started by notices without a user message in between. Beyond it,
-//!   the notice parks as a visible, PAUSED queue row on the parent and
-//!   waits for the user: a user-authored message resets the count and
-//!   thaws the queue, and the row then runs as the parent's next turn.
+//!   the notice parks as a visible, PAUSED queue row on the parent —
+//!   carrying the notice's own sides, so its release writes the same
+//!   System completion-notice entry, never a user message — and merges with
+//!   any row already parked. It waits for the user: a user-authored message
+//!   resets the count and thaws the queue, and the row then runs as the
+//!   parent's next turn.
+//! - **Delivery is single-flight per parent:** two settling children cannot
+//!   both deliver — the second would steer into the notice turn the first
+//!   is starting. The loser's outcomes stay pending for that turn's end.
 //!
 //! The notice message is a SYSTEM entry — never a user message — carrying a
 //! [`roboco_doc::MessagePart::CompletionNotice`] marker so clients can render
@@ -54,6 +61,7 @@
 //! id with its outcome, and points the parent agent at `read_chat`.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -67,6 +75,13 @@ use roboco_doc::{
 use crate::doc_host::DocHost;
 use crate::sessions::SessionsEngine;
 use crate::{new_id, now_ms};
+
+/// How many recent settles per chat the observation watermark can look
+/// back through (ticket 14's acknowledgement): the map keeps one timestamp
+/// per settled turn, bounded so a long-lived chat cannot grow it without
+/// end. An observation older than every kept settle reads as watermark 0
+/// (nothing dropped) — conservative, never a lost report.
+const SETTLE_HISTORY: usize = 1024;
 
 /// Cap for a notice's one-line detail — an error's reason or a question's
 /// summary. Matches the transcript's tool-output summary budget: the notice
@@ -220,19 +235,45 @@ struct NoticeState {
     /// parent → consecutive notice-started turns since the last
     /// user-authored message (ticket 14's loop cap).
     loops: HashMap<String, u32>,
+    /// parent → when its last Stop happened (epoch ms), for the re-arm
+    /// rule: a message the parent sent BEFORE that stop must not re-arm a
+    /// side chat's next turn (story 24 counts only later messages). Transient
+    /// by design — never persisted; a restart loses it and the gate opens,
+    /// which costs at most one notice the stop meant to suppress.
+    stopped_at: HashMap<String, i64>,
+    /// parent → a delivery of its notice turn is being built right now
+    /// (the single-flight guard): a second outcome racing it must not
+    /// steer into the turn the first is starting — it re-arms at that
+    /// turn's end instead.
+    delivering: std::collections::HashSet<String>,
+}
+
+/// One settle's mark: the serial it stamped and the moment it happened.
+#[derive(Debug, Clone)]
+struct SettleMark {
+    /// The serial this settle stamped.
+    serial: u64,
+    /// When the settle happened (epoch ms): the clock an observation's
+    /// "what did I see" timestamp compares against.
+    at: i64,
 }
 
 /// Outcome records owed to parents, keyed by parent chat id.
 #[derive(Debug, Default)]
 pub(crate) struct CompletionNotices {
     state: Mutex<NoticeState>,
-    /// side chat → turns settled so far (ticket 14): the monotonic serial
-    /// outcomes and observations compare on. In-memory by design — a
-    /// restart's boot recovery re-stamps serials for the outcomes it
-    /// records, and a lost watermark costs at most one redundant notice.
-    /// Never taken together with [`Self::state`] except by `ack`, which
-    /// takes this one first (the one ordering rule to keep deadlock-free).
-    settles: Mutex<HashMap<String, u64>>,
+    /// side chat → the turns settled so far (ticket 14): the monotonic
+    /// serial outcomes and observations compare on, with the moment each
+    /// settle happened so an acknowledgement can say WHICH settles its
+    /// observation covered (the serial it read, not the serial the engine
+    /// happens to be at when the report arrives — a settle racing between
+    /// the read and the report is the parent's UNSEEN outcome and must
+    /// survive the ack). In-memory by design — a restart's boot recovery
+    /// re-stamps serials for the outcomes it records, and a lost watermark
+    /// costs at most one redundant notice. Never taken together with
+    /// [`Self::state`] except by `ack`, which takes this one first (the
+    /// one ordering rule to keep deadlock-free).
+    settles: Mutex<HashMap<String, VecDeque<SettleMark>>>,
     /// Where the ledger is mirrored (ticket 13): an outcome is a result the
     /// parent has not received yet, and losing one means a child's work
     /// silently never reaches its creator. `None` until a store path is
@@ -313,20 +354,64 @@ impl CompletionNotices {
     /// sees a serial at least as high as everything it observed.
     pub(crate) fn settle(&self, chat_id: &str) -> u64 {
         let mut settles = lock(&self.settles);
-        let serial = settles.entry(chat_id.to_string()).or_insert(0);
-        *serial += 1;
-        *serial
+        let marks = settles.entry(chat_id.to_string()).or_default();
+        let serial = marks.last().map(|mark| mark.serial).unwrap_or(0) + 1;
+        marks.push_back(SettleMark {
+            serial,
+            at: now_ms(),
+        });
+        if marks.len() > SETTLE_HISTORY {
+            marks.pop_front();
+        }
+        serial
+    }
+
+    /// The chat's current settle serial — zero for a chat that never
+    /// settled in this engine run.
+    pub(crate) fn settle_serial(&self, chat_id: &str) -> u64 {
+        lock(&self.settles)
+            .get(chat_id)
+            .and_then(|marks| marks.last())
+            .map(|mark| mark.serial)
+            .unwrap_or(0)
+    }
+
+    /// The settle serial an observation made at `observed_at` covered: the
+    /// newest settle that happened at or before the observation. Settles
+    /// are monotonic, so an outcome for any settle past this watermark
+    /// happened after what the observer saw and owes its notice. Zero when
+    /// the observation predates every kept settle (a restarted engine, a
+    /// very old report): conservative — nothing is dropped.
+    fn serial_observed_at(&self, chat_id: &str, observed_at: i64) -> u64 {
+        lock(&self.settles)
+            .get(chat_id)
+            .and_then(|marks| {
+                marks
+                    .iter()
+                    .rev()
+                    .find(|mark| mark.at <= observed_at)
+                    .map(|mark| mark.serial)
+            })
+            .unwrap_or(0)
     }
 
     /// The parent observed the side chat after its last outcome happened
     /// (ticket 14) — through `wait_for_turn`, `send_message` with wait,
-    /// `read_chat` or `get_chat`; the MCP server reports it. Outcomes for
-    /// settles at or below the observed serial are dropped (they were
-    /// seen), and the watermark stands so a record that lands right after
-    /// this — the settle raced the report — is dropped too. Outcomes for
-    /// LATER turns owe their notice. Returns the watermark for the log.
-    pub(crate) fn ack(&self, parent: &str, side_chat: &str) -> u64 {
-        let watermark = lock(&self.settles).get(side_chat).copied().unwrap_or(0);
+    /// `read_chat` or `get_chat`; the MCP server reports it, with the
+    /// moment the observation started (`observed_at`) when the caller
+    /// knows it. The watermark is the serial THAT observation covered, not
+    /// the serial the engine happens to be at when the report arrives — a
+    /// settle that landed between the read and this report is the parent's
+    /// UNSEEN outcome and survives the ack. Outcomes for settles at or
+    /// below the watermark are dropped (they were seen), and the watermark
+    /// stands so a record that lands right after this — the settle raced
+    /// the report — is dropped too. Outcomes for LATER turns owe their
+    /// notice. Returns the watermark for the log.
+    pub(crate) fn ack(&self, parent: &str, side_chat: &str, observed_at: Option<i64>) -> u64 {
+        let watermark = match observed_at {
+            Some(at) => self.serial_observed_at(side_chat, at),
+            None => self.settle_serial(side_chat),
+        };
         let mut state = lock(&self.state);
         if let Some(owed) = state.pending.get_mut(parent) {
             owed.retain(|outcome| {
@@ -341,6 +426,20 @@ impl CompletionNotices {
             .insert((parent.to_string(), side_chat.to_string()), watermark);
         self.persist(&state);
         watermark
+    }
+
+    /// Try to begin a delivery for `parent` (the single-flight guard): a
+    /// delivery already being built owns the parent's notice turn, so a
+    /// second one must not race it — the outcomes stay pending and the
+    /// parent's turn-end delivery picks them up instead. `false` when a
+    /// delivery is already in flight.
+    pub(crate) fn begin_delivery(&self, parent: &str) -> bool {
+        lock(&self.state).delivering.insert(parent.to_string())
+    }
+
+    /// Release the single-flight guard `begin_delivery` armed.
+    pub(crate) fn end_delivery(&self, parent: &str) {
+        lock(&self.state).delivering.remove(parent);
     }
 
     /// A notice turn started for `parent` (ticket 14's loop cap): the
@@ -368,6 +467,20 @@ impl CompletionNotices {
     /// number, for logs and tests.
     pub(crate) fn loop_turns(&self, parent: &str) -> u32 {
         lock(&self.state).loops.get(parent).copied().unwrap_or(0)
+    }
+
+    /// When `parent` was last stopped, if it was in this engine run. The
+    /// stopped-parent re-arm rule: only a message sent AFTER this moment
+    /// makes a side chat's next turn notifiable again (ticket 14).
+    pub(crate) fn parent_stopped_at(&self, parent: &str) -> Option<i64> {
+        lock(&self.state).stopped_at.get(parent).copied()
+    }
+
+    /// Record `parent`'s stop moment (the stopped-parent rule's re-arm
+    /// gate): `stop_parent` calls this on every Stop.
+    pub(crate) fn note_stop(&self, parent: &str, at: i64) {
+        let mut state = lock(&self.state);
+        state.stopped_at.insert(parent.to_string(), at);
     }
 
     /// A user-authored message reached `parent`: the streak of consecutive
@@ -538,9 +651,11 @@ pub(crate) fn question_summary(questions: &[roboco_proto::UserInputQuestion]) ->
     one_line(Some(text)).unwrap_or_else(|| "input".into())
 }
 
-/// Is this chat archived (ticket 13)? A missing or unreadable row reads as
-/// active: only a row that says archived silences notices — a row the
-/// engine cannot read must not silently eat a report.
+/// Is this chat quiet (ticket 13)? A row that says archived, and a row
+/// that is GONE (deleted: the delete paths drop the parent's notices, but
+/// a deletion that raced a record must not deliver to a chat that no
+/// longer exists) — both are quiet. An UNREADABLE row reads as active: a
+/// row the engine cannot read must not silently eat a report.
 pub(crate) fn chat_archived(engine: &SessionsEngine, chat_id: &str) -> bool {
     // Bind the host first: `workspace()` borrows it, and a
     // `host().and_then(|host| host.workspace())` chain would borrow a
@@ -549,9 +664,11 @@ pub(crate) fn chat_archived(engine: &SessionsEngine, chat_id: &str) -> bool {
     let Some(host) = engine.host() else {
         return false;
     };
-    host.workspace()
-        .and_then(|ws| ws.chat(chat_id).ok().flatten())
-        .is_some_and(|chat| chat.archived)
+    match host.workspace().and_then(|ws| ws.chat(chat_id)) {
+        Some(Ok(Some(chat))) => chat.archived,
+        Some(Ok(None)) => true, // the chat is gone
+        _ => false, // the row is unreadable: keep talking, never eat a report
+    }
 }
 
 /// Record an outcome for a side-chat turn and deliver what its parent is
@@ -593,6 +710,7 @@ pub(crate) async fn record_and_deliver(
 /// the notice-turn streak resets and the cap's parked rows go with the
 /// rest of the pending notices.
 pub(crate) fn stop_parent(engine: &SessionsEngine, parent: &str) {
+    engine.notices().note_stop(parent, now_ms());
     engine.notices().drop_for(parent);
     engine.notices().note_user_message(parent);
     engine.suppress_notifiable_runs(parent);
@@ -638,14 +756,25 @@ pub(crate) async fn deliver(engine: &SessionsEngine, parent: &str) {
     if engine.shutting_down() {
         return;
     }
+    // Single-flight (the delivery race): two settling children can both
+    // pass the idle check before either dispatches, and the second would
+    // steer into the notice turn the first is starting. One delivery owns
+    // the parent; the loser's outcomes stay pending — the turn-end
+    // delivery sites pick them up when the winner's turn ends.
+    if !engine.notices().begin_delivery(parent) {
+        return;
+    }
+    let _guard = DeliveryGuard(engine, parent);
     if engine.turn_in_flight(parent) {
         return;
     }
-    // An archived parent receives nothing (ticket 13): drop what piled up
-    // rather than holding it — an archived chat owes no wakeups, even after
-    // it is unarchived.
+    // An archived or deleted parent receives nothing (ticket 13): drop what
+    // piled up — and the loop cap's parked rows with it, which are just the
+    // notice's waiting form — rather than holding it: an archived chat owes
+    // no wakeups, even after it is unarchived.
     if chat_archived(engine, parent) {
         engine.notices().drop_for(parent);
+        drop_parked_notices(engine, parent);
         return;
     }
     let Some(outcomes) = engine.notices().take_for_delivery(parent) else {
@@ -664,7 +793,7 @@ pub(crate) async fn deliver(engine: &SessionsEngine, parent: &str) {
     // the count and thaws the queue, and the row then runs as the parent's
     // next turn (counting as notice-started itself, via its id prefix).
     if engine.notices().loop_cap_reached(parent) {
-        park_notice(engine, parent, &host, &text, outcomes);
+        park_notice(engine, parent, &host, &text, sides, outcomes);
         return;
     }
     // The notice turn runs on the parent's own configuration: its chat row
@@ -709,7 +838,7 @@ pub(crate) async fn deliver(engine: &SessionsEngine, parent: &str) {
     }
     let harness = host.harness_for_request(parent, &request);
     if let Err(err) = engine
-        .dispatch(parent, harness, request, Some(entry.id.clone()), None)
+        .dispatch(parent, harness, request, Some(entry.id.clone()), None, None)
         .await
     {
         // The entry is already in the transcript (readable on the parent's
@@ -719,25 +848,43 @@ pub(crate) async fn deliver(engine: &SessionsEngine, parent: &str) {
     }
 }
 
+/// Ends the single-flight guard [`deliver`] armed, even on an early return
+/// (a guard holding a mutex across the awaits below would block every
+/// mutation instead of serialising the deliveries).
+struct DeliveryGuard<'a>(&'a SessionsEngine, &'a str);
+
+impl Drop for DeliveryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.notices().end_delivery(self.1);
+    }
+}
+
 /// Park a capped notice as a visible, paused queue row on the parent (the
 /// loop cap's waiting state, ticket 14). The queue pauses BEFORE the row
 /// lands, so the doc-change drain finds it frozen and cannot send the row
 /// straight out; a recovered queue starts paused too, so the row keeps
 /// waiting across a restart. The row's id carries the notice prefix — the
-/// turn it eventually starts still counts as notice-started — and its
-/// text is the notice itself, so the queue shows exactly what waits. The
+/// turn it eventually starts still counts as notice-started — its text is
+/// the notice itself, so the queue shows exactly what waits, and it carries
+/// the notice's sides so its release writes the SAME System completion-
+/// notice entry a direct delivery writes, never a user message. The
 /// outcomes are consumed into the row (a durable carrier of its own:
 /// queue rows live on the chat doc); only a row that cannot be written
-/// puts them back into the pending set.
+/// puts them back into the pending set. Outcomes from a LATER capped
+/// delivery MERGE into the parked row (ticket 13: outcomes arriving before
+/// delivery merge into the same pending notice) instead of parking beside
+/// it.
 fn park_notice(
     engine: &SessionsEngine,
     parent: &str,
     host: &DocHost,
     text: &str,
+    sides: Vec<NoticeSide>,
     outcomes: Vec<PendingOutcome>,
 ) {
+    let parked_id = format!("{NOTICE_ID_PREFIX}{}", new_id());
     let row = QueuedMessage {
-        id: format!("{NOTICE_ID_PREFIX}{}", new_id()),
+        id: parked_id,
         text: text.to_owned(),
         attachments: Vec::new(),
         hold_for_turn_end: false,
@@ -748,12 +895,43 @@ fn park_notice(
         // Engine-authored, not user-typed: the id prefix (not the origin)
         // carries that for the loop-cap bookkeeping.
         origin_chat_id: None,
+        // The sides make the row the notice's own carrier: on release it
+        // writes the System completion-notice entry, not a user message.
+        completion_notice: Some(sides),
     };
-    let parked = host.open(parent).ok().and_then(|handle| {
+    let handle = host.open(parent).ok();
+    let parked = handle.and_then(|handle| {
         // Pause first: the row's own write wakes the drain, which must
         // already see a frozen queue.
         handle.pause_queue();
-        handle.doc().push_queued(&row).ok()
+        // A row the cap already parked waits here: merge into it — one
+        // pending notice, not a row per capped delivery. Its id stays (the
+        // streak bookkeeping keys on the prefix, and the user's queue view
+        // keeps one row), its text and sides grow to cover every outcome.
+        let existing = handle
+            .doc()
+            .read_queue()
+            .ok()
+            .and_then(|rows| {
+                rows.into_iter().enumerate().find_map(|(ix, row)| {
+                    (row.id.starts_with(NOTICE_ID_PREFIX)).then_some((ix, row))
+                })
+            });
+        match existing {
+            Some((ix, mut old)) => {
+                let mut merged = old.completion_notice.clone().unwrap_or_default();
+                merged.extend(row.completion_notice.clone().unwrap_or_default());
+                old.text = notice_text(&merged);
+                old.completion_notice = Some(merged);
+                handle
+                    .doc()
+                    .remove_queued(&old.id)
+                    .ok()
+                    .and_then(|_| handle.doc().insert_queued(ix, &old).ok())
+                    .map(|_| old.id)
+            }
+            None => handle.doc().push_queued(&row).ok().map(|_| row.id),
+        }
     });
     if parked.is_none() {
         tracing::warn!(
@@ -836,16 +1014,24 @@ fn with_detail(side: &NoticeSide, verb: &str) -> String {
     }
 }
 
-/// Eight-char id prefix — the sidebar's convention.
+/// Eight-char id prefix — the sidebar's convention. Ids are engine-minted
+/// (ASCII) in practice, but a boundary-crossing multibyte id must not
+/// panic: cut at the nearest char boundary at or before the eighth byte.
 fn short_id(id: &str) -> &str {
-    &id[..id.len().min(8)]
+    let mut cut = id.len().min(8);
+    while cut > 0 && !id.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &id[..cut]
 }
 
 /// The engine-authored notice message: a SYSTEM entry (never a user
 /// message) carrying the structured marker clients render distinctly
 /// (ticket 15), with the notice's text beside it as a plain part so older
-/// layouts stay readable.
-fn notice_entry(device_id: &str, sides: &[NoticeSide], text: &str) -> SessionMessageEntry {
+/// layouts stay readable. Also the entry a released parked row writes
+/// (its id prefixes `notice:`), so the two delivery paths land as the same
+/// transcript shape.
+pub(crate) fn notice_entry(device_id: &str, sides: &[NoticeSide], text: &str) -> SessionMessageEntry {
     SessionMessageEntry {
         id: format!("{NOTICE_ID_PREFIX}{}", new_id()),
         role: MessageRole::System,
@@ -921,6 +1107,21 @@ mod tests {
         let wide = "é".repeat(NOTICE_DETAIL_MAX + 5);
         let capped = one_line(Some(&wide)).unwrap();
         assert_eq!(capped.chars().count(), NOTICE_DETAIL_MAX + 1);
+    }
+
+    #[test]
+    fn short_id_cuts_at_a_char_boundary() {
+        // ASCII ids keep the full eight chars.
+        assert_eq!(short_id("chat-side-1234"), "chat-si");
+        assert_eq!(short_id("short"), "short");
+        // A multibyte id never panics: the cut backs up to the nearest
+        // boundary (the review's byte-slice crash).
+        assert_eq!(short_id("é"), "é");
+        let wide = "ééééééééé";
+        let cut = short_id(wide);
+        assert!(cut.chars().count() <= 4, "{cut}");
+        assert!(wide.starts_with(cut), "{cut}");
+        assert_eq!(short_id(""), "");
     }
 
     #[test]
@@ -1176,7 +1377,7 @@ mod tests {
 
         // The parent observed the chat after the turn ended (wait_for_turn,
         // read_chat, get_chat — all arrive as this call): the outcome goes.
-        let watermark = notices.ack("parent", "chat-side-1");
+        let watermark = notices.ack("parent", "chat-side-1", None);
         assert_eq!(watermark, turn_one);
         assert!(notices.parents().is_empty());
 
@@ -1204,13 +1405,13 @@ mod tests {
         notices.record("parent", pending_at("chat-side-b", settle, Outcome::Completed));
 
         // Observing one chat never silences another.
-        notices.ack("parent", "chat-side-a");
+        notices.ack("parent", "chat-side-a", None);
         let owed = notices.take_for_delivery("parent").unwrap();
         assert_eq!(owed.len(), 1);
         assert_eq!(owed[0].side_chat_id, "chat-side-b");
         // And only for the parent that observed it.
         notices.record("other-parent", pending_at("chat-side-a", settle, Outcome::Completed));
-        notices.ack("parent", "chat-side-a");
+        notices.ack("parent", "chat-side-a", None);
         assert_eq!(notices.parents(), vec!["other-parent".to_string()]);
     }
 
@@ -1220,13 +1421,59 @@ mod tests {
         // A side chat that never settled in this engine run: an outcome
         // reloaded from a ledger (settle 0) is still covered — its turn
         // settled before the restart, so a read after it has seen it.
-        assert_eq!(notices.ack("parent", "chat-side-1"), 0);
+        assert_eq!(notices.ack("parent", "chat-side-1", None), 0);
         notices.record("parent", pending("chat-side-1", Outcome::Completed));
         assert!(notices.parents().is_empty());
         // But a fresh settle outruns that watermark.
         let turn = notices.settle("chat-side-1");
         notices.record("parent", pending_at("chat-side-1", turn, Outcome::Completed));
         assert_eq!(notices.parents(), vec!["parent".to_string()]);
+    }
+
+    #[test]
+    fn an_ack_from_an_observation_covers_only_the_settles_it_saw() {
+        // The MCP server reports the moment its read started. A settle that
+        // lands between the read and the report is the parent's UNSEEN
+        // outcome: the watermark must not cover it, or an outcome the parent
+        // never saw is dropped silently (ticket 14).
+        let notices = CompletionNotices::default();
+        let before = now_ms();
+        let seen = notices.settle("chat-side-1");
+        while now_ms() <= before {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let read_at = now_ms();
+        // The settle stamped after the read: the parent's observation never
+        // saw this turn.
+        while now_ms() <= read_at {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let unseen = notices.settle("chat-side-1");
+        notices.record("parent", pending_at("chat-side-1", seen, Outcome::Completed));
+        notices.record("parent", pending_at("chat-side-1", unseen, Outcome::Completed));
+
+        // The report arrives last (the read happened at `read_at`): only the
+        // settle at or before the read is covered.
+        let watermark = notices.ack("parent", "chat-side-1", Some(read_at));
+        assert_eq!(watermark, seen);
+        let owed = notices.take_for_delivery("parent").unwrap();
+        assert_eq!(owed.len(), 1);
+        assert_eq!(owed[0].settle, unseen);
+
+        // A report with no observation time keeps the old reading: the
+        // engine's current serial (the caller could not say what it saw).
+        let current = notices.settle_serial("chat-side-1");
+        assert_eq!(notices.ack("other-parent", "chat-side-1", None), current);
+    }
+
+    #[test]
+    fn settle_serials_advance_and_survive_many_settles() {
+        let notices = CompletionNotices::default();
+        assert_eq!(notices.settle_serial("chat"), 0);
+        assert_eq!(notices.settle("chat"), 1);
+        assert_eq!(notices.settle("chat"), 2);
+        assert_eq!(notices.settle_serial("chat"), 2);
+        assert_eq!(notices.settle_serial("other"), 0);
     }
 
     #[test]

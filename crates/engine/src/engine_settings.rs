@@ -35,8 +35,11 @@ pub(crate) struct EngineSettingsStore {
 }
 
 impl EngineSettingsStore {
-    /// The persisted store at `path`, loaded. Engine assembly calls this;
-    /// the default (no path) serves bare engines.
+    /// The persisted store at `path`, loaded. Test-only now: engine
+    /// assembly wires the shared store in place with [`Self::attach`], so
+    /// production never opens a second copy. The default (no path) serves
+    /// bare engines and tests.
+    #[cfg(test)]
     pub(crate) fn open(path: Option<PathBuf>) -> Self {
         let settings = path.as_deref().and_then(load_file).unwrap_or_default();
         Self {
@@ -60,12 +63,19 @@ impl EngineSettingsStore {
 
     /// Update in memory and on disk. Returns the persistence error (the
     /// in-memory value still updated — a failed write never wedges the
-    /// toggle, and the next successful write heals the file).
+    /// toggle, and the next successful write heals the file). The written
+    /// snapshot is taken under the lock with the assignment: two racing
+    /// `set`s otherwise persist out of order and the file ends up behind
+    /// the in-memory value.
     pub(crate) fn set(&self, settings: EngineSettings) -> std::io::Result<()> {
-        *lock(&self.settings) = settings;
+        let snapshot = {
+            let mut current = lock(&self.settings);
+            *current = settings;
+            current.clone()
+        };
         let path = lock(&self.path).clone();
         match path {
-            Some(path) => write_file(&path, &settings),
+            Some(path) => write_file(&path, &snapshot),
             None => Ok(()),
         }
     }
@@ -83,10 +93,25 @@ fn load_file(path: &Path) -> Option<EngineSettings> {
     }
 }
 
+/// Write atomically (temp file + rename): a crash mid-write must never
+/// leave a truncated `engine-settings.json` that boots as defaults — the
+/// Auto-resume setting is durable intent.
 fn write_file(path: &Path, settings: &EngineSettings) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(settings)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    std::fs::write(path, bytes)
+    write_file_atomic(path, &bytes)
+}
+
+/// Temp-file-then-rename, with the temp file in the target's directory so
+/// the rename stays on one filesystem.
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| path.as_path());
+    let mut staged = tempfile::NamedTempFile::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.flush()?;
+    staged.as_file().sync_all()?;
+    staged.persist(path).map_err(|err| err.error)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

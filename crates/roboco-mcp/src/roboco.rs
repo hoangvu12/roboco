@@ -358,13 +358,21 @@ impl Roboco {
     /// Report that the calling chat (`origin_chat_id`) observed `chat_id`
     /// after its last outcome happened — through `wait_for_turn`, a send
     /// with wait, `read_chat` or `get_chat` (ticket 14). Completion-notice
-    /// outcomes the parent already observed owe no notice.
-    pub async fn ack_side_chat(&self, chat_id: &str, origin_chat_id: &str) -> anyhow::Result<()> {
-        self.call(
-            methods::ACK_SIDE_CHAT,
-            json!({ "chatId": chat_id, "originChatId": origin_chat_id }),
-        )
-        .await?;
+    /// outcomes the parent already observed owe no notice. `observed_at`
+    /// (the observation's start, epoch ms) makes the ack cover only the
+    /// settles the caller had already seen — never one that landed between
+    /// the read and this report.
+    pub async fn ack_side_chat(
+        &self,
+        chat_id: &str,
+        origin_chat_id: &str,
+        observed_at: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let mut params = json!({ "chatId": chat_id, "originChatId": origin_chat_id });
+        if let Some(at) = observed_at {
+            params["observedAt"] = json!(at);
+        }
+        self.call(methods::ACK_SIDE_CHAT, params).await?;
         Ok(())
     }
 
