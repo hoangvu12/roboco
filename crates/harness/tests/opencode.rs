@@ -578,7 +578,24 @@ fn v2_idle(fake: &FakeOpencode, session: &str) {
     }));
 }
 
+/// The next event, passing over the driver's `TurnRef` bookkeeping
+/// (t3-orchestration-v2 ticket 20): one rides every turn's stream ahead of
+/// its content and says nothing about it, so tests that assert on content
+/// order read through this. The turn-ref tests themselves use
+/// [`next_event_with_refs`] and assert the refs where they sit.
 async fn next_event(
+    stream: &mut (impl futures::Stream<Item = Result<AgentEvent, HarnessError>> + Unpin),
+) -> AgentEvent {
+    loop {
+        let event = next_event_with_refs(stream).await;
+        if !matches!(event, AgentEvent::TurnRef { .. }) {
+            return event;
+        }
+    }
+}
+
+/// The raw next event, `TurnRef` included.
+async fn next_event_with_refs(
     stream: &mut (impl futures::Stream<Item = Result<AgentEvent, HarnessError>> + Unpin),
 ) -> AgentEvent {
     tokio::time::timeout(Duration::from_secs(10), stream.next())
@@ -603,13 +620,16 @@ async fn wait_posts(fake: &FakeOpencode, path: &str, n: usize) -> Vec<Value> {
     .unwrap_or_else(|_| panic!("{path} never saw {n} posts"))
 }
 
-/// Drain until a Done arrives; returns everything seen (Done last).
+/// Drain until a Done arrives; returns everything seen (Done last). The
+/// refs ride the drained window too — assertions that count them stay
+/// honest, and the content-order assertions in this suite key on Done,
+/// `any`, or the last element, not on the refs' position.
 async fn drain_to_done(
     stream: &mut (impl futures::Stream<Item = Result<AgentEvent, HarnessError>> + Unpin),
 ) -> Vec<AgentEvent> {
     let mut events = Vec::new();
     loop {
-        let ev = next_event(stream).await;
+        let ev = next_event_with_refs(stream).await;
         let done = matches!(&ev, AgentEvent::Done { .. });
         events.push(ev);
         if done {
@@ -684,7 +704,9 @@ async fn thinking_streams_and_the_turn_settles_only_on_idle() {
     }));
     let text = next_event(&mut stream).await;
     assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "Hello"));
-    let quiet = tokio::time::timeout(Duration::from_millis(600), stream.next()).await;
+    // Nothing but TurnRef bookkeeping may arrive in the quiet gap — the
+    // skipping reader keeps the future pending while only refs land.
+    let quiet = tokio::time::timeout(Duration::from_millis(600), next_event(&mut stream)).await;
     assert!(quiet.is_err(), "nothing may settle a quiet-but-live turn");
 
     idle(&fake, "ses_test");
@@ -761,7 +783,10 @@ async fn foreign_session_idle_never_settles_our_turn() {
 
     assistant_message(&fake, "ses_test", "msg_1");
     idle(&fake, "ses_OTHER");
-    let quiet = tokio::time::timeout(Duration::from_millis(600), stream.next()).await;
+    // Only the turn's own TurnRef may be queued here (ticket 20) — the
+    // skipping reader holds the gap open for real traffic, which a
+    // foreign idle never produces.
+    let quiet = tokio::time::timeout(Duration::from_millis(600), next_event(&mut stream)).await;
     assert!(quiet.is_err(), "a foreign session's idle settled our turn");
 
     idle(&fake, "ses_test");
@@ -1238,7 +1263,7 @@ async fn session_error_with_no_content_settles_errored() {
             "data": { "message": "ProviderAuthError: no credentials for anthropic\n    at stack" },
         }},
     }));
-    let quiet = tokio::time::timeout(Duration::from_millis(400), stream.next()).await;
+    let quiet = tokio::time::timeout(Duration::from_millis(400), next_event(&mut stream)).await;
     assert!(
         quiet.is_err(),
         "duplicate error must not mint a second chip"
@@ -1641,7 +1666,7 @@ async fn prompts_carry_a_client_message_id_and_each_turn_gets_its_ref() {
 
     // The ref rides the stream BEFORE the turn's content: the engine
     // stamps it on the entry the turn is about to stream.
-    let turn_ref = next_event(&mut stream).await;
+    let turn_ref = next_event_with_refs(&mut stream).await;
     assert_eq!(
         turn_ref,
         AgentEvent::TurnRef {
@@ -1691,7 +1716,7 @@ async fn prompts_carry_a_client_message_id_and_each_turn_gets_its_ref() {
     let second_id = prompts[1]["messageID"].as_str().unwrap().to_owned();
     assert!(second_id.starts_with("msg_"), "{second_id}");
     assert_ne!(second_id, first_id);
-    let turn_ref = next_event(&mut stream).await;
+    let turn_ref = next_event_with_refs(&mut stream).await;
     assert_eq!(
         turn_ref,
         AgentEvent::TurnRef {
@@ -1746,7 +1771,7 @@ async fn v2_prompts_carry_a_client_message_id_and_emit_the_turn_ref() {
     let message_id = prompts[0]["id"].as_str().unwrap().to_owned();
     assert!(message_id.starts_with("msg_"), "{message_id}");
 
-    let turn_ref = next_event(&mut stream).await;
+    let turn_ref = next_event_with_refs(&mut stream).await;
     assert_eq!(
         turn_ref,
         AgentEvent::TurnRef {
@@ -1814,7 +1839,7 @@ async fn a_native_fork_cuts_the_source_session_at_the_next_turn() {
     assert!(fake.posts_to("/session").is_empty(), "no fresh create");
     // The forked turn's ref names the forked session.
     let message_id = prompts[0]["messageID"].as_str().unwrap().to_owned();
-    let turn_ref = next_event(&mut stream).await;
+    let turn_ref = next_event_with_refs(&mut stream).await;
     assert_eq!(
         turn_ref,
         AgentEvent::TurnRef {
@@ -1916,7 +1941,7 @@ async fn a_v2_native_fork_cuts_before_the_next_user_message() {
     assert_eq!(prompts[0]["text"], "hi");
     assert!(fake.posts_to("/api/session").is_empty(), "no fresh create");
     let message_id = prompts[0]["id"].as_str().unwrap().to_owned();
-    let turn_ref = next_event(&mut stream).await;
+    let turn_ref = next_event_with_refs(&mut stream).await;
     assert_eq!(
         turn_ref,
         AgentEvent::TurnRef {
@@ -2011,7 +2036,7 @@ async fn a_refused_fork_falls_back_to_a_fresh_session_with_the_budgeted_history(
     let _commands = next_event(&mut stream).await;
     // The fresh session's turn still emits its ref (the entry the engine
     // stamps is addressable for a LATER fork of this chat).
-    let _turn_ref = next_event(&mut stream).await;
+    let _turn_ref = next_event_with_refs(&mut stream).await;
     assert!(matches!(&_turn_ref, AgentEvent::TurnRef { .. }));
     assert_eq!(fake.posts_to("/session").len(), 1, "one fresh create");
     // …whose prompt carries the budgeted history in front of the user
