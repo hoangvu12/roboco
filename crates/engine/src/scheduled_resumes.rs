@@ -275,7 +275,7 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     staged.write_all(bytes)?;
     staged.flush()?;
     staged.as_file().sync_all()?;
-    staged.persist(path).map_err(|err| err.error)
+    staged.persist(path).map(drop).map_err(|err| err.error)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
