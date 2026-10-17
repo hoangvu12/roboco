@@ -6261,7 +6261,10 @@ mod tests {
         let _guard = runtime.enter();
         let (out, mut requests) = tokio::sync::mpsc::channel::<String>(256);
         let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(256);
-        cx.update(|cx| {
+        // The handles outlive the update: dropping them would release the
+        // state (and its test engine's client) and the pickers (and the
+        // switch task) before the frame is ever written.
+        let (_state, _pickers) = cx.update(|cx| {
             cx.set_global(Theme::dark());
             let (state, pickers) = working_chat(roboco_proto::SessionStatus::Idle, cx);
             state.update(cx, |state, _| {
@@ -6291,6 +6294,7 @@ mod tests {
                     .insert("context".into(), serde_json::Value::String("1m".into()));
                 pickers.pick_harness(HarnessId::Codex, cx);
             });
+            (state, pickers)
         });
         cx.run_until_parked();
         // `EngineTarget::call` spawns onto the registry's runtime handle —
