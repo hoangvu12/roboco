@@ -199,14 +199,25 @@ pub(crate) fn rate_limit_reset(params: &Value) -> Option<RateLimitReset> {
     binding
 }
 
-/// Map a structured turn-error code onto the structured error kind: usage
-/// limits (turn-level `usageLimitExceeded`/`rateLimitExceeded`) become a
-/// usage limit carrying the latest known reset; auth failures
-/// (`unauthorized`) become signed out. Everything else stays unclassified.
+/// Map a structured turn-error code onto the structured error kind:
+/// usage limits become a usage limit carrying the latest known reset;
+/// auth failures (`unauthorized`) become signed out. Everything else
+/// stays unclassified.
+///
+/// `usageLimitExceeded` is the plan limit itself — the error says the
+/// limit is reached, so it is always classified (the snapshot only
+/// refines the window and reset). `rateLimitExceeded` is AMBIGUOUS: a
+/// plain 429 says nothing about the plan, and a transient one must stay
+/// an unclassified error (retried like any failure), so it classifies
+/// only when the snapshot proves a blocked window — an exhausted window
+/// whose reset is still AHEAD. A reset already in the past is no block
+/// at all (the window has since lifted), so it is ignored: the error
+/// reads as transient. The same past reset is dropped from a plan limit
+/// too: it would arm a continuation that fires at once into the wall.
 pub(crate) fn error_kind(code: &str, limit: Option<&RateLimitReset>) -> Option<AgentErrorKind> {
+    let limit = limit.filter(|reset| reset.resets_at > now_ms());
     match code {
-        "usageLimitExceeded" | "usage_limit_exceeded" | "rateLimitExceeded"
-        | "rate_limit_exceeded" => Some(match limit {
+        "usageLimitExceeded" | "usage_limit_exceeded" => Some(match limit {
             Some(reset) => AgentErrorKind::UsageLimit {
                 window: reset.window.clone(),
                 resets_at: Some(reset.resets_at),
@@ -216,9 +227,22 @@ pub(crate) fn error_kind(code: &str, limit: Option<&RateLimitReset>) -> Option<A
                 resets_at: None,
             },
         }),
+        "rateLimitExceeded" | "rate_limit_exceeded" => limit
+            .map(|reset| AgentErrorKind::UsageLimit {
+                window: reset.window.clone(),
+                resets_at: Some(reset.resets_at),
+            }),
         "unauthorized" => Some(AgentErrorKind::SignedOut),
         _ => None,
     }
+}
+
+/// Epoch milliseconds now (the past-reset filter's clock).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 /// The classification for a turn-level error notification: the code it
@@ -1228,11 +1252,16 @@ mod tests {
 
     #[test]
     fn error_codes_classify_limits_and_auth() {
+        // A reset still ahead (2100) and one already past (2020).
         let snapshot = RateLimitReset {
             window: "weekly".into(),
-            resets_at: 1_762_675_400_000,
+            resets_at: 4_102_444_800_000,
         };
-        // Both limit codes, both spellings, with and without a snapshot.
+        let lifted = RateLimitReset {
+            window: "weekly".into(),
+            resets_at: 1_577_836_800_000,
+        };
+        // Both limit codes, both spellings, with a live exhausted window.
         for code in [
             "usageLimitExceeded",
             "usage_limit_exceeded",
@@ -1243,18 +1272,30 @@ mod tests {
                 error_kind(code, Some(&snapshot)),
                 Some(AgentErrorKind::UsageLimit {
                     window: "weekly".into(),
-                    resets_at: Some(1_762_675_400_000),
+                    resets_at: Some(4_102_444_800_000),
                 }),
                 "{code}"
             );
-            assert_eq!(
-                error_kind(code, None),
-                Some(AgentErrorKind::UsageLimit {
-                    window: "usage".into(),
-                    resets_at: None,
-                }),
-                "{code} without a snapshot"
-            );
+        }
+        // The plan limit classifies on the error alone; a past reset is
+        // ignored, never carried.
+        for code in ["usageLimitExceeded", "usage_limit_exceeded"] {
+            for limit in [None, Some(&lifted)] {
+                assert_eq!(
+                    error_kind(code, limit),
+                    Some(AgentErrorKind::UsageLimit {
+                        window: "usage".into(),
+                        resets_at: None,
+                    }),
+                    "{code} without a live snapshot"
+                );
+            }
+        }
+        // A bare 429 (no exhausted window, or one that already lifted) is
+        // transient: unclassified.
+        for code in ["rateLimitExceeded", "rate_limit_exceeded"] {
+            assert_eq!(error_kind(code, None), None, "{code}");
+            assert_eq!(error_kind(code, Some(&lifted)), None, "{code} past reset");
         }
         assert_eq!(error_kind("unauthorized", None), Some(AgentErrorKind::SignedOut));
         assert_eq!(error_kind("unauthorized", Some(&snapshot)), Some(AgentErrorKind::SignedOut));

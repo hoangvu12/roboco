@@ -276,6 +276,35 @@ def run_prompt(req):
         user_message(text)
         turn_and_settle("reply:" + text)
         return
+    if text == "old-pi-stop":
+        # B3: pi < 0.99 (no disposition) arms the settle probe while the run
+        # is still live. A Stop then must NOT take the already-settled
+        # shortcut: it clears the queue and aborts like any live turn. The
+        # abort is recorded in the session file so the test can see it.
+        streaming = True
+        response(req)
+        user_message(text)
+        emit({"type": "agent_start"})
+        emit({"type": "turn_start"})
+        assistant_chunks(["working"])
+        while True:
+            command = read_command()
+            kind = command["type"]
+            if kind == "get_state":
+                response(command, state_data())
+            elif kind == "get_session_stats":
+                response(command, stats_data())
+            elif kind == "clear_queue":
+                response(command, {"steering": [], "followUp": []})
+            elif kind == "abort":
+                with open(session_file, "a") as handle:
+                    handle.write("abort\n")
+                streaming = False
+                emit({"type": "agent_settled"})
+                response(command)
+                return
+            else:
+                reject(command, "unexpected old-pi-stop command: " + kind)
     if text == "slow-preflight":
         # pi preflight (input handlers, before_agent_start hooks, the
         # Roboco MCP bridge, compaction) runs longer than any fixed
@@ -628,6 +657,190 @@ def run_prompt(req):
             else:
                 reject(command, "unexpected command: " + command["type"])
         return
+    if text == "late-ack":
+        # B4: a steer races the settle. The run settles while the steer is
+        # still in preflight (its acknowledgement has not landed), and the
+        # settle probe reads pi at REST. The driver must not end the turn
+        # on that quiescent reading while an input awaits its
+        # acknowledgement: the turn ends only after the ack lands, the
+        # acked steer runs, and ITS settle probes clean.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["working"])
+        steer = read_command()
+        assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+        # Still in preflight: not in the queue yet (get_state reports no
+        # pending message), and the run settles with it unacknowledged.
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        emit({"type": "agent_end", "messages": [], "willRetry": False})
+        emit({"type": "agent_settled"})
+        responded = False
+        while True:
+            command = read_command()
+            kind = command["type"]
+            if kind == "get_state":
+                response(command, state_data())
+            elif kind == "get_session_stats":
+                response(command, stats_data())
+                if not responded:
+                    # The acknowledgement lands late, after the settle
+                    # probe already read pi at rest.
+                    responded = True
+                    response(steer, {"disposition": "started"})
+                    user_message(steer["message"])
+                    turn_and_settle("reply-to-late-steer")
+            elif kind == "get_entries":
+                data = entries_data(command)
+                assert data is not None, command
+                response(command, data)
+            elif kind == "clear_queue":
+                drained = {"steering": list(steering_queue), "followUp": []}
+                del steering_queue[:]
+                response(command, drained)
+            else:
+                reject(command, "unexpected late-ack command: " + kind)
+        return
+    if text == "steer-burst-mixed":
+        # B5: a burst of steers where the MIDDLE one carries images: the
+        # driver must deliver the burst in mailbox order — the image steer
+        # cannot be overtaken on the wire by the text steer queued after
+        # it, so pi receives exactly [text, image, text].
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["first part "])
+        steers = []
+        for wants_image in (False, True, False):
+            steer = read_command()
+            assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+            if wants_image:
+                images = steer.get("images")
+                assert isinstance(images, list) and len(images) == 1, steer
+                expected = b"\x89PNG\r\n\x1a\n" + b"roboco burst image"
+                assert base64.b64decode(images[0]["data"]) == expected, images
+            else:
+                assert "images" not in steer, steer
+            steers.append(steer["message"])
+            steering_queue.append(steer["message"])
+            emit({"type": "queue_update", "steering": list(steering_queue), "followUp": []})
+            response(steer, {"disposition": "queued"})
+        assert steers == ["mixed one", "mixed two", "mixed three"], steers
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        del steering_queue[:]
+        emit({"type": "queue_update", "steering": [], "followUp": []})
+        for message in steers:
+            user_message(message)
+        turn_and_settle("reply-to-mixed-burst")
+        return
+    if text == "reject-cap":
+        # B1: pi rejects the parked message on every delivery. The driver
+        # caps the re-delivery after the retries: the message is handed
+        # back to the engine as a failed send and the turn ends ERRORED —
+        # never an endless loop of Error + Completed for a message that
+        # never ran.
+        user_message(text)
+        turn_and_settle("reply:" + text)
+        # Close the prompted turn fully (probe + stats + refs) before the
+        # parked message arrives, the way reject-while-streaming does.
+        probe = read_command()
+        assert probe["type"] == "get_state", probe
+        response(probe, state_data())
+        stats = read_command()
+        assert stats["type"] == "get_session_stats", stats
+        response(stats, stats_data())
+        refs = read_command()
+        assert refs["type"] == "get_entries", refs
+        response(refs, entries_data(refs))
+        while True:
+            command = read_command()
+            kind = command["type"]
+            if kind == "prompt":
+                assert command.get("streamingBehavior") == "steer", command
+                reject(command, "A prompt is already running (busy)")
+            elif kind == "get_state":
+                response(command, state_data())
+            elif kind == "get_session_stats":
+                response(command, stats_data())
+            elif kind == "get_entries":
+                data = entries_data(command)
+                assert data is not None, command
+                response(command, data)
+            else:
+                reject(command, "unexpected reject-cap command: " + kind)
+    if text == "probe-fail-mailbox":
+        # B2: a message lands while the settle probe is in flight (the
+        # first answer is held open), so the driver queues it behind the
+        # turn; the probe then fails out and the turn ends errored. The
+        # queued message must still run as the next turn: the mailbox
+        # never wedges behind the dead turn.
+        user_message(text)
+        turn_and_settle("reply:" + text)
+        for attempt in range(3):
+            probe = read_command()
+            assert probe["type"] == "get_state", probe
+            if attempt == 0:
+                time.sleep(1.0)
+            reject(probe, "wedged")
+        while True:
+            command = read_command()
+            kind = command["type"]
+            if kind == "prompt":
+                assert command.get("streamingBehavior") == "steer", command
+                response(command, {"disposition": "started"})
+                user_message(command["message"])
+                turn_and_settle("reply:" + command["message"])
+            elif kind == "get_state":
+                response(command, state_data())
+            elif kind == "get_session_stats":
+                response(command, stats_data())
+            elif kind == "get_entries":
+                data = entries_data(command)
+                assert data is not None, command
+                response(command, data)
+            else:
+                reject(command, "unexpected probe-fail-mailbox command: " + kind)
+    if text == "steer-strand-image":
+        # B6: a steer carrying images strands in pi queue at settle. The
+        # clear_queue recovery must re-queue the ORIGINAL message — the
+        # re-delivered prompt carries its images again, never bare text.
+        user_message(text)
+        emit({"type": "turn_start"})
+        assistant_chunks(["reply part"])
+        steer = read_command()
+        assert steer["type"] == "prompt" and steer.get("streamingBehavior") == "steer", steer
+        images = steer.get("images")
+        assert isinstance(images, list) and len(images) == 1, steer
+        steering_queue.append(steer["message"])
+        response(steer, {"disposition": "queued"})
+        emit({"type": "turn_end", "message": {"role": "assistant", "content": [], "stopReason": "stop"}, "toolResults": []})
+        emit({"type": "agent_end", "messages": [], "willRetry": False})
+        emit({"type": "agent_settled"})
+        expected = b"\x89PNG\r\n\x1a\n" + b"roboco strand image"
+        while True:
+            command = read_command()
+            kind = command["type"]
+            if kind == "get_state":
+                response(command, state_data())
+            elif kind == "clear_queue":
+                drained = {"steering": list(steering_queue), "followUp": []}
+                del steering_queue[:]
+                response(command, drained)
+            elif kind == "get_session_stats":
+                response(command, stats_data())
+            elif kind == "get_entries":
+                data = entries_data(command)
+                assert data is not None, command
+                response(command, data)
+            elif kind == "prompt":
+                # The recovered message re-delivers with its images intact.
+                recovered = command.get("images")
+                assert isinstance(recovered, list) and len(recovered) == 1, command
+                assert base64.b64decode(recovered[0]["data"]) == expected, recovered
+                response(command, {"disposition": "started"})
+                user_message(command["message"])
+                turn_and_settle("reply-to-recovered-image-steer")
+                return
+            else:
+                reject(command, "unexpected steer-strand-image command: " + kind)
     if text == "settle-race":
         # The settle probe is in flight when the user message arrives: the
         # driver must queue it behind the turn (or join the run) — never

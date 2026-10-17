@@ -1373,6 +1373,256 @@ async fn a_compaction_recovered_run_completes() {
     );
 }
 
+/// A burst mixing an image steer stays in mailbox order (B5): the driver
+/// loads a steer's images before queueing its wire call, so the
+/// FuturesUnordered's completion order cannot overtake the image steer
+/// with the text steer queued after it — pi receives exactly
+/// [text, image, text]. The fixture asserts the wire order and the image
+/// block itself; here the burst folds in with its boundaries.
+#[tokio::test]
+async fn a_burst_with_an_image_steer_stays_in_order() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("burst.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco burst image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-burst-mixed"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            for (text, with_image) in [
+                ("mixed one", None),
+                ("mixed two", Some(png.display().to_string())),
+                ("mixed three", None),
+            ] {
+                steer
+                    .send(SteerMessage {
+                        prompt: text.into(),
+                        message_id: None,
+                        attachments: with_image.map(|path| vec![path]).unwrap_or_default(),
+                        config: None,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let steered = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Steered { .. }))
+        .count();
+    assert_eq!(steered, 3, "{events:?}");
+    assert!(text_of(&events).contains("reply-to-mixed-burst"), "{events:?}");
+}
+
+/// A steer whose acknowledgement lands AFTER the settle does not end the
+/// turn early (B4): the quiescent probe reads pi at rest while the input
+/// is still in preflight, and the driver must wait it out — the turn ends
+/// once, after the acked steer runs and settles in its own turn.
+#[tokio::test]
+async fn a_late_acknowledgement_does_not_end_the_turn_early() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("late-ack"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "working")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer.send(SteerMessage::text("late steer")).await.unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    // Exactly one Done, and only after the late steer ran: the reply to
+    // the steer is in the SAME turn (no Done between the settle and the
+    // ack), and the turn completes.
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert!(text_of(&events).contains("reply-to-late-steer"), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+}
+
+/// A message pi keeps rejecting is capped, not retried forever (B1): past
+/// the re-delivery attempts the message is handed back to the engine as a
+/// failed send and the turn ends ERRORED — one Error naming the attempts,
+/// and NEVER a Done{Completed} for a message that never ran.
+#[tokio::test]
+async fn an_endlessly_rejected_message_is_capped_and_ends_the_turn_errored() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("reject-cap"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(20), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        // The prompted turn completes and parks; the parked message goes
+        // out after the first Done.
+        let send_now =
+            matches!(&event, AgentEvent::Done { status: DoneStatus::Completed, .. }) && !sent;
+        events.push(event);
+        if send_now {
+            sent = true;
+            steer.send(SteerMessage::text("always rejected")).await.unwrap();
+        }
+    }
+    drop(steer);
+    let dones = dones(&events);
+    assert_eq!(dones.len(), 2, "{events:?}");
+    assert_eq!(dones[0], (DoneStatus::Completed, None), "{events:?}");
+    match &dones[1] {
+        (DoneStatus::Errored, Some(error)) => assert!(
+            error.contains("pi rejected the message 2 times"),
+            "the cap ends the turn errored with the attempt count: {error}"
+        ),
+        other => panic!("the capped rejection ends the turn errored: {other:?}"),
+    }
+    // One rejection Error per attempt — and no third attempt (the cap).
+    let rejections = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("rejected")))
+        .count();
+    assert_eq!(rejections, 2, "{events:?}");
+}
+
+/// The mailbox never wedges behind a dead turn (B2): a message queued
+/// behind the settle probe still runs as the next turn after the probe
+/// fails out and the turn ends errored.
+#[tokio::test]
+async fn a_message_queued_behind_a_failing_probe_still_runs() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("probe-fail-mailbox"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(20), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let send_now = matches!(
+            &event,
+            AgentEvent::TextDelta { text } if text == "reply:probe-fail-mailbox"
+        ) && !sent;
+        events.push(event);
+        if send_now {
+            // The fixture holds the first probe answer open: the message
+            // lands behind the settling turn.
+            sent = true;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            steer.send(SteerMessage::text("queued during the probe")).await.unwrap();
+        }
+    }
+    drop(steer);
+    let dones = dones(&events);
+    assert_eq!(
+        dones.len(),
+        2,
+        "the failed turn, then the queued message's own turn: {dones:?}"
+    );
+    assert_eq!(dones[0].0, DoneStatus::Errored);
+    assert_eq!(dones[1].0, DoneStatus::Completed, "{events:?}");
+    assert!(
+        text_of(&events).contains("reply:queued during the probe"),
+        "the queued message ran its own turn: {events:?}"
+    );
+}
+
+/// A stranded steer is recovered INTACT (B6): the images it was sent with
+/// ride the re-delivery too — the recovery re-queues the original
+/// message, never a bare-text copy. The fixture asserts the re-delivered
+/// prompt's image block on the wire.
+#[tokio::test]
+async fn a_stranded_steer_recovers_with_its_images() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("strand.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco strand image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-strand-image"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "reply part")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer
+                .send(SteerMessage {
+                    prompt: "stranded with an image".into(),
+                    message_id: None,
+                    attachments: vec![png.display().to_string()],
+                    config: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+    // Recovered via clear_queue after the first Done, re-delivered as the
+    // next turn's prompt with its image (the fixture checks the wire).
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None), (DoneStatus::Completed, None)],
+        "{events:?}"
+    );
+    assert!(
+        text_of(&events).contains("reply-to-recovered-image-steer"),
+        "the recovered steer ran its own turn: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+}
+
+/// A Stop while the settle probe is armed during a LIVE run (B3: an old pi
+/// with no disposition arms it at acceptance) still clears the queue and
+/// aborts — the "already settled" shortcut is only for a truly settled
+/// turn. The fixture records the abort in its session file.
+#[tokio::test]
+async fn stop_with_a_probe_armed_mid_run_still_aborts() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, _steer, token) = controls();
+    let req = request_cwd("old-pi-stop", &cwd.path().display().to_string());
+    let mut stream = harness().run(req, controls).await.unwrap();
+    let mut events = Vec::new();
+    while dones(&events).is_empty() {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let stop_now = matches!(&event, AgentEvent::TextDelta { text } if text == "working");
+        events.push(event);
+        if stop_now {
+            // Past the probe's re-arm delay: it is armed (pi reports busy).
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            token.cancel();
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("abort\n"), "Stop must abort the live run: {recorded}");
+}
+
 /// Several quick steers are all delivered, in order: pi (steering mode
 /// "all") queues each while streaming and delivers them together at the
 /// next step boundary. The fixture asserts the send order on the wire;

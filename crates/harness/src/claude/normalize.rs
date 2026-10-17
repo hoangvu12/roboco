@@ -1668,6 +1668,39 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_resets_at_never_fails_the_frame() {
+        // `resetsAt` in every shape the CLI has been seen to send: an
+        // integer, a float, a numeric string — all parse; anything else
+        // (null, words, an object) reads as unknown. None of them may fail
+        // the frame: the window classification rides the same event, and a
+        // failed deserialize would drop the whole limit report.
+        let shape = |resets_at: &str| {
+            let raw = format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour",{resets_at}}}}}"#
+            );
+            normalize_one(&raw)
+        };
+        for (field, expected) in [
+            (r#""resetsAt":1762675400"#, Some(1_762_675_400_000i64)),
+            (r#""resetsAt":1762675400.0"#, Some(1_762_675_400_000)),
+            (r#""resetsAt":"1762675400""#, Some(1_762_675_400_000)),
+            (r#""resetsAt":"1762675400.5""#, Some(1_762_675_400_000)),
+            (r#""resetsAt":null"#, None),
+            (r#""resetsAt":"soon""#, None),
+            (r#""resetsAt":{}"#, None),
+            (r#""resetsAt":0"#, None),
+        ] {
+            let events = shape(field);
+            match events.as_slice() {
+                [AgentEvent::Error { kind: Some(AgentErrorKind::UsageLimit { resets_at, .. }), .. }] => {
+                    assert_eq!(*resets_at, expected, "{field}");
+                }
+                other => panic!("{field} must still classify the limit: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn assistant_error_codes_classify_limits_and_auth() {
         // The error message also completes its (empty) assistant message;
         // only the error event is under test here.

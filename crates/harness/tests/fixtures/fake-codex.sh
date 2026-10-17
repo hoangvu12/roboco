@@ -577,7 +577,7 @@ case "$turnline" in
   # the 5-hour window is exhausted, the weekly one is not.
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
-  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1735689600},"secondary":{"usedPercent":61,"windowDurationMins":10080,"resetsAt":1736208000}}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":61,"windowDurationMins":10080,"resetsAt":4102444801}}}}'
   emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"You have exceeded your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}'
   ;;
 
@@ -586,7 +586,7 @@ case "$turnline" in
   # weekly window as the exhausted one and no primary window reported.
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
-  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1736208000}}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444801}}}}'
   emit '{"method":"turn/completed","params":{"turn":{"id":"t-1","status":"failed","error":{"message":"rate limited, retry later","codexErrorInfo":"rateLimitExceeded"}}}}'
   ;;
 

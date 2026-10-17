@@ -1252,7 +1252,9 @@ async fn run_session(session: Session) {
     // carries a fallback — the engine attaches none). A refused RESUME
     // delivers the same way (ticket 09).
     let delivered_prompt = match (&fork_fallback, &resume_fallback) {
-        (Some(history), _) | (_, Some(history)) => format!("{history}{}", request.prompt),
+        (Some(history), _) | (_, Some(history)) => {
+            crate::prompt_with_history(history, &request.prompt)
+        }
         (None, None) => request.prompt.clone(),
     };
     // Model, effort and service tier ride every `turn/start` (each sticks

@@ -1674,10 +1674,9 @@ async fn run_session(session: Session) {
     // native-command routing below — the engine attaches no fallback to a
     // native command, so the concatenation can never hide one.
     let delivered_prompt = match &fork_fallback {
-        Some(history) => format!(
-            "{}{}",
-            roboco_proto::invocation::harness_prompt(history, HarnessId::Opencode),
-            request.prompt
+        Some(history) => crate::prompt_with_history(
+            &roboco_proto::invocation::harness_prompt(history, HarnessId::Opencode),
+            &request.prompt,
         ),
         None => request.prompt.clone(),
     };

@@ -752,7 +752,7 @@ async fn a_usage_limited_turn_carries_the_reset_from_the_latest_notification() {
                 "You have exceeded your usage limit".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "5-hour".into(),
-                    resets_at: Some(1_735_689_600_000),
+                    resets_at: Some(4_102_444_800_000),
                 }),
             )
         ],
@@ -791,7 +791,7 @@ async fn a_rate_limited_turn_completing_with_the_error_also_classifies() {
                 "rate limited, retry later".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "weekly".into(),
-                    resets_at: Some(1_736_208_000_000),
+                    resets_at: Some(4_102_444_801_000),
                 }),
             )
         ],
