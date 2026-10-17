@@ -410,6 +410,29 @@ impl ChatDocHandle {
         self.queue_paused.store(false, Ordering::Release);
     }
 
+    /// Rewrite the full run requests held for this chat's turn end onto the
+    /// harness switch's config (ticket 24: "queued messages after a switch
+    /// go to the new harness"). A held send stores the request it was sent
+    /// with — model, reasoning, options and all — and the drain prefers it
+    /// over the chat row, so without this a message held before the switch
+    /// would run on the OLD harness (its model ids in the new harness's
+    /// vocabulary) after the switch. The switch's own resolution rules
+    /// apply: the new harness and its picks, the sandbox untouched.
+    pub fn rewrite_held_sends_for_switch(&self, config: &roboco_proto::ChatConfig) {
+        let mut sends = lock(&self.held_sends);
+        for request in sends.values_mut() {
+            request.harness = Some(config.harness);
+            request.model = config.model.clone();
+            request.reasoning = config.reasoning;
+            request.model_options = config.model_options.clone();
+            // The old harness's provider session and fork intent never ride
+            // the new harness's first run (the seam already cleared the
+            // chat-level ones; these are the held copies).
+            request.resume = None;
+            request.provider_fork = None;
+        }
+    }
+
     /// Where a newly steered row goes: after the rows already steered, ahead
     /// of every ordinary row. Records `id` as steered.
     fn steer_slot(&self, id: &str) -> Result<usize, DocError> {
@@ -1060,6 +1083,11 @@ impl DocHost {
     pub fn purge_chat(&self, chat_id: &str) {
         if let Some(sessions) = self.sessions() {
             sessions.cancel_scheduled_resume_with_chat(chat_id);
+            // A deleted parent is owed nothing (ticket 13): its pending
+            // completion notices go with the chat — the durable ledger
+            // forgets them, and a record that raced the deletion finds the
+            // row gone and stays quiet on delivery.
+            sessions.notices().drop_for(chat_id);
         }
         let removed = lock(&self.inner.handles).remove(chat_id);
         drop(removed);
@@ -1192,11 +1220,11 @@ impl DocHost {
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
         self.unarchive_on_send(chat_id);
-        // And their newer intent cancels any pending Resume-at-reset
-        // continuation (orchestration v2, ticket 07).
-        if let Some(sessions) = self.sessions() {
-            sessions.cancel_scheduled_resume(chat_id);
-        }
+        // Queuing is not sending (story 41): the row waits behind the armed
+        // continuation — the limit that parked the queue is still the wall
+        // the user chose to wait out, and the continuation stays armed to
+        // fire at its reset. Only a NEW direct message (the send paths
+        // below) cancels it.
         Ok(id)
     }
 
@@ -1986,12 +2014,31 @@ impl DocHost {
             queued_message_prompt(&item.text, &attachments)
         };
         self.resolve_attachment_refs(&mut prompt, &mut attachments);
+        // A parked notice row (the loop cap's waiting form, ticket 14)
+        // releases as the SAME System completion-notice entry a direct
+        // delivery writes — never a user message (notices are engine
+        // artifacts, not the user's words). The entry lands BEFORE the
+        // dispatch, so the dispatch's own user-message write dedupes onto
+        // it and the turn starts on the notice's text with the notice's id
+        // (the loop counter still reads it as notice-started).
+        if let Some(sides) = item.completion_notice.clone() {
+            let entry = crate::completion_notices::notice_entry(
+                self.inner.config.device_id.as_str(),
+                &sides,
+                &item.text,
+            );
+            if let Err(err) = handle.doc().push_message(&entry) {
+                tracing::warn!(chat = %chat_id, error = %err,
+                    "parked completion-notice entry write failed");
+            }
+        }
         if send == QueueSend::Steer {
             match sessions
-                .steer(
+                .steer_at(
                     chat_id,
                     &prompt,
                     Some(message_id.clone()),
+                    item.issued_at.min(now_ms()),
                     item.origin_chat_id.clone(),
                 )
                 .await?
@@ -2043,6 +2090,7 @@ impl DocHost {
             request,
             Some(message_id),
             item.origin_chat_id.clone(),
+            Some(item.issued_at),
         )
         .await?;
         Ok(())
@@ -2757,12 +2805,21 @@ impl DocHost {
                     request,
                     Some(message_id.clone()),
                     entry.origin_chat_id.clone(),
+                    Some(entry.issued_at.min(now_ms())),
                 )
                 .await?;
                 // A fresh user-authored turn is the deliberate action that
-                // thaws a queue frozen by Cancel. Clear only after dispatch
-                // succeeds so a failed send cannot silently unfreeze it.
-                handle.queue_paused.store(false, Ordering::Release);
+                // thaws a queue frozen by Cancel — and the only kind that
+                // may release the loop cap's pause (ticket 14): an
+                // agent-origin Run (a side chat or an orchestrating parent
+                // sending through the Roboco MCP server) must not open the
+                // cap's parked notice without the user, or a busy child
+                // lifts the very brake that waits for one. Send now / Steer
+                // now (explicit user queue actions) and the engine's own
+                // resume continuations thaw through their own paths.
+                if entry.origin_chat_id.is_none() {
+                    handle.queue_paused.store(false, Ordering::Release);
+                }
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
@@ -2877,6 +2934,7 @@ impl DocHost {
                     request,
                     None,
                     None,
+                    None,
                 )
                 .await?;
                 Ok((
@@ -2980,6 +3038,7 @@ impl DocHost {
                     request,
                     message_id,
                     origin_chat_id,
+                    issued_at.min(now_ms()).into(),
                 )
                 .await?;
                 handle.queue_paused.store(false, Ordering::Release);
@@ -3133,6 +3192,7 @@ impl DocHost {
     /// dispatch so the conversation records the checkout the harness will
     /// actually observe, rather than whichever checkout state was current on
     /// an earlier turn.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_with_source_context(
         &self,
         sessions: &SessionsEngine,
@@ -3141,6 +3201,7 @@ impl DocHost {
         request: roboco_proto::RunRequest,
         message_id: Option<String>,
         origin_chat_id: Option<String>,
+        sent_at: Option<i64>,
     ) -> Result<String, EngineError> {
         if let Some(workspace) = self.workspace()
             && let Some(context) = self.capture_source_context(&request.cwd).await
@@ -3149,7 +3210,7 @@ impl DocHost {
             tracing::warn!(chat = %chat_id, error = %err, "conversation source stamp failed");
         }
         sessions
-            .dispatch(chat_id, harness, request, message_id, origin_chat_id)
+            .dispatch(chat_id, harness, request, message_id, origin_chat_id, sent_at)
             .await
     }
 

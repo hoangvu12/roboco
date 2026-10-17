@@ -210,13 +210,35 @@ struct FailoverState {
     )>,
     /// The chat whose candidate load is in flight.
     loading: Option<String>,
+    /// The chat whose last candidate load FAILED: the render pass does not
+    /// re-fetch it (that spun the RPC every frame); the strip offers Retry.
+    failed: Option<String>,
     /// The chat whose switch is in flight (the popover's rows disable).
     switching: Option<String>,
     popup: popover::Popup<()>,
-    /// The last switch outcome — a warning-toned strip line ("Resumed on
-    /// …", "no other account", …) that lives until the next switch or the
-    /// chat's own state supersedes it.
-    notice: Option<SharedString>,
+    /// The last switch outcome, keyed by its chat — a warning-toned strip
+    /// line ("Resumed on …", "no other account", …) that lives until the
+    /// next switch or the chat's own state supersedes it, and never shows
+    /// on another chat.
+    notice: Option<(String, SharedString)>,
+}
+
+/// One pill of the Limited banner (orchestration v2), in strip order — the
+/// model the strip renders from ([`Shell::limited_strip_actions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LimitedAction {
+    /// Arm the durable continuation (a reset still ahead, nothing armed).
+    ResumeAtReset,
+    /// Cancel the armed continuation.
+    CancelResume,
+    /// Send the continue prompt now.
+    Resume,
+    /// Open the "Resume on another account" picker.
+    Failover,
+    /// Re-ask for the failover candidates after a failed load.
+    RetryFailover,
+    /// Open the "Continue on another harness" dialog.
+    ContinueOnHarness,
 }
 
 /// How long a loaded candidate list stays fresh while the banner shows.
@@ -1832,6 +1854,10 @@ pub struct Shell {
     /// switches to. `Some` while open; the confirm performs ticket 24's
     /// one-way switch and then sends the continue prompt.
     continue_dialog: Option<continue_on_harness::ContinueOnHarnessDialog>,
+    /// Monotonic open counter for the fork and continue dialogs: each open
+    /// takes a fresh number as its stale-load guard, so a catalog load from
+    /// a closed dialog can never land on a reopened one.
+    dialog_generation: u64,
     /// The add-space palette (device tabs + folder search), `Some` while open.
     add_space: Option<AddSpaceFlow>,
     /// The New project palette's collapsed-breadcrumbs (`…`) menu.
@@ -2242,6 +2268,7 @@ impl Shell {
             delete_space_confirm: None,
             fork_dialog: None,
             continue_dialog: None,
+            dialog_generation: 0,
             add_space: None,
             command_palette: None,
             pending_workspace_command: None,
@@ -4474,18 +4501,30 @@ impl Shell {
         }
     }
 
+    /// A fresh stale-load guard for a dialog being opened (see
+    /// `dialog_generation`).
+    fn next_dialog_generation(&mut self) -> u64 {
+        self.dialog_generation += 1;
+        self.dialog_generation
+    }
+
     // ── Resume on another account (orchestration v2, ticket 09) ─────────────
 
     /// Load or refresh the banner's candidate list through the engine's
     /// ranking RPC. Cheap enough to call from the strip's render: a chat
     /// change or an expired TTL re-loads, everything else is a no-op. A
-    /// load failure clears the cache so the next pass retries — the banner
-    /// keeps offering plain Resume either way.
+    /// load failure is remembered for its chat: render passes stop
+    /// re-fetching it, and the strip's Retry ([`Self::retry_failover`]) or a
+    /// popover open asks again — the banner keeps offering plain Resume
+    /// either way.
     fn track_failover(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let fresh = self.failover.loaded.as_ref().is_some_and(|(chat, at, _)| {
             chat == chat_id && at.elapsed() < FAILOVER_LIST_TTL
         });
-        if fresh || self.failover.loading.as_deref() == Some(chat_id) {
+        if fresh
+            || self.failover.loading.as_deref() == Some(chat_id)
+            || self.failover.failed.as_deref() == Some(chat_id)
+        {
             return;
         }
         let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok()
@@ -4509,11 +4548,13 @@ impl Shell {
                 shell.failover.loading = None;
                 match result {
                     Ok(candidates) => {
+                        shell.failover.failed = None;
                         shell.failover.loaded =
                             Some((chat, std::time::Instant::now(), candidates));
                     }
                     Err(err) => {
                         shell.failover.loaded = None;
+                        shell.failover.failed = Some(chat);
                         tracing::debug!(error = %err, "failover candidates failed to load");
                     }
                 }
@@ -4522,6 +4563,61 @@ impl Shell {
             .ok();
         })
         .detach();
+    }
+
+    /// The Limited banner's pills for `chat_id`, in strip order. Resume at
+    /// reset only while a reset is still ahead and nothing is armed (a due
+    /// or unknown reset leaves the honest offer as plain Resume); Cancel
+    /// once one is armed (ticket 07); "Resume on another account" only for
+    /// the harnesses whose logins switch AND when the engine's list offers
+    /// something (ticket 09); Retry after that list failed to load; and the
+    /// harness escape hatch always (ticket 25).
+    fn limited_strip_actions(
+        &self,
+        chat_id: &str,
+        now: chrono::DateTime<Utc>,
+        cx: &App,
+    ) -> Vec<LimitedAction> {
+        let state = self.state.read(cx);
+        let limit = state.limit_for(chat_id, now);
+        let scheduled = state.scheduled_resume_for(chat_id, now).is_some();
+        let switchable = limit.as_ref().is_some_and(|limit| {
+            matches!(
+                limit.harness,
+                roboco_proto::HarnessId::ClaudeCode | roboco_proto::HarnessId::Codex
+            )
+        });
+        let armable = !scheduled
+            && limit
+                .as_ref()
+                .and_then(|limit| limit.resets_at)
+                .is_some_and(|at| at > now.timestamp_millis());
+        let mut actions = Vec::new();
+        if armable {
+            actions.push(LimitedAction::ResumeAtReset);
+        }
+        if scheduled {
+            actions.push(LimitedAction::CancelResume);
+        }
+        actions.push(LimitedAction::Resume);
+        if switchable && self.failover_list(chat_id).is_some() {
+            actions.push(LimitedAction::Failover);
+        }
+        if self.failover.failed.as_deref() == Some(chat_id) {
+            actions.push(LimitedAction::RetryFailover);
+        }
+        actions.push(LimitedAction::ContinueOnHarness);
+        actions
+    }
+
+    /// The strip's Retry after a failed candidate load: forget the failure
+    /// and ask the engine once more.
+    fn retry_failover(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        if self.failover.failed.as_deref() == Some(chat_id) {
+            self.failover.failed = None;
+        }
+        self.track_failover(chat_id, cx);
+        cx.notify();
     }
 
     /// The banner's candidate list for `chat_id`, when it is loaded and
@@ -4550,6 +4646,7 @@ impl Shell {
                 .failover
                 .loaded
                 .take_if(|(loaded, _, _)| *loaded != chat);
+            self.failover.failed = None;
             self.failover.popup.open(());
             self.track_failover(&chat, cx);
             cx.notify();
@@ -4582,6 +4679,7 @@ impl Shell {
         self.failover.switching = Some(chat.clone());
         self.failover.notice = None;
         let params = serde_json::json!({ "chatId": chat, "accountId": account_id });
+        let notice_chat = chat.clone();
         cx.spawn(async move |this, cx| {
             let result = engine
                 .call(methods::RESUME_ON_ANOTHER_ACCOUNT, params)
@@ -4598,7 +4696,7 @@ impl Shell {
                     Ok(outcome) => failover_outcome_notice(outcome),
                     Err(err) => format!("Could not switch account: {err}").into(),
                 };
-                shell.failover.notice = Some(notice);
+                shell.failover.notice = Some((notice_chat, notice));
                 // A FAILED switch also rides the composer's failure chip: it
                 // survives the banner disappearing (the chip is chat-scoped
                 // and dismissable) while the strip line is transient.
@@ -10107,19 +10205,18 @@ impl Shell {
                     }
                     (None, _) => "Usage limit reached".into(),
                 };
-                // "Resume on another account" (ticket 09) — only for the
-                // harnesses whose logins switch. The chip hides when the
-                // engine's list offers nothing: no healthy candidate AND no
-                // signed-out row to sign back in (every other account
-                // limited, an API key, or in use) — then only Resume (and,
-                // with ticket 07, Resume at reset) remains.
-                let has_candidates = limit.as_ref().is_some_and(|limit| {
-                    matches!(
-                        limit.harness,
-                        roboco_proto::HarnessId::ClaudeCode | roboco_proto::HarnessId::Codex
-                    )
-                }) && self.failover_list(&chat_id).is_some();
-                let notice = self.failover.notice.clone();
+                // Which pills the banner offers — one model, shared with the
+                // tests (see [`Self::limited_strip_actions`]).
+                let actions = self.limited_strip_actions(&chat_id, now, cx);
+                let has_candidates = actions.contains(&LimitedAction::Failover);
+                let failover_failed = actions.contains(&LimitedAction::RetryFailover);
+                let retry_chat_id = chat_id.clone();
+                let notice = self
+                    .failover
+                    .notice
+                    .as_ref()
+                    .filter(|(chat, _)| *chat == chat_id)
+                    .map(|(_, notice)| notice.clone());
                 let popup_open = self.failover.popup.is_open();
                 let failover_menu = popup_open.then(|| {
                     self.failover_card(cx)
@@ -10132,14 +10229,8 @@ impl Shell {
                     this.failover.popup.note_trigger_press();
                 });
                 let toggle = cx.listener(|this, _, _, cx| this.toggle_failover(cx));
-                // Resume at reset is offered only when there is a reset time
-                // still ahead to wait for; a due or unknown reset leaves the
-                // honest offer as plain Resume.
-                let armable = scheduled.is_none()
-                    && limit
-                        .as_ref()
-                        .and_then(|limit| limit.resets_at)
-                        .is_some_and(|at| at > now.timestamp_millis());
+                let armable = actions.contains(&LimitedAction::ResumeAtReset);
+                let cancellable = actions.contains(&LimitedAction::CancelResume);
                 let arm_chat_id = chat_id.clone();
                 let cancel_chat_id = chat_id.clone();
                 strip
@@ -10181,7 +10272,7 @@ impl Shell {
                                 .child(SharedString::from("Resume at reset")),
                         )
                     })
-                    .when_some(scheduled, |strip, _| {
+                    .when(cancellable, |strip| {
                         strip.child(
                             div()
                                 .id("limited-cancel-resume")
@@ -10256,6 +10347,30 @@ impl Shell {
                                         self.failover.popup.closing_since(),
                                     ))
                                 }),
+                        )
+                    })
+                    .when(failover_failed, |el| {
+                        el.child(
+                            div()
+                                .id("limited-failover-retry")
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .rounded(px(Theme::CONTROL_RADIUS * 0.5))
+                                .px(px(Theme::SPACE_SM + 2.0))
+                                .py(px(1.0))
+                                .text_color(theme.warning.opacity(0.9))
+                                .border_1()
+                                .border_color(theme.warning.opacity(0.45))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.warning.opacity(0.12)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.retry_failover(&retry_chat_id, cx);
+                                }))
+                                .tooltip(crate::settings::widgets::text_tooltip(
+                                    "Could not load the other accounts — try again",
+                                ))
+                                .child(SharedString::from("Retry accounts")),
                         )
                     })
                     .when_some(notice, |el, notice| {

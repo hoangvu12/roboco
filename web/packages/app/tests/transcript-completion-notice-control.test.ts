@@ -102,7 +102,7 @@ describe("the completion notice's open control", () => {
     const ids = Array.from(
       container!.querySelectorAll(".completion-notice-side-id"),
     ).map((node) => node.textContent);
-    expect(ids).toEqual(["chat-si", "chat-si"]);
+    expect(ids).toEqual(["chat-sid", "chat-sid"]);
     const outcomes = Array.from(
       container!.querySelectorAll(".completion-notice-side-outcome"),
     ).map((node) => node.textContent);

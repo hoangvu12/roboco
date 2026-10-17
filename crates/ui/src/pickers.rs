@@ -560,6 +560,13 @@ pub(crate) struct ReturnComposerFocus;
 
 impl gpui::EventEmitter<ReturnComposerFocus> for Pickers {}
 
+/// The engine refused a one-way harness switch (t3-orchestration-v2 ticket
+/// 24): the picker already restored the previous config; the composer shows
+/// the reason on its failure chip.
+pub(crate) struct HarnessSwitchFailed(pub SharedString);
+
+impl gpui::EventEmitter<HarnessSwitchFailed> for Pickers {}
+
 /// A model picked while bound to thread naming (see [`Pickers::new_for_titles`]);
 /// the owner persists it with `SetTitleSettings`.
 pub struct TitleModelPicked(pub TitleSettings);
@@ -683,6 +690,9 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
+    /// In-flight one-way harness switch (ticket 24): its own slot, so a
+    /// model/reasoning mutate never drops a switch mid-flight.
+    harness_switch_task: Option<Task<()>>,
     /// Room measured between the model chip and the window's bottom — the
     /// new-chat model menu sizes its list to what actually fits below the
     /// composer.
@@ -886,6 +896,7 @@ impl Pickers {
             switch_task: None,
             switch_error: None,
             mutate_task: None,
+            harness_switch_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
@@ -2018,8 +2029,10 @@ impl Pickers {
     /// defaults unless the user chose them — stamp the row optimistically,
     /// then tell the engine, which writes the "Switched to <harness>" seam,
     /// drops the old harness session, and arms the budgeted history for the
-    /// next send. A failed switch leaves the engine's row untouched; the
-    /// chats watch reverts the optimistic stamp.
+    /// next send. A refused switch leaves the engine's row untouched, so the
+    /// optimistic stamp reverts to the previous config at once and the
+    /// reason surfaces on the composer's failure chip
+    /// ([`HarnessSwitchFailed`]).
     fn switch_chat_harness(&mut self, chat_id: &str, harness: HarnessId, cx: &mut Context<Self>) {
         let busy = {
             let state = self.state.read(cx);
@@ -2037,11 +2050,13 @@ impl Pickers {
         // Model options reset to the new harness's defaults unless the user
         // chose them (see [`Self::default_picks`]).
         let (model, reasoning, model_options) = self.default_picks(harness);
-        let sandbox = self
+        let previous = self
             .state
             .read(cx)
             .selected_chat_row()
-            .and_then(|chat| chat.config.as_ref())
+            .and_then(|chat| chat.config.clone());
+        let sandbox = previous
+            .as_ref()
             .map(|config| config.sandbox)
             .unwrap_or(SandboxLevel::WorkspaceWrite);
         let mut config = ChatConfig {
@@ -2060,7 +2075,7 @@ impl Pickers {
             return;
         };
         let chat_id = chat_id.to_string();
-        self.mutate_task = Some(cx.spawn(async move |_, _| {
+        self.harness_switch_task = Some(cx.spawn(async move |this, cx| {
             let params = serde_json::json!({
                 "chatId": chat_id,
                 "harness": config.harness,
@@ -2068,10 +2083,37 @@ impl Pickers {
                 "reasoning": config.reasoning,
                 "modelOptions": config.model_options,
             });
-            if let Err(err) = engine.call(methods::SWITCH_HARNESS, params).await {
-                tracing::warn!(error = %err, "harness switch failed");
-            }
+            let Err(err) = engine.call(methods::SWITCH_HARNESS, params).await else {
+                return;
+            };
+            tracing::warn!(error = %err, "harness switch failed");
+            this.update(cx, |pickers, cx| {
+                pickers.revert_harness_switch(&chat_id, previous, err.to_string(), cx);
+            })
+            .ok();
         }));
+    }
+
+    /// Undo a refused harness switch's optimistic stamp (the engine kept
+    /// the previous config) and surface the reason on the composer's
+    /// failure chip.
+    fn revert_harness_switch(
+        &mut self,
+        chat_id: &str,
+        previous: Option<ChatConfig>,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = previous {
+            self.state.update(cx, |state, cx| {
+                state.apply_chat_config(chat_id, previous);
+                cx.notify();
+            });
+        }
+        cx.emit(HarnessSwitchFailed(
+            format!("Could not switch harness: {reason}").into(),
+        ));
+        cx.notify();
     }
 
     // ---- keyboard ----
@@ -6121,7 +6163,7 @@ mod tests {
                 // remembered): the old harness's model never lingers.
                 assert_eq!(config.as_ref().and_then(|c| c.model.as_deref()), None);
                 assert!(config.as_ref().map(|c| c.model_options.is_empty()).unwrap_or(false));
-                assert!(pickers.mutate_task.is_none(), "no engine — no RPC");
+                assert!(pickers.harness_switch_task.is_none(), "no engine — no RPC");
             });
             let (state, pickers) = side_chat_picker(true, cx);
             state.update(cx, |state, _| {
@@ -6250,6 +6292,32 @@ mod tests {
         });
     }
 
+    /// A Working row gone stale (a dead engine stops heartbeating) reads as
+    /// not working — the same staleness check the status dot uses — so the
+    /// picker does not stay locked forever.
+    #[gpui::test]
+    fn a_stale_working_row_does_not_lock_the_picker(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::dark());
+            let (state, pickers) = working_chat(roboco_proto::SessionStatus::Working, cx);
+            assert!(pickers.read(cx).harness_locked(cx));
+            state.update(cx, |state, _| {
+                state.apply_sessions(vec![roboco_proto::Session {
+                    last_completed_turn: None,
+                    chat_id: "main".into(),
+                    device_id: "local".into(),
+                    status: roboco_proto::SessionStatus::Working,
+                    started_at: None,
+                    updated_at: chrono::Utc::now()
+                        - chrono::Duration::milliseconds(roboco_proto::view::SESSION_STALE_MS + 5_000),
+                    limit: None,
+                    scheduled_resume: None,
+                }]);
+            });
+            assert!(!pickers.read(cx).harness_locked(cx), "a stale Working row unlocks");
+        });
+    }
+
     #[gpui::test]
     fn switching_an_idle_chat_tells_the_engine_the_resolved_picks(
         cx: &mut gpui::TestAppContext,
@@ -6317,6 +6385,73 @@ mod tests {
             requests.try_recv().is_err(),
             "one pick is one switch — no setChatConfig chaser"
         );
+    }
+
+    /// A switch the engine REFUSES reverts the optimistic stamp to the
+    /// previous config and reports the reason for the composer's failure
+    /// chip — the row never keeps showing a harness the chat is not on.
+    #[gpui::test]
+    fn a_refused_harness_switch_restores_the_previous_config(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(256);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(256);
+        let failures = std::rc::Rc::new(std::cell::RefCell::new(Vec::<SharedString>::new()));
+        let (state, pickers, _subscription) = cx.update(|cx| {
+            cx.set_global(Theme::dark());
+            let (state, pickers) = working_chat(roboco_proto::SessionStatus::Idle, cx);
+            state.update(cx, |state, _| {
+                state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                    roboco_rpc::RpcClient::new(out, inbound),
+                ));
+            });
+            let seen = failures.clone();
+            let subscription = cx.subscribe(&pickers, move |_, event: &HarnessSwitchFailed, _| {
+                seen.borrow_mut().push(event.0.clone());
+            });
+            pickers.update(cx, |pickers, cx| {
+                pickers
+                    .models
+                    .insert(HarnessId::Codex, Loadable::Ready(Vec::new()));
+                pickers.pick_harness(HarnessId::Codex, cx);
+            });
+            (state, pickers, subscription)
+        });
+        let pump = |cx: &mut gpui::TestAppContext| {
+            cx.run_until_parked();
+            for _ in 0..16 {
+                runtime.block_on(async {
+                    tokio::task::yield_now().await;
+                });
+            }
+            cx.run_until_parked();
+        };
+        pump(cx);
+        let frame: serde_json::Value =
+            serde_json::from_str(&requests.try_recv().expect("the switch reached the engine"))
+                .unwrap();
+        assert!(frame.to_string().contains("SwitchHarness"), "{frame}");
+        let reply = serde_json::json!({ "id": frame["id"], "err": "chat is busy" });
+        runtime.block_on(async {
+            replies.send(reply.to_string()).await.unwrap();
+        });
+        pump(cx);
+        cx.update(|cx| {
+            let config = state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|chat| chat.config.clone())
+                .expect("row config");
+            assert_eq!(config.harness, HarnessId::ClaudeCode, "the stamp reverted");
+            assert_eq!(config.model.as_deref(), Some("saved-model"));
+            assert_eq!(pickers.read(cx).resolved(cx).harness, Some(HarnessId::ClaudeCode));
+        });
+        let failures = failures.borrow();
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("chat is busy"), "{failures:?}");
     }
 
     #[gpui::test]

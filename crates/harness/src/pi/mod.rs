@@ -27,8 +27,12 @@
 //!   against the end of a run. The acknowledgement's `disposition` reports
 //!   what became of it (`started` / `queued` / `handled`; pi < 0.99 reports
 //!   none and the driver infers from whether a run starts). The acceptance
-//!   is unbounded: pi's preflight (extensions, the Roboco MCP bridge,
-//!   compaction) may take arbitrarily long, and only Stop interrupts it. A
+//!   is unbounded ON PURPOSE — there is deliberately no acceptance timeout
+//!   (ticket 02 removed the fixed one): a healthy preflight can take
+//!   arbitrarily long (extensions, the Roboco MCP bridge, compaction), so
+//!   a fixed budget killed slow-but-fine starts. The cost is that a WEDGED
+//!   pi holds its turn open until the user stops it — only Stop interrupts
+//!   a slow acceptance; nothing else ever times the run out. A
 //!   rejected prompt never ends the session — the message returns to the
 //!   driver queue and the rejection surfaces. Delivery tracking keeps one
 //!   FIFO record per original input, created when the input goes out (the
@@ -56,8 +60,21 @@
 //!   error (`stopReason: "error"`), exhausted `auto_retry_*`, or a failed
 //!   `compaction_end` without `willRetry` produce `Done { Errored }` — and
 //!   a successful compaction retry clears the error state, so a run that
-//!   recovered through compaction ends completed. Stop sends `clear_queue`
-//!   before `abort`: steers pi queued but never consumed are cancelled
+//!   recovered through compaction ends completed. The turn is never over
+//!   while an input is still awaiting its acknowledgement: a quiescent
+//!   probe re-arms until the preflight lands. A probe that keeps failing
+//!   ends the turn errored — never a silent kill — and drains the queued
+//!   mailbox messages like a clean settle (the next one starts the next
+//!   turn), so the mailbox never wedges behind the dead turn. A message pi
+//!   keeps REJECTING is capped, not retried forever: past two deliveries
+//!   it is dropped from the driver (the engine's at-least-once ledger
+//!   still owns it) and the turn ends errored — never
+//!   a loop of Error + Completed for a message that never ran. A steer
+//!   stranded in pi's queue at settle is recovered by `clear_queue` and
+//!   re-queued INTACT (its attachments and run config ride along). Stop
+//!   sends `clear_queue` before `abort` — and only takes the "already
+//!   settled" shortcut when the run truly settled, never while work is
+//!   still in flight: steers pi queued but never consumed are cancelled
 //!   with the turn (the engine's at-least-once ledger already owns their
 //!   fate), never delivered into the aborted run.
 //! - **Stats**: `get_session_stats.contextUsage` feeds the context meter
@@ -560,10 +577,10 @@ impl PiHarness {
                     // the user message (codex parity: the refused-fork
                     // fallback), and a notice says what happened.
                     let history = fork.fallback_history.as_deref().unwrap_or("");
-                    request.prompt = format!("{history}{}", request.prompt);
+                    request.prompt = crate::prompt_with_history(history, &request.prompt);
                     fork_notice = Some(format!(
                         "pi could not fork the source session ({reason}); starting a new \
-                         session with a summary of the previous conversation"
+                         session with the chat transcript, trimmed to fit"
                     ));
                 }
                 ForkLaunch::Interrupted => {
@@ -866,6 +883,17 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bound on one settle-probe round (`get_state`, `clear_queue`): pi answers
 /// in milliseconds; a hang past it is one failed attempt.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many times one mailbox message may be delivered before repeated
+/// rejection hands it back to the engine as a failed send (B1): the
+/// original delivery plus ONE re-delivery. Past it, the turn ends errored
+/// — never a loop of Error + Completed for a message that never ran.
+const MESSAGE_DELIVERY_ATTEMPTS: u32 = 2;
+/// Bound on the settle capture's `get_entries` round trip (B7): the
+/// capture must never wedge the run loop for its full 2×15s budget —
+/// an interrupt landing mid-capture cuts even this short, and a lost
+/// capture costs the provider turn ref (a later fork falls back to the
+/// budgeted paste), never the turn.
+const REF_CAPTURE_BUDGET: Duration = Duration::from_secs(3);
 /// Settle-probe attempts before the turn ends errored: a failed probe is
 /// retried, and after this many the turn fails visibly instead of the
 /// process being killed silently.
@@ -911,6 +939,28 @@ struct Armed {
 struct DeliveryRecord {
     id: u64,
     text: String,
+    /// The original mailbox message for an input accepted into pi's steer
+    /// queue: a strand recovered by the settle probe's `clear_queue`
+    /// re-queues it INTACT — attachments and run config included — instead
+    /// of rebuilding it as bare text.
+    message: Option<SteerMessage>,
+}
+
+/// Count one more rejection of `msg` (keyed by its engine message id, or
+/// its text when it has none) and report whether the re-delivery cap is
+/// reached (B1). A capped message's count is forgotten: the engine owns
+/// its fate from here.
+fn note_rejection(rejections: &mut HashMap<String, u32>, msg: &SteerMessage) -> Option<u32> {
+    let key = msg.message_id.clone().unwrap_or_else(|| msg.prompt.clone());
+    let attempts = rejections.entry(key.clone()).or_insert(0);
+    *attempts += 1;
+    let attempts = *attempts;
+    if attempts >= MESSAGE_DELIVERY_ATTEMPTS {
+        rejections.remove(&key);
+        Some(attempts)
+    } else {
+        None
+    }
 }
 
 /// Retire `id`'s delivery record; `true` when it was still pending (the
@@ -1121,26 +1171,36 @@ fn branch_user_entries(entries: &SessionEntries) -> Vec<String> {
     users
 }
 
-/// The exclusive fork boundary for a native fork at `last_turn` (the
-/// provider turn ref recorded on the boundary entry): the user entry id
-/// of the turn AFTER the boundary. pi's RPC `fork` re-roots the session
-/// BEFORE the named user message, so naming the next turn's user entry
-/// keeps everything through the boundary turn — exactly the prefix the
-/// fork copied. `Ok(None)` when the boundary IS the branch's newest turn
-/// (the `--fork` copy already ends there: no RPC, fork the whole
-/// session); `Err` when the ref names no entry on the active branch (a
-/// stale ref, or one from a re-rooted/compacted-away branch) — the fork
-/// then falls back to the budgeted paste rather than silently keeping
-/// turns the boundary excluded.
-fn fork_boundary(users: &[String], last_turn: &str) -> Result<Option<String>, ()> {
+/// The resolved fork boundary for a native fork at `last_turn` (the
+/// provider turn ref recorded on the boundary entry). pi's RPC `fork`
+/// re-roots the session BEFORE the named user message, so the boundary
+/// names the user entry of the turn AFTER the boundary turn — keeping
+/// everything through it, exactly the prefix the fork copied.
+#[derive(Debug, PartialEq, Eq)]
+enum ForkBoundary {
+    /// Re-root the session before this user entry (one turn newer than
+    /// the boundary).
+    RootAt(String),
+    /// The boundary IS the branch's newest turn: the `--fork` copy
+    /// already ends there — fork the whole session, no RPC.
+    NewestTurn,
+    /// The ref names no entry on the active branch (a stale ref, or one
+    /// from a re-rooted/compacted-away branch) — the fork falls back to
+    /// the budgeted paste rather than silently keeping turns the
+    /// boundary excluded.
+    OffBranch,
+}
+
+fn fork_boundary(users: &[String], last_turn: &str) -> ForkBoundary {
     let Some(index) = users.iter().position(|id| id == last_turn) else {
-        return Err(());
+        return ForkBoundary::OffBranch;
     };
     // `users` is newest-first: index 0 is the branch's newest user entry,
     // and one step towards the head is one turn newer.
-    Ok(index
-        .checked_sub(1)
-        .and_then(|newer| users.get(newer).cloned()))
+    match index.checked_sub(1).and_then(|newer| users.get(newer)) {
+        Some(entry_id) => ForkBoundary::RootAt(entry_id.clone()),
+        None => ForkBoundary::NewestTurn,
+    }
 }
 
 /// One bounded `get_entries` round: a request pi never answers counts as a
@@ -1276,12 +1336,16 @@ async fn fork_source_session(
         let listing = parse_entries(&data)
             .ok_or_else(|| "pi returned an unreadable session tree".to_owned())?;
         let users = branch_user_entries(&listing);
-        let boundary = fork_boundary(&users, &fork.last_turn).map_err(|_| {
-            format!(
-                "the boundary entry {} is no longer on the session branch",
-                fork.last_turn
-            )
-        })?;
+        let boundary = match fork_boundary(&users, &fork.last_turn) {
+            ForkBoundary::OffBranch => {
+                return Err(format!(
+                    "the boundary entry {} is no longer on the session branch",
+                    fork.last_turn
+                ))
+            }
+            ForkBoundary::NewestTurn => None,
+            ForkBoundary::RootAt(entry_id) => Some(entry_id),
+        };
         if let Some(entry_id) = boundary {
             let data = client
                 .request("fork", json!({ "entryId": entry_id }))
@@ -1490,8 +1554,8 @@ async fn run_session(session: Session) {
     if let Some(notice) = &fork_notice {
         // A refused native fork (ticket 19): the fresh session carries the
         // budgeted transcript in front of the prompt (pasted in
-        // run_with_mode), so the notice says the context was summarized,
-        // not lost — parity with the lost-resume notice above.
+        // run_with_mode), so the notice says the transcript rides along
+        // (trimmed), not lost — parity with the lost-resume notice above.
         let _ = send(
             &event_tx,
             AgentEvent::Error {
@@ -1519,6 +1583,11 @@ async fn run_session(session: Session) {
     // delivered as fresh prompts once the current turn's Done is out,
     // carrying their attachments and run config.
     let mut driver_steers: VecDeque<SteerMessage> = VecDeque::new();
+    // Rejections per message (B1's re-delivery cap), keyed by the message
+    // id (the engine's, unique per send) or, for id-less messages, the
+    // prompt text: a pi that keeps rejecting one message must be capped,
+    // not retried forever.
+    let mut rejections: HashMap<String, u32> = HashMap::new();
     // The settle probe: armed at `agent_settled` (and after a handled or
     // undispositioned acknowledgement, or a rejection), re-armed while pi
     // reports busy. The turn ends only when a round reports pi at rest with
@@ -1639,7 +1708,16 @@ async fn run_session(session: Session) {
                                 // consumes it (the delivery signal), in
                                 // whatever order the acknowledgement
                                 // processes. A strand is recovered by the
-                                // settle probe clear_queue.
+                                // settle probe clear_queue — the record now
+                                // keeps the ORIGINAL message so that
+                                // recovery re-queues it intact, attachments
+                                // and run config included.
+                                if let Some(id) = delivery
+                                    && let Some(record) =
+                                        sent_deliveries.iter_mut().find(|r| r.id == id)
+                                {
+                                    record.message = mailbox.clone();
+                                }
                                 //
                                 // The run own first prompt queued behind an
                                 // extension run: awaiting_prompt_echo
@@ -1717,36 +1795,55 @@ async fn run_session(session: Session) {
                                 },
                             )
                             .await;
-                            driver_steers.push_front(msg);
-                            run_active = false;
-                            let at_rest = !saw_activity
-                                && probe.is_none()
-                                && steer_calls.is_empty();
-                            if at_rest && !retried_at_rest {
-                                // One immediate re-delivery per acceptance
-                                // cycle; a pi that keeps rejecting an idle
-                                // prompt falls back to the probe path below,
-                                // whose re-arm delay bounds the retry rate.
-                                retried_at_rest = true;
-                                if let Some(msg) = driver_steers.pop_front()
-                                    && !deliver_parked_steer(
-                                        &client,
-                                        &mut armed,
-                                        &mut sent_deliveries,
-                                        &mut delivery_seq,
-                                        &mut awaiting_prompt_echo,
-                                        &mut run_active,
-                                        &mut done_current,
-                                        &mut generation,
-                                        msg,
-                                    )
-                                    .await
-                                {
-                                    break 'main;
+                            // B1's re-delivery cap: past the attempts, the
+                            // message is NOT re-armed (an endlessly
+                            // rejecting pi would otherwise Error + Done-loop
+                            // on it forever) — it is handed back to the
+                            // engine as a failed send, the at-least-once
+                            // ledger re-dispatches it on a fresh runtime,
+                            // and this turn ends ERRORED: never Completed
+                            // for a message that never ran.
+                            if let Some(attempts) = note_rejection(&mut rejections, &msg) {
+                                turn_error = Some(format!(
+                                    "pi rejected the message {attempts} times: {e}"
+                                ));
+                                run_active = false;
+                                if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, true));
                                 }
-                            } else if probe.is_none() {
-                                probe_generation = generation;
-                                probe = Some(rearm_probe(&client, true));
+                            } else {
+                                driver_steers.push_front(msg);
+                                run_active = false;
+                                let at_rest = !saw_activity
+                                    && probe.is_none()
+                                    && steer_calls.is_empty();
+                                if at_rest && !retried_at_rest {
+                                    // One immediate re-delivery per acceptance
+                                    // cycle; a pi that keeps rejecting an idle
+                                    // prompt falls back to the probe path below,
+                                    // whose re-arm delay bounds the retry rate.
+                                    retried_at_rest = true;
+                                    if let Some(parked) = driver_steers.pop_front()
+                                        && !deliver_parked_steer(
+                                            &client,
+                                            &mut armed,
+                                            &mut sent_deliveries,
+                                            &mut delivery_seq,
+                                            &mut awaiting_prompt_echo,
+                                            &mut run_active,
+                                            &mut done_current,
+                                            &mut generation,
+                                            parked,
+                                        )
+                                        .await
+                                    {
+                                        break 'main;
+                                    }
+                                } else if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, true));
+                                }
                             }
                         }
                         None => {
@@ -1797,20 +1894,28 @@ async fn run_session(session: Session) {
                         // pi is idle yet still held messages (steers
                         // stranded by the settle race): they were cleared
                         // and re-queue, in send order, as the next turn's
-                        // prompts. Their delivery records retire — pi will
-                        // never echo them — so the re-delivery's own echo
-                        // consumes the fresh records it creates.
+                        // prompts — INTACT (B6): a stranded steer's record
+                        // keeps the original mailbox message, so its
+                        // re-delivery carries the attachments and run
+                        // config it was sent with, and its delivery record
+                        // retires (pi will never echo it) so the
+                        // re-delivery's own echo consumes the fresh record
+                        // it creates. A stranded text with no record (the
+                        // run's own first prompt) re-queues as bare text.
                         probe_failures = 0;
-                        for text in &texts {
-                            if let Some(pos) = sent_deliveries
+                        let mut recovered: VecDeque<SteerMessage> = VecDeque::new();
+                        for text in texts {
+                            let record = sent_deliveries
                                 .iter()
-                                .position(|record| record.text == *text)
-                            {
-                                sent_deliveries.remove(pos);
-                            }
+                                .position(|record| record.text == text)
+                                .and_then(|pos| sent_deliveries.remove(pos));
+                            let message = record
+                                .and_then(|record| record.message)
+                                .unwrap_or_else(|| SteerMessage::text(text));
+                            recovered.push_back(message);
                         }
-                        for text in texts.into_iter().rev() {
-                            driver_steers.push_front(SteerMessage::text(text));
+                        for message in recovered.into_iter().rev() {
+                            driver_steers.push_front(message);
                         }
                         probe_generation = generation;
                         probe = Some(rearm_probe(&client, false));
@@ -1824,6 +1929,18 @@ async fn run_session(session: Session) {
                             probe_failures = 0;
                             probe_generation = generation;
                             probe = Some(rearm_probe(&client, false));
+                        } else if armed.is_some() || !steer_calls.is_empty() {
+                            // A prompt or steer is still awaiting pi's
+                            // acknowledgement (B4): generation equality
+                            // cannot see an input that is in preflight — the
+                            // bump lands when its acknowledgement does —
+                            // and the turn is not over while one is. Wait it
+                            // out: re-arm (after the delay — a slow
+                            // preflight must not hot-loop the probe) and
+                            // re-check once the acceptance resolves.
+                            probe_failures = 0;
+                            probe_generation = generation;
+                            probe = Some(rearm_probe(&client, true));
                         } else {
                             probe_failures = 0;
                             if let Some(usage) = stats
@@ -1843,10 +1960,46 @@ async fn run_session(session: Session) {
                             // when the entry's segment finishes at the
                             // `Done` below. Best-effort: a failed read costs
                             // the ref — a later fork falls back to the
-                            // budgeted paste — never the turn.
-                            if let Some(reference) =
-                                capture_turn_ref(&client, &session_pointer, &mut ref_cursor)
-                                    .await
+                            // budgeted paste — never the turn. The capture
+                            // is BOUNDED and interruptible (B7): its round
+                            // trips must never wedge the run loop for their
+                            // full 2×15s budget — a Stop landing mid-capture
+                            // is read at once and cuts the wait short (the
+                            // ref is lost, never the turn), and the Done
+                            // below waits at most the short budget.
+                            let capture =
+                                capture_turn_ref(&client, &session_pointer, &mut ref_cursor);
+                            tokio::pin!(capture);
+                            let mut stopped = false;
+                            let captured = tokio::select! {
+                                reference = &mut capture => reference,
+                                _ = interrupt.cancelled(), if !interrupt_sent => {
+                                    stopped = true;
+                                    None
+                                }
+                                _ = tokio::time::sleep(REF_CAPTURE_BUDGET) => None,
+                            };
+                            if stopped {
+                                // Stop landed mid-capture: the turn already
+                                // settled with nothing in flight, so it closes
+                                // out as interrupted at once (the "already
+                                // settled" shortcut of the interrupt arm).
+                                interrupted = true;
+                                done_current = true;
+                                done_after_interrupt = true;
+                                let _ = send(
+                                    &event_tx,
+                                    AgentEvent::Done {
+                                        status: DoneStatus::Interrupted,
+                                        result: None,
+                                        error: None,
+                                        session_id: Some(session_pointer.clone()),
+                                    },
+                                )
+                                .await;
+                                break 'main;
+                            }
+                            if let Some(reference) = captured
                                 && !send(&event_tx, AgentEvent::TurnRef { reference }).await
                             {
                                 break 'main;
@@ -1880,7 +2033,7 @@ async fn run_session(session: Session) {
                             // A queued message becomes the next turn;
                             // otherwise the session parks — the caller owns
                             // teardown.
-                            if let Some(msg) = driver_steers.pop_front()
+                            if let Some(parked) = driver_steers.pop_front()
                                 && !deliver_parked_steer(
                                     &client,
                                     &mut armed,
@@ -1890,7 +2043,7 @@ async fn run_session(session: Session) {
                                     &mut run_active,
                                     &mut done_current,
                                     &mut generation,
-                                    msg,
+                                    parked,
                                 )
                                 .await
                             {
@@ -1907,8 +2060,22 @@ async fn run_session(session: Session) {
                             // messages' ledger entries survive for the
                             // engine's re-dispatch. The counter resets so
                             // the next turn's probe starts a fresh budget.
+                            //
+                            // The mailbox must not wedge behind the dead
+                            // turn (B2): the delivery records clear — no
+                            // later turn's user echo may consume a stale
+                            // one — and the driver-owned messages drain
+                            // below exactly like after a clean settle (the
+                            // next one becomes the next turn), so nothing
+                            // lines up behind the dead turn forever and a
+                            // later mailbox message still gets its turn.
                             probe_failures = 0;
+                            sent_deliveries.clear();
+                            turn_error = None;
                             done_current = true;
+                            if interrupted {
+                                done_after_interrupt = true;
+                            }
                             if !send(
                                 &event_tx,
                                 AgentEvent::Done {
@@ -1922,6 +2089,25 @@ async fn run_session(session: Session) {
                                 },
                             )
                             .await
+                            {
+                                break 'main;
+                            }
+                            if interrupted {
+                                break 'main;
+                            }
+                            if let Some(parked) = driver_steers.pop_front()
+                                && !deliver_parked_steer(
+                                    &client,
+                                    &mut armed,
+                                    &mut sent_deliveries,
+                                    &mut delivery_seq,
+                                    &mut awaiting_prompt_echo,
+                                    &mut run_active,
+                                    &mut done_current,
+                                    &mut generation,
+                                    parked,
+                                )
+                                .await
                             {
                                 break 'main;
                             }
@@ -1969,7 +2155,14 @@ async fn run_session(session: Session) {
                                 // Accepted into pi steer queue: the delivery
                                 // record stays — the user message echo
                                 // consumes it, in whatever order this
-                                // acknowledgement processes.
+                                // acknowledgement processes. The record keeps
+                                // the message so a strand recovered by
+                                // clear_queue re-queues it intact (B6).
+                                if let Some(record) =
+                                    sent_deliveries.iter_mut().find(|r| r.id == delivery)
+                                {
+                                    record.message = Some(msg.clone());
+                                }
                             }
                             Disposition::Handled => {
                                 // pi handled it without starting a run: the
@@ -2002,7 +2195,12 @@ async fn run_session(session: Session) {
                         // turn). The delivery record retires without a
                         // boundary: pi never consumed this input, so the
                         // engine at-least-once ledger keeps its entry until
-                        // the re-delivery.
+                        // the re-delivery. Past B1's re-delivery cap the
+                        // message is handed back to the engine as a failed
+                        // send (the turn ends errored — never a loop of
+                        // Error + Completed for a message that never ran);
+                        // a rejection landing after the turn already ended
+                        // (a probe failure closed it) goes straight back too.
                         retire_delivery(&mut sent_deliveries, delivery);
                         let _ = send(
                             &event_tx,
@@ -2012,38 +2210,57 @@ async fn run_session(session: Session) {
                             },
                         )
                         .await;
-                        driver_steers.push_front(msg);
                         let at_rest = !run_active
                             && !saw_activity
                             && probe.is_none()
                             && armed.is_none()
                             && steer_calls.is_empty();
-                        if at_rest && !retried_at_rest {
-                            // Same one-shot immediate re-delivery budget as a
-                            // rejected parked prompt: bounded by the probe
-                            // re-arm delay if pi keeps rejecting.
-                            retried_at_rest = true;
-                            if let Some(msg) = driver_steers.pop_front()
-                                && !deliver_parked_steer(
-                                    &client,
-                                    &mut armed,
-                                    &mut sent_deliveries,
-                                    &mut delivery_seq,
-                                    &mut awaiting_prompt_echo,
-                                    &mut run_active,
-                                    &mut done_current,
-                                    &mut generation,
-                                    msg,
-                                )
-                                .await
-                            {
-                                break 'main;
+                        if let Some(attempts) = note_rejection(&mut rejections, &msg) {
+                            if done_current {
+                                // The turn already ended (a probe failure
+                                // closed it): there is no turn left to fail —
+                                // the Error above surfaced the rejection, and
+                                // the engine's ledger still owns the message.
+                            } else {
+                                turn_error = Some(format!(
+                                    "pi rejected the message {attempts} times: {e}"
+                                ));
+                                if at_rest {
+                                    // Nothing else will settle the turn: the
+                                    // probe closes it errored.
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, true));
+                                }
                             }
-                        } else if at_rest && probe.is_none() {
-                            // The immediate budget is spent: the probe ends
-                            // the turn and its Done pops the message back.
-                            probe_generation = generation;
-                            probe = Some(rearm_probe(&client, true));
+                        } else {
+                            driver_steers.push_front(msg);
+                            if at_rest && (done_current || !retried_at_rest) {
+                                // Same one-shot immediate re-delivery budget as a
+                                // rejected parked prompt: bounded by the probe
+                                // re-arm delay if pi keeps rejecting.
+                                retried_at_rest = true;
+                                if let Some(parked) = driver_steers.pop_front()
+                                    && !deliver_parked_steer(
+                                        &client,
+                                        &mut armed,
+                                        &mut sent_deliveries,
+                                        &mut delivery_seq,
+                                        &mut awaiting_prompt_echo,
+                                        &mut run_active,
+                                        &mut done_current,
+                                        &mut generation,
+                                        parked,
+                                    )
+                                    .await
+                                {
+                                    break 'main;
+                                }
+                            } else if at_rest && probe.is_none() {
+                                // The immediate budget is spent: the probe ends
+                                // the turn and its Done pops the message back.
+                                probe_generation = generation;
+                                probe = Some(rearm_probe(&client, true));
+                            }
                         }
                     }
                 },
@@ -2269,10 +2486,22 @@ async fn run_session(session: Session) {
                                 // ref so a fork from it continues natively
                                 // instead of pasting (spec story 59:
                                 // interrupted replies are fork boundaries
-                                // too). Best-effort, as at every settle.
-                                if let Some(reference) =
-                                    capture_turn_ref(&client, &session_pointer, &mut ref_cursor)
-                                        .await
+                                // too). Best-effort, as at every settle —
+                                // and bounded (B7): the round trip never
+                                // delays the Interrupted Done by more than
+                                // the short budget.
+                                let reference = tokio::time::timeout(
+                                    REF_CAPTURE_BUDGET,
+                                    capture_turn_ref(
+                                        &client,
+                                        &session_pointer,
+                                        &mut ref_cursor,
+                                    ),
+                                )
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some(reference) = reference
                                     && !send(&event_tx, AgentEvent::TurnRef { reference }).await
                                 {
                                     break 'main;
@@ -2404,8 +2633,17 @@ async fn run_session(session: Session) {
                         sent_deliveries.push_back(DeliveryRecord {
                             id: delivery,
                             text: msg.prompt.clone(),
+                            message: None,
                         });
-                        steer_calls.push(steer_request(&client, msg, delivery));
+                        // Images load BEFORE the call is queued (B5): the
+                        // steer calls run concurrently, and a call that
+                        // loads its images inside the future can be beaten
+                        // to the wire by a later, text-only steer — pi would
+                        // receive the burst out of order. Loading here keeps
+                        // the FuturesUnordered's completion order and the
+                        // wire's send order the same: mailbox order.
+                        let images = load_image_contents(&msg.attachments).await;
+                        steer_calls.push(steer_request(&client, msg, delivery, images));
                     } else if probe.is_some() || !steer_calls.is_empty() || !driver_steers.is_empty() {
                         // The settle probe or a steer acknowledgement is
                         // still winding down: FIFO behind it.
@@ -2446,7 +2684,18 @@ async fn run_session(session: Session) {
             _ = interrupt.cancelled(), if !interrupt_sent => {
                 interrupt_sent = true;
                 interrupted = true;
-                if probe.is_some() {
+                // An armed probe does NOT mean the turn settled (B3): the
+                // probe also runs while work is live (a handled prompt
+                // during an extension run, a rejection mid-run). Only a
+                // probe with nothing else in flight is "already settled" —
+                // otherwise Stop must clear pi's queue and abort exactly
+                // like any live turn, or a steer pi never consumed would
+                // survive into the aborted run.
+                let settled = !run_active
+                    && !saw_activity
+                    && armed.is_none()
+                    && steer_calls.is_empty();
+                if probe.is_some() && settled {
                     // The turn already settled; the probe was the only thing
                     // in flight. Close out as interrupted.
                     let _ = probe.take();
@@ -2464,7 +2713,8 @@ async fn run_session(session: Session) {
                     .await;
                     break 'main;
                 }
-                let in_flight = run_active || armed.is_some() || saw_activity;
+                let in_flight =
+                    run_active || armed.is_some() || saw_activity || !steer_calls.is_empty();
                 if in_flight {
                     // clear_queue FIRST: steers pi accepted but never
                     // consumed must not survive into the abort — they are
@@ -2572,13 +2822,19 @@ fn prompt_acceptance(
 /// while streaming and starts a run when idle). Carries the mailbox
 /// message so a rejection can hand it back to the queue verbatim, its
 /// delivery-record id so the acknowledgement (or a rejection) can retire
-/// it, and stages the message's attachments as inline images — a steer
+/// it, and the message's attachments staged as inline images — a steer
 /// delivers its images exactly like a turn-start prompt (the path refs
-/// ride the text as a fallback either way).
-fn steer_request(client: &PiClient, msg: SteerMessage, delivery: u64) -> SteerCall {
+/// ride the text as a fallback either way). The images arrive LOADED (the
+/// caller loads them before queueing, so a burst's wire order is its
+/// mailbox order — see the steering arm).
+fn steer_request(
+    client: &PiClient,
+    msg: SteerMessage,
+    delivery: u64,
+    images: Vec<Value>,
+) -> SteerCall {
     let client = client.clone();
     Box::pin(async move {
-        let images = load_image_contents(&msg.attachments).await;
         let mut params = json!({
             "message": msg.prompt.clone(),
             "streamingBehavior": "steer",
@@ -2641,6 +2897,7 @@ async fn deliver_parked_steer(
     sent_deliveries.push_back(DeliveryRecord {
         id: delivery,
         text: msg.prompt.clone(),
+        message: None,
     });
     *armed = Some(Armed {
         acceptance: prompt_acceptance(client, &msg.prompt, images),
@@ -2862,14 +3119,14 @@ mod tests {
             .iter()
             .map(|id| id.to_string())
             .collect();
-        // The boundary is the latest turn: Ok(None) — the --fork copy
-        // already ends there.
-        assert_eq!(fork_boundary(&users, "u3"), Ok(None));
+        // The boundary is the latest turn: the --fork copy already ends
+        // there, no RPC fork.
+        assert_eq!(fork_boundary(&users, "u3"), ForkBoundary::NewestTurn);
         // An earlier boundary names the turn after it.
-        assert_eq!(fork_boundary(&users, "u2"), Ok(Some("u3".to_owned())));
-        assert_eq!(fork_boundary(&users, "u1"), Ok(Some("u2".to_owned())));
+        assert_eq!(fork_boundary(&users, "u2"), ForkBoundary::RootAt("u3".to_owned()));
+        assert_eq!(fork_boundary(&users, "u1"), ForkBoundary::RootAt("u2".to_owned()));
         // A stale ref refuses rather than forking somewhere wrong.
-        assert_eq!(fork_boundary(&users, "gone"), Err(()));
+        assert_eq!(fork_boundary(&users, "gone"), ForkBoundary::OffBranch);
     }
 
     /// No settings anywhere: the driver selects the mode itself.

@@ -8596,9 +8596,7 @@ fn agent_message_display(text: &str) -> String {
     {
         let suffix = format!(" ({id})");
         label.strip_suffix(&suffix).unwrap_or(label)
-    } else if let Some(label) = header.strip_suffix(
-        ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.",
-    ) {
+    } else if let Some(label) = header.strip_suffix(roboco_proto::SIDE_CHAT_MESSAGE_HEADER_TAIL) {
         // A parent's message to its notifying side chat (orchestration
         // v2): the header teaches the notice flow instead of inviting a
         // reply, and carries no separate id — the label holds it.
@@ -8806,17 +8804,11 @@ fn short_chat_id(id: &str) -> &str {
     &id[..cut]
 }
 
-/// The outcome verb a notice side row shows — the same vocabulary the
-/// notice's plain text uses (`side_line` in the engine), so the card and
-/// the prose an agent reads agree.
+/// The outcome verb a notice side row shows — the ONE shared vocabulary
+/// ([`NoticeOutcome::verb`]) the engine's notice text uses too, so the card
+/// and the prose an agent reads agree.
 fn notice_outcome_verb(outcome: NoticeOutcome) -> &'static str {
-    match outcome {
-        NoticeOutcome::Completed => "finished",
-        NoticeOutcome::Errored => "failed",
-        NoticeOutcome::Stopped => "stopped",
-        NoticeOutcome::Interrupted => "interrupted",
-        NoticeOutcome::WaitingForInput => "waiting for input",
-    }
+    outcome.verb()
 }
 
 /// `<verb>: <detail>` when the row carries a one-liner, else `<verb>` — the
@@ -10481,9 +10473,9 @@ mod tests {
         for (outcome, verb) in [
             (NoticeOutcome::Completed, "finished"),
             (NoticeOutcome::Errored, "failed"),
-            (NoticeOutcome::Stopped, "stopped"),
-            (NoticeOutcome::Interrupted, "interrupted"),
-            (NoticeOutcome::WaitingForInput, "waiting for input"),
+            (NoticeOutcome::Stopped, "was stopped"),
+            (NoticeOutcome::Interrupted, "was interrupted"),
+            (NoticeOutcome::WaitingForInput, "is waiting for input"),
         ] {
             assert_eq!(notice_outcome_verb(outcome), verb);
         }

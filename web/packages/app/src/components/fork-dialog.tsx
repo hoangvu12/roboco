@@ -89,7 +89,7 @@ export const ForkDialogLayer = memo(function ForkDialogLayer() {
         {crossHarness && (
           <div className="harness-choice-note">
             A different harness starts fresh and receives a size-limited transcript of this chat,
-            not its full history.
+            not its full transcript.
           </div>
         )}
         {state.error !== null && <div className="harness-choice-error">{state.error}</div>}

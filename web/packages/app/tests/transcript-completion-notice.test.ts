@@ -181,7 +181,7 @@ describe("the completion notice row", () => {
 
 describe("the notice side-row helpers", () => {
   it("shortens an id to eight characters without splitting a character", () => {
-    expect(shortChatId("chat-side-1234")).toBe("chat-si");
+    expect(shortChatId("chat-side-1234")).toBe("chat-sid");
     expect(shortChatId("short")).toBe("short");
     // A surrogate pair never splits.
     const wide = "😀😀😀😀😀😀😀😀😀";
@@ -192,9 +192,9 @@ describe("the notice side-row helpers", () => {
   it("maps every outcome to a verb, matching the notice's own text", () => {
     expect(noticeOutcomeVerb(side("c", "t", "completed"))).toBe("finished");
     expect(noticeOutcomeVerb(side("c", "t", "errored"))).toBe("failed");
-    expect(noticeOutcomeVerb(side("c", "t", "stopped"))).toBe("stopped");
-    expect(noticeOutcomeVerb(side("c", "t", "interrupted"))).toBe("interrupted");
-    expect(noticeOutcomeVerb(side("c", "t", "waitingForInput"))).toBe("waiting for input");
+    expect(noticeOutcomeVerb(side("c", "t", "stopped"))).toBe("was stopped");
+    expect(noticeOutcomeVerb(side("c", "t", "interrupted"))).toBe("was interrupted");
+    expect(noticeOutcomeVerb(side("c", "t", "waitingForInput"))).toBe("is waiting for input");
   });
 
   it("appends the one-line reason, and a blank reason reads as none", () => {

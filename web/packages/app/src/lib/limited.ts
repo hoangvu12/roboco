@@ -8,8 +8,9 @@ import type {
   ScheduledResume,
   SessionLimit,
 } from "@roboco/proto";
+import type { ChatStatus } from "@roboco/engine-client";
 import { offeredHarnesses } from "./model-rows";
-import { formatLimitReset, formatScheduledResume } from "./view";
+import { effectiveIndicator, formatLimitReset, formatScheduledResume } from "./view";
 
 /**
  * Limited chats on the web — the peer of the desktop's banner/failover
@@ -23,12 +24,26 @@ import { formatLimitReset, formatScheduledResume } from "./view";
  */
 
 /**
- * The continue prompt the fixed actions send — `roboco_proto::RESUME_CONTINUE_PROMPT`
- * ("Continue where you left off."). Not wiregen'd to TS (it is a const,
- * not a type), so the web carries its own copy; the Rust side owns the
- * engine's run of the same words.
+ * The continue prompt the fixed actions send — `roboco_proto::RESUME_CONTINUE_PROMPT`,
+ * emitted by wiregen into `@roboco/proto`'s constants (one source of truth
+ * for the engine's and the web's words).
  */
-export const RESUME_CONTINUE_PROMPT = "Continue where you left off.";
+export { RESUME_CONTINUE_PROMPT } from "@roboco/proto";
+
+/**
+ * Whether the chat page's Limited banner shows for the chat's raw status
+ * row — gated by the send overlay exactly like `ChatRow.limited`
+ * (lib/view.ts) and the desktop's `indicator_for`: a send in flight
+ * (Resume's own continue prompt included) reads as Working, never Limited,
+ * so Resume cannot be pressed twice. Pure.
+ */
+export function limitedBannerShows(
+  sending: boolean,
+  session: ChatStatus | undefined,
+  now: number,
+): boolean {
+  return !sending && effectiveIndicator(session, now) === "limited";
+}
 
 /** How long a loaded candidate list stays fresh while the banner shows. */
 export const FAILOVER_LIST_TTL_MS = 30_000;

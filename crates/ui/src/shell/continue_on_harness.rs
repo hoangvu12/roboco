@@ -41,8 +41,8 @@ pub(super) struct ContinueOnHarnessDialog {
     harnesses: Loadable<Vec<HarnessDescriptor>>,
     /// Model lists per harness, loaded once per dialog per harness.
     models: std::collections::HashMap<HarnessId, Loadable<Vec<Model>>>,
-    /// Stale-response guard: bumped when the dialog closes, so an in-flight
-    /// catalog load lands on a closed (or reopened) dialog and no-ops.
+    /// Stale-response guard: this open's number from the shell's monotonic
+    /// counter, so a load from a closed (or earlier) dialog no-ops.
     generation: u64,
     /// The model list's scroll.
     model_scroll: gpui::ScrollHandle,
@@ -96,6 +96,7 @@ impl Shell {
         let Some(chat) = self.state.read(cx).selected_chat_row().cloned() else {
             return;
         };
+        let generation = self.next_dialog_generation();
         self.continue_dialog = Some(ContinueOnHarnessDialog {
             current_harness: chat.config.as_ref().map(|config| config.harness),
             chat,
@@ -103,19 +104,17 @@ impl Shell {
             model: None,
             harnesses: Loadable::Idle,
             models: Default::default(),
-            generation: 0,
+            generation,
             model_scroll: gpui::ScrollHandle::new(),
         });
         self.ensure_continue_loads(cx);
         cx.notify();
     }
 
-    /// Close the dialog without continuing. The generation bump retires
-    /// in-flight catalog loads.
+    /// Close the dialog without continuing. In-flight catalog loads retire
+    /// on their generation: a reopened dialog takes a fresh one from the
+    /// shell's monotonic counter.
     pub(super) fn close_continue_dialog(&mut self, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.continue_dialog.as_mut() {
-            dialog.generation += 1;
-        }
         self.continue_dialog = None;
         cx.notify();
     }
@@ -318,15 +317,7 @@ impl Shell {
                     },
                     Err(error) => Loadable::Error(error.to_string()),
                 };
-                // No pick yet: the first OFFERED harness (the current one is
-                // already excluded from the offered list) becomes the pick
-                // once the catalog lands — one click confirms.
-                let first = dialog.offered().first().map(|descriptor| descriptor.id);
-                if dialog.harness.is_none()
-                    && let Some(harness) = first
-                {
-                    dialog.harness = Some(harness);
-                }
+                dialog.resolve_default_harness();
                 cx.notify();
             })
             .ok();
@@ -426,8 +417,8 @@ impl Shell {
             .child(div().mt(px(6.0)).child(popover::dialog_body(
                 &theme,
                 "This chat hit its usage limit. Switching harnesses is one-way: the chat runs \
-                 on the one you pick from here on, and the new agent receives a size-limited \
-                 transcript of the conversation, then the continue prompt.",
+                 on the one you pick from here on, and the new harness receives a size-limited \
+                 transcript of the chat, then the continue prompt.",
             )));
 
         // ── Harness: one chip per offered harness (never the current one);
@@ -651,6 +642,18 @@ impl ContinueOnHarnessDialog {
             .unwrap_or_default();
         continue_offered_harnesses(catalog, self.current_harness)
     }
+
+    /// No pick yet: the first OFFERED harness (the current one is already
+    /// excluded from the offered list) becomes the pick once the catalog
+    /// lands — one click confirms.
+    fn resolve_default_harness(&mut self) {
+        let first = self.offered().first().map(|descriptor| descriptor.id);
+        if self.harness.is_none()
+            && let Some(harness) = first
+        {
+            self.harness = Some(harness);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -813,14 +816,8 @@ mod tests {
                 ];
                 let dialog = shell.continue_dialog.as_mut().unwrap();
                 dialog.harnesses = Loadable::Ready(catalog);
-                // The default resolution the load completion applies —
-                // exercised through the dialog's own offered list here.
-                let first = dialog.offered().first().map(|d| d.id);
-                if dialog.harness.is_none()
-                    && let Some(harness) = first
-                {
-                    dialog.harness = Some(harness);
-                }
+                // The default resolution the load completion applies.
+                dialog.resolve_default_harness();
                 assert_eq!(
                     shell.continue_dialog.as_ref().unwrap().harness,
                     Some(HarnessId::Pi),
@@ -956,9 +953,16 @@ mod tests {
                     state.sessions = vec![session];
                     state.select_chat(Some("limited".into()), cx);
                 });
-                // The Limited branch builds — including the new pill.
-                let strip = shell.render_status_strip(640.0, cx);
-                drop(strip);
+                // The Limited branch builds, and its model offers the pill
+                // (Resume first, the harness escape hatch last).
+                let _strip = shell.render_status_strip(640.0, cx);
+                let actions = shell.limited_strip_actions("limited", Utc::now(), cx);
+                assert!(actions.contains(&LimitedAction::Resume), "{actions:?}");
+                assert_eq!(
+                    actions.last(),
+                    Some(&LimitedAction::ContinueOnHarness),
+                    "{actions:?}"
+                );
                 // The pill's click opens this dialog.
                 shell.open_continue_on_harness(cx);
                 assert!(shell.continue_dialog.is_some());

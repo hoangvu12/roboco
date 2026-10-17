@@ -498,6 +498,53 @@ async fn a_pending_continuation_survives_a_restart_and_an_overdue_one_fires_afte
     core.shutdown().await;
 }
 
+/// **Restart keeps the client-visible rows:** the in-memory status map is
+/// the merged WatchSessions source for this device's chats, and it starts
+/// empty at boot — without the republish, a still-Limited chat and its
+/// armed continuation vanish from the banner (no "resumes in…", no
+/// Cancel) and `ScheduleResumeAtReset` refuses ("not Limited"). The boot
+/// re-creates both rows from the durable workspace row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_republishes_the_limit_and_scheduled_resume_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    // A reset far enough out that nothing fires while we look.
+    let (core, harness, prompts, client) = setup_at(&data_dir, vec![Some(in_ms(60_000))]).await;
+
+    run_into_limit(&core, &harness, &prompts).await;
+    schedule_resume(&client).await;
+    let fire_at = scheduled_fire_at(&core).expect("the continuation to arm");
+
+    core.shutdown().await;
+    drop(core);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Boot a fresh engine over the same data dir: the client-visible rows
+    // are republished at boot, before anything fires.
+    let (core, _harness, prompts, _client) = setup_at(&data_dir, vec![None]).await;
+    let row = core.sessions.session_status(CHAT).expect("the republished row");
+    assert_eq!(row.status, SessionStatus::Errored, "still Limited");
+    assert!(row.limit.is_some(), "the limit record survived the restart");
+    assert_eq!(
+        row.scheduled_resume.map(|resume| resume.fire_at),
+        Some(fire_at),
+        "the armed continuation's row survived the restart"
+    );
+    // The workspace mirror carries it too (remote devices' banners).
+    assert!(core
+        .workspace
+        .read_sessions()
+        .map(|rows| rows.iter().any(|row| {
+            row.chat_id == CHAT
+                && row.limit.is_some()
+                && row.scheduled_resume.is_some_and(|r| r.fire_at == fire_at)
+        }))
+        .unwrap_or(false));
+    // Nothing fired while we looked.
+    assert!(!prompts_contain(&prompts, CONTINUE));
+    core.shutdown().await;
+}
+
 /// **Cancellation by a new message:** a normal send (the composer's Run
 /// command) cancels the pending continuation — the user's newer intent wins.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -540,12 +587,16 @@ async fn a_new_message_cancels_the_pending_continuation() {
     core.shutdown().await;
 }
 
-/// **Cancellation by a queued message:** a message the user queued on the
-/// Limited chat (the queue is holding) is still their newer intent — the
-/// pending continuation dies, and nothing fires at the reset time.
+/// **Queueing is not sending (story 41):** a message the user queued on the
+/// Limited chat does NOT cancel the armed continuation — queued messages
+/// wait BEHIND it, order preserved. The continuation fires at the reset
+/// time and the queued row follows it out (a queued row is not the newer
+/// intent a direct send is; the user can still cancel with a message or an
+/// archive).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_queued_message_cancels_the_pending_continuation() {
-    let (core, harness, prompts, client) = setup(vec![Some(in_ms(2_500))]).await;
+async fn a_queued_message_waits_behind_the_pending_continuation() {
+    // Three runs: the doomed turn, the continuation, the queued row's own.
+    let (core, harness, prompts, client) = setup(vec![Some(in_ms(2_500)), None, None]).await;
 
     run_into_limit(&core, &harness, &prompts).await;
     schedule_resume(&client).await;
@@ -558,17 +609,29 @@ async fn a_queued_message_cancels_the_pending_continuation() {
     core.doc_host
         .queue_message(CHAT, "queued while limited", Vec::new())
         .expect("queue message");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        scheduled_fire_at(&core).is_some(),
+        "queueing a row does not cancel the armed continuation"
+    );
+
+    // The reset time arrives: the continuation fires, and the queued row
+    // follows it — the queue thaws with the continuation's dispatch.
     wait_for(
-        || scheduled_fire_at(&core).is_none(),
-        "the queued message to cancel the continuation",
+        || prompts_contain(&prompts, CONTINUE),
+        "the continuation to fire at the reset time",
     )
     .await;
-
-    // The reset time comes and goes: the continuation never fires; the row
-    // stays queued behind the Limited chat's hold.
-    tokio::time::sleep(Duration::from_millis(3_000)).await;
-    assert!(!prompts_contain(&prompts, CONTINUE));
-    assert_eq!(sent_prompts(&prompts), vec!["do the work"]);
+    wait_for(
+        || prompts_contain(&prompts, "queued while limited"),
+        "the queued row to follow the continuation",
+    )
+    .await;
+    assert_eq!(
+        sent_prompts(&prompts),
+        vec!["do the work", CONTINUE, "queued while limited"],
+        "order preserved: the continuation first, the queued row behind it"
+    );
     core.shutdown().await;
 }
 

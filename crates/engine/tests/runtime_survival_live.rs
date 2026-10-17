@@ -314,7 +314,7 @@ async fn agent_process_survives_sends_and_cancel() {
             ),
             Some("m-2b-steer".into()),
             None,
-        )
+        None)
         .await
         .unwrap();
     let steered_at = std::time::Instant::now();

@@ -913,6 +913,37 @@ async fn a_plain_failure_restores_the_previous_account() {
     .await;
     let active = active_row(&client).await.expect("an active account");
     assert_eq!(active.email.as_deref(), Some("alice@example.com"));
+    // The failure is REPORTED (ticket 09): a System entry on the chat says
+    // the failover failed and the previous account is back — the banner
+    // (and the web client, which renders System entries) shows it.
+    wait_for(
+        || {
+            core.doc_host
+                .open(LIMITED)
+                .is_ok_and(|handle| {
+                    handle
+                        .doc()
+                        .read_entries()
+                        .map(|entries| {
+                            entries.iter().any(|entry| {
+                                entry.role == roboco_doc::MessageRole::System
+                                    && entry
+                                        .parts
+                                        .iter()
+                                        .any(|part| matches!(part,
+                                            roboco_doc::MessagePart::Text { text, .. }
+                                            if text.starts_with(
+                                                "Resume on another account failed: the resumed turn failed."
+                                            ) && text.contains("The harness is back on")
+                                        ))
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+        },
+        "the failed failover to be reported on the chat",
+    )
+    .await;
     // No second candidate: the chain ends with the restore. The settle
     // beat lets a stray third run fail the count assertion.
     tokio::time::sleep(Duration::from_millis(750)).await;

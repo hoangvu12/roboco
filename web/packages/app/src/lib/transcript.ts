@@ -1495,8 +1495,8 @@ export function shortChatId(id: string): string {
 
 /**
  * The outcome verb a notice side row shows — the same vocabulary the
- * notice's plain text uses (`side_line` in the engine), so the card and the
- * prose an agent reads agree. Mirrors `notice_outcome_verb` (transcript.rs).
+ * notice's plain text uses, so the card and the prose an agent reads agree.
+ * Mirrors the one shared source, `NoticeOutcome::verb` (crates/doc parts.rs).
  */
 export function noticeOutcomeVerb(side: NoticeSide): string {
   switch (side.outcome) {
@@ -1505,11 +1505,11 @@ export function noticeOutcomeVerb(side: NoticeSide): string {
     case "errored":
       return "failed";
     case "stopped":
-      return "stopped";
+      return "was stopped";
     case "interrupted":
-      return "interrupted";
+      return "was interrupted";
     case "waitingForInput":
-      return "waiting for input";
+      return "is waiting for input";
   }
 }
 

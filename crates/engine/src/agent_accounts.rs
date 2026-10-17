@@ -1002,13 +1002,6 @@ impl AgentAccounts {
             .find(|account| account.harness == harness && account.active)
     }
 
-    /// The ranked failover candidates for `harness` (orchestration v2,
-    /// ticket 09) — the CACHED rows, no network: the forced probe is the
-    /// engine's call on the CHOSEN candidate only ([`Self::probe_account`]).
-    /// `limited_account_id` names the account the chat's limit hit (the
-    /// limit record's account, else the harness's active login when the
-    /// record carried none). See [`rank_failover_candidates`] for the
-    /// exclusion and ranking rules.
     /// The harness's OTHER accounts that are signed out (ticket 09's
     /// picker): never switch targets — the ranking excludes them — but the
     /// picker lists them with a "Sign in again" action (the existing login
@@ -1032,6 +1025,13 @@ impl AgentAccounts {
             .unwrap_or_default()
     }
 
+    /// The ranked failover candidates for `harness` (orchestration v2,
+    /// ticket 09) — the CACHED rows, no network: the forced probe is the
+    /// engine's call on the CHOSEN candidate only ([`Self::probe_account`]).
+    /// `limited_account_id` names the account the chat's limit hit (the
+    /// limit record's account, else the harness's active login when the
+    /// record carried none). See [`rank_failover_candidates`] for the
+    /// exclusion and ranking rules.
     pub async fn failover_candidates(
         &self,
         harness: HarnessId,
@@ -1138,20 +1138,62 @@ impl AgentAccounts {
     }
 
     /// Fingerprint of the CLI store's live login for `harness` — a digest of
-    /// the credential bytes every new run on this harness would use. The
-    /// sessions engine stamps it on every warm runtime it starts, so a
-    /// runtime launched under another login is never reused after a switch
-    /// (ticket 09). `None` for a harness whose live store roboco does not
-    /// read — and for a Claude Keychain login, which has no file: no
-    /// fingerprint, no forced retirement.
+    /// the login's IDENTITY, never its token bytes (ticket 09): a CLI token
+    /// refresh rewrites the credential file on every expiry, and a
+    /// bytes-keyed fingerprint would retire every warm runtime on the SAME
+    /// login — a mid-turn steer became an interrupt-and-redispatch. Claude's
+    /// identity (account uuid, email, organization) lives in the config
+    /// file's `oauthAccount`; Codex's rides the auth file's `id_token`
+    /// claims (or its API key). The sessions engine stamps the digest on
+    /// every warm runtime it starts, so a runtime launched under another
+    /// login is never reused after a switch. `None` for a harness whose live
+    /// store roboco does not read — and for a Claude Keychain login, which
+    /// has no file: no fingerprint, no forced retirement. When the identity
+    /// cannot be read, the raw credential bytes stand in (the old shape):
+    /// identity unknown is the one case where the tokens themselves are the
+    /// best available proxy for "same login".
     pub fn live_credentials_fingerprint(&self, harness: HarnessId) -> Option<String> {
-        let file = match harness {
-            HarnessId::ClaudeCode => self.inner.config.claude_creds_file(),
-            HarnessId::Codex => self.inner.config.codex_auth_file(),
-            _ => return None,
+        let identity_fingerprint = |parts: &[Option<String>]| {
+            let joined: Vec<&str> = parts.iter().flatten().map(String::as_str).collect();
+            (!joined.is_empty()).then(|| {
+                crate::repos::hex(&Sha256::digest(joined.join("\u{0}").as_bytes()))[..16]
+                    .to_string()
+            })
         };
-        let bytes = std::fs::read(&file).ok()?;
-        Some(crate::repos::hex(&Sha256::digest(&bytes))[..16].to_string())
+        match harness {
+            HarnessId::ClaudeCode => {
+                // The credentials file's tokens churn on every refresh; the
+                // config's `oauthAccount` is the durable identity of the
+                // login every run on this harness uses.
+                let cfg = read_json(&self.inner.config.claude_config_file);
+                let identity = cfg.as_ref().and_then(|c| c.get("oauthAccount")).map(|oauth| {
+                    [
+                        str_field(oauth, "accountUuid"),
+                        str_field(oauth, "emailAddress"),
+                        str_field(oauth, "organizationUuid"),
+                    ]
+                });
+                if let Some(digest) = identity.and_then(|parts| identity_fingerprint(&parts)) {
+                    return Some(digest);
+                }
+                let bytes = std::fs::read(self.inner.config.claude_creds_file()).ok()?;
+                Some(crate::repos::hex(&Sha256::digest(&bytes))[..16].to_string())
+            }
+            HarnessId::Codex => {
+                let auth = read_json(&self.inner.config.codex_auth_file())?;
+                // The id_token rotates; its CLAIMS (the user and workspace
+                // ids) are the login's identity. An API-key login is its
+                // own stable identity.
+                if let Some(parts) = codex_login_identity(&auth)
+                    && let Some(digest) = identity_fingerprint(&parts)
+                {
+                    return Some(digest);
+                }
+                let bytes = serde_json::to_string(&auth).ok()?;
+                Some(crate::repos::hex(&Sha256::digest(bytes.as_bytes()))[..16].to_string())
+            }
+            _ => None,
+        }
     }
 
     /// Caller holds [`Inner::ops`].
@@ -3650,6 +3692,30 @@ fn with_claude_ai_oauth(
     }
 }
 
+/// The Codex auth file's login identity (for the credential fingerprint —
+/// [`AgentAccounts::live_credentials_fingerprint`]): the id_token's user
+/// and workspace claims, or the API key. `None` when the file names no
+/// identity — the caller then falls back to the raw bytes.
+fn codex_login_identity(auth: &serde_json::Value) -> Option<Vec<Option<String>>> {
+    if let Some(id_token) = auth
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(|v| v.as_str())
+    {
+        let claims = jwt_claims(id_token).unwrap_or_else(|| serde_json::json!({}));
+        let oa = claims
+            .get("https://api.openai.com/auth")
+            .cloned()
+            .unwrap_or_default();
+        return Some(vec![
+            str_field(&claims, "email"),
+            str_field(&oa, "chatgpt_account_id"),
+            str_field(&oa, "chatgpt_user_id"),
+        ]);
+    }
+    str_field(auth, "OPENAI_API_KEY").map(|key| vec![Some(key)])
+}
+
 /// Parse a codex `auth.json` (the live one or a fresh login's).
 fn parse_codex_auth(auth: serde_json::Value) -> Option<Detected> {
     if let Some(id_token) = auth
@@ -3828,11 +3894,12 @@ fn failover_group(
 ///   instead);
 /// - accounts still limited (`limited_until` in the future).
 ///
-/// **Ranked:** lowest usage first — the account's most-used window
-/// (`0.0` when the meters are unknown); among equals, accounts OUTSIDE the
-/// limited account's org/workspace rank first (a shared pool may hit the
-/// same wall again). The pre-rank order (slot creation order) breaks the
-/// remaining ties so the ranking is deterministic.
+/// **Ranked:** accounts OUTSIDE the limited account's org/workspace first
+/// (a shared pool may hit the same wall again) — the org penalty is the
+/// PRIMARY key, outranking usage; then lowest usage first — the account's
+/// most-used window (`0.0` when the meters are unknown). The pre-rank order
+/// (slot creation order) breaks the remaining ties so the ranking is
+/// deterministic.
 fn rank_failover_candidates(
     candidates: Vec<FailoverCandidate>,
     limited_id: Option<&str>,

@@ -137,6 +137,10 @@ impl Shell {
         chat.last_seen_at = None;
         chat.harness_session_id = None;
         chat.harness_session_cwd = None;
+        // A user-made side chat is never agent-created: the parent's own
+        // origin (an agent spawned IT) must not ride the copy, or the new
+        // chat would owe completion notices nobody asked for.
+        chat.agent_origin = None;
         chat.room_gen = Some(2);
         self.open_side_chat_tab(chat, key, true, cx);
     }
@@ -558,6 +562,39 @@ mod tests {
                 });
                 shell.close_right_surface(RightSurface::SideChat(id), window, cx);
                 assert!(!shell.side_chats.contains_key(&id));
+            })
+            .unwrap();
+    }
+
+    /// A user-made side chat under an agent-created parent never inherits
+    /// the parent's agent origin: user side chats never notify anyone.
+    #[gpui::test]
+    fn a_user_side_chat_does_not_inherit_the_parents_agent_origin(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let window = shell_window(dir.path(), cx);
+        window
+            .update(cx, |shell, _, cx| {
+                shell.active_chat = "main".into();
+                let main: roboco_proto::Chat = serde_json::from_value(serde_json::json!({
+                    "id": "main", "deviceId": "local", "cwd": "/tmp/main",
+                    "archived": false, "createdAt": Utc::now(),
+                    "agentOrigin": { "chatId": "orchestrator", "notify": true },
+                }))
+                .unwrap();
+                assert!(main.agent_origin.is_some());
+                shell.state.update(cx, |state, _| {
+                    state.chats = vec![main];
+                    state.selected_chat = Some("main".into());
+                });
+                shell.toggle_right_pane(cx);
+                shell.create_child_chat(None, cx);
+                let id = shell.side_chat_seq;
+                let side = shell.side_chats[&id].state.clone();
+                let chat_id = side.read(cx).selected_chat.clone().unwrap();
+                let row = side.read(cx).selected_chat_row().cloned().unwrap();
+                assert_eq!(row.agent_origin, None);
+                let create = side.read(cx).unsaved_side_chat_create(&chat_id).unwrap();
+                assert!(create.get("agentOrigin").is_none(), "{create}");
             })
             .unwrap();
     }

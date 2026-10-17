@@ -301,13 +301,14 @@ async fn switch_writes_the_seam_clears_the_session_and_saves_the_harness() {
     // new harness.
     expect_seams(&core, HarnessId::Pi, 1);
     assert_eq!(entries(&core).len(), before + 1);
-    // The row: new harness and model, and the session cleared — the
-    // empty-string tombstone, not a missing field (the journal scan must
-    // not resurrect the mock session later).
+    // The row: new harness and model, and no session left to resume (how
+    // the clear is spelled is the engine's business; that the old session
+    // never rides a resume — not even after a restart's journal scan — is
+    // asserted by the post-switch send tests below).
     let row = chat_row(&core);
     assert_eq!(row.config.as_ref().map(|c| c.harness), Some(HarnessId::Pi));
     assert_eq!(row.config.as_ref().and_then(|c| c.model.as_deref()), Some("pi-default"));
-    assert_eq!(row.harness_session_id.as_deref(), Some(""));
+    assert!(row.harness_session_id.as_deref().is_none_or(str::is_empty));
     assert!(row.harness_session_cwd.as_deref().is_none_or(|cwd| cwd.is_empty()));
 
     // Refusals: the same harness, an unregistered one, an unknown chat.

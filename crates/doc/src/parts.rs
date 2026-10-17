@@ -135,6 +135,22 @@ pub enum NoticeOutcome {
     WaitingForInput,
 }
 
+impl NoticeOutcome {
+    /// The outcome's verb phrase — the ONE vocabulary the engine's notice
+    /// text (`"title" (id) <verb>`) and every client's notice card share, so
+    /// the card and the prose an agent reads never drift (the web mirrors
+    /// it in `noticeOutcomeVerb`).
+    pub fn verb(self) -> &'static str {
+        match self {
+            Self::Completed => "finished",
+            Self::Errored => "failed",
+            Self::Stopped => "was stopped",
+            Self::Interrupted => "was interrupted",
+            Self::WaitingForInput => "is waiting for input",
+        }
+    }
+}
+
 /// One side chat a completion notice reports: its id and title, the
 /// recorded outcome, and the one-line reason (error text, restart reason or
 /// question summary) when the outcome carries one.

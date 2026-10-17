@@ -322,6 +322,97 @@ async fn a_fork_the_cli_refuses_falls_back_to_a_fresh_session_with_the_budgeted_
     );
 }
 
+/// A fork the CLI accepts and then FAILS (B11): a `--resume-session-at`
+/// uuid it validates only once the first prompt arrives — the CLI answers
+/// initialize, prints its init frame, and errors before any assistant
+/// output. That errored first result is the same refusal as the silent
+/// exit: the driver retries once as a fresh session with the budgeted
+/// transcript pasted in front of the prompt, and the send never fails.
+#[tokio::test]
+async fn a_fork_that_errors_after_launch_retries_fresh_with_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    claude_session_store(dir.path(), "fork-bad-uuid-src", &["msg-uuid-7", "msg-newer-uuid"]);
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-bad-uuid");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-bad-uuid-src".into(),
+        last_turn: "msg-uuid-7".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    // The fallback session served the turn (the fake fails the retry
+    // unless the prompt carries the budgeted history AND the user message,
+    // with no session flags at all).
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-fork-bad-fresh"
+        )),
+        "the late-refused fork fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "bad uuid fallback answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("bad uuid fallback".into()),
+            error: None,
+            session_id: Some("sess-fork-bad-fresh".into()),
+        })
+    );
+}
+
+/// A resume the CLI accepts at launch and then REFUSES once the turn runs
+/// (B12 — the account-failover continuation's cross-account resume, the
+/// research-03 risk): the errored first result, before any assistant
+/// output, retries fresh with the fallback history. The continuation never
+/// fails the send.
+#[tokio::test]
+async fn a_resume_refused_after_launch_retries_fresh_with_the_fallback_history() {
+    let dir = tempfile::tempdir().unwrap();
+    // The session exists in the store, so the pre-launch check passes —
+    // only the running turn reveals the refusal.
+    claude_session_store(dir.path(), "resume-refused-src", &["msg-uuid-7"]);
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-refused");
+    req.resume = Some("resume-refused-src".into());
+    req.resume_fallback_history = Some(FORK_FALLBACK_HISTORY.into());
+    let events = run_to_end(&harness, req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-resume-fresh"
+        )),
+        "the refused resume fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "resume fallback answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("resume fallback".into()),
+            error: None,
+            session_id: Some("sess-resume-fresh".into()),
+        })
+    );
+}
+
 /// A source session the CLI's store no longer has: the fork launch is
 /// skipped outright — no session flags — and the budgeted transcript rides
 /// in front of the prompt on the fresh session.

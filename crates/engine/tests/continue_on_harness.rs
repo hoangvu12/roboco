@@ -512,6 +512,94 @@ async fn continuing_on_another_harness_switches_then_sends_the_continue_prompt()
     core.shutdown().await;
 }
 
+/// A message held for the turn end carries its FULL RunRequest — the
+/// harness, model, options it was sent with — and the drain prefers that
+/// stored request over the chat row. The switch rewrites the stored request
+/// onto its config (ticket 24: "queued messages after a switch go to the new
+/// harness"), or the held message would run on the OLD harness (its model
+/// ids in the new harness's vocabulary) after the switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_request_held_across_the_switch_runs_on_the_new_harness() {
+    let (core, limited, limited_prompts, pi, pi_requests, _tmp) = setup();
+    queue_run(&core, "Remember PINEAPPLE", HarnessId::ClaudeCode, None, "m-open");
+    start_limited_turn(&limited_prompts).await;
+    // A full Run command sent while the turn-boundary run is working: it is
+    // HELD for the turn's end with the exact request it was sent with
+    // (claude, a claude model) — not a text-only queue row.
+    queue_run(
+        &core,
+        "queued as a full request",
+        HarnessId::ClaudeCode,
+        Some("claude-model"),
+        "m-held",
+    );
+    let _ = limited.finish.send(());
+    settle_limited(&core).await;
+    assert_eq!(queue_texts(&core), vec!["queued as a full request"]);
+
+    // The switch, while the held row waits behind the Limited pause.
+    switch(&core, HarnessId::Pi, Some("pi-default"))
+        .await
+        .expect("switch while limited");
+    expect_seams(&core, HarnessId::Pi, 1);
+
+    // The continuation runs on the new harness; when it settles, the held
+    // row follows — rewritten onto the switch's config.
+    queue_run(&core, CONTINUE_PROMPT, HarnessId::Pi, Some("pi-default"), "m-resume");
+    wait_for(
+        || pi_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.prompt.ends_with(CONTINUE_PROMPT)),
+        "the continue prompt to run on the new harness",
+    )
+    .await;
+    let _ = pi.finish.send(());
+    wait_for(
+        || pi_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.prompt.contains("queued as a full request")),
+        "the held row to follow the continuation",
+    )
+    .await;
+    let held = pi_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.prompt.contains("queued as a full request"))
+        .cloned()
+        .expect("the held request");
+    assert_eq!(
+        held.harness, Some(HarnessId::Pi),
+        "the stored request runs on the NEW harness after the switch"
+    );
+    assert_eq!(
+        held.model.as_deref(),
+        Some("pi-default"),
+        "the stored request carries the switch's model, not the claude one"
+    );
+    assert!(held.prompt.contains("queued as a full request"), "{}", held.prompt);
+    let _ = pi.finish.send(());
+    wait_for(
+        || queue_texts(&core).is_empty()
+            && core
+                .sessions
+                .session_status(CHAT)
+                .is_none_or(|s| s.status != SessionStatus::Working),
+        "the last turn to settle and the queue to drain",
+    )
+    .await;
+    assert_eq!(
+        limited_prompts.lock().unwrap().clone(),
+        vec!["Remember PINEAPPLE"],
+        "the limited harness never ran the held message"
+    );
+    core.shutdown().await;
+}
+
 /// The switch alone does NOT clear the Limited state: the record lives as
 /// long as the errored status it rode, so the banner stays up (and the
 /// Resume / continue actions stay offered) until a turn actually starts. A

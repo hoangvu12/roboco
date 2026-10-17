@@ -12,7 +12,8 @@ import { engineRegistry, engineStatesOf, useFleetRegistry, useFleetSnapshot } fr
 import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
-import { chatPageRow, effectiveIndicator, type ChatRow } from "../lib/view";
+import { chatPageRow, type ChatRow } from "../lib/view";
+import { limitedBannerShows } from "../lib/limited";
 import {
   JumpPill,
   StatusStrip,
@@ -1227,7 +1228,9 @@ export function ConversationPage() {
   const sessionRow = hasSelection
     ? snapshot.statuses.rows.find((row) => row.chatId === chatId) ?? null
     : null;
-  const sessionRowLimited = effectiveIndicator(sessionRow ?? undefined, now) === "limited";
+  // Gated by the send overlay (`limitedBannerShows`): a send in flight —
+  // Resume's own continue prompt included — steps the banner aside.
+  const sessionRowLimited = limitedBannerShows(sending, sessionRow ?? undefined, now);
 
   // The session row's `started_at` — the working trailer's timer base
   // (`session_for(chat_id).started_at` on the desktop).

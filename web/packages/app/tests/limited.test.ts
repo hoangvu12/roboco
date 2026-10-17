@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EngineClient } from "@roboco/engine-client";
+import type { ChatStatus, EngineClient } from "@roboco/engine-client";
 import type {
   AgentAccount,
   AgentUsageWindow,
@@ -18,6 +18,7 @@ import {
   failoverRows,
   harnessOffersFailover,
   limitedBannerLabel,
+  limitedBannerShows,
   listResumeAccountCandidates,
   resumeAtResetArmable,
   resumeOnAnotherAccount,
@@ -79,6 +80,33 @@ const CALLER = new FakeCaller() as unknown as EngineClient;
 describe("RESUME_CONTINUE_PROMPT", () => {
   it("is the engine's fixed wording (roboco_proto::RESUME_CONTINUE_PROMPT)", () => {
     expect(RESUME_CONTINUE_PROMPT).toBe("Continue where you left off.");
+  });
+});
+
+// ── The banner's gate ────────────────────────────────────────────────────
+
+describe("limitedBannerShows", () => {
+  const limitedRow: ChatStatus = {
+    chatId: "chat",
+    deviceId: "device-1",
+    status: "errored",
+    startedAt: null,
+    updatedAt: new Date(NOW).toISOString(),
+    lastCompletedTurn: null,
+    limit: limit({ resetsAt: ms(60) }),
+  };
+
+  it("shows for a Limited row with no send in flight", () => {
+    expect(limitedBannerShows(false, limitedRow, NOW)).toBe(true);
+  });
+
+  it("steps aside while a send is in flight, so Resume cannot be pressed twice", () => {
+    expect(limitedBannerShows(true, limitedRow, NOW)).toBe(false);
+  });
+
+  it("never shows for a plain error or no row", () => {
+    expect(limitedBannerShows(false, { ...limitedRow, limit: null }, NOW)).toBe(false);
+    expect(limitedBannerShows(false, undefined, NOW)).toBe(false);
   });
 });
 

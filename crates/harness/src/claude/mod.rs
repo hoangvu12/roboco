@@ -115,6 +115,58 @@ fn mcp_config_arg(mcp: &roboco_proto::McpServer) -> String {
     .to_string()
 }
 
+/// The launch probe's reading of the buffered stdout so far (B11/B12): an
+/// errored first `result` BEFORE any assistant output refuses the launch
+/// — the CLI accepted the flags but then failed the resumed session (a
+/// `--resume-session-at` uuid validated late, or a session the account
+/// can no longer read). Any assistant output accepts it (the launch is
+/// serving the conversation). A clean `result` before any assistant
+/// output also accepts: the launch itself is fine, whatever the empty
+/// turn means. Only complete lines are judged — the tail of a partial
+/// line rides to the session loop and is judged there.
+enum LaunchReading {
+    Undecided,
+    Accepted,
+    Refused,
+}
+
+fn launch_reading(head: &[u8]) -> LaunchReading {
+    for line in std::str::from_utf8(head)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("assistant") => return LaunchReading::Accepted,
+            Some("result") => {
+                let errored = value
+                    .get("is_error")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                    || value.get("subtype").and_then(serde_json::Value::as_str)
+                        == Some("error");
+                return if errored {
+                    LaunchReading::Refused
+                } else {
+                    LaunchReading::Accepted
+                };
+            }
+            _ => {}
+        }
+    }
+    LaunchReading::Undecided
+}
+
+/// Bound on the launch probe (B11/B12): the probe buffers the stream until
+/// the launch proves itself, so a wedged CLI must not hold it forever —
+/// past the bound the buffered stream is handed over and the session loop
+/// deals with whatever follows. Generous: a healthy launch speaks within
+/// milliseconds; only Stop (the other escape) is faster.
+const LAUNCH_PROBE_BOUND: Duration = Duration::from_secs(60);
+
 /// Whether the CLI's own session store knows `session_id` — one
 /// `<config>/projects/*/{session_id}.jsonl` file (the same walk
 /// `Normalizer::for_resume` restores subagent chips from). A resume the
@@ -737,7 +789,7 @@ impl ClaudeHarness {
                 "resume of {resume} has no session file; starting fresh with the budgeted history"
             );
             request.resume = None;
-            request.prompt = format!("{history}{}", request.prompt);
+            request.prompt = crate::prompt_with_history(&history, &request.prompt);
         }
         // A native fork (t3-orchestration-v2 ticket 18): the CLI continues
         // the SOURCE session as a NEW session id — `--resume <source>
@@ -777,7 +829,7 @@ impl ClaudeHarness {
                 );
                 request.provider_fork = None;
                 if let Some(history) = fork.fallback_history {
-                    request.prompt = format!("{history}{}", request.prompt);
+                    request.prompt = crate::prompt_with_history(&history, &request.prompt);
                 }
             }
         }
@@ -792,7 +844,7 @@ impl ClaudeHarness {
                 request.provider_fork = None;
                 fork_flags = None;
                 if let Some(history) = fork_fallback.take() {
-                    request.prompt = format!("{history}{}", request.prompt);
+                    request.prompt = crate::prompt_with_history(&history, &request.prompt);
                 }
                 tracing::debug!(
                     target: "roboco_harness::claude",
@@ -865,51 +917,18 @@ impl ClaudeHarness {
                 )));
             }
 
-            // The fork launch's acceptance probe (ticket 18): a CLI that
-            // rejects the flags exits before it ever speaks — our opening
-            // control request gets no answer, so stdout closes with
-            // nothing on it. One byte proves the CLI accepted the launch
-            // (its answer itself, or the init frame); EOF or a read error
-            // proves refusal, and the loop retries once as a fresh session
-            // with the budgeted transcript. An interrupt mid-probe hands
-            // the child to the session loop, which sees the token and ends
-            // the run interrupted. Every other launch — plain, resumed,
-            // title — is handed over unread, as before.
-            let mut head: Vec<u8> = Vec::new();
-            if attempt == 0 && fork_flags.is_some() && !title_only {
-                enum Probe {
-                    Spoke(usize),
-                    Silent,
-                    Interrupted,
-                }
-                let mut probe = [0u8; 1];
-                let outcome = tokio::select! {
-                    biased;
-                    _ = controls.interrupt.cancelled() => Probe::Interrupted,
-                    read = stdout.read(&mut probe) => match read {
-                        Ok(n) if n > 0 => Probe::Spoke(n),
-                        _ => Probe::Silent,
-                    },
-                };
-                match outcome {
-                    Probe::Spoke(n) => head = probe[..n].to_vec(),
-                    Probe::Silent => {
-                        shutdown_child(&mut child, self.kill_grace).await;
-                        continue;
-                    }
-                    Probe::Interrupted => {}
-                }
-            }
-
-            // The initial prompt as the first stdin user line (streaming-input
-            // mode). Ultrathink rides every user message — steers included.
+            // The first prompt as the first stdin user line (streaming-input
+            // mode) — sent BEFORE the launch probe below: a CLI that lazily
+            // validates its resume flags fails them only once a prompt
+            // arrives, so the probe must be reading when that result lands.
+            // Ultrathink rides every user message — steers included.
             // Staged image attachments are inlined as base64 image content blocks
             // ahead of the text (verified against the real CLI); their path refs
             // also ride the prompt text, so a skipped/unreadable file degrades to
             // the old-app behavior (the agent opens the path with its Read tool).
             // The line carries a uuid: the CLI then reports its
             // `command_lifecycle`, which decides when a `result` is a steer
-            // boundary instead of the turn's end. A refused fork's retry
+            // boundary instead of the turn's end. A refused launch's retry
             // delivers the budgeted transcript here — it is already in front
             // of the prompt.
             let first_command = uuid::Uuid::new_v4().to_string();
@@ -919,6 +938,93 @@ impl ClaudeHarness {
                 &images,
             );
             let _ = stdin_tx.send(StdinMsg::Line(first));
+
+            // The launch's acceptance probe (ticket 18): the CLI proves the
+            // launch as it speaks — anything it writes is buffered in `head`
+            // and handed to the session loop unchanged, so nothing is lost.
+            // The probe reads until one of:
+            // - any ASSISTANT output: the launch is good — hand over.
+            // - an ERRORED first `result` BEFORE any assistant output: the
+            //   CLI accepted the flags but then failed the resume — a bad
+            //   `--resume-session-at` uuid it validates late (B11), or a
+            //   resumed session the account can no longer read (B12: the
+            //   failover continuation's cross-account resume). Same
+            //   refusal as silence: the retry below starts fresh with the
+            //   budgeted transcript, because a fork/resume never fails the
+            //   send.
+            // - silence: EOF before the CLI ever spoke — the flags were
+            //   rejected up front (the original ticket-18 shape).
+            // - Stop mid-probe: hand the child to the session loop, which
+            //   sees the token and ends the run interrupted.
+            // Every launch the probe covers carries a fallback history the
+            // retry pastes: a fork (the engine's budgeted transcript), or a
+            // resume with `resume_fallback_history` (the failover
+            // continuation). Plain launches and titles are handed over
+            // unread, as before.
+            let probe_launch = !title_only
+                && (fork_flags.is_some()
+                    || (request.resume.is_some() && request.resume_fallback_history.is_some()));
+            let mut head: Vec<u8> = Vec::new();
+            if probe_launch {
+                enum Probe {
+                    Accepted,
+                    Silent,
+                    Refused,
+                    Interrupted,
+                }
+                let launch_fallback = fork_fallback
+                    .take()
+                    .or_else(|| request.resume_fallback_history.take());
+                let mut probe = [0u8; 1024];
+                let bound =
+                    tokio::time::Instant::now() + LAUNCH_PROBE_BOUND;
+                let outcome = loop {
+                    tokio::select! {
+                        biased;
+                        _ = controls.interrupt.cancelled() => break Probe::Interrupted,
+                        _ = tokio::time::sleep_until(bound) => break Probe::Accepted,
+                        read = stdout.read(&mut probe) => match read {
+                            Ok(0) | Err(_) => {
+                                break if head.is_empty() {
+                                    Probe::Silent
+                                } else {
+                                    Probe::Accepted
+                                }
+                            }
+                            Ok(n) => {
+                                head.extend_from_slice(&probe[..n]);
+                                match launch_reading(&head) {
+                                    LaunchReading::Refused => break Probe::Refused,
+                                    // Assistant output spoke for the launch:
+                                    // hand the buffered stream over.
+                                    LaunchReading::Accepted => break Probe::Accepted,
+                                    LaunchReading::Undecided => {}
+                                }
+                            }
+                        },
+                    }
+                };
+                match outcome {
+                    // Interrupted: the fallback stays unspent; the session
+                    // loop ends the run interrupted.
+                    Probe::Accepted | Probe::Interrupted => {}
+                    Probe::Silent | Probe::Refused => {
+                        shutdown_child(&mut child, self.kill_grace).await;
+                        request.resume = None;
+                        request.provider_fork = None;
+                        fork_flags = None;
+                        if let Some(history) = launch_fallback {
+                            request.prompt = crate::prompt_with_history(&history, &request.prompt);
+                        }
+                        tracing::debug!(
+                            target: "roboco_harness::claude",
+                            "the CLI refused the launch (silent, or an error before any \
+                             assistant output); starting fresh with the budgeted history"
+                        );
+                        continue;
+                    }
+                }
+            }
 
             // The probe's consumed byte rides ahead of the pipe (no output
             // is lost); an empty head is every unprobed launch.

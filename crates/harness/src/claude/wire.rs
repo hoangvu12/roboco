@@ -154,7 +154,15 @@ pub(crate) struct RateLimitInfo {
     pub rate_limit_type: Option<String>,
     /// Unix seconds when the rejected window resets — the CLI reports it on
     /// the blocking event (live-verified 2.1.228); absent when unknown.
-    #[serde(rename = "resetsAt", default)]
+    /// Parsed leniently ([`deserialize_resets_at]): some CLI builds send a
+    /// float or a numeric string here, and a malformed value must cost
+    /// the timestamp — never the whole frame (the window classification
+    /// rides the same event).
+    #[serde(
+        rename = "resetsAt",
+        default,
+        deserialize_with = "deserialize_resets_at"
+    )]
     pub resets_at: Option<u64>,
     /// `allowed`/`allowed_warning` when the account may spend provisioned
     /// overage past a rejected window.
@@ -164,6 +172,36 @@ pub(crate) struct RateLimitInfo {
     pub is_using_overage: bool,
     #[serde(rename = "overageInUse", default)]
     pub overage_in_use: bool,
+}
+
+/// `resetsAt` in every shape the CLI has been seen to send: an integer,
+/// a float (some builds serialize JS numbers), or a numeric string —
+/// parsed to unix seconds. Any other shape (null, a non-numeric string,
+/// an object) reads as "unknown", and deserializing never fails the
+/// frame.
+fn deserialize_resets_at<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let seconds = match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .or_else(|| number.as_f64().map(|value| value.trunc() as u64)),
+        serde_json::Value::String(text) => {
+            let text = text.trim();
+            text.parse::<u64>()
+                .ok()
+                .or_else(|| text.parse::<f64>().ok().map(|value| value.trunc() as u64))
+        }
+        // Any other shape is a CLI oddity: unknown reset, never an error.
+        _ => None,
+    };
+    Ok(seconds.filter(|seconds| *seconds > 0))
 }
 
 impl RateLimitInfo {

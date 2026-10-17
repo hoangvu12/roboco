@@ -22,6 +22,7 @@ for arg in "$@"; do
     --resume=fork-latest-src) fork_src=fork-latest-src ;;
     --resume=fork-earlier-src) fork_src=fork-earlier-src ;;
     --resume=fork-refused-src) fork_src=fork-refused-src ;;
+    --resume=fork-bad-uuid-src) fork_src=fork-bad-uuid-src ;;
   esac
 done
 if [ -n "$fork_src" ]; then
@@ -35,6 +36,14 @@ if [ -n "$fork_src" ]; then
       # (no stdout at all — the probe reads EOF).
       echo "error: unknown option '--resume-session-at'" >&2
       exit 2
+      ;;
+    fork-bad-uuid-src)
+      # The launch carries the boundary uuid the CLI validates only once
+      # the first prompt arrives (the scenario arm below errors then).
+      case " $* " in
+        *"--resume-session-at=msg-uuid-7"*) ;;
+        *) echo "bad-uuid launch missing resume-session-at: $*" >&2; exit 26 ;;
+      esac
       ;;
   esac
 fi
@@ -140,6 +149,58 @@ case "$first" in
   emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"fresh fallback answer"}}}'
   emit '{"type":"assistant","uuid":"msg-fork-fresh","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"fresh fallback answer"}]}}'
   emit '{"type":"result","subtype":"success","result":"fresh fallback","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-fresh"}'
+  ;;
+
+*scenario:fork-bad-uuid*)
+  # B11: the CLI ACCEPTS the fork flags (it answers initialize and prints
+  # its init frame) and then fails the resumed session when the first
+  # prompt arrives — a --resume-session-at uuid it validates late. The
+  # errored first result, before any assistant output, is the same
+  # refusal as the silent exit: the driver retries fresh with the
+  # budgeted history, no session flags at all.
+  if [ -n "$fork_src" ]; then
+    emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-bad-uuid-new"}'
+    emit '{"type":"result","subtype":"error_during_execution","result":"invalid resume point: msg-uuid-7","errors":["invalid resume point"],"is_error":true,"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-fork-bad-uuid-new"}'
+  else
+    for arg in "$@"; do
+      case "$arg" in
+        --resume=*|--fork-session|--resume-session-at=*) echo "bad-uuid fallback still carries session flags: $arg" >&2; exit 27 ;;
+      esac
+    done
+    for want in 'PINEAPPLE' 'scenario:fork-bad-uuid'; do
+      case "$first" in *"$want"*) ;; *) echo "bad-uuid fallback prompt missing: $want" >&2; exit 27 ;; esac
+    done
+    emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-fork-bad-fresh"}'
+    emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"bad uuid fallback answer"}}}'
+    emit '{"type":"assistant","uuid":"msg-fork-bad-fresh","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"bad uuid fallback answer"}]}}'
+    emit '{"type":"result","subtype":"success","result":"bad uuid fallback","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-fork-bad-fresh"}'
+  fi
+  ;;
+
+*scenario:resume-refused*)
+  # B12: a resume the CLI accepts at launch and then REFUSES once the turn
+  # runs (research 03: a cross-account resume the login can no longer
+  # read). The errored first result, before any assistant output, refuses
+  # the launch: the driver retries fresh with the fallback history — a
+  # failover continuation never fails the send.
+  has_resume=false
+  for arg in "$@"; do
+    case "$arg" in
+      --resume=*) has_resume=true ;;
+    esac
+  done
+  if $has_resume; then
+    emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-resume-refused"}'
+    emit '{"type":"result","subtype":"error_during_execution","result":"session unreadable under this login","errors":["session unreadable"],"is_error":true,"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-resume-refused"}'
+  else
+    for want in 'PINEAPPLE' 'scenario:resume-refused'; do
+      case "$first" in *"$want"*) ;; *) echo "resume-refused fallback prompt missing: $want" >&2; exit 28 ;; esac
+    done
+    emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-resume-fresh"}'
+    emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"resume fallback answer"}}}'
+    emit '{"type":"assistant","uuid":"msg-resume-fresh","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"resume fallback answer"}]}}'
+    emit '{"type":"result","subtype":"success","result":"resume fallback","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-resume-fresh"}'
+  fi
   ;;
 
 *scenario:fork-missing*)
@@ -538,11 +599,15 @@ case "$first" in
 
 *scenario:error*)
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-err"}'
+  # Hard-rejected claude.ai usage window, with the CLI's own reset time
+  # (unix seconds, as the live 2.1.228 capture carries it) — FIRST, matching
+  # the live capture's order: the event lands before the terse
+  # assistant-level error code below, so the engine's limit merge (the
+  # later, windowless `rate_limit` code must not overwrite this window and
+  # reset) is what the fixture exercises.
+  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}'
   # Terse assistant-level error code with no content.
   emit '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}'
-  # Hard-rejected claude.ai usage window, with the CLI's own reset time
-  # (unix seconds, as the live 2.1.228 capture carries it).
-  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}'
   # Result error with an EMPTY errors array: needs fallback wording.
   emit '{"type":"result","subtype":"error_max_turns","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-err"}'
   ;;

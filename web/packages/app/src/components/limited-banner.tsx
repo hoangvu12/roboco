@@ -229,7 +229,11 @@ export function LimitedBanner({
           disabled={chipsDisabled}
           onClick={() => {
             if (client !== null) {
-              void scheduleResumeAtReset(client, chatId);
+              void scheduleResumeAtReset(client, chatId).catch((cause: unknown) => {
+                setNotice(
+                  `Could not schedule the resume: ${cause instanceof Error ? cause.message : String(cause)}`,
+                );
+              });
             }
           }}
         >
@@ -244,7 +248,11 @@ export function LimitedBanner({
           disabled={chipsDisabled}
           onClick={() => {
             if (client !== null) {
-              void cancelScheduledResume(client, chatId);
+              void cancelScheduledResume(client, chatId).catch((cause: unknown) => {
+                setNotice(
+                  `Could not cancel the resume: ${cause instanceof Error ? cause.message : String(cause)}`,
+                );
+              });
             }
           }}
         >
@@ -511,8 +519,8 @@ function ContinueOnHarnessPicker({
         <MenuHeading>Continue on another harness</MenuHeading>
         <div className="continue-card-body">
           This chat hit its usage limit. Switching harnesses is one-way: the chat runs on the one
-          you pick from here on, and the new agent receives a size-limited transcript of the
-          conversation, then the continue prompt.
+          you pick from here on, and the new harness receives a size-limited transcript of the
+          chat, then the continue prompt.
         </div>
         <div className="harness-choice-heading">Harness</div>
         <div className="harness-choice-chips">

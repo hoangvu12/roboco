@@ -204,11 +204,20 @@ export class ForkDialogStore {
           title: childChatTitle(chat),
         });
         endSideChatCreate();
+        // The dialog may have been closed (and even reopened for another
+        // fork) while this one was in flight: only THIS spec's dialog closes
+        // — the same staleness guard the catalog loads use.
+        if (this.#state.spec !== spec) {
+          return;
+        }
         this.#state = { ...CLOSED };
         this.#commit();
       })
       .catch((cause: unknown) => {
         endSideChatCreate();
+        if (this.#state.spec !== spec) {
+          return; // closed or reopened under us: the reason has no dialog
+        }
         this.#state = {
           ...this.#state,
           creating: false,

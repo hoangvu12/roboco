@@ -53,7 +53,11 @@ const ITEM_CAP_BYTES: usize = TRANSCRIPT_BUDGET_BYTES / 4;
 /// omitted rather than shipped as a meaningless stub.
 const MIN_ITEM_BYTES: usize = 64;
 
-const LEAD: &str = "Continue this side chat using the following prior transcript as context.";
+/// The lead is shared by every budgeted-history use (ticket 01): a side
+/// chat's fork bootstrap, a main chat's harness switch, and an account
+/// failover's fresh-session fallback — so it names neither of them, only
+/// the chat and the transcript.
+const LEAD: &str = "Continue this chat using the following prior transcript as context.";
 const TRANSCRIPT_OPEN: &str = "<transcript>\n";
 const TRANSCRIPT_CLOSE: &str = "\n</transcript>\n\n";
 const TRUNCATION_MARKER: &str = " …[truncated]";
@@ -72,6 +76,7 @@ struct TranscriptItem {
 /// `source_chat_id` is the chat whose transcript the omitted messages are
 /// readable in — the fork's source for the fork bootstrap, the chat itself
 /// for harness switches and account failovers.
+#[cfg(test)]
 pub fn budgeted_transcript_prompt(
     entries: &[SessionMessageEntry],
     source_chat_id: Option<&str>,

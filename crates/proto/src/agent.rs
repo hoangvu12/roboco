@@ -35,6 +35,12 @@ pub enum HarnessId {
 /// the engine's scheduled resumes join it in later tickets).
 pub const RESUME_CONTINUE_PROMPT: &str = "Continue where you left off.";
 
+/// The tail of the header the Roboco MCP server puts on a parent's message
+/// to its notifying side chat (orchestration v2): `[Message from Roboco
+/// chat <label><tail>]`. One spelling for the server that writes it and the
+/// transcript that folds it into a concise attribution.
+pub const SIDE_CHAT_MESSAGE_HEADER_TAIL: &str = ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.";
+
 /// Durable user preference for one agent's independently-installed CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]

@@ -1943,6 +1943,39 @@ fn claude_usage_body(session: f64, week: f64) -> String {
     .to_string()
 }
 
+/// The live credential fingerprint keys on the login's IDENTITY, not its
+/// token bytes (ticket 09): a CLI token refresh rewrites the credential
+/// file on every expiry, and a bytes-keyed fingerprint would retire every
+/// warm runtime on the SAME login — a mid-turn steer became an
+/// interrupt-and-redispatch. Only a real login switch may change it.
+#[test]
+fn the_live_credential_fingerprint_keys_on_identity_not_tokens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = AgentAccountsConfig::isolated(tmp.path());
+    let accounts = AgentAccounts::new(config.clone());
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token");
+    let alice = accounts
+        .live_credentials_fingerprint(HarnessId::ClaudeCode)
+        .expect("a fingerprint for the live login");
+
+    // The CLI refreshes the access token: the credential file's bytes all
+    // change, the login does not.
+    write_claude_login(&config, "uuid-alice", "alice@example.com", "alice-token-2");
+    assert_eq!(
+        accounts.live_credentials_fingerprint(HarnessId::ClaudeCode),
+        Some(alice.clone()),
+        "a token refresh must not churn the fingerprint"
+    );
+
+    // A real switch to another account: a different identity, a different
+    // fingerprint — the warm runtimes retire.
+    write_claude_login(&config, "uuid-bob", "bob@example.com", "bob-token");
+    let bob = accounts
+        .live_credentials_fingerprint(HarnessId::ClaudeCode)
+        .expect("a fingerprint for the switched login");
+    assert_ne!(bob, alice, "a login switch changes the fingerprint");
+}
+
 /// A live login that a run refused: an expired access token the CLI refreshes
 /// itself is AMBIGUOUS — unknown, never signed out — and no refresh is ever
 /// attempted for the live login.

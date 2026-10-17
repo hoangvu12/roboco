@@ -51,6 +51,7 @@ use roboco_sync::DocsStore;
 
 const PARENT: &str = "chat-parent";
 const SIDE: &str = "chat-side";
+const SIDE2: &str = "chat-side-2";
 
 /// What one `run()` call does — the tests script turns FIFO, one entry per
 /// run the engine starts (a side chat's turn, then the parent's notice
@@ -1413,6 +1414,56 @@ async fn an_archived_parent_receives_no_notices() {
     core.shutdown().await;
 }
 
+/// A deleted parent is owed nothing (ticket 13): the delete path drops the
+/// parent's pending outcomes — the durable ledger forgets them, and a
+/// delivery attempt for a chat whose row is gone stays quiet instead of
+/// waking a chat that no longer exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_parent_is_owed_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    // The child's turn, the parent's working turn (Hang), then nothing for
+    // the parent — the parked notice's turn never happens.
+    let scripted = Scripted::new(vec![Turn::Hang, Turn::End {
+        status: DoneStatus::Completed,
+        error: None,
+    }]);
+    let core = assemble(dir.path(), scripted.clone());
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    create_parent_and_side(&core, &client, None).await;
+
+    // The parent works; the child's outcome is recorded and stays pending.
+    queue_run(&client, PARENT, "orchestrate the release", "m-parent-1", None).await;
+    wait_for(
+        || scripted.prompts_containing("orchestrate the release"),
+        "the parent's turn to start",
+    )
+    .await;
+    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
+    wait_idle(&core, SIDE).await;
+    wait_for(
+        || ledger_rows(dir.path()) == 1,
+        "the child's outcome to be recorded",
+    )
+    .await;
+
+    // The parent is deleted (the delete path drops what it is owed).
+    core.workspace.delete_chat(PARENT).unwrap();
+    assert_eq!(
+        ledger_rows(dir.path()),
+        0,
+        "the deleted parent's pending outcomes go with the chat"
+    );
+
+    // Nothing wakes the gone chat: no notice turn was started for it.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        scripted.run_count(),
+        2,
+        "a deleted parent receives nothing: no notice turn started"
+    );
+    core.shutdown().await;
+}
+
 /// An archived side chat sends nothing: archiving the child mid-run
 /// suppresses the outcome its stopped turn would otherwise owe (an
 /// interrupt is not a message, so it never revives the archived chat).
@@ -1525,11 +1576,26 @@ async fn notices_owed_to_a_parent_archived_before_delivery_are_dropped_at_boot()
 /// outcome happened, through `wait_for_turn`, a send with wait, `read_chat`
 /// or `get_chat`. All four arrive as this one RPC.
 async fn acknowledge(client: &roboco_rpc::RpcClient, side: &str, parent: &str) {
+    acknowledge_at(client, side, parent, None).await;
+}
+
+/// The observation report with the moment the observation STARTED (the
+/// shape the Roboco MCP server sends for `read_chat`/`get_chat`/waits):
+/// the engine's watermark covers only the settles that had happened by
+/// then, so an outcome landing between the read and this report — the
+/// parent's unseen work — survives it.
+async fn acknowledge_at(
+    client: &roboco_rpc::RpcClient,
+    side: &str,
+    parent: &str,
+    observed_at: Option<i64>,
+) {
+    let mut params = serde_json::json!({ "chatId": side, "originChatId": parent });
+    if let Some(at) = observed_at {
+        params["observedAt"] = serde_json::json!(at);
+    }
     client
-        .call(
-            roboco_rpc::methods::ACK_SIDE_CHAT,
-            serde_json::json!({ "chatId": side, "originChatId": parent }),
-        )
+        .call(roboco_rpc::methods::ACK_SIDE_CHAT, params)
         .await
         .expect("report observation");
 }
@@ -1544,6 +1610,19 @@ fn stop(core: &EngineCore, chat: &str) {
 
 /// The paused queue rows a chat currently shows (WatchQueue's surface).
 fn queue_rows(core: &EngineCore, chat: &str) -> Vec<(String, String)> {
+    queue_rows_with_sides(core, chat)
+        .into_iter()
+        .map(|(id, text, _)| (id, text))
+        .collect()
+}
+
+/// The queue rows with the completion-notice sides a parked notice row
+/// carries (ticket 14): the row is the notice's durable carrier while it
+/// waits, and its release writes the entry those sides name.
+fn queue_rows_with_sides(
+    core: &EngineCore,
+    chat: &str,
+) -> Vec<(String, String, Option<Vec<NoticeSide>>)> {
     core.doc_host
         .open(chat)
         .expect("chat doc")
@@ -1551,7 +1630,7 @@ fn queue_rows(core: &EngineCore, chat: &str) -> Vec<(String, String)> {
         .read_queue()
         .expect("queue")
         .into_iter()
-        .map(|row| (row.id, row.text))
+        .map(|row| (row.id, row.text, row.completion_notice))
         .collect()
 }
 
@@ -1692,6 +1771,98 @@ async fn an_outcome_after_the_observation_still_notifies() {
             outcome: NoticeOutcome::Completed,
             detail: None,
         }]
+    );
+    assert_eq!(scripted.run_count(), 4);
+
+    core.shutdown().await;
+}
+
+/// The report carries WHEN the observation happened (ticket 14): a settle
+/// that lands between the read and the report is the parent's UNSEEN
+/// outcome — the ack must not drop it, or a busy child's report races away
+/// its own completion notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_observation_report_never_drops_an_unseen_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let scripted = Scripted::new(vec![
+        // The parent's working turn.
+        Turn::Hang,
+        // The child's first turn (seen by the observation).
+        Turn::End {
+            status: DoneStatus::Completed,
+            error: None,
+        },
+        // The child's second turn (settles between the read and the report).
+        Turn::End {
+            status: DoneStatus::Completed,
+            error: None,
+        },
+        // The parent's notice turn, for the second outcome only.
+        Turn::End {
+            status: DoneStatus::Completed,
+            error: None,
+        },
+    ]);
+    let core = assemble(dir.path(), scripted.clone());
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    create_parent_and_side(&core, &client, None).await;
+
+    queue_run(&client, PARENT, "orchestrate the release", "m-parent-1", None).await;
+    wait_for(
+        || scripted.prompts_containing("orchestrate the release"),
+        "the parent's turn to start",
+    )
+    .await;
+    queue_run(&client, SIDE, "first task", "m-run-1", Some(PARENT)).await;
+    wait_idle(&core, SIDE).await;
+    wait_for(
+        || ledger_rows(dir.path()) == 1,
+        "the first outcome to be recorded",
+    )
+    .await;
+
+    // The parent's read of the chat happens HERE. Millisecond separation is
+    // forced on both sides so the settle marks order unambiguously.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let observed_at = chrono::Utc::now().timestamp_millis();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    // The child's second turn settles after the read: unseen by it.
+    queue_run(&client, SIDE, "second task", "m-run-2", Some(PARENT)).await;
+    wait_idle(&core, SIDE).await;
+    wait_for(
+        || ledger_rows(dir.path()) == 2,
+        "the second outcome to be recorded",
+    )
+    .await;
+
+    // The report arrives now — long after the read it speaks for. Only the
+    // settle the read saw is covered; the second outcome is owed.
+    acknowledge_at(&client, SIDE, PARENT, Some(observed_at)).await;
+    assert_eq!(
+        ledger_rows(dir.path()),
+        1,
+        "the unseen outcome survives the late report; the seen one drops"
+    );
+
+    // The parent's turn ends: the notice covers the second outcome.
+    queue_user_steer(&client, PARENT, "please wrap up", "m-steer-1").await;
+    wait_for(
+        || scripted.prompts_containing("finished"),
+        "the unseen outcome's notice to start a parent turn",
+    )
+    .await;
+    let notices = notice_entries(&core, PARENT);
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notice_sides(&notices[0]),
+        vec![NoticeSide {
+            chat_id: SIDE.into(),
+            title: "Implement login".into(),
+            outcome: NoticeOutcome::Completed,
+            detail: None,
+        }],
+        "the notice reports the unseen outcome only"
     );
     assert_eq!(scripted.run_count(), 4);
 
@@ -1877,9 +2048,10 @@ async fn a_later_parent_message_re_arms_the_child() {
 async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
     let dir = tempfile::tempdir().unwrap();
     // 27 child turns (25 rounds + the capped 26th + the post-reset 27th)
-    // + 26 notice turns + the user's message + the parked row's turn —
-    // every run pops one scripted turn.
-    let turns: Vec<Turn> = (0..27 + 26 + 1 + 1)
+    // + 26 notice turns + an agent's message to the parent + the user's
+    // message + the parked row's own turn — every run pops one scripted
+    // turn.
+    let turns: Vec<Turn> = (0..27 + 26 + 1 + 1 + 1)
         .map(|_| Turn::End {
             status: DoneStatus::Completed,
             error: None,
@@ -1932,7 +2104,7 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
         51,
         "the 26th notice turn never ran (25 child + 25 notice + the 26th child)"
     );
-    let rows = queue_rows(&core, PARENT);
+    let rows = queue_rows_with_sides(&core, PARENT);
     assert_eq!(rows.len(), 1, "exactly one parked notice row");
     assert!(
         rows[0].0.starts_with("notice:"),
@@ -1943,6 +2115,35 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
         rows[0].1.contains("Implement login"),
         "the parked row shows the notice itself: {}",
         rows[0].1
+    );
+    assert!(
+        rows[0].2.is_some(),
+        "the parked row carries the notice's sides, so its release writes the
+         same System completion-notice entry a direct delivery writes"
+    );
+
+    // An agent's message to the parent (a chat-origin Run, the MCP
+    // `send_message` surface) is NOT the user acting: it must not thaw the
+    // cap's pause, or a busy child lifts the brake that waits for the user
+    // (ticket 14's stopped-parent cap rule). The message still runs as its
+    // own turn — the queue, and the parked notice with it, stays held.
+    queue_run(&client, PARENT, "an agent nudges the parent", "m-agent", Some(SIDE)).await;
+    wait_for(
+        || scripted.prompts_containing("an agent nudges the parent"),
+        "the agent's turn to start",
+    )
+    .await;
+    wait_idle(&core, PARENT).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        queue_rows(&core, PARENT).len(),
+        1,
+        "an agent-origin message does not release the cap's parked notice"
+    );
+    assert_eq!(
+        notice_entries(&core, PARENT).len(),
+        25,
+        "the parked notice did not run on an agent's message"
     );
 
     // The user acts: their message resets the count, thaws the queue, and
@@ -1955,18 +2156,32 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
     .await;
     wait_idle(&core, PARENT).await;
     wait_for(
-        || scripted.run_count() == 53,
+        || scripted.run_count() == 54,
         "the parked notice row to run as the parent's next turn",
     )
     .await;
-    // The row's turn is the 53rd run, carrying the notice text as its
-    // prompt — and it is a USER entry (the row), not a 26th system notice.
-    assert_eq!(notice_entries(&core, PARENT).len(), 25);
+    // The row's turn is the 54th run, carrying the notice text as its
+    // prompt — and it lands as the SAME System completion-notice entry a
+    // direct delivery writes (its own sides ride the row), never a user
+    // message: notices are engine artifacts, not the user's words.
+    wait_for(
+        || notice_entries(&core, PARENT).len() == 26,
+        "the released row's turn to write the 26th system notice entry",
+    )
+    .await;
+    let released = notice_entries(&core, PARENT)
+        .pop()
+        .expect("the released notice entry");
+    assert!(
+        released.id.starts_with("notice:"),
+        "the released entry keeps the parked row's id: {}",
+        released.id
+    );
     let prompts = scripted.prompts.lock().unwrap();
     assert!(
-        prompts[52].contains("Implement login") && prompts[52].contains("read_chat"),
+        prompts[53].contains("Implement login") && prompts[53].contains("read_chat"),
         "the released row ran the notice's own text: {}",
-        prompts[52]
+        prompts[53]
     );
     drop(prompts);
     assert!(
@@ -1982,6 +2197,105 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
         "the count reset lets the next notice start a turn again",
     )
     .await;
+
+    core.shutdown().await;
+}
+
+/// Outcomes that arrive while the cap holds MERGE into the parked row
+/// (ticket 13's merging rule, extended to the cap's waiting form): one
+/// parked notice, not a row per capped delivery, and its release is ONE
+/// system notice covering every side chat that reached an outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capped_outcomes_merge_into_the_one_parked_notice_row() {
+    let dir = tempfile::tempdir().unwrap();
+    // 26 side turns (25 rounds + the capped 26th) + 25 notice turns + the
+    // second side chat's turn + the user's message + the released row's
+    // turn — every run pops one scripted turn.
+    let turns: Vec<Turn> = (0..26 + 25 + 1 + 1 + 1)
+        .map(|_| Turn::End {
+            status: DoneStatus::Completed,
+            error: None,
+        })
+        .collect();
+    let scripted = Scripted::new(turns);
+    let core = assemble(dir.path(), scripted.clone());
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    create_parent_and_side(&core, &client, None).await;
+    create_side(&core, &client, SIDE2, "Flaky test", None).await;
+
+    // Fill the cap, then park the 26th notice.
+    for round in 0..25 {
+        queue_run(
+            &client,
+            SIDE,
+            &format!("round {round}"),
+            &format!("m-run-{round}"),
+            Some(PARENT),
+        )
+        .await;
+        wait_idle(&core, SIDE).await;
+        wait_for(
+            || notice_entries(&core, PARENT).len() == round + 1,
+            &format!("round {round}'s notice to be written"),
+        )
+        .await;
+        wait_idle(&core, PARENT).await;
+    }
+    queue_run(&client, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
+    wait_idle(&core, SIDE).await;
+    wait_for(
+        || queue_rows(&core, PARENT).len() == 1,
+        "the capped notice to park in the parent's queue",
+    )
+    .await;
+
+    // A second capped outcome parks INTO the same row: one row, its text
+    // and sides now covering both side chats.
+    queue_run(&client, SIDE2, "the second child fails", "m-run-2", Some(PARENT)).await;
+    wait_idle(&core, SIDE2).await;
+    wait_for(
+        || queue_rows_with_sides(&core, PARENT)
+            .into_iter()
+            .any(|(_, text, sides)| text.contains("Flaky test") && sides.is_some_and(|s| s.len() == 2)),
+        "the second capped outcome to merge into the parked row",
+    )
+    .await;
+    let rows = queue_rows_with_sides(&core, PARENT);
+    assert_eq!(rows.len(), 1, "still exactly one parked notice row");
+    assert!(
+        rows[0].1.contains("2 side chats reached outcomes"),
+        "the merged row's text is one notice: {}",
+        rows[0].1
+    );
+    assert_eq!(
+        scripted.run_count(),
+        52,
+        "no notice turn started while the cap held (25 child + 25 notice + 2 capped children)"
+    );
+
+    // The user acts: the released row is ONE system notice naming both.
+    queue_run(&client, PARENT, "user speaks now", "m-user", None).await;
+    wait_for(
+        || scripted.prompts_containing("user speaks now"),
+        "the user's turn to start",
+    )
+    .await;
+    wait_idle(&core, PARENT).await;
+    wait_for(
+        || notice_entries(&core, PARENT).len() == 26,
+        "the released row to write its merged system notice entry",
+    )
+    .await;
+    let released = notice_entries(&core, PARENT).pop().expect("the released entry");
+    let text = notice_text(&released);
+    assert!(text.contains("Implement login"), "{text}");
+    assert!(text.contains("Flaky test"), "{text}");
+    assert!(
+        text.starts_with("2 side chats reached outcomes:"),
+        "the released notice is one merged notice: {text}"
+    );
+    assert_eq!(scripted.run_count(), 54);
+    assert!(queue_rows(&core, PARENT).is_empty());
 
     core.shutdown().await;
 }
