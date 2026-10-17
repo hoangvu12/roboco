@@ -1035,6 +1035,7 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
         ("mimeType", &doc_part.mime_type),
         ("sourceChatId", &doc_part.source_chat_id),
         ("sourceTitle", &doc_part.source_title),
+        ("harness", &doc_part.harness),
     ] {
         if let Some(value) = value {
             map.insert(key, value.as_str())?;
