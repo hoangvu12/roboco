@@ -2541,16 +2541,17 @@ export function Composer({
   // new harness with its default picks); the draft is already flipped
   // optimistically, and the SwitchHarness RPC tells the engine, which
   // writes the "Switched to <harness>" seam, drops the old harness
-  // session, and arms the budgeted history for the next send. A failed
-  // switch surfaces here in the failure notice — the engine's row stayed
-  // on the old harness, and the chats watch reverts the row the desktop
-  // stamped. A re-pick of the chat's CURRENT row harness is a UI no-op —
+  // session, and arms the budgeted history for the next send. A refused
+  // switch surfaces here in the failure notice and restores the previous
+  // draft at once — the engine's row stayed on the old harness, and no
+  // chats-watch frame will come to undo the optimistic flip (the desktop's
+  // `revert_harness_switch`). A re-pick of the chat's CURRENT row harness is a UI no-op —
   // nothing to seam (the desktop's guard; the engine would only refuse
   // with "Chat is already on …"). One switch per chat at a time: a double
   // click must not seam twice.
   const switchInFlightRef = useRef<string | null>(null);
   const switchHarness = useCallback(
-    (next: DraftConfig) => {
+    (next: DraftConfig, previous: DraftConfig) => {
       if (switchInFlightRef.current === chat.id) {
         return;
       }
@@ -2564,6 +2565,9 @@ export function Composer({
         modelOptions: next.modelOptions,
       })
         .catch((error: unknown) => {
+          // Only while the draft still shows this switch's flip: a later
+          // pick (or a reseed) wins.
+          setDraft((current) => (current === next ? previous : current));
           setFailure({
             message: `Could not switch the harness: ${describeSendError(error)}`,
             key: chat.id,
@@ -2618,8 +2622,18 @@ export function Composer({
   // reply). The desktop's `confirm_continue_on_harness` stamps the row the
   // same way so its `resolved()` reads the new harness; the web's stamp is
   // this parameter, applied over the draft with the sandbox kept.
+  //
+  // `bare`: a send that is NOT the composer's draft — the Limited banner's
+  // Resume (`resume_limited`). It sends only `typed`: staged files, review
+  // comments and the typed draft stay where they are, untouched either way
+  // the send ends.
   const send = useCallback(
-    async (typed: string, queue: boolean, runOverride?: Partial<DraftConfig>): Promise<void> => {
+    async (
+      typed: string,
+      queue: boolean,
+      runOverride?: Partial<DraftConfig>,
+      bare = false,
+    ): Promise<void> => {
       // Existing busy chats always queue; compatibility was checked before
       // taking the draft (the capability gate below).
       if (queue) {
@@ -2731,17 +2745,22 @@ export function Composer({
         markSideChatSaved(chatId);
       }
       // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
-      // instant you hit send; a failure hands the files back by id.
-      const taken = staged;
-      setStagedByChat((current) => {
-        const next = { ...current };
-        delete next[pageChatId];
-        return next;
-      });
+      // instant you hit send; a failure hands the files back by id. A bare
+      // send takes nothing.
+      const taken: typeof staged = bare ? [] : staged;
+      if (!bare) {
+        setStagedByChat((current) => {
+          const next = { ...current };
+          delete next[pageChatId];
+          return next;
+        });
+      }
       // `take_review_comments` (composer.rs:6130-6136): the comment block is
       // staged onto the composer key the draft was opened against — for the
       // new-chat canvas that is `""`, the pre-mint key.
-      const takenComments = reviewCommentStore.takeComments(chat.id);
+      const takenComments: ReturnType<typeof reviewCommentStore.takeComments> = bare
+        ? []
+        : reviewCommentStore.takeComments(chat.id);
       // `typed` keeps the user's own words for the failure hand-back below
       // (restoring a folded prompt would paste the trailer as literal text).
       // The echo cleanup key: null until an echo actually goes up, so a
@@ -2791,8 +2810,10 @@ export function Composer({
           });
           pushedEchoId = messageId;
         }
-        setText("");
-        chatDrafts.clear(pageChatId);
+        if (!bare) {
+          setText("");
+          chatDrafts.clear(pageChatId);
+        }
         setFailure(null);
         setBusy(true);
         // Whole-send upload accounting (`begin_upload_progress`): the percent
@@ -2896,8 +2917,10 @@ export function Composer({
         if (pushedEchoId !== null) {
           echoStore.removeEcho(pushedEchoId);
         }
-        setText(typed);
-        chatDrafts.set(chatDraftKey(pageChatId, session.engine.baseUrl), typed);
+        if (!bare) {
+          setText(typed);
+          chatDrafts.set(chatDraftKey(pageChatId, session.engine.baseUrl), typed);
+        }
         // The taken comments stage back under the chat's key
         // (`add_review_comment(&restore_key, …)`, composer.rs:6663-6667).
         reviewCommentStore.restoreComments(pageChatId, takenComments);
@@ -2935,10 +2958,9 @@ export function Composer({
   // NORMAL run — same send path, same guards, same queue semantics as
   // typing it — never a special engine mode. The run clears the limit
   // record when it starts; messages queued on the chat stay behind the
-  // continuation. A draft the user was typing (and files they staged) is
-  // theirs, not part of the resume: the send clears the composer, so hand
-  // the slots straight back — `send` takes its own copies, so restoring
-  // them after it settles cannot leak into the sent message.
+  // continuation. A draft the user was typing (and the files and review
+  // comments they staged) is theirs, not part of the resume: the send is
+  // BARE — it carries only the continue prompt and never touches them.
   //
   // `override` (ticket 25, "Continue on another harness"): the switch's
   // landed picks — the continuation must carry the NEW harness and model
@@ -2948,26 +2970,9 @@ export function Composer({
   // `apply_chat_config` stamp before `resume_limited`.
   const resumeLimited = useCallback(
     (override?: Partial<DraftConfig>) => {
-      const draftText = textRef.current;
-      const stagedSnapshot = staged;
-      void send(RESUME_CONTINUE_PROMPT, false, override).then(() => {
-        if (draftText.length > 0) {
-          setText(draftText);
-          chatDrafts.set(textDraftKey, draftText);
-        }
-        if (stagedSnapshot.length > 0) {
-          setStagedByChat((current) => {
-            const fresh = current[chat.id] ?? [];
-            const merged = [
-              ...stagedSnapshot.filter((att) => !fresh.some((f) => f.id === att.id)),
-              ...fresh,
-            ];
-            return { ...current, [chat.id]: merged };
-          });
-        }
-      });
+      void send(RESUME_CONTINUE_PROMPT, false, override, true);
     },
-    [chat.id, staged, send, textDraftKey],
+    [send],
   );
 
   // The banner's handle assignment: the strip above the composer holds the

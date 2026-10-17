@@ -380,12 +380,14 @@ impl AccountUsage {
             return;
         }
         let login_id = start.login_id.clone();
-        *submitting = true;
         let Some(engine) =
             crate::request_routing::device_target(self.state.read(cx), self.target.as_deref()).ok()
         else {
             return;
         };
+        // Only once the submit can actually go out: a bail above must not
+        // leave the button stuck on "Verifying…".
+        *submitting = true;
         let params = self.params(serde_json::json!({ "loginId": login_id, "code": code }));
         self.sign_in_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.call(methods::COMPLETE_AGENT_LOGIN, params).await;
@@ -504,11 +506,14 @@ impl AccountUsage {
             .ok(),
         ) {
             let params = self.params(serde_json::json!({ "loginId": login_id }));
-            self.action_task = Some(cx.spawn(async move |_, _| {
+            // Detached, never in `action_task`: replacing that slot would
+            // cancel an in-flight account switch.
+            cx.spawn(async move |_, _| {
                 if let Err(err) = engine.call(methods::CANCEL_AGENT_LOGIN, params).await {
                     tracing::debug!(error = %err, "CancelAgentLogin failed (best-effort)");
                 }
-            }));
+            })
+            .detach();
         }
         cx.notify();
     }

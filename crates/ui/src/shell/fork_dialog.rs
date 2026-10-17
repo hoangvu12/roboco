@@ -40,8 +40,8 @@ pub(super) struct ForkDialog {
     harnesses: Loadable<Vec<HarnessDescriptor>>,
     /// Model lists per harness, loaded once per dialog per harness.
     models: std::collections::HashMap<HarnessId, Loadable<Vec<Model>>>,
-    /// Stale-response guard: bumped when the dialog closes, so an in-flight
-    /// catalog load lands on a closed (or reopened) dialog and no-ops.
+    /// Stale-response guard: this open's number from the shell's monotonic
+    /// counter, so a load from a closed (or earlier) dialog no-ops.
     generation: u64,
     /// The model list's scroll.
     model_scroll: gpui::ScrollHandle,
@@ -142,6 +142,7 @@ impl Shell {
             .config
             .as_ref()
             .and_then(|config| config.model.clone());
+        let generation = self.next_dialog_generation();
         self.fork_dialog = Some(ForkDialog {
             source,
             parent_id,
@@ -150,19 +151,17 @@ impl Shell {
             model,
             harnesses: Loadable::Idle,
             models: std::collections::HashMap::new(),
-            generation: 0,
+            generation,
             model_scroll: gpui::ScrollHandle::new(),
         });
         self.ensure_fork_loads(cx);
         cx.notify();
     }
 
-    /// Close the dialog without forking. The generation bump retires
-    /// in-flight catalog loads.
+    /// Close the dialog without forking. In-flight catalog loads retire on
+    /// their generation: a reopened dialog takes a fresh one from the
+    /// shell's monotonic counter.
     pub(super) fn close_fork_dialog(&mut self, cx: &mut Context<Self>) {
-        if let Some(dialog) = self.fork_dialog.as_mut() {
-            dialog.generation += 1;
-        }
         self.fork_dialog = None;
         cx.notify();
     }
@@ -593,7 +592,7 @@ impl Shell {
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
                         "A different harness starts fresh and receives a \
-                         size-limited transcript of this chat, not its full history.",
+                         size-limited transcript of this chat, not its full transcript.",
                     )),
             );
         }

@@ -374,4 +374,40 @@ describe("ForkDialogStore", () => {
     expect(state.spec?.source.id).toBe("source-2");
     expect(state.harness).toBe("codex");
   });
+
+  it("a fork settling after close never writes into a reopened dialog", async () => {
+    let fail: (cause: Error) => void = () => {};
+    const pending = new Promise<Chat>((_, reject) => {
+      fail = reject;
+    });
+    const { client } = fakeClient(() => pending);
+    forkDialogStore.open({
+      source: chatRow(),
+      parentId: "source-1",
+      boundary: null,
+      paneChatId: "pane-i",
+      client,
+      engineBaseUrl: ENGINE,
+    });
+    await flush();
+    forkDialogStore.confirm();
+    // Closed while the fork is in flight, then reopened for another source.
+    forkDialogStore.close();
+    forkDialogStore.open({
+      source: chatRow({ id: "source-2" }),
+      parentId: "source-2",
+      boundary: null,
+      paneChatId: "pane-i",
+      client,
+      engineBaseUrl: ENGINE,
+    });
+    await flush();
+    fail(new Error("the old fork failed"));
+    await flush();
+    const state = forkDialogStore.getSnapshot();
+    expect(state.open).toBe(true);
+    expect(state.spec?.source.id).toBe("source-2");
+    expect(state.error).toBeNull();
+    expect(state.creating).toBe(false);
+  });
 });

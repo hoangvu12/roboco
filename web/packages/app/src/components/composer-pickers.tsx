@@ -110,9 +110,10 @@ export interface ComposerPickersProps {
    * (it also writes the "Switched to <harness>" seam and drops the old
    * harness session, none of which `setChatConfig` does). Absent: the
    * switch is unavailable and the pick stays locked (the subagent-less
-   * hosts that never wired it).
+   * hosts that never wired it). `previous` is the draft before the
+   * optimistic flip — what a refused switch restores.
    */
-  readonly onSwitchHarness?: (next: DraftConfig) => void;
+  readonly onSwitchHarness?: (next: DraftConfig, previous: DraftConfig) => void;
   /**
    * Whether the chat's harness picker is unlocked for that one-way switch
    * (ticket 24 — the desktop's `harness_switchable`): true only while the
@@ -331,9 +332,10 @@ export function ComposerPickers(props: ComposerPickersProps) {
       return;
     }
     rememberHarness(harness);
+    const previous = draft;
     const next = switchHarnessDraft(chatConfig, harness, model ?? undefined);
     onDraft(next);
-    onSwitchHarness(next);
+    onSwitchHarness(next, previous);
   }
 
   function pickHarness(harness: HarnessId): void {

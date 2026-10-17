@@ -420,6 +420,11 @@ fn constants_ts() -> String {
          export const SUBAGENT_INPUT_KEEP: readonly string[] = [{}];\n",
         input_keep.join(", ")
     ));
+    out.push_str(&format!(
+        "\n/** The continue prompt a Limited chat's Resume sends (orchestration v2). */\n\
+         export const RESUME_CONTINUE_PROMPT = {:?};\n",
+        roboco_proto::RESUME_CONTINUE_PROMPT
+    ));
     out
 }
 

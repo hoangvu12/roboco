@@ -2157,14 +2157,13 @@ impl AppState {
     /// now (t3-orchestration-v2 ticket 24): an existing chat whose turn is
     /// not in flight — neither Working nor parked on a question — and whose
     /// send is not pending. The picker stays locked while the chat works;
-    /// the engine refuses the switch for the same window.
+    /// the engine refuses the switch for the same window. Reads the
+    /// staleness-checked indicator (a pending send reads as Working): a
+    /// dead engine's frozen Working row must not lock the picker forever.
     pub(crate) fn harness_switchable(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
-        if self.send_pending(chat_id, now) {
-            return false;
-        }
         !matches!(
-            self.session_for(chat_id).map(|session| session.status),
-            Some(roboco_proto::SessionStatus::Working | roboco_proto::SessionStatus::AwaitingInput)
+            self.indicator_for(chat_id, now),
+            Indicator::Working | Indicator::AwaitingInput
         )
     }
 

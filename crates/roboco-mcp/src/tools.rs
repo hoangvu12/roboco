@@ -855,10 +855,7 @@ impl Tools {
             mutate["parentChatId"] = json!(parent);
         }
         if let Some(origin) = &agent_origin {
-            mutate["agentOrigin"] = json!({
-                "chatId": origin.chat_id,
-                "notify": origin.notify,
-            });
+            mutate["agentOrigin"] = json!(origin);
         }
         if let Some(branch) = args
             .branch
@@ -1057,10 +1054,13 @@ impl Tools {
                 .clone()
                 .unwrap_or_else(|| source.id.clone()),
         };
+        // The desktop fork dialog's payload: the copy runs on the SOURCE's
+        // device, named explicitly like the UI does.
         let mut params = json!({
             "chatId": chat_id,
             "sourceChatId": source.id,
             "parentChatId": parent_chat_id,
+            "targetDeviceId": source.device_id,
         });
         // Overrides ride only when chosen — the same wire shape the fork
         // dialog sends — so an engine predating tickets 21/22/23 still
@@ -1087,10 +1087,7 @@ impl Tools {
             params["model"] = json!(model);
         }
         if let Some(origin) = &agent_origin {
-            params["agentOrigin"] = json!({
-                "chatId": origin.chat_id,
-                "notify": origin.notify,
-            });
+            params["agentOrigin"] = json!(origin);
         }
         let chat = self.roboco.fork_side_chat(params).await?;
         if let Some(title) = args
@@ -1393,7 +1390,8 @@ impl Tools {
         });
         if notifying {
             format!(
-                "[Message from Roboco chat {label}. You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.]\n\n{text}"
+                "[Message from Roboco chat {label}{}]\n\n{text}",
+                roboco_proto::SIDE_CHAT_MESSAGE_HEADER_TAIL
             )
         } else {
             format!(
@@ -2229,6 +2227,8 @@ mod tests {
         assert_eq!(params["chatId"], chat_id);
         assert_eq!(params["sourceChatId"], "chat-alpha-1");
         assert_eq!(params["parentChatId"], "chat-alpha-1");
+        // The source's device, named like the desktop fork dialog does.
+        assert_eq!(params["targetDeviceId"], "dev-local");
         assert_eq!(
             params["agentOrigin"],
             json!({ "chatId": "chat-alpha-1", "notify": true })
@@ -3380,9 +3380,15 @@ mod tests {
 
         // The notify opt-out and the side-chat no-report rule.
         assert!(instructions.contains("notify: false"));
+        // ... and told accurately: the parent hears of the reply only when
+        // it did not opt out with notify: false.
         assert!(
-            instructions.contains("your final reply is delivered to your parent"),
-            "side chats must be told their reply is delivered automatically"
+            instructions.contains("unless it opted out at creation (`notify: false`)"),
+            "side chats must be told when their reply reaches the parent"
+        );
+        assert!(
+            !instructions.contains("delivered to your parent automatically"),
+            "the reply is not delivered when the parent opted out"
         );
         assert!(instructions.contains("Do not report progress or acknowledge"));
 

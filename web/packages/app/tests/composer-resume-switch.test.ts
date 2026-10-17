@@ -21,6 +21,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { Chat } from "@roboco/proto";
 import type { DraftConfig } from "../src/lib/composer-actions";
 import { RESUME_CONTINUE_PROMPT } from "../src/lib/limited";
+import { newFileComment } from "../src/lib/review-comments";
+import { reviewCommentStore } from "../src/state/review-comments";
 import { Composer } from "../src/components/composer";
 import { PickerCatalog } from "../src/state/picker-catalog";
 import type { EngineSession } from "../src/state/engine-session";
@@ -226,5 +228,28 @@ describe("resumeLimited with a switched-picks override (tickets 25/26)", () => {
     expect(request.prompt).toBe(RESUME_CONTINUE_PROMPT);
     expect(request.harness).toBe("claude-code");
     expect(request.model).toBe("sonnet");
+  });
+
+  it("Resume sends only the continue prompt and leaves staged review comments alone", async () => {
+    const staged = newFileComment("src/lib.rs", 3, "rename this");
+    reviewCommentStore.addComment("chat-limited", staged);
+    try {
+      mountComposer();
+      await flush();
+      act(() => {
+        hostRef.current!();
+      });
+      await flush();
+      const request = (queueCommand()!.command as Record<string, unknown>).request as Record<
+        string,
+        unknown
+      >;
+      // Exactly the continue prompt: no comment block folded in.
+      expect(request.prompt).toBe(RESUME_CONTINUE_PROMPT);
+      // The staged comment is still the user's, untouched by the resume.
+      expect(reviewCommentStore.stagedFor("chat-limited").map((c) => c.id)).toEqual([staged.id]);
+    } finally {
+      reviewCommentStore.purgeChat("chat-limited");
+    }
   });
 });

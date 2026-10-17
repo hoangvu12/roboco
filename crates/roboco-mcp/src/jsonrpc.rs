@@ -51,8 +51,9 @@ for fire-and-forget children that should not wake you. `wait_for_turn`, and \
 synchronous asks; they block your turn, so never use them to babysit \
 long-running work.\n\
 \n\
-If you are a side chat created by another chat: your final reply is delivered \
-to your parent automatically when your turn ends. Do not report progress or \
+If you are a side chat created by another chat: unless it opted out at \
+creation (`notify: false`), your parent gets a completion notice when your \
+turn ends and reads your final reply from it. Do not report progress or \
 acknowledge messages with `send_message`; answer the task in your reply and \
 end your turn.\n\
 \n\
@@ -69,11 +70,11 @@ side` for a child with an explicit parent or your origin chat. Omitted kind \
 keeps legacy defaults: side with an origin/parent, standalone otherwise. Side \
 chats cannot create chats.\n\
 \n\
-Forking: `fork_chat` branches a conversation into a new side chat — by \
-default the one you are speaking from, from its latest reply. `reply` forks \
-from any earlier assistant reply (an entry id from `read_chat`; errored and \
+Forking: `fork_chat` branches a chat into a new side chat — by default the \
+one you are speaking from, from its latest reply. `reply` forks from any \
+earlier assistant reply (an entry id from `read_chat`; errored and \
 interrupted replies count), `harness` and `model` move the fork onto another \
-agent (it then starts from a size-limited transcript of the source), and \
+harness (it then starts from a size-limited transcript of the source), and \
 `prompt` with `wait` behave like `create_chat`'s. A fork you make is a side \
 chat you created: it notifies you by default (`notify: false` opts out), and \
 side chats cannot fork chats.\n\
