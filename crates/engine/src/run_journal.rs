@@ -684,7 +684,9 @@ mod tests {
         drop(file);
         let journal = RunJournal::open(dir.path()).unwrap();
         assert!(journal.steer_consumed("chat-1", "m-full-id"));
-        assert!(!journal.steer_consumed("chat-1", "m-full-id-trunc"));
+        // The torn bytes are a prefix of the id being written: that id
+        // never matches.
+        assert!(!journal.steer_consumed("chat-1", "m-full-id-truncated"));
         assert!(!journal.steer_consumed("chat-1", "m-full"));
     }
 
