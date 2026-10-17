@@ -5293,7 +5293,10 @@ mod probe_tests {
         assert!(entry.probe_due("new", soon));
         // … while the same credentials keep it (the backoff arm also holds).
         assert!(!entry.probe_due("old", soon));
-        assert!(entry.probe_due("old", 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1));
+        let past_freshness = 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1;
+        assert!(!entry.probe_due("old", past_freshness));
+        let backoff = ProbeError::SignedOut { status: 400 }.backoff().as_millis() as i64;
+        assert!(entry.probe_due("old", 1_000 + backoff));
         // A mark with no recorded credentials (never failed a probe) reads
         // as recorded for any credentials.
         let mut bare = UsageEntry::default();
