@@ -1642,28 +1642,30 @@ mod tests {
         RpcReply::Stream(futures::stream::iter(vec![item]).boxed())
     }
 
-    /// The workspace's chat rows, as `WatchChats` reports them. The fork
-    /// handler builds its copy from the same shape, so the stub's chats
-    /// stay one source of truth.
-    fn rows(&self) -> Value {
-        json!([
-            {
-                "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
-                "archived": false, "spaceId": "space-1",
-                "config": {
-                    "harness": self.alpha_harness.unwrap_or("claude-code"),
-                    "model": "opus", "reasoning": null, "sandbox": "workspace-write"
+    impl World {
+        /// The workspace's chat rows, as `WatchChats` reports them. The fork
+        /// handler builds its copy from the same shape, so the stub's chats
+        /// stay one source of truth.
+        fn rows(&self) -> Value {
+            json!([
+                {
+                    "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
+                    "archived": false, "spaceId": "space-1",
+                    "config": {
+                        "harness": self.alpha_harness.unwrap_or("claude-code"),
+                        "model": "opus", "reasoning": null, "sandbox": "workspace-write"
+                    },
+                    "createdAt": "2026-09-01T00:00:00Z"
                 },
-                "createdAt": "2026-09-01T00:00:00Z"
-            },
-            {
-                "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
-                "parentChatId": self.beta_parent,
-                "agentOrigin": self.beta_agent_origin,
-                "archived": false, "spaceId": "space-1",
-                "createdAt": "2026-09-02T00:00:00Z"
-            }
-        ])
+                {
+                    "id": "chat-beta-2", "deviceId": "dev-local", "title": "Beta",
+                    "parentChatId": self.beta_parent,
+                    "agentOrigin": self.beta_agent_origin,
+                    "archived": false, "spaceId": "space-1",
+                    "createdAt": "2026-09-02T00:00:00Z"
+                }
+            ])
+        }
     }
 
     #[async_trait]
@@ -1843,7 +1845,7 @@ mod tests {
     #[tokio::test]
     async fn list_and_read_chats() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = self::tools(world, Origin::default());
         let listed = tools.call("list_chats", json!({})).await.unwrap();
         assert_eq!(listed["total"], 2);
         // Newest activity first: Beta was created later.
@@ -1870,7 +1872,7 @@ mod tests {
     #[tokio::test]
     async fn send_attributes_and_refuses_self() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-beta-2".into()),
@@ -1936,7 +1938,7 @@ mod tests {
         // The parent's own notifying side chat: the line teaches the notice
         // flow and no longer invites a reply.
         let notifying = world("chat-alpha-1", true);
-        let tools = tools(notifying.clone(), origin.clone());
+        let tools = self::tools(notifying.clone(), origin.clone());
         tools
             .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
             .await
@@ -1956,7 +1958,7 @@ mod tests {
 
         // A side chat that opted out of notices keeps today's reply line.
         let opted_out = world("chat-alpha-1", false);
-        let tools = tools(opted_out.clone(), origin.clone());
+        let tools = self::tools(opted_out.clone(), origin.clone());
         tools
             .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
             .await
@@ -1973,7 +1975,7 @@ mod tests {
         // A side chat created by a third chat keeps the reply line too: only
         // the creator's messages teach the notice flow.
         let foreign = world("chat-gamma-9", true);
-        let tools = tools(foreign.clone(), origin);
+        let tools = self::tools(foreign.clone(), origin);
         tools
             .call("send_message", json!({ "chat": "Beta", "text": "the task" }))
             .await
@@ -1988,7 +1990,7 @@ mod tests {
 
         // An ordinary chat (no agent origin) keeps today's line.
         let plain = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             plain.clone(),
             Origin {
                 chat_id: Some("chat-beta-2".into()),
@@ -2011,7 +2013,7 @@ mod tests {
     #[tokio::test]
     async fn auto_steers_busy_chats_even_at_turn_boundaries_or_after_long_quiet_tools() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         let chats = tools.roboco.chats().await.unwrap();
         let session = Session {
             chat_id: chats[0].id.clone(),
@@ -2045,7 +2047,7 @@ mod tests {
     #[tokio::test]
     async fn create_chat_writes_the_row_and_validates_model() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         let err = tools
             .call(
                 "create_chat",
@@ -2179,7 +2181,7 @@ mod tests {
     #[tokio::test]
     async fn fork_chat_with_no_options_forks_the_caller_from_its_latest_reply() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-alpha-1".into()),
@@ -2219,7 +2221,7 @@ mod tests {
     #[tokio::test]
     async fn fork_chat_options_ride_the_rpc_and_title_the_copy() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-alpha-1".into()),
@@ -2276,7 +2278,7 @@ mod tests {
     #[tokio::test]
     async fn fork_chat_validates_the_catalogs_before_forking() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         for args in [
             // Not installed on this device.
             json!({ "chat": "alpha", "harness": "codex" }),
@@ -2310,7 +2312,7 @@ mod tests {
             alpha_harness: Some("codex"),
             ..Default::default()
         });
-        let tools = tools(codex_source.clone(), Origin::default());
+        let tools = self::tools(codex_source.clone(), Origin::default());
         let forked = tools
             .call("fork_chat", json!({ "chat": "alpha", "harness": "codex" }))
             .await
@@ -2408,7 +2410,7 @@ mod tests {
         // The copied history is baselined out of the wait: a fork that never
         // runs must not report the source's replies as its own turn's.
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-alpha-1".into()),
@@ -2564,7 +2566,7 @@ mod tests {
     #[tokio::test]
     async fn reads_waits_and_gets_report_observations_for_the_calling_chat() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-beta-2".into()),
@@ -2641,7 +2643,7 @@ mod tests {
     #[tokio::test]
     async fn a_human_cli_reports_no_observations() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         tools
             .call("read_chat", json!({ "chat": "alpha" }))
             .await
@@ -2671,7 +2673,7 @@ mod tests {
             working_session: Some("chat-alpha-1".into()),
             ..Default::default()
         });
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-beta-2".into()),
@@ -2693,7 +2695,7 @@ mod tests {
     #[tokio::test]
     async fn create_chat_records_the_origin_as_parent() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-beta-2".into()),
@@ -2732,7 +2734,7 @@ mod tests {
     #[tokio::test]
     async fn wait_on_an_idle_chat_returns_immediately() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = self::tools(world, Origin::default());
         let waited = tools
             .call(
                 "wait_for_turn",
@@ -2749,7 +2751,7 @@ mod tests {
         // The stub never grows a session row, so a send-then-wait must run
         // to its deadline rather than declaring the (unstarted) run done.
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = self::tools(world, Origin::default());
         let started = std::time::Instant::now();
         let sent = tools
             .call(
@@ -2786,7 +2788,7 @@ mod tests {
                 dispatch_barrier: Some(tokio::sync::Barrier::new(2)),
                 ..Default::default()
             });
-            let tools = tools(world.clone(), Origin::default());
+            let tools = self::tools(world.clone(), Origin::default());
             let reply = tokio::time::timeout(
                 Duration::from_secs(3),
                 crate::jsonrpc::handle_request(
@@ -2820,7 +2822,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_batch_sizes_have_no_side_effects() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         for name in ["create_chats", "send_messages"] {
             for requests in [vec![], vec![json!({"prompt": "hello"}); MAX_BATCH + 1]] {
                 assert!(
@@ -2931,7 +2933,7 @@ mod tests {
     #[tokio::test]
     async fn project_and_device_resolution_scopes_names_and_exact_paths() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         for args in [
             json!({"project":"missing"}),
             json!({"device":"missing"}),
@@ -2977,7 +2979,7 @@ mod tests {
     #[tokio::test]
     async fn discovery_and_creation_validate_catalogs_before_writing() {
         let world = Arc::new(World::default());
-        let tools = tools(world.clone(), Origin::default());
+        let tools = self::tools(world.clone(), Origin::default());
         assert_eq!(
             tools.call("list_projects", json!({})).await.unwrap()["projects"]
                 .as_array()
@@ -3036,7 +3038,7 @@ mod tests {
     #[tokio::test]
     async fn mixed_batch_preserves_order_and_errors_per_request() {
         let world = Arc::new(World::default());
-        let tools = tools(
+        let tools = self::tools(
             world.clone(),
             Origin {
                 chat_id: Some("chat-alpha-1".into()),
@@ -3294,7 +3296,7 @@ mod tests {
     #[tokio::test]
     async fn initialize_and_list_over_jsonrpc() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = self::tools(world, Origin::default());
         let init = crate::jsonrpc::handle_request(
             &tools,
             json!(1),
@@ -3332,7 +3334,7 @@ mod tests {
     #[tokio::test]
     async fn instructions_teach_notice_driven_orchestration() {
         let world = Arc::new(World::default());
-        let tools = tools(world, Origin::default());
+        let tools = self::tools(world, Origin::default());
         let init = crate::jsonrpc::handle_request(
             &tools,
             json!(1),
