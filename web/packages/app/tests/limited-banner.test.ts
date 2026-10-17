@@ -372,7 +372,7 @@ describe("LimitedBanner — Resume on another account", () => {
     const card = handle.card();
     expect(card).not.toBeNull();
     expect(card!.querySelector(".menu-heading")!.textContent).toBe("Resume on another Claude account");
-    const rows = Array.from(card!.querySelectorAll(".menu-row"));
+    const rows = Array.from(card!.querySelectorAll<HTMLElement>(".menu-row"));
     expect(rows.length).toBe(2);
     // The first candidate is the recommendation; the caption says what
     // switching means (story 53).
@@ -404,7 +404,7 @@ describe("LimitedBanner — Resume on another account", () => {
     const handle = mountBanner(claudeLimit({ resetsAt: NOW + 60_000 }));
     await flush();
     press(handle.failoverChip()!);
-    press(Array.from(handle.card()!.querySelectorAll(".menu-row"))[0]!);
+    press(Array.from(handle.card()!.querySelectorAll<HTMLElement>(".menu-row"))[0]!);
     await flush();
     expect(handle.banner()!.querySelector(".limited-banner-notice")!.textContent).toBe("engine offline");
   });

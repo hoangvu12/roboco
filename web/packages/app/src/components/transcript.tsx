@@ -2026,6 +2026,10 @@ export function estimateRowHeight(
       // + gap(6) + the 13px title line — an estimate the measurement
       // corrects on mount.
       return 67;
+    case "harnessSwitchMarker":
+      // `harness_switch_marker` (transcript.rs:8580): py(14) + the one 13px
+      // medium line — an estimate the measurement corrects on mount.
+      return 47;
     case "completionNotice":
       // `render_completion_notice` (transcript.rs): the wrapper pads (4+4),
       // the card's own (8+8), the 20px header, the 4px gap, and one 42px

@@ -256,7 +256,7 @@ export function LimitedBanner({
         className="limited-banner-chip"
         title="Send the continue prompt now"
         disabled={chipsDisabled}
-        onClick={onResume}
+        onClick={() => onResume()}
       >
         Resume
       </button>

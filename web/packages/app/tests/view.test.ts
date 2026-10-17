@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Chat, Space } from "@roboco/proto";
+import type { Chat, SessionLimit, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { UNDELIVERED_GRACE_MS, type PendingSend } from "../src/state/transcript-store";
 import {
@@ -89,7 +89,7 @@ describe("effectiveIndicator", () => {
   });
 
   it("an_errored_row_with_a_limit_reads_as_limited (proto view.rs)", () => {
-    const limit = { harness: "claude-code", window: "5-hour", resetsAt: 0, accountId: null };
+    const limit: SessionLimit = { harness: "claude-code", window: "5-hour", resetsAt: 0, accountId: null };
     expect(effectiveIndicator(status({ status: "errored", limit }), NOW)).toBe("limited");
     // The same record on any other status is inert — a row that is working
     // again (the record cleared on the new turn) never shows a stale

@@ -62,7 +62,7 @@ describe("the completion notice's open control", () => {
     const rows = Array.from(
       container!.querySelectorAll("button.completion-notice-side"),
     );
-    expect(rows).toHaveLength(2, "one control per side chat");
+    expect(rows).toHaveLength(2); // one control per side chat
     act(() => {
       rows[1]!.dispatchEvent(
         new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }),

@@ -421,9 +421,9 @@ describe("signedOut / accountNote / usageFallback (ticket 08)", () => {
     expect(signedOut(account({ signInState: "signed-in" }))).toBe(false);
     // An older engine's payload without the additive field defaults to
     // unknown, never signed out.
-    const legacy = account({}) as AgentAccount & { signInState?: unknown };
+    const legacy: Partial<AgentAccount> = { ...account({}) };
     delete legacy.signInState;
-    expect(signedOut(legacy)).toBe(false);
+    expect(signedOut(legacy as AgentAccount)).toBe(false);
   });
 
   it("accountNote: the probe's reason, else the sign-out itself, else nothing", () => {
