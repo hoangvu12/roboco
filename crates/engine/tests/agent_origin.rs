@@ -32,7 +32,8 @@ const PARENT: &str = "chat-parent-1";
 
 /// A turn that runs until the test says so, so "busy" is a state the test
 /// controls. Steers are accepted through the mailbox (the entry is written
-/// before the harness ever sees the prompt).
+/// before the harness ever sees the prompt) and confirmed with a `Steered`
+/// boundary.
 struct HeldHarness {
     steering: SteeringMode,
     finish: tokio::sync::broadcast::Sender<()>,
@@ -78,39 +79,56 @@ impl Harness for HeldHarness {
         self.prompts.lock().unwrap().push(request.prompt.clone());
         let mut finish = self.finish.subscribe();
         let mut steering = controls.steering;
-        let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let _ = tx.try_send(Ok(AgentEvent::SessionStarted {
             harness: HarnessId::Mock,
             model: "mock-1".into(),
             tools: vec![],
             cwd: request.cwd.clone(),
             session_id: "sess-origin".into(),
             assistant_message_id: format!("a-{}", request.prompt),
-        })]);
-        let done = futures::stream::once(async move {
+        }));
+        tokio::spawn(async move {
+            let done = || {
+                Ok(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: None,
+                    error: None,
+                    session_id: Some("sess-origin".into()),
+                })
+            };
             loop {
                 tokio::select! {
                     _ = finish.recv() => {
-                        return Ok(AgentEvent::Done {
-                            status: DoneStatus::Completed,
-                            result: None,
-                            error: None,
-                            session_id: Some("sess-origin".into()),
-                        });
+                        let _ = tx.send(done()).await;
+                        break;
                     }
                     steer = steering.recv() => {
                         if steer.is_none() {
-                            return Ok(AgentEvent::Done {
-                                status: DoneStatus::Completed,
-                                result: None,
-                                error: None,
-                                session_id: Some("sess-origin".into()),
-                            });
+                            let _ = tx.send(done()).await;
+                            break;
+                        }
+                        // Confirm the steer's boundary like a real
+                        // step-boundary agent: an accepted steer that never
+                        // gets one is re-dispatched as a fresh turn when the
+                        // run exits (a sent message must never silently not
+                        // run), and that turn would hang past the test's
+                        // one `finish`.
+                        if tx
+                            .send(Ok(AgentEvent::Steered {
+                                assistant_message_id: None,
+                                next_assistant_message_id: None,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            break;
                         }
                     }
                 }
             }
         });
-        Ok(started.chain(done).boxed())
+        Ok(futures::stream::poll_fn(move |cx| rx.poll_recv(cx)).boxed())
     }
 }
 
@@ -249,6 +267,9 @@ async fn agent_created_side_chats_record_their_creator_and_notify_durably() {
     let _ = harness.finish.send(());
     core.shutdown().await;
     drop(client);
+    // The data-dir instance lock lives as long as the core: drop it before
+    // the restart, exactly like an app restart releases it.
+    drop(core);
 
     // The row is durable: the restart reads it back exactly.
     let restarted =
@@ -319,27 +340,9 @@ async fn user_created_chats_are_never_marked_agent_created() {
         .expect("createChat");
 
     // A fork of a chat with history: the copy lists under the parent but is
-    // user-made.
-    let source = core.doc_host.open("plain").unwrap();
-    source
-        .doc()
-        .push_message(&SessionMessageEntry {
-            origin_chat_id: None,
-            id: "u1".into(),
-            role: MessageRole::User,
-            parts: vec![MessagePart::Text {
-                id: "t1".into(),
-                text: "remember this".into(),
-            }],
-            created_at: 1,
-            device_id: core.device_id.clone(),
-            status: Some(roboco_doc::MessageStatus::Complete),
-            continuation_of: None,
-            duration_ms: None,
-            provider_turn: None,
-        })
-        .unwrap();
-    drop(source);
+    // user-made. The fork button copies through the latest complete reply,
+    // so the source needs a settled turn, not just a user message.
+    settled_turn(&core, "plain");
     client
         .call(
             roboco_rpc::methods::FORK_SIDE_CHAT,
