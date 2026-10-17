@@ -4027,6 +4027,11 @@ fn usage_error_message(
         // login it is (this is what flipped the sign-in state).
         ProbeError::SignedOut { .. } => "Signed out — sign in again".to_string(),
         ProbeError::RateLimited { .. } => format!("Rate limited by {provider}{retry}"),
+        // Devin's key never expires on its own: a rejection means it was
+        // revoked, whichever login it is.
+        ProbeError::Unauthorized { .. } if harness == HarnessId::Devin => {
+            "Signed out — sign in again".to_string()
+        }
         ProbeError::Unauthorized { .. } if active => {
             // The CLI owns (and refreshes) the live token; it just hasn't yet.
             format!(
