@@ -362,7 +362,8 @@ async fn a_fork_that_errors_after_launch_retries_fresh_with_the_budget() {
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("bad uuid fallback".into()),
             error: None,
             session_id: Some("sess-fork-bad-fresh".into()),
         })
@@ -404,7 +405,8 @@ async fn a_resume_refused_after_launch_retries_fresh_with_the_fallback_history()
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("resume fallback".into()),
             error: None,
             session_id: Some("sess-resume-fresh".into()),
         })

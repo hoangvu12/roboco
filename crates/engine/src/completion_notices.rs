@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn short_id_cuts_at_a_char_boundary() {
         // ASCII ids keep the full eight chars.
-        assert_eq!(short_id("chat-side-1234"), "chat-si");
+        assert_eq!(short_id("chat-side-1234"), "chat-sid");
         assert_eq!(short_id("short"), "short");
         // A multibyte id never panics: the cut backs up to the nearest
         // boundary (the review's byte-slice crash).

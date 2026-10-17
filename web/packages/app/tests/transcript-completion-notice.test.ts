@@ -181,7 +181,7 @@ describe("the completion notice row", () => {
 
 describe("the notice side-row helpers", () => {
   it("shortens an id to eight characters without splitting a character", () => {
-    expect(shortChatId("chat-side-1234")).toBe("chat-si");
+    expect(shortChatId("chat-side-1234")).toBe("chat-sid");
     expect(shortChatId("short")).toBe("short");
     // A surrogate pair never splits.
     const wide = "😀😀😀😀😀😀😀😀😀";
