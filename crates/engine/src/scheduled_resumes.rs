@@ -329,22 +329,25 @@ mod tests {
 
     #[test]
     fn entries_and_fired_floors_survive_a_store_reload() {
+        // `advances` also guards against the present, so the resets sit in
+        // the future.
+        let base = now_ms() + 3_600_000;
         let path = temp_path();
         let first = ScheduledResumes::default();
         first.set_path(path.clone());
-        first.arm("chat-live", 5_000);
-        first.arm("chat-done", 6_000);
-        first.consume("chat-done", 6_000);
-        first.note_fired("chat-done", 6_000);
+        first.arm("chat-live", base);
+        first.arm("chat-done", base + 1_000);
+        first.consume("chat-done", base + 1_000);
+        first.note_fired("chat-done", base + 1_000);
 
         let reloaded = ScheduledResumes::default();
         reloaded.set_path(path);
-        assert_eq!(reloaded.scheduled("chat-live").unwrap().fire_at, 5_000);
+        assert_eq!(reloaded.scheduled("chat-live").unwrap().fire_at, base);
         assert!(reloaded.scheduled("chat-done").is_none());
         assert_eq!(reloaded.pending().len(), 1);
         // The fired floor survives the restart.
-        assert!(reloaded.advances("chat-done", 7_000));
-        assert!(!reloaded.advances("chat-done", 6_000));
+        assert!(reloaded.advances("chat-done", base + 2_000));
+        assert!(!reloaded.advances("chat-done", base + 1_000));
         // A reset in the past never advances.
         assert!(!reloaded.advances("chat-live", 1));
     }
@@ -367,7 +370,7 @@ mod tests {
     fn requeue_restores_a_consumed_entry_for_the_next_boot() {
         let path = temp_path();
         let store = ScheduledResumes::default();
-        store.set_path(path);
+        store.set_path(path.clone());
         store.arm("chat", 5_000);
         assert!(store.consume("chat", 5_000));
         store.requeue("chat", 5_000);

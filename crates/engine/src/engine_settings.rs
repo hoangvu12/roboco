@@ -138,7 +138,7 @@ mod tests {
                 auto_resume_limited: true,
             })
             .unwrap();
-        let reloaded = EngineSettingsStore::open(Some(path));
+        let reloaded = EngineSettingsStore::open(Some(path.clone()));
         assert!(reloaded.get().auto_resume_limited);
 
         // Back off again.

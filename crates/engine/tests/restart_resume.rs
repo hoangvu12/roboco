@@ -1237,7 +1237,7 @@ fn manufacture_crashed_steer_turn(dir: &std::path::Path, consumed: bool) {
     {
         let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
-        doc.push_message(entry(
+        doc.push_message(&entry(
             "msg-user-1",
             MessageRole::User,
             "long task",
@@ -1245,7 +1245,7 @@ fn manufacture_crashed_steer_turn(dir: &std::path::Path, consumed: bool) {
             Some(MessageStatus::Complete),
         ))
         .unwrap();
-        doc.push_message(entry(
+        doc.push_message(&entry(
             "msg-assistant-1",
             MessageRole::Assistant,
             "partial…",
@@ -1253,7 +1253,7 @@ fn manufacture_crashed_steer_turn(dir: &std::path::Path, consumed: bool) {
             Some(MessageStatus::Streaming),
         ))
         .unwrap();
-        doc.push_message(entry(
+        doc.push_message(&entry(
             "msg-user-2",
             MessageRole::User,
             STEER_TEXT,
@@ -1264,7 +1264,7 @@ fn manufacture_crashed_steer_turn(dir: &std::path::Path, consumed: bool) {
         if consumed {
             // The harness consumed the steer and the model kept working —
             // the reply after the steer is what was streaming at the kill.
-            doc.push_message(entry(
+            doc.push_message(&entry(
                 "msg-assistant-2",
                 MessageRole::Assistant,
                 "after the steer…",

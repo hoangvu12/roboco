@@ -4094,6 +4094,11 @@ fn usage_error_message(
         // login it is (this is what flipped the sign-in state).
         ProbeError::SignedOut { .. } => "Signed out — sign in again".to_string(),
         ProbeError::RateLimited { .. } => format!("Rate limited by {provider}{retry}"),
+        // Devin's key never expires on its own: a rejection means it was
+        // revoked, whichever login it is.
+        ProbeError::Unauthorized { .. } if harness == HarnessId::Devin => {
+            "Signed out — sign in again".to_string()
+        }
         ProbeError::Unauthorized { .. } if active => {
             // The CLI owns (and refreshes) the live token; it just hasn't yet.
             format!(
@@ -5360,7 +5365,10 @@ mod probe_tests {
         assert!(entry.probe_due("new", soon));
         // … while the same credentials keep it (the backoff arm also holds).
         assert!(!entry.probe_due("old", soon));
-        assert!(entry.probe_due("old", 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1));
+        let past_freshness = 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1;
+        assert!(!entry.probe_due("old", past_freshness));
+        let backoff = ProbeError::SignedOut { status: 400 }.backoff().as_millis() as i64;
+        assert!(entry.probe_due("old", 1_000 + backoff));
         // A mark with no recorded credentials (never failed a probe) reads
         // as recorded for any credentials.
         let mut bare = UsageEntry::default();
@@ -5509,11 +5517,11 @@ mod probe_tests {
         let mut signed_out = plain_row();
         signed_out.sign_in_state = AgentSignInState::SignedOut;
         let mut still_limited = plain_row();
-        still_limited.limited_until = Some(Utc::now() + TimeDelta::hours(3));
+        still_limited.limited_until = Some(Utc::now() + chrono::TimeDelta::hours(3));
         let expired_limit = {
             // A limited_until in the PAST: the window lifted.
             let mut row = plain_row();
-            row.limited_until = Some(Utc::now() - TimeDelta::hours(1));
+            row.limited_until = Some(Utc::now() - chrono::TimeDelta::hours(1));
             row
         };
         let rows = vec![

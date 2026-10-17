@@ -137,7 +137,7 @@ impl Harness for Scripted {
             .pop_front()
             .unwrap_or(Turn::Hang);
         let session = format!("sess-{}", self.run_count());
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(32);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(32);
         let steered = self.steered.clone();
         let mut steering = controls.steering;
         let request_input = controls.request_input;
@@ -243,7 +243,10 @@ impl Harness for Scripted {
                 },
             }
         });
-        Ok(rx.boxed())
+        Ok(futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|event| (event, rx))
+        })
+        .boxed())
     }
 }
 
@@ -260,7 +263,6 @@ fn run_request(prompt: &str) -> RunRequest {
         auto_approve: false,
         resume: None,
         provider_fork: None,
-        resume_fallback_history: None,
         resume_fallback_history: None,
         attachments: vec![],
         worktree: None,

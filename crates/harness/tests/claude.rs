@@ -117,11 +117,13 @@ async fn a_resume_without_a_session_file_starts_fresh_with_the_history() {
         )),
         "the budgeted history rode in front of the prompt: {events:?}"
     );
+    // The fallback session's own final text rides the Done like any
+    // turn's (the driver forwards the result frame's text).
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            result: Some("echoed".into()),
             error: None,
             session_id: Some("sess-resume-missing".into()),
         })
@@ -201,11 +203,13 @@ async fn a_fork_at_the_latest_turn_resumes_the_source_session_with_fork_session(
             turn_id: "msg-fork-last".into(),
         }
     }));
+    // The forked turn's final text rides the Done like any turn's — the
+    // driver forwards the result frame's text (happy path: Some("done!")).
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            result: Some("forked latest".into()),
             error: None,
             session_id: Some("sess-fork-latest-new".into()),
         })
@@ -255,11 +259,12 @@ async fn a_fork_at_an_earlier_turn_passes_the_boundary_uuid_to_resume_session_at
             turn_id: "msg-fork-earlier-last".into(),
         }
     }));
+    // The forked turn's final text rides the Done like any turn's.
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            result: Some("forked earlier".into()),
             error: None,
             session_id: Some("sess-fork-earlier-new".into()),
         })
@@ -305,11 +310,12 @@ async fn a_fork_the_cli_refuses_falls_back_to_a_fresh_session_with_the_budgeted_
         e,
         AgentEvent::TextDelta { text } if text == "fresh fallback answer"
     )));
+    // The fallback turn's final text rides the Done like any turn's.
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            result: Some("fresh fallback".into()),
             error: None,
             session_id: Some("sess-fork-fresh".into()),
         })
@@ -436,11 +442,12 @@ async fn a_fork_of_a_missing_session_falls_back_to_the_budgeted_history() {
         e,
         AgentEvent::TextDelta { text } if text == "missing session fallback answer"
     )));
+    // The fallback turn's final text rides the Done like any turn's.
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
             status: DoneStatus::Completed,
-            result: None,
+            result: Some("missing session fallback".into()),
             error: None,
             session_id: Some("sess-fork-missing-fresh".into()),
         })

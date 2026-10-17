@@ -2701,7 +2701,7 @@ async fn a_fork_with_a_harness_and_model_override_runs_on_that_harness() {
                 harness: HarnessId::Mock,
                 model: Some("mock-9".into()),
                 reasoning: Some(ReasoningLevel::Max),
-                model_options: serde_json::Map::from([(
+                model_options: serde_json::Map::from_iter([(
                     "contextWindow".to_string(),
                     serde_json::json!("1m"),
                 )]),

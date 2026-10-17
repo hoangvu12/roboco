@@ -145,14 +145,23 @@ streaming = False
 # entry so get_entries can serve the tree the driver walks after each
 # settle for provider turn refs: the leaf chain u1 -> a1 -> u2 ... with the
 # walk bounded by the `since` cursor the driver passes.
-entry_seq = 0
+user_seq = 0
+assistant_seq = 0
 leaf_id = None
 entries = []
 
 def append_entry(role):
-    global entry_seq, leaf_id
-    entry_seq += 1
-    entry_id = ("u%d" if role == "user" else "a%d") % entry_seq
+    global user_seq, assistant_seq, leaf_id
+    # Ids number per ROLE, the FORK_TREE spelling (u1, a1, u2, a2): the
+    # turn-ref tests read them as the Nth user entry of the session, so a
+    # shared counter minting a2/u3 for the second exchange would misname
+    # every ref after the first turn.
+    if role == "user":
+        user_seq += 1
+        entry_id = "u%d" % user_seq
+    else:
+        assistant_seq += 1
+        entry_id = "a%d" % assistant_seq
     entries.append({
         "type": "message",
         "id": entry_id,
@@ -893,13 +902,17 @@ def run_prompt(req):
         user_message(text)
         turn_and_settle("reply:" + text)
         return
-    if text == "fork-fallback":
+    if text.endswith("fork-fallback"):
         # The refused/stale fork fallback (ticket 19): a FRESH session (no
         # --session) with the budgeted history pasted in front of the
-        # prompt.
+        # prompt, so the scenario matches the prompt suffix and the
+        # PINEAPPLE assert is the oracle that the history actually rode
+        # along (a bare prompt fails it; codex parity: the fake-codex
+        # fork-refused arm asserts the same markers). The canned marker
+        # reply proves the scenario routed here — the default happy path
+        # would echo the whole pasted message instead.
         assert resumed_session is None, "the fallback must start a fresh session"
         assert "PINEAPPLE" in text, text
-        assert text.endswith("fork-fallback"), text
         user_message(text)
         turn_and_settle("reply:fork-fallback")
         return
