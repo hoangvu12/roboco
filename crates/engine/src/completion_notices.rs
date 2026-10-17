@@ -957,8 +957,8 @@ mod tests {
         let single = notice_text(&[completed.clone()]);
         assert_eq!(
             single,
-            "Side chat \"Implement login\" (chat-si) finished.\n\
-             Read the full result with the Roboco `read_chat` tool, chat chat-si."
+            "Side chat \"Implement login\" (chat-sid) finished.\n\
+             Read the full result with the Roboco `read_chat` tool, chat chat-sid."
         );
 
         let mut errored = side("chat-side-5678", "Flaky test", NoticeOutcome::Errored);
@@ -967,21 +967,21 @@ mod tests {
         waiting.detail = Some("Should we bump the major version?".into());
         let merged = notice_text(&[completed, errored, waiting]);
         assert!(merged.starts_with("3 side chats reached outcomes:\n"));
-        assert!(merged.contains("- \"Implement login\" (chat-si) finished."));
-        assert!(merged.contains("- \"Flaky test\" (chat-si) failed: the build command timed out."));
+        assert!(merged.contains("- \"Implement login\" (chat-sid) finished."));
+        assert!(merged.contains("- \"Flaky test\" (chat-sid) failed: the build command timed out."));
         assert!(
             merged
-                .contains("- \"Review the API\" (chat-si) is waiting for input: Should we bump the major version?")
+                .contains("- \"Review the API\" (chat-sid) is waiting for input: Should we bump the major version?")
         );
         assert!(merged.contains("`read_chat`"));
         // A stopped row carries no detail.
         let stopped = side("chat-side-cdef", "Migration", NoticeOutcome::Stopped);
-        assert!(notice_text(&[stopped]).contains("\"Migration\" (chat-si) was stopped."));
+        assert!(notice_text(&[stopped]).contains("\"Migration\" (chat-sid) was stopped."));
         // A restart-lost row says interrupted, with its one-line reason.
         let mut interrupted = side("chat-side-cdef", "Migration", NoticeOutcome::Interrupted);
         interrupted.detail = Some(INTERRUPTED_REASON.into());
         let text = notice_text(&[interrupted]);
-        assert!(text.contains("\"Migration\" (chat-si) was interrupted: engine restart."));
+        assert!(text.contains("\"Migration\" (chat-sid) was interrupted: engine restart."));
         // Degenerate empty input still renders a pointer, never a panic.
         assert!(notice_text(&[]).contains("read_chat"));
     }
