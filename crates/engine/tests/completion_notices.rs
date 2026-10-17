@@ -260,7 +260,6 @@ fn run_request(prompt: &str) -> RunRequest {
         resume: None,
         provider_fork: None,
         resume_fallback_history: None,
-        resume_fallback_history: None,
         attachments: vec![],
         worktree: None,
     }

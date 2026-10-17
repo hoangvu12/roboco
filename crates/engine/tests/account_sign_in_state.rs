@@ -178,7 +178,7 @@ async fn setup(nested: bool) -> (EngineCore, roboco_rpc::RpcClient) {
     let root = dir.keep();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(SignedOutHarness { nested }));
-    let core =
+    let mut core =
         EngineCore::assemble(&root, Arc::new(registry), HarnessId::ClaudeCode).expect("engine");
 
     let config = AgentAccountsConfig::isolated(&root);

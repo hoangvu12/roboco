@@ -514,7 +514,7 @@ async fn setup(
     let registry = HarnessRegistry::new();
     let harness = FailoverHarness::new(continuation);
     registry.register(harness.clone());
-    let core = EngineCore::assemble(&root, Arc::new(registry), HarnessId::ClaudeCode)
+    let mut core = EngineCore::assemble(&root, Arc::new(registry), HarnessId::ClaudeCode)
         .expect("engine core assembles");
     // The mocked usage endpoint only ever sees a stray probe.
     let base = usage_server().await;
