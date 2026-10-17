@@ -17,7 +17,7 @@ import { Icon } from "@roboco/icons";
 import { motion } from "@roboco/theme";
 import { cubicBezierEval, useBottomClearance } from "../state/layout";
 import { DESKTOP_QUERY, useMediaQuery } from "../state/media";
-import type { ContextUsage, FetchToolBlobReply, HarnessId, ScheduledResume, SessionLimit, SessionMessageEntry } from "@roboco/proto";
+import type { ContextUsage, FetchToolBlobReply, HarnessId, NoticeSide, ScheduledResume, SessionLimit, SessionMessageEntry } from "@roboco/proto";
 import {
   echoStore,
   pendingSendStatus,
@@ -53,6 +53,7 @@ import {
   flavourWord,
   formatElapsed,
   formatTimestamp,
+  noticeOutcomeLine,
   ownTurnReleasedForRestore,
   parseForRow,
   resolveViewportAnchor,
@@ -61,6 +62,8 @@ import {
   SelectionDragTracker,
   selectionScrollStep,
   sendingBridge,
+  shortChatId,
+  singleLine,
   SPACE_LG,
   topGapFor,
   toolGroupCollapses,
@@ -152,6 +155,7 @@ export const TranscriptView = memo(function TranscriptView({
   store: sharedStore = null,
   onOpenSubagent,
   onForkFromEntry,
+  onOpenChat,
   markdownSurface = null,
   deliveryDegraded = false,
 }: {
@@ -212,6 +216,12 @@ export const TranscriptView = memo(function TranscriptView({
    */
   onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
   /**
+   * A completion notice's side row (`TranscriptEvent::OpenSideChat`, ticket
+   * 15): open the side chat it reports — the host navigates to it. Absent
+   * (the subagent pane's read-only doc): the rows render inert, no control.
+   */
+  onOpenChat?: (chatId: string) => void;
+  /**
    * The markdown host hooks (`RenderOptions` on the desktop): the chat's
    * workspace root and the internal-link action. Null (default, the subagent
    * dialog): workspace links render inert.
@@ -259,6 +269,7 @@ export const TranscriptView = memo(function TranscriptView({
       turnStartedAt={turnStartedAt}
       onOpenSubagent={onOpenSubagent}
       onForkFromEntry={onForkFromEntry}
+      onOpenChat={onOpenChat}
       markdownSurface={markdownSurface}
       deliveryDegraded={deliveryDegraded}
     />
@@ -277,6 +288,7 @@ function TranscriptSurface({
   turnStartedAt,
   onOpenSubagent,
   onForkFromEntry,
+  onOpenChat,
   markdownSurface,
   deliveryDegraded,
 }: {
@@ -291,6 +303,7 @@ function TranscriptSurface({
   turnStartedAt: number | null;
   onOpenSubagent?: (payload: SubagentOpen) => void;
   onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
+  onOpenChat?: (chatId: string) => void;
   markdownSurface: MarkdownSurface | null;
   deliveryDegraded: boolean;
 }) {
@@ -572,6 +585,7 @@ function TranscriptSurface({
         onJumpChange={onJumpChange}
         onOpenSubagent={onOpenSubagent}
         onForkFromEntry={onForkFromEntry}
+        onOpenChat={onOpenChat}
         toolMotion={toolMotion}
         chatArrival={chatArrival}
       />
@@ -643,6 +657,8 @@ interface ScrollerProps {
   readonly onOpenSubagent?: (payload: SubagentOpen) => void;
   /** A settled assistant reply's "Fork from here" — the host opens the fork dialog. */
   readonly onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
+  /** A completion notice's side row — the host opens the side chat. */
+  readonly onOpenChat?: (chatId: string) => void;
   /** The surface's tool-group motion store (folds, reveals, blob fetches). */
   readonly toolMotion: ToolGroupMotionStore;
   /** The surface's chat-switch arrival window (ticket 58's ONE predicate). */
@@ -685,6 +701,7 @@ function TranscriptScroller({
   onJumpChange,
   onOpenSubagent,
   onForkFromEntry,
+  onOpenChat,
   toolMotion,
   chatArrival,
 }: ScrollerProps) {
@@ -1829,6 +1846,7 @@ function TranscriptScroller({
                 hovered={hoveredEntry?.entryId === row.entryId}
                 onOpenSubagent={onOpenSubagent}
                 onForkFromEntry={onForkFromEntry}
+                onOpenChat={onOpenChat}
                 client={client}
                 deviceId={deviceId}
                 docId={docId}
@@ -2008,6 +2026,12 @@ export function estimateRowHeight(
       // + gap(6) + the 13px title line — an estimate the measurement
       // corrects on mount.
       return 67;
+    case "completionNotice":
+      // `render_completion_notice` (transcript.rs): the wrapper pads (4+4),
+      // the card's own (8+8), the 20px header, the 4px gap, and one 42px
+      // two-line row per side — an estimate the measurement corrects on
+      // mount.
+      return 48 + kind.sides.length * 42;
   }
 }
 
@@ -2118,6 +2142,7 @@ function RowContent({
   hovered,
   onOpenSubagent,
   onForkFromEntry,
+  onOpenChat,
   client,
   deviceId,
   docId,
@@ -2135,6 +2160,7 @@ function RowContent({
   onOpenSubagent?: (payload: SubagentOpen) => void;
   /** The row's "Fork from here" open (absent = no action renders). */
   onForkFromEntry?: (payload: ForkFromEntryPayload) => void;
+  onOpenChat?: (chatId: string) => void;
   client: EngineClient;
   deviceId: string | null;
   docId: string;
@@ -2190,6 +2216,9 @@ function RowContent({
       {kind.kind === "errorChip" && <ErrorChipRow message={kind.message} />}
       {kind.kind === "forkMarker" && <ForkMarkerRow sourceTitle={kind.sourceTitle} />}
       {kind.kind === "harnessSwitchMarker" && <HarnessSwitchMarkerRow label={kind.label} />}
+      {kind.kind === "completionNotice" && (
+        <CompletionNoticeRow sides={kind.sides} onOpenChat={onOpenChat} />
+      )}
       {row.timestamp !== null && (
         <RowMeta
           row={row}
@@ -2775,6 +2804,73 @@ function HarnessSwitchMarkerRow({ label }: { label: string }) {
         {label}
       </span>
       <span className="fork-marker-rule" aria-hidden />
+    </div>
+  );
+}
+
+/**
+ * The engine's completion notice (orchestration v2 ticket 15) — the web port
+ * of `render_completion_notice` (transcript.rs): a distinct system-notice
+ * card, never a user bubble and never markdown prose. A quiet header
+ * announces the notice; below it one row per side chat, the row itself the
+ * control that opens the chat: the title and short id on the first line, the
+ * colored outcome verb with its one-line reason (the error, the restart
+ * reason, the question) on the second, and the spawn chip's trailing
+ * "opens elsewhere" glyph at the end. Without a host handler (the read-only
+ * subagent pane) the rows render inert — no control, no lie. Exported for
+ * its jsdom suite (tests/transcript-completion-notice-control.test.ts),
+ * like the settings page's AccountRow sibling.
+ */
+export function CompletionNoticeRow({
+  sides,
+  onOpenChat,
+}: {
+  readonly sides: readonly NoticeSide[];
+  readonly onOpenChat?: (chatId: string) => void;
+}) {
+  return (
+    <div className="completion-notice-row">
+      <div className="completion-notice-card" role="status">
+        <div className="completion-notice-header">
+          <span className="completion-notice-tile" aria-hidden>
+            <Icon name="infoCircle" size={12} />
+          </span>
+          <span className="completion-notice-label">Completion notice</span>
+        </div>
+        {sides.map((side) => {
+          const title = singleLine(side.title);
+          const openable = onOpenChat !== undefined;
+          const className = `completion-notice-side completion-notice-side-${side.outcome}`;
+          const body = (
+            <>
+              <span className="completion-notice-side-name">
+                <span className="completion-notice-side-title">{title}</span>
+                <span className="completion-notice-side-id">{shortChatId(side.chatId)}</span>
+                {openable && <Icon name="arrowUpRight" size={12} className="completion-notice-side-glyph" />}
+              </span>
+              <span className="completion-notice-side-outcome">{noticeOutcomeLine(side)}</span>
+            </>
+          );
+          return openable ? (
+            <button
+              key={side.chatId}
+              type="button"
+              className={className}
+              title={`Open side chat — ${title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenChat?.(side.chatId);
+              }}
+            >
+              {body}
+            </button>
+          ) : (
+            <div key={side.chatId} className={className}>
+              {body}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

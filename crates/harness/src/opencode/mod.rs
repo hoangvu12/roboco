@@ -35,6 +35,18 @@
 //!   THAT session — exactly what the desktop's working-predicate keys on.
 //!   Busy is re-asserted at the top of every agent-loop iteration, so idle
 //!   after busy is authoritative, not a lull.
+//! - every prompt carries a client-chosen user message id (1.x `messageID`,
+//!   2.x `id`, `msg_`-prefixed) and emits an [`AgentEvent::TurnRef`] naming
+//!   it: the engine records the ref on the turn's transcript entry, so a
+//!   fork can continue the provider session at exactly that turn
+//!   (t3-orchestration-v2 ticket 20).
+//! - a native fork (ticket 20) forks the SOURCE provider session before
+//!   prompting — 1.x `POST /session/{id}/fork {messageID}`, 2.x
+//!   `POST /api/session/{id}/fork {before}` — both EXCLUSIVE at a message
+//!   id, so the cut is the NEXT turn's user message, resolved from the
+//!   session's message list; with no next turn the whole session is
+//!   copied. A refused or unresolvable fork falls back to a fresh session
+//!   with the engine's budgeted transcript pasted in front of the prompt.
 //! - reasoning streams as reasoning parts on both wires →
 //!   [`AgentEvent::ReasoningDelta`], the thinking feed.
 //!
@@ -961,6 +973,27 @@ impl Server {
             .await
             .map(|_| ())
     }
+
+    /// 2.x: the agent rides the session too (a create carries it in the
+    /// body; a resumed or forked session re-applies it here). A no-op on
+    /// 1.x, which has no session-scoped agent route — the run's agent
+    /// rides the prompt wire there or stays the server default.
+    async fn adopt_agent(
+        &self,
+        session_id: &str,
+        agent: Option<&str>,
+        directory: Option<&str>,
+    ) -> Result<(), HarnessError> {
+        if self.protocol().await == Protocol::V2
+            && let Some(agent) = agent
+        {
+            let path = format!("/api/session/{session_id}/agent");
+            self.post_json(&path, directory, &json!({ "agent": agent }))
+                .await
+                .map(|_| ())?;
+        }
+        Ok(())
+    }
 }
 
 fn http_client() -> reqwest::Client {
@@ -1330,6 +1363,30 @@ fn new_message_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// A client-chosen user message id for a posted turn
+/// (t3-orchestration-v2 ticket 20): both wires take one on the prompt (1.x
+/// `messageID`, 2.x `id`), which becomes the message's server-side id —
+/// the turn's provider ref, and the anchor a later fork cuts the session
+/// at. 2.x requires the `msg_` prefix; a fresh uuid keeps it unique across
+/// the server (2.x answers a repeat id in another session with a 409).
+fn new_user_message_id() -> String {
+    format!("msg_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// The provider turn reference for a prompt just posted (ticket 20): the
+/// client-chosen user message id is the turn's ref — the engine stamps it
+/// on the transcript entry the turn streams, so a fork can continue the
+/// provider session at exactly that turn.
+fn turn_ref_event(session_id: &str, user_message_id: &str) -> AgentEvent {
+    AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Opencode,
+            session_id: session_id.to_owned(),
+            turn_id: user_message_id.to_owned(),
+        },
+    }
+}
+
 /// Rotate the assistant message id; returns (previous, next).
 fn rotate(id: &mut String) -> (String, String) {
     let prev = std::mem::replace(id, new_message_id());
@@ -1510,41 +1567,57 @@ async fn run_session(session: Session) {
         .and_then(Value::as_str)
         .filter(|a| !a.is_empty());
 
-    // ---- session create/resume -------------------------------------------
+    // ---- session create/fork/resume --------------------------------------
+    // The budgeted transcript a refused native fork falls back to (ticket
+    // 20): set when the fork fails, applied in front of the first prompt
+    // below. The interrupted-start path leaves it unset (nothing was
+    // attempted).
+    let mut fork_fallback: Option<String> = None;
     let setup = async {
-        let session_id = match &request.resume {
-            Some(resume) => {
-                // Sessions are durable server-side: resume = reuse the id.
-                match server.session_info(resume, dir).await {
-                    Ok(info) => {
-                        let id = info
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or(resume)
-                            .to_owned();
-                        if server.protocol().await == Protocol::V2
-                            && let Some(agent) = agent
-                        {
-                            server
-                                .post_json(
-                                    &format!("/api/session/{id}/agent"),
-                                    dir,
-                                    &json!({"agent": agent}),
-                                )
-                                .await?;
-                        }
-                        id
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            target: "roboco_harness::opencode",
-                            "session resume failed (starting fresh): {e}"
-                        );
-                        create_session(&server, dir, agent).await?
-                    }
+        let session_id = if let Some(fork) = request.provider_fork.clone() {
+            // A native fork (t3-orchestration-v2 ticket 20): fork the source
+            // provider session at the boundary turn instead of starting
+            // fresh — the copied history rides the provider session, so
+            // nothing is pasted into the prompt. A fork the server refuses
+            // (an unknown boundary, a call this build can't make) is a
+            // fallback, not an error: start fresh and deliver the budgeted
+            // history the engine attached.
+            match fork_session(&server, dir, &fork).await {
+                Ok(forked) => {
+                    server.adopt_agent(&forked, agent, dir).await?;
+                    forked
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        target: "roboco_harness::opencode",
+                        "session fork refused (starting fresh with the budgeted history): {e}"
+                    );
+                    fork_fallback = fork.fallback_history;
+                    create_session(&server, dir, agent).await?
                 }
             }
-            None => create_session(&server, dir, agent).await?,
+        } else if let Some(resume) = &request.resume {
+            // Sessions are durable server-side: resume = reuse the id.
+            match server.session_info(resume, dir).await {
+                Ok(info) => {
+                    let id = info
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or(resume)
+                        .to_owned();
+                    server.adopt_agent(&id, agent, dir).await?;
+                    id
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        target: "roboco_harness::opencode",
+                        "session resume failed (starting fresh): {e}"
+                    );
+                    create_session(&server, dir, agent).await?
+                }
+            }
+        } else {
+            create_session(&server, dir, agent).await?
         };
 
         // Provider catalog: resolves the model's advertised reasoning
@@ -1591,6 +1664,22 @@ async fn run_session(session: Session) {
             server.shutdown(kill_grace).await;
             return;
         }
+    };
+
+    // A refused fork's fresh session still owes the chat its prior context:
+    // the budgeted transcript rides in front of the prompt, byte-identical
+    // to the paste a non-native fork delivers (the engine leaves OpenCode's
+    // canonical conversion to this driver, so the history converts here
+    // exactly as the prompt did in `run`). The prompt itself still governs
+    // native-command routing below — the engine attaches no fallback to a
+    // native command, so the concatenation can never hide one.
+    let delivered_prompt = match &fork_fallback {
+        Some(history) => format!(
+            "{}{}",
+            roboco_proto::invocation::harness_prompt(history, HarnessId::Opencode),
+            request.prompt
+        ),
+        None => request.prompt.clone(),
     };
 
     let (mut model, mut variant) = model_selection(&providers, &request);
@@ -1686,13 +1775,15 @@ async fn run_session(session: Session) {
     let stall = stall_bound();
     let (command_failure_tx, mut command_failure_rx) = mpsc::unbounded_channel();
     let mut turn_generation = 0_u64;
+    let first_user_message_id = new_user_message_id();
     if let Err(e) = post_prompt(
         &server,
         &bus_tx,
+        &event_tx,
         &session_id,
         dir,
         &commands,
-        &request.prompt,
+        &delivered_prompt,
         initial_native_command_selected,
         turn_generation,
         &command_failure_tx,
@@ -1700,6 +1791,7 @@ async fn run_session(session: Session) {
             model: model.as_ref(),
             variant: variant.as_deref(),
             attachments: &request.attachments,
+            user_message_id: &first_user_message_id,
         },
     )
     .await
@@ -1819,6 +1911,9 @@ async fn run_session(session: Session) {
                     break $label;
                 }
                 let steer = texts.join("\n\n");
+                // One posted prompt = one user message, whatever queued
+                // texts it merges — one turn, one provider ref (ticket 20).
+                let steer_user_message_id = new_user_message_id();
                 let adopted = match config {
                     Some(next) => adopt_config(&server, &session_id, dir, &next)
                         .await
@@ -1829,6 +1924,7 @@ async fn run_session(session: Session) {
                     Ok(()) => post_prompt(
                         &server,
                         &bus_tx,
+                        &event_tx,
                         &session_id,
                         dir,
                         &commands,
@@ -1840,6 +1936,7 @@ async fn run_session(session: Session) {
                             model: model.as_ref(),
                             variant: variant.as_deref(),
                             attachments: &attachments,
+                            user_message_id: &steer_user_message_id,
                         },
                     )
                     .await,
@@ -2077,6 +2174,9 @@ async fn run_session(session: Session) {
                                 assistant_message_id: Some(prev),
                                 next_assistant_message_id: Some(next),
                             }).await;
+                            // One posted prompt — one user message, one
+                            // provider ref (ticket 20).
+                            let steer_user_message_id = new_user_message_id();
                             let adopted = match &steer.config {
                                 Some(next) => adopt_config(&server, &session_id, dir, next)
                                     .await
@@ -2087,6 +2187,7 @@ async fn run_session(session: Session) {
                                 Ok(()) => post_prompt(
                                     &server,
                                     &bus_tx,
+                                    &event_tx,
                                     &session_id,
                                     dir,
                                     &commands,
@@ -2098,6 +2199,7 @@ async fn run_session(session: Session) {
                                         model: model.as_ref(),
                                         variant: variant.as_deref(),
                                         attachments: &steer.attachments,
+                                        user_message_id: &steer_user_message_id,
                                     },
                                 )
                                 .await,
@@ -2384,6 +2486,151 @@ async fn create_session(
     unreachable!("create_session retry loop returns from every path")
 }
 
+/// Fork the source provider session for a native fork
+/// (t3-orchestration-v2 ticket 20): OpenCode's fork is EXCLUSIVE at a
+/// message id — 1.x `POST /session/{id}/fork {messageID}`, 2.x
+/// `POST /api/session/{id}/fork {before}` (both shapes checked against
+/// 1.18.31 and 2.0.11) — so keeping everything through the boundary turn
+/// means cutting before the NEXT turn's user message; with no next turn
+/// the whole session is copied (no boundary). `fork.last_turn` is the
+/// boundary turn's own user message id (the provider turn ref recorded on
+/// the boundary entry); the next one is resolved from the session's
+/// message list. Any failure — the list, the boundary, the call — is the
+/// caller's fallback (fresh session + the budgeted paste), never an error
+/// the turn dies on.
+async fn fork_session(
+    server: &Server,
+    dir: Option<&str>,
+    fork: &roboco_proto::ProviderFork,
+) -> Result<String, HarnessError> {
+    let messages = session_messages(server, dir, &fork.session_id).await?;
+    let boundary = fork_cut(&messages, &fork.last_turn)?;
+    let (path, body) = match server.protocol().await {
+        Protocol::V1 => (
+            format!("/session/{}/fork", fork.session_id),
+            boundary
+                .as_ref()
+                .map(|id| json!({ "messageID": id }))
+                .unwrap_or_else(|| json!({})),
+        ),
+        Protocol::V2 => (
+            format!("/api/session/{}/fork", fork.session_id),
+            boundary
+                .as_ref()
+                .map(|id| json!({ "before": id }))
+                .unwrap_or_else(|| json!({})),
+        ),
+    };
+    let created = server.post_json(&path, dir, &body).await?;
+    created
+        .pointer("/data/id")
+        .or_else(|| created.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            HarnessError::Protocol("opencode session fork returned no id".into())
+        })
+}
+
+/// One message-list entry reduced to what a fork cut needs: (id, role).
+/// 1.x wraps the message in `{info: {id, role}, parts}`; 2.x items are
+/// flat `{id, type, …}` — the role lives under either key.
+fn message_id_and_role(item: &Value) -> Option<(String, String)> {
+    let info = item.get("info").unwrap_or(item);
+    let id = info.get("id").and_then(Value::as_str)?;
+    let role = info
+        .get("role")
+        .or_else(|| info.get("type"))
+        .and_then(Value::as_str)?;
+    Some((id.to_owned(), role.to_owned()))
+}
+
+/// Whether a message starts a turn: a user prompt, or a 2.x synthetic
+/// report the session answers as its next user input (both begin a new
+/// execution; 1.x only ever has `user`/`assistant`).
+fn starts_turn(role: &str) -> bool {
+    role == "user" || role == "synthetic"
+}
+
+/// Resolve the exclusive fork cut from a session's (id, role) message list
+/// in creation order: the id of the next turn-starting message after
+/// `last_turn` (the boundary turn's own user message), `None` when nothing
+/// follows (the whole session is copied). `Err` when the boundary message
+/// is gone from the list — the session can no longer be cut there.
+fn fork_cut(
+    messages: &[(String, String)],
+    last_turn: &str,
+) -> Result<Option<String>, HarnessError> {
+    let pos = messages
+        .iter()
+        .position(|(id, _)| id == last_turn)
+        .ok_or_else(|| {
+            HarnessError::Protocol(format!(
+                "opencode session no longer holds message {last_turn}"
+            ))
+        })?;
+    Ok(messages[pos + 1..]
+        .iter()
+        .find(|(_, role)| starts_turn(role))
+        .map(|(id, _)| id.clone()))
+}
+
+/// The session's message list as (id, role) pairs in creation order —
+/// 1.x `GET /session/{id}/message` (a raw array of `{info, parts}`
+/// entries), 2.x `GET /api/session/{id}/message` (cursor-paginated
+/// `{data, cursor}`; `order=asc` fixes oldest-first and the cursor alone
+/// pages on — the spec forbids combining it with `order`). The cursor is
+/// opaque, so it is percent-encoded into the query.
+async fn session_messages(
+    server: &Server,
+    dir: Option<&str>,
+    session_id: &str,
+) -> Result<Vec<(String, String)>, HarnessError> {
+    /// A page cap so a server that keeps feeding cursors cannot hang the
+    /// fork; hitting it refuses the fork (the budgeted paste) rather than
+    /// risking a cut resolved against an incomplete list.
+    const MAX_MESSAGE_PAGES: usize = 1024;
+
+    let protocol = server.protocol().await;
+    let mut messages = Vec::new();
+    let mut cursor: Option<String> = None;
+    for page in 0..MAX_MESSAGE_PAGES {
+        let path = match (protocol, cursor.as_deref()) {
+            (Protocol::V1, _) => format!("/session/{session_id}/message"),
+            (Protocol::V2, None) => format!("/api/session/{session_id}/message?order=asc"),
+            (Protocol::V2, Some(cursor)) => {
+                // `encode_directory` is a plain percent-encoder; it serves
+                // opaque query values as well as the header.
+                format!(
+                    "/api/session/{session_id}/message?cursor={}",
+                    encode_directory(cursor)
+                )
+            }
+        };
+        let response = server.get_json(&path, dir).await?;
+        let next = response
+            .pointer("/cursor/next")
+            .and_then(Value::as_str)
+            .filter(|cursor| !cursor.is_empty())
+            .map(str::to_owned);
+        for item in unwrap_data(response).as_array().cloned().unwrap_or_default() {
+            if let Some(entry) = message_id_and_role(&item) {
+                messages.push(entry);
+            }
+        }
+        match (protocol, next) {
+            (Protocol::V1, _) | (Protocol::V2, None) => return Ok(messages),
+            (Protocol::V2, Some(_)) if page + 1 == MAX_MESSAGE_PAGES => {
+                return Err(HarnessError::Protocol(
+                    "opencode message list never reached its end".into(),
+                ))
+            }
+            (Protocol::V2, Some(next)) => cursor = Some(next),
+        }
+    }
+    unreachable!("the loop returns or errors on its last page")
+}
+
 fn context_usage_event(info: &Value, context_windows: &HashMap<String, u64>) -> Option<AgentEvent> {
     let tokens = info.get("tokens")?;
     let counts: Vec<u64> = [
@@ -2490,12 +2737,15 @@ fn pick_variant(
         .map(str::to_owned)
 }
 
-/// Build a `prompt_async` body: text part + attachment file parts.
+/// Build a `prompt_async` body: text part + attachment file parts. The
+/// client-chosen `messageID` rides the top level (1.x `PromptInput` takes
+/// it; the server adopts it as the user message's id — ticket 20).
 fn prompt_body(
     prompt: &str,
     model: Option<(&str, &str)>,
     variant: Option<&str>,
     attachments: &[String],
+    message_id: &str,
 ) -> Value {
     let mut parts = vec![json!({ "type": "text", "text": prompt })];
     for path in attachments {
@@ -2511,6 +2761,10 @@ fn prompt_body(
     }
     let mut body = serde_json::Map::new();
     body.insert("parts".into(), Value::Array(parts));
+    body.insert(
+        "messageID".into(),
+        Value::String(message_id.to_owned()),
+    );
     if let Some((provider, model)) = model {
         body.insert(
             "model".into(),
@@ -2523,11 +2777,10 @@ fn prompt_body(
     Value::Object(body)
 }
 
-/// 2.x prompt body: plain text plus `{uri, name}` file attachments. Model
-/// and variant do NOT ride here — they were set on the session at run
-/// start (`POST /api/session/{id}/model`).
-fn prompt_body_v2(prompt: &str, attachments: &[String]) -> Value {
-    let files: Vec<Value> = attachments
+/// 2.x file attachments: `{uri, name}` pairs shared by the prompt and
+/// command bodies.
+fn prompt_files_v2(attachments: &[String]) -> Vec<Value> {
+    attachments
         .iter()
         .map(|path| {
             json!({
@@ -2538,8 +2791,15 @@ fn prompt_body_v2(prompt: &str, attachments: &[String]) -> Value {
                     .unwrap_or_default(),
             })
         })
-        .collect();
-    json!({ "text": prompt, "files": files })
+        .collect()
+}
+
+/// 2.x prompt body: plain text plus file attachments, under the
+/// client-chosen message `id` (the turn's provider ref — ticket 20; 2.x
+/// requires the `msg_` prefix). Model and variant do NOT ride here — they
+/// were set on the session at run start (`POST /api/session/{id}/model`).
+fn prompt_body_v2(prompt: &str, attachments: &[String], message_id: &str) -> Value {
+    json!({ "id": message_id, "text": prompt, "files": prompt_files_v2(attachments) })
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -2560,10 +2820,14 @@ fn mime_for(path: &str) -> &'static str {
 
 /// What a posted turn carries besides its text (1.x folds model/variant
 /// into the prompt body; 2.x ignores them there — set on the session).
+/// `user_message_id` is the client-chosen message id the turn travels
+/// under (ticket 20): the turn's provider ref, and the anchor a later
+/// fork cuts the provider session at.
 struct TurnSpec<'a> {
     model: Option<&'a (String, String)>,
     variant: Option<&'a str>,
     attachments: &'a [String],
+    user_message_id: &'a str,
 }
 
 /// Send a turn: a leading `/command` known to the agent routes through the
@@ -2584,7 +2848,7 @@ fn command_body_v2(
     {
         let mut body = json!({"name": name, "text": text});
         if !attachments.is_empty() {
-            body["files"] = prompt_body_v2(text, attachments)["files"].clone();
+            body["files"] = Value::Array(prompt_files_v2(attachments));
         }
         body
     } else {
@@ -2595,6 +2859,7 @@ fn command_body_v2(
 async fn post_prompt(
     server: &Server,
     bus_tx: &mpsc::Sender<BusMsg>,
+    event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
     session_id: &str,
     dir: Option<&str>,
     commands: &[SlashCommand],
@@ -2608,6 +2873,7 @@ async fn post_prompt(
         model,
         variant,
         attachments,
+        user_message_id,
     } = spec;
     let protocol = server.protocol().await;
     if let Some((name, arguments)) =
@@ -2619,15 +2885,21 @@ async fn post_prompt(
                     .into(),
             ));
         }
-        // 1.x names the args `arguments`; 2.x `text`.
-        let (path, cmd_body) = match protocol {
+        // 1.x names the args `arguments` and takes the client message id
+        // (`messageID`, like a prompt — T3 sends it there too), so the
+        // command turn still gets its provider ref; 2.x `text`, and its
+        // command endpoint takes NO id (checked against the 2.0.11
+        // schema), so that turn carries no ref.
+        let (path, cmd_body, id_carried) = match protocol {
             Protocol::V1 => (
                 format!("/session/{session_id}/command"),
-                json!({ "command": name, "arguments": arguments }),
+                json!({ "command": name, "arguments": arguments, "messageID": user_message_id }),
+                true,
             ),
             Protocol::V2 => (
                 format!("/api/session/{session_id}/command"),
                 command_body_v2(server.version.get(), name, &arguments, attachments),
+                false,
             ),
         };
         let server_base = server.base.clone();
@@ -2636,6 +2908,16 @@ async fn post_prompt(
         let path_owned = path.clone();
         let protocol = server.protocol.clone();
         let command_failure_tx = command_failure_tx.clone();
+        // The command turn's provider ref (ticket 20), emitted before the
+        // endpoint's own request so it precedes every event the turn
+        // streams. 2.x commands carry no client id — no ref for them.
+        if id_carried
+            && !send(event_tx, turn_ref_event(session_id, user_message_id)).await
+        {
+            return Err(HarnessError::Protocol(
+                "opencode event consumer closed".into(),
+            ));
+        }
         tokio::spawn(async move {
             let server = Server {
                 child: None,
@@ -2679,13 +2961,23 @@ async fn post_prompt(
                 model.map(|(provider, model)| (provider.as_str(), model.as_str())),
                 variant,
                 attachments,
+                user_message_id,
             ),
         ),
         Protocol::V2 => (
             format!("/api/session/{session_id}/prompt"),
-            prompt_body_v2(prompt, attachments),
+            prompt_body_v2(prompt, attachments, user_message_id),
         ),
     };
+    // The turn's provider ref (ticket 20): emitted before the prompt's own
+    // POST so it precedes every event the turn streams — the engine stamps
+    // it on the transcript entry the turn writes, and a fork of the chat
+    // cuts the provider session at it.
+    if !send(event_tx, turn_ref_event(session_id, user_message_id)).await {
+        return Err(HarnessError::Protocol(
+            "opencode event consumer closed".into(),
+        ));
+    }
     let server = Server {
         child: None,
         base: server.base.clone(),

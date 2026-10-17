@@ -1057,21 +1057,91 @@ fn variants_only_ride_models_that_advertise_them() {
 }
 
 #[test]
-fn prompt_body_carries_model_variant_and_attachments() {
+fn prompt_body_carries_model_variant_attachments_and_message_id() {
     let body = prompt_body(
         "hello",
         Some(("anthropic", "claude-opus-5")),
         Some("high"),
         &["/tmp/shot.png".to_owned()],
+        "msg_unit",
     );
     assert_eq!(body["model"]["providerID"], "anthropic");
     assert_eq!(body["model"]["modelID"], "claude-opus-5");
     assert_eq!(body["variant"], "high");
+    // The client-chosen message id (ticket 20): the turn's provider ref.
+    assert_eq!(body["messageID"], "msg_unit");
     assert_eq!(body["parts"][0]["type"], "text");
     assert_eq!(body["parts"][0]["text"], "hello");
     assert_eq!(body["parts"][1]["type"], "file");
     assert_eq!(body["parts"][1]["mime"], "image/png");
     assert_eq!(body["parts"][1]["url"], "file:///tmp/shot.png");
+}
+
+#[test]
+fn new_user_message_ids_fit_both_wires() {
+    // 2.x requires the `msg_` prefix on prompt ids and fork boundaries.
+    let id = new_user_message_id();
+    assert!(id.starts_with("msg_"), "{id}");
+    assert_ne!(id, new_user_message_id());
+}
+
+#[test]
+fn message_id_and_role_reads_both_list_shapes() {
+    // 1.x: `{info: {id, role}, parts}`. 2.x: flat `{id, type}`.
+    let v1 = json!({ "info": { "id": "msg_1", "role": "user" }, "parts": [] });
+    let v2 = json!({ "id": "msg_2", "type": "assistant", "time": { "created": 1 } });
+    assert_eq!(
+        message_id_and_role(&v1),
+        Some(("msg_1".to_owned(), "user".to_owned()))
+    );
+    assert_eq!(
+        message_id_and_role(&v2),
+        Some(("msg_2".to_owned(), "assistant".to_owned()))
+    );
+    // A synthetic 2.x report is a turn start the fork must cut at too.
+    let synthetic = json!({ "id": "msg_3", "type": "synthetic" });
+    assert_eq!(
+        message_id_and_role(&synthetic),
+        Some(("msg_3".to_owned(), "synthetic".to_owned()))
+    );
+    assert_eq!(message_id_and_role(&json!({ "parts": [] })), None);
+}
+
+#[test]
+fn fork_cut_addresses_the_next_turns_user_message() {
+    // The boundary turn's own message starts the list; the cut is the NEXT
+    // user message (OpenCode's fork boundary is exclusive).
+    let messages: Vec<(String, String)> = [
+        ("msg_first", "user"),
+        ("msg_first_reply", "assistant"),
+        ("msg_second", "user"),
+        ("msg_second_reply", "assistant"),
+    ]
+    .into_iter()
+    .map(|(id, role)| (id.to_owned(), role.to_owned()))
+    .collect();
+    assert_eq!(
+        fork_cut(&messages, "msg_first").unwrap(),
+        Some("msg_second".to_owned())
+    );
+    // The boundary turn is the latest: nothing follows → copy the whole
+    // session (no cut).
+    assert_eq!(fork_cut(&messages, "msg_second").unwrap(), None);
+    // A synthetic report the session answers starts the next turn too.
+    let with_report: Vec<(String, String)> = [
+        ("msg_first", "user"),
+        ("msg_report", "synthetic"),
+    ]
+    .into_iter()
+    .map(|(id, role)| (id.to_owned(), role.to_owned()))
+    .collect();
+    assert_eq!(
+        fork_cut(&with_report, "msg_first").unwrap(),
+        Some("msg_report".to_owned())
+    );
+    // A boundary the session no longer holds refuses the fork (the caller
+    // falls back to the budgeted paste).
+    assert!(fork_cut(&messages, "msg_gone").is_err());
 }
 
 fn feed_with_assistant(message: &str) -> SessionFeed {
@@ -1648,8 +1718,9 @@ fn v2_model_list_folds_into_provider_catalog() {
 }
 
 #[test]
-fn prompt_body_v2_carries_text_and_files_only() {
-    let body = prompt_body_v2("hello", &["/tmp/shot.png".to_owned()]);
+fn prompt_body_v2_carries_text_files_and_the_message_id() {
+    let body = prompt_body_v2("hello", &["/tmp/shot.png".to_owned()], "msg_unit");
+    assert_eq!(body["id"], "msg_unit");
     assert_eq!(body["text"], "hello");
     assert_eq!(body["files"][0]["uri"], "file:///tmp/shot.png");
     assert_eq!(body["files"][0]["name"], "shot.png");
@@ -1890,14 +1961,18 @@ async fn v2_model_selection_and_prompt_use_the_documented_bodies() {
             .1,
         json!({"model":{"providerID":"opencode","id":"muse","variant":"low"}})
     );
-    assert_eq!(
-        posts
-            .iter()
-            .find(|(p, _)| p == "/api/session/fixture/prompt")
-            .unwrap()
-            .1,
-        json!({"text":"first","files":[]})
-    );
+    let prompt = posts
+        .iter()
+        .find(|(p, _)| p == "/api/session/fixture/prompt")
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(prompt["text"], "first");
+    assert_eq!(prompt["files"], json!([]));
+    // The client-chosen message id (ticket 20) rides `id` — a dynamic
+    // `msg_`-prefixed uuid, so only its shape is asserted here.
+    let message_id = prompt["id"].as_str().unwrap_or_default();
+    assert!(message_id.starts_with("msg_"), "{message_id}");
 }
 
 #[tokio::test]
@@ -2078,7 +2153,7 @@ fn v2_command_bodies_follow_server_version() {
         let attachments = vec!["/workspace/image.png".into()];
         assert_eq!(
             command_body_v2(Some(&version), "test", "args", &attachments)["files"],
-            prompt_body_v2("args", &attachments)["files"]
+            prompt_body_v2("args", &attachments, "msg_unit")["files"]
         );
     }
 }

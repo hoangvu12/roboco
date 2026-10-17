@@ -131,7 +131,7 @@ impl ShortcutsPage {
             completion_harnesses: popover::Loadable::Idle,
             completion_task: None,
             thread_naming: cx
-                .new(|cx| crate::settings::thread_naming::ThreadNamingCard::new(state, cx)),
+                .new(|cx| crate::settings::thread_naming::ThreadNamingCard::new(state.clone(), cx)),
             auto_resume: cx
                 .new(|cx| crate::settings::auto_resume::AutoResumeCard::new(state, cx)),
         }

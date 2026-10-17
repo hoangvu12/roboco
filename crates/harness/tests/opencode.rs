@@ -16,7 +16,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use roboco_harness::{
     CancellationToken, Harness, HarnessError, OpencodeHarness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, ReasoningLevel, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
+    AgentEvent, DoneStatus, HarnessId, ProviderFork, ProviderTurnRef, ReasoningLevel, RunRequest,
+    SandboxLevel, ToolCall, UserInputAnswer,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,10 +45,39 @@ struct FakeOpencode {
     fail_session_creates: Arc<Mutex<u32>>,
     /// Answer `POST …/abort` with a 500 (a wedged server).
     fail_aborts: Arc<Mutex<bool>>,
+    /// Serve the 2.x `/api` surface instead: version-bearing `/api/info`,
+    /// `{data}`-wrapped responses, raw (unenveloped) SSE frames.
+    v2: bool,
+    /// Per-session message lists the fork's boundary resolution reads
+    /// (`GET /session/{id}/message`, `GET /api/session/{id}/message`).
+    /// Unlisted sessions 404 — the fork's "a call fails" fallback.
+    messages: Arc<Mutex<std::collections::HashMap<String, Vec<Value>>>>,
+    /// Cursor-paginated 2.x message fixtures by session: whole pages,
+    /// served one `cursor=` step at a time (the pagination path of the
+    /// fork's boundary resolution).
+    paged_messages: Arc<Mutex<std::collections::HashMap<String, Vec<Vec<Value>>>>>,
+    /// Fork outcomes by SOURCE session id: (status, response). An
+    /// unconfigured source 404s the fork (the refused-fork fallback).
+    forks: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                (&'static str, Value),
+            >,
+        >,
+    >,
 }
 
 impl FakeOpencode {
     async fn start() -> Self {
+        Self::start_proto(false).await
+    }
+
+    async fn start_v2() -> Self {
+        Self::start_proto(true).await
+    }
+
+    async fn start_proto(v2: bool) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (events, _) = broadcast::channel::<(u64, String)>(256);
@@ -64,6 +94,10 @@ impl FakeOpencode {
             first_prompt_had_subscriber: Arc::new(Mutex::new(None)),
             fail_session_creates: Arc::new(Mutex::new(0)),
             fail_aborts: Arc::new(Mutex::new(false)),
+            v2,
+            messages: Arc::default(),
+            paged_messages: Arc::default(),
+            forks: Arc::default(),
         };
         let accept = fake.clone();
         tokio::spawn(async move {
@@ -79,7 +113,8 @@ impl FakeOpencode {
     }
 
     /// Push one bus event (the driver accepts both the bare and the
-    /// `/global/event` envelope; the fake uses the enveloped form).
+    /// `/global/event` envelope; the fake uses the enveloped form on 1.x
+    /// and the raw 2.x frame shape on 2.x).
     fn emit(&self, payload: Value) {
         if payload["type"] == "session.status"
             && let Some(id) = payload["properties"]["sessionID"].as_str()
@@ -89,10 +124,14 @@ impl FakeOpencode {
                 .unwrap()
                 .insert(id.to_owned(), payload["properties"]["status"].clone());
         }
-        let framed = format!(
-            "data: {}\n\n",
-            json!({ "directory": "/", "payload": payload })
-        );
+        let framed = if self.v2 {
+            format!("data: {}\n\n", payload)
+        } else {
+            format!(
+                "data: {}\n\n",
+                json!({ "directory": "/", "payload": payload })
+            )
+        };
         let mut backlog = self.backlog.lock().unwrap();
         let seq = backlog.len() as u64;
         backlog.push((seq, framed.clone()));
@@ -101,6 +140,33 @@ impl FakeOpencode {
 
     fn set_providers(&self, providers: Value) {
         *self.providers.lock().unwrap() = providers;
+    }
+
+    /// Install a session's message list (creation order) for the fork's
+    /// boundary resolution.
+    fn set_messages(&self, session: &str, messages: Vec<Value>) {
+        self.messages
+            .lock()
+            .unwrap()
+            .insert(session.to_owned(), messages);
+    }
+
+    /// Install a session's message list as 2.x cursor pages (creation
+    /// order across the pages).
+    fn set_messages_paged(&self, session: &str, pages: Vec<Vec<Value>>) {
+        self.paged_messages
+            .lock()
+            .unwrap()
+            .insert(session.to_owned(), pages);
+    }
+
+    /// Install the fork outcome for a source session (status + response
+    /// body; 1.x returns the session info raw, 2.x wrapped in `{data}`).
+    fn set_fork(&self, source: &str, status: &'static str, response: Value) {
+        self.forks
+            .lock()
+            .unwrap()
+            .insert(source.to_owned(), (status, response));
     }
 
     fn posts_to(&self, path: &str) -> Vec<Value> {
@@ -153,9 +219,12 @@ impl FakeOpencode {
             let mut parts = start.split_whitespace();
             let method = parts.next().unwrap_or_default().to_owned();
             let target = parts.next().unwrap_or_default().to_owned();
-            let path = target.split('?').next().unwrap_or_default().to_owned();
+            let (path, query) = match target.split_once('?') {
+                Some((path, query)) => (path.to_owned(), query.to_owned()),
+                None => (target, String::new()),
+            };
 
-            if method == "GET" && path == "/global/event" {
+            if method == "GET" && (path == "/global/event" || path == "/api/event") {
                 // Subscribe FIRST, then snapshot the backlog: frames landing
                 // in between arrive on both channels and dedupe by sequence.
                 let mut rx = self.events.subscribe();
@@ -190,7 +259,7 @@ impl FakeOpencode {
             }
 
             if method == "POST" {
-                if path.ends_with("/prompt_async") {
+                if path.ends_with("/prompt_async") || path.ends_with("/prompt") {
                     let mut first = self.first_prompt_had_subscriber.lock().unwrap();
                     if first.is_none() {
                         *first = Some(self.events.receiver_count() > 0);
@@ -198,7 +267,7 @@ impl FakeOpencode {
                 }
                 self.posts.lock().unwrap().push((path.clone(), body));
             }
-            let (status, payload) = self.route(&method, &path);
+            let (status, payload) = self.route(&method, &path, &query);
             let body = payload.to_string();
             let resp = format!(
                 "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
@@ -211,7 +280,41 @@ impl FakeOpencode {
         }
     }
 
-    fn route(&self, method: &str, path: &str) -> (&'static str, Value) {
+    fn route(&self, method: &str, path: &str, query: &str) -> (&'static str, Value) {
+        if self.v2 {
+            return self.route_v2(method, path, query);
+        }
+        self.route_v1(method, path)
+    }
+
+    /// The session id segment of a `/…/session/{id}/…` path.
+    fn session_id_of(path: &str, prefix: &str) -> Option<String> {
+        let rest = path.strip_prefix(prefix)?;
+        let id = rest.split('/').next()?;
+        (!id.is_empty()).then(|| id.to_owned())
+    }
+
+    /// The message list for a session's boundary resolution, when the fake
+    /// has one (unlisted sessions 404 — the fork's resolution fallback).
+    fn message_list(&self, path: &str, prefix: &str) -> Option<Value> {
+        let id = Self::session_id_of(path, prefix)?;
+        self.messages.lock().unwrap().get(&id).cloned()
+    }
+
+    /// The configured fork outcome for a source session (unconfigured
+    /// sources 404 — the refused-fork fallback).
+    fn fork_outcome(&self, path: &str, prefix: &str) -> (&'static str, Value) {
+        let id = Self::session_id_of(path, prefix);
+        match id
+            .as_deref()
+            .and_then(|id| self.forks.lock().unwrap().get(id))
+        {
+            Some((status, body)) => (*status, body.clone()),
+            None => ("404 Not Found", json!({})),
+        }
+    }
+
+    fn route_v1(&self, method: &str, path: &str) -> (&'static str, Value) {
         match (method, path) {
             ("GET", "/global/health") => ("200 OK", json!({ "healthy": true })),
             ("GET", "/provider") => ("200 OK", self.providers.lock().unwrap().clone()),
@@ -239,6 +342,19 @@ impl FakeOpencode {
                 Value::Object(self.statuses.lock().unwrap().clone()),
             ),
             ("GET", "/session/ses_resume") => ("200 OK", json!({ "id": "ses_resume" })),
+            // The fork's boundary resolution: a raw array of
+            // `{info: {id, role}, parts}` entries (the 1.18.31 shape).
+            ("GET", p) if p.starts_with("/session/") && p.ends_with("/message") => {
+                match self.message_list(p, "/session/") {
+                    Some(list) => ("200 OK", Value::Array(list)),
+                    None => ("404 Not Found", json!({})),
+                }
+            }
+            // A native fork: `POST /session/{id}/fork {messageID}` answering
+            // the new session's info (raw, 1.x).
+            ("POST", p) if p.starts_with("/session/") && p.ends_with("/fork") => {
+                self.fork_outcome(p, "/session/")
+            }
             ("GET", p) if p.starts_with("/session/") => ("404 Not Found", json!({})),
             ("POST", p) if p.ends_with("/prompt_async") => ("204 No Content", json!({})),
             ("POST", p) if p.ends_with("/abort") && *self.fail_aborts.lock().unwrap() => (
@@ -246,6 +362,86 @@ impl FakeOpencode {
                 json!({ "name": "UnknownError", "data": { "message": "abort failed" } }),
             ),
             ("POST", p) if p.ends_with("/abort") => ("200 OK", json!(true)),
+            ("POST", p) if p.contains("/permission/") || p.contains("/question/") => {
+                ("200 OK", json!(true))
+            }
+            _ => ("404 Not Found", json!({ "missing": path })),
+        }
+    }
+
+    /// The 2.x `/api` surface: version-bearing info endpoints (protocol
+    /// detection), `{data}`-wrapped responses, and the fork/message routes
+    /// in their 2.x shapes.
+    fn route_v2(&self, method: &str, path: &str, query: &str) -> (&'static str, Value) {
+        match (method, path) {
+            ("GET", "/api/info") | ("GET", "/api/health") | ("GET", "/api/status") => {
+                ("200 OK", json!({ "version": "2.0.11", "healthy": true }))
+            }
+            ("GET", "/api/model") => (
+                "200 OK",
+                // Non-empty: the catalog-sync retry loop must not stall tests.
+                json!({ "data": [{
+                    "providerID": "test-provider",
+                    "id": "muse",
+                    "name": "Muse",
+                    "limit": { "context": 100000 },
+                    "variants": [],
+                    "enabled": true,
+                }] }),
+            ),
+            ("GET", "/api/command") => {
+                ("200 OK", json!({ "data": self.commands.lock().unwrap().clone() }))
+            }
+            ("POST", "/api/session") => {
+                let mut fails = self.fail_session_creates.lock().unwrap();
+                if *fails > 0 {
+                    *fails -= 1;
+                    ("500 Internal Server Error", json!({ "name": "UnknownError" }))
+                } else {
+                    ("200 OK", json!({ "data": { "id": "ses_test2" } }))
+                }
+            }
+            ("GET", "/api/session/active") => ("200 OK", json!({ "data": {} })),
+            // The fork's boundary resolution: `{data, cursor}` pages of
+            // flat `{id, type}` entries (the 2.0.11 shape). A paged fixture
+            // answers one page per `cursor=` step; the driver's first page
+            // rides `order=asc` (no cursor).
+            ("GET", p) if p.starts_with("/api/session/") && p.ends_with("/message") => {
+                let session = Self::session_id_of(p, "/api/session/");
+                let pages = session
+                    .as_deref()
+                    .and_then(|id| self.paged_messages.lock().unwrap().get(id))
+                    .cloned();
+                if let Some(pages) = pages {
+                    let index = query
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("cursor="))
+                        .and_then(|cursor| cursor.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let page = pages.get(index).cloned().unwrap_or_default();
+                    let next = (index + 1 < pages.len()).then(|| (index + 1).to_string());
+                    let cursor = match next {
+                        Some(next) => json!({ "next": next }),
+                        None => json!({}),
+                    };
+                    return ("200 OK", json!({ "data": page, "cursor": cursor }));
+                }
+                match self.message_list(p, "/api/session/") {
+                    Some(list) => ("200 OK", json!({ "data": list, "cursor": {} })),
+                    None => ("404 Not Found", json!({})),
+                }
+            }
+            // A native fork: `POST /api/session/{id}/fork {before}`
+            // answering `{data: {id}}`.
+            ("POST", p) if p.starts_with("/api/session/") && p.ends_with("/fork") => {
+                self.fork_outcome(p, "/api/session/")
+            }
+            ("GET", p) if p.starts_with("/api/session/") => {
+                let id = Self::session_id_of(p, "/api/session/").unwrap_or_default();
+                ("200 OK", json!({ "data": { "id": id } }))
+            }
+            ("POST", p) if p.ends_with("/prompt") => ("200 OK", json!({})),
+            ("POST", p) if p.ends_with("/interrupt") => ("200 OK", json!(true)),
             ("POST", p) if p.contains("/permission/") || p.contains("/question/") => {
                 ("200 OK", json!(true))
             }
@@ -306,6 +502,23 @@ fn harness(fake: &FakeOpencode) -> OpencodeHarness {
     OpencodeHarness::new().with_base_url(fake.base.clone())
 }
 
+/// A request carrying a native-fork directive (what the engine's first
+/// dispatch of a forked chat injects from the recorded intent).
+fn fork_request(
+    prompt: &str,
+    session_id: &str,
+    last_turn: &str,
+    fallback_history: Option<&str>,
+) -> RunRequest {
+    let mut request = request(prompt);
+    request.provider_fork = Some(ProviderFork {
+        session_id: session_id.into(),
+        last_turn: last_turn.into(),
+        fallback_history: fallback_history.map(str::to_owned),
+    });
+    request
+}
+
 /// Emit the standard opening frames of an assistant turn.
 fn assistant_message(fake: &FakeOpencode, session: &str, message: &str) {
     fake.emit(json!({
@@ -322,6 +535,47 @@ fn idle(fake: &FakeOpencode, session: &str) {
     fake.emit(json!({
         "type": "session.status",
         "properties": { "sessionID": session, "status": { "type": "idle" } },
+    }));
+}
+
+/// 2.x bus frames: an execution starts, the assistant message is fixed by
+/// `session.step.started`, and text streams as text items on it.
+fn v2_assistant_message(fake: &FakeOpencode, session: &str, message: &str) {
+    fake.emit(json!({
+        "type": "session.execution.started",
+        "data": { "sessionID": session },
+    }));
+    fake.emit(json!({
+        "type": "session.step.started",
+        "data": { "sessionID": session, "assistantMessageID": message },
+    }));
+    fake.emit(json!({
+        "type": "session.text.started",
+        "data": { "sessionID": session, "assistantMessageID": message, "ordinal": 0, "text": "" },
+    }));
+}
+
+fn v2_text(fake: &FakeOpencode, session: &str, message: &str, text: &str) {
+    fake.emit(json!({
+        "type": "session.text.delta",
+        "data": {
+            "sessionID": session, "assistantMessageID": message, "ordinal": 0,
+            "delta": text,
+        },
+    }));
+    fake.emit(json!({
+        "type": "session.text.ended",
+        "data": {
+            "sessionID": session, "assistantMessageID": message, "ordinal": 0,
+            "text": text,
+        },
+    }));
+}
+
+fn v2_idle(fake: &FakeOpencode, session: &str) {
+    fake.emit(json!({
+        "type": "session.execution.succeeded",
+        "data": { "sessionID": session },
     }));
 }
 
@@ -1352,5 +1606,520 @@ async fn dollar_selected_skill_uses_opencode_native_command_with_arguments() {
     assert!(fake.posts_to("/session/ses_test/prompt_async").is_empty());
     assistant_message(&fake, "ses_test", "msg_1");
     idle(&fake, "ses_test");
+    drain_to_done(&mut stream).await;
+}
+
+// ---------------------------------------------------------------------------
+// Provider turn refs and native forks (t3-orchestration-v2 ticket 20)
+// ---------------------------------------------------------------------------
+
+/// The budgeted transcript the engine attaches as a fork's fallback —
+/// what a refused fork must paste in front of the prompt.
+const BUDGETED_HISTORY: &str = "Continue this side chat using the following prior transcript as context.\n\
+<transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n";
+
+#[tokio::test]
+async fn prompts_carry_a_client_message_id_and_each_turn_gets_its_ref() {
+    let fake = FakeOpencode::start().await;
+    let (controls, steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(request("hi"), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_test"
+    ));
+    let _commands = next_event(&mut stream).await;
+
+    // The prompt travels under a client-chosen message id (the turn's
+    // provider ref — the anchor a fork cuts the session at).
+    let prompts = wait_posts(&fake, "/session/ses_test/prompt_async", 1).await;
+    let first_id = prompts[0]["messageID"].as_str().unwrap().to_owned();
+    assert!(first_id.starts_with("msg_"), "{first_id}");
+
+    // The ref rides the stream BEFORE the turn's content: the engine
+    // stamps it on the entry the turn is about to stream.
+    let turn_ref = next_event(&mut stream).await;
+    assert_eq!(
+        turn_ref,
+        AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Opencode,
+                session_id: "ses_test".into(),
+                turn_id: first_id.clone(),
+            }
+        }
+    );
+
+    assistant_message(&fake, "ses_test", "msg_1");
+    fake.emit(json!({
+        "type": "message.part.updated",
+        "properties": { "part": {
+            "id": "prt_t", "messageID": "msg_1", "sessionID": "ses_test",
+            "type": "text", "text": "Hello",
+        }},
+    }));
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "Hello"));
+    idle(&fake, "ses_test");
+    let first = drain_to_done(&mut stream).await;
+    assert_eq!(
+        first
+            .iter()
+            .filter(|ev| matches!(ev, AgentEvent::TurnRef { .. }))
+            .count(),
+        0,
+        "the turn's one ref was delivered before its content: {first:?}"
+    );
+
+    // A steer at the turn boundary starts the next turn: a NEW id, a new
+    // ref — the turns stay separately addressable for a fork boundary.
+    steer
+        .send(SteerMessage {
+            prompt: "redirect".into(),
+            message_id: None,
+            attachments: Vec::new(),
+            config: None,
+        })
+        .await
+        .expect("steer queued");
+    let steered = next_event(&mut stream).await;
+    assert!(matches!(&steered, AgentEvent::Steered { .. }));
+    let prompts = wait_posts(&fake, "/session/ses_test/prompt_async", 2).await;
+    let second_id = prompts[1]["messageID"].as_str().unwrap().to_owned();
+    assert!(second_id.starts_with("msg_"), "{second_id}");
+    assert_ne!(second_id, first_id);
+    let turn_ref = next_event(&mut stream).await;
+    assert_eq!(
+        turn_ref,
+        AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Opencode,
+                session_id: "ses_test".into(),
+                turn_id: second_id,
+            }
+        }
+    );
+
+    assistant_message(&fake, "ses_test", "msg_2");
+    fake.emit(json!({
+        "type": "message.part.updated",
+        "properties": { "part": {
+            "id": "prt_t2", "messageID": "msg_2", "sessionID": "ses_test",
+            "type": "text", "text": "Redirected",
+        }},
+    }));
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "Redirected"));
+    idle(&fake, "ses_test");
+    let second = drain_to_done(&mut stream).await;
+    assert_eq!(
+        second
+            .iter()
+            .filter(|ev| matches!(ev, AgentEvent::TurnRef { .. }))
+            .count(),
+        0,
+        "the steer turn's one ref was delivered before its content: {second:?}"
+    );
+}
+
+#[tokio::test]
+async fn v2_prompts_carry_a_client_message_id_and_emit_the_turn_ref() {
+    let fake = FakeOpencode::start_v2().await;
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(request("hi"), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_test2"
+    ));
+    let _commands = next_event(&mut stream).await;
+
+    // 2.x spells the client-chosen id `id` (must be `msg_`-prefixed).
+    let prompts = wait_posts(&fake, "/api/session/ses_test2/prompt", 1).await;
+    let message_id = prompts[0]["id"].as_str().unwrap().to_owned();
+    assert!(message_id.starts_with("msg_"), "{message_id}");
+
+    let turn_ref = next_event(&mut stream).await;
+    assert_eq!(
+        turn_ref,
+        AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Opencode,
+                session_id: "ses_test2".into(),
+                turn_id: message_id,
+            }
+        }
+    );
+
+    v2_assistant_message(&fake, "ses_test2", "amsg_1");
+    v2_text(&fake, "ses_test2", "amsg_1", "Hello");
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "Hello"));
+    v2_idle(&fake, "ses_test2");
+    let events = drain_to_done(&mut stream).await;
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("ses_test2".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_native_fork_cuts_the_source_session_at_the_next_turn() {
+    // OpenCode's fork boundary is exclusive: keeping the boundary turn
+    // means cutting before the NEXT turn's user message.
+    let fake = FakeOpencode::start().await;
+    fake.set_messages(
+        "ses_src",
+        vec![
+            json!({ "info": { "id": "msg_a", "role": "user", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_a_reply", "role": "assistant", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_b", "role": "user", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_b_reply", "role": "assistant", "sessionID": "ses_src" } }),
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "id": "ses_fork" }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    // The run continues the FORKED session (the fork response's id)…
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork"
+    ));
+    let _commands = next_event(&mut stream).await;
+    // …cut at the next turn's user message, not at the boundary itself…
+    let forks = wait_posts(&fake, "/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({ "messageID": "msg_b" }));
+    // …and nothing is pasted: the prompt carries only the user text, and
+    // no fresh session was created behind the fork's back.
+    let prompts = wait_posts(&fake, "/session/ses_fork/prompt_async", 1).await;
+    assert_eq!(prompts[0]["parts"][0]["text"], "hi");
+    assert_eq!(prompts[0]["parts"].as_array().map(Vec::len), Some(1));
+    assert!(fake.posts_to("/session").is_empty(), "no fresh create");
+    // The forked turn's ref names the forked session.
+    let message_id = prompts[0]["messageID"].as_str().unwrap().to_owned();
+    let turn_ref = next_event(&mut stream).await;
+    assert_eq!(
+        turn_ref,
+        AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Opencode,
+                session_id: "ses_fork".into(),
+                turn_id: message_id,
+            }
+        }
+    );
+
+    assistant_message(&fake, "ses_fork", "msg_1");
+    fake.emit(json!({
+        "type": "message.part.updated",
+        "properties": { "part": {
+            "id": "prt_t", "messageID": "msg_1", "sessionID": "ses_fork",
+            "type": "text", "text": "forked answer",
+        }},
+    }));
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "forked answer"));
+    idle(&fake, "ses_fork");
+    let events = drain_to_done(&mut stream).await;
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("ses_fork".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_fork_at_the_latest_turn_copies_the_whole_session() {
+    // No next turn: no boundary at all — the whole session is copied.
+    let fake = FakeOpencode::start().await;
+    fake.set_messages(
+        "ses_src",
+        vec![
+            json!({ "info": { "id": "msg_a", "role": "user", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_a_reply", "role": "assistant", "sessionID": "ses_src" } }),
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "id": "ses_fork" }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork"
+    ));
+    let forks = wait_posts(&fake, "/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({}));
+    let prompts = wait_posts(&fake, "/session/ses_fork/prompt_async", 1).await;
+    assert_eq!(prompts[0]["parts"][0]["text"], "hi");
+
+    assistant_message(&fake, "ses_fork", "msg_1");
+    idle(&fake, "ses_fork");
+    drain_to_done(&mut stream).await;
+}
+
+#[tokio::test]
+async fn a_v2_native_fork_cuts_before_the_next_user_message() {
+    let fake = FakeOpencode::start_v2().await;
+    fake.set_messages(
+        "ses_src",
+        vec![
+            json!({ "id": "msg_a", "type": "user", "time": { "created": 1 } }),
+            json!({ "id": "msg_a_reply", "type": "assistant", "time": { "created": 2 } }),
+            json!({ "id": "msg_b", "type": "user", "time": { "created": 3 } }),
+            json!({ "id": "msg_b_reply", "type": "assistant", "time": { "created": 4 } }),
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "data": { "id": "ses_fork2" } }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork2"
+    ));
+    let _commands = next_event(&mut stream).await;
+    // 2.x spells the exclusive boundary `before` and wraps the answer in
+    // `{data}` — the forked session id comes from there.
+    let forks = wait_posts(&fake, "/api/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({ "before": "msg_b" }));
+    // Nothing is pasted: the prompt carries only the user text.
+    let prompts = wait_posts(&fake, "/api/session/ses_fork2/prompt", 1).await;
+    assert_eq!(prompts[0]["text"], "hi");
+    assert!(fake.posts_to("/api/session").is_empty(), "no fresh create");
+    let message_id = prompts[0]["id"].as_str().unwrap().to_owned();
+    let turn_ref = next_event(&mut stream).await;
+    assert_eq!(
+        turn_ref,
+        AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Opencode,
+                session_id: "ses_fork2".into(),
+                turn_id: message_id,
+            }
+        }
+    );
+
+    v2_assistant_message(&fake, "ses_fork2", "amsg_1");
+    v2_text(&fake, "ses_fork2", "amsg_1", "forked answer");
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "forked answer"));
+    v2_idle(&fake, "ses_fork2");
+    let events = drain_to_done(&mut stream).await;
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("ses_fork2".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_v2_fork_at_the_latest_turn_sends_no_boundary() {
+    let fake = FakeOpencode::start_v2().await;
+    fake.set_messages(
+        "ses_src",
+        vec![
+            json!({ "id": "msg_a", "type": "user", "time": { "created": 1 } }),
+            json!({ "id": "msg_a_reply", "type": "assistant", "time": { "created": 2 } }),
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "data": { "id": "ses_fork2" } }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork2"
+    ));
+    let forks = wait_posts(&fake, "/api/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({}));
+    let prompts = wait_posts(&fake, "/api/session/ses_fork2/prompt", 1).await;
+    assert_eq!(prompts[0]["text"], "hi");
+
+    v2_assistant_message(&fake, "ses_fork2", "amsg_1");
+    v2_idle(&fake, "ses_fork2");
+    drain_to_done(&mut stream).await;
+}
+
+#[tokio::test]
+async fn a_refused_fork_falls_back_to_a_fresh_session_with_the_budgeted_history() {
+    let fake = FakeOpencode::start().await;
+    fake.set_messages(
+        "ses_src",
+        vec![
+            json!({ "info": { "id": "msg_a", "role": "user", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_a_reply", "role": "assistant", "sessionID": "ses_src" } }),
+            json!({ "info": { "id": "msg_b", "role": "user", "sessionID": "ses_src" } }),
+        ],
+    );
+    // No fork outcome configured: the POST 404s — the server refused.
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(
+            fork_request("hi", "ses_src", "msg_a", Some(BUDGETED_HISTORY)),
+            controls,
+        )
+        .await
+        .expect("run starts");
+
+    // The boundary resolved (the refused call still addressed the next
+    // turn)…
+    let forks = wait_posts(&fake, "/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({ "messageID": "msg_b" }));
+    // …but the turn then starts a FRESH session…
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_test"
+    ));
+    let _commands = next_event(&mut stream).await;
+    // The fresh session's turn still emits its ref (the entry the engine
+    // stamps is addressable for a LATER fork of this chat).
+    let _turn_ref = next_event(&mut stream).await;
+    assert!(matches!(&_turn_ref, AgentEvent::TurnRef { .. }));
+    assert_eq!(fake.posts_to("/session").len(), 1, "one fresh create");
+    // …whose prompt carries the budgeted history in front of the user
+    // message, byte-identical to the non-native paste.
+    let prompts = wait_posts(&fake, "/session/ses_test/prompt_async", 1).await;
+    assert_eq!(
+        prompts[0]["parts"][0]["text"],
+        format!("{BUDGETED_HISTORY}hi")
+    );
+
+    assistant_message(&fake, "ses_test", "msg_1");
+    fake.emit(json!({
+        "type": "message.part.updated",
+        "properties": { "part": {
+            "id": "prt_t", "messageID": "msg_1", "sessionID": "ses_test",
+            "type": "text", "text": "fresh answer",
+        }},
+    }));
+    let text = next_event(&mut stream).await;
+    assert!(matches!(&text, AgentEvent::TextDelta { text } if text == "fresh answer"));
+    idle(&fake, "ses_test");
+    let events = drain_to_done(&mut stream).await;
+    assert!(events.iter().all(|ev| !matches!(ev, AgentEvent::Error { .. })));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("ses_test".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_fork_boundary_the_server_cannot_resolve_falls_back_to_the_paste() {
+    // The message list itself fails (the session is gone or unreadable):
+    // "a call fails" — same budgeted-paste fallback, and no fork call is
+    // ever made.
+    let fake = FakeOpencode::start_v2().await;
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(
+            fork_request("hi", "ses_src", "msg_a", Some(BUDGETED_HISTORY)),
+            controls,
+        )
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_test2"
+    ));
+    assert_eq!(fake.posts_to("/api/session").len(), 1, "one fresh create");
+    assert!(
+        fake.posts_to("/api/session/ses_src/fork").is_empty(),
+        "the fork is never called with an unresolvable boundary"
+    );
+    let prompts = wait_posts(&fake, "/api/session/ses_test2/prompt", 1).await;
+    assert_eq!(prompts[0]["text"], format!("{BUDGETED_HISTORY}hi"));
+
+    v2_assistant_message(&fake, "ses_test2", "amsg_1");
+    v2_idle(&fake, "ses_test2");
+    let events = drain_to_done(&mut stream).await;
+    assert!(events.iter().all(|ev| !matches!(ev, AgentEvent::Error { .. })));
+}
+
+#[tokio::test]
+async fn a_v2_fork_resolution_follows_the_message_list_cursor() {
+    // The boundary turn sits on the first page, the next user message on
+    // the second: the driver must follow the cursor before it cuts.
+    let fake = FakeOpencode::start_v2().await;
+    fake.set_messages_paged(
+        "ses_src",
+        vec![
+            vec![
+                json!({ "id": "msg_a", "type": "user", "time": { "created": 1 } }),
+                json!({ "id": "msg_a_reply", "type": "assistant", "time": { "created": 2 } }),
+            ],
+            vec![
+                json!({ "id": "msg_b", "type": "user", "time": { "created": 3 } }),
+                json!({ "id": "msg_b_reply", "type": "assistant", "time": { "created": 4 } }),
+            ],
+        ],
+    );
+    fake.set_fork("ses_src", "200 OK", json!({ "data": { "id": "ses_fork2" } }));
+    let (controls, _steer, _token) = controls();
+    let mut stream = harness(&fake)
+        .run(fork_request("hi", "ses_src", "msg_a", None), controls)
+        .await
+        .expect("run starts");
+
+    let started = next_event(&mut stream).await;
+    assert!(matches!(
+        &started,
+        AgentEvent::SessionStarted { session_id, .. } if session_id == "ses_fork2"
+    ));
+    let _commands = next_event(&mut stream).await;
+    // The cut addresses the next turn's user message — which only exists
+    // on the second page, so the driver followed the cursor to find it.
+    let forks = wait_posts(&fake, "/api/session/ses_src/fork", 1).await;
+    assert_eq!(forks[0], json!({ "before": "msg_b" }));
+    let prompts = wait_posts(&fake, "/api/session/ses_fork2/prompt", 1).await;
+    assert_eq!(prompts[0]["text"], "hi");
+
+    v2_assistant_message(&fake, "ses_fork2", "amsg_1");
+    v2_idle(&fake, "ses_fork2");
     drain_to_done(&mut stream).await;
 }

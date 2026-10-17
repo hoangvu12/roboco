@@ -12,6 +12,7 @@
 import type {
   HarnessId,
   MessagePart,
+  NoticeSide,
   SessionMessageEntry,
   ToolCall,
   ToolDiff,
@@ -1468,6 +1469,61 @@ export function fnv1a(text: string): number {
   return Number(BigInt.asIntN(32, hash));
 }
 
+/**
+ * The completion-notice row's diff key (ticket 15): every field a notice
+ * side carries presentationally — chat id, title, outcome kind, and the
+ * one-line detail — hashed together, so a re-delivery re-keys nothing but a
+ * changed outcome, a renamed side chat or an edited detail re-splices the
+ * card. Mirrors `notice_fingerprint` (transcript.rs).
+ */
+export function noticeFingerprint(sides: readonly NoticeSide[]): number {
+  let text = "";
+  for (const side of sides) {
+    text += `${side.chatId}\u0000${side.title}\u0000${side.outcome}\u0000${side.detail ?? ""}\u0000`;
+  }
+  return fnv1a(text);
+}
+
+/**
+ * Eight-character id prefix — the sidebar's convention, and the form the
+ * notice's own text names a side chat by. Mirrors `short_chat_id`
+ * (transcript.rs): the cut never splits a surrogate pair.
+ */
+export function shortChatId(id: string): string {
+  return Array.from(id).slice(0, 8).join("");
+}
+
+/**
+ * The outcome verb a notice side row shows — the same vocabulary the
+ * notice's plain text uses (`side_line` in the engine), so the card and the
+ * prose an agent reads agree. Mirrors `notice_outcome_verb` (transcript.rs).
+ */
+export function noticeOutcomeVerb(side: NoticeSide): string {
+  switch (side.outcome) {
+    case "completed":
+      return "finished";
+    case "errored":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    case "interrupted":
+      return "interrupted";
+    case "waitingForInput":
+      return "waiting for input";
+  }
+}
+
+/**
+ * `<verb>: <detail>` when the row carries a one-liner, else `<verb>` — the
+ * second line of a notice side row. Mirrors `notice_outcome_line`
+ * (transcript.rs).
+ */
+export function noticeOutcomeLine(side: NoticeSide): string {
+  const verb = noticeOutcomeVerb(side);
+  const detail = side.detail?.trim() ?? "";
+  return detail.length === 0 ? verb : `${verb}: ${detail}`;
+}
+
 // ---------------------------------------------------------------------------
 // Row model (transcript.rs rows_for_entry)
 // ---------------------------------------------------------------------------
@@ -1536,7 +1592,17 @@ export type TranscriptRowKind =
    * pre-resolved ("Switched to Codex") so nothing rendering it needs a
    * catalog.
    */
-  | { readonly kind: "harnessSwitchMarker"; readonly label: string };
+  | { readonly kind: "harnessSwitchMarker"; readonly label: string }
+  /**
+   * The engine's completion notice (orchestration v2 ticket 15,
+   * `RowKind::CompletionNotice`): a distinct system-notice card — one row
+   * per side chat, each naming it by title and short id with its outcome
+   * and one-line reason and opening that chat on click. Built from the
+   * entry's `completionNotice` marker; the notice's plain-text sibling part
+   * stays in the doc (older layouts' fallback) but renders no row beside
+   * this one.
+   */
+  | { readonly kind: "completionNotice"; readonly sides: readonly NoticeSide[] };
 
 /** A transcript row: stable id + content version (diff key) + block payload. */
 export interface TranscriptRow {
@@ -1699,6 +1765,16 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
   // position of the FIRST foldable part, so Input/Error chips ahead of it
   // keep their doc order.
   let compactGroupPos: number | null = null;
+  // The engine's completion notice (orchestration v2 ticket 15): an entry
+  // carrying a marker with sides renders as ONE distinct system-notice
+  // card, and its plain-text sibling part — the same notice as prose, kept
+  // in the doc so older layouts stay readable — renders no row beside it.
+  // A marker with no sides (a partial row off a lenient doc decode) is not
+  // a notice renderable here; the text sibling then carries the notice as
+  // plain text, exactly like an older build.
+  const hasNotice = entry.parts.some(
+    (part) => part.kind === "completionNotice" && part.sides.length > 0,
+  );
 
   const flushGroup = (): void => {
     if (pendingGroup.length === 0) {
@@ -1785,9 +1861,11 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
     }
 
     // Compact mode: narration text folds into the single group as a "Wrote"
-    // chip — only the reply (the trailing text run) stays a row.
+    // chip — only the reply (the trailing text run) stays a row. A notice's
+    // text sibling never folds either: the card replaces it in every mode.
     if (
       compact &&
+      !hasNotice &&
       part.kind === "text" &&
       part.text.trim().length > 0 &&
       (replyStart === null || partIx < replyStart)
@@ -1803,7 +1881,7 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       flushGroup();
     }
     if (part.kind === "text") {
-      if (part.text.trim().length === 0) {
+      if (part.text.trim().length === 0 || hasNotice) {
         return;
       }
       const key = `${entry.id}#${part.id}`;
@@ -1877,6 +1955,27 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       });
       return;
     }
+    if (part.kind === "completionNotice") {
+      // `MessagePart::CompletionNotice` (orchestration v2 ticket 15): the
+      // notice card. Its version fingerprints every side's chat id, title,
+      // outcome kind and one-line detail — a rename, a changed outcome or an
+      // edited reason re-keys the card; a replay re-keys nothing. A marker
+      // with no sides renders no row: its text sibling carries the notice
+      // as plain prose (the older layout's fallback).
+      if (part.sides.length === 0) {
+        return;
+      }
+      rows.push({
+        id: `${entry.id}#${part.id}`,
+        version: noticeFingerprint(part.sides),
+        turnStart: false,
+        rowKind: { kind: "completionNotice", sides: part.sides },
+        entryId: entry.id,
+        timestamp: null,
+        copyText: null,
+        compactFold: null,
+      });
+    }
     if (part.kind === "harnessSwitch") {
       // The one-way harness switch's seam (t3-orchestration-v2 ticket 24,
       // transcript.rs:1621-1641): the divider line, resolved once at row
@@ -1895,9 +1994,10 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
       });
       return;
     }
-    // Generated images and the engine's completion-notice markers render no
-    // row here (the notice keeps its plain-text sibling part for older
-    // layouts); they persist in the doc and stay inert in this model.
+    // Generated images render no row here (the rendering port hasn't
+    // landed); they persist in the doc and stay inert in this model. The
+    // completion-notice marker renders its card above; its plain-text
+    // sibling part renders no row beside it (ticket 15's fallback rule).
   });
   if (compact) {
     // Collapsed: one work header. Expanded: the same rows compact-off would
@@ -1963,12 +2063,15 @@ export function rowsForEntry(entry: SessionMessageEntry, options: RowsOptions): 
   // ("No timestamp hover mid-stream"). The fork seam and the harness-switch
   // seam carry NO message metadata lane (transcript.rs:1674-1683 excludes
   // ForkMarker and HarnessSwitchMarker — a quiet divider, never a hover
-  // target).
+  // target); the completion notice joins them (transcript.rs excludes
+  // CompletionNotice — engine structure, not a hover target).
   const lastRow = rows.length > 0 ? rows[rows.length - 1]! : null;
-  const lastIsSeam =
+  const lastIsQuietRow =
     lastRow !== null &&
-    (lastRow.rowKind.kind === "forkMarker" || lastRow.rowKind.kind === "harnessSwitchMarker");
-  if (!streaming && lastRow !== null && !lastIsSeam) {
+    (lastRow.rowKind.kind === "forkMarker" ||
+      lastRow.rowKind.kind === "harnessSwitchMarker" ||
+      lastRow.rowKind.kind === "completionNotice");
+  if (!streaming && lastRow !== null && !lastIsQuietRow) {
     rows[rows.length - 1] = {
       ...lastRow,
       timestamp: entry.createdAt,

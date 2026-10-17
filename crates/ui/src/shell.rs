@@ -3830,6 +3830,13 @@ impl Shell {
                     .unwrap_or_else(|| source.id.clone());
                 self.open_fork_dialog(source, parent, Some(entry_id.clone()), cx);
             }
+            // A completion notice's side row (ticket 15): open the side chat
+            // it reports — the same path a sidebar click takes, so the
+            // notice works from the main transcript and from an open side
+            // chat's pane alike.
+            TranscriptEvent::OpenSideChat { chat_id } => {
+                self.open_chat(chat_id.clone(), cx);
+            }
         }
     }
 
@@ -4736,7 +4743,7 @@ impl Shell {
                             // same "resets in …" phrasing the banner
                             // uses, one per shown meter.
                             .children(
-                                candidate_reset_caption(account, now).map(|caption| {
+                                candidate_reset_caption(&account, now).map(|caption| {
                                     div()
                                         .text_size(px(10.5))
                                         .text_color(theme.text_muted)
