@@ -340,7 +340,7 @@ mod tests {
     fn requeue_restores_a_consumed_entry_for_the_next_boot() {
         let path = temp_path();
         let store = ScheduledResumes::default();
-        store.set_path(path);
+        store.set_path(path.clone());
         store.arm("chat", 5_000);
         assert!(store.consume("chat", 5_000));
         store.requeue("chat", 5_000);

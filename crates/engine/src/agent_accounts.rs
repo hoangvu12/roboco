@@ -5442,11 +5442,11 @@ mod probe_tests {
         let mut signed_out = plain_row();
         signed_out.sign_in_state = AgentSignInState::SignedOut;
         let mut still_limited = plain_row();
-        still_limited.limited_until = Some(Utc::now() + TimeDelta::hours(3));
+        still_limited.limited_until = Some(Utc::now() + chrono::TimeDelta::hours(3));
         let expired_limit = {
             // A limited_until in the PAST: the window lifted.
             let mut row = plain_row();
-            row.limited_until = Some(Utc::now() - TimeDelta::hours(1));
+            row.limited_until = Some(Utc::now() - chrono::TimeDelta::hours(1));
             row
         };
         let rows = vec![
