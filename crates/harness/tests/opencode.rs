@@ -296,7 +296,7 @@ impl FakeOpencode {
 
     /// The message list for a session's boundary resolution, when the fake
     /// has one (unlisted sessions 404 — the fork's resolution fallback).
-    fn message_list(&self, path: &str, prefix: &str) -> Option<Value> {
+    fn message_list(&self, path: &str, prefix: &str) -> Option<Vec<Value>> {
         let id = Self::session_id_of(path, prefix)?;
         self.messages.lock().unwrap().get(&id).cloned()
     }
@@ -307,9 +307,9 @@ impl FakeOpencode {
         let id = Self::session_id_of(path, prefix);
         match id
             .as_deref()
-            .and_then(|id| self.forks.lock().unwrap().get(id))
+            .and_then(|id| self.forks.lock().unwrap().get(id).cloned())
         {
-            Some((status, body)) => (*status, body.clone()),
+            Some((status, body)) => (status, body),
             None => ("404 Not Found", json!({})),
         }
     }
@@ -410,8 +410,7 @@ impl FakeOpencode {
                 let session = Self::session_id_of(p, "/api/session/");
                 let pages = session
                     .as_deref()
-                    .and_then(|id| self.paged_messages.lock().unwrap().get(id))
-                    .cloned();
+                    .and_then(|id| self.paged_messages.lock().unwrap().get(id).cloned());
                 if let Some(pages) = pages {
                     let index = query
                         .split('&')
