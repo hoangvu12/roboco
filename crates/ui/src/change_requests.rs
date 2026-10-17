@@ -287,14 +287,27 @@ impl ChangeRequestClientState {
 }
 
 /// Active, fully identified checkouts that need host-side PR resolution.
+///
+/// Every target is a host-side Git polling loop, so only chats that can show
+/// a badge get one: top-level rows, and side chats only while they or their
+/// parent are selected (the composer footer and the child-session rows).
+/// Orchestrators spawn side chats by the dozen; watching them all made the
+/// host's Git work grow with every delegation.
 pub(crate) fn desired_watch_targets(
     chats: &[Chat],
     _spaces: &[Space],
+    selected_chat: Option<&str>,
     is_unsupported: impl Fn(&str) -> bool,
 ) -> HashSet<ChangeRequestWatchKey> {
     chats
         .iter()
         .filter(|chat| !chat.archived)
+        .filter(|chat| match chat.parent_chat_id.as_deref() {
+            None => true,
+            Some(parent) => {
+                selected_chat == Some(chat.id.as_str()) || selected_chat == Some(parent)
+            }
+        })
         .filter(|chat| !is_unsupported(&chat.device_id))
         .filter_map(|chat| {
             let source = chat.source_context.as_ref()?;
@@ -458,7 +471,7 @@ mod tests {
     fn shared_checkout_keeps_conversation_branches_independent() {
         let first = with_source(chat("first", "local", Some("/repo"), None), "feature/one");
         let second = with_source(chat("second", "local", Some("/repo"), None), "feature/two");
-        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], |_| false);
+        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], None, |_| false);
         assert_eq!(targets.len(), 2);
         assert!(targets.iter().any(|target| target.branch == "feature/one"));
         assert!(targets.iter().any(|target| target.branch == "feature/two"));
@@ -512,7 +525,7 @@ mod tests {
         let status = snapshot("local", "/repo", "checkout");
         assert!(change_request_for_chat(&chat, &[], [&status]).is_none());
         assert!(conversation_branch(&chat, &[]).is_none());
-        assert!(desired_watch_targets(&[chat], &[], |_| false).is_empty());
+        assert!(desired_watch_targets(&[chat], &[], None, |_| false).is_empty());
     }
 
     #[test]
@@ -520,7 +533,7 @@ mod tests {
         let chat = chat("chat", "local", None, None);
         let status = snapshot("local", "/project", "checkout");
         assert!(change_request_for_chat(&chat, &[space("local")], [&status]).is_none());
-        assert!(desired_watch_targets(&[chat], &[space("local")], |_| false).is_empty());
+        assert!(desired_watch_targets(&[chat], &[space("local")], None, |_| false).is_empty());
     }
 
     #[test]
@@ -544,16 +557,16 @@ mod tests {
             chat("two", "local", Some("/repo"), Some("checkout")),
             "feature/pr",
         );
-        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], |_| false);
+        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], None, |_| false);
         assert_eq!(targets.len(), 1);
 
         second.archived = true;
-        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], |_| false);
+        let targets = desired_watch_targets(&[first.clone(), second.clone()], &[], None, |_| false);
         assert_eq!(targets.len(), 1);
 
         let mut first = first;
         first.archived = true;
-        assert!(desired_watch_targets(&[first, second], &[], |_| false).is_empty());
+        assert!(desired_watch_targets(&[first, second], &[], None, |_| false).is_empty());
     }
 
     #[test]
@@ -576,7 +589,8 @@ mod tests {
 
         assert!(state.change_request_for_chat(&chat, &[]).is_none());
         assert!(
-            desired_watch_targets(&[chat], &[], |device| !state.is_supported(device)).is_empty()
+            desired_watch_targets(&[chat], &[], None, |device| !state.is_supported(device))
+                .is_empty()
         );
     }
 
@@ -594,7 +608,7 @@ mod tests {
         assert!(state.clear_unsupported_on_version_change("host", Some("0.2.3")));
         assert!(state.is_supported("host"));
         assert_eq!(
-            desired_watch_targets(&[chat], &[], |device| !state.is_supported(device)).len(),
+            desired_watch_targets(&[chat], &[], None, |device| !state.is_supported(device)).len(),
             1
         );
     }

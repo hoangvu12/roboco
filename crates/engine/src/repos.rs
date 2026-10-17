@@ -43,6 +43,10 @@ const FILE_SEARCH_MAX_RESULTS: usize = 8;
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(6);
 const GITHUB_AVATAR_TIMEOUT: Duration = Duration::from_secs(6);
 const FILE_INDEX_TTL: Duration = Duration::from_secs(10);
+/// Longest a `git worktree list` answers checkout authorization. A change to
+/// `.git/worktrees` (`worktree add`/`remove`/`prune`) invalidates it sooner;
+/// the TTL covers `worktree move` and repositories it cannot stamp.
+const WORKTREE_LIST_TTL: Duration = Duration::from_secs(10);
 const FILE_INDEX_MAX_ENTRIES: usize = 250_000;
 const RANK_BUFFER: usize = 1_024;
 pub const GIT_HISTORY_DEFAULT_LIMIT: usize = 100;
@@ -138,6 +142,10 @@ struct ReposInner {
     github_avatars: std::sync::Mutex<HashMap<String, String>>,
     github_avatar_pages: std::sync::Mutex<HashSet<String>>,
     file_index: FileIndexCache,
+    worktree_lists: std::sync::Mutex<HashMap<PathBuf, WorktreeList>>,
+    /// Every `git` subprocess this instance spawned; tests assert on it.
+    #[cfg(test)]
+    git_runs: std::sync::atomic::AtomicUsize,
 }
 
 struct IndexedPath {
@@ -152,6 +160,14 @@ struct FileIndex {
 }
 
 type FileIndexCache = std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<FileIndex>>>;
+
+/// A repository's linked worktrees as of `listed`, with the mtime of its
+/// `.git/worktrees` directory at that moment.
+struct WorktreeList {
+    paths: Vec<PathBuf>,
+    stamp: Option<std::time::SystemTime>,
+    listed: std::time::Instant,
+}
 
 #[derive(Clone)]
 pub struct Repos {
@@ -185,8 +201,16 @@ impl Repos {
                 github_avatars: std::sync::Mutex::new(HashMap::new()),
                 github_avatar_pages: std::sync::Mutex::new(HashSet::new()),
                 file_index: std::sync::Mutex::new(HashMap::new()),
+                worktree_lists: std::sync::Mutex::new(HashMap::new()),
+                #[cfg(test)]
+                git_runs: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn git_runs(&self) -> usize {
+        self.inner.git_runs.load(Ordering::Relaxed)
     }
 
     // ── registry (repos.json) ───────────────────────────────────────────────
@@ -222,6 +246,8 @@ impl Repos {
 
     /// Run `git <args>` (optionally under `cwd`), returning trimmed stdout.
     async fn git(&self, args: &[&str], cwd: Option<&Path>) -> Result<String, EngineError> {
+        #[cfg(test)]
+        self.inner.git_runs.fetch_add(1, Ordering::Relaxed);
         let mut cmd = tokio::process::Command::new("git");
         #[cfg(windows)]
         {
@@ -1062,15 +1088,9 @@ impl Repos {
     /// worktrees. Filesystem resolution happens on a disposable thread because
     /// user-selected paths may be dead mounts.
     pub async fn workspace_checkout(&self, repo_path: &Path, candidate: &Path) -> Option<PathBuf> {
+        let worktrees = self.linked_worktrees(repo_path).await;
         let repo_path = repo_path.to_path_buf();
         let candidate = candidate.to_path_buf();
-        let worktrees: Vec<_> = self
-            .refs(&repo_path)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|row| row.worktree_path.map(PathBuf::from))
-            .collect();
         disposable_worker("checkout-auth", move || {
             let candidate = std::fs::canonicalize(candidate).ok()?;
             std::iter::once(repo_path)
@@ -1081,6 +1101,43 @@ impl Repos {
         })
         .await
         .flatten()
+    }
+
+    /// Linked worktree paths of `repo_path`. Workspace-file requests
+    /// authorize their checkout on every call, so one `git worktree list`
+    /// serves them until `.git/worktrees` changes or [`WORKTREE_LIST_TTL`]
+    /// passes.
+    async fn linked_worktrees(&self, repo_path: &Path) -> Vec<PathBuf> {
+        let worktrees_dir = repo_path.join(".git").join("worktrees");
+        let stamp = disposable_worker("checkout-auth", move || {
+            std::fs::metadata(worktrees_dir).and_then(|metadata| metadata.modified())
+        })
+        .await
+        .and_then(Result::ok);
+        if let Ok(lists) = self.inner.worktree_lists.lock()
+            && let Some(list) = lists.get(repo_path)
+            && list.stamp == stamp
+            && list.listed.elapsed() < WORKTREE_LIST_TTL
+        {
+            return list.paths.clone();
+        }
+        let listed = std::time::Instant::now();
+        let paths = self
+            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+            .await
+            .map(|out| linked_worktree_paths(&out))
+            .unwrap_or_default();
+        if let Ok(mut lists) = self.inner.worktree_lists.lock() {
+            lists.insert(
+                repo_path.to_path_buf(),
+                WorktreeList {
+                    paths: paths.clone(),
+                    stamp,
+                    listed,
+                },
+            );
+        }
+        paths
     }
 
     /// Switch the checkout at `cwd` (a main folder OR a linked worktree) to
@@ -1460,6 +1517,17 @@ async fn disposable_worker<T: Send + 'static>(
         })
         .ok()?;
     rx.await.ok()
+}
+
+/// Linked worktrees in `git worktree list --porcelain` output: every
+/// `worktree <path>` stanza after the first, which is the main checkout.
+fn linked_worktree_paths(porcelain: &str) -> Vec<PathBuf> {
+    porcelain
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("worktree "))
+        .skip(1)
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// The blocking walk: ONE readdir of the target; `is_repo` is a cheap `.git`
@@ -2596,6 +2664,71 @@ tmpfs /run tmpfs rw 0 0
                 .await
                 .is_none()
         );
+    }
+
+    fn git_fixture(cwd: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Roboco",
+                "-c",
+                "user.email=roboco@example.com",
+            ])
+            .args(args)
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// Workspace-file requests authorize their checkout on every call. That
+    /// must not re-list branches and worktrees each time: one `git worktree
+    /// list` serves every request until `.git/worktrees` changes.
+    #[tokio::test]
+    async fn workspace_checkout_lists_worktrees_once_until_they_change() {
+        const REQUESTS: usize = 10;
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git_fixture(&repo, &["init", "-b", "main"]);
+        git_fixture(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        let first = root.path().join("first");
+        git_fixture(&repo, &["worktree", "add", "-b", "first", "../first"]);
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+
+        for _ in 0..REQUESTS {
+            assert_eq!(
+                repos.workspace_checkout(&repo, &first).await,
+                std::fs::canonicalize(&first).ok()
+            );
+            assert!(repos.workspace_checkout(&repo, root.path()).await.is_none());
+        }
+        assert_eq!(
+            repos.git_runs(),
+            1,
+            "{} authorizations against one repository spawned {} git processes",
+            REQUESTS * 2,
+            repos.git_runs()
+        );
+
+        // A worktree added after the listing is authorized immediately.
+        let second = root.path().join("second");
+        git_fixture(&repo, &["worktree", "add", "-b", "second", "../second"]);
+        assert_eq!(
+            repos.workspace_checkout(&repo, &second).await,
+            std::fs::canonicalize(&second).ok()
+        );
+        assert_eq!(repos.git_runs(), 2);
+
+        // So is a removed one revoked.
+        git_fixture(&repo, &["worktree", "remove", "../first"]);
+        std::fs::create_dir(&first).unwrap();
+        assert!(repos.workspace_checkout(&repo, &first).await.is_none());
+        assert_eq!(repos.git_runs(), 3);
     }
 
     #[tokio::test]

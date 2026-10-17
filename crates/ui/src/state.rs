@@ -2583,9 +2583,12 @@ impl AppState {
             return;
         };
         let targets = if self.change_requests_visible {
-            desired_watch_targets(&self.chats, &self.spaces, |device| {
-                !self.change_requests.is_supported(device)
-            })
+            desired_watch_targets(
+                &self.chats,
+                &self.spaces,
+                self.selected_chat.as_deref(),
+                |device| !self.change_requests.is_supported(device),
+            )
         } else {
             HashSet::new()
         };
@@ -2792,6 +2795,9 @@ impl AppState {
                 self.start_chat_watches(chat_id, cx);
             }
         }
+        // A selected side chat (and a selected parent's side chats) shows
+        // PR badges, so the watched set follows the selection.
+        self.reconcile_change_request_watches(cx);
         cx.notify();
     }
 
@@ -5206,6 +5212,77 @@ mod tests {
             state.selected_chat_row().unwrap().parent_chat_id.as_deref(),
             Some("main")
         );
+    }
+
+    fn watched_branches(state: &AppState) -> Vec<&str> {
+        let mut branches: Vec<&str> = state
+            .change_request_tasks
+            .keys()
+            .map(|target| target.branch.as_str())
+            .collect();
+        branches.sort_unstable();
+        branches
+    }
+
+    /// Every watch task is a host-side Git inspection loop, so the desktop
+    /// holds none while PR badges are hidden, and otherwise only for chats
+    /// that can show a badge: top-level rows, plus the selected chat and its
+    /// side chats (the composer footer and the child-session rows).
+    #[gpui::test]
+    fn change_request_watches_follow_visibility_and_badge_surfaces(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, _requests) = tokio::sync::mpsc::channel(256);
+        let (_replies, inbound) = tokio::sync::mpsc::channel(16);
+        let engine = EngineHandle::from_test_client(roboco_rpc::RpcClient::new(out, inbound));
+        let with_branch = |mut chat: Chat, branch: &str, parent: Option<&str>| {
+            chat.parent_chat_id = parent.map(str::to_owned);
+            chat.source_context = Some(roboco_proto::ConversationSourceContext {
+                checkout_id: format!("checkout-{branch}"),
+                repo_root: format!("/worktrees/{branch}"),
+                cwd: format!("/worktrees/{branch}"),
+                branch: branch.into(),
+                head_sha: None,
+                observed_at: chat.created_at,
+            });
+            chat
+        };
+        let mut archived = with_branch(chat("archived", 4, None), "archived", None);
+        archived.archived = true;
+        let chats = vec![
+            with_branch(chat("lead", 0, None), "lead", None),
+            with_branch(chat("lead-side", 1, None), "lead-side", Some("lead")),
+            with_branch(chat("other", 2, None), "other", None),
+            with_branch(chat("other-side", 3, None), "other-side", Some("other")),
+            archived,
+        ];
+
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            // The shell applies the persisted "hide PR badges" setting when it
+            // is built, before the engine registry attaches.
+            state.set_change_requests_visible(false, cx);
+            state.set_test_engine(engine);
+            state.apply_chats(chats);
+            state.reconcile_change_request_watches(cx);
+            assert!(watched_branches(state).is_empty());
+            state.select_chat(Some("lead".into()), cx);
+            assert!(watched_branches(state).is_empty());
+            state.select_chat(None, cx);
+
+            state.set_change_requests_visible(true, cx);
+            assert_eq!(watched_branches(state), ["lead", "other"]);
+            state.select_chat(Some("lead".into()), cx);
+            assert_eq!(watched_branches(state), ["lead", "lead-side", "other"]);
+            state.select_chat(Some("other-side".into()), cx);
+            assert_eq!(watched_branches(state), ["lead", "other", "other-side"]);
+
+            state.set_change_requests_visible(false, cx);
+            assert!(watched_branches(state).is_empty());
+        });
     }
 
     #[test]
