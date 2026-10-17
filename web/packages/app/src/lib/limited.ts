@@ -1,12 +1,14 @@
 import { methods } from "@roboco/engine-client";
 import type {
   AgentAccount,
+  HarnessDescriptor,
   HarnessId,
   ResumeAccountCandidates,
   ResumeOnAccountOutcome,
   ScheduledResume,
   SessionLimit,
 } from "@roboco/proto";
+import { offeredHarnesses } from "./model-rows";
 import { formatLimitReset, formatScheduledResume } from "./view";
 
 /**
@@ -44,6 +46,21 @@ export function failoverCardTitle(harness: HarnessId): string {
   return harness === "codex"
     ? "Resume on another Codex account"
     : "Resume on another Claude account";
+}
+
+/**
+ * The harnesses the "Continue on another harness" picker offers
+ * (t3-orchestration-v2 ticket 25, the desktop's
+ * `continue_offered_harnesses`): the same offered set the composer's
+ * picker uses (installed and enabled on the listing device), minus the
+ * chat's CURRENT harness — a Limited chat escapes its limit by switching
+ * to ANOTHER harness, never by re-picking the one that hit it. Pure.
+ */
+export function continueOfferedHarnesses(
+  catalog: readonly HarnessDescriptor[],
+  current: HarnessId | null,
+): HarnessDescriptor[] {
+  return offeredHarnesses(catalog).filter((descriptor) => descriptor.id !== current);
 }
 
 /**

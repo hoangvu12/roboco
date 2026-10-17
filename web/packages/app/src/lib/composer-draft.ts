@@ -143,18 +143,48 @@ export function draftFromChat(
  * a new side chat whose first send has not minted it yet
  * (`side_chat_harness_editable`, state.rs, upstream #590): its inherited
  * config must not pin the picked harness while the draft is still the
- * only config carrier.
+ * only config carrier — and EXCEPT an existing chat that sits between
+ * turns (t3-orchestration-v2 ticket 24): its picker unlocks for a ONE-WAY
+ * switch, so `harnessSwitchable` (the caller's `harness_switchable` —
+ * `harnessSwitchable()` in lib/harness-switch.ts) re-opens the facet
+ * while the chat is idle, and a pick becomes the switch instead of a
+ * draft change.
  */
 export function isHarnessLocked(
   chatConfig: ChatConfig | null,
   sideChatHarnessEditable = false,
+  harnessSwitchable = false,
 ): boolean {
-  return chatConfig !== null && !sideChatHarnessEditable;
+  return chatConfig !== null && !sideChatHarnessEditable && !harnessSwitchable;
 }
 
 /** Two drafts differ when any user-facing field changed. */
 export function draftsEqual(a: DraftConfig, b: DraftConfig): boolean {
   return JSON.stringify(buildChatConfig(a)) === JSON.stringify(buildChatConfig(b));
+}
+
+/**
+ * The draft a one-way harness switch lands (t3-orchestration-v2 ticket 24,
+ * the desktop pickers' `default_picks` + the kept sandbox): the new
+ * harness's remembered defaults — model, reasoning, options — reset to
+ * "the new harness's defaults unless the user chose them", with the
+ * caller's explicit model (a pick that rode the switch itself, like a
+ * foreign model row) overriding the remembered one. The sandbox stays the
+ * chat's own pick: the switch never owns it. Pure over the sticky-picks
+ * store, like every remembered* helper here.
+ */
+export function switchHarnessDraft(
+  chatConfig: ChatConfig,
+  harness: HarnessId,
+  model: string | null = rememberedModelFor(harness)?.id ?? null,
+): DraftConfig {
+  return {
+    harness,
+    model,
+    reasoning: rememberedReasoningFor(harness, model),
+    sandbox: chatConfig.sandbox,
+    modelOptions: model === null ? {} : rememberedModelOptions(harness, model),
+  };
 }
 
 // ---------------------------------------------------------------------------

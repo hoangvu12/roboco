@@ -1,5 +1,5 @@
 import { methods } from "@roboco/engine-client";
-import type { Chat, ChatConfig } from "@roboco/proto";
+import type { Chat, ChatConfig, HarnessId } from "@roboco/proto";
 import { createChat, type MutateCaller } from "./chat-actions";
 
 /**
@@ -28,10 +28,20 @@ import { createChat, type MutateCaller } from "./chat-actions";
 
 /**
  * `FORK_SIDE_CHAT` params — `{chatId, sourceChatId, parentChatId?,
- * targetDeviceId?}`. The engine defaults `parentChatId` to the source; a
- * side chat's own fork button passes the side chat's parent so the copy
- * lists as a sibling. `targetDeviceId` rides for request routing like the
- * desktop's send (the engine itself checks the source lives on it).
+ * boundary?, harness?, model?, targetDeviceId?}`. The engine defaults
+ * `parentChatId` to the source; a side chat's own fork button passes the
+ * side chat's parent so the copy lists as a sibling. `targetDeviceId`
+ * rides for request routing like the desktop's send (the engine itself
+ * checks the source lives on it).
+ *
+ * The t3-orchestration-v2 additions (tickets 21+22): `boundary` picks the
+ * settled assistant entry the copy stops at — any of them, errored and
+ * interrupted included, inclusive — where absent keeps the classic
+ * latest-complete-reply fork; `harness`/`model` override what the copy
+ * runs on. Each rides only when chosen (trimmed non-blank), so an engine
+ * predating the additions still reads its classic fork — the fork dialog
+ * (state/fork-dialog.ts) sends exactly the picks that differ from the
+ * source's own.
  */
 export interface ForkSideChatParams {
   /** The minted id of the fork — idempotent by this key. */
@@ -40,25 +50,51 @@ export interface ForkSideChatParams {
   readonly sourceChatId: string;
   /** Where the fork hangs; defaults to the source (the engine's rule). */
   readonly parentChatId?: string;
+  /**
+   * Ticket 21, "Fork from here": the settled assistant entry the copy
+   * stops at, inclusive — its provider turn ref becomes the native fork
+   * boundary. Absent = the latest complete reply (the classic fork).
+   */
+  readonly boundary?: string;
+  /**
+   * Ticket 22: the harness the copy runs on instead of the source's (its
+   * wire name, "codex", "claude-code", …). A cross-harness pick never
+   * records the native-fork intent — its first send carries the budgeted
+   * history instead.
+   */
+  readonly harness?: HarnessId;
+  /**
+   * Ticket 22: the model the copy runs on. Without a harness change it
+   * replaces only the model; into another harness it is all the copy gets
+   * (the old ids are meaningless there).
+   */
+  readonly model?: string;
   /** The source's host device — forwarded-routing metadata, like the Rust. */
   readonly targetDeviceId?: string;
 }
 
 /**
- * Fork `sourceChatId` through its latest completed response into a new chat
- * under `parentChatId`, and get the fresh `Chat` back. The engine rejects
- * with "Wait for a completed response before starting a side chat" when the
- * source has no completed turn yet — callers surface that verbatim (the
- * desktop shows it in the composer).
+ * Fork `sourceChatId` through its latest completed response — or through
+ * `boundary`'s settled assistant reply when given (ticket 21) — into a new
+ * chat under `parentChatId`, on the source's own harness/model or the
+ * overrides (ticket 22), and get the fresh `Chat` back. The engine rejects
+ * with "Wait for a completed response before starting a side chat" when
+ * the source has no completed turn yet — callers surface that verbatim
+ * (the desktop shows it in the composer).
  */
 export async function forkSideChat(
   caller: MutateCaller,
   params: ForkSideChatParams,
 ): Promise<Chat> {
+  const boundary = params.boundary?.trim() ?? "";
+  const model = params.model?.trim() ?? "";
   return caller.call<Chat>(methods.FORK_SIDE_CHAT, {
     chatId: params.chatId,
     sourceChatId: params.sourceChatId,
     ...(params.parentChatId !== undefined ? { parentChatId: params.parentChatId } : {}),
+    ...(boundary.length > 0 ? { boundary } : {}),
+    ...(params.harness !== undefined && params.harness !== null ? { harness: params.harness } : {}),
+    ...(model.length > 0 ? { model } : {}),
     ...(params.targetDeviceId !== undefined ? { targetDeviceId: params.targetDeviceId } : {}),
   });
 }

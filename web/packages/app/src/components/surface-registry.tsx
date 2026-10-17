@@ -29,6 +29,8 @@ import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { childChatTitle } from "../lib/explorer-sections";
+import { forkSpecFor } from "../lib/fork-dialog";
+import { forkDialogStore } from "../state/fork-dialog";
 import { chatRenameStore } from "../state/chat-rename";
 import type { WorkspaceCommandActions } from "./composer";
 import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
@@ -41,7 +43,7 @@ import { SurfacePicker } from "./surface-picker";
 import { Composer } from "./composer";
 import { ChatTranscriptOutlet } from "./chat-transcript-outlet";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
-import { JumpPill, TranscriptView, type JumpButtonState } from "./transcript";
+import { JumpPill, TranscriptView, type ForkFromEntryPayload, type JumpButtonState } from "./transcript";
 import type { SubagentOpen } from "./tool-group";
 
 /**
@@ -431,6 +433,24 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const onOpenSubagent = (payload: SubagentOpen): void => {
     rightPaneStore.addSubagentSurface(chatId, payload);
   };
+  // "Fork from here" (t3-orchestration-v2 tickets 21/22/26): a settled
+  // reply in THIS side chat's transcript forks the side chat — the copy
+  // hangs under its PARENT (a sibling, the desktop's `ForkFromEntry` rule)
+  // and its surface opens in this pane, the pane the side chat itself
+  // lives in. The surface's row (fleet, seed, or unsaved local) is the
+  // source; an unsaved one has no replies yet, so nothing renders the
+  // action until it exists engine-side.
+  const onForkFromEntry = useCallback(
+    (payload: ForkFromEntryPayload) => {
+      if (session === null || effectiveChat === null) {
+        return;
+      }
+      forkDialogStore.open(
+        forkSpecFor(effectiveChat, chatId, payload.entryId, session.client, session.engine.baseUrl),
+      );
+    },
+    [session, effectiveChat, chatId],
+  );
   const onRetryDelivery = (): void => {
     if (session.client.state !== "connected") {
       return;
@@ -523,6 +543,7 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
               indicator={indicator}
               turnStartedAt={turnStartedAt}
               onOpenSubagent={onOpenSubagent}
+              onForkFromEntry={onForkFromEntry}
               onOpenChat={onOpenChat}
               deliveryDegraded={deliveryDegraded}
             />

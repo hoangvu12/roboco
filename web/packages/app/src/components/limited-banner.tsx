@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { EngineClient } from "@roboco/engine-client";
-import type { AgentAccount, ResumeAccountCandidates, ScheduledResume, SessionLimit } from "@roboco/proto";
+import type {
+  AgentAccount,
+  HarnessDescriptor,
+  HarnessId,
+  Model,
+  ResumeAccountCandidates,
+  ScheduledResume,
+  SessionLimit,
+} from "@roboco/proto";
 import { accountLabel } from "../lib/accounts";
 import {
   cancelScheduledResume,
   candidateResetCaption,
+  continueOfferedHarnesses,
   failoverCardTitle,
   failoverListOffers,
   failoverOutcomeNotice,
@@ -17,7 +26,18 @@ import {
   scheduleResumeAtReset,
   FAILOVER_LIST_TTL_MS,
 } from "../lib/limited";
+import {
+  dialogError,
+  dialogLoading,
+  dialogRows,
+  loadDialogHarnesses,
+  loadDialogModels,
+  type DialogLoad,
+} from "../lib/harness-choice";
+import { switchHarness } from "../lib/harness-switch";
+import type { DraftConfig } from "../lib/composer-actions";
 import { AccountUsageMeter } from "./account-usage";
+import { HarnessChip, harnessChipsEmptyText, ModelList } from "./ui/HarnessChoice";
 import { PickerCard } from "./ui/PickerCard";
 import { MenuHeading, MenuRowNav } from "./ui/MenuRows";
 import { SignInAgainCard, useSignInAgainFlow } from "./sign-in-again";
@@ -37,10 +57,12 @@ import { SignInAgainCard, useSignInAgainFlow } from "./sign-in-again";
  * - **Resume on another account** (ticket 09) — the failover picker: the
  *   engine-ranked candidates with their usage meters and reset times, the
  *   recommended one first, and the signed-out accounts with a "Sign in
- *   again" action instead of a switch.
- *
- * "Continue on another harness" (ticket 25) is ticket 26's web work — the
- * desktop's fourth chip lands there, not here.
+ *   again" action instead of a switch;
+ * - **Continue on another harness** (t3-orchestration-v2 tickets 25/26) —
+ *   the escape hatch spec story 55 asks for: pick any OTHER enabled
+ *   harness and a model; confirming performs ticket 24's one-way switch
+ *   and then sends the same continue prompt, so the new agent picks the
+ *   work up from the budgeted history above the "Switched to" seam.
  */
 export function LimitedBanner({
   chatId,
@@ -49,6 +71,8 @@ export function LimitedBanner({
   scheduled,
   now,
   onResume,
+  currentHarness,
+  targetDeviceId,
 }: {
   /** The chat's id as the page knows it (scoped; routing decodes either form). */
   readonly chatId: string;
@@ -57,8 +81,19 @@ export function LimitedBanner({
   readonly limit: SessionLimit | null;
   readonly scheduled: ScheduledResume | null;
   readonly now: number;
-  /** The composer's fixed-prompt send ("Continue where you left off."). */
-  readonly onResume: () => void;
+  /**
+   * The composer's fixed-prompt send ("Continue where you left off.") —
+   * called plainly for Resume, or with the switch's landed picks for
+   * "Continue on another harness" (ticket 25: the continuation carries the
+   * NEW harness deterministically, the desktop's row stamp).
+   */
+  readonly onResume: (switched?: Partial<DraftConfig>) => void;
+  /** The harness the chat runs today (its row config) — never offered by the
+   *  "Continue on another harness" picker (ticket 25). */
+  readonly currentHarness: HarnessId | null;
+  /** The picker's catalog routing: the chat's host device when it differs
+   *  from the connected engine's own (scoped), else null. */
+  readonly targetDeviceId: string | null;
 }) {
   const label = limitedBannerLabel(limit, scheduled, now);
   const armable = resumeAtResetArmable(limit, scheduled, now);
@@ -258,8 +293,266 @@ export function LimitedBanner({
           )}
         </PickerCard>
       )}
+      {/*
+        CONTINUE ON ANOTHER HARNESS (orchestration v2 tickets 25/26): a
+        separate action — the escape hatch spec story 55 asks for. A small
+        picker card lists the enabled harnesses OTHER than the current one
+        (plus a model pick); confirming performs ticket 24's one-way switch
+        and then sends the same continue prompt, so the new agent picks the
+        work up from the budgeted history above the "Switched to" seam.
+      */}
+      <ContinueOnHarnessPicker
+        chatId={chatId}
+        client={client}
+        currentHarness={currentHarness}
+        targetDeviceId={targetDeviceId}
+        disabled={chipsDisabled}
+        onNotice={setNotice}
+        onResume={onResume}
+      />
       {notice !== null && <span className="limited-banner-notice">{notice}</span>}
     </div>
+  );
+}
+
+/**
+ * The "Continue on another harness" picker (t3-orchestration-v2 tickets
+ * 25/26) — the web peer of the desktop's `ContinueOnHarnessDialog`
+ * (`shell/continue_on_harness.rs`), held in the banner's own anchored-card
+ * idiom (the failover picker's shape): the harness chips (never the
+ * current one), the selected harness's models, and the Continue action.
+ *
+ * Confirming performs ticket 24's one-way switch FIRST — its seam is what
+ * arms the budgeted history and drops the limited harness's session — so
+ * the continue prompt is sent only after the RPC succeeds
+ * (`onResume`, the composer's fixed-prompt path). A failed switch leaves
+ * the chat untouched: still Limited, still on its old harness, the banner
+ * still up — the outcome line says why. A selection that moved while the
+ * switch was in flight never fires the continuation: the banner re-keys
+ * to the new chat (the props change, not a remount), so the guard compares
+ * the live chat id against the one the switch started for — the switched
+ * chat keeps its Limited banner and its own Resume, never sending another
+ * chat's continuation into it (the desktop's `still_selected` rule).
+ */
+function ContinueOnHarnessPicker({
+  chatId,
+  client,
+  currentHarness,
+  targetDeviceId,
+  disabled,
+  onNotice,
+  onResume,
+}: {
+  readonly chatId: string;
+  readonly client: EngineClient | null;
+  readonly currentHarness: HarnessId | null;
+  readonly targetDeviceId: string | null;
+  readonly disabled: boolean;
+  readonly onNotice: (message: string | null) => void;
+  readonly onResume: (switched?: Partial<DraftConfig>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [harnesses, setHarnesses] = useState<DialogLoad<HarnessDescriptor>>("idle");
+  const [models, setModels] = useState<ReadonlyMap<HarnessId, DialogLoad<Model>>>(new Map());
+  const [harness, setHarness] = useState<HarnessId | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  // The freshness guards: the banner re-keys to a new chat through props
+  // (no remount), so the live chat id retires in-flight loads and the
+  // confirm's continuation alike; the load epoch retires loads from a
+  // closed card.
+  const chatIdRef = useRef(chatId);
+  chatIdRef.current = chatId;
+  const loadEpochRef = useRef(0);
+
+  // Opening loads the catalog once per open (the desktop's dialog-local
+  // `ensure_continue_loads`); reopening retries. A chat change drops the
+  // picks (the current harness to exclude moved with it).
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    loadEpochRef.current += 1;
+    const epoch = loadEpochRef.current;
+    setHarnesses("loading");
+    setModels(new Map());
+    setHarness(null);
+    setModel(null);
+    if (client === null) {
+      setHarnesses({ error: "Engine not connected" });
+      return;
+    }
+    void loadDialogHarnesses(client, targetDeviceId)
+      .then((rows) => {
+        if (loadEpochRef.current !== epoch || chatIdRef.current !== chatId) {
+          return;
+        }
+        setHarnesses({ rows });
+        // No pick yet: the first OFFERED harness (the current one is
+        // already excluded from the offered list) becomes the pick once
+        // the catalog lands — one click confirms (the desktop's default
+        // resolution).
+        const first = continueOfferedHarnesses(rows, currentHarness)[0]?.id ?? null;
+        if (first !== null) {
+          setHarness(first);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (loadEpochRef.current !== epoch || chatIdRef.current !== chatId) {
+          return;
+        }
+        setHarnesses({ error: cause instanceof Error ? cause.message : String(cause) });
+      });
+  }, [open, client, targetDeviceId, chatId, currentHarness]);
+
+  // The picked harness's model list, loaded once per open per harness.
+  useEffect(() => {
+    if (!open || client === null || harness === null) {
+      return;
+    }
+    if (models.get(harness) !== undefined && models.get(harness) !== "idle") {
+      return;
+    }
+    const epoch = loadEpochRef.current;
+    setModels((current) => new Map(current).set(harness, "loading"));
+    void loadDialogModels(client, harness, targetDeviceId)
+      .then((rows) => {
+        if (loadEpochRef.current !== epoch || chatIdRef.current !== chatId) {
+          return;
+        }
+        setModels((current) => new Map(current).set(harness, { rows }));
+      })
+      .catch((cause: unknown) => {
+        if (loadEpochRef.current !== epoch || chatIdRef.current !== chatId) {
+          return;
+        }
+        setModels((current) =>
+          new Map(current).set(harness, { error: cause instanceof Error ? cause.message : String(cause) }),
+        );
+      });
+  }, [open, client, harness, models, targetDeviceId, chatId]);
+
+  /** Pick the continuation's harness — a pick resets the model (the
+   *  previous pick's model id is meaningless there; its own default
+   *  applies at run time). */
+  const pickHarness = (next: HarnessId): void => {
+    if (harness === next) {
+      return;
+    }
+    setHarness(next);
+    setModel(null);
+  };
+
+  /** Confirm: ticket 24's one-way switch, then the continue prompt — only
+   *  once the engine accepts the switch (the desktop's ordering). The
+   *  continuation carries the switch's landed picks explicitly: the
+   *  chats-watch frame that would re-seed the composer's draft can trail
+   *  the SwitchHarness reply, so the picks ride the resume handle (the
+   *  desktop's `apply_chat_config` stamp). */
+  const confirm = (): void => {
+    if (client === null || harness === null || switching) {
+      return;
+    }
+    const startedChatId = chatId;
+    const pickedModel = model;
+    setSwitching(true);
+    onNotice(null);
+    void switchHarness(client, chatId, harness, { model })
+      .then(() => {
+        setSwitching(false);
+        setOpen(false);
+        // The selection must still be this chat: a moved selection never
+        // fires the continuation into whatever chat now owns the composer.
+        if (chatIdRef.current === startedChatId) {
+          onResume({
+            harness,
+            model: pickedModel,
+            // The switch reset these to the new harness's defaults — the
+            // engine stored exactly this shape.
+            reasoning: null,
+            modelOptions: {},
+          });
+        }
+      })
+      .catch((cause: unknown) => {
+        setSwitching(false);
+        // The switch never landed: the chat keeps its old harness and its
+        // Limited state — the continuation is never sent into the same wall.
+        onNotice(
+          `Could not switch the harness: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      });
+  };
+
+  const offered = continueOfferedHarnesses(dialogRows(harnesses), currentHarness);
+  const modelLoad = harness === null ? "idle" : models.get(harness) ?? "idle";
+
+  return (
+    <PickerCard
+      open={open}
+      onOpenChange={setOpen}
+      placement="anchorAboveEnd"
+      role="dialog"
+      ariaLabel="Continue on another harness"
+      width={400}
+      overlaySource="composer-pickers"
+      trigger={
+        <button
+          type="button"
+          className="limited-banner-chip"
+          title="Switch this chat to another harness and continue there"
+          disabled={disabled}
+        >
+          Continue on another harness
+        </button>
+      }
+    >
+      <div className="continue-card">
+        <MenuHeading>Continue on another harness</MenuHeading>
+        <div className="continue-card-body">
+          This chat hit its usage limit. Switching harnesses is one-way: the chat runs on the one
+          you pick from here on, and the new agent receives a size-limited transcript of the
+          conversation, then the continue prompt.
+        </div>
+        <div className="harness-choice-heading">Harness</div>
+        <div className="harness-choice-chips">
+          {offered.map((descriptor) => (
+            <HarnessChip
+              key={descriptor.id}
+              descriptor={descriptor}
+              selected={harness === descriptor.id}
+              onPick={() => pickHarness(descriptor.id)}
+            />
+          ))}
+          {offered.length === 0 && (
+            <span className="harness-choice-empty">
+              {harnessChipsEmptyText(harnesses, "No other harnesses are available on this device.")}
+            </span>
+          )}
+        </div>
+        <div className="harness-choice-heading">Model</div>
+        <ModelList
+          models={dialogRows(modelLoad)}
+          error={dialogError(modelLoad)}
+          loading={dialogLoading(modelLoad)}
+          selectedModel={model}
+          onPick={setModel}
+        />
+        <div className="continue-card-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-solid"
+            disabled={switching || harness === null}
+            onClick={confirm}
+          >
+            {switching ? "Switching…" : "Continue"}
+          </button>
+        </div>
+      </div>
+    </PickerCard>
   );
 }
 

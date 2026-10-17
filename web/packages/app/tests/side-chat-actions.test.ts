@@ -100,6 +100,41 @@ describe("forkSideChat", () => {
     expect(params).not.toHaveProperty("parentChatId");
     expect(params).not.toHaveProperty("targetDeviceId");
   });
+
+  it("rides the ticket 21/22 additions only when chosen — boundary, harness, model", async () => {
+    const caller = new FakeCaller(parent());
+    await forkSideChat(caller, {
+      chatId: "fork-9",
+      sourceChatId: "source-1",
+      boundary: "a1",
+      harness: "pi",
+      model: "glm-5.3",
+      targetDeviceId: "dev-1",
+    });
+    expect(caller.calls[0]!.params).toEqual({
+      chatId: "fork-9",
+      sourceChatId: "source-1",
+      boundary: "a1",
+      harness: "pi",
+      model: "glm-5.3",
+      targetDeviceId: "dev-1",
+    });
+  });
+
+  it("blank strings are absent picks, never empty overrides (the dialog hands through whatever it holds)", async () => {
+    const caller = new FakeCaller(parent());
+    await forkSideChat(caller, {
+      chatId: "fork-9",
+      sourceChatId: "source-1",
+      boundary: "   ",
+      model: "",
+    });
+    const params = caller.calls[0]!.params as Record<string, unknown>;
+    expect(params).toEqual({ chatId: "fork-9", sourceChatId: "source-1" });
+    expect(params).not.toHaveProperty("boundary");
+    expect(params).not.toHaveProperty("model");
+    expect(params).not.toHaveProperty("harness");
+  });
 });
 
 describe("mintUnsavedSideChat (the first send's createChat, upstream #568)", () => {
