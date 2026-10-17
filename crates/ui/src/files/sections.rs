@@ -310,6 +310,9 @@ pub(super) struct ChildChatRow {
     pub chat_id: String,
     pub title: SharedString,
     pub status: ChatIndicator,
+    /// The chat reads as Limited right now (errored with a recorded usage
+    /// limit): the row's dot wears the amber limit tone.
+    pub limited: bool,
     pub time_ago: SharedString,
     /// The chat's linked pull request, drawn as the sidebar's badge.
     pub change_request: Option<roboco_proto::ChangeRequestSummary>,
@@ -333,6 +336,7 @@ pub(super) fn child_chat_rows(
                 chat_id: chat.id.clone(),
                 title: child_chat_title(chat).into(),
                 status: state.display_status_for(chat, now),
+                limited: state.is_limited(&chat.id, now),
                 time_ago: roboco_proto::view::format_time_ago(activity, now).into(),
                 change_request: state.change_request_for_chat(chat).cloned(),
                 activity,
@@ -784,6 +788,7 @@ impl FilesSurface {
             let glyph = status_glyph(
                 format!("files-subagent-{}", row.doc_id),
                 row.indicator(),
+                false,
                 view,
                 theme,
                 cx,
@@ -874,6 +879,7 @@ impl FilesSurface {
             let glyph = status_glyph(
                 format!("files-chat-{}", row.chat_id),
                 row.status,
+                row.limited,
                 view,
                 theme,
                 cx,
@@ -1098,15 +1104,24 @@ fn row_title(id: String, title: SharedString) -> impl IntoElement {
 }
 
 /// The compact row's 13px status slot: Working animates the glyph spinner,
-/// Completed wears the check, the rest a 6px dot in the status color.
+/// Completed wears the check, the rest a 6px dot in the status color. A
+/// LIMITED chat's dot is the amber limit tone (not the failure red), so a
+/// usage-limited chat stands out in the chat lists like it does in the
+/// sidebar.
 fn status_glyph(
     key: String,
     status: ChatIndicator,
+    limited: bool,
     view: EntityId,
     theme: &Theme,
     cx: &mut gpui::App,
 ) -> AnyElement {
-    let color = crate::shell::spaces::status_dot_color(status, theme);
+    let color = if limited {
+        let (l, c, h) = roboco_proto::view::dot::LIMITED;
+        crate::theme::oklch(l, c, h)
+    } else {
+        crate::shell::spaces::status_dot_color(status, theme)
+    };
     let glyph: AnyElement = match status {
         ChatIndicator::Completed => icon(icons::CHECK)
             .size(px(11.0))
@@ -1179,6 +1194,7 @@ mod tests {
 
     fn entry(parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
             id: "e1".into(),
             role: MessageRole::Assistant,
@@ -1186,6 +1202,7 @@ mod tests {
             created_at: (Utc::now() - chrono::Duration::minutes(3)).timestamp_millis(),
             device_id: "dev".into(),
             status: Some(MessageStatus::Complete),
+            provider_turn: None,
             continuation_of: None,
         }
     }
@@ -1235,6 +1252,7 @@ mod tests {
     #[test]
     fn subagent_rows_are_most_recently_updated_first() {
         let at = |id: &str, minutes_ago: i64, parts| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             created_at: (Utc::now() - chrono::Duration::minutes(minutes_ago)).timestamp_millis(),
             ..entry(parts)
@@ -1293,6 +1311,7 @@ mod tests {
     #[test]
     fn running_subagents_lead_longest_running_first() {
         let at = |id: &str, minutes_ago: i64, parts| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             created_at: (Utc::now() - chrono::Duration::minutes(minutes_ago)).timestamp_millis(),
             ..entry(parts)

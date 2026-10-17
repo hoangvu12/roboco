@@ -19,8 +19,11 @@ fn run_request_attachments_survive_command_round_trip() {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     };
     doc.queue_command(&SessionCommandEntry {
+        origin_chat_id: None,
         id: "c1".into(),
         payload: SessionCommandPayload::Run {
             request,

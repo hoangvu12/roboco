@@ -252,6 +252,7 @@ fn device(id: &str, name: &str) -> Device {
 
 fn chat(id: &str, device_id: &str) -> Chat {
     Chat {
+        agent_origin: None,
         id: id.into(),
         device_id: device_id.into(),
         title: Some("First chat".into()),
@@ -301,6 +302,8 @@ fn session(chat_id: &str, device_id: &str, status: SessionStatus) -> Session {
         status,
         started_at: Some(ts(3_000)),
         updated_at: ts(3_500),
+        limit: None,
+        scheduled_resume: None,
     }
 }
 
@@ -373,6 +376,21 @@ fn rows_round_trip_and_upsert_refreshes() {
     assert_eq!(chats.len(), 1);
     assert_eq!(chats[0].title, None);
     assert_eq!(chats[0].last_message_preview.as_deref(), Some("hello"));
+}
+
+/// The armed Resume-at-reset continuation rides the session row (remote
+/// banners' countdown), and a cancel clears it.
+#[test]
+fn the_scheduled_resume_rides_the_session_row() {
+    let mut doc = RegistryDoc::new("dev-a");
+    let mut row = session("chat-1", "dev-a", SessionStatus::Errored);
+    row.scheduled_resume = Some(roboco_proto::ScheduledResume { fire_at: 9_000 });
+    doc.upsert_session(&row).unwrap();
+    assert_eq!(doc.read_sessions().unwrap(), vec![row.clone()]);
+
+    row.scheduled_resume = None;
+    doc.upsert_session(&row).unwrap();
+    assert_eq!(doc.read_sessions().unwrap()[0].scheduled_resume, None);
 }
 
 #[test]

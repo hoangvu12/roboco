@@ -353,6 +353,7 @@ mod tests {
                     "engine",
                     &format!("chat-{i}"),
                     &[SessionMessageEntry {
+                        origin_chat_id: None,
                         id: format!("m{i}"),
                         role: roboco_doc::MessageRole::User,
                         parts: vec![],
@@ -360,6 +361,7 @@ mod tests {
                         device_id: String::new(),
                         status: None,
                         continuation_of: None,
+                        provider_turn: None,
                         duration_ms: None,
                     }],
                 )

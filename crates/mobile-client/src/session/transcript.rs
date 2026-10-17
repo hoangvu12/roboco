@@ -535,6 +535,7 @@ mod tests {
 
     fn entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -545,6 +546,7 @@ mod tests {
             device_id: String::new(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }

@@ -4,6 +4,7 @@ import type { AgentAccount, AgentAccountsSnapshot, AgentLoginStart, HarnessId } 
 import { useEngineSession } from "../state/session-provider";
 import { useNow } from "../state/hooks";
 import { useFleet, useFleetRegistry } from "../state/fleet";
+import { SignedOutSwitchConfirm } from "../components/account-usage";
 import {
   applySettingsTargetChange,
   settingsDeviceSwitcherRows,
@@ -26,6 +27,7 @@ import { Tooltip } from "../components/ui/Tooltip";
 import {
   accountInitial,
   accountLabel,
+  accountNote,
   activateAgentAccount,
   addOptionLabel,
   cancelAgentLogin,
@@ -43,6 +45,8 @@ import {
   providerEmptyCopy,
   providerNote,
   PROVIDERS,
+  signedOut,
+  signInOptionFor,
   startAgentLogin,
   usageColorVar,
   usageFallback,
@@ -96,6 +100,9 @@ function AccountsSettingsPageBody() {
   const [busyAccount, setBusyAccount] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [login, setLogin] = useState<LoginFlow | null>(null);
+  /** A signed-out account whose Switch is asking first (ticket 08, the
+   *  desktop's `confirm_switch`). */
+  const [confirmSwitch, setConfirmSwitch] = useState<AgentAccount | null>(null);
   const now = useNow(30_000);
 
   // An engine switch remounts this body (SettingsEnginePage's key), so the
@@ -125,6 +132,7 @@ function AccountsSettingsPageBody() {
     setBusyAccount(null);
     setActionError(null);
     setLogin(null);
+    setConfirmSwitch(null);
     void load("mount");
   }, [load]);
 
@@ -161,8 +169,14 @@ function AccountsSettingsPageBody() {
     };
   }, [client, browserLoginId, load, rpcTarget]);
 
-  function accountAction(action: "activate" | "forget", account: AgentAccount) {
+  function accountAction(action: "activate" | "forget", account: AgentAccount, confirmed = false) {
     if (client === null || busyAccount !== null) {
+      return;
+    }
+    // A signed-out switch asks first (ticket 08): the account may not work
+    // until it is signed in again — the desktop's `confirm_switch`.
+    if (action === "activate" && !confirmed && signedOut(account)) {
+      setConfirmSwitch(account);
       return;
     }
     setBusyAccount(account.id);
@@ -268,6 +282,7 @@ function AccountsSettingsPageBody() {
     setLogin(null);
     setBusyAccount(null);
     setActionError(null);
+    setConfirmSwitch(null);
   }
 
   const devices = useMemo(() => settingsDeviceSwitcherRows(registry, fleet), [registry, fleet]);
@@ -327,6 +342,7 @@ function AccountsSettingsPageBody() {
             onAdd={(option) => addAccount(provider.harness, option.provider)}
             onSwitch={(account) => accountAction("activate", account)}
             onForget={(account) => accountAction("forget", account)}
+            onSignInAgain={(account) => addAccount(account.harness, signInOptionFor(account))}
           />
         ))
       )}
@@ -338,6 +354,22 @@ function AccountsSettingsPageBody() {
 
       {login !== null && (
         <LoginDialog flow={login} onCancel={dismissLogin} onSubmitCode={submitCode} />
+      )}
+
+      {/* The "switch to a signed-out account" ask (ticket 08) — the same
+          confirm the desktop's `render_switch_confirm` draws. */}
+      {confirmSwitch !== null && (
+        <SignedOutSwitchConfirm
+          account={confirmSwitch}
+          onCancel={() => setConfirmSwitch(null)}
+          onConfirm={() => {
+            const account = confirmSwitch;
+            setConfirmSwitch(null);
+            if (account !== null) {
+              accountAction("activate", account, true);
+            }
+          }}
+        />
       )}
     </div>
   );
@@ -351,6 +383,7 @@ function ProviderSection({
   onAdd,
   onSwitch,
   onForget,
+  onSignInAgain,
 }: {
   readonly provider: ProviderDescriptor;
   readonly loadable: Loadable;
@@ -360,6 +393,8 @@ function ProviderSection({
   readonly onAdd: (option: LoginOption) => void;
   readonly onSwitch: (account: AgentAccount) => void;
   readonly onForget: (account: AgentAccount) => void;
+  /** "Sign in again" on a signed-out row (ticket 08). */
+  readonly onSignInAgain: (account: AgentAccount) => void;
 }) {
   const loading = loadable.kind === "loading";
   const accounts = loadable.kind === "ready" ? providerAccounts(loadable.snapshot, provider.harness) : [];
@@ -403,6 +438,7 @@ function ProviderSection({
               now={now}
               onSwitch={() => onSwitch(account)}
               onForget={() => onForget(account)}
+              onSignInAgain={() => onSignInAgain(account)}
             />
           ))
         )}
@@ -414,8 +450,10 @@ function ProviderSection({
 /**
  * One provider account row (accounts.rs:1115-1193): the avatar, the email
  * label and usage meters, badges, and the inactive-only actions — the
- * icon-only Forget and the Switch button. Exported for the mounted row
- * suite (tests/account-row.test.ts), like its `LoginDialog` sibling.
+ * icon-only Forget and the Switch button. A signed-out row carries the
+ * mark and a "Sign in again" action (ticket 08), and its Switch asks
+ * first. Exported for the mounted row suite (tests/account-row.test.ts),
+ * like its `LoginDialog` sibling.
  */
 export function AccountRow({
   account,
@@ -424,6 +462,7 @@ export function AccountRow({
   now,
   onSwitch,
   onForget,
+  onSignInAgain,
 }: {
   readonly account: AgentAccount;
   readonly busy: boolean;
@@ -431,7 +470,14 @@ export function AccountRow({
   readonly now: number;
   readonly onSwitch: () => void;
   readonly onForget: () => void;
+  /** "Sign in again" on a signed-out row (ticket 08) — re-runs the
+   *  provider's login flow for this account's provider group. */
+  readonly onSignInAgain: () => void;
 }) {
+  const isSignedOut = signedOut(account);
+  // The reason line rides BELOW the meters, so a cached meter no longer
+  // hides it (the desktop's display fix, accounts.rs:1385-1404).
+  const note = accountNote(account);
   return (
     <div className="settings-row settings-account-row">
       <span className="account-avatar" aria-hidden>
@@ -446,6 +492,9 @@ export function AccountRow({
             {account.usageWindows.map((window, index) => (
               <UsageMeter key={index} label={window.label} usedFraction={window.usedFraction} resetsAt={window.resetsAt} now={now} />
             ))}
+            {note !== null && (
+              <span className={`account-note ${isSignedOut ? "account-note-signed-out" : ""}`}>{note}</span>
+            )}
           </span>
         )}
       </div>
@@ -453,7 +502,18 @@ export function AccountRow({
         <span className="account-badges">
           {account.active && <span className="badge badge-active">Active</span>}
           {account.planLabel != null && <span className="badge">{account.planLabel}</span>}
+          {/* The mark that keeps a dead login from reading healthy (ticket 08). */}
+          {isSignedOut && <span className="badge badge-signed-out">Signed out</span>}
         </span>
+        {/* "Sign in again" on any SIGNED-OUT row, active or not (accounts.rs
+            :1294-1312); the inactive-only actions follow. */}
+        {isSignedOut && (
+          <span className="account-actions">
+            <button type="button" className="btn btn-solid" disabled={busy} onClick={onSignInAgain}>
+              Sign in again
+            </button>
+          </span>
+        )}
         {!account.active && (
           <span className="account-actions">
             {/* The icon-only trash (accounts.rs:1147-1175): muted at rest,

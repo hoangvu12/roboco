@@ -141,6 +141,7 @@ mod tests {
 
     fn entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -151,6 +152,7 @@ mod tests {
             device_id: "host".into(),
             status: Some(MessageStatus::Streaming),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }

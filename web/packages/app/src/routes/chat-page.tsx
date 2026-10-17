@@ -13,7 +13,14 @@ import { useNow, useWatchSnapshot } from "../state/hooks";
 import { useTitlebar } from "../state/chrome";
 import { emitShortcut } from "../state/shortcuts";
 import { chatPageRow, type ChatRow } from "../lib/view";
-import { JumpPill, StatusStrip, TranscriptView, type JumpButtonState } from "../components/transcript";
+import { limitedBannerShows } from "../lib/limited";
+import {
+  JumpPill,
+  StatusStrip,
+  TranscriptView,
+  type ForkFromEntryPayload,
+  type JumpButtonState,
+} from "../components/transcript";
 import { ChatTranscriptOutlet } from "../components/chat-transcript-outlet";
 import type { SubagentOpen } from "../components/tool-group";
 import { resolvePaneWidth, rightPaneStore, useRightPane } from "../state/right-pane";
@@ -68,6 +75,10 @@ import {
   QUEUE_EDIT_UNREACHABLE_MESSAGE,
 } from "../lib/queue-actions";
 import { ATTACHMENT_ONLY_TEXT, uploadAttachments, type StagedAttachment } from "../lib/attachments";
+import { catalogTargetDeviceId } from "../lib/harness-choice";
+import type { DraftConfig } from "../lib/composer-actions";
+import { forkSpecFor } from "../lib/fork-dialog";
+import { forkDialogStore } from "../state/fork-dialog";
 import { TerminalDock } from "../terminal/terminal-dock";
 import { drawerTerminalStore } from "../terminal/store";
 import { canvasTerminalKey } from "../terminal/session";
@@ -437,6 +448,17 @@ export function ConversationPage() {
     [chatId],
   );
 
+  // A completion notice's side row (ticket 15): open the side chat — the
+  // route select, the web shape of the desktop's `open_chat`
+  // (shell/tabs.rs:205). A chat that left the list still owns its transcript,
+  // so the route is always the target.
+  const onOpenChat = useCallback(
+    (target: string) => {
+      void navigate({ to: "/chat/$chatId", params: { chatId: target } });
+    },
+    [navigate],
+  );
+
   const crStore = useMemo(() => {
     if (session === null) {
       return null;
@@ -506,6 +528,14 @@ export function ConversationPage() {
   // lands in the composer's red failure notice, chat-scoped, instead of a
   // sidebar toast (ticket 06 — the desktop's placement).
   const editFailureRef = useRef<((message: string) => void) | null>(null);
+
+  // The composer's **Resume** handle (orchestration v2, ticket 06/10) — the
+  // same ref pattern: the composer assigns its `resume_limited` (the fixed
+  // continue prompt through the normal send path, the user's draft handed
+  // back), and the status strip's Limited banner calls it. The banner lives
+  // above the composer in the bottom stack; the ref is the one channel that
+  // reaches the send path without re-mounting anything.
+  const resumeRef = useRef<((override?: Partial<DraftConfig>) => void) | null>(null);
 
   // If the queue store reports the row disappeared while we were editing
   // (another device removed/sent it), drop the edit state so the composer
@@ -1191,6 +1221,17 @@ export function ConversationPage() {
     useCallback(() => echoStore.forChat(chatId).length > 0, [chatId]),
   );
 
+  // The chat's RAW status row — the Limited banner's input. The banner
+  // reads the live session (errored + a recorded limit), not the
+  // unseen-marker status the row word carries, exactly like the desktop's
+  // `Indicator::Limited` arm of `render_status_strip`.
+  const sessionRow = hasSelection
+    ? snapshot.statuses.rows.find((row) => row.chatId === chatId) ?? null
+    : null;
+  // Gated by the send overlay (`limitedBannerShows`): a send in flight —
+  // Resume's own continue prompt included — steps the banner aside.
+  const sessionRowLimited = limitedBannerShows(sending, sessionRow ?? undefined, now);
+
   // The session row's `started_at` — the working trailer's timer base
   // (`session_for(chat_id).started_at` on the desktop).
   const turnStartedAt = useMemo(() => {
@@ -1278,6 +1319,34 @@ export function ConversationPage() {
       void navigate({ to: "/chat/$chatId", params: { chatId: scoped } });
     },
     [navigate, session],
+  );
+
+  /**
+   * "Fork from here" (t3-orchestration-v2 tickets 21/22/26, the desktop's
+   * `TranscriptEvent::ForkFromEntry`): the hover action on a settled
+   * assistant reply opens the fork dialog at exactly that reply. The
+   * reply lives in the selected chat's transcript, so the fork hangs
+   * under the source — a side chat's parent would make its own fork land
+   * as a sibling (its surface's callback computes that parent) — and the
+   * copy's surface opens in THIS chat's pane.
+   */
+  const onForkFromEntry = useCallback(
+    (payload: ForkFromEntryPayload) => {
+      if (session === null) {
+        return;
+      }
+      const source =
+        snapshot.chats.loaded
+          ? snapshot.chats.rows.find((row) => row.id === payload.chatId) ?? null
+          : null;
+      if (source === null) {
+        return;
+      }
+      forkDialogStore.open(
+        forkSpecFor(source, chatId, payload.entryId, session.client, session.engine.baseUrl),
+      );
+    },
+    [session, snapshot, chatId],
   );
 
   // The titlebar is the shell's; the route fills its identity and the `+`'s
@@ -1376,6 +1445,8 @@ export function ConversationPage() {
                   indicator={row?.status ?? "idle"}
                   turnStartedAt={turnStartedAt}
                   onOpenSubagent={onOpenSubagent}
+                  onForkFromEntry={onForkFromEntry}
+                  onOpenChat={onOpenChat}
                   deliveryDegraded={deliveryDegraded}
                 />
               )}
@@ -1401,7 +1472,34 @@ export function ConversationPage() {
           Terminal surfaces ride a separate, independent host.
         */}
         <div className="bottom-stack" ref={bottomStackRef}>
-          <StatusStrip status={row?.status ?? "idle"} sending={sending} />
+          <StatusStrip
+            status={row?.status ?? "idle"}
+            sending={sending}
+            limited={
+              hasSelection && sessionRowLimited
+                ? {
+                    chatId,
+                    client: session?.client ?? null,
+                    limit: sessionRow?.limit ?? null,
+                    scheduled: sessionRow?.scheduledResume ?? null,
+                    now,
+                    onResume: (switched?: Partial<DraftConfig>) => resumeRef.current?.(switched),
+                    // Ticket 26: the "Continue on another harness" picker's
+                    // inputs — the harness to exclude (the chat's row config)
+                    // and the catalog routing (the dialogs' target rule: the
+                    // chat's host device when it differs from the connected
+                    // engine's own, both in the fleet's scoped form).
+                    currentHarness: chat?.config?.harness ?? null,
+                    targetDeviceId: catalogTargetDeviceId(
+                      session !== null && deviceId !== null
+                        ? encodeScopedId(session.engine.baseUrl, deviceId)
+                        : null,
+                      chat?.deviceId ?? null,
+                    ),
+                  }
+                : null
+            }
+          />
           {targetUnavailable && (
             <div className="composer-target-warning" role="status">
               {target.projectUnavailable
@@ -1442,6 +1540,7 @@ export function ConversationPage() {
                 onEditCancel={onEditCancel}
                 editCommitRef={editCommitRef}
                 editFailureRef={editFailureRef}
+                resumeRef={resumeRef}
                 activateLatestQueued={activateLatestQueued}
                 dockFrame={dockFrame}
                 liveDockFrame={liveDockFrame}

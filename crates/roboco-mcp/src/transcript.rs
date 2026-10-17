@@ -146,9 +146,13 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
                 }
             }
             MessagePart::Error { message, .. } => errors.push(message.clone()),
-            // The fork seam is a transcript marker, not agent content: an
-            // orchestrator reads the copied history as ordinary turns.
-            MessagePart::Fork { .. } => {}
+            // The fork seam, the harness-switch seam and the completion
+            // notice are transcript markers, not agent content: an
+            // orchestrator reads the copied history as ordinary turns, and
+            // the notice's own text part already rendered above.
+            MessagePart::Fork { .. }
+            | MessagePart::HarnessSwitch { .. }
+            | MessagePart::CompletionNotice { .. } => {}
         }
     }
     RenderedMessage {
@@ -225,6 +229,7 @@ mod tests {
 
     fn entry(id: &str, role: MessageRole, parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
             id: id.into(),
             role,
@@ -232,6 +237,7 @@ mod tests {
             created_at: 1_700_000_000_000,
             device_id: "dev-a".into(),
             status: Some(MessageStatus::Complete),
+            provider_turn: None,
             continuation_of: None,
         }
     }

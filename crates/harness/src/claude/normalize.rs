@@ -1,7 +1,10 @@
 //! Frame → [`AgentEvent`] normalization (init dedupe, subagent tagging, tool
 //! decoding, error-code mapping).
 
-use roboco_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall};
+use roboco_proto::{
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ProviderTurnRef, TodoItem, TodoStatus,
+    ToolCall,
+};
 use serde_json::Value;
 
 use super::wire::{ContentBlock, Frame};
@@ -35,6 +38,24 @@ fn rate_window_label(kind: &str) -> &'static str {
         "seven_day_sonnet" => "weekly (Sonnet)",
         "overage" => "overage",
         _ => "usage",
+    }
+}
+
+/// Structured classification for an assistant-level error code: the CLI's
+/// terse `rate_limit` says a plan window blocked the turn but not which one
+/// (the accompanying `rate_limit_event` usually does, and carries the reset);
+/// `authentication_failed` means the login is gone. Everything else stays
+/// unclassified.
+fn assistant_error_kind(code: &str) -> Option<AgentErrorKind> {
+    match code {
+        "rate_limit" => Some(AgentErrorKind::UsageLimit {
+            // Which window was hit is unknown at this surface — the plain
+            // "usage" label (the fallback window wording).
+            window: "usage".into(),
+            resets_at: None,
+        }),
+        "authentication_failed" => Some(AgentErrorKind::SignedOut),
+        _ => None,
     }
 }
 
@@ -208,6 +229,12 @@ pub(crate) struct Normalizer {
     assistant_message_id: String,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
+    /// The uuid of the last TOP-LEVEL (untagged) assistant/user frame seen
+    /// — the turn ref of the turn a `result` closes (t3-orchestration-v2
+    /// ticket 18): a fork resumes the provider session at exactly that
+    /// message (`--resume-session-at`, inclusive). Tagged subagent frames
+    /// never count (their uuids name the subagent's own nested turns).
+    last_message_uuid: Option<String>,
 }
 
 impl Normalizer {
@@ -220,6 +247,7 @@ impl Normalizer {
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
             session_id: None,
+            last_message_uuid: None,
         }
     }
 
@@ -331,6 +359,39 @@ impl Normalizer {
     pub fn rotate_for_steer(&mut self) -> (String, String) {
         let prev = std::mem::replace(&mut self.assistant_message_id, new_message_id());
         (prev, self.assistant_message_id.clone())
+    }
+
+    /// Record the uuid of a top-level (untagged) message frame: the
+    /// candidate turn ref of the turn a later `result` closes — the LAST
+    /// one before the result wins (see [`Self::turn_ref`]).
+    fn note_message_uuid(&mut self, uuid: Option<&str>) {
+        if let Some(uuid) = uuid.filter(|u| !u.is_empty()) {
+            self.last_message_uuid = Some(uuid.to_owned());
+        }
+    }
+
+    /// The provider turn reference a `result` frame closes (ticket 18):
+    /// the session id plus the uuid of the last top-level assistant/user
+    /// frame before the result — what a fork resumes the provider session
+    /// at (`--resume <session> --fork-session`, `--resume-session-at
+    /// <uuid>` for an earlier boundary, inclusive). `None` when either
+    /// half is unknown (no message frame carried a uuid, or no session id
+    /// ever arrived): the engine then records no ref and a later fork
+    /// falls back to the budgeted paste.
+    fn turn_ref(&self, result_session: &Option<String>) -> Option<ProviderTurnRef> {
+        let session_id = result_session
+            .clone()
+            .or_else(|| self.session_id.clone())
+            .filter(|id| !id.is_empty())?;
+        let turn_id = self
+            .last_message_uuid
+            .clone()
+            .filter(|id| !id.is_empty())?;
+        Some(ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id,
+            turn_id,
+        })
     }
 
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
@@ -501,11 +562,18 @@ impl Normalizer {
                             parent,
                             AgentEvent::Error {
                                 message: assistant_error_text(code),
+                                kind: assistant_error_kind(code),
                             },
                         ));
                     }
                     return out;
                 }
+                // A top-level message frame: its uuid is the candidate turn
+                // ref (ticket 18) — the last one before the turn's result
+                // is what a fork resumes at. Recorded even when the frame
+                // yields no events (a tool-result-only user frame still
+                // names a turn boundary).
+                self.note_message_uuid(f.uuid.as_deref());
                 // Record spawn tool ids up front: `task_notification` keys on
                 // them; a task may finish before a `task_started` arrives.
                 for b in f.message.blocks() {
@@ -593,6 +661,7 @@ impl Normalizer {
                 if let Some(code) = &f.error {
                     out.push(AgentEvent::Error {
                         message: assistant_error_text(code),
+                        kind: assistant_error_kind(code),
                     });
                 }
                 // The enclosing assistant frame closes the streamed message
@@ -642,6 +711,10 @@ impl Normalizer {
                     );
                     return out;
                 }
+                // A top-level user frame (tool results, or the CLI's echo of
+                // a line we wrote): its uuid is the candidate turn ref
+                // (ticket 18), same as an assistant frame's.
+                self.note_message_uuid(f.uuid.as_deref());
                 f.message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_result")
@@ -667,6 +740,15 @@ impl Normalizer {
                     message: format!(
                         "Claude {window} limit reached — the turn was blocked. Try again after it resets."
                     ),
+                    kind: Some(AgentErrorKind::UsageLimit {
+                        window: window.into(),
+                        // The CLI reports the reset in unix seconds
+                        // (live-verified 2.1.228); the kind carries millis.
+                        resets_at: f
+                            .rate_limit_info
+                            .resets_at
+                            .map(|secs| (secs as i64).saturating_mul(1000)),
+                    }),
                 }]
             }
 
@@ -707,7 +789,7 @@ impl Normalizer {
                         },
                         result: f.result,
                         error: None,
-                        session_id: f.session_id,
+                        session_id: f.session_id.clone(),
                     }
                 } else {
                     // Split the CLI's internal `[ede_diagnostic]` breadcrumbs
@@ -756,10 +838,18 @@ impl Normalizer {
                         },
                         result: None,
                         error,
-                        session_id: f.session_id,
+                        session_id: f.session_id.clone(),
                     }
                 };
                 let mut out = Vec::new();
+                // The provider turn ref (ticket 18) rides FIRST, before the
+                // result's own events: the engine holds it while the entry
+                // the turn streamed into finishes, and the Done below —
+                // Usage and ContextUsage never close a segment — closes it,
+                // so the ref is stamped on exactly that entry.
+                if let Some(reference) = self.turn_ref(&f.session_id) {
+                    out.push(AgentEvent::TurnRef { reference });
+                }
                 if let Some(window) = window {
                     out.push(AgentEvent::ContextUsage {
                         tokens: None,
@@ -1365,6 +1455,108 @@ mod tests {
         );
     }
 
+    /// The provider turn ref (t3-orchestration-v2 ticket 18): every
+    /// `result` closes the turn with the session id plus the uuid of the
+    /// LAST top-level assistant/user frame before it — tagged subagent
+    /// frames never count — emitted ahead of the result's own events so
+    /// the engine stamps it on the entry the turn streamed into.
+    #[test]
+    fn result_frames_emit_the_last_top_level_message_uuid_as_the_turn_ref() {
+        let mut norm = Normalizer::new();
+        let init = r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"sess-t"}"#;
+        norm.normalize(crate::claude::wire::parse_frame(init).unwrap(), false);
+        let frames = [
+            r#"{"type":"assistant","uuid":"msg-a","message":{"content":[{"type":"text","text":"a"}]}}"#,
+            // Tagged (subagent) frames carry uuids too — they name the
+            // subagent's own nested turns and must never become the ref.
+            r#"{"type":"assistant","uuid":"msg-sub","parent_tool_use_id":"toolu_s","message":{"content":[{"type":"text","text":"sub"}]}}"#,
+            r#"{"type":"user","uuid":"msg-b","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":false}]}}"#,
+            r#"{"type":"result","subtype":"success","result":"done","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-t"}"#,
+        ];
+        let mut events = Vec::new();
+        for raw in frames {
+            events.extend(norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false));
+        }
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, AgentEvent::TurnRef { .. })).count(),
+            1,
+            "one ref per turn: {events:?}"
+        );
+        assert!(events.contains(&AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::ClaudeCode,
+                session_id: "sess-t".into(),
+                turn_id: "msg-b".into(),
+            }
+        }));
+        // The ref rides ahead of the result's own events — the Done closes
+        // the entry it must be stamped on.
+        let done_at = events
+            .iter()
+            .rposition(|e| matches!(e, AgentEvent::Done { .. }))
+            .expect("done");
+        let ref_at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::TurnRef { .. }))
+            .expect("turn ref");
+        assert!(ref_at < done_at);
+    }
+
+    /// A result whose own frame carries no session id falls back to the
+    /// last one seen (the init's); frames without uuids, or a session id
+    /// that never arrived, record no ref at all — a later fork then falls
+    /// back to the budgeted paste instead.
+    #[test]
+    fn turn_refs_need_a_uuid_and_a_session_id() {
+        let mut norm = Normalizer::new();
+        let init = r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"sess-fb"}"#;
+        norm.normalize(crate::claude::wire::parse_frame(init).unwrap(), false);
+        // No uuid on the message frames, and none on the result: no ref.
+        for raw in [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"a"}]}}"#,
+            r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+        ] {
+            let events = norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false);
+            assert!(
+                !events.iter().any(|e| matches!(e, AgentEvent::TurnRef { .. })),
+                "{events:?}"
+            );
+        }
+        // A uuid arrives; the result still names no session, so the ref
+        // falls back to the init's — the session a fork must resume.
+        let frame = r#"{"type":"assistant","uuid":"msg-late","message":{"content":[]}}"#;
+        norm.normalize(crate::claude::wire::parse_frame(frame).unwrap(), false);
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.contains(&AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::ClaudeCode,
+                session_id: "sess-fb".into(),
+                turn_id: "msg-late".into(),
+            }
+        }));
+        // No session id ever seen: a uuid alone is not a ref.
+        let mut fresh = Normalizer::new();
+        let frame = r#"{"type":"assistant","uuid":"msg-2","message":{"content":[]}}"#;
+        fresh.normalize(crate::claude::wire::parse_frame(frame).unwrap(), false);
+        let events = fresh.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","usage":{"input_tokens":0,"output_tokens":0}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, AgentEvent::TurnRef { .. })),
+            "{events:?}"
+        );
+    }
+
     #[test]
     fn ede_diagnostics_never_surface_as_errors() {
         // The CLI's internal turn-accounting breadcrumbs must not become
@@ -1439,7 +1631,142 @@ mod tests {
             assert!(normalize_one(&raw).is_empty(), "{overage}");
         }
     }
+
+    #[test]
+    fn a_blocking_limit_event_carries_the_window_and_reset_time() {
+        // The blocking event yields kind usage-limit with the window label
+        // and the CLI's own reset time — unix seconds on the wire (the live
+        // 2.1.228 capture carries seconds), millis in the kind. The message
+        // is unchanged, so older clients render exactly as before.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1762675400}}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude 5-hour limit reached — the turn was blocked. Try again after it resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "5-hour".into(),
+                    resets_at: Some(1_762_675_400_000),
+                }),
+            }]
+        );
+        // No reset time reported: the kind still lands, without one.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"seven_day"}}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude weekly limit reached — the turn was blocked. Try again after it resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "weekly".into(),
+                    resets_at: None,
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_malformed_resets_at_never_fails_the_frame() {
+        // `resetsAt` in every shape the CLI has been seen to send: an
+        // integer, a float, a numeric string — all parse; anything else
+        // (null, words, an object) reads as unknown. None of them may fail
+        // the frame: the window classification rides the same event, and a
+        // failed deserialize would drop the whole limit report.
+        let shape = |resets_at: &str| {
+            let raw = format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour",{resets_at}}}}}"#
+            );
+            normalize_one(&raw)
+        };
+        for (field, expected) in [
+            (r#""resetsAt":1762675400"#, Some(1_762_675_400_000i64)),
+            (r#""resetsAt":1762675400.0"#, Some(1_762_675_400_000)),
+            (r#""resetsAt":"1762675400""#, Some(1_762_675_400_000)),
+            (r#""resetsAt":"1762675400.5""#, Some(1_762_675_400_000)),
+            (r#""resetsAt":null"#, None),
+            (r#""resetsAt":"soon""#, None),
+            (r#""resetsAt":{}"#, None),
+            (r#""resetsAt":0"#, None),
+        ] {
+            let events = shape(field);
+            match events.as_slice() {
+                [AgentEvent::Error { kind: Some(AgentErrorKind::UsageLimit { resets_at, .. }), .. }] => {
+                    assert_eq!(*resets_at, expected, "{field}");
+                }
+                other => panic!("{field} must still classify the limit: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn assistant_error_codes_classify_limits_and_auth() {
+        // The error message also completes its (empty) assistant message;
+        // only the error event is under test here.
+        let errors = |line: &str| {
+            normalize_one(line)
+                .into_iter()
+                .filter(|event| matches!(event, AgentEvent::Error { .. }))
+                .collect::<Vec<_>>()
+        };
+        // The terse `rate_limit` code: a usage limit, window unknown (the
+        // accompanying rate_limit_event usually carries the details).
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"rate_limit"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Claude usage limit reached — try again after the limit resets.".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "usage".into(),
+                    resets_at: None,
+                }),
+            }]
+        );
+        // Authentication failed: signed out, distinct from a limit.
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"authentication_failed"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Authentication failed — sign in to Claude again.".into(),
+                kind: Some(AgentErrorKind::SignedOut),
+            }]
+        );
+        // Other codes stay unclassified.
+        let events = errors(
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[]},"error":"billing_error"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "Billing error — check your Claude plan or payment method.".into(),
+                kind: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn subagent_error_codes_carry_the_classification_too() {
+        let events = normalize_one(
+            r#"{"type":"assistant","parent_tool_use_id":"toolu_sub","message":{"content":[]},"error":"authentication_failed"}"#,
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Subagent {
+                parent_tool_use_id: "toolu_sub".into(),
+                event: Box::new(AgentEvent::Error {
+                    message: "Authentication failed — sign in to Claude again.".into(),
+                    kind: Some(AgentErrorKind::SignedOut),
+                }),
+            }]
+        );
+    }
 }
+
 #[cfg(test)]
 mod context_tests {
     use super::*;

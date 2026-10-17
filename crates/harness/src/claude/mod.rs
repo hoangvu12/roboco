@@ -42,6 +42,18 @@
 //!   either way. `background_tasks_changed` reports the live set to the host.
 //! - Interrupt: cancelling [`RunControls::interrupt`] tears the runtime down —
 //!   the interrupt control request, then SIGTERM and SIGKILL.
+//! - TURN REFS (t3-orchestration-v2 ticket 18): every `result` closes its
+//!   turn with a provider turn reference — the session id plus the uuid of
+//!   the last top-level (untagged) assistant/user frame before it — so a
+//!   fork can continue the provider session at exactly that turn.
+//! - NATIVE FORK (same ticket): a fork's first run resumes the SOURCE
+//!   session with `--fork-session` (plus the hidden
+//!   `--resume-session-at <uuid>` when the boundary is an earlier turn,
+//!   inclusive), giving the fork a NEW session id that carries the copied
+//!   history — nothing is pasted. A CLI that rejects the flags (it exits
+//!   before ever speaking), or a source session the CLI's store no longer
+//!   has, falls back to a fresh session with the budgeted transcript: a
+//!   fork never fails the send.
 
 pub mod catalog;
 mod discovery;
@@ -56,7 +68,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use roboco_proto::{
@@ -101,6 +113,163 @@ fn mcp_config_arg(mcp: &roboco_proto::McpServer) -> String {
         }
     })
     .to_string()
+}
+
+/// The launch probe's reading of the buffered stdout so far (B11/B12): an
+/// errored first `result` BEFORE any assistant output refuses the launch
+/// — the CLI accepted the flags but then failed the resumed session (a
+/// `--resume-session-at` uuid validated late, or a session the account
+/// can no longer read). Any assistant output accepts it (the launch is
+/// serving the conversation). A clean `result` before any assistant
+/// output also accepts: the launch itself is fine, whatever the empty
+/// turn means. Only complete lines are judged — the tail of a partial
+/// line rides to the session loop and is judged there.
+enum LaunchReading {
+    Undecided,
+    Accepted,
+    Refused,
+}
+
+fn launch_reading(head: &[u8]) -> LaunchReading {
+    for line in std::str::from_utf8(head)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("assistant") => return LaunchReading::Accepted,
+            Some("result") => {
+                let errored = value
+                    .get("is_error")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                    || value.get("subtype").and_then(serde_json::Value::as_str)
+                        == Some("error");
+                return if errored {
+                    LaunchReading::Refused
+                } else {
+                    LaunchReading::Accepted
+                };
+            }
+            _ => {}
+        }
+    }
+    LaunchReading::Undecided
+}
+
+/// Bound on the launch probe (B11/B12): the probe buffers the stream until
+/// the launch proves itself, so a wedged CLI must not hold it forever —
+/// past the bound the buffered stream is handed over and the session loop
+/// deals with whatever follows. Generous: a healthy launch speaks within
+/// milliseconds; only Stop (the other escape) is faster.
+const LAUNCH_PROBE_BOUND: Duration = Duration::from_secs(60);
+
+/// Whether the CLI's own session store knows `session_id` — one
+/// `<config>/projects/*/{session_id}.jsonl` file (the same walk
+/// `Normalizer::for_resume` restores subagent chips from). A resume the
+/// CLI would refuse is what triggers the account-failover fallback
+/// (ticket 09): the driver starts a fresh session with the engine's
+/// budgeted history instead of passing an id `--resume` will reject.
+async fn session_known(config_root: &std::path::Path, session_id: &str) -> bool {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return false;
+    }
+    let config_root = config_root.to_owned();
+    let session_id = session_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Ok(projects) = std::fs::read_dir(config_root.join("projects")) else {
+            return false;
+        };
+        projects
+            .flatten()
+            .any(|project| project.path().join(format!("{session_id}.jsonl")).exists())
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// The uuid of the LAST top-level message record (`assistant` or `user`,
+/// no parent tool-use id, not a sidechain) in the CLI's own session file
+/// for `session_id` — how a fork launch tells the session's LATEST turn
+/// (`--fork-session` alone continues the whole session) from a boundary at
+/// an EARLIER turn (the hidden `--resume-session-at` cuts it there,
+/// inclusive). `None` when the file is missing, unreadable, or holds no
+/// message records: the boundary is then treated as an earlier turn — the
+/// flag combination the CLI may refuse, which is exactly what the fork's
+/// budgeted-paste fallback covers.
+async fn session_last_message_uuid(
+    config_root: &std::path::Path,
+    session_id: &str,
+) -> Option<String> {
+    use std::io::BufRead as _;
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    let config_root = config_root.to_owned();
+    let session_id = session_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Ok(projects) = std::fs::read_dir(config_root.join("projects")) else {
+            return None;
+        };
+        // Session ids are global; the project directory encoding does not
+        // matter here (the same walk `session_known` and
+        // `Normalizer::for_resume` use).
+        let file = projects.flatten().find_map(|project| {
+            std::fs::File::open(project.path().join(format!("{session_id}.jsonl"))).ok()
+        })?;
+        // Long sessions run to hundreds of MB: only lines that can carry a
+        // uuid are parsed, off the runtime, and only the LAST top-level
+        // message record is kept.
+        let mut reader = std::io::BufReader::with_capacity(1 << 16, file);
+        let mut line = Vec::new();
+        let mut last = None;
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if !line.windows(6).any(|window| window == b"\"uuid\"") {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(&line) else {
+                continue;
+            };
+            // Torn lines and older/newer unknown shapes are harmless.
+            let Ok(record) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if !matches!(
+                record.get("type").and_then(Value::as_str),
+                Some("assistant") | Some("user")
+            ) || record.get("isSidechain").and_then(Value::as_bool) == Some(true)
+                || !record.get("parent_tool_use_id").is_none_or(Value::is_null)
+            {
+                continue;
+            }
+            if let Some(uuid) = record
+                .get("uuid")
+                .and_then(Value::as_str)
+                .filter(|uuid| !uuid.is_empty())
+            {
+                last = Some(uuid.to_owned());
+            }
+        }
+        last
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// The `--model` value: the 1M context window is selected via a model-id
@@ -152,6 +321,11 @@ pub struct ClaudeHarness {
     initialize: discovery::InitializeCache,
     models_cache: crate::catalog::Catalog,
     workspace_commands: crate::skills::CommandDiscovery,
+    /// Test override for the CLI's config root — the directory whose
+    /// `projects/` holds the session store the fork launch reads (a
+    /// missing source session and the latest-turn boundary). Unset in
+    /// production: `CLAUDE_CONFIG_DIR` (or `~/.claude`) applies.
+    config_root: Option<PathBuf>,
 }
 
 impl Default for ClaudeHarness {
@@ -163,6 +337,7 @@ impl Default for ClaudeHarness {
             initialize: discovery::InitializeCache::default(),
             models_cache: crate::catalog::Catalog::default(),
             workspace_commands: crate::skills::CommandDiscovery::default(),
+            config_root: None,
         }
     }
 }
@@ -175,6 +350,15 @@ impl ClaudeHarness {
     /// Use a fixed CLI binary instead of PATH/known-location resolution.
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
+        self
+    }
+
+    /// Point the session store at a fixed config root instead of
+    /// `CLAUDE_CONFIG_DIR` / `~/.claude` (tests drive the fork launch
+    /// against a crafted store; the env var is process-global and would
+    /// race parallel tests).
+    pub fn with_config_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.config_root = Some(root.into());
         self
     }
 
@@ -578,116 +762,296 @@ impl Harness for ClaudeHarness {
 impl ClaudeHarness {
     async fn run_with_mode(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         controls: RunControls,
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let mut cmd = self.build_command(&exe, &request);
-        if title_only {
-            cmd.args([
-                "--system-prompt",
-                crate::TITLE_INSTRUCTIONS,
-                "--tools",
-                "",
-                "--strict-mcp-config",
-                "--mcp-config",
-                "{\"mcpServers\":{}}",
-                "--setting-sources",
-                "",
-            ]);
-        } else if let Some(mcp) = &request.mcp {
-            // Roboco's own server rides beside the user's configured servers
-            // (no `--strict-mcp-config`): the CLI merges an inline JSON
-            // config with settings-sourced ones.
-            cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
-        }
-        let normalizer = if let Some(session_id) = &request.resume {
-            let config = crate::model_context::root(
+        let config_root = self.config_root.clone().unwrap_or_else(|| {
+            crate::model_context::root(
                 "CLAUDE_CONFIG_DIR",
                 crate::executable::home_or_current_dir().join(".claude"),
+            )
+        });
+        // A resume the CLI will REFUSE — its session store has no such id —
+        // starts a fresh session instead when the engine attached a
+        // fallback history (the account-failover continuation, ticket 09):
+        // the budgeted transcript rides in front of the prompt, so the
+        // fresh session still knows the conversation. Plain resumes carry
+        // no fallback and keep today's behavior: pass `--resume` and let
+        // the CLI report the bad id itself.
+        if let (Some(resume), Some(history)) =
+            (request.resume.clone(), request.resume_fallback_history.clone())
+            && !session_known(&config_root, &resume).await
+        {
+            tracing::debug!(
+                target: "roboco_harness::claude",
+                "resume of {resume} has no session file; starting fresh with the budgeted history"
             );
-            Normalizer::for_resume(&config, session_id).await
-        } else {
-            Normalizer::new()
-        };
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
-        })?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
-        let stderr_tail = crate::StderrTail::default();
-        if let Some(stderr) = child.stderr.take() {
-            let tail = stderr_tail.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "roboco_harness::claude", "stderr: {line}");
-                    tail.push(&line);
+            request.resume = None;
+            request.prompt = crate::prompt_with_history(&history, &request.prompt);
+        }
+        // A native fork (t3-orchestration-v2 ticket 18): the CLI continues
+        // the SOURCE session as a NEW session id — `--resume <source>
+        // --fork-session` — so the copied history rides the provider and
+        // nothing is pasted. A boundary at an earlier turn also passes the
+        // hidden `--resume-session-at <uuid>` (inclusive); the latest turn
+        // needs no cut, and the unverified flag combination is exactly
+        // what the fallback below covers. A source session the CLI's store
+        // no longer has skips the fork outright; a CLI that REJECTS the
+        // flags — it exits before it ever speaks — retries once as a fresh
+        // session with the budgeted transcript in front of the prompt. A
+        // fork never fails the send.
+        let mut fork_flags: Option<Vec<String>> = None;
+        // Only set when the fork launch is ATTEMPTED — the budgeted
+        // transcript the retry pastes if the CLI rejects the flags. A
+        // missing session never attempts; its fallback pastes at once,
+        // exactly like the refused resume above.
+        let mut fork_fallback: Option<String> = None;
+        if let Some(fork) = request.provider_fork.clone() {
+            if session_known(&config_root, &fork.session_id).await {
+                // The source session doubles as the launch's resume id, and
+                // the restored spawn chips (subagent transcript tabs) come
+                // from its history — the forked copy continues it.
+                request.resume = Some(fork.session_id.clone());
+                let latest = session_last_message_uuid(&config_root, &fork.session_id).await;
+                let mut flags = vec!["--fork-session".to_string()];
+                if latest.as_deref() != Some(fork.last_turn.as_str()) {
+                    flags.push(format!("--resume-session-at={}", fork.last_turn));
                 }
-            });
+                fork_flags = Some(flags);
+                fork_fallback = fork.fallback_history;
+            } else {
+                tracing::debug!(
+                    target: "roboco_harness::claude",
+                    "fork source {} has no session file; starting fresh with the budgeted history",
+                    fork.session_id
+                );
+                request.provider_fork = None;
+                if let Some(history) = fork.fallback_history {
+                    request.prompt = crate::prompt_with_history(&history, &request.prompt);
+                }
+            }
         }
-
-        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<StdinMsg>();
-        tokio::spawn(stdin_writer(stdin, stdin_rx));
-        if !title_only {
-            // The opening control request: `perTaskStopAffordance` tells the
-            // CLI this host stops tasks individually, so an interrupt ends
-            // the turn and spares background agents.
-            let _ = stdin_tx.send(StdinMsg::Line(wire::initialize_request_line(
-                "roboco_initialize",
-            )));
-        }
-
-        // The initial prompt as the first stdin user line (streaming-input
-        // mode). Ultrathink rides every user message — steers included.
-        // Staged image attachments are inlined as base64 image content blocks
-        // ahead of the text (verified against the real CLI); their path refs
-        // also ride the prompt text, so a skipped/unreadable file degrades to
-        // the old-app behavior (the agent opens the path with its Read tool).
-        // The line carries a uuid: the CLI then reports its
-        // `command_lifecycle`, which decides when a `result` is a steer
-        // boundary instead of the turn's end.
         let images = load_image_blocks(&request.attachments).await;
-        let first_command = uuid::Uuid::new_v4().to_string();
-        let first = wire::prompt_line(
-            &apply_ultrathink(request.reasoning, &request.prompt),
-            &first_command,
-            &images,
-        );
-        let _ = stdin_tx.send(StdinMsg::Line(first));
+        // One launch — or two, when the CLI refuses the fork flags: the
+        // second drops every session flag and pastes the budgeted
+        // transcript (the fallback the engine attached for exactly this
+        // refusal).
+        for attempt in 0..2 {
+            if attempt == 1 {
+                request.resume = None;
+                request.provider_fork = None;
+                fork_flags = None;
+                if let Some(history) = fork_fallback.take() {
+                    request.prompt = crate::prompt_with_history(&history, &request.prompt);
+                }
+                tracing::debug!(
+                    target: "roboco_harness::claude",
+                    "the CLI refused the fork launch; starting fresh with the budgeted history"
+                );
+            }
+            let mut cmd = self.build_command(&exe, &request);
+            if let Some(flags) = &fork_flags {
+                cmd.args(flags.clone());
+            }
+            if title_only {
+                cmd.args([
+                    "--system-prompt",
+                    crate::TITLE_INSTRUCTIONS,
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "{\"mcpServers\":{}}",
+                    "--setting-sources",
+                    "",
+                ]);
+            } else if let Some(mcp) = &request.mcp {
+                // Roboco's own server rides beside the user's configured servers
+                // (no `--strict-mcp-config`): the CLI merges an inline JSON
+                // config with settings-sourced ones.
+                cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
+            }
+            let normalizer = if let Some(session_id) = &request.resume {
+                Normalizer::for_resume(&config_root, session_id).await
+            } else {
+                Normalizer::new()
+            };
+            let mut child = cmd.spawn().map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
+                } else {
+                    HarnessError::Io(e)
+                }
+            })?;
 
-        let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
-        tokio::spawn(run_session(Session {
-            normalizer,
-            title_only,
-            child,
-            stdout_lines: BufReader::new(stdout).lines(),
-            first_command,
-            stdin_tx,
-            event_tx,
-            controls,
-            config: request,
-            interrupt_grace: self.interrupt_grace,
-            kill_grace: self.kill_grace,
-            stderr_tail,
-        }));
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
+            let stderr_tail = crate::StderrTail::default();
+            if let Some(stderr) = child.stderr.take() {
+                let tail = stderr_tail.clone();
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tracing::debug!(target: "roboco_harness::claude", "stderr: {line}");
+                        tail.push(&line);
+                    }
+                });
+            }
 
-        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed())
+            let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<StdinMsg>();
+            tokio::spawn(stdin_writer(stdin, stdin_rx));
+            if !title_only {
+                // The opening control request: `perTaskStopAffordance` tells the
+                // CLI this host stops tasks individually, so an interrupt ends
+                // the turn and spares background agents.
+                let _ = stdin_tx.send(StdinMsg::Line(wire::initialize_request_line(
+                    "roboco_initialize",
+                )));
+            }
+
+            // The first prompt as the first stdin user line (streaming-input
+            // mode) — sent BEFORE the launch probe below: a CLI that lazily
+            // validates its resume flags fails them only once a prompt
+            // arrives, so the probe must be reading when that result lands.
+            // Ultrathink rides every user message — steers included.
+            // Staged image attachments are inlined as base64 image content blocks
+            // ahead of the text (verified against the real CLI); their path refs
+            // also ride the prompt text, so a skipped/unreadable file degrades to
+            // the old-app behavior (the agent opens the path with its Read tool).
+            // The line carries a uuid: the CLI then reports its
+            // `command_lifecycle`, which decides when a `result` is a steer
+            // boundary instead of the turn's end. A refused launch's retry
+            // delivers the budgeted transcript here — it is already in front
+            // of the prompt.
+            let first_command = uuid::Uuid::new_v4().to_string();
+            let first = wire::prompt_line(
+                &apply_ultrathink(request.reasoning, &request.prompt),
+                &first_command,
+                &images,
+            );
+            let _ = stdin_tx.send(StdinMsg::Line(first));
+
+            // The launch's acceptance probe (ticket 18): the CLI proves the
+            // launch as it speaks — anything it writes is buffered in `head`
+            // and handed to the session loop unchanged, so nothing is lost.
+            // The probe reads until one of:
+            // - any ASSISTANT output: the launch is good — hand over.
+            // - an ERRORED first `result` BEFORE any assistant output: the
+            //   CLI accepted the flags but then failed the resume — a bad
+            //   `--resume-session-at` uuid it validates late (B11), or a
+            //   resumed session the account can no longer read (B12: the
+            //   failover continuation's cross-account resume). Same
+            //   refusal as silence: the retry below starts fresh with the
+            //   budgeted transcript, because a fork/resume never fails the
+            //   send.
+            // - silence: EOF before the CLI ever spoke — the flags were
+            //   rejected up front (the original ticket-18 shape).
+            // - Stop mid-probe: hand the child to the session loop, which
+            //   sees the token and ends the run interrupted.
+            // Every launch the probe covers carries a fallback history the
+            // retry pastes: a fork (the engine's budgeted transcript), or a
+            // resume with `resume_fallback_history` (the failover
+            // continuation). Plain launches and titles are handed over
+            // unread, as before.
+            let probe_launch = !title_only
+                && (fork_flags.is_some()
+                    || (request.resume.is_some() && request.resume_fallback_history.is_some()));
+            let mut head: Vec<u8> = Vec::new();
+            if probe_launch {
+                enum Probe {
+                    Accepted,
+                    Silent,
+                    Refused,
+                    Interrupted,
+                }
+                let launch_fallback = fork_fallback
+                    .take()
+                    .or_else(|| request.resume_fallback_history.take());
+                let mut probe = [0u8; 1024];
+                let bound =
+                    tokio::time::Instant::now() + LAUNCH_PROBE_BOUND;
+                let outcome = loop {
+                    tokio::select! {
+                        biased;
+                        _ = controls.interrupt.cancelled() => break Probe::Interrupted,
+                        _ = tokio::time::sleep_until(bound) => break Probe::Accepted,
+                        read = stdout.read(&mut probe) => match read {
+                            Ok(0) | Err(_) => {
+                                break if head.is_empty() {
+                                    Probe::Silent
+                                } else {
+                                    Probe::Accepted
+                                }
+                            }
+                            Ok(n) => {
+                                head.extend_from_slice(&probe[..n]);
+                                match launch_reading(&head) {
+                                    LaunchReading::Refused => break Probe::Refused,
+                                    // Assistant output spoke for the launch:
+                                    // hand the buffered stream over.
+                                    LaunchReading::Accepted => break Probe::Accepted,
+                                    LaunchReading::Undecided => {}
+                                }
+                            }
+                        },
+                    }
+                };
+                match outcome {
+                    // Interrupted: the fallback stays unspent; the session
+                    // loop ends the run interrupted.
+                    Probe::Accepted | Probe::Interrupted => {}
+                    Probe::Silent | Probe::Refused => {
+                        shutdown_child(&mut child, self.kill_grace).await;
+                        request.resume = None;
+                        request.provider_fork = None;
+                        fork_flags = None;
+                        if let Some(history) = launch_fallback {
+                            request.prompt = crate::prompt_with_history(&history, &request.prompt);
+                        }
+                        tracing::debug!(
+                            target: "roboco_harness::claude",
+                            "the CLI refused the launch (silent, or an error before any \
+                             assistant output); starting fresh with the budgeted history"
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            // The probe's consumed byte rides ahead of the pipe (no output
+            // is lost); an empty head is every unprobed launch.
+            let stdout_lines =
+                BufReader::new(std::io::Cursor::new(head).chain(stdout)).lines();
+            let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+            tokio::spawn(run_session(Session {
+                normalizer,
+                title_only,
+                child,
+                stdout_lines,
+                first_command,
+                stdin_tx,
+                event_tx,
+                controls,
+                config: request,
+                interrupt_grace: self.interrupt_grace,
+                kill_grace: self.kill_grace,
+                stderr_tail,
+            }));
+
+            return Ok(futures::stream::unfold(event_rx, |mut rx| async move {
+                rx.recv().await.map(|ev| (ev, rx))
+            })
+            .boxed());
+        }
+        unreachable!("the launch loop returns (or errors) on its final pass")
     }
 }
 
@@ -795,11 +1159,19 @@ async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Std
     }
 }
 
+/// The session's stdout line source: the fork probe's consumed lead byte
+/// (chained back ahead of the pipe, so no output is lost) then the child's
+/// stdout. The head is empty for every launch that was never probed — a
+/// plain, resumed, or title launch behaves exactly as before.
+type StdoutLines = tokio::io::Lines<
+    BufReader<tokio::io::Chain<std::io::Cursor<Vec<u8>>, crate::process::ChildStdout>>,
+>;
+
 struct Session {
     normalizer: Normalizer,
     title_only: bool,
     child: Child,
-    stdout_lines: tokio::io::Lines<BufReader<crate::process::ChildStdout>>,
+    stdout_lines: StdoutLines,
     /// The uuid the opening prompt was written with.
     first_command: String,
     stdin_tx: mpsc::UnboundedSender<StdinMsg>,
@@ -1483,6 +1855,50 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+
+    /// The fork launch's latest-turn detection (ticket 18): the session
+    /// store's last TOP-LEVEL message record — tagged subagent records and
+    /// non-message records (summaries, tags) never count.
+    #[tokio::test]
+    async fn the_session_scan_takes_the_last_top_level_message_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("projects/probe");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("sess-scan.jsonl"),
+            concat!(
+                r#"{"type":"user","uuid":"u-1","parent_tool_use_id":null,"message":{"role":"user","content":"first"}}"#,
+                "\n",
+                // A tagged subagent record and a non-message record.
+                r#"{"type":"assistant","uuid":"sub-1","parent_tool_use_id":"toolu_x","isSidechain":true,"message":{"role":"assistant","content":[]}}"#,
+                "\n",
+                r#"{"type":"summary","uuid":"trailing","summary":"s"}"#,
+                "\n",
+                r#"{"type":"assistant","uuid":"msg-last","parent_tool_use_id":null,"message":{"role":"assistant","content":[]}}"#,
+                "\n",
+                // Records after the last message never count either.
+                r#"{"type":"summary","uuid":"after","summary":"s"}"#,
+                "\n",
+                // A torn tail line is harmless.
+                "{torn",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            session_last_message_uuid(dir.path(), "sess-scan")
+                .await
+                .as_deref(),
+            Some("msg-last")
+        );
+        // No session file (and unreadable ids): no latest turn — the
+        // launch treats the boundary as an earlier one.
+        assert_eq!(session_last_message_uuid(dir.path(), "no-such").await, None);
+        assert_eq!(session_last_message_uuid(dir.path(), "").await, None);
+        assert_eq!(
+            session_last_message_uuid(dir.path(), "../escape").await,
+            None
+        );
     }
 }
 

@@ -33,6 +33,9 @@ pub enum Indicator {
     Working,
     AwaitingInput,
     Errored,
+    /// Errored with a recorded usage limit ([`Session::limit`]): the same
+    /// status row, presented as Limited — reset time known, Resume offered.
+    Limited,
 }
 
 /// A `Working`/`AwaitingInput` session older than this is treated as dead — a
@@ -47,7 +50,13 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
     };
     match session.status {
         SessionStatus::Idle => Indicator::None,
-        SessionStatus::Errored => Indicator::Errored,
+        SessionStatus::Errored => {
+            if session.limit.is_some() {
+                Indicator::Limited
+            } else {
+                Indicator::Errored
+            }
+        }
         SessionStatus::Working | SessionStatus::AwaitingInput => {
             let age_ms = now
                 .signed_duration_since(session.updated_at)
@@ -61,6 +70,44 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
             }
         }
     }
+}
+
+/// Banner text for a Limited chat's reset time ("resets in 45m", "resets in
+/// 2h 05m"). A reset already past reads as due — the honest offer is Resume,
+/// not a countdown into the past. Pure.
+pub fn format_limit_reset(resets_at: i64, now: DateTime<Utc>) -> String {
+    relative_reset_text("resets", resets_at, now)
+}
+
+/// Banner text for a chat's armed Resume-at-reset continuation ("resumes in
+/// 45m", "resumes in 2h 05m"). Same shape as [`format_limit_reset`]; a fire
+/// time already past reads as due — the continuation is running or about to.
+/// Pure.
+pub fn format_scheduled_resume(fire_at: i64, now: DateTime<Utc>) -> String {
+    relative_reset_text("resumes", fire_at, now)
+}
+
+/// The shared relative countdown behind both Limited banner texts — one
+/// wall-clock deadline, one phrasing, verb-parameterized only.
+fn relative_reset_text(verb: &str, at: i64, now: DateTime<Utc>) -> String {
+    let until = chrono::TimeDelta::milliseconds(at - now.timestamp_millis());
+    if until.num_seconds() <= 0 {
+        return format!("{verb} now");
+    }
+    let minutes = until.num_minutes();
+    if minutes < 60 {
+        return format!("{verb} in {minutes}m");
+    }
+    let hours = minutes / 60;
+    let rest = minutes % 60;
+    if hours < 24 {
+        return if rest == 0 {
+            format!("{verb} in {hours}h")
+        } else {
+            format!("{verb} in {hours}h {rest:02}m")
+        };
+    }
+    format!("{verb} in {}d", hours / 24)
 }
 
 /// The full display status for a chat row / tab dot: live states win, then the
@@ -136,9 +183,14 @@ impl SessionNotificationState {
 
     /// Call after saving the new baseline, including when delivery is
     /// pending or outputs are disabled. Suppressed pings must never be
-    /// replayed later. Precedence: error, then input, then done.
+    /// replayed later. Precedence: error, then input, then done. A Limited
+    /// row counts as the error attention state: a usage limit ended the
+    /// turn just as loudly as a crash did.
     pub fn sound_since(&self, prev: &Self, send_pending: bool) -> Option<NotifyKind> {
-        if self.indicator == Indicator::Errored && prev.indicator != Indicator::Errored {
+        let attention = |indicator: Indicator| {
+            matches!(indicator, Indicator::Errored | Indicator::Limited)
+        };
+        if attention(self.indicator) && !attention(prev.indicator) {
             return Some(NotifyKind::Attention);
         }
         if self.indicator == Indicator::AwaitingInput
@@ -559,6 +611,10 @@ pub mod dot {
     pub const AWAITING: (f32, f32, f32) = (0.673, 0.182, 276.935);
     /// Errored. Red-400.
     pub const ERRORED: (f32, f32, f32) = (0.704, 0.191, 22.216);
+    /// Limited (errored on a usage limit). Amber — "waiting out a limit",
+    /// not the failure red; it must read differently from Errored at a
+    /// glance so a limited chat stands out in the sidebar.
+    pub const LIMITED: (f32, f32, f32) = (0.766, 0.155, 75.0);
     /// Finished but unseen. Emerald — reads as "ready for you".
     pub const COMPLETED: (f32, f32, f32) = (0.765, 0.177, 163.223);
 }
@@ -711,6 +767,84 @@ mod checkout_tests {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod limited_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn session(status: SessionStatus, limit: Option<crate::SessionLimit>) -> Session {
+        Session {
+            last_completed_turn: None,
+            chat_id: "c".into(),
+            device_id: "d".into(),
+            status,
+            started_at: None,
+            updated_at: Utc::now(),
+            limit,
+            scheduled_resume: None,
+        }
+    }
+
+    fn limit() -> crate::SessionLimit {
+        crate::SessionLimit {
+            harness: crate::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some(0),
+            account_id: None,
+        }
+    }
+
+    #[test]
+    fn an_errored_row_with_a_limit_reads_as_limited() {
+        let now = Utc::now();
+        assert_eq!(
+            effective_indicator(Some(&session(SessionStatus::Errored, Some(limit()))), now),
+            Indicator::Limited
+        );
+        // The same record on any other status is inert — a row that is
+        // working again (the record cleared on the new turn) never shows a
+        // stale Limited marker.
+        assert_eq!(
+            effective_indicator(Some(&session(SessionStatus::Working, Some(limit()))), now),
+            Indicator::Working
+        );
+        assert_eq!(
+            effective_indicator(Some(&session(SessionStatus::Errored, None)), now),
+            Indicator::Errored
+        );
+        assert_eq!(effective_indicator(None, now), Indicator::None);
+    }
+
+    #[test]
+    fn reset_text_is_relative_and_never_counts_into_the_past() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap();
+        let ms = |secs: i64| (now + chrono::TimeDelta::seconds(secs)).timestamp_millis();
+        assert_eq!(format_limit_reset(ms(45 * 60), now), "resets in 45m");
+        assert_eq!(format_limit_reset(ms(30), now), "resets in 0m");
+        assert_eq!(format_limit_reset(ms(3 * 3600 + 5 * 60), now), "resets in 3h 05m");
+        assert_eq!(format_limit_reset(ms(7 * 3600), now), "resets in 7h");
+        assert_eq!(format_limit_reset(ms(2 * 86_400 + 3 * 3600), now), "resets in 2d");
+        // A reset already due: the offer is Resume, not a negative countdown.
+        assert_eq!(format_limit_reset(ms(-600), now), "resets now");
+        assert_eq!(format_limit_reset(now.timestamp_millis(), now), "resets now");
+    }
+
+    #[test]
+    fn scheduled_resume_text_is_relative_and_never_counts_into_the_past() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap();
+        let ms = |secs: i64| (now + chrono::TimeDelta::seconds(secs)).timestamp_millis();
+        assert_eq!(format_scheduled_resume(ms(45 * 60), now), "resumes in 45m");
+        assert_eq!(format_scheduled_resume(ms(30), now), "resumes in 0m");
+        assert_eq!(format_scheduled_resume(ms(3 * 3600 + 5 * 60), now), "resumes in 3h 05m");
+        assert_eq!(format_scheduled_resume(ms(7 * 3600), now), "resumes in 7h");
+        assert_eq!(format_scheduled_resume(ms(2 * 86_400 + 3 * 3600), now), "resumes in 2d");
+        // A fire time already due: the continuation is about to run, not
+        // counting into the past.
+        assert_eq!(format_scheduled_resume(ms(-600), now), "resumes now");
+        assert_eq!(format_scheduled_resume(now.timestamp_millis(), now), "resumes now");
+    }
+}
+
+#[cfg(test)]
 mod notification_tests {
     use super::*;
 
@@ -743,6 +877,21 @@ mod notification_tests {
             Some(NotifyKind::Attention)
         );
         assert_eq!(errored.sound_since(&errored, false), None);
+    }
+
+    #[test]
+    fn a_limited_transition_chimes_attention_like_any_error() {
+        let working = baseline(Indicator::Working, None);
+        let limited = baseline(Indicator::Limited, None);
+        assert_eq!(
+            limited.sound_since(&working, false),
+            Some(NotifyKind::Attention)
+        );
+        // Staying limited (a heartbeat re-publishing the row) never
+        // re-chimes, and a later plain error is the same attention state.
+        assert_eq!(limited.sound_since(&limited, false), None);
+        let errored = baseline(Indicator::Errored, None);
+        assert_eq!(errored.sound_since(&limited, false), None);
     }
 
     #[test]
@@ -795,6 +944,8 @@ mod notification_tests {
             status,
             started_at: None,
             updated_at: updated,
+            limit: None,
+            scheduled_resume: None,
         };
         let working = SessionNotificationState::new(&session(SessionStatus::Working, fresh), now);
         assert_eq!(working.indicator, Indicator::Working);

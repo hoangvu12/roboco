@@ -286,6 +286,13 @@ impl WorkspaceDoc {
         )?;
         set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
+        match &chat.agent_origin {
+            Some(origin) => row.insert(
+                "agentOrigin",
+                LoroValue::from(serde_json::to_value(origin)?),
+            )?,
+            None => row.delete("agentOrigin")?,
+        }
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         self.doc.commit();
         Ok(())
@@ -485,6 +492,20 @@ impl WorkspaceDoc {
         )?;
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
+        match &session.limit {
+            Some(limit) => row.insert(
+                "limit",
+                LoroValue::from(serde_json::to_value(limit)?),
+            )?,
+            None => row.delete("limit")?,
+        }
+        match &session.scheduled_resume {
+            Some(scheduled) => row.insert(
+                "scheduledResume",
+                LoroValue::from(serde_json::to_value(scheduled)?),
+            )?,
+            None => row.delete("scheduledResume")?,
+        }
         self.doc.commit();
         Ok(())
     }
@@ -720,6 +741,8 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     parent_chat_id: Option<String>,
+    #[serde(default)]
+    agent_origin: Option<roboco_proto::AgentOrigin>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -761,6 +784,7 @@ impl From<RawChat> for Chat {
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
             parent_chat_id: raw.parent_chat_id,
+            agent_origin: raw.agent_origin,
         }
     }
 }
@@ -777,6 +801,10 @@ pub(crate) struct RawSession {
     started_at: Option<i64>,
     #[serde(default)]
     updated_at: i64,
+    #[serde(default)]
+    limit: Option<roboco_proto::SessionLimit>,
+    #[serde(default)]
+    scheduled_resume: Option<roboco_proto::ScheduledResume>,
 }
 
 impl From<RawSession> for Session {
@@ -788,6 +816,8 @@ impl From<RawSession> for Session {
             status: raw.status,
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
+            limit: raw.limit,
+            scheduled_resume: raw.scheduled_resume,
         }
     }
 }
@@ -846,6 +876,7 @@ mod tests {
 
     fn chat(id: &str, device_id: &str) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: device_id.into(),
             title: Some("First chat".into()),
@@ -895,6 +926,8 @@ mod tests {
             status,
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
+            limit: None,
+            scheduled_resume: None,
         }
     }
 
@@ -969,6 +1002,37 @@ mod tests {
             .delete("lastCompletedTurn")
             .unwrap();
         assert_eq!(ws.read_sessions().unwrap()[0].last_completed_turn, None);
+    }
+
+    /// The usage-limit record rides the session row additively: it
+    /// round-trips through the doc, a row from an older writer (no such
+    /// key) reads as unlimited, and clearing it on a later upsert (a new
+    /// turn started) drops the stale marker instead of keeping it.
+    #[test]
+    fn limit_record_round_trips_and_clears_on_the_session_row() {
+        let ws = WorkspaceDoc::new();
+        let mut row = session("chat-1", "dev-a", SessionStatus::Errored);
+        row.limit = Some(roboco_proto::SessionLimit {
+            harness: HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some(1_762_675_400_000),
+            account_id: Some("slot-9f2c".into()),
+        });
+        ws.upsert_session(&row).unwrap();
+        assert_eq!(ws.read_sessions().unwrap(), vec![row.clone()]);
+        // Old writers never wrote the field: a row without the key parses
+        // as unlimited.
+        ws.row("sessions", "chat-1")
+            .unwrap()
+            .delete("limit")
+            .unwrap();
+        assert_eq!(ws.read_sessions().unwrap()[0].limit, None);
+        // A new turn clears the record: the engine upserts the row without
+        // one, and the stale marker must not survive that write.
+        let mut resumed = session("chat-1", "dev-a", SessionStatus::Working);
+        ws.upsert_session(&resumed).unwrap();
+        resumed.limit = None;
+        assert_eq!(ws.read_sessions().unwrap(), vec![resumed]);
     }
 
     #[test]

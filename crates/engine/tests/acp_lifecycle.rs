@@ -40,6 +40,7 @@ async fn quiet_acp_prompt_stays_working_until_response() {
     let doc = handle.doc();
     let queue = |id: &str, payload| {
         doc.queue_command(&SessionCommandEntry {
+            origin_chat_id: None,
             id: id.into(),
             payload,
             issued_by: "viewer".into(),
@@ -68,6 +69,8 @@ async fn quiet_acp_prompt_stays_working_until_response() {
                 worktree: None,
                 mcp: None,
                 resume: None,
+                provider_fork: None,
+                resume_fallback_history: None,
             },
         },
     );

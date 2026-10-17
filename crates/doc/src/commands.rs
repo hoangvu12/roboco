@@ -91,6 +91,12 @@ pub struct SessionCommandEntry {
     pub status: SessionCommandStatus,
     #[serde(default)]
     pub resolution: Option<String>,
+    /// The chat this Run/Steer was sent BY through the Roboco MCP server —
+    /// structured attribution (additive; ADR 0005). None for user-typed
+    /// sends and for rows written before the field existed. Executing it
+    /// stamps the same origin on the user message entry it writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_chat_id: Option<String>,
 }
 
 impl SessionCommandEntry {
@@ -187,6 +193,7 @@ mod tests {
             expires_at: None,
             status: SessionCommandStatus::Pending,
             resolution: None,
+            origin_chat_id: None,
         }
     }
 
@@ -348,6 +355,39 @@ mod tests {
         assert!(!can_composer_cancel(&applied, "device-a"));
     }
 
+    #[test]
+    fn run_and_steer_entries_carry_their_origin_chat_additively() {
+        for payload in [
+            SessionCommandPayload::Run {
+                request: run_request(),
+                message_id: "m1".into(),
+            },
+            SessionCommandPayload::Steer {
+                prompt: "go".into(),
+                message_id: Some("m2".into()),
+            },
+        ] {
+            let sent = SessionCommandEntry {
+                origin_chat_id: Some("chat-origin-1".into()),
+                ..entry("c1", payload, 1_000)
+            };
+            let value = serde_json::to_value(&sent).unwrap();
+            assert_eq!(value["originChatId"], "chat-origin-1", "{value}");
+            assert_eq!(
+                serde_json::from_value::<SessionCommandEntry>(value).unwrap(),
+                sent
+            );
+        }
+        // Rows from older writers (and user-typed sends) carry no origin.
+        let plain = steer("c1", 1_000);
+        let value = serde_json::to_value(&plain).unwrap();
+        assert!(value.get("originChatId").is_none());
+        assert_eq!(
+            serde_json::from_value::<SessionCommandEntry>(value).unwrap(),
+            plain
+        );
+    }
+
     fn run_request() -> RunRequest {
         RunRequest {
             prompt: "hello".into(),
@@ -362,6 +402,8 @@ mod tests {
             worktree: None,
             mcp: None,
             resume: None,
+            provider_fork: None,
+            resume_fallback_history: None,
         }
     }
 }

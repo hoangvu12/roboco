@@ -48,6 +48,8 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 

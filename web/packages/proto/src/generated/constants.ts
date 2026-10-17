@@ -32,3 +32,6 @@ export const SUBAGENT_MODEL_KEYS: readonly string[] = ["model", "modelId", "mode
 
 /** The only spawn-input keys preserved in a doc-side tool call. */
 export const SUBAGENT_INPUT_KEEP: readonly string[] = ["model", "modelId", "model_id", "subagent_model", "subagent_type"];
+
+/** The continue prompt a Limited chat's Resume sends (orchestration v2). */
+export const RESUME_CONTINUE_PROMPT = "Continue where you left off.";

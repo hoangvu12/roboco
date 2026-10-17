@@ -59,6 +59,7 @@ import {
   sendRun,
   type DraftConfig,
 } from "../lib/composer-actions";
+import { switchHarness as switchChatHarness, harnessSwitchable } from "../lib/harness-switch";
 import {
   attachmentStripHeight,
   COMPOSER_MAX_WIDTH,
@@ -97,6 +98,7 @@ import {
 import { menuStep } from "../lib/picker-search";
 import { dockHeight, routeChromeOpacities, type DockFrame } from "../lib/composer-dock";
 import { createChat, waitForChatRow } from "../lib/chat-actions";
+import { RESUME_CONTINUE_PROMPT } from "../lib/limited";
 import { mintUnsavedSideChat } from "../lib/side-chat-actions";
 import {
   completionTargetChatId,
@@ -377,6 +379,17 @@ interface ComposerProps {
    */
   readonly editFailureRef?: React.MutableRefObject<((message: string) => void) | null>;
   /**
+   * The Limited banner's **Resume** handle (orchestration v2, tickets
+   * 06/10/25): assigned the composer's `resume_limited` — the fixed continue
+   * prompt through the normal send path, the user's draft and staged files
+   * handed back — so the status strip above the composer can trigger it.
+   * Called plainly for Resume, or with the switch's landed picks for
+   * "Continue on another harness" (ticket 25: the continuation carries the
+   * NEW harness deterministically — the desktop's `apply_chat_config` stamp
+   * before `resume_limited`). The `editCommitRef` pattern again.
+   */
+  readonly resumeRef?: React.MutableRefObject<((override?: Partial<DraftConfig>) => void) | null>;
+  /**
    * The workspace commands' host surfaces (composer.rs's
    * `ComposerEvent::WorkspaceCommand` dispatch, web-shaped): the Roboco-local
    * `/new`, `/settings`, `/diff`, `/files`, `/terminal`, and `/rename` route
@@ -468,6 +481,7 @@ export function Composer({
   onEditCancel,
   editCommitRef,
   editFailureRef,
+  resumeRef,
   activateLatestQueued,
   dockFrame = null,
   liveDockFrame,
@@ -667,6 +681,14 @@ export function Composer({
   );
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The one-way switch's unlock (t3-orchestration-v2 ticket 24, the
+  // desktop's `harness_switchable`): the chat exists, no send of its own
+  // is still awaiting confirmation (`busy`), and no turn is in flight —
+  // Working or AwaitingInput both count as live. An unsaved side chat
+  // keeps its own editable facet (the pickers' `sideChatHarnessEditable`),
+  // which the lock already honors.
+  const switchable =
+    chat.id !== "" && !isUnsavedSideChat(chat.id) && harnessSwitchable(true, busy, runLive);
   // ── Ticket 15: the new-thread canvas branch ─────────────────────────────
   // `new_chat = selected_chat.is_none()` (composer.rs:7286) — the web's
   // canvas chat is the "" stub, so `expanded = expanded_mode || new_chat`
@@ -2514,6 +2536,52 @@ export function Composer({
     setDraft(next);
   }, []);
 
+  // ── The one-way harness switch (t3-orchestration-v2 ticket 24) ──────
+  // `Pickers::switch_chat_harness`: the pickers hand the built draft (the
+  // new harness with its default picks); the draft is already flipped
+  // optimistically, and the SwitchHarness RPC tells the engine, which
+  // writes the "Switched to <harness>" seam, drops the old harness
+  // session, and arms the budgeted history for the next send. A refused
+  // switch surfaces here in the failure notice and restores the previous
+  // draft at once — the engine's row stayed on the old harness, and no
+  // chats-watch frame will come to undo the optimistic flip (the desktop's
+  // `revert_harness_switch`). A re-pick of the chat's CURRENT row harness is a UI no-op —
+  // nothing to seam (the desktop's guard; the engine would only refuse
+  // with "Chat is already on …"). One switch per chat at a time: a double
+  // click must not seam twice.
+  const switchInFlightRef = useRef<string | null>(null);
+  const switchHarness = useCallback(
+    (next: DraftConfig, previous: DraftConfig) => {
+      if (switchInFlightRef.current === chat.id) {
+        return;
+      }
+      if (chat.config?.harness === next.harness) {
+        return;
+      }
+      switchInFlightRef.current = chat.id;
+      void switchChatHarness(session.client, chat.id, next.harness, {
+        model: next.model,
+        reasoning: next.reasoning,
+        modelOptions: next.modelOptions,
+      })
+        .catch((error: unknown) => {
+          // Only while the draft still shows this switch's flip: a later
+          // pick (or a reseed) wins.
+          setDraft((current) => (current === next ? previous : current));
+          setFailure({
+            message: `Could not switch the harness: ${describeSendError(error)}`,
+            key: chat.id,
+          });
+        })
+        .finally(() => {
+          if (switchInFlightRef.current === chat.id) {
+            switchInFlightRef.current = null;
+          }
+        });
+    },
+    [session.client, chat.id, chat.config?.harness],
+  );
+
   // The composer's mid-session model / reasoning / options changes persist
   // through `Mutate setChatConfig` (pickers.rs:1474) — a picker change, never
   // a send. An UNSAVED side chat has no row to write yet: the first send's
@@ -2547,8 +2615,25 @@ export function Composer({
   interruptRef.current = interrupt;
 
   // ── The send path (`Composer::send`, composer.rs:6032-6705) ────────────
+  // `runOverride`: a send whose run identity comes from OUTSIDE the draft
+  // — the Limited banner's "Continue on another harness" continuation
+  // (t3-orchestration-v2 ticket 25): the switch's landed picks, not the
+  // possibly-stale draft (the chats-watch frame can trail the switch's
+  // reply). The desktop's `confirm_continue_on_harness` stamps the row the
+  // same way so its `resolved()` reads the new harness; the web's stamp is
+  // this parameter, applied over the draft with the sandbox kept.
+  //
+  // `bare`: a send that is NOT the composer's draft — the Limited banner's
+  // Resume (`resume_limited`). It sends only `typed`: staged files, review
+  // comments and the typed draft stay where they are, untouched either way
+  // the send ends.
   const send = useCallback(
-    async (typed: string, queue: boolean): Promise<void> => {
+    async (
+      typed: string,
+      queue: boolean,
+      runOverride?: Partial<DraftConfig>,
+      bare = false,
+    ): Promise<void> => {
       // Existing busy chats always queue; compatibility was checked before
       // taking the draft (the capability gate below).
       if (queue) {
@@ -2576,6 +2661,10 @@ export function Composer({
       // stored cwd else `"."`. There is no error path — the desktop has no
       // guard for a projectless send, and neither does the web.
       const sendCwd = resolveSendCwd(chat.id === "", chat.cwd, chat.cwd);
+      // The run identity this send carries: the draft, with any override
+      // merged over it (the sandbox and anything un-overridden keep the
+      // draft's — the chat's own picks).
+      const runDraft: DraftConfig = { ...draft, ...(runOverride ?? {}) };
       // New-chat mode mints the chat id on first send (shell.rs:5897-5899,
       // composer.rs:6249-6258): create the row, wait for it to land, and
       // hand the host the navigation BEFORE the wire call — the route
@@ -2608,7 +2697,7 @@ export function Composer({
               // projectless `"~"` NEVER rides here — it lives on the
               // RunRequest (composer.rs:6515-6521 inserts `cwd` only for the
               // worktree-reuse override).
-              config: buildChatConfig(draft),
+              config: buildChatConfig(runDraft),
             },
           );
           await waitForChatRow(session.cache, chatId);
@@ -2642,7 +2731,7 @@ export function Composer({
             session.client,
             unsavedRow,
             chatId,
-            buildChatConfig(draft),
+            buildChatConfig(runDraft),
           );
         } catch (error) {
           setFailure({
@@ -2656,17 +2745,22 @@ export function Composer({
         markSideChatSaved(chatId);
       }
       // Snapshot-and-clear NOW (`takeAttachments`): the strip empties the
-      // instant you hit send; a failure hands the files back by id.
-      const taken = staged;
-      setStagedByChat((current) => {
-        const next = { ...current };
-        delete next[pageChatId];
-        return next;
-      });
+      // instant you hit send; a failure hands the files back by id. A bare
+      // send takes nothing.
+      const taken: typeof staged = bare ? [] : staged;
+      if (!bare) {
+        setStagedByChat((current) => {
+          const next = { ...current };
+          delete next[pageChatId];
+          return next;
+        });
+      }
       // `take_review_comments` (composer.rs:6130-6136): the comment block is
       // staged onto the composer key the draft was opened against — for the
       // new-chat canvas that is `""`, the pre-mint key.
-      const takenComments = reviewCommentStore.takeComments(chat.id);
+      const takenComments: ReturnType<typeof reviewCommentStore.takeComments> = bare
+        ? []
+        : reviewCommentStore.takeComments(chat.id);
       // `typed` keeps the user's own words for the failure hand-back below
       // (restoring a folded prompt would paste the trailer as literal text).
       // The echo cleanup key: null until an echo actually goes up, so a
@@ -2716,8 +2810,10 @@ export function Composer({
           });
           pushedEchoId = messageId;
         }
-        setText("");
-        chatDrafts.clear(pageChatId);
+        if (!bare) {
+          setText("");
+          chatDrafts.clear(pageChatId);
+        }
         setFailure(null);
         setBusy(true);
         // Whole-send upload accounting (`begin_upload_progress`): the percent
@@ -2752,7 +2848,7 @@ export function Composer({
           const sendResult = await sendRun(
             session.client,
             chatId,
-            draft,
+            runDraft,
             trimmed,
             sendCwd,
             { mintMessageId: () => messageId, worktree: runWorktree },
@@ -2821,8 +2917,10 @@ export function Composer({
         if (pushedEchoId !== null) {
           echoStore.removeEcho(pushedEchoId);
         }
-        setText(typed);
-        chatDrafts.set(chatDraftKey(pageChatId, session.engine.baseUrl), typed);
+        if (!bare) {
+          setText(typed);
+          chatDrafts.set(chatDraftKey(pageChatId, session.engine.baseUrl), typed);
+        }
         // The taken comments stage back under the chat's key
         // (`add_review_comment(&restore_key, …)`, composer.rs:6663-6667).
         reviewCommentStore.restoreComments(pageChatId, takenComments);
@@ -2854,6 +2952,41 @@ export function Composer({
     },
     [chat.id, chat.cwd, draft, session.client, session.engine.baseUrl, staged, engineSupports, checkReferenceDelivery, onNewThreadLaunched, commentCount],
   );
+
+  // ── **Resume** on a Limited chat (orchestration v2, tickets 06/10/25) ─
+  // `resume_limited` (composer.rs): send the fixed continue prompt as a
+  // NORMAL run — same send path, same guards, same queue semantics as
+  // typing it — never a special engine mode. The run clears the limit
+  // record when it starts; messages queued on the chat stay behind the
+  // continuation. A draft the user was typing (and the files and review
+  // comments they staged) is theirs, not part of the resume: the send is
+  // BARE — it carries only the continue prompt and never touches them.
+  //
+  // `override` (ticket 25, "Continue on another harness"): the switch's
+  // landed picks — the continuation must carry the NEW harness and model
+  // deterministically (the chats-watch frame that would re-seed the draft
+  // can trail the SwitchHarness reply), so the banner hands them here and
+  // the send merges them over the draft, exactly the desktop's
+  // `apply_chat_config` stamp before `resume_limited`.
+  const resumeLimited = useCallback(
+    (override?: Partial<DraftConfig>) => {
+      void send(RESUME_CONTINUE_PROMPT, false, override, true);
+    },
+    [send],
+  );
+
+  // The banner's handle assignment: the strip above the composer holds the
+  // ref; `send`'s identity churn re-binds it without re-subscribing the
+  // host (the `editCommitRef` pattern).
+  useEffect(() => {
+    if (resumeRef === undefined) {
+      return;
+    }
+    resumeRef.current = resumeLimited;
+    return () => {
+      resumeRef.current = null;
+    };
+  }, [resumeRef, resumeLimited]);
 
   // ── The submit dispatch (`on_submit`, composer.rs:5980-6007) ───────────
   // `commit_queue_edit` (queue.rs:1430): save the composer into the leased
@@ -3698,11 +3831,13 @@ export function Composer({
                       draft={draft}
                       chatConfig={chat.config}
                       sideChatHarnessEditable={isUnsavedSideChat(chat.id) && !busy}
+                      harnessSwitchable={switchable}
                       newChat={newChat}
                       openRequest={modelPickerRequest}
                       engineLabel={session.engine.label}
                       onDraft={applyDraft}
                       onPersist={persistDraft}
+                      onSwitchHarness={switchHarness}
                       escapeFocusTarget={() => textareaRef.current}
                       onOpenChange={setPickersOpen}
                     />

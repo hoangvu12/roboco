@@ -84,6 +84,14 @@ const LEGACY_NOTES: &[(&str, &str)] = &[
         "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
     ),
     (
+        "ResumeAccountCandidates",
+        "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
+    ),
+    (
+        "ResumeOnAccountOutcome",
+        "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
+    ),
+    (
         "AgentLoginStart",
         "Legacy wire name (ADR 0005): the canonical term is \"Harness account\" — see CONTEXT.md.",
     ),
@@ -126,10 +134,13 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::Space,
         roboco_proto::ChatConfig,
         roboco_proto::ConversationSourceContext,
+        roboco_proto::AgentOrigin,
         roboco_proto::Chat,
         roboco_proto::ChatIndicator,
         roboco_proto::SessionStatus,
         roboco_proto::Session,
+        roboco_proto::SessionLimit,
+        roboco_proto::ScheduledResume,
         roboco_proto::Repo,
         roboco_proto::RepoRef,
         roboco_proto::GitHistoryRefKind,
@@ -188,7 +199,10 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::InstallHarnessRequest,
         roboco_proto::AgentAccount,
         roboco_proto::AgentAuthKind,
+        roboco_proto::AgentSignInState,
         roboco_proto::AgentAccountsSnapshot,
+        roboco_proto::ResumeAccountCandidates,
+        roboco_proto::ResumeOnAccountOutcome,
         roboco_proto::AgentAccountWarning,
         roboco_proto::AgentLoginStart,
         roboco_proto::AgentLoginMode,
@@ -223,9 +237,11 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::Model,
         roboco_proto::ModelOption,
         roboco_proto::ModelOptionChoice,
+        roboco_proto::ProviderFork,
         roboco_proto::RunRequest,
         roboco_proto::McpServer,
         roboco_proto::WorktreeSpec,
+        roboco_proto::ProviderTurnRef,
         roboco_proto::ToolCall,
         roboco_proto::TodoItem,
         roboco_proto::SlashCommand,
@@ -233,6 +249,7 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::UserInputQuestion,
         roboco_proto::UserInputAnswer,
         roboco_proto::DoneStatus,
+        roboco_proto::AgentErrorKind,
         roboco_proto::AgentEvent,
         roboco_proto::ContextUsage,
         // invocation.rs
@@ -262,6 +279,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_doc::ToolDiffStat,
         roboco_doc::MessageStatus,
         roboco_doc::SubagentStatus,
+        roboco_doc::NoticeOutcome,
+        roboco_doc::NoticeSide,
         roboco_doc::MessagePart,
         roboco_doc::SessionCommandKind,
         roboco_doc::SessionCommandStatus,
@@ -284,6 +303,7 @@ fn export_all(cfg: &Config) -> Result<()> {
     export!(
         roboco_engine::registry::HarnessDescriptor,
         roboco_engine::registry::TitleSettings,
+        roboco_engine::EngineSettings,
         roboco_engine::uploads::AttachmentChunk,
         roboco_engine::uploads::AttachmentTransfer,
         roboco_engine::doc_host::BeginQueueEditOutcome,
@@ -399,6 +419,11 @@ fn constants_ts() -> String {
         "\n/** The only spawn-input keys preserved in a doc-side tool call. */\n\
          export const SUBAGENT_INPUT_KEEP: readonly string[] = [{}];\n",
         input_keep.join(", ")
+    ));
+    out.push_str(&format!(
+        "\n/** The continue prompt a Limited chat's Resume sends (orchestration v2). */\n\
+         export const RESUME_CONTINUE_PROMPT = {:?};\n",
+        roboco_proto::RESUME_CONTINUE_PROMPT
     ));
     out
 }

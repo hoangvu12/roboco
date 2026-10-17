@@ -32,24 +32,35 @@ impl Shell {
     }
 
     /// The surface picker's "Side chat": fork the current conversation
-    /// through its latest completed response, as a child of it.
+    /// through its latest completed response, as a child of it. Ticket 22:
+    /// the fork dialog opens first so the harness and model can be chosen
+    /// (defaulting to this conversation's); its confirm performs the fork.
     pub(super) fn create_side_chat(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.state.read(cx).selected_chat_row().cloned() else {
             self.show_side_chat_error("Start a conversation before creating a side chat.", cx);
             return;
         };
         let parent = source.id.clone();
-        self.fork_chat(source, parent, cx);
+        self.open_fork_dialog(source, parent, None, cx);
     }
 
-    /// Fork `source` through its latest completed response into a new chat
-    /// hanging under `parent_id`, and open it in the right pane. A side
-    /// chat's own fork button passes its parent so the copy lists as a
-    /// sibling; the picker passes the source itself.
+    /// Fork `source` into a new chat hanging under `parent_id`, and open it
+    /// in the right pane. A side chat's own fork button passes its parent so
+    /// the copy lists as a sibling; the picker passes the source itself.
+    /// `boundary` (t3-orchestration-v2 ticket 21, "Fork from here") forks at
+    /// a chosen assistant reply — any settled one, errored and interrupted
+    /// included — instead of the latest completed response; `None` keeps
+    /// today's behaviour. `harness`/`model` (ticket 22, "fork into another
+    /// harness") override what the copy runs on — `None` keeps the source's
+    /// harness and its native fork behaviour, and the fork dialog passes
+    /// its picks here on confirm.
     pub(super) fn fork_chat(
         &mut self,
         source: roboco_proto::Chat,
         parent_id: String,
+        boundary: Option<String>,
+        harness: Option<roboco_proto::HarnessId>,
+        model: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.side_chat_creating {
@@ -60,12 +71,16 @@ impl Shell {
         };
         let key = self.panel_key(cx);
         self.side_chat_creating = true;
-        let params = serde_json::json!({
-            "chatId": uuid::Uuid::new_v4().to_string(),
-            "sourceChatId": source.id,
-            "parentChatId": parent_id,
-            "targetDeviceId": source.device_id,
-        });
+        // The wire payload: overrides ride only when chosen, so an engine
+        // predating tickets 21/22 still reads its classic fork.
+        let params = fork_dialog::fork_params(
+            &uuid::Uuid::new_v4().to_string(),
+            &source,
+            &parent_id,
+            boundary.as_deref(),
+            harness,
+            model.as_deref(),
+        );
         cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
@@ -122,6 +137,10 @@ impl Shell {
         chat.last_seen_at = None;
         chat.harness_session_id = None;
         chat.harness_session_cwd = None;
+        // A user-made side chat is never agent-created: the parent's own
+        // origin (an agent spawned IT) must not ride the copy, or the new
+        // chat would owe completion notices nobody asked for.
+        chat.agent_origin = None;
         chat.room_gen = Some(2);
         self.open_side_chat_tab(chat, key, true, cx);
     }
@@ -543,6 +562,39 @@ mod tests {
                 });
                 shell.close_right_surface(RightSurface::SideChat(id), window, cx);
                 assert!(!shell.side_chats.contains_key(&id));
+            })
+            .unwrap();
+    }
+
+    /// A user-made side chat under an agent-created parent never inherits
+    /// the parent's agent origin: user side chats never notify anyone.
+    #[gpui::test]
+    fn a_user_side_chat_does_not_inherit_the_parents_agent_origin(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let window = shell_window(dir.path(), cx);
+        window
+            .update(cx, |shell, _, cx| {
+                shell.active_chat = "main".into();
+                let main: roboco_proto::Chat = serde_json::from_value(serde_json::json!({
+                    "id": "main", "deviceId": "local", "cwd": "/tmp/main",
+                    "archived": false, "createdAt": Utc::now(),
+                    "agentOrigin": { "chatId": "orchestrator", "notify": true },
+                }))
+                .unwrap();
+                assert!(main.agent_origin.is_some());
+                shell.state.update(cx, |state, _| {
+                    state.chats = vec![main];
+                    state.selected_chat = Some("main".into());
+                });
+                shell.toggle_right_pane(cx);
+                shell.create_child_chat(None, cx);
+                let id = shell.side_chat_seq;
+                let side = shell.side_chats[&id].state.clone();
+                let chat_id = side.read(cx).selected_chat.clone().unwrap();
+                let row = side.read(cx).selected_chat_row().cloned().unwrap();
+                assert_eq!(row.agent_origin, None);
+                let create = side.read(cx).unsaved_side_chat_create(&chat_id).unwrap();
+                assert!(create.get("agentOrigin").is_none(), "{create}");
             })
             .unwrap();
     }

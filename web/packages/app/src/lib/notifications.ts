@@ -54,7 +54,10 @@ export function sessionNotificationState(session: ChatStatus, now: number): Sess
  * transition from `prev` to `current` earns. Call after saving the new
  * baseline — suppressed pings must never be replayed later. Error first
  * (an error never masquerades as a completion), then input, then the
- * completion marker — only fresh, only un-masked by a pending send.
+ * completion marker — only fresh, only un-masked by a pending send. A
+ * Limited row counts as the error attention state (proto
+ * `view::sound_since`): a usage limit ended the turn just as loudly as a
+ * crash did, and neither re-chimes into the other.
  *
  * `notify` is the chat's emit gate (shell.rs's side-chat rule): a chat
  * the caller cannot see as top-level — a side chat (parent linkage) or a
@@ -72,7 +75,12 @@ export function soundSince(
   if (!notify) {
     return null;
   }
-  if (current.indicator === "errored" && prev.indicator !== "errored") {
+  // A Limited transition chimes attention like any error — and staying in
+  // either attention state (limited → errored, errored → limited) never
+  // re-chimes.
+  const attention = (indicator: Indicator): boolean =>
+    indicator === "errored" || indicator === "limited";
+  if (attention(current.indicator) && !attention(prev.indicator)) {
     return "attention";
   }
   if (current.indicator === "awaitingInput" && prev.indicator !== "awaitingInput") {

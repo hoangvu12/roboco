@@ -328,6 +328,8 @@ fn run_request(prompt: &str) -> roboco_proto::RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -432,6 +434,7 @@ async fn side_chats_never_emit() {
                 None,
                 None,
                 Some("same-chat".to_owned()),
+                None,
             )
             .unwrap();
         let side = rig.client.scope(&rig.engine_id, "side-chat");

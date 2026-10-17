@@ -193,6 +193,20 @@ a:focus-visible,
   background: color-mix(in srgb, var(--rb-success) 90%, transparent);
 }
 
+/*
+ * LIMITED (orchestration v2): amber — "waiting out a limit", not the
+ * failure red (proto `view::dot::LIMITED`, oklch(0.766, 0.155, 75)); it
+ * must read differently from Errored at a glance so a limited chat
+ * stands out in the list. Same mix as the queued-send dot.
+ */
+.dot-limited {
+  background: color-mix(in srgb, var(--rb-warning) 80%, transparent);
+}
+
+.status-limited {
+  color: var(--rb-warning);
+}
+
 .dot-idle {
   background: color-mix(in srgb, var(--rb-text) 14%, transparent);
 }
@@ -9007,6 +9021,266 @@ button.files-save-pill:hover {
   flex: none;
 }
 
+/* ── The Limited banner (orchestration v2, the strip's Limited arm) ──── */
+
+.limited-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-sm);
+  min-width: 0;
+  color: var(--rb-warning);
+}
+
+.limited-banner-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--rb-warning);
+}
+
+.limited-banner-label {
+  flex: none;
+}
+
+/*
+ * The banner's action chips (shell.rs's bordered strips): the strip itself
+ * is pointer-transparent so the transcript scrolls beneath it — every
+ * interactive element opts back in, and the disabled state keeps the
+ * layout while the engine is unreachable.
+ */
+.limited-banner-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 10px;
+  border-radius: calc(var(--rb-radius-control) * 0.5);
+  border: 1px solid color-mix(in srgb, var(--rb-warning) 45%, transparent);
+  color: color-mix(in srgb, var(--rb-warning) 90%, transparent);
+  font-size: 11px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.limited-banner-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rb-warning) 12%, transparent);
+}
+
+.limited-banner-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.limited-banner-notice {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--rb-warning) 75%, transparent);
+}
+
+/*
+ * The failover picker (`failover_card`): the account ring card's geometry
+ * with the candidate rows' own caption and nested sign-in action.
+ */
+.failover-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+/* While a switch runs, the rows read inert (the desktop's 0.6 opacity). */
+.failover-card [data-switching] .menu-row {
+  opacity: 0.6;
+}
+
+.failover-card .menu-row-static {
+  cursor: default;
+}
+
+.failover-card .menu-row-static:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.failover-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.failover-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.failover-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--rb-text-faint);
+}
+
+.failover-row-plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failover-row-recommended {
+  color: var(--rb-accent);
+}
+
+.failover-row-signed-out {
+  color: var(--rb-danger);
+}
+
+.failover-row-reset {
+  font-size: 10.5px;
+  color: var(--rb-text-muted);
+}
+
+/* The signed-out row's own action (story 47): the accent wash chip,
+   nested inside an inert row so its click stops there. */
+.failover-row-sign-in {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
+  color: var(--rb-accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.failover-warning {
+  margin: 6px 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgb(var(--rb-wash) / 0.06);
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * "Continue on another harness" (t3-orchestration-v2 tickets 25/26) — the
+ * Limited banner's fourth chip's anchored card, the failover picker's
+ * idiom: the one-way warning body, the shared harness-choice chips and
+ * model rows, and the confirm pair. The body copy is the desktop dialog's
+ * (`continue_on_harness.rs`).
+ */
+.continue-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.continue-card-body {
+  margin: 2px 8px 4px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--rb-text-muted);
+}
+
+.continue-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 8px 8px 2px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(var(--rb-hairline) / calc(0.07 * var(--rb-hairline-scale)));
+}
+
+/*
+ * The inline "Sign in again" progress (the desktop's `sign_in_footer`):
+ * a compact wash card under whichever rows offered the action — the
+ * browser wait, the paste-code field, and the failure all in place.
+ */
+.sign-in-again-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgb(var(--rb-wash) / 0.06);
+  font-size: 11.5px;
+}
+
+.sign-in-again-who {
+  color: var(--rb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign-in-again-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sign-in-again-form input {
+  width: 100%;
+}
+
+.sign-in-again-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sign-in-again-cancel {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rb-text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sign-in-again-submit {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
+  color: var(--rb-accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sign-in-again-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sign-in-again-pending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--rb-text-muted);
+}
+
+.sign-in-again-error {
+  margin: 0;
+  color: var(--rb-danger);
+}
+
 /* ── MessageRail (rail.rs::render_rail, :411-572) ───────────────────── */
 
 /*
@@ -9510,6 +9784,19 @@ button.files-save-pill:hover {
 }
 
 /*
+ * The signed-out mark (ticket 08): danger-toned word + reason line — a dead
+ * login never reads healthy beside green meters, and the reason shows
+ * BESIDE stale meters (the accountNote fix), never only when they're gone.
+ */
+.account-usage-row-signed-out {
+  color: var(--rb-danger);
+}
+
+.account-usage-row-reason-signed-out {
+  color: var(--rb-danger-muted);
+}
+
+/*
  * One compact meter line (`render_usage_meter`): 52px label, an 88px bar,
  * 34px right-aligned percent. The bar's fill keeps the level color at the
  * desktop's opacity (accent 0.8, warning/danger 0.9) with a 1.5% floor so
@@ -9926,11 +10213,21 @@ button.files-save-pill:hover {
   transition: background-color var(--rb-motion-hover-fade) var(--rb-ease-ease-out);
 }
 
-.row-meta-copy:hover {
+/*
+ * "Fork from here" (t3-orchestration-v2 ticket 21): the quiet icon button
+ * beside the copy action — the same treatment, a branch glyph.
+ */
+.row-meta-fork {
+  color: var(--rb-text-muted);
+}
+
+.row-meta-copy:hover,
+.row-meta-fork:hover {
   background: rgb(var(--rb-ink) / 0.08);
 }
 
-.row-meta-copy:focus-visible {
+.row-meta-copy:focus-visible,
+.row-meta-fork:focus-visible {
   background: rgb(var(--rb-ink) / 0.08);
 }
 
@@ -11209,6 +11506,342 @@ button.files-save-pill:hover {
   color: var(--rb-text-muted);
 }
 
+/*
+ * The engine's completion notice (orchestration v2 ticket 15) — the web
+ * port of `render_completion_notice` (transcript.rs): a 4px-block wrapper,
+ * then the card — 10px radius, hairline border, the input chip's quiet ink
+ * wash (0.045), 8px padding, 4px stack gap. The header is the input chip's
+ * tile + a 12px medium muted label. Each side row is a two-line control
+ * (6px radius, 6px/4px padding, 0.06 ink hover wash): title + short id +
+ * the spawn chip's "opens elsewhere" glyph on the first line, the outcome
+ * verb and one-line reason on the second — colored by outcome (success for
+ * finished, danger for failed, warning for waiting for input, muted for
+ * the stops). Without a host handler (the read-only subagent pane) the
+ * rows render inert, so only the button form carries the hover.
+ */
+.completion-notice-row {
+  padding-block: 4px;
+  width: 100%;
+}
+
+.completion-notice-card {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 10px;
+  border: 1px solid rgb(var(--rb-hairline) / calc(0.08 * var(--rb-hairline-scale)));
+  background: rgb(var(--rb-ink) / 0.045);
+  padding: 8px;
+}
+
+.completion-notice-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.completion-notice-tile {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--rb-radius-control);
+  background: rgb(var(--rb-ink) / 0.09);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rb-text-muted);
+}
+
+.completion-notice-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+.completion-notice-side {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+}
+
+button.completion-notice-side {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+}
+
+button.completion-notice-side:hover {
+  background: rgb(var(--rb-ink) / 0.06);
+}
+
+.completion-notice-side-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.completion-notice-side-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--rb-text) 90%, transparent);
+}
+
+.completion-notice-side-id {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 70%, transparent);
+}
+
+.completion-notice-side-glyph {
+  flex: none;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.completion-notice-side-outcome {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.completion-notice-side-completed .completion-notice-side-outcome {
+  color: var(--rb-success-muted);
+}
+
+.completion-notice-side-errored .completion-notice-side-outcome {
+  color: var(--rb-danger-muted);
+}
+
+.completion-notice-side-waitingForInput .completion-notice-side-outcome {
+  color: var(--rb-warning-muted);
+}
+
+.completion-notice-side-stopped .completion-notice-side-outcome,
+.completion-notice-side-interrupted .completion-notice-side-outcome {
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The harness-switch seam (t3-orchestration-v2 ticket 24, transcript.rs
+ * `harness_switch_marker`): the same divider treatment as the fork seam,
+ * ONE line — the label arrives pre-resolved ("Switched to Codex") so
+ * nothing here needs a catalog. No message metadata lane.
+ */
+.harness-switch-marker {
+  padding-block: 14px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.harness-switch-marker-label {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rb-text-muted);
+}
+
+/*
+ * The fork dialog (t3-orchestration-v2 tickets 21+22, the desktop's
+ * `render_fork_dialog`): a 460px modal card — title, the one-line body,
+ * the shared harness-choice chips and model rows, the cross-harness note,
+ * the inline error, and the cancel/fork pair.
+ */
+.fork-dialog-card {
+  box-sizing: border-box;
+  width: 460px;
+}
+
+.fork-dialog-body {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 14px;
+}
+
+.fork-dialog-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--rb-text);
+}
+
+.fork-dialog-body-text {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--rb-text-muted);
+}
+
+.fork-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/*
+ * The shared harness/model choice pieces (lib/harness-choice.ts's
+ * consumers): the fork dialog's modal body and the Limited banner's
+ * "Continue on another harness" card render the same rows — the
+ * desktop's two dialogs' chip and row treatments.
+ */
+.harness-choice-heading {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-chips {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.harness-choice-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  background: transparent;
+  cursor: pointer;
+}
+
+.harness-choice-chip[data-selected="1"] {
+  border-color: var(--rb-border-strong);
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+}
+
+.harness-choice-chip-label {
+  font-size: 12.5px;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-chip[data-selected="1"] .harness-choice-chip-label {
+  color: var(--rb-text);
+}
+
+.harness-choice-empty {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-border);
+  font-size: 12.5px;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-models {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 216px;
+  overflow-y: auto;
+}
+
+.harness-choice-models-empty {
+  border: none;
+  padding: 6px 0;
+}
+
+.harness-choice-model-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.harness-choice-model-row[data-selected="1"] {
+  background: rgb(var(--rb-wash) / var(--rb-selected-wash-alpha));
+  box-shadow: var(--rb-shadow-popover);
+}
+
+.harness-choice-model-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.harness-choice-model-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rb-text);
+}
+
+.harness-choice-model-default {
+  flex: none;
+  font-size: 10px;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-model-sub {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--rb-text-muted);
+}
+
+.harness-choice-error {
+  margin-top: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rb-warning, var(--rb-accent)) 12%, transparent);
+  font-size: 11.5px;
+  color: var(--rb-text-muted);
+}
+
 /* ── Transcript responsive + reduced motion ─────────────────────────── */
 
 @media (max-width: 768px) {
@@ -12117,6 +12750,33 @@ button.files-save-pill:hover {
   border-color: transparent;
   background: color-mix(in srgb, var(--rb-success) 12%, transparent);
   color: color-mix(in srgb, var(--rb-success-muted) 90%, transparent);
+}
+
+/*
+ * The signed-out mark (ticket 08, `badge_signed_out`): the danger-tinged
+ * pill that keeps a dead login from reading healthy beside green meters.
+ */
+.badge-signed-out {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--rb-danger) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-danger-muted) 90%, transparent);
+}
+
+/*
+ * The reason line under an account's meters (ticket 08's display fix — a
+ * cached meter no longer hides the sign-out); danger-muted when the row is
+ * signed out, the fallback line's tone otherwise.
+ */
+.account-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--rb-text-muted) 60%, transparent);
+}
+
+.account-note-signed-out {
+  color: color-mix(in srgb, var(--rb-danger-muted) 85%, transparent);
 }
 
 /* Account rows. */

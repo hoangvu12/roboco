@@ -338,6 +338,8 @@ mod tests {
             status,
             started_at: Some(updated - TimeDelta::minutes(5)),
             updated_at: updated,
+            limit: None,
+            scheduled_resume: None,
         }
     }
 
@@ -405,6 +407,7 @@ mod tests {
     #[test]
     fn open_input_finds_the_newest_unresolved_question() {
         let entry = |id: &str, parts: Vec<MessagePart>| Arc::new(SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts,
@@ -412,6 +415,7 @@ mod tests {
             device_id: String::new(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         });
         let question = |id: &str| roboco_proto::UserInputQuestion {

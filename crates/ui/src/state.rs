@@ -607,8 +607,9 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 // this crate reads them as `state::…`.
 pub use roboco_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
-    chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    chat_location, display_status, effective_indicator, format_limit_reset,
+    format_scheduled_resume, format_time_ago, gate_phase, group_chats, project_label,
+    sort_active, sort_chats, sort_spaces, sort_tabs,
 };
 
 // ---------------------------------------------------------------------------
@@ -2152,6 +2153,20 @@ impl AppState {
         self.sessions.iter().find(|s| s.chat_id == chat_id)
     }
 
+    /// Whether the selected chat's harness can be switched in place right
+    /// now (t3-orchestration-v2 ticket 24): an existing chat whose turn is
+    /// not in flight — neither Working nor parked on a question — and whose
+    /// send is not pending. The picker stays locked while the chat works;
+    /// the engine refuses the switch for the same window. Reads the
+    /// staleness-checked indicator (a pending send reads as Working): a
+    /// dead engine's frozen Working row must not lock the picker forever.
+    pub(crate) fn harness_switchable(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        !matches!(
+            self.indicator_for(chat_id, now),
+            Indicator::Working | Indicator::AwaitingInput
+        )
+    }
+
     /// Staleness-checked status dot for a chat row. A send in flight reads as
     /// Working (see [`Self::display_status_for`]).
     pub fn indicator_for(&self, chat_id: &str, now: DateTime<Utc>) -> Indicator {
@@ -2159,6 +2174,38 @@ impl AppState {
             return Indicator::Working;
         }
         effective_indicator(self.session_for(chat_id), now)
+    }
+
+    /// The usage-limit record for `chat_id`, when its status row reads as
+    /// Limited right now (errored with a recorded limit): the window, reset
+    /// time and account the Limited banner, the list markers and Resume act
+    /// on. `None` for plain errors and non-limited rows.
+    pub fn limit_for(&self, chat_id: &str, now: DateTime<Utc>) -> Option<roboco_proto::SessionLimit> {
+        let session = self.session_for(chat_id)?;
+        (self.indicator_for(chat_id, now) == Indicator::Limited)
+            .then(|| session.limit.clone())
+            .flatten()
+    }
+
+    /// The pending **Resume at reset** continuation for `chat_id`, when its
+    /// status row reads as Limited and one is armed: the fire time the
+    /// banner's "Resumes at …" segment and Cancel action act on. `None`
+    /// when nothing is armed (the banner then offers Resume at reset).
+    pub fn scheduled_resume_for(
+        &self,
+        chat_id: &str,
+        now: DateTime<Utc>,
+    ) -> Option<roboco_proto::ScheduledResume> {
+        let session = self.session_for(chat_id)?;
+        (self.indicator_for(chat_id, now) == Indicator::Limited)
+            .then(|| session.scheduled_resume)
+            .flatten()
+    }
+
+    /// Whether `chat_id` reads as Limited right now — the cheap marker
+    /// predicate for row dots (the record itself is [`Self::limit_for`]).
+    pub fn is_limited(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
+        self.indicator_for(chat_id, now) == Indicator::Limited
     }
 
     /// The earliest moment after `now` at which a clock-derived value flips
@@ -3936,6 +3983,7 @@ mod tests {
             .unwrap()
             .to_utc();
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev".into(),
             title: None,
@@ -3987,11 +4035,14 @@ mod tests {
             status,
             started_at: None,
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
+            limit: None,
+            scheduled_resume: None,
         }
     }
 
     fn user_entry(id: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::User,
             parts: Vec::new(),
@@ -3999,6 +4050,7 @@ mod tests {
             device_id: "dev".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         }
     }
@@ -4027,6 +4079,8 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            limit: None,
+            scheduled_resume: None,
         };
         assert!(state.apply_sessions_at(vec![row.clone()], now));
         row.updated_at = now + TimeDelta::seconds(30);
@@ -4058,6 +4112,8 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            limit: None,
+            scheduled_resume: None,
         }];
         let mut row = device("host", "Host");
         row.last_seen_at = Some(now);
@@ -4299,6 +4355,87 @@ mod tests {
             effective_indicator(Some(&awaiting_stale), now),
             Indicator::None
         );
+    }
+
+    /// A Limited chat is an errored row carrying the additive limit record:
+    /// the state derivation surfaces the record (banner + markers + Resume)
+    /// and only while the row is errored — a row that is working again
+    /// (a new turn clears the record) shows plain Working.
+    #[test]
+    fn limited_rows_expose_their_limit_record_while_errored() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut limited = session("c", SessionStatus::Errored, 10, now);
+        assert_eq!(state.indicator_for("c", now), Indicator::None);
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Errored);
+        assert_eq!(state.limit_for("c", now), None, "no record yet");
+
+        let record = roboco_proto::SessionLimit {
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some((now + TimeDelta::hours(2)).timestamp_millis()),
+            account_id: Some("slot-9f2c".into()),
+        };
+        limited.limit = Some(record.clone());
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Limited);
+        assert_eq!(state.limit_for("c", now), Some(record));
+
+        // The new turn clears the record: a Working row never reads Limited.
+        limited.status = SessionStatus::Working;
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Working);
+        assert_eq!(state.limit_for("c", now), None);
+        // Even back on a settled row, no record means no Limited read.
+        limited.status = SessionStatus::Errored;
+        limited.limit = None;
+        state.sessions = vec![limited];
+        assert_eq!(state.indicator_for("c", now), Indicator::Errored);
+        assert_eq!(state.limit_for("c", now), None);
+    }
+
+    /// A Limited chat with an armed Resume-at-reset continuation exposes
+    /// it through the state derivation — the banner's "Resumes at …"
+    /// segment and Cancel action — and only while the row reads Limited: a
+    /// row that is working again (the continuation fired, or a new turn)
+    /// shows nothing scheduled, record or no record.
+    #[test]
+    fn limited_rows_expose_their_armed_scheduled_resume() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut limited = session("c", SessionStatus::Errored, 10, now);
+        limited.limit = Some(roboco_proto::SessionLimit {
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some((now + TimeDelta::hours(2)).timestamp_millis()),
+            account_id: None,
+        });
+        // Nothing armed: the banner offers Resume at reset, no scheduled
+        // state to show.
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Limited);
+        assert_eq!(state.scheduled_resume_for("c", now), None);
+
+        // Armed: the continuation rides the same row.
+        let armed = roboco_proto::ScheduledResume {
+            fire_at: (now + TimeDelta::hours(2)).timestamp_millis(),
+        };
+        limited.scheduled_resume = Some(armed);
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.scheduled_resume_for("c", now), Some(armed));
+
+        // The new turn clears both records: a Working row shows nothing
+        // scheduled (the engine cancels the continuation on the send).
+        limited.status = SessionStatus::Working;
+        state.sessions = vec![limited.clone()];
+        assert_eq!(state.indicator_for("c", now), Indicator::Working);
+        assert_eq!(state.scheduled_resume_for("c", now), None);
+        // A cancelled continuation on a still-errored row is also nothing.
+        limited.status = SessionStatus::Errored;
+        limited.scheduled_resume = None;
+        state.sessions = vec![limited];
+        assert_eq!(state.scheduled_resume_for("c", now), None);
     }
 
     #[test]
@@ -5404,6 +5541,7 @@ mod tests {
         let mut state = AppState::new();
         state.selected_chat = Some("c1".into());
         let echo = |id: &str| SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![],
@@ -5411,9 +5549,12 @@ mod tests {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         let row = |id: &str| roboco_doc::QueuedMessage {
+            origin_chat_id: None,
+            completion_notice: None,
             id: id.into(),
             text: "held".into(),
             attachments: vec![],
@@ -5442,6 +5583,7 @@ mod tests {
         let mut state = AppState::new();
         state.selected_chat = Some("c1".into());
         let echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: roboco_doc::MessageRole::User,
             parts: vec![],
@@ -5449,6 +5591,7 @@ mod tests {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         state.push_echo("c1", echo.clone());
@@ -5460,6 +5603,7 @@ mod tests {
         assert_eq!(state.pending_echoes().len(), 1);
         // The confirming frame prunes it.
         state.apply_transcript(vec![SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             ..echo.clone()
         }]);
@@ -5468,6 +5612,7 @@ mod tests {
         state.push_echo(
             "c1",
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m2".into(),
                 ..echo.clone()
             },
@@ -5478,6 +5623,7 @@ mod tests {
         state.push_echo(
             "other",
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m3".into(),
                 ..echo
             },

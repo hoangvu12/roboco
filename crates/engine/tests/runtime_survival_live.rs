@@ -111,6 +111,8 @@ fn run(
         attachments: vec![],
         worktree: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -311,7 +313,8 @@ async fn agent_process_survives_sends_and_cancel() {
                 &cwd,
             ),
             Some("m-2b-steer".into()),
-        )
+            None,
+        None)
         .await
         .unwrap();
     let steered_at = std::time::Instant::now();

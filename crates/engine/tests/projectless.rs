@@ -293,6 +293,8 @@ async fn exercise_projectless(command_first: bool) {
                         worktree: None,
                         mcp: None,
                         resume: None,
+                        provider_fork: None,
+                        resume_fallback_history: None,
                     },
                     message_id: message_id.into(),
                 },

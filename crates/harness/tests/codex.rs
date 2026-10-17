@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use roboco_harness::{
     CancellationToken, CodexHarness, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoItem,
-    TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel,
+    TodoItem, TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -104,6 +104,8 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -203,6 +205,25 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
     assert_eq!(model, "gpt-5.6-sol");
     assert_eq!(cwd, "/tmp");
     assert_eq!(session_id, "th-1");
+
+    // The turn ref rides the stream once per turn (ticket 17): the engine
+    // stamps it on the transcript entry so a fork can continue this thread
+    // at exactly that turn.
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TurnRef { .. }))
+            .count(),
+        1,
+        "turn ref emitted exactly once: {events:?}"
+    );
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Codex,
+            session_id: "th-1".into(),
+            turn_id: "t-1".into(),
+        }
+    }));
 
     // Deltas — both wire spellings accepted.
     assert!(events.contains(&AgentEvent::TextDelta {
@@ -349,6 +370,92 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
             result: None,
             error: None,
             session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_native_fork_forks_the_source_thread_and_pastes_no_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:fork-success");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-source".into(),
+        last_turn: "turn-7".into(),
+        // What the engine would have pasted for a fresh session — the driver
+        // must NOT use it when the fork succeeds (the fake fails the turn if
+        // any of it reaches the input).
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    // The run continues the FORKED thread (thread/fork's new id), and its
+    // turn ref names that thread and the turn that actually ran.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-forked"
+        )),
+        "session continues the forked thread: {events:?}"
+    );
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Codex,
+            session_id: "th-forked".into(),
+            turn_id: "t-f1".into(),
+        }
+    }));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "forked thread answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-forked".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_refused_fork_falls_back_to_a_fresh_thread_with_the_budgeted_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:fork-refused");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-refused".into(),
+        last_turn: "turn-7".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    // The fresh fallback thread serves the turn (the fake fails it unless
+    // the input carries the budgeted history AND the user message).
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-fresh"
+        )),
+        "refused fork fell back to a fresh thread: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "fresh thread answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-fresh".into()),
         })
     );
 }
@@ -615,6 +722,124 @@ async fn turn_failed_maps_to_errored_done() {
             session_id: Some("th-1".into()),
         })
     );
+    // An unclassified failure keeps its historical shape: the text rides
+    // the Done and no Error event (and no kind) is minted for it.
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "unclassified failure minted an error event: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_usage_limited_turn_carries_the_reset_from_the_latest_notification() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:usage-limit"), controls).await;
+
+    // The turn-level usage-limit error classifies as a usage limit and
+    // carries the reset time of the exhausted window from the rate-limit
+    // notification that preceded it (seconds on the wire, millis in the
+    // kind).
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "You have exceeded your usage limit".to_owned(),
+                Some(AgentErrorKind::UsageLimit {
+                    window: "5-hour".into(),
+                    resets_at: Some(4_102_444_800_000),
+                }),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    // The failure text rides the Error event; the Done keeps the errored
+    // status without duplicating the text.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_turn_completing_with_the_error_also_classifies() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:rate-limit-completed"), controls).await;
+
+    // turn/completed (rather than turn/failed) carrying a rate-limit error:
+    // the weekly window is the exhausted one, so its reset is reported.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "rate limited, retry later".to_owned(),
+                Some(AgentErrorKind::UsageLimit {
+                    window: "weekly".into(),
+                    resets_at: Some(4_102_444_801_000),
+                }),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn an_auth_failure_is_signed_out() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:auth-fail"), controls).await;
+
+    // A dead login is signed out — distinct from a usage limit, so the user
+    // knows to sign in rather than wait for a reset.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "Token is expired or invalid".to_owned(),
+                Some(AgentErrorKind::SignedOut),
+            )
+        ],
+        "one classified error: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Errored,
+            result: None,
+            error: None,
+            session_id: Some("th-1".into()),
+        })
+    );
 }
 
 #[tokio::test]
@@ -631,6 +856,44 @@ async fn resume_falls_back_to_fresh_thread() {
         )),
         "fresh thread expected: {events:?}"
     );
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: Some("th-fresh".into()),
+        })
+    );
+}
+
+/// A refused resume with the engine's budgeted fallback (ticket 09's
+/// account-failover continuation): the fresh thread's first turn carries
+/// the history in front of the user message — the fake fails the turn
+/// unless both reach the input.
+#[tokio::test]
+async fn a_refused_resume_falls_back_with_the_budgeted_history() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:resume-fallback");
+    req.resume = Some("resume-fail".into());
+    req.resume_fallback_history = Some(
+        "Continue this side chat using the following prior transcript as context.\n\
+         <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+            .into(),
+    );
+    let events = run_to_end(&harness(), req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-fresh"
+        )),
+        "refused resume fell back to a fresh thread: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "resumed with history"
+    )));
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
@@ -1567,7 +1830,7 @@ async fn ordinary_followup_cannot_overtake_a_queued_native_command() {
                 assert_eq!(status, DoneStatus::Completed, "{error:?}");
                 events.push("done".into());
             }
-            AgentEvent::Error { message } => panic!("{message}"),
+            AgentEvent::Error { message, .. } => panic!("{message}"),
             _ => {}
         }
     }

@@ -5,7 +5,7 @@
 //! (`delta`/`textDelta`, `exitCode`/`exit_code`, camelCase/snake_case item
 //! types) are accepted, and unknown item types map to nothing.
 
-use roboco_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall};
+use roboco_proto::{AgentErrorKind, AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +120,138 @@ pub(crate) fn turn_error_message(params: &Value) -> Option<String> {
             let msg = str_field(e, &["message"]);
             if msg.is_empty() { e.to_string() } else { msg }
         })
+}
+
+/// The error object a turn-level error notification carries: `turn.error`
+/// on turn/completed|failed, the bare `error` on the top-level `error`
+/// notification.
+fn turn_error_object(params: &Value) -> Option<&Value> {
+    params
+        .get("turn")
+        .and_then(|t| t.get("error"))
+        .filter(|e| !e.is_null())
+        .or_else(|| params.get("error").filter(|e| !e.is_null()))
+}
+
+/// The app-server's structured turn-error code (`codexErrorInfo`, both
+/// spellings it has shipped): `"usageLimitExceeded"`, `"rateLimitExceeded"`,
+/// `"unauthorized"`, … — absent on older builds and plain failures.
+pub(crate) fn turn_error_code(params: &Value) -> Option<&str> {
+    let error = turn_error_object(params)?;
+    field(error, &["codexErrorInfo", "codex_error_info"]).and_then(Value::as_str)
+}
+
+/// The latest `account/rateLimits/updated` snapshot reduced to the window it
+/// reports as exhausted: `primary` is the ~5-hour window, `secondary` the
+/// weekly one (the snapshot's own `windowDurationMins` picks the label).
+/// When both are exhausted the LATER reset is the binding constraint.
+/// `resets_at` arrives as unix seconds; the kind carries epoch millis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RateLimitReset {
+    pub window: String,
+    /// Epoch millis.
+    pub resets_at: i64,
+}
+
+/// Which window label a usage-window duration gets — the same 5-hour/weekly
+/// vocabulary the Claude driver uses, so clients see one label scheme.
+fn window_label(minutes: i64) -> &'static str {
+    match minutes {
+        300 => "5-hour",
+        10_080 => "weekly",
+        _ => "usage",
+    }
+}
+
+/// `params.rateLimits` → the exhausted window's label and reset, when the
+/// snapshot says one is exhausted. Both camelCase and snake_case field
+/// spellings, and missing windows, are tolerated.
+pub(crate) fn rate_limit_reset(params: &Value) -> Option<RateLimitReset> {
+    let limits = field(params, &["rateLimits", "rate_limits"])?;
+    let mut binding: Option<RateLimitReset> = None;
+    for (name, default_minutes) in [("primary", 300i64), ("secondary", 10_080)] {
+        let Some(window) = field(limits, &[name]) else { continue };
+        let exhausted = field(window, &["usedPercent", "used_percent"])
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            >= 100.0;
+        if !exhausted {
+            continue;
+        }
+        let Some(resets_at) = field(window, &["resetsAt", "resets_at"]).and_then(Value::as_i64)
+        else {
+            continue;
+        };
+        let minutes = field(window, &["windowDurationMins", "window_duration_mins"])
+            .and_then(Value::as_i64)
+            .unwrap_or(default_minutes);
+        let candidate = RateLimitReset {
+            window: window_label(minutes).into(),
+            resets_at: resets_at.saturating_mul(1000),
+        };
+        if binding
+            .as_ref()
+            .map_or(true, |b| candidate.resets_at > b.resets_at)
+        {
+            binding = Some(candidate);
+        }
+    }
+    binding
+}
+
+/// Map a structured turn-error code onto the structured error kind:
+/// usage limits become a usage limit carrying the latest known reset;
+/// auth failures (`unauthorized`) become signed out. Everything else
+/// stays unclassified.
+///
+/// `usageLimitExceeded` is the plan limit itself — the error says the
+/// limit is reached, so it is always classified (the snapshot only
+/// refines the window and reset). `rateLimitExceeded` is AMBIGUOUS: a
+/// plain 429 says nothing about the plan, and a transient one must stay
+/// an unclassified error (retried like any failure), so it classifies
+/// only when the snapshot proves a blocked window — an exhausted window
+/// whose reset is still AHEAD. A reset already in the past is no block
+/// at all (the window has since lifted), so it is ignored: the error
+/// reads as transient. The same past reset is dropped from a plan limit
+/// too: it would arm a continuation that fires at once into the wall.
+pub(crate) fn error_kind(code: &str, limit: Option<&RateLimitReset>) -> Option<AgentErrorKind> {
+    let limit = limit.filter(|reset| reset.resets_at > now_ms());
+    match code {
+        "usageLimitExceeded" | "usage_limit_exceeded" => Some(match limit {
+            Some(reset) => AgentErrorKind::UsageLimit {
+                window: reset.window.clone(),
+                resets_at: Some(reset.resets_at),
+            },
+            None => AgentErrorKind::UsageLimit {
+                window: "usage".into(),
+                resets_at: None,
+            },
+        }),
+        "rateLimitExceeded" | "rate_limit_exceeded" => limit
+            .map(|reset| AgentErrorKind::UsageLimit {
+                window: reset.window.clone(),
+                resets_at: Some(reset.resets_at),
+            }),
+        "unauthorized" => Some(AgentErrorKind::SignedOut),
+        _ => None,
+    }
+}
+
+/// Epoch milliseconds now (the past-reset filter's clock).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// The classification for a turn-level error notification: the code it
+/// carries, mapped with the latest rate-limit snapshot when one arrived.
+pub(crate) fn turn_error_kind(
+    params: &Value,
+    limit: Option<&RateLimitReset>,
+) -> Option<AgentErrorKind> {
+    turn_error_code(params).and_then(|code| error_kind(code, limit))
 }
 
 /// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the LAST
@@ -309,6 +441,9 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
             if let Some(message) = error {
                 events.push(AgentEvent::Error {
                     message: message.into(),
+                    // Image-generation quota is item-scoped, not a turn-level
+                    // plan limit: stays unclassified.
+                    kind: None,
                 });
             } else {
                 let name = std::path::Path::new(&path)
@@ -419,6 +554,8 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
         }
         "error" => vec![AgentEvent::Error {
             message: str_field(item, &["message"]),
+            // Item-scoped transcript error: not a turn-level plan limit.
+            kind: None,
         }],
         "collabAgentToolCall" | "collab_agent_tool_call" => {
             let tool = str_field(item, &["tool"]);
@@ -643,6 +780,10 @@ impl ChildStream {
                     .or_else(|| params.get("message").and_then(Value::as_str))
                     .unwrap_or("Codex subagent error")
                     .to_owned(),
+                // A subagent's failure carries the same code shape, but the
+                // account-wide rate-limit snapshot lives in the driver loop —
+                // classified here without a reset time.
+                kind: turn_error_kind(params, None),
             }],
             _ => Vec::new(),
         }
@@ -1081,6 +1222,156 @@ mod tests {
         assert_eq!(turn_error_message(&json!({"turn": {"id": "t"}})), None);
         assert_eq!(turn_error_message(&json!({"turn": {"error": null}})), None);
     }
+
+    #[test]
+    fn turn_error_code_reads_turn_and_bare_notification_shapes() {
+        // turn/failed|completed: under `turn.error`, both spellings.
+        assert_eq!(
+            turn_error_code(&json!({"turn": {"error": {
+                "message": "usage limit", "codexErrorInfo": "usageLimitExceeded"
+            }}})),
+            Some("usageLimitExceeded")
+        );
+        assert_eq!(
+            turn_error_code(&json!({"turn": {"error": {
+                "message": "usage limit", "codex_error_info": "rate_limit_exceeded"
+            }}})),
+            Some("rate_limit_exceeded")
+        );
+        // The bare `error` notification: under `error`.
+        assert_eq!(
+            turn_error_code(&json!({"error": {
+                "message": "unauthorized", "codexErrorInfo": "unauthorized"
+            }})),
+            Some("unauthorized")
+        );
+        // Plain failures and older builds carry no code.
+        assert_eq!(turn_error_code(&json!({"turn": {"error": {"message": "boom"}}})), None);
+        assert_eq!(turn_error_code(&json!({"message": "flat"})), None);
+    }
+
+    #[test]
+    fn error_codes_classify_limits_and_auth() {
+        // A reset still ahead (2100) and one already past (2020).
+        let snapshot = RateLimitReset {
+            window: "weekly".into(),
+            resets_at: 4_102_444_800_000,
+        };
+        let lifted = RateLimitReset {
+            window: "weekly".into(),
+            resets_at: 1_577_836_800_000,
+        };
+        // Both limit codes, both spellings, with a live exhausted window.
+        for code in [
+            "usageLimitExceeded",
+            "usage_limit_exceeded",
+            "rateLimitExceeded",
+            "rate_limit_exceeded",
+        ] {
+            assert_eq!(
+                error_kind(code, Some(&snapshot)),
+                Some(AgentErrorKind::UsageLimit {
+                    window: "weekly".into(),
+                    resets_at: Some(4_102_444_800_000),
+                }),
+                "{code}"
+            );
+        }
+        // The plan limit classifies on the error alone; a past reset is
+        // ignored, never carried.
+        for code in ["usageLimitExceeded", "usage_limit_exceeded"] {
+            for limit in [None, Some(&lifted)] {
+                assert_eq!(
+                    error_kind(code, limit),
+                    Some(AgentErrorKind::UsageLimit {
+                        window: "usage".into(),
+                        resets_at: None,
+                    }),
+                    "{code} without a live snapshot"
+                );
+            }
+        }
+        // A bare 429 (no exhausted window, or one that already lifted) is
+        // transient: unclassified.
+        for code in ["rateLimitExceeded", "rate_limit_exceeded"] {
+            assert_eq!(error_kind(code, None), None, "{code}");
+            assert_eq!(error_kind(code, Some(&lifted)), None, "{code} past reset");
+        }
+        assert_eq!(error_kind("unauthorized", None), Some(AgentErrorKind::SignedOut));
+        assert_eq!(error_kind("unauthorized", Some(&snapshot)), Some(AgentErrorKind::SignedOut));
+        // Everything else stays unclassified.
+        for code in ["serverOverloaded", "streamError", ""] {
+            assert_eq!(error_kind(code, Some(&snapshot)), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn rate_limit_reset_picks_the_exhausted_windows_binding_reset() {
+        // Primary exhausted: the 5-hour window, seconds → millis.
+        assert_eq!(
+            rate_limit_reset(&json!({"rateLimits": {
+                "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1735689600},
+                "secondary": {"usedPercent": 61, "windowDurationMins": 10080, "resetsAt": 1736208000}
+            }})),
+            Some(RateLimitReset { window: "5-hour".into(), resets_at: 1_735_689_600_000 })
+        );
+        // Both exhausted: the later reset binds (the weekly window).
+        assert_eq!(
+            rate_limit_reset(&json!({"rateLimits": {
+                "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1735689600},
+                "secondary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": 1736208000}
+            }})),
+            Some(RateLimitReset { window: "weekly".into(), resets_at: 1_736_208_000_000 })
+        );
+        // Only the weekly window is reported/exhausted; the label follows
+        // the snapshot's own duration, and snake_case is tolerated.
+        assert_eq!(
+            rate_limit_reset(&json!({"rate_limits": {
+                "secondary": {"used_percent": 100, "window_duration_mins": 10080, "resets_at": 1736208000}
+            }})),
+            Some(RateLimitReset { window: "weekly".into(), resets_at: 1_736_208_000_000 })
+        );
+        // Nothing exhausted, or no snapshot at all: no reset to report.
+        assert_eq!(
+            rate_limit_reset(&json!({"rateLimits": {
+                "primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1735689600},
+                "secondary": {"usedPercent": 61, "windowDurationMins": 10080, "resetsAt": 1736208000}
+            }})),
+            None
+        );
+        assert_eq!(rate_limit_reset(&json!({"message": "x"})), None);
+        // An exhausted window whose reset the snapshot omits is skipped, not
+        // fatal; a missing duration falls back to the slot's usual window.
+        assert_eq!(
+            rate_limit_reset(&json!({"rateLimits": {
+                "primary": {"usedPercent": 100},
+                "secondary": {"usedPercent": 100, "resetsAt": 1736208000}
+            }})),
+            Some(RateLimitReset { window: "weekly".into(), resets_at: 1_736_208_000_000 })
+        );
+    }
+
+    #[test]
+    fn subagent_error_notifications_carry_the_classification() {
+        let mut feed = ChildStream::default();
+        let events = feed.map(
+            "child",
+            "error",
+            &json!({"threadId": "child", "error": {
+                "message": "You've hit your usage limit", "codexErrorInfo": "usageLimitExceeded"
+            }}),
+        );
+        assert_eq!(
+            events,
+            vec![AgentEvent::Error {
+                message: "You've hit your usage limit".into(),
+                kind: Some(AgentErrorKind::UsageLimit {
+                    window: "usage".into(),
+                    resets_at: None,
+                }),
+            }]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1194,7 +1485,8 @@ mod generated_image_tests {
             assert_eq!(
                 events[2],
                 AgentEvent::Error {
-                    message: expected.into()
+                    message: expected.into(),
+                    kind: None
                 }
             );
         }

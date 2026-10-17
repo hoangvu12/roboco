@@ -29,6 +29,8 @@ import { COMPOSER_MAX_WIDTH } from "../lib/composer-flip";
 import { sidebarNotice } from "../state/notice";
 import { markChatSeen } from "../lib/chat-actions";
 import { childChatTitle } from "../lib/explorer-sections";
+import { forkSpecFor } from "../lib/fork-dialog";
+import { forkDialogStore } from "../state/fork-dialog";
 import { chatRenameStore } from "../state/chat-rename";
 import type { WorkspaceCommandActions } from "./composer";
 import { ChangesSurface, ChangesToolbar, CommitDiffToolbar } from "../routes/changes-page";
@@ -41,7 +43,7 @@ import { SurfacePicker } from "./surface-picker";
 import { Composer } from "./composer";
 import { ChatTranscriptOutlet } from "./chat-transcript-outlet";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
-import { JumpPill, TranscriptView, type JumpButtonState } from "./transcript";
+import { JumpPill, TranscriptView, type ForkFromEntryPayload, type JumpButtonState } from "./transcript";
 import type { SubagentOpen } from "./tool-group";
 
 /**
@@ -418,6 +420,77 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const availableWidth =
     width === null ? null : Math.min(Math.max(width, 0), COMPOSER_MAX_WIDTH);
 
+  // Every hook runs on every render — ABOVE the picker fallbacks below (the
+  // rules of hooks: a row that appears or vanishes must not change the
+  // hook order).
+  //
+  // "Fork from here" (t3-orchestration-v2 tickets 21/22/26): a settled
+  // reply in THIS side chat's transcript forks the side chat — the copy
+  // hangs under its PARENT (a sibling, the desktop's `ForkFromEntry` rule)
+  // and its surface opens in this pane, the pane the side chat itself
+  // lives in. The surface's row (fleet, seed, or unsaved local) is the
+  // source; an unsaved one has no replies yet, so nothing renders the
+  // action until it exists engine-side.
+  const onForkFromEntry = useCallback(
+    (payload: ForkFromEntryPayload) => {
+      if (session === null || effectiveChat === null) {
+        return;
+      }
+      forkDialogStore.open(
+        forkSpecFor(effectiveChat, chatId, payload.entryId, session.client, session.engine.baseUrl),
+      );
+    },
+    [session, effectiveChat, chatId],
+  );
+  // The workspace commands' side-chat host (the composer's dispatch, the
+  // side-chat pane's targets): the pane commands dock into THIS pane's strip
+  // (the parent chat's pane — the host the side-chat tab itself lives in,
+  // the web shape of the desktop's side-chat panel), `/rename` targets THIS
+  // side chat, and the globals navigate like the chat page's.
+  const navigate = useNavigate();
+  const workspaceCommands = useMemo<WorkspaceCommandActions>(
+    () => ({
+      newChat: () => {
+        void navigate({ to: "/" });
+      },
+      openSettings: () => {
+        void navigate({ to: "/settings" });
+      },
+      revealSurface: (kind) => {
+        rightPaneStore.revealSurface(chatId, kind);
+      },
+      renameChat: () => {
+        rightPaneStore.revealSurface(chatId, "files");
+        if (sideChatId !== null) {
+          chatRenameStore.begin(sideChatId);
+        }
+      },
+    }),
+    [chatId, navigate, sideChatId],
+  );
+  const workspaceRoot = effectiveChat?.cwd ?? null;
+  const markdownSurface = useMemo(
+    () => ({
+      workspaceRoot,
+      // A side chat's file link opens an editor keyed to the SIDE CHAT (one
+      // tab per (chat, path)), docked into this pane's strip — the desktop's
+      // `activate_session_link` binding the editor to the side chat's own
+      // checkout.
+      openWorkspaceFile: (path: string, line: number | null, column: number | null) => {
+        if (sideChatId === null) {
+          return;
+        }
+        rightPaneStore.addFileSurface(
+          chatId,
+          path,
+          sideChatId,
+          line !== null ? { line, column } : null,
+        );
+      },
+    }),
+    [workspaceRoot, chatId, sideChatId],
+  );
+
   if (session === null || sideChatId === null) {
     return <SurfacePicker chatId={chatId} />;
   }
@@ -456,48 +529,13 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
   const deliveryDegraded = chatDeliveryDegraded(sessionWatch?.connectivity.value?.state);
   const indicator = displayStatusFor(effectiveChat, statusRow, now);
   const turnStartedAt = startedAtOf(statusRow);
-  // The workspace commands' side-chat host (the composer's dispatch, the
-  // side-chat pane's targets): the pane commands dock into THIS pane's strip
-  // (the parent chat's pane — the host the side-chat tab itself lives in,
-  // the web shape of the desktop's side-chat panel), `/rename` targets THIS
-  // side chat, and the globals navigate like the chat page's.
-  const navigate = useNavigate();
-  const workspaceCommands = useMemo<WorkspaceCommandActions>(
-    () => ({
-      newChat: () => {
-        void navigate({ to: "/" });
-      },
-      openSettings: () => {
-        void navigate({ to: "/settings" });
-      },
-      revealSurface: (kind) => {
-        rightPaneStore.revealSurface(chatId, kind);
-      },
-      renameChat: () => {
-        rightPaneStore.revealSurface(chatId, "files");
-        chatRenameStore.begin(sideChatId);
-      },
-    }),
-    [chatId, navigate, sideChatId],
-  );
-  const markdownSurface = useMemo(
-    () => ({
-      workspaceRoot: effectiveChat.cwd,
-      // A side chat's file link opens an editor keyed to the SIDE CHAT (one
-      // tab per (chat, path)), docked into this pane's strip — the desktop's
-      // `activate_session_link` binding the editor to the side chat's own
-      // checkout.
-      openWorkspaceFile: (path: string, line: number | null, column: number | null) => {
-        rightPaneStore.addFileSurface(
-          chatId,
-          path,
-          sideChatId,
-          line !== null ? { line, column } : null,
-        );
-      },
-    }),
-    [effectiveChat.cwd, chatId, sideChatId],
-  );
+  // A completion notice's side row (ticket 15): open the side chat it
+  // reports — the route select, the web shape of the desktop's `open_chat`
+  // (shell/tabs.rs:205). A notice inside a side chat's own pane points at
+  // ITS side chats the same way.
+  const onOpenChat = (target: string): void => {
+    void navigate({ to: "/chat/$chatId", params: { chatId: target } });
+  };
 
   return (
     <div className="side-chat-surface" ref={hostRef}>
@@ -516,6 +554,8 @@ function SideChatSurface({ surfaceId, chatId }: { surfaceId: string; chatId: str
               indicator={indicator}
               turnStartedAt={turnStartedAt}
               onOpenSubagent={onOpenSubagent}
+              onForkFromEntry={onForkFromEntry}
+              onOpenChat={onOpenChat}
               deliveryDegraded={deliveryDegraded}
             />
           )}

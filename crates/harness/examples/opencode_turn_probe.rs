@@ -33,6 +33,8 @@ async fn main() {
         auto_approve: true,
         attachments: Vec::new(),
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
         worktree: None,
         mcp: None,
     };
@@ -87,7 +89,7 @@ async fn main() {
             }) => {
                 eprintln!("USAGE {input_tokens}/{output_tokens}");
             }
-            Ok(AgentEvent::Error { message }) => eprintln!("CHIP {message}"),
+            Ok(AgentEvent::Error { message, .. }) => eprintln!("CHIP {message}"),
             Ok(other) => eprintln!("EV {other:?}"),
             Err(e) => eprintln!("ERR {e}"),
         }

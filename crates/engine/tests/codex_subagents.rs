@@ -65,6 +65,8 @@ async fn check_persistence(
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
         .dispatch(
@@ -72,7 +74,8 @@ async fn check_persistence(
             HarnessId::Codex,
             request.clone(),
             Some("user-prompt".into()),
-        )
+            None,
+        None)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -177,7 +180,8 @@ async fn check_persistence(
             HarnessId::Codex,
             request,
             Some("user-followup".into()),
-        )
+            None,
+        None)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {

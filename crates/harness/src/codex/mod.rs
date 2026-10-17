@@ -9,9 +9,13 @@
 //!
 //! - `initialize` handshake (clientInfo + `capabilities.experimentalApi`) then
 //!   the `initialized` notification; unknown notification methods tolerated.
-//! - `thread/start` (or `thread/resume` with a fresh-start fallback) →
+//! - `thread/start` (or `thread/resume` with a fresh-start fallback; or
+//!   `thread/fork` with a fresh-start + budgeted-history fallback when the
+//!   engine sends a native-fork directive, t3-orchestration-v2 ticket 17) →
 //!   `SessionStarted`; `turn/start` carries the prompt, model, effort,
-//!   `sandboxPolicy`, and approval policy.
+//!   `sandboxPolicy`, and approval policy. Every adopted turn id also emits
+//!   an [`AgentEvent::TurnRef`] naming the thread and turn, for the
+//!   transcript's provider turn refs.
 //! - Notifications map to [`AgentEvent`]s: agentMessage/reasoning deltas (both
 //!   `delta`/`textDelta` spellings), item lifecycles → typed ToolCall/ToolResult,
 //!   `thread/tokenUsage/updated` → Usage, turn/completed|failed|aborted → Done.
@@ -70,8 +74,9 @@ use crate::process::{Child, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls};
 use catalog::{REASONING_LEVELS, sandbox_mode, sandbox_policy_value, static_models, to_effort};
 use normalize::{
-    ChildRoute, Phase, ReasoningStream, delta_text, item_id, item_type, notification_thread_id,
-    route_child_notification, turn_error_message, turn_id, usage_event,
+    ChildRoute, Phase, RateLimitReset, ReasoningStream, delta_text, item_id, item_type,
+    notification_thread_id, rate_limit_reset, route_child_notification, turn_error_kind,
+    turn_error_message, turn_id, usage_event,
 };
 
 /// Locate the device's installed Codex CLI: `CODEX_EXECUTABLE`, then our own
@@ -843,19 +848,24 @@ impl TurnRouter {
         self.completed.iter().any(|c| c == id)
     }
 
-    fn note_started(&mut self, id: String) {
+    /// Note a turn the app-server announced (`turn/started`), returning the
+    /// id when it became the turn in flight — a repeat announcement of the
+    /// running turn, or one already completed, reports nothing new.
+    fn note_started(&mut self, id: String) -> Option<String> {
         if id.is_empty() || self.is_completed(&id) {
-            return;
+            return None;
         }
         // A replacement `turn/started` is authoritative evidence that a stale
         // active turn is over, even if its completion notification was lost.
+        let changed = self.active.as_deref() != Some(id.as_str());
         if let Some(prev) = self.active.take()
             && prev != id
         {
             self.remember_completed(prev);
         }
-        self.active = Some(id);
+        self.active = Some(id.clone());
         self.announced = true;
+        changed.then_some(id)
     }
 
     fn note_completed(&mut self, id: &str) {
@@ -872,13 +882,15 @@ impl TurnRouter {
     /// Adopt a turn id from a `turn/start` RESPONSE (the notification is
     /// allowed to beat it). A turn already running keeps its id: a follow-up
     /// `turn/start` folds into it and answers with that same id anyway, and
-    /// an announced turn is authoritative.
-    fn adopt_started(&mut self, id: String) {
+    /// an announced turn is authoritative. Returns the id when it was newly
+    /// adopted, so the caller emits its turn ref exactly once.
+    fn adopt_started(&mut self, id: String) -> Option<String> {
         if self.active.is_some() || id.is_empty() || self.is_completed(&id) {
-            return;
+            return None;
         }
-        self.active = Some(id);
+        self.active = Some(id.clone());
         self.announced = false;
+        Some(id)
     }
 
     /// Whether a `turn/completed` (or failed/aborted) for `id` ends the turn
@@ -906,6 +918,20 @@ fn new_message_id() -> String {
 fn rotate(id: &mut String) -> (String, String) {
     let prev = std::mem::replace(id, new_message_id());
     (prev, id.clone())
+}
+
+/// The provider turn reference for a turn that just started
+/// (t3-orchestration-v2 ticket 17): the engine records it on the transcript
+/// entry streaming into this turn, so a fork can continue the thread at
+/// exactly that turn (`thread/fork {threadId, lastTurnId}`).
+fn turn_ref_event(thread_id: &str, turn_id: &str) -> AgentEvent {
+    AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Codex,
+            session_id: thread_id.to_owned(),
+            turn_id: turn_id.to_owned(),
+        },
+    }
 }
 
 async fn send(tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>, ev: AgentEvent) -> bool {
@@ -1090,6 +1116,13 @@ async fn run_session(session: Session) {
     };
 
     // ---- handshake + thread + first turn (interruptible) ------------------
+    // The budgeted transcript the engine attached for a refused fork; the
+    // interrupted-start path leaves it unset (nothing was attempted).
+    let mut fork_fallback: Option<String> = None;
+    // The same for a REFUSED RESUME (account failover, ticket 09): the
+    // engine attaches the chat's budgeted history to the continuation so a
+    // fresh thread still knows the conversation.
+    let mut resume_fallback: Option<String> = None;
     let setup = async {
         client
             .request(
@@ -1123,7 +1156,33 @@ async fn run_session(session: Session) {
                 }
             }
         }
-        let thread = if let Some(resume) = &request.resume {
+        // A native fork (t3-orchestration-v2 ticket 17): fork the source
+        // thread at the inclusive boundary instead of resuming it — the
+        // forked thread carries the copied history, so nothing is pasted
+        // into the prompt. A refused fork falls back to a fresh thread, and
+        // the engine's budgeted transcript then rides in front of the prompt
+        // (`fork_fallback`, applied to the first turn below).
+        let thread = if let Some(fork) = request.provider_fork.clone() {
+            let mut p = start_params.clone();
+            p.insert("threadId".into(), Value::String(fork.session_id.clone()));
+            p.insert("lastTurnId".into(), Value::String(fork.last_turn.clone()));
+            match client.request("thread/fork", Value::Object(p)).await {
+                Ok(thread) => thread,
+                // A fork the app-server refuses (experimental API off, a
+                // boundary it no longer knows) is a fallback, not an error:
+                // start fresh and deliver the budgeted history.
+                Err(e) => {
+                    tracing::debug!(
+                        target: "roboco_harness::codex",
+                        "thread/fork refused (starting fresh with the budgeted history): {e}"
+                    );
+                    fork_fallback = fork.fallback_history;
+                    client
+                        .request("thread/start", Value::Object(start_params.clone()))
+                        .await?
+                }
+            }
+        } else if let Some(resume) = &request.resume {
             let mut p = start_params.clone();
             p.insert("threadId".into(), Value::String(resume.clone()));
             match client.request("thread/resume", Value::Object(p)).await {
@@ -1137,6 +1196,10 @@ async fn run_session(session: Session) {
                         target: "roboco_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
+                    // A refused resume with the engine's budgeted fallback
+                    // history (ticket 09's account-failover continuation):
+                    // the fresh thread still owes the chat its context.
+                    resume_fallback = request.resume_fallback_history.clone();
                     client
                         .request("thread/start", Value::Object(start_params.clone()))
                         .await?
@@ -1182,6 +1245,18 @@ async fn run_session(session: Session) {
         }
     };
 
+    // A refused fork's fresh thread still owes the chat its prior context:
+    // the budgeted transcript rides in front of the prompt, exactly as the
+    // engine would have pasted it for a fresh session. The prompt itself
+    // still governs native-command routing below (a native command never
+    // carries a fallback — the engine attaches none). A refused RESUME
+    // delivers the same way (ticket 09).
+    let delivered_prompt = match (&fork_fallback, &resume_fallback) {
+        (Some(history), _) | (_, Some(history)) => {
+            crate::prompt_with_history(history, &request.prompt)
+        }
+        (None, None) => request.prompt.clone(),
+    };
     // Model, effort and service tier ride every `turn/start` (each sticks
     // for later turns): a steer's in-place `config` takes effect from the
     // next turn the runtime starts.
@@ -1228,8 +1303,18 @@ async fn run_session(session: Session) {
     }
 
     let mut router = TurnRouter::default();
-    match start_turn(&client, turn_params(&live, &request.prompt)).await {
-        Ok(id) => router.adopt_started(id),
+    match start_turn(&client, turn_params(&live, &delivered_prompt)).await {
+        Ok(id) => {
+            // Emit the first turn's ref right after SessionStarted and
+            // before any item deltas: the entry about to stream belongs to
+            // this turn.
+            if let Some(started) = router.adopt_started(id)
+                && !send(&event_tx, turn_ref_event(&thread_id, &started)).await
+            {
+                shutdown_child(&mut child, kill_grace).await;
+                return;
+            }
+        }
         Err(e) => {
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
@@ -1264,6 +1349,10 @@ async fn run_session(session: Session) {
     let mut accepted_steers: VecDeque<String> = VecDeque::new();
     // A turn stop waiting for the app-server to announce the turn.
     let mut stop_when_announced = false;
+    // The latest `account/rateLimits/updated` snapshot reduced to the window
+    // it reports exhausted. Turn-level usage-limit errors attach this reset
+    // time; the notifications themselves stay otherwise unconsumed.
+    let mut limit_reset: Option<RateLimitReset> = None;
     // Commands the parent thread started and the app-server has not reported
     // finished, with their process id and the turn that started them. One
     // still open after its turn is background work (a dev server, a
@@ -1343,7 +1432,15 @@ async fn run_session(session: Session) {
                                 break 'main;
                             }
                         }
-                        router.note_started(id);
+                        // The turn ref rides the boundary: the entry the
+                        // app-server is about to stream into belongs to this
+                        // turn, whatever started it (a steer, a native
+                        // handoff, a background wake).
+                        if let Some(started) = router.note_started(id) {
+                            if !send(&event_tx, turn_ref_event(&thread_id, &started)).await {
+                                break 'main;
+                            }
+                        }
                         if std::mem::take(&mut stop_when_announced)
                             && let Some(active) = router.active.clone()
                         {
@@ -1487,6 +1584,14 @@ async fn run_session(session: Session) {
                         }
                     }
 
+                    // The account's usage meters, pushed on token-count
+                    // events. Nothing is surfaced directly: the snapshot is
+                    // held so a turn-level usage-limit error can carry the
+                    // reset time the error itself omits.
+                    "account/rateLimits/updated" => {
+                        limit_reset = rate_limit_reset(&params);
+                    }
+
                     // Codex's `update_plan` tool: the whole checklist, replaced
                     // on every call, with an in-progress step.
                     "turn/plan/updated" => {
@@ -1539,6 +1644,24 @@ async fn run_session(session: Session) {
                                 == Some("failed"))
                             .then(|| "Codex turn failed".to_owned())
                         });
+                        // A classified failure (usage limit, signed out)
+                        // surfaces as an Error event ahead of the Done so the
+                        // kind reaches engine and clients; its text moves off
+                        // the Done so the transcript keeps exactly ONE error
+                        // part. Unclassified failures keep their historical
+                        // Done-only shape.
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        let mut text_rides_error_event = false;
+                        if let (Some(message), Some(kind)) = (&error, &kind) {
+                            let classified = AgentEvent::Error {
+                                message: message.clone(),
+                                kind: Some(kind.clone()),
+                            };
+                            if !send(&event_tx, classified).await {
+                                break 'main;
+                            }
+                            text_rides_error_event = true;
+                        }
                         let status = if interrupted || stopping {
                             DoneStatus::Interrupted
                         } else if error.is_some() {
@@ -1560,7 +1683,7 @@ async fn run_session(session: Session) {
                             AgentEvent::Done {
                                 status,
                                 result: None,
-                                error,
+                                error: if text_rides_error_event { None } else { error },
                                 session_id: Some(thread_id.clone()),
                             },
                         )
@@ -1584,6 +1707,7 @@ async fn run_session(session: Session) {
                                 command_request(&text, &thread_id).ok().flatten().is_some();
                             if !steer_as_new_turn(
                                 &client,
+                                &thread_id,
                                 turn_params(&live, &text),
                                 &mut router,
                                 &event_tx,
@@ -1634,6 +1758,22 @@ async fn run_session(session: Session) {
                         if interrupted {
                             done_after_interrupt = true;
                         }
+                        let error =
+                            turn_error_message(&params).unwrap_or_else(|| "Codex turn failed".into());
+                        // Same classified-failure shape as turn/completed: the
+                        // kind rides an Error event ahead of the Done, which
+                        // then carries no error text of its own — one rendered
+                        // error part either way.
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        if let Some(kind) = &kind {
+                            let classified = AgentEvent::Error {
+                                message: error.clone(),
+                                kind: Some(kind.clone()),
+                            };
+                            if !send(&event_tx, classified).await {
+                                break 'main;
+                            }
+                        }
                         let _ = send(
                             &event_tx,
                             AgentEvent::Done {
@@ -1643,10 +1783,7 @@ async fn run_session(session: Session) {
                                     DoneStatus::Errored
                                 },
                                 result: None,
-                                error: Some(
-                                    turn_error_message(&params)
-                                        .unwrap_or_else(|| "Codex turn failed".into()),
-                                ),
+                                error: if kind.is_none() { Some(error) } else { None },
                                 session_id: Some(thread_id.clone()),
                             },
                         )
@@ -1707,7 +1844,8 @@ async fn run_session(session: Session) {
                             .or_else(|| params.get("message").and_then(Value::as_str))
                             .unwrap_or("Codex error")
                             .to_owned();
-                        if !send(&event_tx, AgentEvent::Error { message }).await {
+                        let kind = turn_error_kind(&params, limit_reset.as_ref());
+                        if !send(&event_tx, AgentEvent::Error { message, kind }).await {
                             break 'main;
                         }
                     }
@@ -1792,7 +1930,7 @@ async fn run_session(session: Session) {
                                 } else {
                                     current_native = command_request(&text, &thread_id).ok().flatten().is_some();
                                     if !steer_as_new_turn(
-                                        &client, turn_params(&live, &text), &mut router, &event_tx,
+                                        &client, &thread_id, turn_params(&live, &text), &mut router, &event_tx,
                                         &mut assistant_message_id, &mut done_current,
                                     ).await { break 'main; }
                                 }
@@ -1801,7 +1939,7 @@ async fn run_session(session: Session) {
                     } else {
                         current_native = command_request(&text, &thread_id).ok().flatten().is_some();
                         if !steer_as_new_turn(
-                            &client, turn_params(&live, &text), &mut router, &event_tx,
+                            &client, &thread_id, turn_params(&live, &text), &mut router, &event_tx,
                             &mut assistant_message_id, &mut done_current,
                         ).await { break 'main; }
                     }
@@ -1982,6 +2120,7 @@ fn send_turn_interrupt(client: &RpcClient, thread_id: &str, turn: String) {
 /// when the loop should end (turn/start failed or the consumer hung up).
 async fn steer_as_new_turn(
     client: &RpcClient,
+    thread_id: &str,
     params: Value,
     router: &mut TurnRouter,
     event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
@@ -1990,23 +2129,34 @@ async fn steer_as_new_turn(
 ) -> bool {
     match start_turn(client, params).await {
         Ok(id) => {
-            router.adopt_started(id);
             *done_current = false;
             let (prev, next) = rotate(assistant_message_id);
-            send(
+            // The boundary first (the entry rotates), then the new turn's
+            // ref for the entry that is about to stream.
+            let steered = send(
                 event_tx,
                 AgentEvent::Steered {
                     assistant_message_id: Some(prev),
                     next_assistant_message_id: Some(next),
                 },
             )
-            .await
+            .await;
+            if !steered {
+                return false;
+            }
+            match router.adopt_started(id) {
+                Some(started) => {
+                    send(event_tx, turn_ref_event(thread_id, &started)).await
+                }
+                None => steered,
+            }
         }
         Err(e) => {
             let _ = send(
                 event_tx,
                 AgentEvent::Error {
                     message: format!("Steering failed: {e}"),
+                    kind: None,
                 },
             )
             .await;
@@ -2308,19 +2458,25 @@ mod tests {
         let mut r = TurnRouter::default();
         r.note_completed("t-1");
         // The turn/start response arriving after turn/completed must not
-        // resurrect the turn.
-        r.adopt_started("t-1".into());
+        // resurrect the turn — and adopts nothing.
+        assert_eq!(r.adopt_started("t-1".into()), None);
         assert_eq!(r.active, None);
         // Nor may a late turn/started notification.
-        r.note_started("t-1".into());
+        assert_eq!(r.note_started("t-1".into()), None);
         assert_eq!(r.active, None);
 
-        r.note_started("t-2".into());
+        // A first announcement reports the turn it started.
+        assert_eq!(r.note_started("t-2".into()), Some("t-2".into()));
         assert_eq!(r.active.as_deref(), Some("t-2"));
+        // Re-announcing the running turn reports nothing new.
+        assert_eq!(r.note_started("t-2".into()), None);
         // A replacement started turn retires the stale one.
-        r.note_started("t-3".into());
+        assert_eq!(r.note_started("t-3".into()), Some("t-3".into()));
         assert_eq!(r.active.as_deref(), Some("t-3"));
         assert!(r.is_completed("t-2"));
+        // An adoption while a turn runs folds into it and adopts nothing.
+        assert_eq!(r.adopt_started("t-4".into()), None);
+        assert_eq!(r.active.as_deref(), Some("t-3"));
     }
 }
 

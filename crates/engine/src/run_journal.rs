@@ -96,6 +96,50 @@ impl RunJournal {
         let _ = std::fs::remove_file(self.attempts_path(chat_id));
     }
 
+    /// Durable record that the harness CONFIRMED consuming a steer (the
+    /// `Steered` boundary that retires its at-least-once ledger entry).
+    /// Boot auto-resume reads it so a chat revived after an engine restart
+    /// re-delivers only input its harness had not yet consumed: a steer
+    /// replayed as the revival prompt is a message the model answers twice
+    /// (orchestration v2, ticket 04 — restart correctness).
+    ///
+    /// One message id per line, bounded by the current turn (a cleanly
+    /// completed turn clears it, like the resume budget). A torn trailing
+    /// write can only ever read as some OTHER id, never a full match, so it
+    /// is tolerated like a torn journal line.
+    pub fn note_steer_consumed(&self, chat_id: &str, message_id: &str) {
+        let path = self.steers_path(chat_id);
+        let result = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(format!("{message_id}\n").as_bytes()));
+        if let Err(err) = result {
+            tracing::warn!(chat = %chat_id, error = %err, "consumed-steer record write failed");
+        }
+    }
+
+    /// Whether the harness had confirmed consuming `message_id` as a steer
+    /// before it was recorded — the read a boot auto-resume consults to tell
+    /// a consumed steer (never re-delivered) from an accepted-but-undelivered
+    /// one (still delivered after the resume).
+    pub fn steer_consumed(&self, chat_id: &str, message_id: &str) -> bool {
+        std::fs::read_to_string(self.steers_path(chat_id))
+            .map(|lines| lines.lines().any(|line| line.trim() == message_id))
+            .unwrap_or(false)
+    }
+
+    /// A cleanly completed turn closes the consumed-steer record: everything
+    /// the harness consumed before it is settled history no revival ever
+    /// re-examines, so the file stays bounded by one turn's steers.
+    pub fn clear_consumed_steers(&self, chat_id: &str) {
+        let _ = std::fs::remove_file(self.steers_path(chat_id));
+    }
+
+    fn steers_path(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.steers", sanitize_id(chat_id)))
+    }
+
     /// Append one event; returns its journal seq.
     pub fn append(&self, chat_id: &str, event: &AgentEvent) -> Result<u64, JournalError> {
         let mut files = self.lock();
@@ -206,6 +250,9 @@ impl RunJournal {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
+        // The chat's own recovery sidecars go with its journal.
+        let _ = std::fs::remove_file(self.attempts_path(chat_id));
+        let _ = std::fs::remove_file(self.steers_path(chat_id));
         Ok(())
     }
 }
@@ -385,9 +432,11 @@ impl Iterator for RevEvents {
     }
 }
 
-/// Journal (`.jsonl`) and resume-budget (`.resume`) paths for `chat_id` under an
-/// arbitrary journals directory — profile import copies these files between
-/// profiles without opening a `RunJournal`.
+/// Journal (`.jsonl`) and resume-budget (`.resume`) paths for `chat_id` under
+/// an arbitrary journals directory. Only those two: the consumed-steer record
+/// (`.steers`, restart correctness) is a separate file that this helper does
+/// NOT name — copy it alongside these when moving a profile, or an imported
+/// journal replays a steer its harness had already consumed.
 pub fn journal_paths(dir: &Path, chat_id: &str) -> (PathBuf, PathBuf) {
     let stem = sanitize_id(chat_id);
     (
@@ -595,6 +644,50 @@ mod tests {
         let missing = dir.path().join("missing.jsonl");
         assert_eq!(last_valid_line(&missing).unwrap(), None);
         assert_eq!(scan_tail(&missing).unwrap(), (1, false));
+    }
+
+    #[test]
+    fn consumed_steer_records_survive_and_clear_per_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(!journal.steer_consumed("chat-1", "m-1"), "no record yet");
+        journal.note_steer_consumed("chat-1", "m-1");
+        journal.note_steer_consumed("chat-1", "m-2");
+        assert!(journal.steer_consumed("chat-1", "m-1"));
+        assert!(journal.steer_consumed("chat-1", "m-2"));
+        assert!(!journal.steer_consumed("chat-1", "m-3"));
+        // Per-chat files, like the journal itself.
+        assert!(!journal.steer_consumed("chat-2", "m-1"));
+        // A cleanly completed turn closes the record (bounded by one turn).
+        journal.clear_consumed_steers("chat-1");
+        assert!(!journal.steer_consumed("chat-1", "m-1"));
+        assert!(!journal.steer_consumed("chat-1", "m-2"));
+        // The record survives a reopen — the boot auto-resume read.
+        journal.note_steer_consumed("chat-1", "m-1");
+        drop(journal);
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(journal.steer_consumed("chat-1", "m-1"));
+    }
+
+    #[test]
+    fn a_torn_consumed_steer_line_never_reads_as_a_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = RunJournal::open(dir.path()).unwrap();
+        journal.note_steer_consumed("chat-1", "m-full-id");
+        // Crash mid-write of a second record: a truncated id is not the id —
+        // only a fully written id (even without its newline) can match.
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("chat-1.steers"))
+            .unwrap();
+        file.write_all(b"m-full-id-trunc").unwrap();
+        drop(file);
+        let journal = RunJournal::open(dir.path()).unwrap();
+        assert!(journal.steer_consumed("chat-1", "m-full-id"));
+        // The torn bytes are a prefix of the id being written: that id
+        // never matches.
+        assert!(!journal.steer_consumed("chat-1", "m-full-id-truncated"));
+        assert!(!journal.steer_consumed("chat-1", "m-full"));
     }
 
     #[test]

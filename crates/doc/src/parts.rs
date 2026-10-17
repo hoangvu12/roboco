@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use roboco_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
+use roboco_proto::{AgentEvent, HarnessId, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
 
 use crate::constants::MSG_INLINE_MAX;
 
@@ -120,6 +120,57 @@ pub enum SubagentStatus {
     Failed,
 }
 
+/// What the engine recorded when a notifiable side-chat turn came to rest
+/// (orchestration v2). The outcome of one row of a completion notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum NoticeOutcome {
+    Completed,
+    Errored,
+    Stopped,
+    /// The run was lost to an engine restart without auto-resume (ticket
+    /// 13): the work never finished — distinct from a stop, which the
+    /// user chose.
+    Interrupted,
+    WaitingForInput,
+}
+
+impl NoticeOutcome {
+    /// The outcome's verb phrase — the ONE vocabulary the engine's notice
+    /// text (`"title" (id) <verb>`) and every client's notice card share, so
+    /// the card and the prose an agent reads never drift (the web mirrors
+    /// it in `noticeOutcomeVerb`).
+    pub fn verb(self) -> &'static str {
+        match self {
+            Self::Completed => "finished",
+            Self::Errored => "failed",
+            Self::Stopped => "was stopped",
+            Self::Interrupted => "was interrupted",
+            Self::WaitingForInput => "is waiting for input",
+        }
+    }
+}
+
+/// One side chat a completion notice reports: its id and title, the
+/// recorded outcome, and the one-line reason (error text, restart reason or
+/// question summary) when the outcome carries one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NoticeSide {
+    /// The side chat's full id — clients open the chat with it; the notice's
+    /// text names the short form.
+    pub chat_id: String,
+    /// The side chat's title as of the notice, so the transcript reads it
+    /// without a registry lookup (a later rename never rewrites history).
+    pub title: String,
+    pub outcome: NoticeOutcome,
+    /// The one-line detail for errored (reason), interrupted (restart
+    /// reason) and waiting-for-input (question summary) rows; absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// One rendered part of an assistant message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -219,6 +270,39 @@ pub enum MessagePart {
         /// source does not rewrite history.
         source_title: String,
     },
+    /// The seam a one-way harness switch leaves in a chat's transcript
+    /// (t3-orchestration-v2 ticket 24): everything above ran on another
+    /// harness whose provider session the switch dropped; the next send on
+    /// `harness` carries the budgeted history of everything above. Written
+    /// once per switch by the engine; renders as a "Switched to <harness>"
+    /// divider. Old desktop builds' unknown-kind fallback yields an empty
+    /// text part (invisible). There is no switch BACK: returning to the old
+    /// harness is just another one-way switch.
+    #[serde(rename_all = "camelCase")]
+    HarnessSwitch {
+        id: String,
+        /// The harness the chat switched TO (wire name, e.g. "codex").
+        harness: HarnessId,
+    },
+    /// The engine's completion notice (orchestration v2): an engine-authored
+    /// SYSTEM entry in a parent chat reporting the recorded outcomes of its
+    /// agent-created side chats' turns — finished, failed (one-line reason),
+    /// stopped, interrupted by an engine restart without auto-resume, or
+    /// waiting for input (one-line summary). The entry's sibling
+    /// text part carries the same notice as plain text, so older layouts —
+    /// whose unknown-kind fallback yields an empty part — stay readable.
+    /// Written only by the engine when it delivers a notice; never a user
+    /// message, never agent content.
+    #[serde(rename_all = "camelCase")]
+    CompletionNotice {
+        id: String,
+        /// One row per side chat the notice reports (a single outcome when
+        /// one side chat finished; several when outcomes merged — ticket 13).
+        /// Defaults for leniency: a partial row reads as an empty notice
+        /// rather than a decode failure.
+        #[serde(default)]
+        sides: Vec<NoticeSide>,
+    },
 }
 
 impl MessagePart {
@@ -230,7 +314,9 @@ impl MessagePart {
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
-            | MessagePart::Fork { id, .. } => id,
+            | MessagePart::Fork { id, .. }
+            | MessagePart::HarnessSwitch { id, .. }
+            | MessagePart::CompletionNotice { id, .. } => id,
         }
     }
 
@@ -268,6 +354,19 @@ impl MessagePart {
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
+            MessagePart::HarnessSwitch { harness, .. } => {
+                // Fixed-size structure (the wire name): never grows, so it
+                // never drives a continuation split.
+                serde_json::to_vec(harness).map_or(0, |v| v.len())
+            }
+            MessagePart::CompletionNotice { sides, .. } => sides
+                .iter()
+                .map(|side| {
+                    side.chat_id.len()
+                        + side.title.len()
+                        + side.detail.as_ref().map_or(0, String::len)
+                })
+                .sum(),
         }
     }
 }
@@ -424,7 +523,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 }
             }
         }
-        AgentEvent::Error { message } => {
+        AgentEvent::Error { message, .. } => {
             let id = format!("e{}", out.len());
             out.push(MessagePart::Error {
                 id,
@@ -496,11 +595,15 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         // AvailableCommands feeds the engine's per-harness command cache, not
         // the transcript. UserMessage becomes its own doc ENTRY (the engine's
         // subagent sink writes it), never a part of the assistant message.
+        // TurnRef names the provider turn the streaming entry belongs to —
+        // engine bookkeeping (stamped when the segment finishes), never a
+        // rendered part.
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::Usage { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
-        | AgentEvent::UserMessage { .. } => {}
+        | AgentEvent::UserMessage { .. }
+        | AgentEvent::TurnRef { .. } => {}
     }
 }
 

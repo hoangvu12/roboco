@@ -295,18 +295,21 @@ impl Roboco {
     }
 
     /// Durable command into the chat doc; the host device drains it.
+    /// `origin_chat_id` is the structured attribution when a chat is sending
+    /// this through the Roboco MCP server (Run/Steer commands); `None` for
+    /// control commands (interrupt, respond-input).
     pub async fn queue_command(
         &self,
         chat_id: &str,
         payload: &SessionCommandPayload,
+        origin_chat_id: Option<&str>,
     ) -> anyhow::Result<String> {
         let command = serde_json::to_value(payload).context("serialize command")?;
-        let reply = self
-            .call(
-                methods::QUEUE_COMMAND,
-                json!({ "chatId": chat_id, "command": command }),
-            )
-            .await?;
+        let mut params = json!({ "chatId": chat_id, "command": command });
+        if let Some(origin_chat_id) = origin_chat_id {
+            params["originChatId"] = json!(origin_chat_id);
+        }
+        let reply = self.call(methods::QUEUE_COMMAND, params).await?;
         Ok(reply
             .get("commandId")
             .and_then(Value::as_str)
@@ -315,19 +318,62 @@ impl Roboco {
     }
 
     /// Queue-row send for a busy chat whose harness cannot steer mid-turn:
-    /// the host promotes it when the live turn ends.
-    pub async fn queue_message(&self, chat_id: &str, text: &str) -> anyhow::Result<String> {
-        let reply = self
-            .call(
-                methods::QUEUE_MESSAGE,
-                json!({ "chatId": chat_id, "text": text, "holdForTurnEnd": true }),
-            )
-            .await?;
+    /// the host promotes it when the live turn ends. `origin_chat_id` is the
+    /// structured attribution when a chat is sending this through the Roboco
+    /// MCP server.
+    pub async fn queue_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        origin_chat_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        let mut params = json!({
+            "chatId": chat_id,
+            "text": text,
+            "holdForTurnEnd": true,
+        });
+        if let Some(origin_chat_id) = origin_chat_id {
+            params["originChatId"] = json!(origin_chat_id);
+        }
+        let reply = self.call(methods::QUEUE_MESSAGE, params).await?;
         Ok(reply
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned())
+    }
+
+    /// Fork a chat into a new side chat through the same RPC the UI's fork
+    /// button uses (t3-orchestration-v2 ticket 23, the `fork_chat` tool):
+    /// the copy carries the source's transcript up to the boundary and,
+    /// where the harness supports it, the native-fork intent. An
+    /// `agentOrigin` in `params` marks an agent-made fork (the creator and
+    /// its notify flag — the row completion notices key on); a user fork
+    /// sends none and never notifies.
+    pub async fn fork_side_chat(&self, params: Value) -> anyhow::Result<Chat> {
+        let reply = self.call(methods::FORK_SIDE_CHAT, params).await?;
+        serde_json::from_value(reply).context("ForkSideChat: unexpected shape")
+    }
+
+    /// Report that the calling chat (`origin_chat_id`) observed `chat_id`
+    /// after its last outcome happened — through `wait_for_turn`, a send
+    /// with wait, `read_chat` or `get_chat` (ticket 14). Completion-notice
+    /// outcomes the parent already observed owe no notice. `observed_at`
+    /// (the observation's start, epoch ms) makes the ack cover only the
+    /// settles the caller had already seen — never one that landed between
+    /// the read and this report.
+    pub async fn ack_side_chat(
+        &self,
+        chat_id: &str,
+        origin_chat_id: &str,
+        observed_at: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let mut params = json!({ "chatId": chat_id, "originChatId": origin_chat_id });
+        if let Some(at) = observed_at {
+            params["observedAt"] = json!(at);
+        }
+        self.call(methods::ACK_SIDE_CHAT, params).await?;
+        Ok(())
     }
 
     // ---- resolution --------------------------------------------------------
@@ -686,6 +732,7 @@ mod tests {
 
     fn chat(id: &str, title: Option<&str>) -> Chat {
         Chat {
+            agent_origin: None,
             id: id.into(),
             device_id: "dev".into(),
             title: title.map(str::to_owned),

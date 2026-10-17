@@ -967,9 +967,11 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
-        .dispatch(chat_id, HarnessId::Mock, request, None)
+        .dispatch(chat_id, HarnessId::Mock, request, None, None, None)
         .await
         .expect("dispatch");
 
@@ -1013,9 +1015,11 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     };
     core.sessions
-        .dispatch(chat_id, HarnessId::Mock, request, None)
+        .dispatch(chat_id, HarnessId::Mock, request, None, None, None)
         .await
         .expect("second dispatch");
     tokio::time::sleep(Duration::from_millis(400)).await;

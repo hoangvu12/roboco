@@ -428,5 +428,6 @@ function chatRows(ids: readonly string[]): ChatRow[] {
     deviceOffline: false,
     changeRequest: null,
     sendState: null,
+    limited: false,
   }));
 }

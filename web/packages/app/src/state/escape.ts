@@ -28,8 +28,10 @@ export type EscapeOutcome =
   | { kind: "ignored" }
   | { kind: "interruptChat"; chatId: string };
 
-/** The desktop's `Indicator` — the chat's live, staleness-gated status. */
-export type EscapeIndicator = "working" | "awaitingInput" | "errored" | "completed" | "idle" | null;
+/** The desktop's `Indicator` — the chat's live, staleness-gated status
+ *  (the full proto enum, `limited` included: a limited chat is NOT live —
+ *  nothing to interrupt — so it falls to `ignored` like errored). */
+export type EscapeIndicator = "working" | "awaitingInput" | "errored" | "limited" | "completed" | "idle" | null;
 
 export interface ShellEscapeInput {
   readonly key: string;

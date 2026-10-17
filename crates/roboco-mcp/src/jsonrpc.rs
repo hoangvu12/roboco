@@ -28,21 +28,57 @@ model, read transcripts, and send messages between chats.\n\
 \n\
 Chats are referenced by full id, a unique id prefix, or an exact title. Use \
 `whoami` to learn which chat you are speaking from; messages you send are \
-attributed to it and a chat cannot message itself. For request/response \
-with a single chat, `send_message` with `wait: true` returns its reply. \
-For parallel delegation, use `create_chats` with a prompt for each chat or \
-`send_messages` for existing chats. These batch tools launch requests concurrently \
-even if your harness executes tool calls sequentially. Alternatively, launch ALL \
-chats/messages with `wait: false` first, then use `wait_for_turn` to collect replies. \
-Do not wait for one worker before launching the next independent worker. \
-Use `kind: chat` in `create_chat` or each `create_chats` request for a standalone \
-session visible in Sessions; it cannot have a parent. Use `kind: side` for a child \
-with an explicit parent or your origin chat. Omitted kind keeps legacy defaults: \
-side with an origin/parent, standalone otherwise. Side chats cannot create chats. \
-The engine is device-local: `list_devices` reports this engine's device, and a \
-`device` argument must resolve to it. A project fixes its device; with both \
-project and device it must belong to that device. Use listed ids when names or \
-paths repeat. Without project or device, creation uses the local engine. \
+attributed to it and a chat cannot message itself. The engine is device-local: \
+`list_devices` reports this engine's device, and a `device` argument must \
+resolve to it. A project fixes its device; with both project and device it must \
+belong to that device. Use listed ids when names or paths repeat. Without \
+project or device, creation uses the local engine.\n\
+\n\
+Delegating work: launch side chats with `wait: false` — `create_chats` with a \
+prompt per request for new ones, `send_messages` for existing chats — then end \
+your turn. Do not block on the launches, and do not wait for one worker before \
+launching the next independent worker (the batch tools run requests \
+concurrently even when your harness executes tool calls sequentially). When a \
+side chat you created finishes, fails, stops, is interrupted, or needs input \
+on a turn you started or steered, the engine sends you a completion notice \
+naming that chat and its outcome: immediately when you are idle, after your \
+current turn ends when you are busy, merged into one message when several \
+land together. Collect the result with `read_chat`; answer a waiting side \
+chat with `respond_to_input`. \
+Side chats you create notify you by default — pass `notify: false` at creation \
+for fire-and-forget children that should not wake you. `wait_for_turn`, and \
+`wait: true` on `send_message` for a single request/response, remain for quick \
+synchronous asks; they block your turn, so never use them to babysit \
+long-running work.\n\
+\n\
+If you are a side chat created by another chat: unless it opted out at \
+creation (`notify: false`), your parent gets a completion notice when your \
+turn ends and reads your final reply from it. Do not report progress or \
+acknowledge messages with `send_message`; answer the task in your reply and \
+end your turn.\n\
+\n\
+A side chat that will edit files, commit, or switch branches in a git repo \
+gets its own worktree — create one with `git worktree add` and pass its path \
+as the `cwd` argument — or reuses an existing worktree handed over via `cwd`; \
+it never switches branches in the main checkout. Read-only side chats \
+(research, review, audit, questions), non-git folders, and an explicit user \
+instruction to work in place are exempt.\n\
+\n\
+Use `kind: chat` in `create_chat` or each `create_chats` request for a \
+standalone session visible in Sessions; it cannot have a parent. Use `kind: \
+side` for a child with an explicit parent or your origin chat. Omitted kind \
+keeps legacy defaults: side with an origin/parent, standalone otherwise. Side \
+chats cannot create chats.\n\
+\n\
+Forking: `fork_chat` branches a chat into a new side chat — by default the \
+one you are speaking from, from its latest reply. `reply` forks from any \
+earlier assistant reply (an entry id from `read_chat`; errored and \
+interrupted replies count), `harness` and `model` move the fork onto another \
+harness (it then starts from a size-limited transcript of the source), and \
+`prompt` with `wait` behave like `create_chat`'s. A fork you make is a side \
+chat you created: it notifies you by default (`notify: false` opts out), and \
+side chats cannot fork chats.\n\
+\n\
 If a chat is `awaitingInput`, answer it with `respond_to_input`.";
 
 const PARSE_ERROR: i64 = -32700;

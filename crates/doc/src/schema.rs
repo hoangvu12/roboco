@@ -4,14 +4,14 @@
 //! - `meta`:     LoroMap  { chatId: string, schemaVersion: number }         (host-only writer)
 //! - `messages`: LoroList of LoroMap {
 //!   id, role, parts: LoroList<part map>, createdAt, deviceId, status?,
-//!   continuationOf?, durationMs? }
+//!   continuationOf?, durationMs?, providerTurn? }
 //! - `commands`: LoroList of LoroMap {
 //!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
 //! - `queue`:    LoroMovableList of LoroMap {
 //!   id, text, attachments?, issuedBy, issuedAt, editedAt? }        (any device writes)
 //!
-//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error"|"image", text?: LoroText,
-//! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
+//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error"|"image"|"fork"|"completionNotice",
+//! text?: LoroText, reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
 //! Text bodies are **LoroText** so streaming appends RLE-merge (1.03x oplog overhead vs
 //! 125x for whole-value rewrites).
 
@@ -60,6 +60,20 @@ pub struct SessionMessageEntry {
     /// the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
+    /// The chat this user entry was sent BY through the Roboco MCP server —
+    /// structured attribution (additive; ADR 0005), the durable record the
+    /// completion-notice rules key on. None on typed messages and entries
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_chat_id: Option<String>,
+    /// The provider turn that produced this assistant entry (additive,
+    /// t3-orchestration-v2 ticket 17): harness, provider session id, and the
+    /// harness's own turn ref. A fork continues the provider session at
+    /// exactly this entry using it. Absent on user/system rows and on docs
+    /// written before the field existed — those fall back to the budgeted
+    /// paste.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_turn: Option<roboco_proto::ProviderTurnRef>,
 }
 
 /// The doc-resident flat part map (`DocMessagePart` in TS). Distinct from the app-layer
@@ -99,6 +113,11 @@ struct DocPartJson {
     source_chat_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_title: Option<String>,
+    /// Harness-switch seam (`kind: "harnessSwitch"`, additive): the harness
+    /// (wire name) the chat switched to; everything above the seam ran on
+    /// another harness whose provider session the switch dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
     /// Tool output summary (additive — absent on old rows and old writers;
     /// pre-strip writers stored up to 4KB of capped output here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +146,11 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// Completion-notice rows (kind: "completionNotice", additive): the
+    /// side chats and their recorded outcomes an engine-authored notice
+    /// reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sides: Option<serde_json::Value>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -225,6 +249,20 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
+        MessagePart::HarnessSwitch { id, harness } => DocPartJson {
+            id: id.clone(),
+            kind: "harnessSwitch".into(),
+            harness: serde_json::to_value(harness)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            ..Default::default()
+        },
+        MessagePart::CompletionNotice { id, sides } => DocPartJson {
+            id: id.clone(),
+            kind: "completionNotice".into(),
+            sides: Some(serde_json::to_value(sides)?),
+            ..Default::default()
+        },
     })
 }
 
@@ -279,6 +317,31 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             source_chat_id: p.source_chat_id.unwrap_or_default(),
             source_title: p.source_title.unwrap_or_default(),
+        },
+        "harnessSwitch" => {
+            // A harness name this build does not know (a future wire value)
+            // degrades to an invisible empty part rather than failing the doc.
+            let harness = p.harness.and_then(|name| {
+                serde_json::from_value::<roboco_proto::HarnessId>(serde_json::Value::String(name))
+                    .ok()
+            });
+            match harness {
+                Some(harness) => MessagePart::HarnessSwitch {
+                    id: p.id,
+                    harness,
+                },
+                None => MessagePart::Text {
+                    id: p.id,
+                    text: String::new(),
+                },
+            }
+        }
+        "completionNotice" => MessagePart::CompletionNotice {
+            id: p.id,
+            sides: p
+                .sides
+                .and_then(|s| serde_json::from_value(s).ok())
+                .unwrap_or_default(),
         },
         _ => MessagePart::Text {
             id: p.id,
@@ -391,6 +454,118 @@ impl SessionDoc {
                 .get_map("meta")
                 .insert("forkHistorySession", session_id)?;
             self.doc.commit();
+        }
+        Ok(())
+    }
+
+    /// The chat's outstanding native-fork intent (additive meta,
+    /// t3-orchestration-v2 ticket 17): the source harness, provider session
+    /// id, and inclusive boundary recorded by the ForkSideChat RPC. The
+    /// fork's first dispatch consumes it — the driver then forks the source
+    /// provider session instead of resuming or starting fresh.
+    pub fn provider_fork(&self) -> Option<roboco_proto::ProviderFork> {
+        let meta = self.doc.get_map("meta");
+        let str_field = |key: &str| match meta.get(key) {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
+            _ => None,
+        };
+        let fork = roboco_proto::ProviderFork {
+            session_id: str_field("forkSourceSession")?,
+            last_turn: str_field("forkSourceTurn")?,
+            fallback_history: None,
+        };
+        (!fork.session_id.is_empty() && !fork.last_turn.is_empty()).then_some(fork)
+    }
+
+    /// The recorded source harness of the native-fork intent, when present.
+    /// A run on any other harness must fall back to the budgeted paste.
+    pub fn provider_fork_harness(&self) -> Option<roboco_proto::HarnessId> {
+        match self.doc.get_map("meta").get("forkSourceHarness") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => {
+                serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// Record the native-fork intent: the source harness's provider session
+    /// and the inclusive boundary turn the fork continues at. One commit, so
+    /// a partial write is never observable.
+    pub fn set_provider_fork(
+        &self,
+        harness: roboco_proto::HarnessId,
+        fork: &roboco_proto::ProviderFork,
+    ) -> Result<(), DocError> {
+        let harness = serde_json::to_value(harness)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .ok_or_else(|| DocError::Schema("harness wire name not a string".into()))?;
+        let meta = self.doc.get_map("meta");
+        meta.insert("forkSourceHarness", harness)?;
+        meta.insert("forkSourceSession", fork.session_id.as_str())?;
+        meta.insert("forkSourceTurn", fork.last_turn.as_str())?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// Consume the native-fork intent for a run on `harness`: the recorded
+    /// spec when the source harness matches, `None` otherwise (the intent
+    /// is spent either way — a changed harness falls back to the budgeted
+    /// paste and never comes back to the native path).
+    pub fn take_provider_fork(
+        &self,
+        harness: roboco_proto::HarnessId,
+    ) -> Option<roboco_proto::ProviderFork> {
+        let fork = self.provider_fork();
+        let recorded = self.provider_fork_harness();
+        self.clear_provider_fork();
+        (recorded == Some(harness)).then_some(fork).flatten()
+    }
+
+    /// Drop the native-fork intent (consumed, mismatched, or superseded).
+    /// No-op when nothing is recorded — dispatch consults the intent on
+    /// every side-chat send, and a doc commit per dispatch would be pure
+    /// write amplification.
+    pub fn clear_provider_fork(&self) {
+        if self.provider_fork().is_none() && self.provider_fork_harness().is_none() {
+            return;
+        }
+        let meta = self.doc.get_map("meta");
+        for key in ["forkSourceHarness", "forkSourceSession", "forkSourceTurn"] {
+            let _ = meta.delete(key);
+        }
+        self.doc.commit();
+    }
+
+    /// Stamp a provider turn reference onto a transcript entry (additive):
+    /// the harness, provider session id and per-harness turn ref that
+    /// produced it. A fork uses the boundary entry's ref to continue the
+    /// provider session at exactly that turn. No-op for a missing entry —
+    /// a segment that never streamed has nothing to stamp.
+    pub fn stamp_provider_turn(
+        &self,
+        entry_id: &str,
+        reference: &roboco_proto::ProviderTurnRef,
+    ) -> Result<(), DocError> {
+        let messages = self.doc.get_list("messages");
+        for index in 0..messages.len() {
+            let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) =
+                messages.get(index)
+            else {
+                continue;
+            };
+            let matches = matches!(map.get("id"),
+                Some(loro::ValueOrContainer::Value(LoroValue::String(s)))
+                    if s.as_str() == entry_id);
+            if !matches {
+                continue;
+            }
+            map.insert(
+                "providerTurn",
+                loro_value_from_json(&serde_json::to_value(reference)?),
+            )?;
+            self.doc.commit();
+            return Ok(());
         }
         Ok(())
     }
@@ -554,6 +729,9 @@ impl SessionDoc {
                 .as_str()
                 .ok_or_else(|| DocError::Schema("status not a string".into()))?,
         )?;
+        if let Some(origin_chat_id) = &entry.origin_chat_id {
+            map.insert("originChatId", origin_chat_id.as_str())?;
+        }
         self.doc.commit();
         Ok(())
     }
@@ -815,6 +993,15 @@ fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Resu
     if let Some(duration_ms) = entry.duration_ms {
         map.insert("durationMs", duration_ms)?;
     }
+    if let Some(origin_chat_id) = &entry.origin_chat_id {
+        map.insert("originChatId", origin_chat_id.as_str())?;
+    }
+    if let Some(reference) = &entry.provider_turn {
+        map.insert(
+            "providerTurn",
+            loro_value_from_json(&serde_json::to_value(reference)?),
+        )?;
+    }
     Ok(())
 }
 
@@ -848,6 +1035,7 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
         ("mimeType", &doc_part.mime_type),
         ("sourceChatId", &doc_part.source_chat_id),
         ("sourceTitle", &doc_part.source_title),
+        ("harness", &doc_part.harness),
     ] {
         if let Some(value) = value {
             map.insert(key, value.as_str())?;
@@ -895,6 +1083,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(sides) = &doc_part.sides {
+        map.insert("sides", loro_value_from_json(sides))?;
+    }
     Ok(())
 }
 
@@ -914,6 +1105,10 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
         continuation_of: Option<String>,
         #[serde(default)]
         duration_ms: Option<i64>,
+        #[serde(default)]
+        origin_chat_id: Option<String>,
+        #[serde(default)]
+        provider_turn: Option<roboco_proto::ProviderTurnRef>,
     }
     match serde_json::from_value::<RawEntry>(v.clone()) {
         Ok(raw) => Ok(SessionMessageEntry {
@@ -925,6 +1120,8 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
             status: raw.status,
             continuation_of: raw.continuation_of,
             duration_ms: raw.duration_ms,
+            origin_chat_id: raw.origin_chat_id,
+            provider_turn: raw.provider_turn,
         }),
         // 2026-08-10 incident rule: a missing field must cost AT MOST what
         // the field carried — never the entry, never the transcript. Rooms
@@ -990,6 +1187,10 @@ fn salvage_entry(
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
         continuation_of: str_field("continuationOf"),
         duration_ms: obj.get("durationMs").and_then(|x| x.as_i64()),
+        origin_chat_id: str_field("originChatId"),
+        provider_turn: obj
+            .get("providerTurn")
+            .and_then(|r| serde_json::from_value(r.clone()).ok()),
     })
 }
 
@@ -1126,6 +1327,7 @@ impl<'a> SegmentWriter<'a> {
         write_entry_scalar_fields(
             &map,
             &SessionMessageEntry {
+                origin_chat_id: None,
                 id: entry_id.into(),
                 role: MessageRole::Assistant,
                 parts: vec![],
@@ -1134,6 +1336,7 @@ impl<'a> SegmentWriter<'a> {
                 status: Some(MessageStatus::Streaming),
                 continuation_of: None,
                 duration_ms: None,
+                provider_turn: None,
             },
         )?;
         map.insert_container("parts", LoroList::new())?;
@@ -1408,7 +1611,9 @@ mod tests {
             source_title: "Main conversation".into(),
         };
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             duration_ms: None,
+            provider_turn: None,
             id: "fork:side".into(),
             role: MessageRole::System,
             parts: vec![seam.clone()],
@@ -1422,6 +1627,200 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].role, MessageRole::System);
         assert_eq!(entries[0].parts, vec![seam]);
+    }
+
+    /// The one-way harness switch seam (t3-orchestration-v2 ticket 24): a
+    /// SYSTEM entry whose marker part round-trips through the doc with the
+    /// harness wire name. Additive (ADR 0005): an older reader without the
+    /// kind degrades to an invisible empty part; a row from an older writer
+    /// simply never carries one.
+    #[test]
+    fn harness_switch_seam_round_trips_through_the_doc() {
+        let doc = SessionDoc::init("switch").unwrap();
+        let seam = MessagePart::HarnessSwitch {
+            id: "switch:1".into(),
+            harness: roboco_proto::HarnessId::Codex,
+        };
+        doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
+            duration_ms: None,
+            provider_turn: None,
+            id: "switch:1".into(),
+            role: MessageRole::System,
+            parts: vec![seam.clone()],
+            created_at: 1,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, MessageRole::System);
+        assert_eq!(entries[0].parts, vec![seam]);
+    }
+
+    /// The engine-authored completion notice: a SYSTEM entry whose marker
+    /// part (sides + outcomes) round-trips through the doc beside the plain
+    /// text that keeps older layouts readable. Wire names stay camelCase and
+    /// additive (ADR 0005): a row from an older writer carries no sides and
+    /// degrades to an empty text part, never a decode failure.
+    #[test]
+    fn completion_notice_round_trips_through_the_doc() {
+        let doc = SessionDoc::init("notice").unwrap();
+        let marker = MessagePart::CompletionNotice {
+            id: "n0".into(),
+            sides: vec![
+                NoticeSide {
+                    chat_id: "chat-side-1234".into(),
+                    title: "Implement login".into(),
+                    outcome: NoticeOutcome::Completed,
+                    detail: None,
+                },
+                NoticeSide {
+                    chat_id: "chat-side-5678".into(),
+                    title: "Flaky test".into(),
+                    outcome: NoticeOutcome::Errored,
+                    detail: Some("build timed out".into()),
+                },
+            ],
+        };
+        let text = MessagePart::Text {
+            id: "t0".into(),
+            text: "2 side chats reached outcomes:".into(),
+        };
+        doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
+            duration_ms: None,
+            provider_turn: None,
+            id: "notice:1".into(),
+            role: MessageRole::System,
+            parts: vec![marker.clone(), text.clone()],
+            created_at: 1,
+            device_id: "dev".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, MessageRole::System);
+        assert_eq!(entries[0].parts, vec![marker, text]);
+
+        // The wire shape: camelCase, additive, tag "completionNotice".
+        let value = serde_json::to_value(entries[0].parts.clone()).unwrap();
+        assert_eq!(value[0]["kind"], "completionNotice");
+        assert_eq!(value[0]["sides"][0]["chatId"], "chat-side-1234");
+        assert_eq!(value[0]["sides"][0]["outcome"], "completed");
+        assert_eq!(value[0]["sides"][1]["outcome"], "errored");
+        assert_eq!(value[0]["sides"][1]["detail"], "build timed out");
+        assert!(value[0]["sides"][0].get("detail").is_none());
+        // An older writer's marker (no sides) degrades to empty rows.
+        let legacy = serde_json::json!({
+            "kind": "completionNotice",
+            "id": "n0",
+        });
+        assert_eq!(
+            serde_json::from_value::<MessagePart>(legacy).unwrap(),
+            MessagePart::CompletionNotice {
+                id: "n0".into(),
+                sides: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn provider_turn_round_trips_and_stamps_only_existing_entries() {
+        let doc = SessionDoc::init("refs").unwrap();
+        let reference = roboco_proto::ProviderTurnRef {
+            harness: roboco_proto::HarnessId::Codex,
+            session_id: "th-1".into(),
+            turn_id: "t-1".into(),
+        };
+        // A stamped assistant entry keeps its ref; an untouched sibling does
+        // not; a missing id is a no-op, never an error.
+        let mut entry = user_entry("u1", "question");
+        entry.role = MessageRole::Assistant;
+        doc.push_message(&entry).unwrap();
+        doc.stamp_provider_turn("u1", &reference).unwrap();
+        doc.stamp_provider_turn("gone", &reference).unwrap();
+        let mut plain = user_entry("u2", "unmarked");
+        plain.role = MessageRole::Assistant;
+        doc.push_message(&plain).unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries[0].provider_turn.as_ref(), Some(&reference));
+        assert_eq!(entries[1].provider_turn, None);
+        // A snapshot import keeps the ref (the fork boundary survives a
+        // device sync).
+        let imported = LoroDoc::new();
+        imported
+            .import(&doc.export_snapshot().unwrap())
+            .unwrap();
+        let loaded = SessionDoc::from_doc(imported);
+        assert_eq!(
+            loaded.read_entries().unwrap()[0].provider_turn.as_ref(),
+            Some(&reference)
+        );
+    }
+
+    #[test]
+    fn provider_turn_survives_salvage_of_a_torn_entry() {
+        // A strict parse that fails on an unrelated field (a missing
+        // deviceId) must still keep the ref — the 2026-08-10 incident rule.
+        let torn = serde_json::json!({
+            "id": "a1",
+            "role": "assistant",
+            "parts": [],
+            "createdAt": 1,
+            "providerTurn": {
+                "harness": "codex",
+                "sessionId": "th-1",
+                "turnId": "t-9"
+            }
+        });
+        let salvaged =
+            salvage_entry(torn, serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
+                .unwrap();
+        let reference = roboco_proto::ProviderTurnRef {
+            harness: roboco_proto::HarnessId::Codex,
+            session_id: "th-1".into(),
+            turn_id: "t-9".into(),
+        };
+        assert_eq!(salvaged.provider_turn.as_ref(), Some(&reference));
+    }
+
+    #[test]
+    fn provider_fork_intent_is_recorded_and_consumed_once() {
+        let doc = SessionDoc::init("fork-intent").unwrap();
+        assert_eq!(doc.provider_fork(), None);
+        let fork = roboco_proto::ProviderFork {
+            session_id: "th-source".into(),
+            last_turn: "turn-7".into(),
+            fallback_history: None,
+        };
+        doc.set_provider_fork(roboco_proto::HarnessId::Codex, &fork)
+            .unwrap();
+        assert_eq!(doc.provider_fork_harness(), Some(roboco_proto::HarnessId::Codex));
+        assert_eq!(doc.provider_fork(), Some(fork));
+        // Consumed by a run on the recorded harness.
+        assert_eq!(doc.take_provider_fork(roboco_proto::HarnessId::Codex), Some(fork));
+        // Consumed once: the next dispatch — same harness or not — has
+        // nothing left, so it falls back to the budgeted paste.
+        assert_eq!(doc.take_provider_fork(roboco_proto::HarnessId::Codex), None);
+        assert_eq!(doc.provider_fork(), None);
+        // A mismatched harness spends the intent too, without ever taking
+        // the native path.
+        doc.set_provider_fork(roboco_proto::HarnessId::Codex, &fork)
+            .unwrap();
+        assert_eq!(doc.take_provider_fork(roboco_proto::HarnessId::Mock), None);
+        assert_eq!(doc.provider_fork(), None);
+        // A partial write (session without turn) never reads as an intent.
+        doc.doc
+            .get_map("meta")
+            .insert("forkSourceSession", "th-source")
+            .unwrap();
+        doc.doc.commit();
+        assert_eq!(doc.provider_fork(), None);
     }
 
     #[test]
@@ -1468,6 +1867,7 @@ mod tests {
 
     fn user_entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -1479,6 +1879,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         }
     }
 
@@ -1487,6 +1888,7 @@ mod tests {
         let doc = SessionDoc::init("whale").unwrap();
         for segment in 0..4 {
             doc.push_message(&SessionMessageEntry {
+                origin_chat_id: None,
                 id: format!("segment-{segment}"),
                 role: MessageRole::Assistant,
                 parts: (0..100)
@@ -1500,6 +1902,7 @@ mod tests {
                 status: Some(MessageStatus::Complete),
                 continuation_of: (segment > 0).then(|| "segment-0".into()),
                 duration_ms: None,
+                provider_turn: None,
             })
             .unwrap();
         }
@@ -1732,6 +2135,7 @@ mod tests {
     fn resolve_input_stamps_the_part_in_place() {
         let doc = SessionDoc::init("chat-1").unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Input {
@@ -1746,6 +2150,7 @@ mod tests {
             status: Some(MessageStatus::Aborted),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         })
         .unwrap();
         assert!(!doc.resolve_input("nope").unwrap());
@@ -1981,6 +2386,7 @@ mod tests {
     fn pre_strip_doc_parts_still_round_trip() {
         let doc = SessionDoc::init("chat-3").unwrap();
         doc.push_message(&SessionMessageEntry {
+            origin_chat_id: None,
             id: "m1".into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Tool {
@@ -2009,6 +2415,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         })
         .unwrap();
         let entries = doc.read_entries().unwrap();
@@ -2046,6 +2453,7 @@ mod tests {
         use crate::commands::{SessionCommandPayload, SessionCommandStatus};
         let doc = SessionDoc::init("chat-1").unwrap();
         let entry = SessionCommandEntry {
+            origin_chat_id: None,
             id: "c1".into(),
             payload: SessionCommandPayload::Steer {
                 prompt: "focus".into(),

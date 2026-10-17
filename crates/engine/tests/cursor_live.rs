@@ -84,6 +84,8 @@ fn start(core: &EngineCore, cwd: &std::path::Path, prompt: String) {
                     worktree: None,
                     mcp: None,
                     resume: None,
+                    provider_fork: None,
+                    resume_fallback_history: None,
                 },
             },
         )
@@ -130,6 +132,7 @@ async fn remote_steer_batch_reaches_real_muse_with_every_message() {
         .as_millis() as i64;
     for (i, token) in tokens.iter().enumerate().skip(1) {
         handle.doc().queue_command(&roboco_doc::SessionCommandEntry {
+            origin_chat_id: None,
             id: format!("remote-{i}"),
             payload: SessionCommandPayload::Steer {prompt: format!("Remember {token}. Reply with the immediately previous user token and this token. Do not use tools."), message_id: Some(format!("message-{i}"))},
             issued_by: "remote-viewer".into(), issued_at: now + i as i64,

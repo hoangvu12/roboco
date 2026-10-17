@@ -85,6 +85,7 @@ import { toggleSettings } from "../lib/settings-close";
 import { PaneSeam } from "./pane-seam";
 import { RightPane, usePaneGlide } from "./right-pane";
 import { FilesPaneColumn } from "./files/files-pane-column";
+import { ForkDialogLayer } from "./fork-dialog";
 import { RightTabStrip } from "./right-tab-strip";
 import { useConnectionState } from "./connection-state";
 import { Titlebar, islandTarget } from "./titlebar";
@@ -991,6 +992,14 @@ export function AppShell() {
           }
         }}
       />
+      {/*
+        The fork dialog (t3-orchestration-v2 tickets 21+22): one mount over
+        everything — both entry points (the files panel's fork button, the
+        transcript's "Fork from here" hover action) open it through the
+        module-level store, exactly like the sidebar owns the add-space
+        palette's single mount.
+      */}
+      <ForkDialogLayer />
     </div>
   );
 }

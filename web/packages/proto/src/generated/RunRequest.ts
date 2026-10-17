@@ -2,6 +2,7 @@
 
 import type { HarnessId } from "./HarnessId";
 import type { McpServer } from "./McpServer";
+import type { ProviderFork } from "./ProviderFork";
 import type { ReasoningLevel } from "./ReasoningLevel";
 import type { SandboxLevel } from "./SandboxLevel";
 import type { WorktreeSpec } from "./WorktreeSpec";
@@ -22,6 +23,28 @@ modelOptions: Record<string, unknown>, cwd: string, sandbox: SandboxLevel, autoA
  * Harness-native session id to resume, if any.
  */
 resume: string | null, 
+/**
+ * The budgeted transcript (ticket 01's builder) delivered in front of
+ * the prompt ONLY when the harness refuses the native resume of
+ * `resume` and starts a fresh session instead (account failover,
+ * orchestration v2 ticket 09: cross-account resumes usually keep working,
+ * but a session the harness will not continue must still carry the chat's
+ * prior context). Only the engine sets it — a plain resume carries none,
+ * and a resumed session that never refuses never sees it. Additive +
+ * serde-defaulted for wire compat.
+ */
+resumeFallbackHistory?: string | null, 
+/**
+ * A native fork to perform instead of a plain resume or fresh start
+ * (t3-orchestration-v2 ticket 17): the driver forks the source provider
+ * session at `last_turn` (inclusive) — Codex `thread/fork {threadId,
+ * lastTurnId}` — so the forked session carries the copied history and
+ * nothing is pasted into the prompt. Only the engine sets it: the fork's
+ * first dispatch injects it from the intent the ForkSideChat RPC
+ * recorded. Additive + serde-defaulted for wire compat — an old host
+ * ignores it and starts fresh (the budgeted-history fallback).
+ */
+providerFork?: ProviderFork | null, 
 /**
  * Absolute paths of image attachments already staged on the run device
  * (composer uploads: UploadChunk/UploadCommit → durable path). The same

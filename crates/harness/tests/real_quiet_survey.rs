@@ -68,6 +68,8 @@ async fn probe_once(harness: AcpHarness) -> ProbeOutcome {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     };
     let mut stream = match harness.run(req, controls).await {
         Ok(s) => s,

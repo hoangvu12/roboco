@@ -2,8 +2,8 @@
 # Fake Codex app-server for roboco-harness tests.
 #
 # Speaks scripted JSON-RPC 2.0 over stdio: initialize handshake, thread
-# start/resume, then a scenario picked from the turn/start prompt text. Driven
-# by crates/harness/tests/codex.rs.
+# start/resume/fork, then a scenario picked from the turn/start prompt text.
+# Driven by crates/harness/tests/codex.rs.
 
 emit() { printf '%s\n' "$1"; }
 rid() { printf '%s' "$1" | sed 's/.*"id":\([0-9]*\).*/\1/'; }
@@ -49,7 +49,22 @@ if has "$line" '"method":"model/list"'; then
   emit "{\"id\":$(rid "$line"),\"result\":{\"data\":[{\"id\":\"gpt-5.6-sol\",\"model\":\"gpt-5.6-sol\",\"displayName\":\"GPT-5.6-Sol\",\"description\":\"Reliable agentic workhorse for everyday tasks.\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"ultra\"}],\"additionalSpeedTiers\":[],\"serviceTiers\":[],\"defaultServiceTier\":null,\"isDefault\":false}],\"nextCursor\":null}}"
   exec sleep 30
 fi
-if has "$line" '"method":"thread/resume"'; then
+if has "$line" '"method":"thread/fork"'; then
+  if has "$line" '"threadId":"fork-source"' && has "$line" '"lastTurnId":"turn-7"'; then
+    # Native fork (ticket 17): a new thread id; the copied history rides the
+    # provider, so the first turn's input must carry no transcript.
+    emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-forked\"}}}"
+  elif has "$line" '"threadId":"fork-refused"'; then
+    # A refused fork: fall back to thread/start; the first turn's input must
+    # then carry the budgeted history in front of the prompt.
+    emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32600,\"message\":\"fork not allowed\"}}"
+    read -r line || exit 1
+    has "$line" '"method":"thread/start"' || exit 1
+    emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-fresh\"}}}"
+  else
+    exit 1
+  fi
+elif has "$line" '"method":"thread/resume"'; then
   if has "$line" '"threadId":"resume-with-child-v1"'; then
     emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-resumed\",\"turns\":[{\"items\":[{\"type\":\"collabAgentToolCall\",\"id\":\"spawn-alpha\",\"tool\":\"spawnAgent\",\"status\":\"completed\",\"receiverThreadIds\":[\"child-alpha\"]}]}]}}}"
   elif has "$line" '"threadId":"resume-with-child-v2"'; then
@@ -360,6 +375,49 @@ case "$turnline" in
   cat >/dev/null
   ;;
 
+*scenario:fork-success*)
+  # The native fork delivered: the turn runs on the forked thread, its input
+  # is the bare prompt (no transcript block, no copied history).
+  has "$turnline" '"threadId":"th-forked"' || { fail_turn "$tid" "turn not on the forked thread"; exit 0; }
+  for bad in '<transcript>' 'PINEAPPLE'; do
+    if has "$turnline" "$bad"; then
+      fail_turn "$tid" "history pasted into a native fork: $bad"; exit 0
+    fi
+  done
+  has "$turnline" 'scenario:fork-success' || { fail_turn "$tid" "prompt missing"; exit 0; }
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-f1\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-forked","turn":{"id":"t-f1"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-forked","itemId":"m1","delta":"forked thread answer"}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-forked","turn":{"id":"t-f1","status":"completed"}}}'
+  ;;
+
+*scenario:fork-refused*)
+  # The refused fork fell back to a fresh thread: the input must carry the
+  # budgeted history in front of the user message.
+  has "$turnline" '"threadId":"th-fresh"' || { fail_turn "$tid" "turn not on the fresh thread"; exit 0; }
+  for want in 'PINEAPPLE' 'scenario:fork-refused'; do
+    has "$turnline" "$want" || { fail_turn "$tid" "fallback prompt missing: $want"; exit 0; }
+  done
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-f2\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-fresh","turn":{"id":"t-f2"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-fresh","itemId":"m1","delta":"fresh thread answer"}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-fresh","turn":{"id":"t-f2","status":"completed"}}}'
+  ;;
+
+*scenario:resume-fallback*)
+  # A REFUSED RESUME (ticket 09's account-failover continuation) fell back
+  # to a fresh thread: the input must carry the engine's budgeted history
+  # in front of the user message, exactly like the refused fork.
+  has "$turnline" '"threadId":"th-fresh"' || { fail_turn "$tid" "turn not on the fresh thread"; exit 0; }
+  for want in 'PINEAPPLE' 'scenario:resume-fallback'; do
+    has "$turnline" "$want" || { fail_turn "$tid" "fallback prompt missing: $want"; exit 0; }
+  done
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-rf\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-fresh","turn":{"id":"t-rf"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"threadId":"th-fresh","itemId":"m1","delta":"resumed with history"}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-fresh","turn":{"id":"t-rf","status":"completed"}}}'
+  ;;
+
 # NOTE: steer-race before steer — `case` takes the first matching glob.
 *scenario:steer-race*)
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
@@ -511,6 +569,32 @@ case "$turnline" in
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
   emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"boom"}}}}'
+  ;;
+
+*scenario:usage-limit*)
+  # A turn killed by the account's usage limit. The rate-limit snapshot
+  # (pushed before the failure) carries the reset the error itself omits;
+  # the 5-hour window is exhausted, the weekly one is not.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":4102444800},"secondary":{"usedPercent":61,"windowDurationMins":10080,"resetsAt":4102444801}}}}'
+  emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"You have exceeded your usage limit","codexErrorInfo":"usageLimitExceeded"}}}}'
+  ;;
+
+*scenario:rate-limit-completed*)
+  # Same classification on turn/completed (status failed + error), with the
+  # weekly window as the exhausted one and no primary window reported.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"account/rateLimits/updated","params":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":4102444801}}}}'
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-1","status":"failed","error":{"message":"rate limited, retry later","codexErrorInfo":"rateLimitExceeded"}}}}'
+  ;;
+
+*scenario:auth-fail*)
+  # A turn killed by an expired login: signed out, not a limit.
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"Token is expired or invalid","codexErrorInfo":"unauthorized"}}}}'
   ;;
 
 *scenario:resumed-child*)

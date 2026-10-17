@@ -345,6 +345,7 @@ mod tests {
 
     fn entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -356,6 +357,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         }
     }
 

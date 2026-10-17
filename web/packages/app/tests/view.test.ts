@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Chat, Space } from "@roboco/proto";
+import type { Chat, SessionLimit, Space } from "@roboco/proto";
 import type { ChatStatus } from "@roboco/engine-client";
 import { UNDELIVERED_GRACE_MS, type PendingSend } from "../src/state/transcript-store";
 import {
@@ -10,6 +10,8 @@ import {
   chatPageRow,
   displayStatus,
   effectiveIndicator,
+  formatLimitReset,
+  formatScheduledResume,
   mergePendingSpaces,
   mostUrgent,
   projectLabel,
@@ -84,6 +86,43 @@ describe("effectiveIndicator", () => {
     expect(effectiveIndicator(status({ status: "errored", updatedAt: "2026-09-16T08:00:00Z" }), NOW)).toBe("errored");
     expect(effectiveIndicator(status({ status: "idle" }), NOW)).toBe("none");
     expect(effectiveIndicator(undefined, NOW)).toBe("none");
+  });
+
+  it("an_errored_row_with_a_limit_reads_as_limited (proto view.rs)", () => {
+    const limit: SessionLimit = { harness: "claude-code", window: "5-hour", resetsAt: 0, accountId: null };
+    expect(effectiveIndicator(status({ status: "errored", limit }), NOW)).toBe("limited");
+    // The same record on any other status is inert — a row that is working
+    // again (the record cleared on the new turn) never shows a stale
+    // Limited marker.
+    expect(effectiveIndicator(status({ status: "working", limit }), NOW)).toBe("working");
+    expect(effectiveIndicator(status({ status: "errored", limit: null }), NOW)).toBe("errored");
+    // A payload from an older engine without the additive field reads as a
+    // plain error, never Limited.
+    const legacy = status({ status: "errored" }) as ChatStatus & { limit?: unknown };
+    delete legacy.limit;
+    expect(effectiveIndicator(legacy, NOW)).toBe("errored");
+  });
+});
+
+describe("formatLimitReset / formatScheduledResume (proto view.rs)", () => {
+  it("reset_text_is_relative_and_never_counts_into_the_past", () => {
+    const at = (secs: number): number => NOW + secs * 1000;
+    expect(formatLimitReset(at(45 * 60), NOW)).toBe("resets in 45m");
+    expect(formatLimitReset(at(30), NOW)).toBe("resets in 0m");
+    expect(formatLimitReset(at(3 * 3600 + 5 * 60), NOW)).toBe("resets in 3h 05m");
+    expect(formatLimitReset(at(7 * 3600), NOW)).toBe("resets in 7h");
+    expect(formatLimitReset(at(2 * 86_400 + 3 * 3600), NOW)).toBe("resets in 2d");
+    // A reset already due: the offer is Resume, not a negative countdown.
+    expect(formatLimitReset(at(-600), NOW)).toBe("resets now");
+    expect(formatLimitReset(NOW, NOW)).toBe("resets now");
+  });
+
+  it("scheduled_resume_text_is_relative_and_never_counts_into_the_past", () => {
+    const at = (secs: number): number => NOW + secs * 1000;
+    expect(formatScheduledResume(at(45 * 60), NOW)).toBe("resumes in 45m");
+    expect(formatScheduledResume(at(3 * 3600 + 5 * 60), NOW)).toBe("resumes in 3h 05m");
+    expect(formatScheduledResume(at(2 * 86_400 + 3 * 3600), NOW)).toBe("resumes in 2d");
+    expect(formatScheduledResume(at(-600), NOW)).toBe("resumes now");
   });
 });
 
@@ -400,6 +439,50 @@ describe("send truth on the sidebar row (state.rs display_status_for + render_ch
       ["a", "idle", null],
       ["b", "working", null],
     ]);
+  });
+});
+
+describe("the sidebar row's Limited flag (state.rs is_limited)", () => {
+  const limit = { harness: "claude-code" as const, window: "5-hour", resetsAt: NOW + 45 * 60_000, accountId: null };
+
+  it("an errored row with a limit reads limited; the plain status stays errored/idle", () => {
+    const statuses = [status({ chatId: "a", status: "errored", limit })];
+    const rows = chatListRows(
+      [chat({ id: "a", lastMessageAt: "2026-09-16T11:00:00Z" }), chat({ id: "b" })],
+      [],
+      statuses,
+      NOW,
+    );
+    // The row status keeps the unseen-marker derivation (Errored), and the
+    // marker rides its own field — the desktop's ChatIndicator has no
+    // Limited variant either.
+    expect(rows[0]!.status).toBe("errored");
+    expect(rows[0]!.limited).toBe(true);
+    expect(rows[1]!.limited).toBe(false);
+  });
+
+  it("a send in flight is Working, never Limited (indicator_for's overlay)", () => {
+    const statuses = [status({ chatId: "a", status: "errored", limit })];
+    const rows = chatListRows([chat({ id: "a" })], [], statuses, NOW, [], {
+      sendsFor: () => [
+        {
+          messageId: "m-a",
+          chatId: "a",
+          startedAtMs: NOW - 1_000,
+          text: "hello",
+          attachmentPaths: [],
+        },
+      ],
+    });
+    expect(rows[0]!.status).toBe("working");
+    expect(rows[0]!.limited).toBe(false);
+  });
+
+  it("the record on any other status never marks the row", () => {
+    const statuses = [status({ chatId: "a", status: "working", limit })];
+    const rows = chatListRows([chat({ id: "a" })], [], statuses, NOW);
+    expect(rows[0]!.status).toBe("working");
+    expect(rows[0]!.limited).toBe(false);
   });
 });
 

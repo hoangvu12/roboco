@@ -210,6 +210,8 @@ impl TitleGenerator {
                 auto_approve: false,
                 attachments: Vec::new(),
                 resume: None,
+                provider_fork: None,
+                resume_fallback_history: None,
                 worktree: None,
                 mcp: None,
             };
@@ -298,7 +300,7 @@ async fn collect_text(
                     "title generation attempted to use a tool".into(),
                 ));
             }
-            AgentEvent::Error { message } => {
+            AgentEvent::Error { message, .. } => {
                 return Err(EngineError::Other(format!("titling run error: {message}")));
             }
             AgentEvent::Done { status, error, .. } => {
@@ -380,6 +382,8 @@ mod tests {
             resume: None,
             attachments: vec![],
             worktree: None,
+            provider_fork: None,
+            resume_fallback_history: None,
             mcp: None,
         };
         let result = collect_text(&harness, request, None).await;

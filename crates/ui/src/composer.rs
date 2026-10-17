@@ -5762,6 +5762,7 @@ pub struct Composer {
     /// A side chat's composer: its footer keeps only the context ring.
     side_chat: bool,
     _picker_focus: Subscription,
+    _harness_switch_failed: Subscription,
     _input_events: Subscription,
     _dictation_events: Subscription,
     dictation_activation: Option<Subscription>,
@@ -5858,6 +5859,14 @@ impl Composer {
             |this: &mut Self, _, _: &crate::pickers::ReturnComposerFocus, cx| {
                 this.focus_pending = true;
                 cx.notify();
+            },
+        );
+        // A refused one-way harness switch (ticket 24): the pickers already
+        // restored the previous config; the reason rides the failure chip.
+        let harness_switch_failed = cx.subscribe(
+            &pickers,
+            |this: &mut Self, _, event: &crate::pickers::HarnessSwitchFailed, cx| {
+                this.show_error(event.0.clone(), cx);
             },
         );
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
@@ -6015,6 +6024,7 @@ impl Composer {
             account_usage,
             side_chat: false,
             _picker_focus: picker_focus,
+            _harness_switch_failed: harness_switch_failed,
             _input_events: input_events,
             _dictation_events: dictation_events,
             dictation_activation: None,
@@ -8250,6 +8260,7 @@ impl Composer {
         // Optimistic echo (client-minted id doubles as the persisted message id,
         // so the doc frame dedups it away).
         let echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: message_id.clone(),
             role: roboco_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -8260,6 +8271,7 @@ impl Composer {
             device_id: "local".into(),
             status: None,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         self.launching_new_chat = is_new;
@@ -8416,6 +8428,7 @@ impl Composer {
                     // its queue row is the only representation until dispatch.
                     if should_publish_optimistic_echo(queue) {
                         let refreshed = SessionMessageEntry {
+                            origin_chat_id: None,
                             id: message_id.clone(),
                             role: roboco_doc::MessageRole::User,
                             parts: vec![MessagePart::Text {
@@ -8426,6 +8439,7 @@ impl Composer {
                             device_id: "local".into(),
                             status: None,
                             continuation_of: None,
+                            provider_turn: None,
                             duration_ms: None,
                         };
                         let echo_chat_id = chat_id.clone();
@@ -8634,6 +8648,8 @@ impl Composer {
                         sandbox: SandboxLevel::WorkspaceWrite,
                         auto_approve: false,
                         resume: None,
+                        provider_fork: None,
+                        resume_fallback_history: None,
                         attachments: attachment_paths,
                         worktree: run_worktree.clone(),
                         mcp: None,
@@ -8832,6 +8848,48 @@ impl Composer {
             return;
         };
         self.interrupt_chat(chat_id, cx);
+    }
+
+    /// Start the "Sign in again" flow for one harness account from outside
+    /// the footer's account ring — the Limited banner's failover picker
+    /// (ticket 09, stories 47/50) lists signed-out accounts with this
+    /// action. The SAME login flow ticket 08's switcher drives, on the SAME
+    /// `AccountUsage` entity, so the ring's popover shows the progress right
+    /// where the user already looks (browser flow, paste-code fallback and
+    /// all).
+    pub(crate) fn sign_in_account(
+        &mut self,
+        account: &roboco_proto::AgentAccount,
+        cx: &mut Context<Self>,
+    ) {
+        self.account_usage
+            .update(cx, |usage, cx| usage.sign_in_again(account, cx));
+    }
+
+    /// **Resume** on a Limited chat (orchestration v2): send the fixed
+    /// continue prompt as a NORMAL run — same send path, same guards, same
+    /// queue semantics as typing it — never a special engine mode. The run
+    /// clears the limit record when it starts; messages queued on the chat
+    /// stay behind the continuation.
+    pub(crate) fn resume_limited(&mut self, cx: &mut Context<Self>) {
+        // A draft the user was typing (and files they staged) are theirs, not
+        // part of the resume: the send clears the composer, so hand them
+        // straight back. `send` takes its own copies, so restoring the slots
+        // after it returns cannot leak into the sent message.
+        let draft = self.input.read(cx).text().to_string();
+        let staged = self.attachments.remove(&self.current_key).unwrap_or_default();
+        let appshots = self.appshots.remove(&self.current_key).unwrap_or_default();
+        self.send(roboco_proto::RESUME_CONTINUE_PROMPT.into(), false, cx);
+        if !draft.is_empty() {
+            self.input.update(cx, |input, cx| input.set_text(&draft, cx));
+            self.drafts.insert(self.current_key.clone(), draft);
+        }
+        if !staged.is_empty() {
+            self.attachments.insert(self.current_key.clone(), staged);
+        }
+        if !appshots.is_empty() {
+            self.appshots.insert(self.current_key.clone(), appshots);
+        }
     }
 
     pub(crate) fn interrupt_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
@@ -12086,6 +12144,8 @@ mod tests {
                 status: roboco_proto::SessionStatus::Working,
                 started_at: Some(updated),
                 updated_at: updated,
+                limit: None,
+                scheduled_resume: None,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);
@@ -15132,6 +15192,7 @@ mod tests {
             resolved: false,
         };
         let entry = |status: Option<MessageStatus>, parts: Vec<MessagePart>| SessionMessageEntry {
+            origin_chat_id: None,
             id: "m".into(),
             role: MessageRole::Assistant,
             parts,
@@ -15139,6 +15200,7 @@ mod tests {
             device_id: "d".into(),
             status,
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         // Streaming entry with unresolved input → panel.
@@ -15166,6 +15228,7 @@ mod tests {
         let t = vec![
             entry(Some(MessageStatus::Aborted), vec![input_part.clone()]),
             SessionMessageEntry {
+                origin_chat_id: None,
                 id: "m2".into(),
                 role: MessageRole::Assistant,
                 parts: vec![MessagePart::Text {
@@ -15176,6 +15239,7 @@ mod tests {
                 device_id: "d".into(),
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
+                provider_turn: None,
                 duration_ms: None,
             },
         ];
@@ -15199,6 +15263,7 @@ mod tests {
         // found (a last-entry-only read vanished the panel exactly when the
         // user typed, bricking the answer flow).
         let user_echo = SessionMessageEntry {
+            origin_chat_id: None,
             id: "u2".into(),
             role: MessageRole::User,
             parts: vec![MessagePart::Text {
@@ -15209,6 +15274,7 @@ mod tests {
             device_id: "d".into(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
         };
         let t = vec![

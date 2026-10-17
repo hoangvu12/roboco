@@ -41,7 +41,16 @@ pub enum HarnessError {
     Io(#[from] std::io::Error),
 }
 
+/// The prompt a fresh session receives when a native fork or resume falls
+/// back to the engine's budgeted transcript: the history in front of the
+/// prompt, verbatim (the engine's transcript carries its own separator).
+/// Every driver delivers the fallback through this one spelling.
+pub(crate) fn prompt_with_history(history: &str, prompt: &str) -> String {
+    format!("{history}{prompt}")
+}
+
 /// A steer prompt pushed into a live run; delivered at the harness's steering boundary.
+#[derive(Clone)]
 pub struct SteerMessage {
     pub prompt: String,
     pub message_id: Option<String>,

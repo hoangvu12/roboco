@@ -167,6 +167,20 @@ Verification: reading + `git show` only (ticket 30's budget); no code
 changed, no cargo. Test execution deferred to the wave-final batched pass
 (user directive) — nothing here to execute.
 
+- **Reversal (2026-10-16, orchestration v2 ticket 03 —
+  `.scratch/t3-orchestration-v2/issues/03-pi-steers-mid-turn.md`):** items
+  8 and 9 above are superseded. The T3 study measured that our
+  TurnBoundary classification held every message sent to a working Pi chat
+  in the engine queue until `agent_settled` — "our steering rides pi's own
+  steer queue" was true on the wire and false in delivery. Ticket 02
+  already moved the driver to upstream's `prompt` +
+  `streamingBehavior: "steer"` shape; ticket 03 flips the declaration and
+  the registry descriptor to `StepBoundary` together, selects steering
+  mode `"all"` at session start unless the user configured one (upstream
+  #630's overwrite guard now fully applies), and covers both with tests
+  (fixture `set_steering_mode` handling, an engine-level pi steering test
+  driving the real queue/steer flow).
+
 - Wave-final batched verification (2026-10-03, merged main `cf94f415`): one
   batched pass over all lanes — ui lib 1521/1521; engine 529/530 (the one
   failure is the documented pre-existing

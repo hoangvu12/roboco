@@ -237,6 +237,11 @@ where
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
+    /// The chat this Run/Steer is sent BY through the Roboco MCP server —
+    /// structured attribution (additive). Absent for user-typed sends; the
+    /// command entry and its user message entry keep it.
+    #[serde(default)]
+    origin_chat_id: Option<String>,
     /// Queued attachments (bytes already committed locally as `pending://`
     /// refs) the engine delivers to a remote host AFTER the command is
     /// durably queued — never as a gate in front of it.
@@ -264,6 +269,28 @@ struct QueueMessageParams {
     /// supports mid-turn steering.
     #[serde(default)]
     hold_for_turn_end: bool,
+    /// The chat this row is sent BY through the Roboco MCP server —
+    /// structured attribution (additive). Absent for user-typed rows.
+    #[serde(default)]
+    origin_chat_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AckSideChatParams {
+    /// The chat that was observed — the side chat.
+    chat_id: String,
+    /// The chat that observed it: the Roboco MCP server's calling chat
+    /// (an agent parent). Reported after `wait_for_turn`, a send with
+    /// wait, `read_chat` or `get_chat` (ticket 14).
+    origin_chat_id: String,
+    /// When the observation started (epoch ms; additive — absent when the
+    /// caller could not say): the engine's acknowledgement watermark covers
+    /// only the side chat's settles that had happened by then, so an
+    /// outcome that landed between the read and this report — the parent's
+    /// UNSEEN work — still owes its notice.
+    #[serde(default)]
+    observed_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,6 +576,16 @@ struct AgentAccountParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ResumeOnAccountParams {
+    chat_id: String,
+    /// The account the user picked; `None` takes the engine's
+    /// recommendation (the best-ranked candidate).
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StartAgentLoginParams {
     harness: HarnessId,
     /// For agents that keep a login per model provider (OpenCode, Pi,
@@ -645,6 +682,13 @@ pub enum MutateParams {
         #[serde(default)]
         #[ts(optional)]
         parent_chat_id: Option<String>,
+        /// Set when an AGENT is creating this one through the Roboco MCP
+        /// `create_chat` / `create_chats` tools: the creating chat and its
+        /// notify preference (default on). Absent on UI creations — forks
+        /// and blank side chats never notify.
+        #[serde(default)]
+        #[ts(optional)]
+        agent_origin: Option<roboco_proto::AgentOrigin>,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
     /// duplicate `(deviceId, path)` no-ops. `gitDetected` is seeded from the
@@ -720,6 +764,16 @@ pub enum MutateParams {
         #[ts(optional)]
         at: Option<i64>,
     },
+    /// **Resume at reset** (orchestration v2, ticket 07): arm the durable
+    /// continuation for a Limited chat — at the limit's reset time the
+    /// engine sends the continue prompt like the manual Resume. Requires
+    /// the chat to be Limited with a reset time still ahead.
+    #[serde(rename_all = "camelCase")]
+    ScheduleResumeAtReset { chat_id: String },
+    /// Cancel the chat's pending Resume-at-reset continuation (the banner's
+    /// Cancel action). No-op when nothing is armed.
+    #[serde(rename_all = "camelCase")]
+    CancelScheduledResume { chat_id: String },
 }
 
 pub struct EngineRpc {
@@ -997,6 +1051,7 @@ impl EngineRpc {
                 branch,
                 cwd,
                 parent_chat_id,
+                agent_origin,
             } => {
                 self.workspace
                     .create_chat_with_parent(
@@ -1006,6 +1061,7 @@ impl EngineRpc {
                         config,
                         cwd,
                         parent_chat_id,
+                        agent_origin,
                     )
                     .map_err(failed)?;
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
@@ -1077,11 +1133,29 @@ impl EngineRpc {
                 .set_chat_host(&chat_id, &device_id)
                 .map_err(failed)
                 .map(drop),
-            MutateParams::SetChatArchived { chat_id, archived } => self
-                .workspace
-                .set_chat_archived(&chat_id, archived)
-                .map_err(failed)
-                .map(drop),
+            MutateParams::SetChatArchived { chat_id, archived } => {
+                let result = self
+                    .workspace
+                    .set_chat_archived(&chat_id, archived)
+                    .map_err(failed);
+                // Archiving a Limited chat cancels its pending Resume-at-reset
+                // continuation (orchestration v2, ticket 07): the user put the
+                // work away — it must not resume on its own overnight. Only
+                // on a SUCCESSFUL archive: a refused write (the registry row
+                // unreadable, the doc busy) leaves the chat exactly as it
+                // was, continuation armed — cancelling beside a failed
+                // write would strand an unarchived chat with no continuation.
+                if archived && result.is_ok() {
+                    self.sessions.cancel_scheduled_resume(&chat_id);
+                    // An archived parent is owed nothing (ticket 13): its
+                    // pending completion notices go now, and the loop cap's
+                    // parked rows — the notice's waiting form — go with them,
+                    // or they would sit in the archived chat's queue forever
+                    // (nothing drains an archived parent).
+                    crate::completion_notices::stop_parent(&self.sessions, &chat_id);
+                }
+                result.map(drop)
+            }
             MutateParams::SetChatConfig { chat_id, config } => self
                 .workspace
                 .set_chat_config(&chat_id, &config)
@@ -1105,6 +1179,16 @@ impl EngineRpc {
                     .mark_chat_seen(&chat_id, at)
                     .map_err(failed)
                     .map(drop)
+            }
+            MutateParams::ScheduleResumeAtReset { chat_id } => {
+                self.sessions
+                    .schedule_resume_at_reset(&chat_id)
+                    .map_err(failed)
+                    .map(drop)
+            }
+            MutateParams::CancelScheduledResume { chat_id } => {
+                self.sessions.cancel_scheduled_resume(&chat_id);
+                Ok(())
             }
         }
     }
@@ -1371,6 +1455,14 @@ impl RpcService for EngineRpc {
                     .map_err(RpcError::Failed)?;
                 RpcReply::value(&self.registry.title_settings())
             }
+            methods::GET_ENGINE_SETTINGS => RpcReply::value(&self.sessions.engine_settings()),
+            methods::SET_ENGINE_SETTINGS => {
+                let p: crate::engine_settings::EngineSettings = parse_params(params)?;
+                self.sessions
+                    .set_engine_settings(p)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&self.sessions.engine_settings())
+            }
             methods::SET_HARNESS_ENABLED => {
                 let p: SetHarnessEnabledParams = parse_params(params)?;
                 update_harness_enabled(&self.registry, p.harness, p.enabled).await?;
@@ -1462,7 +1554,12 @@ impl RpcService for EngineRpc {
                 let p: QueueCommandParams = parse_params(params)?;
                 let command_id = self
                     .doc_host
-                    .queue_command_with_transfers(&p.chat_id, p.command, p.transfers)
+                    .queue_command_with_transfers(
+                        &p.chat_id,
+                        p.command,
+                        p.transfers,
+                        p.origin_chat_id.as_deref(),
+                    )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "commandId": command_id }))
             }
@@ -1498,6 +1595,39 @@ impl RpcService for EngineRpc {
                     /// side chat's parent so the copy lists as a sibling.
                     #[serde(default)]
                     parent_chat_id: Option<String>,
+                    /// The assistant entry to fork at (t3-orchestration-v2
+                    /// ticket 21, "Fork from here"): the copy stops at that
+                    /// reply, inclusive, and its provider turn ref becomes
+                    /// the native fork boundary. Any SETTLED assistant entry
+                    /// qualifies — an earlier one, an errored one, an
+                    /// interrupted one. Absent (the classic fork button)
+                    /// keeps today's behaviour: the latest complete reply.
+                    #[serde(default)]
+                    boundary: Option<String>,
+                    /// Harness override (t3-orchestration-v2 ticket 22, "fork
+                    /// into another harness"): the copy runs on this harness
+                    /// instead of the source's, its wire name ("codex",
+                    /// "claude-code", …). A pick of the source's own harness
+                    /// — or no pick at all — keeps the native fork behaviour.
+                    #[serde(default)]
+                    harness: Option<String>,
+                    /// Model override (ticket 22): rides the copy's run
+                    /// config. Without a harness change it replaces only the
+                    /// model; into another harness the old model ids are
+                    /// meaningless, so it (or the new harness's default at
+                    /// run time) is all the copy gets.
+                    #[serde(default)]
+                    model: Option<String>,
+                    /// Agent-made fork (t3-orchestration-v2 ticket 23, the
+                    /// `fork_chat` MCP tool): the chat whose agent forked
+                    /// this one and whether it wants completion notices
+                    /// (default on). The assignment REPLACES whatever the
+                    /// source row carried, so a user-made fork — the UI, the
+                    /// web client, a terminal — is never marked and never
+                    /// notifies, even when the source itself was
+                    /// agent-created (ticket 11's rule).
+                    #[serde(default)]
+                    agent_origin: Option<roboco_proto::AgentOrigin>,
                 }
                 let p: ForkParams = parse_params(params)?;
                 let parent_chat_id = p
@@ -1527,17 +1657,87 @@ impl RpcService for EngineRpc {
                     .doc()
                     .read_entries()
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let boundary = entries
-                    .iter()
-                    .rposition(|entry| {
-                        entry.role == roboco_doc::MessageRole::Assistant
-                            && entry.status == Some(roboco_doc::MessageStatus::Complete)
-                    })
-                    .ok_or_else(|| {
-                        RpcError::Failed(
-                            "Wait for a completed response before starting a side chat".into(),
+                // The reply the copy stops at, inclusive. An explicit
+                // boundary is any settled assistant entry — never a
+                // streaming one (the run is still writing it, and its turn
+                // ref is not stamped yet); the default stays the latest
+                // COMPLETE assistant reply, exactly as before this change.
+                let chosen = match p
+                    .boundary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(id) => entries
+                        .iter()
+                        .position(|entry| entry.id == id)
+                        .filter(|&ix| {
+                            entries[ix].role == roboco_doc::MessageRole::Assistant
+                                && entries[ix].status != Some(roboco_doc::MessageStatus::Streaming)
+                        })
+                        .ok_or_else(|| {
+                            RpcError::Failed(
+                                "Fork boundary must be a settled assistant reply".into(),
+                            )
+                        })?,
+                    None => entries
+                        .iter()
+                        .rposition(|entry| {
+                            entry.role == roboco_doc::MessageRole::Assistant
+                                && entry.status == Some(roboco_doc::MessageStatus::Complete)
+                        })
+                        .ok_or_else(|| {
+                            RpcError::Failed(
+                                "Wait for a completed response before starting a side chat".into(),
+                            )
+                        })?,
+                };
+                // A logical message can span continuation fragments after
+                // its root (schema capability for oversized replies): the
+                // fork copies the WHOLE message the chosen entry belongs
+                // to, and the native boundary ref comes from its root —
+                // where a turn ref is stamped.
+                let boundary = logical_message_end(&entries, chosen);
+                let ref_entry = logical_message_root(&entries, chosen);
+                // Ticket 22's overrides: a chosen harness (and model). A
+                // trimmed empty string counts as absent — the web client and
+                // the MCP tool hand through whatever the caller typed. An
+                // unknown harness name is refused rather than silently
+                // ignored: the fork would run on the default harness while
+                // the user believes it runs on the one they picked.
+                let requested_harness = p
+                    .harness
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|harness| !harness.is_empty());
+                let requested_model = p
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty());
+                let override_harness = match requested_harness {
+                    None => None,
+                    Some(name) => Some(
+                        serde_json::from_value::<roboco_proto::HarnessId>(
+                            serde_json::Value::String(name.to_owned()),
                         )
-                    })?;
+                        .map_err(|_| RpcError::Failed(format!("Unknown harness: {name}")))?,
+                    ),
+                };
+                // The harness the source's conversation lives on: the
+                // boundary entry's provider turn ref names it (the
+                // native-fork contract), else the row's config. An override
+                // onto any other harness is a CROSS-harness fork: native
+                // fork only works within one harness, so the copy never
+                // records the intent and its first send carries the budgeted
+                // history instead (ticket 01's builder).
+                let source_harness = entries[ref_entry]
+                    .provider_turn
+                    .as_ref()
+                    .map(|reference| reference.harness)
+                    .or_else(|| source.config.as_ref().map(|config| config.harness));
+                let cross_harness =
+                    override_harness.is_some_and(|harness| source_harness != Some(harness));
                 let mut chat = source.clone();
                 chat.id = p.chat_id;
                 chat.parent_chat_id = Some(parent_chat_id);
@@ -1550,6 +1750,62 @@ impl RpcService for EngineRpc {
                 chat.harness_session_id = None;
                 chat.harness_session_cwd = None;
                 chat.room_gen = Some(2);
+                // Ticket 23: an agent-made fork records its creator and
+                // notify flag — the durable row the engine's completion
+                // notices key on. The plain assignment also strips any
+                // origin the source row carried, so a fork nobody marked
+                // for the agent stays user-made and never notifies.
+                chat.agent_origin = p.agent_origin;
+                // Ticket 22's override on the row's run config. A
+                // cross-harness fork keeps only harness-agnostic settings:
+                // the sandbox. Model, reasoning and model options are ids in
+                // the OLD harness's vocabulary — the override's model (or
+                // the new harness's own default at run time) is all the copy
+                // gets, mirroring the harness-switch rule. A same-harness
+                // pick (or a model-only override) replaces exactly the
+                // model and inherits the rest, like the composer's own
+                // model change. A chat that never carried a config is
+                // pinned to the harness it actually runs on (the engine
+                // default) so a configless source stays honest.
+                //
+                // The same drop applies when the copy's harness differs
+                // from the SOURCE'S CURRENT CONFIG — not just from the
+                // boundary's turn-ref harness `cross_harness` judges
+                // against: forking an older Claude reply of a chat that has
+                // since switched to Codex, back onto Claude, inherits
+                // Codex's model ids on a Claude copy. The copy's harness
+                // versus the config it inherits is the mismatch that
+                // matters; the sandbox always survives.
+                if override_harness.is_some() || requested_model.is_some() {
+                    let base = chat.config.clone().unwrap_or(roboco_proto::ChatConfig {
+                        harness: self.doc_host.harness_for(&p.source_chat_id),
+                        model: None,
+                        reasoning: None,
+                        model_options: Default::default(),
+                        sandbox: roboco_proto::SandboxLevel::WorkspaceWrite,
+                    });
+                    let copy_harness = override_harness.unwrap_or(base.harness);
+                    let config_cross = chat
+                        .config
+                        .as_ref()
+                        .is_some_and(|config| config.harness != copy_harness);
+                    let drop_vocab = cross_harness || config_cross;
+                    chat.config = Some(roboco_proto::ChatConfig {
+                        harness: copy_harness,
+                        model: if drop_vocab {
+                            requested_model.map(str::to_owned)
+                        } else {
+                            requested_model.map(str::to_owned).or(base.model)
+                        },
+                        reasoning: if drop_vocab { None } else { base.reasoning },
+                        model_options: if drop_vocab {
+                            Default::default()
+                        } else {
+                            base.model_options
+                        },
+                        sandbox: base.sandbox,
+                    });
+                }
                 // Missing rows open on chat2. Persist history before publishing
                 // the registry row so a crash cannot leave a discoverable empty fork.
                 let target = self.doc_host.open(&chat.id).map_err(failed)?;
@@ -1587,7 +1843,9 @@ impl RpcService for EngineRpc {
                     target
                         .doc()
                         .push_message(&roboco_doc::SessionMessageEntry {
+                            origin_chat_id: None,
                             duration_ms: None,
+                            provider_turn: None,
                             id: marker_id.clone(),
                             role: roboco_doc::MessageRole::System,
                             parts: vec![roboco_doc::MessagePart::Fork {
@@ -1602,9 +1860,86 @@ impl RpcService for EngineRpc {
                         })
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
                 }
+                // Native fork intent (t3-orchestration-v2 tickets 17+21):
+                // when the boundary entry carries a provider turn ref, the
+                // fork records the source provider session and the boundary
+                // on the new chat — its first run asks the harness to fork
+                // the source session at that turn (Codex `thread/fork
+                // {threadId, lastTurnId}`) instead of resuming it, so the
+                // copied history rides the provider and nothing is pasted.
+                // The boundary is whatever reply the caller chose — the
+                // latest by default, an earlier/errored/interrupted one
+                // explicitly — so every harness's driver (17–20) forks at
+                // exactly that turn. A CROSS-harness fork (ticket 22) never
+                // records the intent: native fork only works within one
+                // harness, so the copy takes the budgeted-paste path.
+                // No ref — old chats, or a harness that records none —
+                // keeps today's behavior: a fresh session plus the budgeted
+                // paste, cut at the boundary because the fork's own doc only
+                // holds the copied prefix.
+                //
+                // A boundary that is NOT the last segment of its turn gets
+                // the paste too (story 60): a steer-split reply's segments
+                // share the turn's ref, and the native fork cuts at the
+                // WHOLE turn — content the boundary excluded would ride the
+                // copy through the provider. Only the turn's last segment
+                // names a boundary the harness can actually cut at.
+                if !cross_harness
+                    && let Some(reference) = entries[ref_entry].provider_turn.clone()
+                    && !turn_continues_past(&entries, boundary, &reference)
+                {
+                    target
+                        .doc()
+                        .set_provider_fork(
+                            reference.harness,
+                            &roboco_proto::ProviderFork {
+                                session_id: reference.session_id,
+                                last_turn: reference.turn_id,
+                                fallback_history: None,
+                            },
+                        )
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                }
                 self.doc_host.persist_fork(&target).map_err(failed)?;
                 self.workspace.import_chat_row(&chat).map_err(failed)?;
                 RpcReply::value(&chat)
+            }
+            methods::SWITCH_HARNESS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct SwitchParams {
+                    chat_id: String,
+                    harness: HarnessId,
+                    #[serde(default)]
+                    model: Option<String>,
+                    #[serde(default)]
+                    reasoning: Option<roboco_proto::ReasoningLevel>,
+                    #[serde(default)]
+                    model_options: serde_json::Map<String, serde_json::Value>,
+                }
+                let p: SwitchParams = parse_params(params)?;
+                let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+                // Sandbox is the one field the switch does not own: whatever
+                // the chat already runs stays (the picker never offered it).
+                let sandbox = self
+                    .workspace
+                    .chat(&p.chat_id)
+                    .map_err(failed)?
+                    .and_then(|chat| chat.config)
+                    .map(|config| config.sandbox)
+                    .unwrap_or(roboco_proto::SandboxLevel::WorkspaceWrite);
+                let config = ChatConfig {
+                    harness: p.harness,
+                    model: p.model,
+                    reasoning: p.reasoning,
+                    model_options: p.model_options,
+                    sandbox,
+                };
+                self.sessions
+                    .switch_harness(&p.chat_id, config)
+                    .await
+                    .map_err(failed)?;
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::RELAY_COMMAND => {
                 let p: RelayCommandParams = parse_params(params)?;
@@ -1697,9 +2032,20 @@ impl RpcService for EngineRpc {
                         &p.text,
                         p.attachments,
                         p.hold_for_turn_end,
+                        p.origin_chat_id.as_deref(),
                     )
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "id": id }))
+            }
+            methods::ACK_SIDE_CHAT => {
+                // An agent parent observed a chat after its last outcome
+                // happened (ticket 14, orchestration v2). Engine-local:
+                // the Roboco MCP server dials this engine's loopback, and
+                // both chats live here.
+                let p: AckSideChatParams = parse_params(params)?;
+                self.sessions
+                    .ack_notice(&p.origin_chat_id, &p.chat_id, p.observed_at);
+                RpcReply::value(&serde_json::json!({}))
             }
             methods::UPDATE_QUEUED_MESSAGE => {
                 let p: QueuedMessageParams = parse_params(params)?;
@@ -2928,6 +3274,24 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
             }
+            methods::LIST_RESUME_ACCOUNT_CANDIDATES => {
+                let p: ChatParams = parse_params(params)?;
+                let candidates = self
+                    .sessions
+                    .resume_account_candidates(&p.chat_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&candidates)
+            }
+            methods::RESUME_ON_ANOTHER_ACCOUNT => {
+                let p: ResumeOnAccountParams = parse_params(params)?;
+                let outcome = self
+                    .sessions
+                    .resume_on_another_account(&p.chat_id, p.account_id.as_deref())
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&outcome)
+            }
             methods::FORGET_AGENT_ACCOUNT => {
                 let p: AgentAccountParams = parse_params(params)?;
                 let snapshot = self
@@ -3027,6 +3391,63 @@ impl RpcService for EngineRpc {
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }
     }
+}
+
+/// The index of the ROOT entry of the logical message `at` belongs to: an
+/// oversized relayed reply can split into continuation fragments
+/// (`root#c1`, …) after its root, and the whole chain is one message
+/// (`join_continuation_entries`). Fragments name their ROOT (`root#c2`
+/// points at `root`, not at `root#c1`), so the walk resolves the named id
+/// directly rather than stepping back one entry at a time — a three-plus
+/// fragment chain would otherwise stop at the first fragment and lose the
+/// root (and the root's provider turn ref, where a fork boundary is
+/// stamped). An orphan fragment (root missing, or named forward) is its
+/// own root; the walk can only move backwards, so a corrupt cycle cannot
+/// spin it.
+fn logical_message_root(entries: &[roboco_doc::SessionMessageEntry], at: usize) -> usize {
+    let mut root = at;
+    while let Some(parent) = entries[root].continuation_of.as_deref() {
+        match entries
+            .iter()
+            .position(|entry| entry.id.as_str() == parent)
+        {
+            Some(prev) if prev < root => root = prev,
+            _ => return root,
+        }
+    }
+    root
+}
+
+/// The inclusive index of the LAST entry of the logical message `at`
+/// belongs to — the end a fork copies through, so a split message never
+/// copies as a truncated prefix of itself.
+fn logical_message_end(entries: &[roboco_doc::SessionMessageEntry], at: usize) -> usize {
+    let root = logical_message_root(entries, at);
+    let root_id = entries[root].id.as_str();
+    let mut end = root;
+    while entries
+        .get(end + 1)
+        .is_some_and(|next| next.continuation_of.as_deref() == Some(root_id))
+    {
+        end += 1;
+    }
+    end.max(at)
+}
+
+/// Whether the provider turn the boundary entry belongs to CONTINUES past
+/// the copy's end (story 60): a steer-split reply's later segments carry
+/// the same turn ref, and a native fork cuts at the whole turn — so a
+/// boundary that is not its turn's last segment must fall back to the
+/// budgeted paste (later entries the boundary excluded would otherwise
+/// reach the copy through the provider session).
+fn turn_continues_past(
+    entries: &[roboco_doc::SessionMessageEntry],
+    boundary: usize,
+    reference: &roboco_proto::ProviderTurnRef,
+) -> bool {
+    entries[boundary.saturating_add(1)..]
+        .iter()
+        .any(|entry| entry.provider_turn.as_ref() == Some(reference))
 }
 
 #[cfg(test)]
@@ -3308,6 +3729,7 @@ mod tests {
         handle
             .doc()
             .push_message(&roboco_doc::SessionMessageEntry {
+                origin_chat_id: None,
                 id: "turn".into(),
                 role: roboco_doc::MessageRole::Assistant,
                 parts: (0..500)
@@ -3321,6 +3743,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                provider_turn: None,
             })
             .unwrap();
         // Hold publication blocked: the opening must not await the full mirror.
@@ -3350,14 +3773,14 @@ mod tests {
         assert_eq!(preview["reset"][0]["parts"][0]["id"], "part-372");
         // Changes between preview and subscribe must appear in the full reset.
         handle
-            .write_user_message("arrived", "new local message", 1)
+            .write_user_message("arrived", "new local message", 1, None)
             .unwrap();
         let full = stream.next().await.unwrap();
         assert!(full.get("historyPending").is_none());
         assert_eq!(full["reset"][0]["parts"].as_array().unwrap().len(), 500);
         assert_eq!(full["reset"][1]["id"], "arrived");
         handle
-            .write_user_message("live", "after attach", 2)
+            .write_user_message("live", "after attach", 2, None)
             .unwrap();
         let live = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
             .await
@@ -3505,6 +3928,7 @@ mod context_usage_tests {
         let append = |id: &str| {
             source
                 .push_message(&roboco_doc::SessionMessageEntry {
+                    origin_chat_id: None,
                     id: id.into(),
                     role: roboco_doc::MessageRole::Assistant,
                     parts: vec![roboco_doc::MessagePart::Text {
@@ -3516,6 +3940,7 @@ mod context_usage_tests {
                     status: Some(roboco_doc::MessageStatus::Streaming),
                     continuation_of: None,
                     duration_ms: None,
+                    provider_turn: None,
                 })
                 .unwrap()
         };
@@ -3638,6 +4063,7 @@ mod context_usage_tests {
                 .unwrap();
         });
         let entry = |id: &str| roboco_doc::SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: roboco_doc::MessageRole::Assistant,
             parts: vec![roboco_doc::MessagePart::Text {
@@ -3649,6 +4075,7 @@ mod context_usage_tests {
             status: Some(roboco_doc::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         handle.doc().push_message(&entry("local-before")).unwrap();
         source.update_context_usage(Some(10), Some(100)).unwrap();

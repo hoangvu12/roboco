@@ -692,11 +692,14 @@ mod tests {
             status,
             started_at: Some(updated - chrono::TimeDelta::minutes(5)),
             updated_at: updated,
+            limit: None,
+            scheduled_resume: None,
         }
     }
 
     fn chat(raw: &str, title: Option<&str>, parent: Option<&str>) -> Chat {
         Chat {
+            agent_origin: None,
             id: raw.into(),
             device_id: "engine".into(),
             created_at: Utc::now(),

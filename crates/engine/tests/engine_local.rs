@@ -68,7 +68,7 @@ async fn local_listener_feeds_exclude_legacy_cloud_rows_and_keep_transcripts() {
     core.doc_host
         .open("local-chat")
         .unwrap()
-        .write_user_message("m1", "saved locally", 123)
+        .write_user_message("m1", "saved locally", 123, None)
         .unwrap();
     // Completed subagent/tool sidecars use the local database too.
     core.doc_host.upload_tool_sidecar(

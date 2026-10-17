@@ -25,6 +25,7 @@ fn entry(
     status: Option<MessageStatus>,
 ) -> SessionMessageEntry {
     SessionMessageEntry {
+        origin_chat_id: None,
         id: id.into(),
         role,
         parts: vec![MessagePart::Text {
@@ -35,6 +36,7 @@ fn entry(
         device_id: "lost-device".into(),
         status,
         continuation_of: None,
+        provider_turn: None,
         duration_ms: None,
     }
 }

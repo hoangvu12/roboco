@@ -157,6 +157,8 @@ fn main() -> anyhow::Result<()> {
                             },
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
+                            limit: None,
+                            scheduled_resume: None,
                         }]);
                     })
                 });

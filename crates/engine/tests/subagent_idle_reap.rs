@@ -52,6 +52,8 @@ fn run_request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -195,7 +197,7 @@ async fn park_after_spawn() -> Parked {
     let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock)
         .expect("engine core assembles");
     core.sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("fan out"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("fan out"), None, None, None)
         .await
         .expect("dispatch");
 

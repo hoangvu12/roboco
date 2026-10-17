@@ -25,8 +25,12 @@ originating chat in the environment:
 When `ROBOCO_CHAT_ID` is set, every `send_message` is prefixed with a
 `[Message from Roboco chat <title> (<id8>) …]` line so the receiving agent and the
 human reading that transcript can tell an agent-to-agent message from a typed
-one, and the server refuses to message its own chat. The transcript renders
-this routing header as "Message from **chat name**", keeping the full routing
+one, and the server refuses to message its own chat. The line comes in two
+variants: an ordinary chat-to-chat message invites a reply with `send_message`;
+a message from a side chat's creator (when that side chat notifies — the
+default) instead tells the side chat its final reply is delivered to the parent
+automatically and not to report or acknowledge by hand. The transcript renders
+both headers as "Message from **chat name**", keeping the full routing
 instructions in the stored prompt for agents.
 
 ### Parent links
@@ -108,12 +112,41 @@ lost the bind) gets no Roboco tools rather than a dead server.
 
 ### Forks
 
-`ForkSideChat { chatId, sourceChatId, parentChatId? }` copies a chat's
-history through its latest completed response into a new chat and appends
-a `fork` part (a system entry: `sourceChatId`, `sourceTitle`) as the seam;
-the transcript draws it as "This chat was forked from <title>". `parentChatId`
-defaults to the source; a side chat's own fork button passes its parent so
-the copy lists as a sibling.
+`ForkSideChat { chatId, sourceChatId, parentChatId?, boundary?, harness?,
+model?, agentOrigin? }` copies a chat's history through its latest completed response into
+a new chat and appends a `fork` part (a system entry: `sourceChatId`,
+`sourceTitle`) as the seam; the transcript draws it as "This chat was forked
+from <title>". `parentChatId` defaults to the source; a side chat's own fork
+button passes its parent so the copy lists as a sibling. `boundary`
+(t3-orchestration-v2 ticket 21) names the assistant entry to fork at — any
+settled reply, errored and interrupted included — and the copy stops there,
+inclusive. `harness`/`model` (ticket 22) override what the copy runs on, by
+wire name ("codex", "claude-code", …): a different harness never continues
+the source's provider session — its first send carries the budgeted
+transcript instead — while a pick of the source's own harness keeps the
+native fork. A source chat that hit a usage limit can still be forked into
+another harness this way.
+
+An additive `agentOrigin` (ticket 23) rides the same RPC when a chat's agent
+forks through the `fork_chat` MCP tool: `{ chatId, notify }` marks the copy
+agent-created, the durable row the engine's completion notices key on
+(`notify: false` is the opt-out). The assignment replaces anything the source
+row carried, so forks made without it — the UI, the web client, a terminal —
+stay user-made and never notify, even when the source itself was
+agent-created.
+
+The `fork_chat` MCP tool drives the same RPC for agents. Its source defaults
+to the calling chat; `reply` is the boundary entry id; `harness` and `model`
+are validated against this engine's catalogs before the RPC (the source's own
+harness stays pickable even when its CLI is gone, mirroring the fork dialog);
+`title`, `prompt`, `wait` and `timeout_secs` behave like `create_chat`'s. The
+copy hangs under the calling chat — `create_chat`'s parent rule, so the fork
+is the agent's side chat and owes it the notices — while a terminal without
+an origin uses the UI's placement: the source, or the source's parent when
+the source is itself a side chat, so the copy lists as a sibling. A first
+prompt baselines its wait on the copied transcript, so a wait reports the
+fork's own replies, never the copied history. Side chats cannot call it, the
+same refusal `create_chat` gives.
 
 ## Tools
 
@@ -133,6 +166,7 @@ name (default: the local engine's device — the engine is device-local, so a
 | `get_chat`         | above + `WatchDocMessages` opening frame (pending input)  |
 | `create_chat`      | `Mutate createChat` (+ `renameChat`; optional first send) |
 | `create_chats`     | Concurrent `create_chat` requests with per-request results |
+| `fork_chat`        | `ForkSideChat` (+ `renameChat`; optional first send)      |
 | `send_messages`    | Concurrent `send_message` requests with per-request results |
 | `read_chat`        | `WatchDocMessages` opening `reset` frame, rendered        |
 | `send_message`     | `QueueCommand` Run / Steer, or `QueueMessage`             |
@@ -145,10 +179,18 @@ Watch streams are the engine's only read surface (there is no one-shot "get
 transcript" RPC); a snapshot is "subscribe, take the first item, drop" — drop
 cancels server-side, exactly what the sidebar does on attach.
 
-`send_message` mode `auto` starts idle chats and steers working chats through
-their live mailbox without interrupting tools or child processes. Providers
-consume it at their next supported input boundary. Only explicit `queue` mode
-creates a held queue row. `awaitingInput` refuses and points at
+`wait_for_turn`, `send_message` with `wait`, `read_chat` and `get_chat` all
+report the observation to the engine for the calling chat afterwards
+(`AckSideChat {chatId, originChatId}`): a side chat's outcome the caller just
+saw owes no completion notice. A wait that timed out reports nothing, and a
+human at a terminal (no calling chat) never reports — the user reading a chat
+is not the parent agent that would process the notice.
+
+`send_message` mode `auto` starts idle (or errored) chats and delivers into
+working chats without interrupting the run: mid-turn where the harness accepts
+prompts mid-run (Claude Code, Codex, Cursor, Pi, OpenCode), otherwise held in
+the queue and delivered when the turn ends. Only explicit `queue` mode creates a
+held queue row. `awaitingInput` refuses and points at
 `respond_to_input`. Quiet, long-running turns still receive steering; the host
 falls back to starting a turn if the live runtime has already exited.
 
@@ -250,9 +292,14 @@ Only batch independent work, not ordered messages to the same chat. Requests
 may mix `kind: "chat"` and `kind: "side"`; guards run per request.
 
 When using individual tools, launch **all** chats/messages with `wait: false`
-first, then collect replies with `wait_for_turn`. Waiting on each individual
-launch before issuing the next serializes work at the caller, even though
-both the MCP transport and engine support concurrent chat runs.
+and end the turn. Side chats an agent created send it a completion notice when
+they finish, fail, stop, are interrupted, or need input on a turn it started
+or steered (opt out per chat with `notify: false`); `read_chat` collects the
+result and `respond_to_input` answers a waiting side chat. Waiting on each
+individual launch before issuing the next serializes work at the caller, even though
+both the MCP transport and engine support concurrent chat runs, and
+`wait_for_turn` blocks the caller for the whole wait — keep it for quick
+synchronous asks.
 
 ## Smoke recipe
 

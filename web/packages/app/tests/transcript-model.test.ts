@@ -484,7 +484,11 @@ describe("topGapFor / diffRows", () => {
               ? { kind, header: "", resolved: false }
               : kind === "forkMarker"
                 ? { kind, sourceChatId: "", sourceTitle: "" }
-                : { kind, message: "" };
+                : kind === "harnessSwitchMarker"
+                  ? { kind, label: "" }
+                  : kind === "completionNotice"
+                    ? { kind, sides: [] }
+                    : { kind, message: "" };
     return {
       id,
       version: 0,

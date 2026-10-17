@@ -123,6 +123,28 @@ pub struct ConversationSourceContext {
     pub observed_at: DateTime<Utc>,
 }
 
+/// Durable record that an AGENT created a chat through the Roboco MCP
+/// `create_chat` / `create_chats` tools: the chat whose agent ran the tool,
+/// and whether that chat wants completion notices for this one. Written once
+/// at creation; the engine's completion-notice machinery (spec: orchestration
+/// v2) keys on it. Absent on user-created chats (UI forks, blank side chats,
+/// human CLI sends) and on standalone chats — those never notify.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOrigin {
+    /// The chat whose agent created this one (the Roboco MCP origin chat).
+    pub chat_id: String,
+    /// Whether the creator is notified when this chat's turns settle.
+    /// Defaults to on; `notify: false` opts out at creation. A missing flag
+    /// (an older writer) reads as on.
+    #[serde(default = "default_true")]
+    pub notify: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -178,6 +200,12 @@ pub struct Chat {
     /// deleted) is tolerated rather than cascaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_chat_id: Option<String>,
+    /// Set when an agent — not the user — created this chat through the
+    /// Roboco MCP tools: which chat ran `create_chat`, and whether it is owed
+    /// completion notices. Additive (ADR 0005): rows from older writers read
+    /// as not agent-created and never notify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_origin: Option<AgentOrigin>,
 }
 
 impl Chat {
@@ -232,6 +260,44 @@ pub enum SessionStatus {
     Errored,
 }
 
+/// A usage-limit record for a Limited chat: what the chat hit and when the
+/// window resets. The chat stays `Errored` on the wire (ADR 0005: names are
+/// frozen, this row is additive) — clients that know the field layer the
+/// Limited presentation on top of the errored one. Written when a run ends
+/// on a usage-limit error; cleared when a new turn starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLimit {
+    /// The harness the limited run was on.
+    pub harness: HarnessId,
+    /// The harness's own window label ("5-hour", "weekly", … — "usage"
+    /// when the harness did not name the window).
+    pub window: String,
+    /// Epoch millis when the window resets, when known — from the harness's
+    /// own error, else filled from the harness account's cached usage
+    /// windows (see `AgentUsageWindow`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// The harness account the limit hit (the engine slot id of the harness's
+    /// active login), when the engine could resolve one. Account switching
+    /// is addressed by this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+
+/// A pending **Resume at reset** continuation (orchestration v2): the
+/// engine will send the continue prompt to the Limited chat at `fire_at`
+/// — its limit's reset time — unless a newer message, archive or delete
+/// cancels it first. Durable: it survives engine restarts, and one whose
+/// time passed while the engine was down fires after boot. Absent from
+/// every other status row; cleared with the record it armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledResume {
+    /// Epoch millis when the continuation fires.
+    pub fire_at: i64,
+}
+
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.
 /// Staleness-checked client-side against `updated_at` so a crashed backend never shows
 /// an eternal "Working".
@@ -248,6 +314,16 @@ pub struct Session {
     pub status: SessionStatus,
     pub started_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
+    /// The usage-limit record when the last turn ended on a harness usage
+    /// limit — the additive "Limited" detail on the errored status (see
+    /// [`SessionLimit`]). Absent on rows from older engines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<SessionLimit>,
+    /// The pending Resume-at-reset continuation, when one is armed for this
+    /// Limited chat (see [`ScheduledResume`]). Absent on rows from older
+    /// engines and on chats with nothing armed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_resume: Option<ScheduledResume>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -940,6 +1016,19 @@ pub struct AgentAccount {
     /// beside stale windows. `None` when the last probe succeeded or none ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_error: Option<String>,
+    /// Whether the login is known to work: `SignedIn` after the last usage
+    /// probe (or sign-in) succeeded, `SignedOut` after a hard rejection (a
+    /// refused refresh, a signed-out run error). Ambiguous "session expired"
+    /// outcomes never claim `SignedOut` — they stay `Unknown`, as does an
+    /// account never probed. Additive (ADR 0005): older payloads default to
+    /// `Unknown`.
+    #[serde(default)]
+    pub sign_in_state: AgentSignInState,
+    /// The latest reset among the account's exhausted (100% used) windows —
+    /// when it is in the future, the account is still limited. `None` when
+    /// no window is exhausted (or none knows its reset). Additive (ADR 0005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited_until: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -973,12 +1062,92 @@ pub enum AgentAuthKind {
     ApiKey,
 }
 
+/// Whether a harness account's login is known to work. `Unknown` is a real
+/// state, not an absence: an account that was never probed, or whose last
+/// probe was ambiguous (an expired token the CLI refreshes itself, a
+/// rate-limited probe), is `Unknown` — never `SignedOut`. The engine flips
+/// the state only on hard evidence: a successful probe or sign-in →
+/// `SignedIn`, a hard rejection (refused refresh, signed-out run error) →
+/// `SignedOut`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentSignInState {
+    SignedIn,
+    SignedOut,
+    Unknown,
+}
+
+impl Default for AgentSignInState {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 /// Everything the Accounts settings page renders, rebuilt after every mutation.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAccountsSnapshot {
     pub accounts: Vec<AgentAccount>,
     pub warnings: Vec<AgentAccountWarning>,
+}
+
+/// The ranked switch targets for one Limited chat's "Resume on another
+/// account" (orchestration v2, ticket 09): the cached harness accounts of
+/// the chat's harness, filtered and ranked by the engine's failover rules —
+/// switchable, not an API key, not signed out, not still limited, and not
+/// the account that hit the limit; lowest usage first, accounts sharing the
+/// limited account's org or workspace ranked lower. The first entry is the
+/// recommended one. Signed-out accounts ride `signed_out` — the picker
+/// lists them with a "Sign in again" action instead of a switch (stories
+/// 47/50). Both lists empty leaves only Resume (and Resume at reset).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeAccountCandidates {
+    pub chat_id: String,
+    pub harness: HarnessId,
+    /// The account the chat's limit hit (the record's account id, else the
+    /// harness's active login) — named so the picker can say what it is
+    /// switching FROM. Never a candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limited_account_id: Option<String>,
+    /// The candidate rows in rank order, best first. Usage windows and
+    /// limited-until ride the rows themselves.
+    pub candidates: Vec<AgentAccount>,
+    /// The harness's OTHER accounts that are signed out (ticket 08's mark):
+    /// never switch targets, but the picker lists them with a "Sign in
+    /// again" action (the existing login flow) so a dead login can be
+    /// revived in place — stories 47 and 50. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signed_out: Vec<AgentAccount>,
+}
+
+/// The synchronous outcome of "Resume on another account" (ticket 09): the
+/// account switch, warm-runtime retirement and continuation dispatch the
+/// engine performed — or why it could not. The continuation turn's own
+/// result arrives through the chat's status; a signed-out failure after the
+/// switch is handled by the engine (next candidate, else the previous
+/// account restored) before the chat settles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ResumeOnAccountOutcome {
+    /// The switch landed and the continuation was dispatched: the chat
+    /// resumes its harness session under `account_id`.
+    #[serde(rename_all = "camelCase")]
+    Switched {
+        account_id: String,
+        /// The row's email (or display name) — the "Resumed on …" label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_email: Option<String>,
+    },
+    /// No healthy candidate: every other account of the harness is limited,
+    /// signed out, an API key, or unswitchable. Only Resume at reset remains.
+    NoCandidates,
+    /// The switch itself failed (the chosen account vanished, the probe
+    /// failed hard, the activation was refused); the previous account is
+    /// untouched.
+    Failed {
+        reason: String,
+    },
 }
 
 /// `InstallHarness` / `CancelInstall` request — the explicit, user-requested
@@ -1563,5 +1732,352 @@ mod tests {
         assert!(encoded.get("setupAction").is_none());
         assert!(encoded.get("setupError").is_none());
         assert!(serde_json::from_value::<Worktree>(encoded).is_ok());
+    }
+
+    /// A harness account's sign-in state and limited-until are additive on
+    /// the wire (ADR 0005): new payloads carry them under stable camelCase /
+    /// kebab-case names, a payload from before they existed parses (Unknown /
+    /// absent), and the state serializes as one of its three kebab-case
+    /// names — never null.
+    #[test]
+    fn agent_account_sign_in_state_is_additive_on_the_wire() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 17, 9, 30, 0).unwrap();
+        let account = AgentAccount {
+            id: "slot-1".into(),
+            harness: HarnessId::ClaudeCode,
+            email: Some("a@example.com".into()),
+            plan_label: None,
+            active: false,
+            usage_windows: Vec::new(),
+            usage_fetched_at: None,
+            usage_error: Some("Signed out — sign in again".into()),
+            sign_in_state: AgentSignInState::SignedOut,
+            limited_until: Some(at),
+            display_name: None,
+            organization: None,
+            auth_kind: None,
+            switchable: true,
+            saved_at: None,
+            provider: None,
+        };
+        let value = serde_json::to_value(&account).unwrap();
+        assert_eq!(value["signInState"], "signed-out");
+        assert_eq!(value["limitedUntil"], serde_json::to_value(at).unwrap());
+        // Unknown + no reset serialize without null placeholders.
+        let plain = AgentAccount {
+            sign_in_state: AgentSignInState::Unknown,
+            limited_until: None,
+            ..account.clone()
+        };
+        let plain = serde_json::to_value(&plain).unwrap();
+        assert_eq!(plain["signInState"], "unknown");
+        assert!(plain.get("limitedUntil").is_none());
+        for (state, name) in [
+            (AgentSignInState::SignedIn, "signed-in"),
+            (AgentSignInState::SignedOut, "signed-out"),
+            (AgentSignInState::Unknown, "unknown"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), name);
+        }
+        // A payload from before the fields existed still parses, as Unknown.
+        let legacy = serde_json::json!({
+            "id": "slot-1",
+            "harness": "claude-code",
+            "email": null,
+            "planLabel": null,
+            "active": true,
+            "usageWindows": [],
+            "switchable": false,
+        });
+        let legacy: AgentAccount = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.sign_in_state, AgentSignInState::Unknown);
+        assert_eq!(legacy.limited_until, None);
+        assert!(legacy.active);
+        // Round trip.
+        assert_eq!(
+            serde_json::from_value::<AgentAccount>(serde_json::to_value(&account).unwrap())
+                .unwrap(),
+            account
+        );
+    }
+
+    /// The failover candidates and the switch outcome (ticket 09) ride the
+    /// wire additively: camelCase field names, a tagged outcome, `None`
+    /// optionals serializing away, and legacy payloads (no limited account)
+    /// parsing.
+    #[test]
+    fn resume_account_candidates_and_outcome_round_trip() {
+        let account = AgentAccount {
+            id: "slot-2".into(),
+            harness: HarnessId::Codex,
+            email: Some("b@example.com".into()),
+            plan_label: Some("Plus".into()),
+            active: false,
+            usage_windows: vec![AgentUsageWindow {
+                label: "Week".into(),
+                used_fraction: 0.2,
+                resets_at: None,
+            }],
+            usage_fetched_at: None,
+            usage_error: None,
+            sign_in_state: AgentSignInState::SignedIn,
+            limited_until: None,
+            display_name: None,
+            organization: None,
+            auth_kind: Some(AgentAuthKind::Oauth),
+            switchable: true,
+            saved_at: None,
+            provider: None,
+        };
+        let candidates = ResumeAccountCandidates {
+            chat_id: "chat-9".into(),
+            harness: HarnessId::Codex,
+            limited_account_id: Some("slot-1".into()),
+            candidates: vec![account.clone()],
+            signed_out: Vec::new(),
+        };
+        let value = serde_json::to_value(&candidates).unwrap();
+        assert_eq!(value["chatId"], "chat-9");
+        assert_eq!(value["harness"], "codex");
+        assert_eq!(value["limitedAccountId"], "slot-1");
+        assert_eq!(value["candidates"][0]["id"], "slot-2");
+        assert_eq!(
+            serde_json::from_value::<ResumeAccountCandidates>(value).unwrap(),
+            candidates
+        );
+        // No limited account on record: the optional serializes away.
+        let bare = ResumeAccountCandidates {
+            limited_account_id: None,
+            candidates: Vec::new(),
+            ..candidates.clone()
+        };
+        let value = serde_json::to_value(&bare).unwrap();
+        assert!(value.get("limitedAccountId").is_none());
+
+        // The signed-out rows the picker offers "Sign in again" for ride
+        // their own additive list, camelCased, serializing away when empty.
+        let mut signed_out = account.clone();
+        signed_out.id = "slot-3".into();
+        signed_out.sign_in_state = AgentSignInState::SignedOut;
+        let with_signed_out = ResumeAccountCandidates {
+            signed_out: vec![signed_out.clone()],
+            ..candidates.clone()
+        };
+        let value = serde_json::to_value(&with_signed_out).unwrap();
+        assert_eq!(value["signedOut"][0]["id"], "slot-3");
+        assert_eq!(value["signedOut"][0]["signInState"], "signed-out");
+        assert_eq!(
+            serde_json::from_value::<ResumeAccountCandidates>(value).unwrap(),
+            with_signed_out
+        );
+        // An empty signed-out list is omitted, not null — older payloads
+        // parse with nothing to sign in.
+        let value = serde_json::to_value(&candidates).unwrap();
+        assert!(value.get("signedOut").is_none());
+        let legacy = serde_json::json!({
+            "chatId": "chat-9",
+            "harness": "codex",
+            "candidates": [],
+        });
+        let legacy: ResumeAccountCandidates = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.signed_out.is_empty());
+
+        let switched = ResumeOnAccountOutcome::Switched {
+            account_id: "slot-2".into(),
+            account_email: Some("b@example.com".into()),
+        };
+        let value = serde_json::to_value(&switched).unwrap();
+        assert_eq!(value["type"], "switched");
+        assert_eq!(value["accountId"], "slot-2");
+        assert_eq!(value["accountEmail"], "b@example.com");
+        assert_eq!(
+            serde_json::from_value::<ResumeOnAccountOutcome>(value).unwrap(),
+            switched
+        );
+        assert_eq!(
+            serde_json::to_value(ResumeOnAccountOutcome::NoCandidates).unwrap(),
+            serde_json::json!({"type": "noCandidates"})
+        );
+        let failed = ResumeOnAccountOutcome::Failed {
+            reason: "the slot vanished".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(failed.clone()).unwrap(),
+            serde_json::json!({"type": "failed", "reason": "the slot vanished"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ResumeOnAccountOutcome>(
+                serde_json::to_value(&failed).unwrap()
+            )
+            .unwrap(),
+            failed
+        );
+    }
+
+    #[test]
+    fn agent_origin_is_camel_case_additive_and_defaults_notify_on() {
+        let origin = AgentOrigin {
+            chat_id: "chat-origin-1".into(),
+            notify: false,
+        };
+        let value = serde_json::to_value(&origin).unwrap();
+        assert_eq!(value["chatId"], "chat-origin-1");
+        assert_eq!(value["notify"], false);
+        assert_eq!(
+            serde_json::from_value::<AgentOrigin>(value).unwrap(),
+            origin
+        );
+        // A missing flag (older writer) reads as notify: on.
+        assert_eq!(
+            serde_json::from_value::<AgentOrigin>(serde_json::json!({
+                "chatId": "chat-origin-1"
+            }))
+            .unwrap()
+            .notify,
+            true
+        );
+    }
+
+    #[test]
+    fn chat_row_carries_agent_origin_and_omits_it_when_absent() {
+        let chat = Chat {
+            id: "chat-side-1".into(),
+            device_id: "device-1".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+            parent_chat_id: Some("chat-parent-1".into()),
+            agent_origin: Some(AgentOrigin {
+                chat_id: "chat-parent-1".into(),
+                notify: true,
+            }),
+        };
+        let value = serde_json::to_value(&chat).unwrap();
+        assert_eq!(value["agentOrigin"]["chatId"], "chat-parent-1");
+        assert_eq!(value["agentOrigin"]["notify"], true);
+        assert_eq!(serde_json::from_value::<Chat>(value).unwrap(), chat);
+        // Additive: a row from an older writer carries no agentOrigin and
+        // reads as not agent-created.
+        let legacy = serde_json::json!({
+            "id": "chat-old-1",
+            "deviceId": "device-1",
+            "title": null,
+            "archived": false,
+            "cwd": null,
+            "branch": null,
+            "checkoutId": null,
+            "config": null,
+            "lastMessagePreview": null,
+            "lastMessageAt": null,
+            "createdAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Chat>(legacy).unwrap();
+        assert_eq!(old.agent_origin, None);
+        let encoded = serde_json::to_value(&old).unwrap();
+        assert!(encoded.get("agentOrigin").is_none());
+    }
+
+    fn session_row(status: SessionStatus) -> Session {
+        Session {
+            last_completed_turn: None,
+            chat_id: "chat-1".into(),
+            device_id: "device-1".into(),
+            status,
+            started_at: None,
+            updated_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
+            limit: None,
+            scheduled_resume: None,
+        }
+    }
+
+    /// The limit record is additive on the session row (ADR 0005): it rides
+    /// the errored status under stable camelCase names, omits itself when
+    /// absent, and rows from older engines still parse.
+    #[test]
+    fn session_limit_row_is_additive_and_round_trips() {
+        let mut limited = session_row(SessionStatus::Errored);
+        limited.limit = Some(SessionLimit {
+            harness: HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some(1_762_675_400_000),
+            account_id: Some("slot-9f2c".into()),
+        });
+        let value = serde_json::to_value(&limited).unwrap();
+        assert_eq!(value["status"], "errored");
+        assert_eq!(value["limit"]["harness"], "claude-code");
+        assert_eq!(value["limit"]["window"], "5-hour");
+        assert_eq!(value["limit"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(value["limit"]["accountId"], "slot-9f2c");
+        assert_eq!(serde_json::from_value::<Session>(value).unwrap(), limited);
+
+        // A missing reset or account is omitted, not null.
+        let unknown = SessionLimit {
+            harness: HarnessId::Codex,
+            window: "usage".into(),
+            resets_at: None,
+            account_id: None,
+        };
+        let value = serde_json::to_value(&unknown).unwrap();
+        assert!(value.get("resetsAt").is_none());
+        assert!(value.get("accountId").is_none());
+
+        // Older engines never wrote `limit`; their rows parse as unlimited.
+        let legacy = serde_json::json!({
+            "chatId": "chat-1",
+            "deviceId": "device-1",
+            "status": "errored",
+            "updatedAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Session>(legacy).unwrap();
+        assert_eq!(old.limit, None);
+        let encoded = serde_json::to_value(&old).unwrap();
+        assert!(encoded.get("limit").is_none());
+    }
+
+    /// The scheduled-resume record is additive on the session row exactly
+    /// like the limit one (ADR 0005): stable camelCase, omitted when absent,
+    /// and rows from older engines still parse with nothing armed.
+    #[test]
+    fn session_scheduled_resume_row_is_additive_and_round_trips() {
+        let mut armed = session_row(SessionStatus::Errored);
+        armed.scheduled_resume = Some(ScheduledResume {
+            fire_at: 1_762_675_400_000,
+        });
+        let value = serde_json::to_value(&armed).unwrap();
+        assert_eq!(value["scheduledResume"]["fireAt"], 1_762_675_400_000);
+        assert_eq!(serde_json::from_value::<Session>(value).unwrap(), armed);
+
+        // Nothing armed: the field is omitted, not null.
+        let idle = session_row(SessionStatus::Idle);
+        let value = serde_json::to_value(&idle).unwrap();
+        assert!(value.get("scheduledResume").is_none());
+
+        // Older engines never wrote `scheduledResume`; nothing parses as armed.
+        let legacy = serde_json::json!({
+            "chatId": "chat-1",
+            "deviceId": "device-1",
+            "status": "errored",
+            "limit": {
+                "harness": "claude-code",
+                "window": "5-hour",
+                "resetsAt": 1_762_675_400_000,
+            },
+            "updatedAt": "2026-10-16T12:00:00Z",
+        });
+        let old = serde_json::from_value::<Session>(legacy).unwrap();
+        assert!(old.limit.is_some());
+        assert_eq!(old.scheduled_resume, None);
     }
 }

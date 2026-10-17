@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use roboco_harness::{
     CancellationToken, ClaudeHarness, Harness, HarnessError, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
-    UserInputQuestion,
+    AgentErrorKind, AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall,
+    UserInputAnswer, UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -49,6 +49,8 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -93,6 +95,367 @@ async fn run_to_end(
     .expect("run finished in time")
 }
 
+/// A resume whose session file the CLI store does not know, carrying the
+/// engine's budgeted fallback (ticket 09's account-failover continuation):
+/// the driver starts FRESH — no `--resume` reaches the CLI (the fake fails
+/// the run if it does) — with the history in front of the prompt.
+#[tokio::test]
+async fn a_resume_without_a_session_file_starts_fresh_with_the_history() {
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-missing");
+    // An id no real Claude session store knows (the check only READS the
+    // store — no login, no write).
+    req.resume = Some("roboco-missing-3f9c".into());
+    req.resume_fallback_history = Some("HISTORY PINEAPPLE ".into());
+    let events = run_to_end(&harness(), req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TextDelta { text }
+                if text.contains("HISTORY PINEAPPLE") && text.contains("scenario:resume-missing")
+        )),
+        "the budgeted history rode in front of the prompt: {events:?}"
+    );
+    // The fallback session's own final text rides the Done like any
+    // turn's (the driver forwards the result frame's text).
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("echoed".into()),
+            error: None,
+            session_id: Some("sess-resume-missing".into()),
+        })
+    );
+}
+
+/// Write one Claude session file into a temporary config root — the
+/// records the CLI's own store would hold for `session_id`, with the given
+/// top-level message uuids in order (the last one is the session's latest
+/// turn). Records that must never count ride after them: a tagged
+/// subagent frame and a trailing non-message record.
+fn claude_session_store(root: &std::path::Path, session_id: &str, uuids: &[&str]) {
+    let project = root.join("projects").join("probe-cwd");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut file = String::new();
+    for uuid in uuids {
+        file.push_str(&format!(
+            "{{\"type\":\"assistant\",\"uuid\":\"{uuid}\",\"parent_tool_use_id\":null,\
+             \"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"m\"}}]}}}}\n"
+        ));
+    }
+    file.push_str(
+        "{\"type\":\"assistant\",\"uuid\":\"sub-uuid\",\"parent_tool_use_id\":\"toolu_x\",\
+         \"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[]}}\n",
+    );
+    file.push_str("{\"type\":\"summary\",\"uuid\":\"trailing\",\"summary\":\"s\"}\n");
+    std::fs::write(project.join(format!("{session_id}.jsonl")), file).unwrap();
+}
+
+/// The budgeted transcript the engine attaches as the refused-fork
+/// fallback (ticket 01's selection): what a fresh fallback session must
+/// receive in front of the prompt, and a native fork must NEVER see.
+const FORK_FALLBACK_HISTORY: &str = "Continue this side chat using the following prior transcript as context.\
+<transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n";
+
+/// A fork at the session's LATEST turn (ticket 18): the launch resumes the
+/// source session with `--fork-session` and NO `--resume-session-at`, the
+/// copied history rides the provider (nothing is pasted — the fake fails
+/// the turn if any of the fallback reaches it), and the new session id
+/// arrives on the init frame with its own turn ref.
+#[tokio::test]
+async fn a_fork_at_the_latest_turn_resumes_the_source_session_with_fork_session() {
+    let dir = tempfile::tempdir().unwrap();
+    // The boundary uuid is the session's LAST top-level message — the
+    // latest turn, so fork-session alone carries the whole session.
+    claude_session_store(dir.path(), "fork-latest-src", &["u-1", "msg-latest-uuid"]);
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-latest");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-latest-src".into(),
+        last_turn: "msg-latest-uuid".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    // The forked session: a NEW session id read from the init frame.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-fork-latest-new"
+        )),
+        "the run continues the forked session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "forked latest answer"
+    )));
+    // The turn's ref names the forked session and its last top-level
+    // message uuid — tagged subagent frames never count.
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "sess-fork-latest-new".into(),
+            turn_id: "msg-fork-last".into(),
+        }
+    }));
+    // The forked turn's final text rides the Done like any turn's — the
+    // driver forwards the result frame's text (happy path: Some("done!")).
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("forked latest".into()),
+            error: None,
+            session_id: Some("sess-fork-latest-new".into()),
+        })
+    );
+}
+
+/// A fork at an EARLIER turn (ticket 21's boundary): the hidden
+/// `--resume-session-at` rides with the boundary uuid (inclusive) beside
+/// `--resume` + `--fork-session` — the combination the fallback exists for.
+#[tokio::test]
+async fn a_fork_at_an_earlier_turn_passes_the_boundary_uuid_to_resume_session_at() {
+    let dir = tempfile::tempdir().unwrap();
+    // The boundary (msg-uuid-7) sits BEFORE the session's latest message
+    // (msg-newer-uuid) — an earlier turn, so the boundary uuid must cut it.
+    claude_session_store(
+        dir.path(),
+        "fork-earlier-src",
+        &["msg-uuid-7", "msg-newer-uuid"],
+    );
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-earlier");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-earlier-src".into(),
+        last_turn: "msg-uuid-7".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-fork-earlier-new"
+        )),
+        "the run continues the forked session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "forked earlier answer"
+    )));
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "sess-fork-earlier-new".into(),
+            turn_id: "msg-fork-earlier-last".into(),
+        }
+    }));
+    // The forked turn's final text rides the Done like any turn's.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("forked earlier".into()),
+            error: None,
+            session_id: Some("sess-fork-earlier-new".into()),
+        })
+    );
+}
+
+/// A CLI that REJECTS the fork flags — it exits before it ever speaks, so
+/// the launch probe reads EOF — retries once as a fresh session with the
+/// budgeted transcript in front of the prompt: a fork never fails the send.
+#[tokio::test]
+async fn a_fork_the_cli_refuses_falls_back_to_a_fresh_session_with_the_budgeted_history() {
+    let dir = tempfile::tempdir().unwrap();
+    // An earlier-turn boundary, so the refused launch is the full flag
+    // combination (resume + fork-session + resume-session-at).
+    claude_session_store(
+        dir.path(),
+        "fork-refused-src",
+        &["msg-uuid-7", "msg-newer-uuid"],
+    );
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-refused");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-refused-src".into(),
+        last_turn: "msg-uuid-7".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    // The fallback session served the turn (the fake fails it unless the
+    // prompt carries the budgeted history AND the user message, with no
+    // session flags at all).
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-fork-fresh"
+        )),
+        "the refused fork fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "fresh fallback answer"
+    )));
+    // The fallback turn's final text rides the Done like any turn's.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("fresh fallback".into()),
+            error: None,
+            session_id: Some("sess-fork-fresh".into()),
+        })
+    );
+}
+
+/// A fork the CLI accepts and then FAILS (B11): a `--resume-session-at`
+/// uuid it validates only once the first prompt arrives — the CLI answers
+/// initialize, prints its init frame, and errors before any assistant
+/// output. That errored first result is the same refusal as the silent
+/// exit: the driver retries once as a fresh session with the budgeted
+/// transcript pasted in front of the prompt, and the send never fails.
+#[tokio::test]
+async fn a_fork_that_errors_after_launch_retries_fresh_with_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    claude_session_store(dir.path(), "fork-bad-uuid-src", &["msg-uuid-7", "msg-newer-uuid"]);
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-bad-uuid");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-bad-uuid-src".into(),
+        last_turn: "msg-uuid-7".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    // The fallback session served the turn (the fake fails the retry
+    // unless the prompt carries the budgeted history AND the user message,
+    // with no session flags at all).
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-fork-bad-fresh"
+        )),
+        "the late-refused fork fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "bad uuid fallback answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("bad uuid fallback".into()),
+            error: None,
+            session_id: Some("sess-fork-bad-fresh".into()),
+        })
+    );
+}
+
+/// A resume the CLI accepts at launch and then REFUSES once the turn runs
+/// (B12 — the account-failover continuation's cross-account resume, the
+/// research-03 risk): the errored first result, before any assistant
+/// output, retries fresh with the fallback history. The continuation never
+/// fails the send.
+#[tokio::test]
+async fn a_resume_refused_after_launch_retries_fresh_with_the_fallback_history() {
+    let dir = tempfile::tempdir().unwrap();
+    // The session exists in the store, so the pre-launch check passes —
+    // only the running turn reveals the refusal.
+    claude_session_store(dir.path(), "resume-refused-src", &["msg-uuid-7"]);
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-refused");
+    req.resume = Some("resume-refused-src".into());
+    req.resume_fallback_history = Some(FORK_FALLBACK_HISTORY.into());
+    let events = run_to_end(&harness, req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "sess-resume-fresh"
+        )),
+        "the refused resume fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "resume fallback answer"
+    )));
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            // The fallback turn's final text rides the Done like any turn's.
+            result: Some("resume fallback".into()),
+            error: None,
+            session_id: Some("sess-resume-fresh".into()),
+        })
+    );
+}
+
+/// A source session the CLI's store no longer has: the fork launch is
+/// skipped outright — no session flags — and the budgeted transcript rides
+/// in front of the prompt on the fresh session.
+#[tokio::test]
+async fn a_fork_of_a_missing_session_falls_back_to_the_budgeted_history() {
+    let dir = tempfile::tempdir().unwrap();
+    // No session file for fork-missing-src: the store cannot know it.
+    let harness = ClaudeHarness::new()
+        .with_executable(fixture_path())
+        .with_config_root(dir.path());
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:fork-missing");
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "fork-missing-src".into(),
+        last_turn: "msg-uuid-7".into(),
+        fallback_history: Some(FORK_FALLBACK_HISTORY.into()),
+    });
+    let events = run_to_end(&harness, req, controls).await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. }
+                if session_id == "sess-fork-missing-fresh"
+        )),
+        "the missing session fell back to a fresh session: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        AgentEvent::TextDelta { text } if text == "missing session fallback answer"
+    )));
+    // The fallback turn's final text rides the Done like any turn's.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("missing session fallback".into()),
+            error: None,
+            session_id: Some("sess-fork-missing-fresh".into()),
+        })
+    );
+}
+
 #[tokio::test]
 async fn happy_path_normalizes_events_and_tags_subagents() {
     let (controls, _steer, _token) = controls("A");
@@ -118,6 +481,23 @@ async fn happy_path_normalizes_events_and_tags_subagents() {
     assert_eq!(model, "claude-fable-5");
     assert_eq!(tools, &vec!["Bash".to_string(), "Read".to_string()]);
     assert_eq!(session_id, "sess-1");
+
+    // The turn ref (t3-orchestration-v2 ticket 18): the session id plus
+    // the uuid of the LAST top-level message frame before the result — a
+    // USER frame here (the tool-result echo closes the turn) — while the
+    // tagged subagent frames' uuids never count.
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "sess-1".into(),
+            turn_id: "msg-happy-2".into(),
+        }
+    }));
+    assert_eq!(
+        events.iter().filter(|e| matches!(e, AgentEvent::TurnRef { .. })).count(),
+        1,
+        "one ref per turn: {events:?}"
+    );
 
     assert!(events.contains(&AgentEvent::ReasoningDelta {
         text: "pondering".into()
@@ -484,7 +864,7 @@ async fn error_codes_map_to_readable_messages() {
     let errors: Vec<&str> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::Error { message } => Some(message.as_str()),
+            AgentEvent::Error { message, .. } => Some(message.as_str()),
             _ => None,
         })
         .collect();
@@ -499,6 +879,30 @@ async fn error_codes_map_to_readable_messages() {
         "rejected rate_limit_event not mapped: {errors:?}"
     );
 
+    // Both limit surfaces carry kind usage-limit: the blocking event with
+    // the window and the CLI's own reset time, the terse assistant code
+    // without either.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, kind: Some(AgentErrorKind::UsageLimit { window, resets_at }) }
+            if message == "Claude 5-hour limit reached — the turn was blocked. Try again after it resets."
+                && window == "5-hour"
+                && *resets_at == Some(1_762_675_400_000)
+        )),
+        "blocking limit event not classified: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, kind: Some(AgentErrorKind::UsageLimit { window, resets_at }) }
+            if message == "Claude usage limit reached — try again after the limit resets."
+                && window == "usage"
+                && resets_at.is_none()
+        )),
+        "assistant rate_limit code not classified: {events:?}"
+    );
+
     // Empty `errors` array on the result falls back to subtype wording.
     assert_eq!(
         events.last(),
@@ -509,6 +913,33 @@ async fn error_codes_map_to_readable_messages() {
             session_id: Some("sess-err".into()),
         })
     );
+}
+
+#[tokio::test]
+async fn an_authentication_failure_is_signed_out() {
+    let (controls, _steer, _token) = controls("A");
+    let events = run_to_end(&harness(), request("scenario:auth"), controls).await;
+
+    // Exactly one error: the message stays human-readable, and the kind says
+    // sign in again — distinct from waiting out a usage limit.
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Error { message, kind } => Some((message.clone(), kind.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![(
+            "Authentication failed — sign in to Claude again.".to_owned(),
+            Some(AgentErrorKind::SignedOut),
+        )],
+        "exactly one error, and it is signed-out: {events:?}"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Done { status: DoneStatus::Errored, .. })
+    ));
 }
 
 #[tokio::test]
@@ -578,6 +1009,36 @@ async fn captured_live_background_subagent_frames_replay_correctly() {
         .filter_map(|(i, e)| matches!(e, AgentEvent::Done { .. }).then_some(i))
         .collect();
     assert_eq!(dones.len(), 2, "eager done + wake done: {events:?}");
+
+    // Turn refs (ticket 18): one per turn — the session id plus the uuid of
+    // the last top-level message frame before EACH result (the live
+    // capture's own uuids; the tagged subagent frames streaming between
+    // the two results never count). Each ref rides ahead of its turn's
+    // Done so the engine stamps it on the entry that turn streamed into.
+    let refs: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| matches!(e, AgentEvent::TurnRef { .. }).then_some(i))
+        .collect();
+    assert_eq!(refs.len(), 2, "one ref per turn: {events:?}");
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "a8fb1e09-b66e-4d02-8759-398c9d784261".into(),
+            turn_id: "6a1d5b71-3411-44e0-ac9b-742ff98f9aea".into(),
+        }
+    }));
+    assert!(events.contains(&AgentEvent::TurnRef {
+        reference: roboco_proto::ProviderTurnRef {
+            harness: HarnessId::ClaudeCode,
+            session_id: "a8fb1e09-b66e-4d02-8759-398c9d784261".into(),
+            turn_id: "86d6794c-69b5-4c12-a0bb-b7d3c2f04825".into(),
+        }
+    }));
+    assert!(
+        refs[0] < dones[0] && dones[0] < refs[1] && refs[1] < dones[1],
+        "each turn's ref precedes its own done: {events:?}"
+    );
 
     // The parent-feed Agent spawn is a plain tool call; the subagent's own
     // Bash call arrives tagged with the spawning tool-use id, between the

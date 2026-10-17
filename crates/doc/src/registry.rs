@@ -1240,6 +1240,14 @@ impl RegistryDoc {
                 chat.room_gen.map(|g| json!(g)).unwrap_or(Value::Null),
             ),
             ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
+            (
+                "agentOrigin",
+                chat.agent_origin
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or(Value::Null),
+            ),
         ]);
         self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1493,6 +1501,14 @@ impl RegistryDoc {
     /// Upsert a session-status row (writer discipline: each device writes only
     /// its own runs' rows). Staleness is checked client-side via `updatedAt`.
     pub fn upsert_session(&mut self, session: &Session) -> Result<(), DocError> {
+        let limit = match &session.limit {
+            Some(limit) => serde_json::to_value(limit)?,
+            None => Value::Null,
+        };
+        let scheduled_resume = match &session.scheduled_resume {
+            Some(scheduled) => serde_json::to_value(scheduled)?,
+            None => Value::Null,
+        };
         let set = fields([
             ("chatId", json!(session.chat_id)),
             ("deviceId", json!(session.device_id)),
@@ -1500,6 +1516,8 @@ impl RegistryDoc {
             ("lastCompletedTurn", json!(session.last_completed_turn)),
             ("startedAt", opt_ms(session.started_at)),
             ("updatedAt", json!(session.updated_at.timestamp_millis())),
+            ("limit", limit),
+            ("scheduledResume", scheduled_resume),
         ]);
         self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1626,11 +1644,27 @@ impl RegistryDoc {
                     ("spaceId", opt_str(chat.space_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
+                    (
+                        "agentOrigin",
+                        chat.agent_origin
+                            .as_ref()
+                            .map(serde_json::to_value)
+                            .transpose()?
+                            .unwrap_or(Value::Null),
+                    ),
                 ]),
             );
         }
         for session in &state.sessions {
             let ms = newest(&[Some(session.updated_at), session.started_at]);
+            let limit = match &session.limit {
+                Some(limit) => serde_json::to_value(limit)?,
+                None => Value::Null,
+            };
+            let scheduled_resume = match &session.scheduled_resume {
+                Some(scheduled) => serde_json::to_value(scheduled)?,
+                None => Value::Null,
+            };
             seed(
                 KIND_SESSIONS,
                 &session.chat_id,
@@ -1642,6 +1676,8 @@ impl RegistryDoc {
                     ("lastCompletedTurn", json!(session.last_completed_turn)),
                     ("startedAt", opt_ms(session.started_at)),
                     ("updatedAt", json!(session.updated_at.timestamp_millis())),
+                    ("limit", limit),
+                    ("scheduledResume", scheduled_resume),
                 ]),
             );
         }

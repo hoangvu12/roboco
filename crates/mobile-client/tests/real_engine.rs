@@ -768,7 +768,7 @@ async fn scoped_ids_feed_watches_and_transcript_connections_work() {
     core.doc_host
         .open("same-chat")
         .unwrap()
-        .write_user_message("m1", "hello", 123)
+        .write_user_message("m1", "hello", 123, None)
         .unwrap();
     let listener = serve(&core, engine_dir.path()).await;
     let url = pairing_url(&listener, engine_dir.path(), None);
@@ -929,7 +929,7 @@ async fn large_reset_streams_intact_while_calls_stay_fast() {
     core.doc_host
         .open("same-chat")
         .unwrap()
-        .write_user_message("big-message", &big, 123)
+        .write_user_message("big-message", &big, 123, None)
         .unwrap();
     let listener = serve(&core, engine_dir.path()).await;
     let url = pairing_url(&listener, engine_dir.path(), None);

@@ -456,13 +456,18 @@ impl WorkspaceHost {
         config: Option<ChatConfig>,
         cwd: Option<String>,
     ) -> Result<(), EngineError> {
-        self.create_chat_with_parent(chat_id, space_id, device_id, config, cwd, None)
+        self.create_chat_with_parent(chat_id, space_id, device_id, config, cwd, None, None)
     }
 
     /// [`create_chat`](Self::create_chat) recording the chat this one hangs
     /// off (`parentChatId`) — a side chat forked from it, or the chat whose
     /// agent spawned this one through the Roboco MCP server. Children list
     /// under their parent in the explorer instead of the main sidebar.
+    /// `agent_origin` is set when an AGENT created this one through the
+    /// Roboco MCP `create_chat`/`create_chats` tools (the creator chat and
+    /// its notify preference); absent on user-created chats, which never
+    /// notify. It rides the same row as `parentChatId` and survives
+    /// restarts with it.
     pub fn create_chat_with_parent(
         &self,
         chat_id: &str,
@@ -471,6 +476,7 @@ impl WorkspaceHost {
         config: Option<ChatConfig>,
         cwd: Option<String>,
         parent_chat_id: Option<String>,
+        agent_origin: Option<roboco_proto::AgentOrigin>,
     ) -> Result<(), EngineError> {
         if self.read(|doc| doc.chat(chat_id))?.is_some() {
             return Ok(()); // idempotent: optimistic client retries never duplicate
@@ -519,6 +525,7 @@ impl WorkspaceHost {
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
                 parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),
+                agent_origin,
             })
         })?;
         Ok(())
@@ -1075,6 +1082,8 @@ mod tests {
             last_completed_turn: None,
             started_at: None,
             updated_at: at,
+            limit: None,
+            scheduled_resume: None,
         }
     }
 

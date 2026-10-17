@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use tokio::sync::{mpsc, oneshot};
 
 use roboco_harness::{CancellationToken, Harness, PiHarness, RunControls, SteerMessage, TurnControl};
@@ -54,6 +55,8 @@ fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -130,6 +133,27 @@ fn text_of(events: &[AgentEvent]) -> String {
         .collect()
 }
 
+/// Collect events through the next `Done` (bounded), keeping the stream
+/// open for further turns.
+async fn until_done(
+    stream: &mut BoxStream<'static, Result<AgentEvent, roboco_harness::HarnessError>>,
+    events: &mut Vec<AgentEvent>,
+    budget: Duration,
+) {
+    loop {
+        let event = tokio::time::timeout(budget, stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let done = matches!(event, AgentEvent::Done { .. });
+        events.push(event);
+        if done {
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Descriptor + catalog surfaces
 // ---------------------------------------------------------------------------
@@ -140,7 +164,10 @@ fn pi_surfaces_match_registry_expectations() {
     assert_eq!(pi.id(), HarnessId::Pi);
     assert_eq!(pi.display_name(), "Pi");
     assert!(pi.supports_steering());
-    assert_eq!(pi.steering_mode(), SteeringMode::TurnBoundary);
+    // Step-boundary (orchestration v2 ticket 03): pi's steer queue delivers
+    // after the current assistant turn's tool calls — the engine registry
+    // descriptor must agree (its own tests check the pair).
+    assert_eq!(pi.steering_mode(), SteeringMode::StepBoundary);
     assert_eq!(
         pi.reasoning_levels(),
         &[
@@ -431,6 +458,11 @@ async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
     // A hostile caller smuggles interaction surfaces; run_title must clear
     // every one of them before spawning.
     req.resume = Some("some-old-session".into());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: "some-old-session.jsonl".into(),
+        last_turn: "u1".into(),
+        fallback_history: None,
+    });
     req.attachments = vec!["/etc/passwd".into()];
     req.auto_approve = true;
     let mut stream = harness().run_title(req, ctl).await.unwrap();
@@ -450,6 +482,8 @@ async fn title_runs_spawn_an_isolated_one_shot_and_answer_with_a_title() {
     // No session file in the scratch dir: the title sandbox is ephemeral
     // and never resumes. (The fixture asserts the spawn flags itself.)
     assert!(!scratch.path().join(".pi-fixture-session.jsonl").exists());
+    // The smuggled fork directive never spawned a fork process either.
+    assert!(!scratch.path().join(".pi-fixture-forked.jsonl").exists());
     // pi participates in device-local title generation.
     assert!(roboco_harness::supports_titles(HarnessId::Pi));
 }
@@ -496,7 +530,7 @@ async fn errored_assistant_message_rejects_the_prompt() {
     // The failed message also surfaces as a visible error chip.
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message == "provider returned 529"
+        AgentEvent::Error { message, .. } if message == "provider returned 529"
     )));
 }
 
@@ -515,7 +549,7 @@ async fn exhausted_auto_retry_rejects_the_prompt_and_recovery_completes() {
     // Retry status surfaces as a visible notice.
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message.contains("attempt 1/3")
+        AgentEvent::Error { message, .. } if message.contains("attempt 1/3")
     )));
 
     let (controls, _steer, _token) = controls();
@@ -592,7 +626,7 @@ async fn lost_resume_pointer_announces_fresh_context() {
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
     assert!(events.iter().any(|e| matches!(
         e,
-        AgentEvent::Error { message } if message.contains("without the previous context")
+        AgentEvent::Error { message, .. } if message.contains("without the previous context")
     )));
     assert_eq!(text_of(&events), "reply:fresh");
 }
@@ -946,4 +980,1009 @@ async fn wake_turn_after_settle_still_gets_its_done() {
         "{events:?}"
     );
     assert!(text_of(&events).contains("wake output"));
+}
+
+// ---------------------------------------------------------------------------
+// Prompt delivery hardening: dispositions, rejections, the settle probe
+// (orchestration v2, ticket 02)
+// ---------------------------------------------------------------------------
+
+/// A prompt pi handles without a run (an extension command) ends the turn —
+/// the settle probe confirms pi at rest — instead of sticking the chat on
+/// Working forever, and the session keeps serving.
+#[tokio::test]
+async fn a_handled_prompt_ends_the_turn_and_parks_the_session() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("handled"), controls).await.unwrap();
+    let mut events = Vec::new();
+    until_done(&mut stream, &mut events, Duration::from_secs(15)).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The session parks: the next message runs as a normal turn.
+    steer
+        .send(SteerMessage::text("after handled"))
+        .await
+        .unwrap();
+    let mut second = Vec::new();
+    until_done(&mut stream, &mut second, Duration::from_secs(15)).await;
+    assert_eq!(dones(&second), vec![(DoneStatus::Completed, None)], "{second:?}");
+    assert!(second.iter().any(|e| matches!(e, AgentEvent::Steered { .. })));
+    assert_eq!(text_of(&second), "reply:after handled");
+}
+
+/// A prompt rejected while pi is streaming surfaces the rejection, returns
+/// the message to the queue, and never ends the session: the message
+/// re-delivers once pi comes to rest, and the session keeps serving.
+#[tokio::test]
+async fn a_prompt_rejected_while_pi_streams_keeps_the_session_and_the_message() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness()
+        .run(request("reject-while-streaming"), controls)
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let is_working = matches!(&event, AgentEvent::TextDelta { text } if text == "working");
+        let saw_reply = text_of(&events).contains("reply:steered while streaming");
+        let is_done = matches!(&event, AgentEvent::Done { .. });
+        events.push(event);
+        if is_working && !sent {
+            // The extension run is streaming: this is the window where the
+            // message is delivered and rejected.
+            sent = true;
+            steer
+                .send(SteerMessage::text("steered while streaming"))
+                .await
+                .unwrap();
+        }
+        if is_done && saw_reply {
+            break;
+        }
+    }
+    // The prompted turn, the extension run, and the re-delivered message:
+    // three completed turns — the session never died, the turn never
+    // stranded.
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None); 3],
+        "{events:?}"
+    );
+    // The rejection surfaced...
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("busy")
+        )),
+        "{events:?}"
+    );
+    // ...and the message survived the rejection and ran.
+    assert!(
+        text_of(&events).contains("reply:steered while streaming"),
+        "{events:?}"
+    );
+    // The session is alive: a follow-up still runs.
+    steer.send(SteerMessage::text("still alive")).await.unwrap();
+    let mut tail = Vec::new();
+    until_done(&mut stream, &mut tail, Duration::from_secs(15)).await;
+    assert_eq!(dones(&tail), vec![(DoneStatus::Completed, None)], "{tail:?}");
+    assert_eq!(text_of(&tail), "reply:still alive");
+}
+
+/// A slow pi preflight (extensions, the Roboco MCP bridge, compaction) is
+/// allowed: no fixed acceptance budget kills the run — only Stop interrupts
+/// a slow acceptance.
+#[tokio::test]
+async fn a_slow_pi_preflight_completes_the_run() {
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let started = std::time::Instant::now();
+    let mut stream = harness().run(request("slow-preflight"), controls).await.unwrap();
+    let mut events = Vec::new();
+    until_done(&mut stream, &mut events, Duration::from_secs(60)).await;
+    assert!(started.elapsed() >= Duration::from_secs(31));
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:slow-preflight");
+}
+
+/// Stop interrupts a slow acceptance: no fixed timeout kills the run, but
+/// Stop still ends it — exactly one `Interrupted` Done, never an
+/// error-then-interrupted pair from the unanswered acceptance.
+#[tokio::test]
+async fn stop_interrupts_a_slow_pi_preflight() {
+    let (controls, steer, token) = controls();
+    drop(steer);
+    let mut stream = harness().run(request("slow-preflight"), controls).await.unwrap();
+    // The acceptance is in flight (the fake holds its answer for 31 s).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    token.cancel();
+    let mut events = Vec::new();
+    while let Some(event) =
+        tokio::time::timeout(Duration::from_secs(10), stream.next()).await.expect("progress")
+    {
+        let event = event.expect("stream event");
+        let done = matches!(event, AgentEvent::Done { .. });
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{events:?}");
+    // The run never started: nothing streamed before the Stop.
+    assert!(text_of(&events).is_empty(), "{events:?}");
+}
+
+/// A prompt racing `agent_settled` either joins the run or starts the next
+/// turn: it is delivered exactly once and the turn never strands.
+#[tokio::test]
+async fn a_prompt_racing_agent_settled_never_strands_the_turn() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("settle-race"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let race_now = matches!(&event, AgentEvent::TextDelta { text } if text == "reply:settle-race")
+            && !sent;
+        events.push(event);
+        if race_now {
+            // The settle probe is in flight (the fixture holds its answer
+            // open): the message lands behind the turn.
+            sent = true;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            steer.send(SteerMessage::text("race steer")).await.unwrap();
+        }
+    }
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None), (DoneStatus::Completed, None)],
+        "{events:?}"
+    );
+    // The raced message ran — joined the run or started the next turn.
+    assert!(text_of(&events).contains("reply:settle-race"));
+    assert!(text_of(&events).contains("reply:race steer"), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })));
+}
+
+/// A settle probe that reports busy (pi still streaming) re-arms: the turn
+/// ends only once pi is at rest — never stranded, never errored.
+#[tokio::test]
+async fn a_busy_settle_probe_re_arms_until_pi_rests() {
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(&harness(), request("busy-probe"), controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:busy-probe");
+}
+
+/// A settle probe that keeps failing ends the turn ERRORED — visibly, with
+/// the reason — instead of hanging or silently killing the process.
+#[tokio::test]
+async fn a_failing_settle_probe_ends_the_turn_errored() {
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(&harness(), request("probe-fail"), controls).await;
+    let dones = dones(&events);
+    assert_eq!(dones.len(), 1, "{events:?}");
+    assert_eq!(dones[0].0, DoneStatus::Errored);
+    let error = dones[0].1.as_deref().unwrap();
+    assert!(error.contains("probe") && error.contains("wedged"), "{error}");
+}
+
+/// pi older than 0.99 reports no disposition: the driver infers from whether
+/// a run starts — a running prompt settles normally, and a handled one ends
+/// the turn instead of sticking on Working forever.
+#[tokio::test]
+async fn old_pi_without_disposition_is_inferred_not_assumed() {
+    let (first, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(&harness(), request("old-pi"), first).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:old-pi");
+
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("old-pi-handled"), controls).await.unwrap();
+    let mut events = Vec::new();
+    until_done(&mut stream, &mut events, Duration::from_secs(15)).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The session lives on: the next message runs.
+    steer.send(SteerMessage::text("revived")).await.unwrap();
+    let mut tail = Vec::new();
+    until_done(&mut stream, &mut tail, Duration::from_secs(15)).await;
+    assert_eq!(dones(&tail), vec![(DoneStatus::Completed, None)], "{tail:?}");
+    assert_eq!(text_of(&tail), "reply:revived");
+}
+
+// ---------------------------------------------------------------------------
+// Mid-turn steering (orchestration v2, ticket 03): pi is a step-boundary
+// harness — steering mode "all" at session start, steers carrying images,
+// clear_queue before abort, compaction recovery, bursts in order.
+// ---------------------------------------------------------------------------
+
+/// The steering mode is set to "all" at session start unless the user
+/// configured one: pi's one-at-a-time default would deliver a burst of
+/// steers one assistant turn at a time; roboco's steers belong together.
+#[tokio::test]
+async fn steering_mode_defaults_to_all_at_session_start() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The fixture records the wire selection in its session file.
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("steering-mode:all"), "{recorded}");
+}
+
+/// A steering mode the user already configured (the agent directory's
+/// settings — their own edit, or `/steering` picked globally) is never
+/// overwritten: the driver sends no `set_steering_mode` at all.
+#[tokio::test]
+async fn a_configured_steering_mode_is_never_overwritten() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("settings.json"),
+        r#"{"steeringMode": "one-at-a-time"}"#,
+    )
+    .unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("steering-mode:"), "{recorded}");
+}
+
+/// A mode configured in the project `.pi/settings.json` counts the same:
+/// an explicit choice, never overwritten.
+#[tokio::test]
+async fn project_settings_count_as_a_configured_steering_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(cwd.path().join(".pi")).unwrap();
+    std::fs::write(
+        cwd.path().join(".pi").join("settings.json"),
+        r#"{"steeringMode": "all"}"#,
+    )
+    .unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(
+        &harness().with_agent_dir(home.path()),
+        request_cwd("hello", &cwd.path().display().to_string()),
+        controls,
+    )
+    .await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(!recorded.contains("steering-mode:"), "{recorded}");
+}
+
+/// A mid-run steer carries its staged images inline — the same
+/// `ImageContent` blocks a turn-start prompt rides — so steering with a
+/// screenshot reaches pi. The fixture asserts the wire block itself.
+#[tokio::test]
+async fn steers_carry_their_attached_images() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("shot.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco steer image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-image"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer
+                .send(SteerMessage {
+                    prompt: "look at this".into(),
+                    message_id: None,
+                    attachments: vec![png.display().to_string()],
+                    config: None,
+                })
+                .await
+                .unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+    assert!(text_of(&events).contains("reply-to-image-steer"), "{events:?}");
+}
+
+/// Stop sends `clear_queue` before `abort`: steers pi queued but never
+/// consumed are cancelled with the turn — never delivered into the aborted
+/// run. The fixture asserts the wire order and that the cleared queue held
+/// the stranded steer; here the run ends interrupted, exactly once.
+#[tokio::test]
+async fn stop_clears_pi_queue_before_abort() {
+    let (controls, steer, token) = controls();
+    let mut stream = harness().run(request("stop-clears-queue"), controls).await.unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        let mut sent = false;
+        while let Some(event) = stream.next().await {
+            let event = event.unwrap();
+            let steer_now =
+                matches!(&event, AgentEvent::TextDelta { text } if text == "working") && !sent;
+            let stop_now = matches!(&event, AgentEvent::TextDelta { text } if text == "steer queued");
+            events.push(event);
+            if steer_now {
+                sent = true;
+                steer.send(SteerMessage::text("stranded steer")).await.unwrap();
+            }
+            if stop_now {
+                token.cancel();
+            }
+            if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+                break;
+            }
+        }
+        events
+    })
+    .await
+    .expect("stop must settle");
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{events:?}");
+}
+
+/// A run that recovered from an error through a successful compaction retry
+/// ends completed, not errored: the recovered error no longer rejects the
+/// prompt.
+#[tokio::test]
+async fn a_compaction_recovered_run_completes() {
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let events = run_to_end(&harness(), request("compaction-recover"), controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The overflow error surfaced (as a transient notice) and the retried
+    // turn still completed the run.
+    assert!(text_of(&events).contains("doomed"), "{events:?}");
+    assert!(text_of(&events).contains("recovered"), "{events:?}");
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("overflow"))),
+        "{events:?}"
+    );
+}
+
+/// A burst mixing an image steer stays in mailbox order (B5): the driver
+/// loads a steer's images before queueing its wire call, so the
+/// FuturesUnordered's completion order cannot overtake the image steer
+/// with the text steer queued after it — pi receives exactly
+/// [text, image, text]. The fixture asserts the wire order and the image
+/// block itself; here the burst folds in with its boundaries.
+#[tokio::test]
+async fn a_burst_with_an_image_steer_stays_in_order() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("burst.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco burst image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-burst-mixed"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            for (text, with_image) in [
+                ("mixed one", None),
+                ("mixed two", Some(png.display().to_string())),
+                ("mixed three", None),
+            ] {
+                steer
+                    .send(SteerMessage {
+                        prompt: text.into(),
+                        message_id: None,
+                        attachments: with_image.map(|path| vec![path]).unwrap_or_default(),
+                        config: None,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let steered = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Steered { .. }))
+        .count();
+    assert_eq!(steered, 3, "{events:?}");
+    assert!(text_of(&events).contains("reply-to-mixed-burst"), "{events:?}");
+}
+
+/// A steer whose acknowledgement lands AFTER the settle does not end the
+/// turn early (B4): the quiescent probe reads pi at rest while the input
+/// is still in preflight, and the driver must wait it out — the turn ends
+/// once, after the acked steer runs and settles in its own turn.
+#[tokio::test]
+async fn a_late_acknowledgement_does_not_end_the_turn_early() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("late-ack"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "working")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer.send(SteerMessage::text("late steer")).await.unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    // Exactly one Done, and only after the late steer ran: the reply to
+    // the steer is in the SAME turn (no Done between the settle and the
+    // ack), and the turn completes.
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert!(text_of(&events).contains("reply-to-late-steer"), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+}
+
+/// A message pi keeps rejecting is capped, not retried forever (B1): past
+/// the re-delivery attempts the message is handed back to the engine as a
+/// failed send and the turn ends ERRORED — one Error naming the attempts,
+/// and NEVER a Done{Completed} for a message that never ran.
+#[tokio::test]
+async fn an_endlessly_rejected_message_is_capped_and_ends_the_turn_errored() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("reject-cap"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(20), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        // The prompted turn completes and parks; the parked message goes
+        // out after the first Done.
+        let send_now =
+            matches!(&event, AgentEvent::Done { status: DoneStatus::Completed, .. }) && !sent;
+        events.push(event);
+        if send_now {
+            sent = true;
+            steer.send(SteerMessage::text("always rejected")).await.unwrap();
+        }
+    }
+    drop(steer);
+    let dones = dones(&events);
+    assert_eq!(dones.len(), 2, "{events:?}");
+    assert_eq!(dones[0], (DoneStatus::Completed, None), "{events:?}");
+    match &dones[1] {
+        (DoneStatus::Errored, Some(error)) => assert!(
+            error.contains("pi rejected the message 2 times"),
+            "the cap ends the turn errored with the attempt count: {error}"
+        ),
+        other => panic!("the capped rejection ends the turn errored: {other:?}"),
+    }
+    // One rejection Error per attempt — and no third attempt (the cap).
+    let rejections = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("rejected")))
+        .count();
+    assert_eq!(rejections, 2, "{events:?}");
+}
+
+/// The mailbox never wedges behind a dead turn (B2): a message queued
+/// behind the settle probe still runs as the next turn after the probe
+/// fails out and the turn ends errored.
+#[tokio::test]
+async fn a_message_queued_behind_a_failing_probe_still_runs() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("probe-fail-mailbox"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(20), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let send_now = matches!(
+            &event,
+            AgentEvent::TextDelta { text } if text == "reply:probe-fail-mailbox"
+        ) && !sent;
+        events.push(event);
+        if send_now {
+            // The fixture holds the first probe answer open: the message
+            // lands behind the settling turn.
+            sent = true;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            steer.send(SteerMessage::text("queued during the probe")).await.unwrap();
+        }
+    }
+    drop(steer);
+    let dones = dones(&events);
+    assert_eq!(
+        dones.len(),
+        2,
+        "the failed turn, then the queued message's own turn: {dones:?}"
+    );
+    assert_eq!(dones[0].0, DoneStatus::Errored);
+    assert_eq!(dones[1].0, DoneStatus::Completed, "{events:?}");
+    assert!(
+        text_of(&events).contains("reply:queued during the probe"),
+        "the queued message ran its own turn: {events:?}"
+    );
+}
+
+/// A stranded steer is recovered INTACT (B6): the images it was sent with
+/// ride the re-delivery too — the recovery re-queues the original
+/// message, never a bare-text copy. The fixture asserts the re-delivered
+/// prompt's image block on the wire.
+#[tokio::test]
+async fn a_stranded_steer_recovers_with_its_images() {
+    let image = tempfile::tempdir().unwrap();
+    let png = image.path().join("strand.png");
+    std::fs::write(&png, b"\x89PNG\r\n\x1a\nroboco strand image").unwrap();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-strand-image"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while dones(&events).len() < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "reply part")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer
+                .send(SteerMessage {
+                    prompt: "stranded with an image".into(),
+                    message_id: None,
+                    attachments: vec![png.display().to_string()],
+                    config: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+    // Recovered via clear_queue after the first Done, re-delivered as the
+    // next turn's prompt with its image (the fixture checks the wire).
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None), (DoneStatus::Completed, None)],
+        "{events:?}"
+    );
+    assert!(
+        text_of(&events).contains("reply-to-recovered-image-steer"),
+        "the recovered steer ran its own turn: {events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Steered { .. })), "{events:?}");
+}
+
+/// A Stop while the settle probe is armed during a LIVE run (B3: an old pi
+/// with no disposition arms it at acceptance) still clears the queue and
+/// aborts — the "already settled" shortcut is only for a truly settled
+/// turn. The fixture records the abort in its session file.
+#[tokio::test]
+async fn stop_with_a_probe_armed_mid_run_still_aborts() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, _steer, token) = controls();
+    let req = request_cwd("old-pi-stop", &cwd.path().display().to_string());
+    let mut stream = harness().run(req, controls).await.unwrap();
+    let mut events = Vec::new();
+    while dones(&events).is_empty() {
+        let event = tokio::time::timeout(Duration::from_secs(15), stream.next())
+            .await
+            .expect("progress")
+            .expect("stream open")
+            .expect("stream event");
+        let stop_now = matches!(&event, AgentEvent::TextDelta { text } if text == "working");
+        events.push(event);
+        if stop_now {
+            // Past the probe's re-arm delay: it is armed (pi reports busy).
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            token.cancel();
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Interrupted, None)], "{events:?}");
+    let recorded =
+        std::fs::read_to_string(cwd.path().join(".pi-fixture-session.jsonl")).unwrap();
+    assert!(recorded.contains("abort\n"), "Stop must abort the live run: {recorded}");
+}
+
+/// Several quick steers are all delivered, in order: pi (steering mode
+/// "all") queues each while streaming and delivers them together at the
+/// next step boundary. The fixture asserts the send order on the wire;
+/// here every steer folds in with its own boundary and one turn ends.
+#[tokio::test]
+async fn a_burst_of_steers_is_delivered_in_order() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-burst"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            for text in ["burst one", "burst two", "burst three"] {
+                steer.send(SteerMessage::text(text)).await.unwrap();
+            }
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let steered = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::Steered { .. }))
+        .count();
+    assert_eq!(steered, 3, "{events:?}");
+    assert!(text_of(&events).contains("reply-to-burst"), "{events:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Provider turn refs + native forks (t3-orchestration-v2 ticket 19)
+// ---------------------------------------------------------------------------
+
+/// The session-tree helpers: the driver names the turn's ref after each
+/// settle, the engine stamps it on the assistant entry, and a fork reads
+/// the boundary off it. The unit level (walks, boundaries) lives in the
+/// driver module; this proves the wire shape end to end.
+fn session_file_of(events: &[AgentEvent]) -> String {
+    events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::SessionStarted { session_id, .. } => Some(session_id.clone()),
+            _ => None,
+        })
+        .expect("SessionStarted")
+}
+
+fn turn_refs_of(events: &[AgentEvent]) -> Vec<roboco_proto::ProviderTurnRef> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::TurnRef { reference } => Some(reference.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each settled turn emits its provider turn ref: the session file plus
+/// the turn's user entry id — the first turn's prompt, and the second
+/// turn's prompt once the parked session runs another message (the `since`
+/// cursor bounds the second capture to the second turn's entries).
+#[tokio::test]
+async fn turn_refs_name_the_session_file_and_each_turns_user_entry() {
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd = cwd.path().display().to_string();
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request_cwd("first", &cwd), controls).await.unwrap();
+    let mut events = Vec::new();
+    until_done(&mut stream, &mut events, Duration::from_secs(15)).await;
+    // The parked session runs a second turn on the same process.
+    steer.send(SteerMessage::text("second")).await.unwrap();
+    let mut tail = Vec::new();
+    until_done(&mut stream, &mut tail, Duration::from_secs(15)).await;
+    events.extend(tail);
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None); 2], "{events:?}");
+    let session = session_file_of(&events);
+    assert_eq!(
+        turn_refs_of(&events),
+        vec![
+            roboco_proto::ProviderTurnRef {
+                harness: HarnessId::Pi,
+                session_id: session.clone(),
+                turn_id: "u1".into(),
+            },
+            roboco_proto::ProviderTurnRef {
+                harness: HarnessId::Pi,
+                session_id: session.clone(),
+                turn_id: "u2".into(),
+            },
+        ],
+        "{events:?}"
+    );
+    // The refs name the file the runs actually continue.
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert!(std::path::Path::new(&session).is_file());
+}
+
+/// A turn a steer landed in names its LAST user entry — the steer — as the
+/// ref: pi's exclusive fork boundary is "the user entry after the ref", so
+/// naming the last consumed entry keeps the whole turn (prompt, steer and
+/// reply) when a fork cuts at the next turn's start.
+#[tokio::test]
+async fn a_steered_turn_names_its_last_user_entry() {
+    let (controls, steer, _token) = controls();
+    let mut stream = harness().run(request("steer-flow"), controls).await.unwrap();
+    let mut events = Vec::new();
+    let mut sent = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        let steer_now = matches!(&event, AgentEvent::TextDelta { text } if text == "first part ")
+            && !sent;
+        events.push(event);
+        if steer_now {
+            sent = true;
+            steer.send(SteerMessage::text("steered text")).await.unwrap();
+        }
+        if matches!(events.last(), Some(AgentEvent::Done { .. })) {
+            break;
+        }
+    }
+    let session = session_file_of(&events);
+    assert_eq!(
+        turn_refs_of(&events),
+        vec![roboco_proto::ProviderTurnRef {
+            harness: HarnessId::Pi,
+            session_id: session,
+            // u1 = the prompt, u2 = the steer: the turn consumed the steer
+            // last, so that is the ref.
+            turn_id: "u2".into(),
+        }],
+        "{events:?}"
+    );
+}
+
+/// A native fork at the source's LATEST turn: the fork process launches
+/// with `--fork` and sends no RPC fork (the copy already ends at the
+/// boundary), the run resumes the FORKED session file, and nothing is
+/// pasted — the fake refuses the turn if the budgeted history reaches the
+/// prompt or the run resumes anything but the forked file.
+#[tokio::test]
+async fn a_native_fork_at_the_latest_turn_copies_the_whole_session() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-turn", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // The fake fork tree's NEWEST user entry: forking there keeps the
+        // whole copied session — no RPC fork.
+        last_turn: "u3".into(),
+        // What the engine would have pasted for a fresh session — the
+        // driver must NOT use it when the fork succeeds.
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // The run continues the FORKED session file, never the source.
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-forked.jsonl"), "{session}");
+    assert!(std::path::Path::new(&session).is_file());
+    assert_ne!(session, source.display().to_string());
+    // The fork process ran with --fork and sent NO fork RPC: the markers
+    // in the forked session file prove both.
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-launch:"), "{forked}");
+    assert!(!forked.contains("fork-rpc:"), "{forked}");
+    assert_eq!(text_of(&events), "reply:fork-turn");
+}
+
+/// A native fork at an EARLIER turn also sends the RPC `fork` with the
+/// user entry id of the turn AFTER the boundary: pi's fork is exclusive
+/// (it re-roots before the named user message), so the forked session ends
+/// exactly at the boundary. Nothing is pasted (the fake refuses it).
+#[tokio::test]
+async fn a_native_fork_at_an_earlier_turn_forks_at_the_next_turns_user_entry() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-turn", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // The fake fork tree's SECOND user entry: the boundary is turn 2,
+        // so the RPC fork must name turn 3's user entry (u3).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-forked.jsonl"), "{session}");
+    // The RPC fork named the turn AFTER the boundary.
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-rpc:u3"), "{forked}");
+    assert_eq!(text_of(&events), "reply:fork-turn");
+}
+
+/// A stale boundary ref (an entry the session branch no longer holds)
+/// refuses the fork: the run starts a FRESH session with the budgeted
+/// transcript in front of the prompt — never a failed send. The fake
+/// asserts the pasted history and refuses a --session resume.
+#[tokio::test]
+async fn a_stale_fork_boundary_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("source-session.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // Not on the fake tree branch: the driver must refuse the fork.
+        last_turn: "u-gone".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    // A fresh session served the turn (the fake refuses the fork-turn
+    // scenario on a resume).
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    // The refusal surfaced.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // No fork RPC ever ran (the marker proves the refusal came first).
+    let forked = cwd.path().join(".pi-fixture-forked.jsonl");
+    if forked.exists() {
+        let forked = std::fs::read_to_string(&forked).unwrap();
+        assert!(!forked.contains("fork-rpc:"), "{forked}");
+    }
+}
+
+/// A fork a pi extension cancels falls back the same way: fresh session,
+/// budgeted transcript, visible notice.
+#[tokio::test]
+async fn a_cancelled_fork_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("fork-cancel-source.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // An earlier-turn boundary, so the cancelled RPC actually fires
+        // (the source name scripts the cancellation).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+}
+
+/// A fork whose source session file is gone never spawns the fork process:
+/// the run starts fresh with the budgeted paste (the same fallback as a
+/// lost resume pointer).
+#[tokio::test]
+async fn a_fork_with_a_missing_source_file_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: cwd.path().join("no-such-session.jsonl").display().to_string(),
+        last_turn: "u1".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // No fork process ever ran.
+    assert!(!cwd.path().join(".pi-fixture-forked.jsonl").exists());
+}
+
+/// A fork RPC pi REFUSES (success: false) falls back the same way: fresh
+/// session, budgeted transcript, visible notice.
+#[tokio::test]
+async fn a_refused_fork_falls_back_to_the_budgeted_paste() {
+    let cwd = tempfile::tempdir().unwrap();
+    let source = cwd.path().join("fork-refuse-source.jsonl");
+    std::fs::write(&source, b"fixture session\n").unwrap();
+    let (controls, steer, _token) = controls();
+    drop(steer);
+    let mut req = request_cwd("fork-fallback", &cwd.path().display().to_string());
+    req.provider_fork = Some(roboco_proto::ProviderFork {
+        session_id: source.display().to_string(),
+        // An earlier-turn boundary, so the refused RPC actually fires
+        // (the source name scripts the refusal).
+        last_turn: "u2".into(),
+        fallback_history: Some(
+            "Continue this side chat using the following prior transcript as context.\n\
+             <transcript>\nuser: Remember PINEAPPLE\n</transcript>\n\n"
+                .into(),
+        ),
+    });
+    let events = run_to_end(&harness(), req, controls).await;
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)], "{events:?}");
+    let session = session_file_of(&events);
+    assert!(session.ends_with(".pi-fixture-session.jsonl"), "{session}");
+    assert_eq!(text_of(&events), "reply:fork-fallback");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Error { message, .. } if message.contains("pi could not fork")
+        )),
+        "{events:?}"
+    );
+    // The refused RPC still ran (its marker proves the refusal, not a
+    // silent skip).
+    let forked = std::fs::read_to_string(cwd.path().join(".pi-fixture-forked.jsonl")).unwrap();
+    assert!(forked.contains("fork-rpc:u3"), "{forked}");
 }

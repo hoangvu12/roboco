@@ -360,6 +360,7 @@ mod tests {
 
     fn entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
+            origin_chat_id: None,
             id: id.into(),
             role: MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -371,6 +372,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         }
     }
 
@@ -545,6 +547,7 @@ mod context_update_tests {
     #[test]
     fn replay_cutoff_keeps_only_historical_parts_and_unicode_text_prefixes() {
         let mut entry = SessionMessageEntry {
+            origin_chat_id: None,
             id: "message".into(),
             role: crate::MessageRole::Assistant,
             parts: vec![MessagePart::Text {
@@ -556,6 +559,7 @@ mod context_update_tests {
             status: Some(crate::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            provider_turn: None,
         };
         let baseline = TranscriptBaseline::capture(&[entry.clone()]);
         assert!(baseline.covers(&entry));

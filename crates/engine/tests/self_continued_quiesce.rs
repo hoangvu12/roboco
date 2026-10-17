@@ -60,6 +60,8 @@ fn run_request(prompt: &str) -> RunRequest {
         worktree: None,
         mcp: None,
         resume: None,
+        provider_fork: None,
+        resume_fallback_history: None,
     }
 }
 
@@ -212,7 +214,7 @@ async fn self_continued_turn_parks_on_the_short_window() {
     let rig = assemble("watch the build");
     rig.core
         .sessions
-        .dispatch(CHAT, HarnessId::Mock, run_request("watch the build"), None)
+        .dispatch(CHAT, HarnessId::Mock, run_request("watch the build"), None, None, None)
         .await
         .expect("dispatch");
 
@@ -258,7 +260,8 @@ async fn steered_turn_keeps_the_normal_window() {
             HarnessId::Mock,
             run_request("watch the build again"),
             None,
-        )
+            None,
+        None)
         .await
         .expect("dispatch");
 
@@ -286,7 +289,7 @@ async fn steered_turn_keeps_the_normal_window() {
     // the short window (its Done is genuinely coming).
     rig.core
         .sessions
-        .steer(CHAT, "and then?", None)
+        .steer(CHAT, "and then?", None, None)
         .await
         .expect("steer accepted");
     wait_for(

@@ -393,6 +393,46 @@ impl ChatDocHandle {
         rx
     }
 
+    /// Hold queued rows until an explicit prompt thaws them (the same state
+    /// a Stop leaves): the sessions engine arms this when a turn ends on a
+    /// usage limit, so a Limited chat's queued messages wait behind the
+    /// continuation instead of dispatching into the same limit. A queued row
+    /// inserted afterwards also waits — nothing dispatches while paused.
+    pub fn pause_queue(&self) {
+        self.queue_paused.store(true, Ordering::Release);
+    }
+
+    /// Release the hold [`Self::pause_queue`] armed: the explicit prompt —
+    /// the manual Resume's run, the user's own message, or the engine's
+    /// Resume-at-reset continuation — dispatched successfully, so the queued
+    /// rows may follow it (the drain still waits out the turn in flight).
+    pub fn thaw_queue(&self) {
+        self.queue_paused.store(false, Ordering::Release);
+    }
+
+    /// Rewrite the full run requests held for this chat's turn end onto the
+    /// harness switch's config (ticket 24: "queued messages after a switch
+    /// go to the new harness"). A held send stores the request it was sent
+    /// with — model, reasoning, options and all — and the drain prefers it
+    /// over the chat row, so without this a message held before the switch
+    /// would run on the OLD harness (its model ids in the new harness's
+    /// vocabulary) after the switch. The switch's own resolution rules
+    /// apply: the new harness and its picks, the sandbox untouched.
+    pub fn rewrite_held_sends_for_switch(&self, config: &roboco_proto::ChatConfig) {
+        let mut sends = lock(&self.held_sends);
+        for request in sends.values_mut() {
+            request.harness = Some(config.harness);
+            request.model = config.model.clone();
+            request.reasoning = config.reasoning;
+            request.model_options = config.model_options.clone();
+            // The old harness's provider session and fork intent never ride
+            // the new harness's first run (the seam already cleared the
+            // chat-level ones; these are the held copies).
+            request.resume = None;
+            request.provider_fork = None;
+        }
+    }
+
     /// Where a newly steered row goes: after the rows already steered, ahead
     /// of every ordinary row. Records `id` as steered.
     fn steer_slot(&self, id: &str) -> Result<usize, DocError> {
@@ -435,11 +475,14 @@ impl ChatDocHandle {
 
     /// Write a complete user message entry, idempotent by id (the client-minted message
     /// id — a re-executed command or optimistic echo never duplicates the entry).
+    /// `origin_chat_id` is the structured attribution for messages sent by a
+    /// chat through the Roboco MCP server; `None` for typed messages.
     pub fn write_user_message(
         &self,
         message_id: &str,
         text: &str,
         created_at: i64,
+        origin_chat_id: Option<&str>,
     ) -> Result<(), DocError> {
         if self.doc.read_entries()?.iter().any(|e| e.id == message_id) {
             return Ok(());
@@ -455,7 +498,9 @@ impl ChatDocHandle {
             device_id: self.device_id.clone(),
             status: Some(MessageStatus::Complete),
             continuation_of: None,
+            provider_turn: None,
             duration_ms: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
         })
     }
 
@@ -1032,7 +1077,18 @@ impl DocHost {
     /// Drop a chat's doc unconditionally and delete its local snapshot — the
     /// chat is gone (DeleteChat / DeleteSpace cascade). Watchers see the
     /// stream end; a racing writer keeps its orphaned doc until the run ends.
+    /// Cancels the chat's pending Resume-at-reset continuation (ticket 07):
+    /// deleting the chat is the last word — locally, without re-mirroring a
+    /// sessions row that is going away with the chat.
     pub fn purge_chat(&self, chat_id: &str) {
+        if let Some(sessions) = self.sessions() {
+            sessions.cancel_scheduled_resume_with_chat(chat_id);
+            // A deleted parent is owed nothing (ticket 13): its pending
+            // completion notices go with the chat — the durable ledger
+            // forgets them, and a record that raced the deletion finds the
+            // row gone and stays quiet on delivery.
+            sessions.notices().drop_for(chat_id);
+        }
         let removed = lock(&self.inner.handles).remove(chat_id);
         drop(removed);
         if let Err(err) = self.inner.store.delete_snapshot(chat_id) {
@@ -1048,7 +1104,7 @@ impl DocHost {
         chat_id: &str,
         payload: SessionCommandPayload,
     ) -> Result<String, EngineError> {
-        self.queue_command_with_transfers(chat_id, payload, Vec::new())
+        self.queue_command_with_transfers(chat_id, payload, Vec::new(), None)
     }
 
     /// [`Self::queue_command`] plus queued-attachment transfers: the command's
@@ -1056,12 +1112,16 @@ impl DocHost {
     /// dir; when another device hosts the chat, a background task pushes them
     /// over the peer link (retry until they land) while the command is
     /// already durably queued. The send is a local write — attachment bytes
-    /// chase it, never gate it (2026-08-19 incident).
+    /// chase it, never gate it (2026-08-19 incident). `origin_chat_id` is the
+    /// structured attribution when a chat sent this through the Roboco MCP
+    /// server (Run/Steer commands only); it survives the relay and retry
+    /// paths and is stamped on the user message entry the command writes.
     pub fn queue_command_with_transfers(
         &self,
         chat_id: &str,
         payload: SessionCommandPayload,
         _transfers: Vec<crate::uploads::AttachmentTransfer>,
+        origin_chat_id: Option<&str>,
     ) -> Result<String, EngineError> {
         let handle = self.open(chat_id)?;
         let id = new_id();
@@ -1083,6 +1143,7 @@ impl DocHost {
             expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
             status: SessionCommandStatus::Pending,
             resolution: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
         };
         handle.doc.queue_command(&entry)?;
         // Sending a message revives an archived chat: the user is acting in it
@@ -1090,6 +1151,14 @@ impl DocHost {
         // effort — the command itself is durable regardless.
         if is_message {
             self.unarchive_on_send(chat_id);
+            // And it cancels any pending Resume-at-reset continuation
+            // (orchestration v2, ticket 07): the newer intent wins. The
+            // engine's own continuations never queue commands — they
+            // dispatch directly — so this hook only ever sees user and
+            // agent messages.
+            if let Some(sessions) = self.sessions() {
+                sessions.cancel_scheduled_resume(chat_id);
+            }
         }
         Ok(id)
     }
@@ -1119,18 +1188,21 @@ impl DocHost {
         text: &str,
         attachments: Vec<String>,
     ) -> Result<String, EngineError> {
-        self.queue_message_with_behavior(chat_id, text, attachments, false)
+        self.queue_message_with_behavior(chat_id, text, attachments, false, None)
     }
 
     /// Append a message while preserving the submitter's active-turn policy
     /// on the synchronized row. This matters when another device hosts the
     /// chat: the host, not the submitting UI, decides when to drain it.
+    /// `origin_chat_id` is the structured attribution when a chat queued this
+    /// through the Roboco MCP server; the promoted user message entry keeps it.
     pub fn queue_message_with_behavior(
         &self,
         chat_id: &str,
         text: &str,
         attachments: Vec<String>,
         hold_for_turn_end: bool,
+        origin_chat_id: Option<&str>,
     ) -> Result<String, EngineError> {
         let handle = self.open(chat_id)?;
         let id = new_id();
@@ -1143,10 +1215,17 @@ impl DocHost {
             issued_at: now_ms(),
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id: origin_chat_id.map(str::to_string),
+            completion_notice: None,
         })?;
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
         self.unarchive_on_send(chat_id);
+        // Queuing is not sending (story 41): the row waits behind the armed
+        // continuation — the limit that parked the queue is still the wall
+        // the user chose to wait out, and the continuation stays armed to
+        // fire at its reset. Only a NEW direct message (the send paths
+        // below) cancels it.
         Ok(id)
     }
 
@@ -1693,6 +1772,13 @@ impl DocHost {
             let Ok(Some(head)) = handle.doc.read_queue().map(|q| q.into_iter().next()) else {
                 return;
             };
+            // A pause armed while this drain sat between rows (a capped
+            // completion notice parks its row and freezes the queue in one
+            // step — ticket 14) holds the head too: nothing dispatches
+            // while paused, whenever the pause landed.
+            if handle.queue_paused.load(Ordering::Acquire) {
+                return;
+            }
             match &head.delivery_gate {
                 Some(QueueDeliveryGate::Editing {
                     lease_id,
@@ -1884,7 +1970,12 @@ impl DocHost {
                 continue;
             };
             changed = true;
-            if let Err(err) = handle.write_user_message(&row.id, &row.text, row.issued_at) {
+            if let Err(err) = handle.write_user_message(
+                &row.id,
+                &row.text,
+                row.issued_at,
+                row.origin_chat_id.as_deref(),
+            ) {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "cancelled held send write failed");
             }
         }
@@ -1924,9 +2015,36 @@ impl DocHost {
             queued_message_prompt(&item.text, &attachments)
         };
         self.resolve_attachment_refs(&mut prompt, &mut attachments);
+        // A parked notice row (the loop cap's waiting form, ticket 14)
+        // releases as the SAME System completion-notice entry a direct
+        // delivery writes — never a user message (notices are engine
+        // artifacts, not the user's words). The entry lands BEFORE the
+        // dispatch, so the dispatch's own user-message write dedupes onto
+        // it and the turn starts on the notice's text with the notice's id
+        // (the loop counter still reads it as notice-started).
+        if let Some(sides) = item.completion_notice.clone() {
+            let mut entry = crate::completion_notices::notice_entry(
+                self.inner.config.device_id.as_str(),
+                &sides,
+                &item.text,
+            );
+            // The row's own id (already `notice:`-prefixed): the dispatch
+            // below writes under `message_id`, and only a shared id dedupes.
+            entry.id = message_id.clone();
+            if let Err(err) = handle.doc().push_message(&entry) {
+                tracing::warn!(chat = %chat_id, error = %err,
+                    "parked completion-notice entry write failed");
+            }
+        }
         if send == QueueSend::Steer {
             match sessions
-                .steer(chat_id, &prompt, Some(message_id.clone()))
+                .steer_at(
+                    chat_id,
+                    &prompt,
+                    Some(message_id.clone()),
+                    item.issued_at.min(now_ms()),
+                    item.origin_chat_id.clone(),
+                )
                 .await?
             {
                 SteerOutcome::Accepted => return Ok(()),
@@ -1969,8 +2087,16 @@ impl DocHost {
         request.resume = None; // dispatch re-derives the harness session
         request.attachments = attachments;
         let harness = self.harness_for_request(chat_id, &request);
-        self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
-            .await?;
+        self.dispatch_with_source_context(
+            &sessions,
+            chat_id,
+            harness,
+            request,
+            Some(message_id),
+            item.origin_chat_id.clone(),
+            Some(item.issued_at),
+        )
+        .await?;
         Ok(())
     }
 
@@ -2069,6 +2195,9 @@ impl DocHost {
                 expires_at: Some(now + COMMAND_DEFAULT_TTL_MS),
                 status: SessionCommandStatus::Pending,
                 resolution: None,
+                // The re-issue speaks for the same message: it keeps the
+                // origin of the send it re-sends.
+                origin_chat_id: old.origin_chat_id.clone(),
             };
             tracing::info!(chat = %chat_id, old = %old.id, new = %reissue.id,
                 "retry re-issues a dead send attempt");
@@ -2552,9 +2681,12 @@ impl DocHost {
                 SessionCommandPayload::Steer { prompt, .. } => prompt.clone(),
                 _ => String::new(),
             };
-            if let Err(err) =
-                handle.write_user_message(&message_id, &prompt, entry.issued_at.min(now_ms()))
-            {
+            if let Err(err) = handle.write_user_message(
+                &message_id,
+                &prompt,
+                entry.issued_at.min(now_ms()),
+                entry.origin_chat_id.as_deref(),
+            ) {
                 tracing::warn!(chat = %chat_id, error = %err, "cancelled message write failed");
             }
             tracing::info!(chat = %chat_id, "prompt sent before a Stop that has acted: cancelled");
@@ -2649,6 +2781,7 @@ impl DocHost {
                         entry.issued_at,
                         false,
                         Some(&request),
+                        entry.origin_chat_id.clone(),
                     )?;
                     return Ok((
                         SessionCommandStatus::Applied,
@@ -2665,6 +2798,7 @@ impl DocHost {
                     message_id,
                     &request.prompt,
                     entry.issued_at.min(now_ms()),
+                    entry.origin_chat_id.as_deref(),
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
                 }
@@ -2674,12 +2808,22 @@ impl DocHost {
                     harness,
                     request,
                     Some(message_id.clone()),
+                    entry.origin_chat_id.clone(),
+                    Some(entry.issued_at.min(now_ms())),
                 )
                 .await?;
                 // A fresh user-authored turn is the deliberate action that
-                // thaws a queue frozen by Cancel. Clear only after dispatch
-                // succeeds so a failed send cannot silently unfreeze it.
-                handle.queue_paused.store(false, Ordering::Release);
+                // thaws a queue frozen by Cancel — and the only kind that
+                // may release the loop cap's pause (ticket 14): an
+                // agent-origin Run (a side chat or an orchestrating parent
+                // sending through the Roboco MCP server) must not open the
+                // cap's parked notice without the user, or a busy child
+                // lifts the very brake that waits for one. Send now / Steer
+                // now (explicit user queue actions) and the engine's own
+                // resume continuations thaw through their own paths.
+                if entry.origin_chat_id.is_none() {
+                    handle.queue_paused.store(false, Ordering::Release);
+                }
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
@@ -2689,6 +2833,7 @@ impl DocHost {
                     prompt,
                     message_id.clone(),
                     entry.issued_at,
+                    entry.origin_chat_id.clone(),
                 )
                 .await
             }
@@ -2696,6 +2841,13 @@ impl DocHost {
                 self.await_earlier_prompts(sessions, handle, &entry.id)
                     .await;
                 *lock(&handle.stopped_by) = Some(entry.id.clone());
+                // The user's Stop drops the notices this chat is owed as a
+                // parent and suppresses outcomes from side chats whose
+                // notifiable turns are running now (ticket 14). Stopping an
+                // idle chat still drops them — a stopped parent must not
+                // restart on its own — which `interrupt_and_pause_queue`
+                // would skip when there is nothing to stop.
+                crate::completion_notices::stop_parent(sessions, &handle.chat_id);
                 // Sends before this Stop that are still on their way (a slow
                 // dispatch the wait above gave up on) are cancelled with it.
                 if let Ok(commands) = handle.doc.read_commands()
@@ -2779,8 +2931,16 @@ impl DocHost {
                         "orphaned input resolve failed");
                 }
                 let harness = self.harness_for_request(chat_id, &request);
-                self.dispatch_with_source_context(sessions, chat_id, harness, request, None)
-                    .await?;
+                self.dispatch_with_source_context(
+                    sessions,
+                    chat_id,
+                    harness,
+                    request,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("answered as new turn".into()),
@@ -2805,12 +2965,19 @@ impl DocHost {
         prompt: &str,
         message_id: Option<String>,
         issued_at: i64,
+        origin_chat_id: Option<String>,
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
         // Keep upstream's queued-attachment rewrite and send-time canonical
         // history while preserving the personal cut's turn-boundary queue.
         let prompt = self.resolve_prompt_attachments(prompt);
-        if self.held_until_turn_end(sessions, chat_id, &prompt, message_id.as_deref())? {
+        if self.held_until_turn_end(
+            sessions,
+            chat_id,
+            &prompt,
+            message_id.as_deref(),
+            origin_chat_id.clone(),
+        )? {
             return Ok((
                 SessionCommandStatus::Applied,
                 Some("held until the turn ends".into()),
@@ -2821,13 +2988,23 @@ impl DocHost {
         // transcript copy would duplicate it until the update finishes.
         if !sessions.live_run_update_pending(chat_id)
             && let Some(message_id) = message_id.as_deref()
-            && let Err(err) =
-                handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
+            && let Err(err) = handle.write_user_message(
+                message_id,
+                &prompt,
+                issued_at.min(now_ms()),
+                origin_chat_id.as_deref(),
+            )
         {
             tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
         }
         match sessions
-            .steer_at(chat_id, &prompt, message_id.clone(), issued_at)
+            .steer_at(
+                chat_id,
+                &prompt,
+                message_id.clone(),
+                issued_at,
+                origin_chat_id.clone(),
+            )
             .await?
         {
             SteerOutcome::Accepted => {
@@ -2836,7 +3013,12 @@ impl DocHost {
             }
             SteerOutcome::NotSteerable => {
                 if let Some(message_id) = message_id.as_deref() {
-                    handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))?;
+                    handle.write_user_message(
+                        message_id,
+                        &prompt,
+                        issued_at.min(now_ms()),
+                        origin_chat_id.as_deref(),
+                    )?;
                 }
                 let request = sessions
                     .last_request(chat_id)
@@ -2853,8 +3035,16 @@ impl DocHost {
                 // images; this prompt's own refs (if any) ride its text.
                 request.attachments = Vec::new();
                 let harness = self.harness_for_request(chat_id, &request);
-                self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
-                    .await?;
+                self.dispatch_with_source_context(
+                    sessions,
+                    chat_id,
+                    harness,
+                    request,
+                    message_id,
+                    origin_chat_id,
+                    issued_at.min(now_ms()).into(),
+                )
+                .await?;
                 handle.queue_paused.store(false, Ordering::Release);
                 Ok((
                     SessionCommandStatus::Applied,
@@ -2863,7 +3053,7 @@ impl DocHost {
             }
             SteerOutcome::DeferredByUpdate => {
                 let id = message_id.unwrap_or_else(new_id);
-                self.hold_until_update_ends(handle, &id, &prompt, issued_at)?;
+                self.hold_until_update_ends(handle, &id, &prompt, issued_at, origin_chat_id)?;
                 // The completed turn's status publication normally re-drains
                 // this queue. Also cover completion racing the enqueue itself.
                 self.drain_queue(handle).await;
@@ -2893,6 +3083,7 @@ impl DocHost {
         chat_id: &str,
         prompt: &str,
         message_id: Option<&str>,
+        origin_chat_id: Option<String>,
     ) -> Result<bool, EngineError> {
         // A persistent session parked BETWEEN turns DOES take the next prompt
         // through its mailbox (the warm-child fast path), so the question is
@@ -2921,6 +3112,7 @@ impl DocHost {
             now_ms(),
             true,
             None,
+            origin_chat_id,
         )?;
         Ok(true)
     }
@@ -2937,6 +3129,7 @@ impl DocHost {
         issued_at: i64,
         steer: bool,
         request: Option<&roboco_proto::RunRequest>,
+        origin_chat_id: Option<String>,
     ) -> Result<(), EngineError> {
         let item = QueuedMessage {
             id: message_id.to_string(),
@@ -2947,6 +3140,8 @@ impl DocHost {
             issued_at: issued_at.min(now_ms()),
             edited_at: None,
             delivery_gate: None,
+            origin_chat_id,
+            completion_notice: None,
         };
         if handle.doc.read_queue()?.iter().any(|row| row.id == item.id) {
             return Ok(()); // a redelivered command: already held
@@ -2976,8 +3171,9 @@ impl DocHost {
         id: &str,
         prompt: &str,
         issued_at: i64,
+        origin_chat_id: Option<String>,
     ) -> Result<(), EngineError> {
-        self.hold_until_turn_end(handle, id, prompt, issued_at, true, None)
+        self.hold_until_turn_end(handle, id, prompt, issued_at, true, None, origin_chat_id)
     }
 
     async fn capture_source_context(&self, cwd: &str) -> Option<ConversationSourceContext> {
@@ -3001,6 +3197,7 @@ impl DocHost {
     /// dispatch so the conversation records the checkout the harness will
     /// actually observe, rather than whichever checkout state was current on
     /// an earlier turn.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_with_source_context(
         &self,
         sessions: &SessionsEngine,
@@ -3008,6 +3205,8 @@ impl DocHost {
         harness: HarnessId,
         request: roboco_proto::RunRequest,
         message_id: Option<String>,
+        origin_chat_id: Option<String>,
+        sent_at: Option<i64>,
     ) -> Result<String, EngineError> {
         if let Some(workspace) = self.workspace()
             && let Some(context) = self.capture_source_context(&request.cwd).await
@@ -3016,7 +3215,7 @@ impl DocHost {
             tracing::warn!(chat = %chat_id, error = %err, "conversation source stamp failed");
         }
         sessions
-            .dispatch(chat_id, harness, request, message_id)
+            .dispatch(chat_id, harness, request, message_id, origin_chat_id, sent_at)
             .await
     }
 
@@ -3171,6 +3370,8 @@ impl DocHost {
             auto_approve: false,
             attachments: Vec::new(),
             resume: None,
+            provider_fork: None,
+            resume_fallback_history: None,
             worktree: None,
             mcp: None,
         })
@@ -3271,6 +3472,7 @@ mod transcript_revisit_tests {
         for i in 0..2000 {
             source
                 .push_message(&roboco_doc::SessionMessageEntry {
+                    origin_chat_id: None,
                     id: format!("row-{i}"),
                     role: roboco_doc::MessageRole::User,
                     parts: vec![roboco_doc::MessagePart::Text {
@@ -3281,6 +3483,7 @@ mod transcript_revisit_tests {
                     device_id: "remote".into(),
                     status: None,
                     continuation_of: None,
+                    provider_turn: None,
                     duration_ms: None,
                 })
                 .unwrap();
@@ -3308,7 +3511,7 @@ mod transcript_revisit_tests {
         let (_dir, host) = host();
         let handle = host.open("cached").unwrap();
         handle
-            .write_user_message("row", "locally persisted transcript", 0)
+            .write_user_message("row", "locally persisted transcript", 0, None)
             .unwrap();
         let rx = handle.watch_messages();
         assert_eq!(rx.borrow().entries.len(), 1);

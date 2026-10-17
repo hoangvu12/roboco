@@ -60,6 +60,9 @@ describe("resolveShellEscape", () => {
     // Everything else is not live: completed, errored, idle, unknown.
     expect(resolveShellEscape(input({ indicator: "completed" }))).toEqual({ kind: "ignored" });
     expect(resolveShellEscape(input({ indicator: "errored" }))).toEqual({ kind: "ignored" });
+    // A limited chat is NOT live — nothing to interrupt (the full proto
+    // `Indicator` reaches here now that `effectiveIndicator` can say it).
+    expect(resolveShellEscape(input({ indicator: "limited" }))).toEqual({ kind: "ignored" });
     expect(resolveShellEscape(input({ indicator: "idle" }))).toEqual({ kind: "ignored" });
     expect(resolveShellEscape(input({ indicator: null }))).toEqual({ kind: "ignored" });
     // A live chat with no selection has nothing to interrupt.

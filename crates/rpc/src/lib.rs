@@ -53,6 +53,12 @@ pub mod methods {
     /// replies with the device's fresh `ListHarnesses` catalog.
     pub const GET_TITLE_SETTINGS: &str = "GetTitleSettings";
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
+    /// The engine's own user-facing settings (Settings → General on desktop;
+    /// orchestration v2, ticket 07): `autoResumeLimited` — arm Resume-at-reset
+    /// automatically whenever a chat becomes Limited. `{}` → EngineSettings;
+    /// Set takes the full EngineSettings and replies with the stored one.
+    pub const GET_ENGINE_SETTINGS: &str = "GetEngineSettings";
+    pub const SET_ENGINE_SETTINGS: &str = "SetEngineSettings";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_SKILLS: &str = "ListSkills";
@@ -71,8 +77,22 @@ pub mod methods {
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
     /// Fork a chat into a side chat: copies the source's completed history,
     /// appends the `fork` seam, and lists the copy under its parent.
-    /// Params `{chatId, sourceChatId, parentChatId?}` → `Chat`.
+    /// Params `{chatId, sourceChatId, parentChatId?, boundary?, harness?,
+    /// model?}` → `Chat`; `boundary` (t3-orchestration-v2 ticket 21) names
+    /// the assistant entry to fork at — any settled reply, not just the
+    /// latest complete one — and the copy stops there, inclusive;
+    /// `harness`/`model` (ticket 22) override what the copy runs on — a
+    /// different harness takes the budgeted-transcript path instead of a
+    /// native session fork, the same harness keeps it.
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
+    /// One-way harness switch on an existing chat between turns
+    /// (t3-orchestration-v2 ticket 24). Params `{chatId, harness, model?,
+    /// reasoning?, modelOptions?}` → `{}`: the engine writes the
+    /// "Switched to <harness>" seam, clears the chat's harness session, and
+    /// saves the new harness with the picks that arrived (model options
+    /// reset to the new harness's defaults unless the user chose them).
+    /// Refused while the chat works; must run on the chat's host device.
+    pub const SWITCH_HARNESS: &str = "SwitchHarness";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Messages typed while the agent was busy, held on the chat doc so every
     /// device sees the same queue. `{ chatId }` → `{ items: QueuedMessage[] }`.
@@ -96,6 +116,14 @@ pub mod methods {
     /// Steer this row into the live turn without interrupting it.
     /// `{ chatId, id }` → `{ sent }`.
     pub const STEER_QUEUED_MESSAGE_NOW: &str = "SteerQueuedMessageNow";
+    /// An agent parent observed a chat after its last outcome happened
+    /// (ticket 14, orchestration v2): the Roboco MCP server reports it for
+    /// its calling chat after `wait_for_turn`, `send_message` with wait,
+    /// `read_chat` or `get_chat`. Params `{ chatId, originChatId }` → `{}`:
+    /// completion-notice outcomes the parent already observed owe no
+    /// notice — they are dropped, and a record that lands right after the
+    /// report raced it is dropped too.
+    pub const ACK_SIDE_CHAT: &str = "AckSideChat";
     /// Pushed edge-connectivity posture (`roboco_proto::Connectivity`):
     /// current value first, then every change — the connection pill /
     /// composer-honesty / queued-badge feed. No params; IPC-only.
@@ -199,6 +227,21 @@ pub mod methods {
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
     pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
+    /// The ranked switch targets for one Limited chat's "Resume on another
+    /// account" (t3-orchestration-v2 ticket 09): the cached harness accounts
+    /// of the chat's harness, best first — switchable, not an API key, not
+    /// signed out, not still limited, not the account that hit the limit.
+    /// Empty when only Resume at reset remains. Params `{chatId}` →
+    /// `ResumeAccountCandidates`.
+    pub const LIST_RESUME_ACCOUNT_CANDIDATES: &str = "ListResumeAccountCandidates";
+    /// **Resume on another account** (t3-orchestration-v2 ticket 09): probe
+    /// the chosen account (or the best-ranked), activate it, retire the
+    /// chat's warm runtime, and resume the chat's harness session with the
+    /// continue prompt — falling back to a fresh session with the budgeted
+    /// history when the harness refuses. A signed-out failure after the
+    /// switch moves to the next candidate, else restores the previous
+    /// account. Params `{chatId, accountId?}` → `ResumeOnAccountOutcome`.
+    pub const RESUME_ON_ANOTHER_ACCOUNT: &str = "ResumeOnAnotherAccount";
     pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";

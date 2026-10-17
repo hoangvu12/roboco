@@ -29,6 +29,18 @@ pub enum HarnessId {
     Mock,
 }
 
+/// The continue prompt a Limited chat's **Resume** sends as a normal run
+/// (orchestration v2): one shared spelling so a resumed transcript reads
+/// the same from every surface that sends it (the desktop banner today;
+/// the engine's scheduled resumes join it in later tickets).
+pub const RESUME_CONTINUE_PROMPT: &str = "Continue where you left off.";
+
+/// The tail of the header the Roboco MCP server puts on a parent's message
+/// to its notifying side chat (orchestration v2): `[Message from Roboco
+/// chat <label><tail>]`. One spelling for the server that writes it and the
+/// transcript that folds it into a concise attribution.
+pub const SIDE_CHAT_MESSAGE_HEADER_TAIL: &str = ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.";
+
 /// Durable user preference for one agent's independently-installed CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
@@ -232,6 +244,26 @@ pub struct RunRequest {
     pub auto_approve: bool,
     /// Harness-native session id to resume, if any.
     pub resume: Option<String>,
+    /// The budgeted transcript (ticket 01's builder) delivered in front of
+    /// the prompt ONLY when the harness refuses the native resume of
+    /// `resume` and starts a fresh session instead (account failover,
+    /// orchestration v2 ticket 09: cross-account resumes usually keep working,
+    /// but a session the harness will not continue must still carry the chat's
+    /// prior context). Only the engine sets it — a plain resume carries none,
+    /// and a resumed session that never refuses never sees it. Additive +
+    /// serde-defaulted for wire compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_fallback_history: Option<String>,
+    /// A native fork to perform instead of a plain resume or fresh start
+    /// (t3-orchestration-v2 ticket 17): the driver forks the source provider
+    /// session at `last_turn` (inclusive) — Codex `thread/fork {threadId,
+    /// lastTurnId}` — so the forked session carries the copied history and
+    /// nothing is pasted into the prompt. Only the engine sets it: the fork's
+    /// first dispatch injects it from the intent the ForkSideChat RPC
+    /// recorded. Additive + serde-defaulted for wire compat — an old host
+    /// ignores it and starts fresh (the budgeted-history fallback).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_fork: Option<ProviderFork>,
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
@@ -254,6 +286,41 @@ pub struct RunRequest {
     /// no Roboco tools; title runs never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpServer>,
+}
+
+/// One side of a native fork riding [`RunRequest`]: the source provider
+/// session, the inclusive boundary to fork at, and the budgeted transcript
+/// to deliver instead when the harness refuses the fork (ticket 01's
+/// builder produces it; the driver pastes it in front of the prompt on the
+/// fresh session it starts). The engine fills `fallback_history` at run
+/// time — it is never persisted in the command payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFork {
+    /// The provider session being forked (the fork's source).
+    pub session_id: String,
+    /// The per-harness turn ref of the last copied assistant entry — the
+    /// boundary the fork continues the source session at, inclusive (Codex
+    /// `lastTurnId`).
+    pub last_turn: String,
+    /// The budgeted transcript prefix delivered in front of the prompt only
+    /// when the harness refuses the fork. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_history: Option<String>,
+}
+
+/// A provider turn reference (t3-orchestration-v2 ticket 17): the harness,
+/// the provider session the turn belongs to, and the harness's own turn ref
+/// (Codex: the turn id; Claude/Pi/OpenCode later). Transcript entries
+/// record it so a fork can continue the provider session at exactly the
+/// turn that produced the entry. The session id is part of the ref because
+/// a chat's provider session can change (fresh-start fallbacks).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTurnRef {
+    pub harness: HarnessId,
+    pub session_id: String,
+    pub turn_id: String,
 }
 
 /// A stdio MCP server the harness should add to the agent's session, on top
@@ -545,6 +612,32 @@ pub enum DoneStatus {
     Errored,
 }
 
+/// Structured classification for an [`AgentEvent::Error`], so engines and
+/// clients can act on usage limits and sign-outs instead of parsing the
+/// error text. The `message` stays the rendering source of truth; a `None`
+/// kind means the emitting harness could not classify the failure.
+///
+/// Wire names are frozen (ADR 0005): this whole type is additive — older
+/// clients ignore the `kind` field and keep rendering the message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentErrorKind {
+    /// A harness account's plan usage limit blocked the turn. The window is
+    /// the harness's own label ("5-hour", "weekly", … — "usage" when the
+    /// harness did not name the window); `resets_at` is the epoch-millis
+    /// instant the harness reported, when it reported one.
+    #[serde(rename_all = "camelCase")]
+    UsageLimit {
+        window: String,
+        /// Epoch millis when the window resets, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<i64>,
+    },
+    /// The harness's login is gone — the user must sign in again, not wait
+    /// for a limit to reset.
+    SignedOut,
+}
+
 /// The normalized streaming event every harness emits.
 ///
 /// Mirrors roboco's `AgentEvent` tagged enum.
@@ -620,6 +713,11 @@ pub enum AgentEvent {
     },
     Error {
         message: String,
+        /// Structured classification (usage limit, signed out). Additive on
+        /// the wire (ADR 0005): `None` (and a missing key) for every
+        /// unclassified error, so older payloads and clients are unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<AgentErrorKind>,
     },
     #[serde(rename_all = "camelCase")]
     InputRequested {
@@ -654,6 +752,17 @@ pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
     UserMessage {
         text: String,
+    },
+    /// The provider turn reference for the assistant entry currently
+    /// streaming (t3-orchestration-v2 ticket 17): the engine records it on
+    /// the transcript entry when the segment finishes, so a fork can
+    /// continue the provider session at exactly that turn. Codex emits it
+    /// when the app-server adopts a turn id; other harnesses follow. A
+    /// consumer that does not know the variant drops it — the pre-fork
+    /// behavior. Additive on the wire.
+    #[serde(rename_all = "camelCase")]
+    TurnRef {
+        reference: ProviderTurnRef,
     },
     /// An event belonging to a SUBAGENT's nested transcript, attributed to
     /// the spawning tool call (`parent_tool_use_id` = the parent-feed
@@ -738,6 +847,67 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    /// The structured error kind is additive on the wire (ADR 0005): new
+    /// payloads carry it under stable camelCase names, unclassified errors
+    /// serialize exactly as before, and legacy payloads without it parse.
+    #[test]
+    fn error_kind_is_additive_on_the_wire() {
+        let limited = AgentEvent::Error {
+            message: "Claude 5-hour limit reached — the turn was blocked. Try again after it resets.".into(),
+            kind: Some(AgentErrorKind::UsageLimit {
+                window: "5-hour".into(),
+                resets_at: Some(1_762_675_400_000),
+            }),
+        };
+        let json = serde_json::to_value(&limited).unwrap();
+        assert_eq!(json["type"], "error");
+        assert_eq!(json["kind"]["type"], "usageLimit");
+        assert_eq!(json["kind"]["window"], "5-hour");
+        assert_eq!(json["kind"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), limited);
+
+        let signed_out = AgentEvent::Error {
+            message: "Authentication failed — sign in to Claude again.".into(),
+            kind: Some(AgentErrorKind::SignedOut),
+        };
+        let json = serde_json::to_value(&signed_out).unwrap();
+        assert_eq!(
+            json.get("kind"),
+            Some(&serde_json::json!({"type": "signedOut"}))
+        );
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), signed_out);
+
+        // An unknown reset time is omitted, not null.
+        let unknown_reset = AgentEvent::Error {
+            message: "limit".into(),
+            kind: Some(AgentErrorKind::UsageLimit {
+                window: "usage".into(),
+                resets_at: None,
+            }),
+        };
+        let json = serde_json::to_value(&unknown_reset).unwrap();
+        assert!(json["kind"].get("resetsAt").is_none());
+
+        // Unclassified errors serialize byte-identically to the old shape …
+        let plain = serde_json::to_value(AgentEvent::Error {
+            message: "boom".into(),
+            kind: None,
+        })
+        .unwrap();
+        assert_eq!(plain, serde_json::json!({"type": "error", "message": "boom"}));
+        // … and payloads from before the field exist still parse.
+        let legacy =
+            serde_json::from_value::<AgentEvent>(serde_json::json!({"type": "error", "message": "boom"}))
+                .unwrap();
+        assert_eq!(
+            legacy,
+            AgentEvent::Error {
+                message: "boom".into(),
+                kind: None
+            }
+        );
     }
 
     /// Drivers spell the key differently; the chip must not care which one
@@ -872,6 +1042,88 @@ mod tests {
         assert!(spec.space_id.is_none());
         let encoded = serde_json::to_value(&spec).unwrap();
         assert!(encoded.get("spaceId").is_none());
+    }
+
+    #[test]
+    fn run_request_provider_fork_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.provider_fork.is_none());
+        // …and `None` serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("providerFork").is_none());
+        // A populated fork round-trips camelCased, boundary and fallback; a
+        // fork without a fallback parses (the driver then has none to paste).
+        let req = RunRequest {
+            provider_fork: Some(ProviderFork {
+                session_id: "th-source".into(),
+                last_turn: "turn-7".into(),
+                fallback_history: Some("<transcript>…".into()),
+            }),
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["providerFork"]["sessionId"], "th-source");
+        assert_eq!(json["providerFork"]["lastTurn"], "turn-7");
+        assert_eq!(json["providerFork"]["fallbackHistory"], "<transcript>…");
+        let round: RunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round.provider_fork, req.provider_fork);
+        let bare = serde_json::json!({ "sessionId": "s", "lastTurn": "t" });
+        let fork: ProviderFork = serde_json::from_value(bare).unwrap();
+        assert_eq!(fork.fallback_history, None);
+    }
+
+    #[test]
+    fn run_request_resume_fallback_history_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.resume_fallback_history.is_none());
+        // …and `None` serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("resumeFallbackHistory").is_none());
+        // The engine attaches the budgeted transcript only to a failover's
+        // continuation: it rides beside `resume`, camelCased.
+        let req = RunRequest {
+            resume: Some("sess-42".into()),
+            resume_fallback_history: Some("<transcript>…".into()),
+            ..req
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["resume"], "sess-42");
+        assert_eq!(json["resumeFallbackHistory"], "<transcript>…");
+        let round: RunRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round.resume, req.resume);
+        assert_eq!(round.resume_fallback_history, req.resume_fallback_history);
+    }
+
+    #[test]
+    fn turn_ref_event_round_trips_and_must_be_droppable_by_old_consumers() {
+        let event = AgentEvent::TurnRef {
+            reference: ProviderTurnRef {
+                harness: HarnessId::Codex,
+                session_id: "th-1".into(),
+                turn_id: "t-1".into(),
+            },
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "turnRef");
+        assert_eq!(json["reference"]["harness"], "codex");
+        assert_eq!(json["reference"]["sessionId"], "th-1");
+        assert_eq!(json["reference"]["turnId"], "t-1");
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(json).unwrap(),
+            event
+        );
+        // Additive compat: the same shape a future harness may extend parses.
+        let parsed: ProviderTurnRef = serde_json::from_value(serde_json::json!({
+            "harness": "claude-code",
+            "sessionId": "s",
+            "turnId": "uuid"
+        }))
+        .unwrap();
+        assert_eq!(parsed.harness, HarnessId::ClaudeCode);
     }
 
     #[test]

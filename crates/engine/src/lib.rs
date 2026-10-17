@@ -15,11 +15,14 @@ use roboco_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use roboco_sync::DocsStore;
 
+pub mod account_failover;
 pub mod agent_accounts;
 pub mod change_requests;
 mod chat_persistence;
+pub mod completion_notices;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod engine_settings;
 mod fs_watch;
 pub mod harness_updates;
 mod http_error;
@@ -34,6 +37,7 @@ pub mod registry;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
+pub mod scheduled_resumes;
 pub mod sessions;
 pub mod sidebar_state;
 pub mod source_control;
@@ -43,6 +47,7 @@ pub mod tailcat;
 pub mod tailcat_relay;
 pub mod terminals;
 pub mod titles;
+pub mod transcript_budget;
 mod transcript_history;
 pub mod uploads;
 mod web;
@@ -57,6 +62,7 @@ pub use diff_sync::{
     discard_working_tree, merge_base, read_diff_file_text, snapshot_tree, working_diff_base,
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig};
+pub use engine_settings::EngineSettings;
 pub use instance_lock::InstanceLock;
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
@@ -229,11 +235,28 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        // Pending completion notices are undelivered outcomes
+        // (orchestration v2, ticket 13): load the previous engine run's
+        // ledger BEFORE boot recovery, so the interrupted outcomes
+        // recovery records for runs the restart lost land in the same
+        // ledger — then deliver everything once recovery has settled the
+        // chats.
+        sessions.load_pending_notices(&profile.store_root().join("completion-notices.json"));
+        // Engine settings (auto-resume limited chats, …) and the durable
+        // Resume-at-reset store both live under the engine data dir; the
+        // continuations' timers arm after `recover_stale` (firing needs the
+        // wired doc host) — orchestration v2, ticket 07.
+        sessions.set_engine_settings_path(data_dir.join("engine-settings.json"));
+        sessions.set_scheduled_resumes_path(data_dir.join("scheduled-resumes.json"));
         match sessions.recover_stale() {
             Ok(0) => {}
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
+        sessions.deliver_pending_notices();
+        // Overdue continuations fire after boot; the rest sleep until their
+        // reset time. Staggered with the crashed-run resumes above.
+        sessions.recover_scheduled_resumes();
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());
@@ -268,6 +291,12 @@ impl EngineCore {
         // login between engines, so no route is registered in production.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        // The sessions engine reads the accounts store: usage-limit records
+        // take the active login's cached windows (which account the limit
+        // hit, reset-time fill — ticket 06), and runs that fail signed-out
+        // mark the harness's live login on the same store the accounts RPCs
+        // list (ticket 08).
+        sessions.set_agent_accounts(agent_accounts.clone());
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();

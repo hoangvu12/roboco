@@ -114,6 +114,7 @@ mod tests {
 
     fn harness_chat(harness: HarnessId) -> Chat {
         Chat {
+            agent_origin: None,
             id: "chat".into(),
             device_id: "device".into(),
             title: None,
