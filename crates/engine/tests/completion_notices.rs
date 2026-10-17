@@ -102,6 +102,16 @@ impl Scripted {
             .iter()
             .any(|p| p.contains(needle))
     }
+
+    /// How many runs so far carried `needle` in their prompt.
+    fn prompt_count(&self, needle: &str) -> usize {
+        self.prompts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|p| p.contains(needle))
+            .count()
+    }
 }
 
 #[async_trait]
@@ -129,13 +139,16 @@ impl Harness for Scripted {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        self.prompts.lock().unwrap().push(request.prompt.clone());
+        // Take the turn before recording the prompt: a test that sees this
+        // prompt may start the next run at once, and that run must never
+        // take the turn scripted for this one.
         let turn = self
             .turns
             .lock()
             .unwrap()
             .pop_front()
             .unwrap_or(Turn::Hang);
+        self.prompts.lock().unwrap().push(request.prompt.clone());
         let session = format!("sess-{}", self.run_count());
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(32);
         let steered = self.steered.clone();
@@ -339,6 +352,30 @@ async fn wait_idle(core: &EngineCore, chat: &str) {
         "the chat to go idle",
     )
     .await;
+}
+
+/// Queue a Run for `chat` and wait for THAT run to start and settle. A bare
+/// `wait_idle` right after the queue can pass on the chat's previous Idle
+/// row before this run even dispatched; the run's own prompt reaching the
+/// harness means its Working status already published (dispatch sets it
+/// before the run task starts), so the idle wait after it is this run's.
+async fn run_to_idle(
+    core: &EngineCore,
+    client: &roboco_rpc::RpcClient,
+    scripted: &Scripted,
+    chat: &str,
+    prompt: &str,
+    message_id: &str,
+    origin_chat_id: Option<&str>,
+) {
+    let before = scripted.prompt_count(prompt);
+    queue_run(client, chat, prompt, message_id, origin_chat_id).await;
+    wait_for(
+        || scripted.prompt_count(prompt) > before,
+        &format!("the run of {prompt:?} to start"),
+    )
+    .await;
+    wait_idle(core, chat).await;
 }
 
 /// Create the orchestrating parent: a cwd'd, titled chat a notice turn can
@@ -726,8 +763,7 @@ async fn a_user_started_turn_in_the_child_produces_no_notice() {
     create_parent_and_side(&core, &client, None).await;
 
     // A typed send: no origin chat on the command or the entry.
-    queue_run(&client, SIDE, "typed by the user", "m-run-1", None).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "typed by the user", "m-run-1", None).await;
     // Let any (wrongly recorded) notice delivery settle before asserting
     // absence.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -793,8 +829,7 @@ async fn a_user_created_side_chat_produces_no_notice() {
 
     // Even a parent-originated message does not make its turns notifiable:
     // there is no durable creator row to key on.
-    queue_run(&client, SIDE, "sent by a chat anyway", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "sent by a chat anyway", "m-run-1", Some(PARENT)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     assert!(
@@ -828,8 +863,7 @@ async fn a_notify_false_side_chat_produces_no_notice() {
         })
     );
 
-    queue_run(&client, SIDE, "fire and forget", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "fire and forget", "m-run-1", Some(PARENT)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     assert!(
@@ -975,8 +1009,7 @@ async fn a_working_parent_receives_the_notice_after_its_turn_as_its_next_turn() 
 
     // The parent starts the child's turn through the MCP surface; the
     // child completes while the parent still works.
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
 
     // No notice while the parent is busy: nothing steered in, no parent
     // turn started, no entry written. The outcome is recorded durably
@@ -1083,6 +1116,13 @@ async fn three_children_finishing_while_the_parent_works_merge_into_one_notice()
         )
         .await;
     }
+    // Every child's run dispatched (its Working row published) before the
+    // idle waits read the rows.
+    wait_for(
+        || scripted.prompt_count("please do your part") == sides.len(),
+        "every child's turn to start",
+    )
+    .await;
     for (chat_id, _) in sides {
         wait_idle(&core, chat_id).await;
     }
@@ -1166,8 +1206,7 @@ async fn a_pending_notice_survives_an_engine_restart_and_is_delivered_after_boot
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &first, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
     assert!(core.sessions.turn_in_flight(PARENT));
     assert!(notice_entries(&core, PARENT).is_empty());
     // The outcome is recorded durably before the engine dies — that is the
@@ -1400,8 +1439,7 @@ async fn an_archived_parent_receives_no_notices() {
     create_parent_and_side(&core, &client, None).await;
     core.workspace.set_chat_archived(PARENT, true).unwrap();
 
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
     // Let a wrongly recorded outcome settle before asserting absence.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -1438,8 +1476,7 @@ async fn a_deleted_parent_is_owed_nothing() {
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "the child's outcome to be recorded",
@@ -1539,8 +1576,7 @@ async fn notices_owed_to_a_parent_archived_before_delivery_are_dropped_at_boot()
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &first, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
     wait_for(
         || ledger_rows(&dir) == 1,
         "the child's outcome to be recorded durably",
@@ -1670,8 +1706,7 @@ async fn an_observed_outcome_owes_no_notice() {
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "please implement login", "m-run-1", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "the child's outcome to be recorded durably",
@@ -1739,8 +1774,7 @@ async fn an_outcome_after_the_observation_still_notifies() {
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "first task", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "first task", "m-run-1", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "the first outcome to be recorded",
@@ -1753,8 +1787,7 @@ async fn an_outcome_after_the_observation_still_notifies() {
 
     // A later turn of the same child settles while the parent still works:
     // its outcome is past the observation's watermark, so it is owed.
-    queue_run(&client, SIDE, "second task", "m-run-2", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "second task", "m-run-2", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "the second outcome to be recorded",
@@ -1820,8 +1853,7 @@ async fn a_late_observation_report_never_drops_an_unseen_outcome() {
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, SIDE, "first task", "m-run-1", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "first task", "m-run-1", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "the first outcome to be recorded",
@@ -1835,8 +1867,7 @@ async fn a_late_observation_report_never_drops_an_unseen_outcome() {
     tokio::time::sleep(Duration::from_millis(5)).await;
 
     // The child's second turn settles after the read: unseen by it.
-    queue_run(&client, SIDE, "second task", "m-run-2", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "second task", "m-run-2", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 2,
         "the second outcome to be recorded",
@@ -1907,8 +1938,7 @@ async fn stopping_the_parent_drops_pending_notices_and_suppresses_running_childr
         "the parent's turn to start",
     )
     .await;
-    queue_run(&client, "chat-side-a", "please implement login", "m-run-a", Some(PARENT)).await;
-    wait_idle(&core, "chat-side-a").await;
+    run_to_idle(&core, &client, &scripted, "chat-side-a", "please implement login", "m-run-a", Some(PARENT)).await;
     wait_for(
         || ledger_rows(dir.path()) == 1,
         "child A's outcome to be recorded durably",
@@ -2072,18 +2102,26 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
     // 25 rounds: the parent orchestrates, the child completes, the notice
     // starts the parent's next turn. The parent never sees a user message.
     for round in 0..25 {
-        queue_run(
+        run_to_idle(
+            &core,
             &client,
+            &scripted,
             SIDE,
             &format!("round {round}"),
             &format!("m-run-{round}"),
             Some(PARENT),
         )
         .await;
-        wait_idle(&core, SIDE).await;
         wait_for(
             || notice_entries(&core, PARENT).len() == round + 1,
             &format!("round {round}'s notice to be written"),
+        )
+        .await;
+        // The notice turn itself dispatched (child + notice per round)
+        // before the idle wait reads the parent's row.
+        wait_for(
+            || scripted.run_count() == 2 * (round + 1),
+            &format!("round {round}'s notice turn to start"),
         )
         .await;
         wait_idle(&core, PARENT).await;
@@ -2093,8 +2131,7 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
 
     // Round 26: the child completes, but the 26th notice-started turn does
     // not start — the notice parks as a paused queue row.
-    queue_run(&client, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
     wait_for(
         || queue_rows(&core, PARENT).len() == 1,
         "the capped notice to park in the parent's queue",
@@ -2197,8 +2234,7 @@ async fn the_loop_cap_parks_the_26th_notice_until_the_user_acts() {
     );
     // A new outcome after the user's message can start a notice turn again:
     // the count reset with the user's message (plus the row's own turn).
-    queue_run(&client, SIDE, "round 27", "m-run-27", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "round 27", "m-run-27", Some(PARENT)).await;
     wait_for(
         || notice_entries(&core, PARENT).len() == 27,
         "the count reset lets the next notice start a turn again",
@@ -2232,24 +2268,31 @@ async fn capped_outcomes_merge_into_the_one_parked_notice_row() {
 
     // Fill the cap, then park the 26th notice.
     for round in 0..25 {
-        queue_run(
+        run_to_idle(
+            &core,
             &client,
+            &scripted,
             SIDE,
             &format!("round {round}"),
             &format!("m-run-{round}"),
             Some(PARENT),
         )
         .await;
-        wait_idle(&core, SIDE).await;
         wait_for(
             || notice_entries(&core, PARENT).len() == round + 1,
             &format!("round {round}'s notice to be written"),
         )
         .await;
+        // The notice turn itself dispatched (child + notice per round)
+        // before the idle wait reads the parent's row.
+        wait_for(
+            || scripted.run_count() == 2 * (round + 1),
+            &format!("round {round}'s notice turn to start"),
+        )
+        .await;
         wait_idle(&core, PARENT).await;
     }
-    queue_run(&client, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
     wait_for(
         || queue_rows(&core, PARENT).len() == 1,
         "the capped notice to park in the parent's queue",
@@ -2258,8 +2301,7 @@ async fn capped_outcomes_merge_into_the_one_parked_notice_row() {
 
     // A second capped outcome parks INTO the same row: one row, its text
     // and sides now covering both side chats.
-    queue_run(&client, SIDE2, "the second child fails", "m-run-2", Some(PARENT)).await;
-    wait_idle(&core, SIDE2).await;
+    run_to_idle(&core, &client, &scripted, SIDE2, "the second child fails", "m-run-2", Some(PARENT)).await;
     wait_for(
         || queue_rows_with_sides(&core, PARENT)
             .into_iter()
@@ -2336,24 +2378,31 @@ async fn stopping_the_parent_drops_the_parked_notice_row() {
     // Fill the cap: 25 notice-started turns, then the 26th child completion
     // parks its notice in the parent's queue.
     for round in 0..25 {
-        queue_run(
+        run_to_idle(
+            &core,
             &client,
+            &scripted,
             SIDE,
             &format!("round {round}"),
             &format!("m-run-{round}"),
             Some(PARENT),
         )
         .await;
-        wait_idle(&core, SIDE).await;
         wait_for(
             || notice_entries(&core, PARENT).len() == round + 1,
             &format!("round {round}'s notice to be written"),
         )
         .await;
+        // The notice turn itself dispatched (child + notice per round)
+        // before the idle wait reads the parent's row.
+        wait_for(
+            || scripted.run_count() == 2 * (round + 1),
+            &format!("round {round}'s notice turn to start"),
+        )
+        .await;
         wait_idle(&core, PARENT).await;
     }
-    queue_run(&client, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
-    wait_idle(&core, SIDE).await;
+    run_to_idle(&core, &client, &scripted, SIDE, "round 26", "m-run-26", Some(PARENT)).await;
     wait_for(
         || queue_rows(&core, PARENT).len() == 1,
         "the capped notice to park in the parent's queue",
