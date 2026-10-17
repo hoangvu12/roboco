@@ -99,11 +99,13 @@ impl Harness for ResetHarness {
         request: RunRequest,
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // Subscribe before recording the prompt: a test that sees the prompt
+        // may send `finish` at once.
+        let mut finish = self.finish.subscribe();
         self.prompts.lock().unwrap().push(request.prompt.clone());
         let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let resets_at = self.script.lock().unwrap().get(run).copied().flatten();
         let session = format!("sess-{run}");
-        let mut finish = self.finish.subscribe();
         let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
             harness: HarnessId::ClaudeCode,
             model: "reset-1".into(),
@@ -616,12 +618,16 @@ async fn a_queued_message_waits_behind_the_pending_continuation() {
     );
 
     // The reset time arrives: the continuation fires, and the queued row
-    // follows it — the queue thaws with the continuation's dispatch.
+    // follows it — the queue thaws with the continuation's dispatch and
+    // drains when its turn ends.
     wait_for(
         || prompts_contain(&prompts, CONTINUE),
         "the continuation to fire at the reset time",
     )
     .await;
+    // The continuation owns the turn: the queued row waits behind it.
+    assert!(!prompts_contain(&prompts, "queued while limited"));
+    let _ = harness.finish.send(());
     wait_for(
         || prompts_contain(&prompts, "queued while limited"),
         "the queued row to follow the continuation",

@@ -1505,6 +1505,10 @@ impl RegistryDoc {
             Some(limit) => serde_json::to_value(limit)?,
             None => Value::Null,
         };
+        let scheduled_resume = match &session.scheduled_resume {
+            Some(scheduled) => serde_json::to_value(scheduled)?,
+            None => Value::Null,
+        };
         let set = fields([
             ("chatId", json!(session.chat_id)),
             ("deviceId", json!(session.device_id)),
@@ -1513,6 +1517,7 @@ impl RegistryDoc {
             ("startedAt", opt_ms(session.started_at)),
             ("updatedAt", json!(session.updated_at.timestamp_millis())),
             ("limit", limit),
+            ("scheduledResume", scheduled_resume),
         ]);
         self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -1656,6 +1661,10 @@ impl RegistryDoc {
                 Some(limit) => serde_json::to_value(limit)?,
                 None => Value::Null,
             };
+            let scheduled_resume = match &session.scheduled_resume {
+                Some(scheduled) => serde_json::to_value(scheduled)?,
+                None => Value::Null,
+            };
             seed(
                 KIND_SESSIONS,
                 &session.chat_id,
@@ -1668,6 +1677,7 @@ impl RegistryDoc {
                     ("startedAt", opt_ms(session.started_at)),
                     ("updatedAt", json!(session.updated_at.timestamp_millis())),
                     ("limit", limit),
+                    ("scheduledResume", scheduled_resume),
                 ]),
             );
         }
