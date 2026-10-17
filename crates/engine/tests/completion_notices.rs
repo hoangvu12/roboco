@@ -2301,7 +2301,13 @@ async fn capped_outcomes_merge_into_the_one_parked_notice_row() {
         text.starts_with("2 side chats reached outcomes:"),
         "the released notice is one merged notice: {text}"
     );
-    assert_eq!(scripted.run_count(), 54);
+    // The entry lands before the released row's dispatch: wait for its turn.
+    wait_for(
+        || scripted.run_count() == 54,
+        "the released row's notice turn to start",
+    )
+    .await;
+    wait_idle(&core, PARENT).await;
     assert!(queue_rows(&core, PARENT).is_empty());
 
     core.shutdown().await;
