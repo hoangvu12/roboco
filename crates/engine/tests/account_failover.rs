@@ -378,8 +378,9 @@ fn write_slot(
         .unwrap_or_else(|| serde_json::json!({ "entries": {} }));
     cache["entries"][&format!("claude-code:{account_key}")] = serde_json::json!({
         "usage": { "windows": serde_json::from_str::<serde_json::Value>(usage).unwrap() },
-        "checked_at": chrono::Utc::now().timestamp_millis(),
-        "sign_in": sign_in,
+        "fetchedAt": chrono::Utc::now().timestamp_millis(),
+        "checkedAt": chrono::Utc::now().timestamp_millis(),
+        "signIn": sign_in,
     });
     std::fs::write(&cache_path, cache.to_string()).expect("usage cache");
 }
