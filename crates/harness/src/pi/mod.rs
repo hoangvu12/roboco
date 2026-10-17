@@ -3009,7 +3009,8 @@ fn image_mime_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str>
 mod tests {
     use super::steering_mode_configured;
     use super::{
-        SessionEntries, branch_user_entries, fork_boundary, newest_user_entry, parse_entries,
+        ForkBoundary, SessionEntries, branch_user_entries, fork_boundary, newest_user_entry,
+        parse_entries,
     };
     use std::path::Path;
 

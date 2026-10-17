@@ -63,7 +63,7 @@ pub struct QueuedMessage {
     /// never as a user message. `None` for every other row. A later capped
     /// delivery merges its sides into the existing row's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion_notice: Option<Vec<roboco_proto::NoticeSide>>,
+    pub completion_notice: Option<Vec<crate::NoticeSide>>,
 }
 
 /// Why a queued row is not currently eligible for automatic or explicit
@@ -540,10 +540,10 @@ mod tests {
     fn completion_notice_sides_round_trip_and_old_rows_read_as_plain() {
         let doc = doc();
         let mut parked = item("notice:1", "Side chat reached outcomes.");
-        parked.completion_notice = Some(vec![roboco_proto::NoticeSide {
+        parked.completion_notice = Some(vec![crate::NoticeSide {
             chat_id: "chat-side-1234".into(),
             title: "Implement login".into(),
-            outcome: roboco_proto::NoticeOutcome::Completed,
+            outcome: crate::NoticeOutcome::Completed,
             detail: None,
         }]);
         doc.push_queued(&parked).unwrap();
