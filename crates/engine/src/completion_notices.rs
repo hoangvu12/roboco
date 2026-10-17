@@ -515,11 +515,9 @@ pub(crate) fn one_line(text: Option<&str>) -> Option<String> {
     if line.chars().count() <= NOTICE_DETAIL_MAX {
         return Some(line.to_owned());
     }
-    let mut cut = NOTICE_DETAIL_MAX;
-    while cut > 0 && !line.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    Some(format!("{}…", &line[..cut]))
+    // Cap by characters, not bytes: multibyte text keeps the full budget.
+    let cut: String = line.chars().take(NOTICE_DETAIL_MAX).collect();
+    Some(format!("{cut}…"))
 }
 
 /// The one-line summary of the question or approval a side chat is waiting
