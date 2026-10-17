@@ -95,12 +95,14 @@ impl Harness for LimitHarness {
         request: RunRequest,
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // Subscribe before recording the prompt: a test that sees the prompt
+        // may send `finish` at once.
+        let mut finish = self.finish.subscribe();
         self.prompts.lock().unwrap().push(request.prompt.clone());
         let run = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let kind = self.kind.clone();
         let second_kind = self.second_kind.clone();
         let session = format!("sess-{run}");
-        let mut finish = self.finish.subscribe();
         let started = futures::stream::iter(vec![Ok(AgentEvent::SessionStarted {
             harness: self.id,
             model: "limit-1".into(),
@@ -714,12 +716,11 @@ async fn a_plain_new_turn_clears_the_limit_record() {
 
     // The user's own next message (a normal send, not the resume prompt).
     queue_run(&core, "try a different angle", HarnessId::ClaudeCode, "m-next");
+    // Wait for the harness to hold the run, not just for Working: the
+    // status publishes before run() subscribes to `finish`, so a send in
+    // that window would be lost and the turn would never settle.
     wait_for(
-        || {
-            core.sessions
-                .session_status(CHAT)
-                .is_some_and(|s| s.status == SessionStatus::Working)
-        },
+        || prompts.lock().unwrap().iter().any(|p| p == "try a different angle"),
         "the new turn to start",
     )
     .await;
