@@ -270,7 +270,7 @@ fn write_file(path: &Path, file: &ScheduledResumeFile) -> std::io::Result<()> {
 /// the rename stays on one filesystem.
 fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let dir = path.parent().unwrap_or_else(|| path.as_path());
+    let dir = path.parent().unwrap_or(Path::new("."));
     let mut staged = tempfile::NamedTempFile::new_in(dir)?;
     staged.write_all(bytes)?;
     staged.flush()?;

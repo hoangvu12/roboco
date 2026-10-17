@@ -2110,6 +2110,13 @@ impl Pickers {
                 cx.notify();
             });
         }
+        // The refused pick still sits in the local picks, which shadow the
+        // chat row: drop them so the picker reads the restored row again.
+        if self.state.read(cx).selected_chat.as_deref() == Some(chat_id) {
+            self.config.harness = None;
+            self.config.model = None;
+            self.config.reasoning = None;
+        }
         cx.emit(HarnessSwitchFailed(
             format!("Could not switch harness: {reason}").into(),
         ));

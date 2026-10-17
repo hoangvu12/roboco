@@ -5477,6 +5477,7 @@ mod tests {
         };
         let row = |id: &str| roboco_doc::QueuedMessage {
             origin_chat_id: None,
+            completion_notice: None,
             id: id.into(),
             text: "held".into(),
             attachments: vec![],

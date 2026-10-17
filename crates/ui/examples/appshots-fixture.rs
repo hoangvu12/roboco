@@ -136,6 +136,7 @@ fn main() -> anyhow::Result<()> {
     let queue = vec![
         roboco_doc::QueuedMessage {
             origin_chat_id: None,
+            completion_notice: None,
             id: "queued-review".into(),
             text: body,
             attachments: paths.clone(),
@@ -147,6 +148,7 @@ fn main() -> anyhow::Result<()> {
         },
         roboco_doc::QueuedMessage {
             origin_chat_id: None,
+            completion_notice: None,
             id: "queued-text".into(),
             text: "Then check the spacing and keyboard navigation.".into(),
             attachments: vec![],

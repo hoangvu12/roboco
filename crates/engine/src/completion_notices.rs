@@ -355,7 +355,7 @@ impl CompletionNotices {
     pub(crate) fn settle(&self, chat_id: &str) -> u64 {
         let mut settles = lock(&self.settles);
         let marks = settles.entry(chat_id.to_string()).or_default();
-        let serial = marks.last().map(|mark| mark.serial).unwrap_or(0) + 1;
+        let serial = marks.back().map(|mark| mark.serial).unwrap_or(0) + 1;
         marks.push_back(SettleMark {
             serial,
             at: now_ms(),
@@ -371,7 +371,7 @@ impl CompletionNotices {
     pub(crate) fn settle_serial(&self, chat_id: &str) -> u64 {
         lock(&self.settles)
             .get(chat_id)
-            .and_then(|marks| marks.last())
+            .and_then(|marks| marks.back())
             .map(|mark| mark.serial)
             .unwrap_or(0)
     }
@@ -662,7 +662,7 @@ pub(crate) fn chat_archived(engine: &SessionsEngine, chat_id: &str) -> bool {
     let Some(host) = engine.host() else {
         return false;
     };
-    match host.workspace().and_then(|ws| ws.chat(chat_id)) {
+    match host.workspace().map(|ws| ws.chat(chat_id)) {
         Some(Ok(Some(chat))) => chat.archived,
         Some(Ok(None)) => true, // the chat is gone
         _ => false, // the row is unreadable: keep talking, never eat a report

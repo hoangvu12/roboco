@@ -1446,13 +1446,20 @@ async fn a_deleted_parent_is_owed_nothing() {
     )
     .await;
 
-    // The parent is deleted (the delete path drops what it is owed).
-    core.workspace.delete_chat(PARENT).unwrap();
-    assert_eq!(
-        ledger_rows(dir.path()),
-        0,
-        "the deleted parent's pending outcomes go with the chat"
-    );
+    // The parent is deleted through the RPC (the delete path purges the
+    // chat, dropping what it is owed).
+    client
+        .call(
+            roboco_rpc::methods::MUTATE,
+            serde_json::json!({ "op": "deleteChat", "chatId": PARENT }),
+        )
+        .await
+        .expect("deleteChat");
+    wait_for(
+        || ledger_rows(dir.path()) == 0,
+        "the deleted parent's pending outcomes to go with the chat",
+    )
+    .await;
 
     // Nothing wakes the gone chat: no notice turn was started for it.
     tokio::time::sleep(Duration::from_millis(300)).await;

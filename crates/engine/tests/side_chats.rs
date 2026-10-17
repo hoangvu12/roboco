@@ -1463,7 +1463,7 @@ async fn a_fork_onto_the_boundarys_harness_drops_the_current_configs_picks() {
                 harness: HarnessId::ClaudeCode,
                 model: Some("claude-sonnet".into()),
                 reasoning: Some(roboco_proto::ReasoningLevel::High),
-                model_options: serde_json::Map::from([(
+                model_options: serde_json::Map::from_iter([(
                     "claudeOption".into(),
                     serde_json::json!("on"),
                 )]),

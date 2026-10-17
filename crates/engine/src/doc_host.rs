@@ -1216,6 +1216,7 @@ impl DocHost {
             edited_at: None,
             delivery_gate: None,
             origin_chat_id: origin_chat_id.map(str::to_string),
+            completion_notice: None,
         })?;
         handle.publish_queue();
         // Same reasoning as a command: the user is acting in this chat again.
@@ -2022,11 +2023,14 @@ impl DocHost {
         // it and the turn starts on the notice's text with the notice's id
         // (the loop counter still reads it as notice-started).
         if let Some(sides) = item.completion_notice.clone() {
-            let entry = crate::completion_notices::notice_entry(
+            let mut entry = crate::completion_notices::notice_entry(
                 self.inner.config.device_id.as_str(),
                 &sides,
                 &item.text,
             );
+            // The row's own id (already `notice:`-prefixed): the dispatch
+            // below writes under `message_id`, and only a shared id dedupes.
+            entry.id = message_id.clone();
             if let Err(err) = handle.doc().push_message(&entry) {
                 tracing::warn!(chat = %chat_id, error = %err,
                     "parked completion-notice entry write failed");
@@ -3137,6 +3141,7 @@ impl DocHost {
             edited_at: None,
             delivery_gate: None,
             origin_chat_id,
+            completion_notice: None,
         };
         if handle.doc.read_queue()?.iter().any(|row| row.id == item.id) {
             return Ok(()); // a redelivered command: already held

@@ -784,6 +784,7 @@ impl SessionsEngine {
         message_id: Option<String>,
         origin_chat_id: Option<String>,
         startup_retry: bool,
+        sent_at: Option<i64>,
     ) -> futures::future::BoxFuture<'a, Result<String, EngineError>> {
         Box::pin(self.dispatch_inner(
             chat_id,
@@ -1776,6 +1777,7 @@ impl SessionsEngine {
                         request,
                         Some(user_id),
                         origin_chat_id,
+                        None,
                     )
                     .await
                 {
