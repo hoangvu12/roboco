@@ -249,6 +249,10 @@ struct RegistryState {
     entries: BTreeMap<EngineKey, Entry>,
     tasks: BTreeMap<EngineKey, tokio::task::JoinHandle<()>>,
 }
+/// How long the cache writer gathers saves before writing (the latest per
+/// engine wins).
+const CACHE_SAVE_WINDOW: Duration = Duration::from_millis(500);
+
 /// Command for the registry's single cache-writer task. Writes flow through
 /// one FIFO channel so the newest rows always win the rename: concurrent
 /// `save_rows` calls can persist out of order, and a stale frame would then
@@ -527,19 +531,41 @@ impl EngineRegistry {
         let (cache_tx, mut cache_rx) = tokio::sync::mpsc::unbounded_channel::<CacheCommand>();
         let writer_cache = cache.clone();
         tokio::task::spawn(async move {
-            while let Some(command) = cache_rx.recv().await {
-                match command {
+            // Coalesce: every feed frame asks for a save of the whole rows
+            // file (hundreds of KB, fsynced), so the writer gathers the
+            // saves of a short window and writes only each engine's latest.
+            // A flush ends the window at once and is acked after the writes.
+            while let Some(first) = cache_rx.recv().await {
+                let mut saves: BTreeMap<String, crate::cache::CachedRows> = BTreeMap::new();
+                let mut flushes = Vec::new();
+                let mut absorb = |command: CacheCommand| match command {
                     CacheCommand::Save { key, rows } => {
-                        let cache = writer_cache.clone();
-                        if let Ok(Err(error)) =
-                            tokio::task::spawn_blocking(move || cache.save_rows(&key, &rows)).await
-                        {
-                            tracing::warn!(%error, "Could not save engine history");
-                        }
+                        saves.insert(key, rows);
+                        false
                     }
                     CacheCommand::Flush(done) => {
-                        let _ = done.send(());
+                        flushes.push(done);
+                        true
                     }
+                };
+                let mut flushing = absorb(first);
+                let window = tokio::time::Instant::now() + CACHE_SAVE_WINDOW;
+                while !flushing {
+                    match tokio::time::timeout_at(window, cache_rx.recv()).await {
+                        Ok(Some(command)) => flushing = absorb(command),
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                for (key, rows) in saves {
+                    let cache = writer_cache.clone();
+                    if let Ok(Err(error)) =
+                        tokio::task::spawn_blocking(move || cache.save_rows(&key, &rows)).await
+                    {
+                        tracing::warn!(%error, "Could not save engine history");
+                    }
+                }
+                for done in flushes {
+                    let _ = done.send(());
                 }
             }
         });
