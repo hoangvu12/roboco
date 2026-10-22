@@ -26,13 +26,29 @@ but they are optional; take them only if they apply cleanly.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 4def484e4)
 
 **Verification budget:** `cargo test -p roboco-harness -- cursor`.
 Source: `.scratch/upstream-drift/2026-10-22.md` § account-adjacent pair.
 
-- [ ] Catalog defaults + adapter send + tests + shim ported
-- [ ] Account reads adapted to engine-local accounts
-- [ ] Commit records upstream SHA `3b2f78027` (#920)
+- [x] Catalog defaults + adapter send + tests + shim ported
+- [x] Account reads adapted to engine-local accounts
+- [x] Commit records upstream SHA `3b2f78027` (#920)
 
 ## Comments
+
+- 2026-10-24: Ported in 4def484e4. Carried `Catalog::cached_for`,
+  `fill_catalog_defaults` (on `run` + steer reconfigure),
+  `max_mode_default_ids`/`max_mode_defaults` (Max Mode default variants
+  keep the bare id), all seven new tests and the shim fixture scenarios
+  (model-default/override/legacy/switch/maxmode, grok-4.7 isMaxMode
+  item; discovery count 2→3). "Account catalog" = the engine-local
+  credential-scoped `models_cache` (catalog::Catalog +
+  credential_context hash) — no adaptation needed, no cloud account
+  service. The optional macOS dev hunks applied cleanly after the
+  rebrand (`ROBOCO_AUTO_UPDATE=0` in Info-dev.plist + run-macos-dev.sh)
+  and were taken. Drive-by rebrand fix in the same commit:
+  `model_context` read unprefixed `CURSOR_SDK_SHIM_EXECUTABLE`; now
+  `ROBOCO_CURSOR_SDK_SHIM_EXECUTABLE` (cache-key input only).
+  Verification: `cargo test -p roboco-harness --test cursor` 18/18,
+  `--lib catalog::` 20/20, `--test cursor_shim` 20/20.
