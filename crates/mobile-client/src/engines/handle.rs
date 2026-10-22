@@ -371,7 +371,7 @@ impl EngineHandle {
         // stop, or when this connection is dropped.
         let cancel = self.engine_cancel.child_token();
         let lag_cancel = cancel.clone();
-        super::link::spawn_lag_check(client.clone(), lag_cancel, timings);
+        super::link::spawn_lag_check(client.clone(), lag_cancel, timings, self.feed_slot.clone());
         Ok(TranscriptConnection {
             client,
             engine_id: self.key.0.clone(),

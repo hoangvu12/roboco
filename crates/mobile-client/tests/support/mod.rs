@@ -175,6 +175,7 @@ pub fn test_timings() -> Timings {
         subscribe_timeout: Duration::from_secs(2),
         sync_deadline: Duration::from_secs(5),
         probe_every: Duration::from_millis(200),
+        wake_probe_timeout: Duration::from_secs(1),
         lag_every: Duration::from_millis(300),
         lag_timeout: Duration::from_millis(400),
         cache_debounce: Duration::from_millis(50),

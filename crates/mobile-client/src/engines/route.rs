@@ -37,6 +37,12 @@ use crate::tailcat::{OpenedTunnel, TailcatError, Tunnel, TunnelOpener};
 /// How long the loopback probe after a failed dial may take.
 const LOOPBACK_PROBE: Duration = Duration::from_secs(2);
 
+/// The WebSocket upgrade budget through a Tailcat tunnel. The loopback
+/// accepts at once, then the Go side dials the engine through the tunnel
+/// (a 5 s attempt, a client reset, another 5 s) before the upgrade can
+/// answer; the 5 s localhost default gave up in the middle of that.
+const TAILCAT_HANDSHAKE: Duration = Duration::from_secs(15);
+
 pub(crate) enum Route {
     Direct { endpoint: String },
     Tailcat(TailcatRoute),
@@ -241,7 +247,12 @@ impl DialTarget {
             .endpoint()
             .await
             .map_err(|error| RpcError::Transport(error.to_string()))?;
-        let result = roboco_rpc::connect_ws_authenticated(&endpoint, &self.credential).await;
+        let result = if self.route.is_tailcat() {
+            roboco_rpc::connect_ws_authenticated_within(&endpoint, &self.credential, TAILCAT_HANDSHAKE)
+                .await
+        } else {
+            roboco_rpc::connect_ws_authenticated(&endpoint, &self.credential).await
+        };
         if self.route.is_tailcat() {
             match &result {
                 Ok(_) => tracing::debug!(%endpoint, "tailcat route: dial ok"),

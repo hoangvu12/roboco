@@ -63,6 +63,11 @@ pub struct Timings {
     pub sync_deadline: Duration,
     /// Health probe cadence: `EngineInfo` on the feed.
     pub probe_every: Duration,
+    /// The budget of the probe a foreground or a network change runs at
+    /// once: a thawed app must not wait out `identity_timeout` on a socket
+    /// that died while it was frozen. A slow reply whose bytes are still
+    /// arriving does not fail it.
+    pub wake_probe_timeout: Duration,
     /// Transcript lag check cadence and its reply budget; a transcript
     /// connection that misses the budget is closed.
     pub lag_every: Duration,
@@ -102,6 +107,7 @@ impl Default for Timings {
             subscribe_timeout: Duration::from_secs(15),
             sync_deadline: Duration::from_secs(20),
             probe_every: Duration::from_secs(5),
+            wake_probe_timeout: Duration::from_secs(4),
             lag_every: Duration::from_secs(10),
             lag_timeout: Duration::from_secs(15),
             cache_debounce: Duration::from_millis(300),

@@ -40,6 +40,9 @@ pub struct RpcClient {
     shared: Arc<Shared>,
     next_id: AtomicU64,
     reader: tokio::task::JoinHandle<()>,
+    /// The socket's byte clock, for a WebSocket dial (`None` for in-memory
+    /// and stdio duplexes).
+    progress: Option<crate::pump::Progress>,
 }
 
 /// Owned stream receiver whose drop immediately cancels the server task.
@@ -133,7 +136,22 @@ impl RpcClient {
             shared,
             next_id: AtomicU64::new(1),
             reader,
+            progress: None,
         }
+    }
+
+    fn with_progress(mut self, progress: crate::pump::Progress) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Whether any byte arrived on the socket after `since` (pongs count).
+    /// A health check that timed out while this holds was queued behind a
+    /// large frame, not lost. Always `false` without a socket clock.
+    pub fn received_since(&self, since: tokio::time::Instant) -> bool {
+        self.progress
+            .as_ref()
+            .is_some_and(|progress| progress.last_read() > since)
     }
 
     /// Resolves when the transport stops accepting frames.
@@ -149,7 +167,9 @@ impl RpcClient {
     /// client are still held: pending RPCs fail as [`RpcError::Closed`] and
     /// every stream subscriber sees its receiver end. The client's pump owns
     /// the socket; aborting the inbound reader drops the receiver the pump
-    /// selects on, which tears the socket down from either half. Idempotent.
+    /// selects on, and the pump sends a WebSocket Close (bounded) before it
+    /// releases the socket, so the peer learns at once instead of waiting
+    /// out its silence lease. Idempotent.
     ///
     /// The mobile client's transcript lag check uses this to drop a frozen
     /// connection whose `Arc` is still held by an open session handle.
@@ -432,22 +452,36 @@ fn dial_error(error: tokio_tungstenite::tungstenite::Error) -> RpcError {
 }
 
 /// How long each dial phase (TCP connect, WebSocket upgrade) may take before
-/// we give up.
+/// we give up, by default.
 ///
 /// This is localhost: a real engine answers in milliseconds. Without a bound,
 /// *any* other process holding the port accepts the TCP connection and then
 /// never completes the WebSocket handshake, and the caller waits forever — a
 /// stranger on port 27654 would hang the app at boot rather than degrade it.
+/// A tunnelled engine (a loopback proxy that dials onward on accept) needs a
+/// longer upgrade budget: [`connect_ws_authenticated_within`].
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Dial a WebSocket RPC server (`ws://127.0.0.1:{ipc_port}`).
 pub async fn connect_ws(url: &str) -> Result<RpcClient, RpcError> {
-    connect_ws_with_session(url, None).await
+    connect_ws_with_session(url, None, CONNECT_TIMEOUT).await
 }
 
 /// Dial a paired engine without placing its credential in the URL.
 pub async fn connect_ws_authenticated(url: &str, credential: &str) -> Result<RpcClient, RpcError> {
-    connect_ws_with_session(url, Some(credential)).await
+    connect_ws_with_session(url, Some(credential), CONNECT_TIMEOUT).await
+}
+
+/// [`connect_ws_authenticated`] with its own WebSocket upgrade budget. The
+/// TCP connect keeps [`CONNECT_TIMEOUT`]; the upgrade gets `handshake` —
+/// a Tailcat loopback accepts at once, then dials the engine through the
+/// tunnel before the upgrade can answer.
+pub async fn connect_ws_authenticated_within(
+    url: &str,
+    credential: &str,
+    handshake: std::time::Duration,
+) -> Result<RpcClient, RpcError> {
+    connect_ws_with_session(url, Some(credential), handshake).await
 }
 
 /// Per-message size ceiling for client WebSocket connections. #621 measured
@@ -461,6 +495,7 @@ pub const MAX_MESSAGE_BYTES: usize = 256 << 20;
 async fn connect_ws_with_session(
     url: &str,
     credential: Option<&str>,
+    handshake: std::time::Duration,
 ) -> Result<RpcClient, RpcError> {
     use tokio_tungstenite::tungstenite::{
         client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
@@ -502,7 +537,7 @@ async fn connect_ws_with_session(
     .map_err(|e| RpcError::Transport(e.to_string()))?;
     let (io, progress) = crate::pump::ProgressIo::new(io);
     let (ws, _) = tokio::time::timeout(
-        CONNECT_TIMEOUT,
+        handshake,
         tokio_tungstenite::client_async_tls_with_config(
             request,
             io,
@@ -522,12 +557,12 @@ async fn connect_ws_with_session(
     tokio::spawn(crate::pump::pump(
         crate::pump::Connection {
             socket: ws,
-            progress,
+            progress: progress.clone(),
         },
         out_rx,
         in_tx,
     ));
-    Ok(RpcClient::new(out_tx, in_rx))
+    Ok(RpcClient::new(out_tx, in_rx).with_progress(progress))
 }
 
 #[cfg(test)]
