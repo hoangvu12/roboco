@@ -25,6 +25,7 @@ use crate::settings::accounts::{
     self, AccountsSnapshotCache, UsageLevel, account_note, render_usage_meter, reports_usage,
     signed_out, signed_out_switch_warning, signs_in, usage_color, usage_level,
 };
+use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -584,6 +585,7 @@ impl AccountUsage {
     fn accounts_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = &Theme::of(cx).for_popup();
         let harness = self.harness;
+        let now = chrono::Utc::now();
         let rows: Vec<AgentAccount> = match (harness, self.snapshot(cx)) {
             (Some(harness), Some(snapshot)) => accounts::provider_accounts(snapshot, harness)
                 .into_iter()
@@ -683,10 +685,18 @@ impl AccountUsage {
                     )
                     .child(
                         div()
+                            .id(("account-usage-meters", ix))
                             .flex_none()
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
+                            // The meters carry the same reset-times tooltip
+                            // the Settings page's meters do (upstream #873).
+                            .when(!account.usage_windows.is_empty(), |meters| {
+                                meters.tooltip(widgets::text_tooltip(
+                                    accounts::usage_resets(&account.usage_windows, now),
+                                ))
+                            })
                             .children(
                                 account
                                     .usage_windows
