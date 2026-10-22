@@ -30,7 +30,6 @@ trait ProcessGroup {
 impl ProcessGroup for tokio::process::Command {
     fn into_configured_process_group(mut self) -> Self {
         use std::os::unix::process::CommandExt as _;
-        use tokio::process::CommandExt as _TokioCommandExt;
         self.process_group(0);
         self
     }

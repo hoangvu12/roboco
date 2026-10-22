@@ -2920,93 +2920,165 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&matches)
             }
             methods::LIST_WORKSPACE_DIRECTORY => {
-                let request: roboco_proto::ListWorkspaceDirectoryRequest = parse_params(params)?;
-                let page = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.list_directory(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::ListWorkspaceDirectoryRequest = parse_params(params)?;
+                    let page = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.list_directory(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace directory listing timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&page)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace directory listing timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&page)
             }
             methods::SEARCH_WORKSPACE_FILES => {
-                let request: roboco_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
-                let matches = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.search(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
+                    let matches = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.search(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file search timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&matches)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file search timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&matches)
             }
             methods::READ_WORKSPACE_IMAGE => {
-                let request: roboco_proto::ReadWorkspaceImageRequest = parse_params(params)?;
-                let chunk = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.read_image(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::ReadWorkspaceImageRequest = parse_params(params)?;
+                    let chunk = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.read_image(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("Workspace image read timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&chunk)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("Workspace image read timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&chunk)
             }
             methods::READ_WORKSPACE_FILE => {
-                let request: roboco_proto::ReadWorkspaceFileRequest = parse_params(params)?;
-                let file = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.read_file(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::ReadWorkspaceFileRequest = parse_params(params)?;
+                    let file = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.read_file(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&file)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&file)
             }
             // Structural mutations run without the short file-RPC timeout: a
             // recursive delete over a large tree can outlast it.
             methods::DELETE_WORKSPACE_ENTRY => {
-                let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
-                let outcome = self
-                    .workspace_files
-                    .delete_entry(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
+                    let outcome = self
+                        .workspace_files
+                        .delete_entry(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
+                .await
             }
             methods::MOVE_WORKSPACE_ENTRY => {
-                let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
-                let outcome = self
-                    .workspace_files
-                    .move_entry(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
+                    let outcome = self
+                        .workspace_files
+                        .move_entry(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
+                .await
             }
             methods::WRITE_WORKSPACE_FILE => {
-                let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;
-                let outcome = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.write_file(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;
+                    let outcome = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.write_file(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file write timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file write timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
             }
             methods::WATCH_WORKSPACE_FILES => {
-                let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
-                let subscription = self
-                    .workspace_files
-                    .watch_files(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                let stream = futures::stream::unfold(subscription, |mut subscription| async move {
-                    let changes = subscription.recv().await?;
-                    let value = serde_json::to_value(changes).ok()?;
-                    Some((value, subscription))
-                });
-                Ok(RpcReply::Stream(stream.boxed()))
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
+                    let subscription = self
+                        .workspace_files
+                        .watch_files(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    let stream = futures::stream::unfold(subscription, |mut subscription| async move {
+                        let changes = subscription.recv().await?;
+                        let value = serde_json::to_value(changes).ok()?;
+                        Some((value, subscription))
+                    });
+                    Ok(RpcReply::Stream(stream.boxed()))
+                })
+                .await
             }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
@@ -3206,37 +3278,44 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
-                let p: OpenTerminalParams = parse_params(params)?;
-                // Prefer an explicit real path (new-chat canvas has no row yet);
-                // `space-canvas:{spaceId}` names the selected project so a
-                // missing/tilde cwd still lands in that folder. Project-less
-                // chats store a home-relative cwd, expanded here on the host,
-                // and a missing home is an error rather than a silent `/`.
-                let chat_cwd = self
-                    .workspace
-                    .chat(&p.chat_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|chat| chat.cwd);
-                let space_cwd = canvas_space_id(&p.chat_id).and_then(|space_id| {
-                    self.workspace
-                        .space(space_id)
+                // The cwd resolution grew with the projectless-scratch and
+                // worktree-location ports (resolve_chat_cwd/scratch_root);
+                // box the branch like the workspace-file arms so the
+                // dispatcher's stack frame stays bounded.
+                Box::pin(async move {
+                    let p: OpenTerminalParams = parse_params(params)?;
+                    // Prefer an explicit real path (new-chat canvas has no row yet);
+                    // `space-canvas:{spaceId}` names the selected project so a
+                    // missing/tilde cwd still lands in that folder. Project-less
+                    // chats store a home-relative cwd, expanded here on the host,
+                    // and a missing home is an error rather than a silent `/`.
+                    let chat_cwd = self
+                        .workspace
+                        .chat(&p.chat_id)
                         .ok()
                         .flatten()
-                        .map(|space| space.path)
-                });
-                let cwd = resolve_open_terminal_cwd(
-                    p.cwd,
-                    chat_cwd,
-                    space_cwd,
-                    &self.repos.scratch_root(),
-                )
-                .map_err(|error| RpcError::Failed(error.to_string()))?;
-                let session = self
-                    .terminals
-                    .open(&cwd, p.cols, p.rows)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&session)
+                        .and_then(|chat| chat.cwd);
+                    let space_cwd = canvas_space_id(&p.chat_id).and_then(|space_id| {
+                        self.workspace
+                            .space(space_id)
+                            .ok()
+                            .flatten()
+                            .map(|space| space.path)
+                    });
+                    let cwd = resolve_open_terminal_cwd(
+                        p.cwd,
+                        chat_cwd,
+                        space_cwd,
+                        &self.repos.scratch_root(),
+                    )
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                    let session = self
+                        .terminals
+                        .open(&cwd, p.cols, p.rows)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    RpcReply::value(&session)
+                })
+                .await
             }
             methods::SUBSCRIBE_TERMINAL => {
                 let p: SubscribeTerminalParams = parse_params(params)?;
