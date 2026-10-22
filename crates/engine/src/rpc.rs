@@ -2940,12 +2940,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::SEARCH_WORKSPACE_FILES => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
                     let matches = tokio::time::timeout(
@@ -2960,12 +2955,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::READ_WORKSPACE_IMAGE => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::ReadWorkspaceImageRequest = parse_params(params)?;
                     let chunk = tokio::time::timeout(
@@ -2980,12 +2970,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::READ_WORKSPACE_FILE => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::ReadWorkspaceFileRequest = parse_params(params)?;
                     let file = tokio::time::timeout(
@@ -3002,12 +2987,7 @@ impl RpcService for EngineRpc {
             // Structural mutations run without the short file-RPC timeout: a
             // recursive delete over a large tree can outlast it.
             methods::DELETE_WORKSPACE_ENTRY => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
                     let outcome = self
@@ -3020,12 +3000,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::MOVE_WORKSPACE_ENTRY => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
                     let outcome = self
@@ -3038,12 +3013,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::WRITE_WORKSPACE_FILE => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;
                     let outcome = tokio::time::timeout(
@@ -3058,12 +3028,7 @@ impl RpcService for EngineRpc {
                 .await
             }
             methods::WATCH_WORKSPACE_FILES => {
-                                // resolve_target nests the checkout-authorization git futures
-                // (workspace_checkout/linked_worktrees/checkout_identity), which
-                // grew with the worktree-location and projectless ports. Keep
-                // this arm behind an allocation like its diff cousins so the
-                // dispatcher's already-large stack frame does not carry it
-                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                                // Same stack bounding as the listing arm above.
                 Box::pin(async move {
                     let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
                     let subscription = self
@@ -3278,10 +3243,8 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
-                // The cwd resolution grew with the projectless-scratch and
-                // worktree-location ports (resolve_chat_cwd/scratch_root);
-                // box the branch like the workspace-file arms so the
-                // dispatcher's stack frame stays bounded.
+                // The cwd resolution below carries the same grown nested
+                // futures as the workspace-file arms; box it the same way.
                 Box::pin(async move {
                     let p: OpenTerminalParams = parse_params(params)?;
                     // Prefer an explicit real path (new-chat canvas has no row yet);
