@@ -21,6 +21,7 @@ import (
 
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tailscale/tailcat"
@@ -64,22 +65,60 @@ type Client struct {
 	url   string
 	once  sync.Once
 
-	mu        sync.Mutex
-	tc        *tailcat.Client
-	newTC     func() *tailcat.Client
+	// cur is the live tunnel. Dials read it without a lock; only a reset
+	// (under resetMu) replaces it.
+	cur   atomic.Pointer[tunnel]
+	newTC func() *tailcat.Client
+
+	// resetMu serializes reset decisions, so simultaneous failed dials share
+	// one health probe and at most one of them replaces the tunnel.
+	resetMu   sync.Mutex
 	lastReset time.Time
+}
+
+// tunnel is one tailcat.Client generation. A reset replaces the whole
+// generation, which kills every socket it carries.
+type tunnel struct {
+	tc      *tailcat.Client
+	created time.Time
+	// handshaken is set once the server has acknowledged this client: the
+	// startup ping, a successful dial or a successful health probe. Only a
+	// handshaken client has a network stack and tunnel sockets to drain.
+	handshaken atomic.Bool
+
+	// The last health probe, guarded by Client.resetMu.
+	probedAt time.Time
+	probeErr error
+}
+
+func newTunnel(tc *tailcat.Client) *tunnel {
+	return &tunnel{tc: tc, created: time.Now()}
 }
 
 // URL returns the local loopback URL. It remains stable until Close.
 func (c *Client) URL() string { return c.url }
 
+// closeDrainTimeout bounds how long Close waits for the in-tunnel FINs to be
+// acknowledged. Without the drain, tearing down the in-process TCP stack
+// loses them and the engine only notices the dead sockets when its silence
+// lease runs out.
+const closeDrainTimeout = 1500 * time.Millisecond
+
 // Close stops accepting connections and closes active proxy and Tailcat
 // connections. It is safe to call more than once.
 func (c *Client) Close() {
 	c.once.Do(func() {
+		// proxy.close cancels and joins all dial/copy workers first, so no
+		// reset can race this and every tunnel socket is already closed.
 		c.proxy.close()
-		// proxy.close cancels and joins all dial/copy workers first.
-		_ = c.tc.Close()
+		t := c.cur.Load()
+		if t.handshaken.Load() {
+			ctx, cancel := context.WithTimeout(context.Background(), closeDrainTimeout)
+			err := t.tc.DrainTCP(ctx)
+			cancel()
+			debugLogf("adapter: close drained tailcat client %p: %v", t.tc, err)
+		}
+		_ = t.tc.Close()
 	})
 }
 
@@ -208,59 +247,169 @@ func connectClient(address, listenAddress string, state *stateFile, derpMap stri
 		_ = cl.Close()
 		return nil, errors.New("could not open loopback listener")
 	}
-	c := &Client{tc: cl, newTC: newTC, url: "http://" + ln.Addr().String()}
+	c := &Client{newTC: newTC, url: "http://" + ln.Addr().String()}
+	t := newTunnel(cl)
+	t.handshaken.Store(true) // the startup ping succeeded
+	c.cur.Store(t)
 	c.proxy = newProxy(ln, c.dial)
+	// Callers speak first (HTTP/WebSocket). Waiting for their first bytes
+	// keeps a bare connect-and-close liveness check of the loopback (the
+	// mobile core's "is the Go client still there?" probe) from dialing the
+	// tunnel, and so from ever counting as a failed dial.
+	c.proxy.awaitFirstBytes = true
 	c.proxy.start()
 	return c, nil
 }
 
 // Bound each tunnel dial: the proxy's lifetime context alone can leave a
-// gVisor SYN pending long after the HTTP caller has given up. The pinned
-// Tailcat client caches its initial registration (upDone); a restarted server
-// has forgotten that peer. Recreate the tunnel, with the SAME persisted key,
-// only after a failed dial. Keep the loopback listener and pairing untouched.
+// gVisor SYN pending long after the HTTP caller has given up.
 const tunnelDialTimeout = 5 * time.Second
 
-func (c *Client) dial(ctx context.Context) (net.Conn, error) {
-	c.mu.Lock()
-	tc := c.tc
-	c.mu.Unlock()
-	dial := func(tc *tailcat.Client) (net.Conn, error) {
-		attempt, cancel := context.WithTimeout(ctx, tunnelDialTimeout)
-		defer cancel()
-		started := time.Now()
-		conn, err := tc.DialTCPPort(attempt, ApplicationPort)
-		if err != nil {
-			debugLogf("adapter: tunnel dial %p failed after %v: %v", tc, time.Since(started), err)
-		} else {
-			debugLogf("adapter: tunnel dial %p ok after %v", tc, time.Since(started))
-		}
-		return conn, err
+// The pinned Tailcat client caches its initial registration (upDone), so a
+// restarted server that has forgotten the peer stays unreachable until the
+// client is recreated, with the SAME persisted key; the loopback listener and
+// pairing stay untouched. A reset kills every socket the client carries, so
+// one failed dial is not enough: the tunnel must also fail a health probe.
+const (
+	// healthProbeTimeout bounds the probe a failed dial triggers.
+	healthProbeTimeout = 3 * time.Second
+	// probeReuse lets the other dials that failed in the same burst reuse a
+	// fresh probe result instead of each paying for their own.
+	probeReuse = 2 * time.Second
+	// handshakeGrace is how long a client that has never completed its
+	// first handshake is left alone: right after a reset or a thaw its
+	// relay connection may still be coming up.
+	handshakeGrace = 20 * time.Second
+	// minResetInterval rate-limits resets while the server is offline.
+	minResetInterval = tunnelDialTimeout
+)
+
+// resetVerdict is the outcome of a failed tunnel dial.
+type resetVerdict int
+
+const (
+	keepReplaced    resetVerdict = iota // a newer tunnel already took over
+	keepRateLimited                     // reset too recently
+	keepHandshaking                     // first handshake still within its grace
+	keepHealthy                         // the health probe succeeded
+	resetTunnel                         // replace the tailcat client
+)
+
+func (v resetVerdict) String() string {
+	switch v {
+	case keepReplaced:
+		return "replaced"
+	case keepRateLimited:
+		return "rate-limited"
+	case keepHandshaking:
+		return "handshaking"
+	case keepHealthy:
+		return "healthy"
+	case resetTunnel:
+		return "reset"
 	}
-	conn, err := dial(tc)
+	return fmt.Sprintf("resetVerdict(%d)", int(v))
+}
+
+// dialFailure is what the reset decision knows about a failed dial.
+type dialFailure struct {
+	replaced   bool          // the dial used a tunnel that is no longer current
+	sinceReset time.Duration // since the last reset of this Client
+	age        time.Duration // of the tunnel the dial used
+	handshaken bool          // that tunnel ever completed its handshake
+}
+
+// decideReset decides whether a failed dial resets the tunnel. probe runs
+// only when every cheap check allows a reset; nil means the tunnel is healthy.
+func decideReset(f dialFailure, probe func() error) resetVerdict {
+	switch {
+	case f.replaced:
+		return keepReplaced
+	case f.sinceReset < minResetInterval:
+		return keepRateLimited
+	case !f.handshaken && f.age < handshakeGrace:
+		return keepHandshaking
+	}
+	if probe() == nil {
+		return keepHealthy
+	}
+	return resetTunnel
+}
+
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
+	t := c.cur.Load()
+	conn, err := t.dial(ctx)
 	if err == nil || ctx.Err() != nil {
 		return conn, err
 	}
-	c.mu.Lock()
-	// Coalesce simultaneous room reconnects. Never tear down a newer tunnel
-	// because a dial from its predecessor finally timed out; rate-limit resets
-	// while the server is offline or its application is unavailable.
-	if c.tc == tc && time.Since(c.lastReset) >= tunnelDialTimeout && ctx.Err() == nil {
-		_ = tc.Close()
-		c.tc = c.newTC()
-		c.lastReset = time.Now()
-		debugLogf("adapter: reset tailcat client %p -> %p", tc, c.tc)
-	} else {
-		debugLogf("adapter: no reset (current %p, since last reset %v)", c.tc, time.Since(c.lastReset))
-	}
-	tc = c.tc
-	c.mu.Unlock()
+	c.afterFailedDial(ctx, t)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	// No application bytes have been copied yet: retrying the TCP dial cannot
 	// replay a command or attachment write. The upper layer owns such retries.
-	return dial(tc)
+	return c.cur.Load().dial(ctx)
+}
+
+// afterFailedDial resets the tunnel if decideReset says so. Simultaneous
+// room reconnects coalesce on resetMu: they share one probe, and none tears
+// down a newer tunnel because a dial from its predecessor finally timed out.
+func (c *Client) afterFailedDial(ctx context.Context, failed *tunnel) {
+	c.resetMu.Lock()
+	defer c.resetMu.Unlock()
+	now := time.Now()
+	verdict := decideReset(dialFailure{
+		replaced:   c.cur.Load() != failed,
+		sinceReset: now.Sub(c.lastReset),
+		age:        now.Sub(failed.created),
+		handshaken: failed.handshaken.Load(),
+	}, func() error { return failed.probe(ctx) })
+	if verdict != resetTunnel || ctx.Err() != nil {
+		debugLogf("adapter: no reset of %p (%v)", failed.tc, verdict)
+		return
+	}
+	_ = failed.tc.Close()
+	next := newTunnel(c.newTC())
+	c.cur.Store(next)
+	c.lastReset = time.Now()
+	debugLogf("adapter: reset tailcat client %p -> %p", failed.tc, next.tc)
+}
+
+func (t *tunnel) dial(ctx context.Context) (net.Conn, error) {
+	attempt, cancel := context.WithTimeout(ctx, tunnelDialTimeout)
+	defer cancel()
+	started := time.Now()
+	conn, err := t.tc.DialTCPPort(attempt, ApplicationPort)
+	if err != nil {
+		debugLogf("adapter: tunnel dial %p failed after %v: %v", t.tc, time.Since(started), err)
+		return nil, err
+	}
+	t.handshaken.Store(true)
+	debugLogf("adapter: tunnel dial %p ok after %v", t.tc, time.Since(started))
+	return conn, nil
+}
+
+// probe checks the tunnel end to end within healthProbeTimeout. The caller
+// holds Client.resetMu.
+//
+// tailcat.Client.Ping is no health check here: once the first meow
+// handshake completed it returns at once without waiting for an ack. A
+// disco ping needs a pong from the server, via the relay or a direct path,
+// and a restarted server that has forgotten this peer ignores it.
+func (t *tunnel) probe(ctx context.Context) error {
+	if !t.probedAt.IsZero() && time.Since(t.probedAt) < probeReuse {
+		return t.probeErr
+	}
+	attempt, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+	started := time.Now()
+	_, err := t.tc.DiscoPing(attempt)
+	t.probedAt, t.probeErr = time.Now(), err
+	if err == nil {
+		t.handshaken.Store(true)
+	}
+	debugLogf("adapter: health probe of %p after %v: %v", t.tc, time.Since(started), err)
+	return err
 }
 
 func startServer(target, statePath, derpMap string, regionID int, region *tailcfg.DERPRegion) (*Server, error) {
@@ -437,12 +586,16 @@ func redactError(operation string, _ error) error { return errors.New(operation 
 type proxy struct {
 	listener net.Listener
 	dial     func(context.Context) (net.Conn, error)
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	closed   bool
-	active   map[net.Conn]struct{}
-	wg       sync.WaitGroup
+	// awaitFirstBytes defers the upstream dial until the accepted
+	// connection sends something; one that hangs up first never dials.
+	// Only for protocols whose caller speaks first.
+	awaitFirstBytes bool
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.Mutex
+	closed          bool
+	active          map[net.Conn]struct{}
+	wg              sync.WaitGroup
 }
 
 func newProxy(listener net.Listener, dial func(context.Context) (net.Conn, error)) *proxy {
@@ -472,6 +625,17 @@ func (p *proxy) serve(local net.Conn) {
 		return
 	}
 	defer p.untrack(local)
+	var first []byte
+	if p.awaitFirstBytes {
+		buf := make([]byte, 4096)
+		n, _ := local.Read(buf)
+		if n == 0 {
+			// Hung up (or failed) before sending anything: a liveness
+			// check of the listener, not a caller. Don't dial for it.
+			return
+		}
+		first = buf[:n]
+	}
 	remote, err := p.dial(p.ctx)
 	if err != nil {
 		_ = local.Close()
@@ -483,6 +647,11 @@ func (p *proxy) serve(local net.Conn) {
 		return
 	}
 	defer p.untrack(remote)
+	if len(first) > 0 {
+		if _, err := remote.Write(first); err != nil {
+			return
+		}
+	}
 	proxyBoth(local, remote)
 }
 

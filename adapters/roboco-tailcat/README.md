@@ -14,6 +14,15 @@ or `roboco-tailcat connect --config <private-connect.json> --state <client.key>
 `ROBOCO_TAILCAT_PARENT_PIPE=1` to terminate the subprocess when its stdin
 closes; both the Go adapter and Rust launcher use this Roboco-owned flag.
 
+The client keeps one `tailcat.Client` per engine for every socket. A failed
+tunnel dial resets it (with the same key) only when a ~3 s disco-ping health
+probe also fails; a client still on its first handshake gets 20 s first.
+`Client.Ping` cannot be the probe: after the first handshake it returns
+without waiting for an ack. The loopback proxy dials the tunnel only once the
+caller sends bytes, so a bare connect-and-close liveness check never does.
+`Close` drains in-tunnel TCP (`DrainTCP`, 1.5 s) before tearing the client
+down, so the engine receives the FINs instead of waiting out its lease.
+
 Build from this directory with Go 1.27.1 or `GOTOOLCHAIN=auto`:
 
 ```sh
