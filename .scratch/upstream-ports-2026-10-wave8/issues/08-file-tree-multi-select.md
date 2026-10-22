@@ -36,7 +36,6 @@ with no wire or pin involvement.
 
 ## Comments
 
-- f08bdd585_PLACEHOLDER
 - Ported in commit f08bdd585, ported in the ticket's order: model.rs
   selection model first, then tree.rs modifier clicks + context menu
   actions, drag.rs multi-entry drops, rename.rs multi-item delete,

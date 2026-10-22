@@ -29,7 +29,10 @@ account service adapts to the engine-local accounts model instead.
 tests. Source: `.scratch/upstream-drift/2026-10-22.md` § account-adjacent
 pair.
 
-- [x] Reset-time tooltip shared between popover and Settings meters
+- [x] Reset-time tooltip shared via `usage_resets` and attached to the
+  popover meters (roboco's Settings meters show resets inline per meter in
+  their own design, so the tooltip itself is popover-only here — see
+  Comments)
 - [x] Commit records upstream SHA `09beace00` (#873)
 
 ## Comments
