@@ -340,15 +340,31 @@ impl Repos {
     /// Canonical identity shared by every chat operating in this exact worktree:
     /// `sha256(deviceId ‖ NUL ‖ canonical git dir)`.
     pub async fn checkout_identity(&self, path: &Path) -> Result<CheckoutIdentity, EngineError> {
-        let root = self
-            .git(&["rev-parse", "--show-toplevel"], Some(path))
-            .await?;
-        let git_dir = self
+        let out = self
             .git(
-                &["rev-parse", "--path-format=absolute", "--git-dir"],
+                &[
+                    "rev-parse",
+                    "--show-toplevel",
+                    "--path-format=absolute",
+                    "--git-dir",
+                ],
                 Some(path),
             )
             .await?;
+        let mut lines = out.lines();
+        let (root, git_dir) = match (lines.next(), lines.next(), lines.next()) {
+            (Some(root), Some(git_dir), None) => (root.to_owned(), git_dir.to_owned()),
+            // Fallback for a path with a `\n` in its name.
+            _ => (
+                self.git(&["rev-parse", "--show-toplevel"], Some(path))
+                    .await?,
+                self.git(
+                    &["rev-parse", "--path-format=absolute", "--git-dir"],
+                    Some(path),
+                )
+                .await?,
+            ),
+        };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
         let canonical_git_dir =
             std::fs::canonicalize(&git_dir).unwrap_or_else(|_| PathBuf::from(&git_dir));
@@ -1122,11 +1138,21 @@ impl Repos {
             return list.paths.clone();
         }
         let listed = std::time::Instant::now();
-        let paths = self
-            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+        // NUL-terminated so a `\n` in a worktree's path can't forge another
+        // entry.
+        let out = match self
+            .git(&["worktree", "list", "--porcelain", "-z"], Some(repo_path))
             .await
-            .map(|out| linked_worktree_paths(&out))
-            .unwrap_or_default();
+        {
+            Ok(out) => out,
+            // Git before 2.36 has no `-z`.
+            Err(_) => self
+                .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+                .await
+                .map(|out| out.replace('\n', "\0"))
+                .unwrap_or_default(),
+        };
+        let paths = linked_worktree_paths(&out);
         if let Ok(mut lists) = self.inner.worktree_lists.lock() {
             lists.insert(
                 repo_path.to_path_buf(),
@@ -1521,10 +1547,11 @@ async fn disposable_worker<T: Send + 'static>(
 
 /// Linked worktrees in `git worktree list --porcelain` output: every
 /// `worktree <path>` stanza after the first, which is the main checkout.
+/// NUL-terminated so a `\n` in a worktree's path can't forge another entry.
 fn linked_worktree_paths(porcelain: &str) -> Vec<PathBuf> {
     porcelain
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("worktree "))
+        .split('\0')
+        .filter_map(|line| line.strip_prefix("worktree "))
         .skip(1)
         .map(PathBuf::from)
         .collect()
@@ -2664,6 +2691,57 @@ tmpfs /run tmpfs rw 0 0
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_checkout_accepts_every_linked_worktree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let branch = tmp.path().join("branch");
+        let detached = tmp.path().join("detached");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        std::fs::create_dir_all(&elsewhere).expect("unrelated dir");
+        git_fixture(&root, &["init", "-b", "main"]);
+        git_fixture(&root, &["commit", "--allow-empty", "-m", "initial"]);
+        git_fixture(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &branch.to_string_lossy(),
+            ],
+        );
+        git_fixture(
+            &root,
+            &["worktree", "add", "--detach", &detached.to_string_lossy()],
+        );
+        let data = tmp.path().join("data");
+        let repos =
+            Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        for checkout in [&root, &branch, &detached] {
+            assert_eq!(
+                repos.workspace_checkout(&root, checkout).await,
+                std::fs::canonicalize(checkout).ok(),
+                "{}",
+                checkout.display()
+            );
+        }
+        // A newline in a worktree's path must not smuggle in another entry.
+        #[cfg(unix)]
+        {
+            let forged = tmp
+                .path()
+                .join(format!("forged\nworktree {}", elsewhere.display()));
+            git_fixture(
+                &root,
+                &["worktree", "add", "--detach", &forged.to_string_lossy()],
+            );
+        }
+        assert!(repos.workspace_checkout(&root, &elsewhere).await.is_none());
     }
 
     fn git_fixture(cwd: &Path, args: &[&str]) {
