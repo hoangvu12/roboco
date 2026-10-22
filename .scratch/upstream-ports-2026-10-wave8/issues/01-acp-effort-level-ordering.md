@@ -17,7 +17,7 @@ tests), no wire/UI/pin involvement, roboco holds the adapter from the
 
 **Blocked by:** None.
 
-**Status:** done (ported in 32ecde8fb)
+**Status:** done (ported in c2d0db230)
 
 **Verification budget:** `cargo check -p roboco-harness` + the ACP
 tests. Source: `.scratch/upstream-drift/2026-10-22.md` § quick ports.
@@ -27,7 +27,7 @@ tests. Source: `.scratch/upstream-drift/2026-10-22.md` § quick ports.
 
 ## Comments
 
-- 2026-10-24: Ported in 32ecde8fb. `models_from_session` gained
+- 2026-10-24: Ported in c2d0db230. `models_from_session` gained
   `ladder.sort_unstable(); ladder.dedup();` (renamed binding to `mut`),
   plus the `grok_thought_levels_order_from_lowest_to_highest` test
   carried verbatim — roboco's `grok_spec` matches upstream's at the

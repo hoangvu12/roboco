@@ -22,7 +22,7 @@ involvement beyond the question surfaces roboco already renders.
 
 **Blocked by:** None.
 
-**Status:** done (ported in cc5325dcd)
+**Status:** done (ported in 7789a2f67)
 
 **Verification budget:** `cargo test -p roboco-harness -- opencode`.
 Source: `.scratch/upstream-drift/2026-10-22.md` § engine tickets.
@@ -32,7 +32,7 @@ Source: `.scratch/upstream-drift/2026-10-22.md` § engine tickets.
 
 ## Comments
 
-- 2026-10-24: Ported in cc5325dcd. Carried
+- 2026-10-24: Ported in 7789a2f67. Carried
   `v2_question_form_payload` (form.created → shared question.asked
   payload with field keys), `map_questions` → (key, question) pairs
   with minted panel ids, `form_answer_body` (field-keyed answers,

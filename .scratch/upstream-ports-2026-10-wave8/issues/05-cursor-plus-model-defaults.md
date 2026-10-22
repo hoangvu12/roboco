@@ -26,7 +26,7 @@ but they are optional; take them only if they apply cleanly.
 
 **Blocked by:** None.
 
-**Status:** done (ported in 4def484e4)
+**Status:** done (ported in d45a46263)
 
 **Verification budget:** `cargo test -p roboco-harness -- cursor`.
 Source: `.scratch/upstream-drift/2026-10-22.md` § account-adjacent pair.
@@ -37,7 +37,7 @@ Source: `.scratch/upstream-drift/2026-10-22.md` § account-adjacent pair.
 
 ## Comments
 
-- 2026-10-24: Ported in 4def484e4. Carried `Catalog::cached_for`,
+- 2026-10-24: Ported in d45a46263. Carried `Catalog::cached_for`,
   `fill_catalog_defaults` (on `run` + steer reconfigure),
   `max_mode_default_ids`/`max_mode_defaults` (Max Mode default variants
   keep the bare id), all seven new tests and the shim fixture scenarios
