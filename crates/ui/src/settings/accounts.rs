@@ -115,6 +115,22 @@ pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Opt
     })
 }
 
+/// "Session: resets 3:45 PM · Week: resets Thu" — the usage meters' tooltip
+/// (shared by the Settings page's meters and the composer popover's).
+pub(crate) fn usage_resets(
+    windows: &[roboco_proto::AgentUsageWindow],
+    now: DateTime<Utc>,
+) -> String {
+    windows
+        .iter()
+        .map(|window| match format_reset(window.resets_at, now) {
+            Some(reset) => format!("{}: {reset}", window.label),
+            None => window.label.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// The provider cards, in display order: (harness, name, CLI command — named
 /// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`). Every
 /// agent with a login of its own is here; what each one supports is
@@ -2202,6 +2218,32 @@ mod tests {
         assert_eq!(usage_color(UsageLevel::Normal, &theme), theme.accent);
         assert_eq!(usage_color(UsageLevel::Warn, &theme), theme.warning);
         assert_eq!(usage_color(UsageLevel::Critical, &theme), theme.danger);
+    }
+
+    #[test]
+    fn usage_resets_lists_every_window() {
+        let now = Utc::now();
+        let soon = now + TimeDelta::minutes(125);
+        let windows = [
+            roboco_proto::AgentUsageWindow {
+                label: "Session".into(),
+                used_fraction: 0.07,
+                resets_at: Some(soon),
+            },
+            roboco_proto::AgentUsageWindow {
+                label: "Week".into(),
+                used_fraction: 0.44,
+                resets_at: None,
+            },
+        ];
+        assert_eq!(
+            usage_resets(&windows, now),
+            format!(
+                "Session: {} · Week",
+                format_reset(Some(soon), now).unwrap()
+            )
+        );
+        assert_eq!(usage_resets(&[], now), "");
     }
 
     #[test]

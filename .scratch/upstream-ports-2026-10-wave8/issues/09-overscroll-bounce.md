@@ -22,14 +22,28 @@ visible payoff.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 106f36a38)
 
 **Verification budget:** `cargo check -p roboco-ui` + any overscroll
 tests upstream ships; a manual smoke of the three regions if a headed
 run is convenient. Source: `.scratch/upstream-drift/2026-10-22.md` §
 medium tickets.
 
-- [ ] `overscroll.rs` ported + three consumers wired
-- [ ] Commit records upstream SHA `2d40f8df6` (#821)
+- [x] `overscroll.rs` ported + three consumers wired
+- [x] Commit records upstream SHA `2d40f8df6` (#821)
 
 ## Comments
+
+- Ported in commit 106f36a38. `overscroll.rs` ported verbatim from
+  upstream (0 zeron identifiers, 721 lines, all 10 tests including the
+  div-stretch fixture). Consumers wired in upstream's order:
+  transcript (List source), sessions sidebar (Handle source), file
+  tree (List source); `pub mod overscroll` exported from lib.rs.
+- Motion gate verified: the wrapper's prepaint already consults
+  roboco's `crate::motion::reduced_motion` (the OS-following global,
+  upstream #642 parity) and resets the band when set, so no extra
+  wiring was needed; it is also off while a drag is active.
+- Verified: cargo check -p roboco-ui clean; overscroll 10/10,
+  files::tree 5/5, transcript 135/135, shell 216/216. No manual headed
+  smoke available in this environment (Linux); the unit suite covers
+  the band mechanics and ENABLED is macOS/test-only as upstream.

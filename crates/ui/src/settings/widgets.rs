@@ -1529,12 +1529,14 @@ pub fn dropdown_list_height(viewport: gpui::Size<Pixels>, chrome_height: f32) ->
 /// Tone presets shared by every settings action button, so quiet inline
 /// actions, outlined controls, filled pills and solid CTAs read as one family
 /// (upstream unifies them; the glass-control pass may refine their material).
+/// Danger is for destructive actions behind a confirmation.
 #[derive(Clone, Copy)]
 pub enum ActionTone {
     Quiet,
     Outlined,
     Filled,
     Solid,
+    Danger,
 }
 
 pub fn action_button(theme: &Theme, tone: ActionTone) -> gpui::Div {
@@ -1570,6 +1572,11 @@ pub fn action_button(theme: &Theme, tone: ActionTone) -> gpui::Div {
             .bg(theme.solid)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(theme.on_solid)
+            .hover(|s| s.opacity(0.9)),
+        // The dialogs' destructive fill (`popover::btn_danger`).
+        ActionTone::Danger => button
+            .bg(theme.danger_strong)
+            .text_color(gpui::white())
             .hover(|s| s.opacity(0.9)),
     }
 }

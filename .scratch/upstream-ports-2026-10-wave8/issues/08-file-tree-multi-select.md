@@ -24,14 +24,29 @@ with no wire or pin involvement.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in f08bdd585)
 
 **Verification budget:** `cargo check -p roboco-ui` + files tree tests
 (upstream ships selection tests via `test_support.rs`). Source:
 `.scratch/upstream-drift/2026-10-22.md` § medium tickets.
 
-- [ ] Selection model + bulk actions + drag + rename ported
-- [ ] `docs/file-tree-interactions.md` carried
-- [ ] Commit records upstream SHA `2c2963aae` (#774)
+- [x] Selection model + bulk actions + drag + rename ported
+- [x] `docs/file-tree-interactions.md` carried
+- [x] Commit records upstream SHA `2c2963aae` (#774)
 
 ## Comments
+
+- Ported in commit f08bdd585, ported in the ticket's order: model.rs
+  selection model first, then tree.rs modifier clicks + context menu
+  actions, drag.rs multi-entry drops, rename.rs multi-item delete,
+  mutations.rs batching, shell fan-out (MutateMany queue in
+  shell/file_mutations.rs), test_support.rs set_root_entries, and
+  docs/file-tree-interactions.md's "Selecting several entries"
+  section. All 8 upstream tests carried (3 model, 2 tree, 1 context
+  menu, 2 drag, 1 mutations, 2 file_mutations) plus the 3 model
+  selection tests; files:: suite 154/154, shell::file_mutations 4/4,
+  cargo check -p roboco-ui clean.
+- Adaptations (not exclusions): roboco_proto rename;
+  `batch_failure_message` etc. carried verbatim; roboco's
+  engine-target routing inside run_file_mutation_queue kept as the
+  single-operation path the queue replays. No excluded hunks.
