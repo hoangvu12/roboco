@@ -19,13 +19,34 @@ files and the Cmd+K palette.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 783027f5b on wave8/engine)
 
 **Verification budget:** `cargo check -p roboco-engine` + the repos/
 workspace_files tests. Source: `.scratch/upstream-drift/2026-10-22.md`
 § engine tickets.
 
-- [ ] Stable recent-files snapshot + projection ported
-- [ ] Commit records upstream SHA `2a209cc6c` (#890)
+- [x] Stable recent-files snapshot + projection ported
+- [x] Commit records upstream SHA `2a209cc6c` (#890)
 
 ## Comments
+
+Ported in 783027f5b. All three upstream hunks carried:
+
+- `checkout_identity` single `rev-parse` + 3-line fallback: verbatim.
+- `workspace_checkout`: roboco already had the TTL-cached
+  `linked_worktrees()` (one `git worktree list` until
+  `.git/worktrees` mtime changes or 10 s pass), so upstream's new
+  `worktree_paths()` helper was folded into that cache rather than
+  replacing a `refs()` call that roboco's version never made. The
+  NUL-terminated `-z` parsing with the pre-2.36 newline fallback and
+  the `linked_worktree_paths` `split('\0')` port carry upstream's
+  newline-forgery protection; the newline-in-path test
+  (`workspace_checkout_accepts_every_linked_worktree`, using roboco's
+  `git_fixture` instead of upstream's env-var `git`) passes. Detached
+  worktrees were already accepted by roboco's stanza parser; the new
+  test pins that.
+- `resolve_target` `tokio::join!` concurrency: verbatim (both match
+  arms now yield `(root, identity)`).
+
+Verified: `cargo check -p roboco-engine`; repos module 21/21,
+`--test workspace_files` 8/8. No new wire types, so no wiregen check.
