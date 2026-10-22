@@ -22,12 +22,29 @@ involvement beyond the question surfaces roboco already renders.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in cc5325dcd)
 
 **Verification budget:** `cargo test -p roboco-harness -- opencode`.
 Source: `.scratch/upstream-drift/2026-10-22.md` § engine tickets.
 
-- [ ] Session-form handling + tests ported
-- [ ] Commit records upstream SHA `9609f994a` (#833)
+- [x] Session-form handling + tests ported
+- [x] Commit records upstream SHA `9609f994a` (#833)
 
 ## Comments
+
+- 2026-10-24: Ported in cc5325dcd. Carried
+  `v2_question_form_payload` (form.created → shared question.asked
+  payload with field keys), `map_questions` → (key, question) pairs
+  with minted panel ids, `form_answer_body` (field-keyed answers,
+  multiselect arrays), the form-route reply arm (with the dropped-
+  resolver no-op for forms, 1.x reject unchanged), removal of the
+  harness's own InputRequested/InputResolved (the engine input bridge
+  is sole emitter — roboco's Claude/Codex and sessions.rs already carry
+  this), and all four tests. Adaptation: roboco's engine-local
+  `UserInputQuestion` has no `prefill`/`multiline` fields, so those
+  initializers were dropped (the only delta vs upstream). No fixture
+  changes needed — the bus-frame tests use the in-file TurnWire
+  harness. Verification: `--lib opencode::` 71/71 (incl. the 3 new unit
+  tests + form-route async test), `--test opencode` 31/31; no new
+  clippy or rustfmt findings (repo has pre-existing divergence in
+  unrelated files).
