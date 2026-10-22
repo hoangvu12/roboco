@@ -18,12 +18,23 @@ surfaces exist.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 63495938b)
 
 **Verification budget:** `cargo check -p roboco-ui` + shell tab tests.
 Source: `.scratch/upstream-drift/2026-10-22.md` § smalls.
 
-- [ ] Icons render in idle side-chat/subagent tabs
-- [ ] Commit records upstream SHA `75b72602a` (#725)
+- [x] Icons render in idle side-chat/subagent tabs
+- [x] Commit records upstream SHA `75b72602a` (#725)
 
 ## Comments
+
+- Ported in commit 63495938b. SubagentTab gains `harness:
+  Option<roboco_proto::HarnessId>`, resolved at spawn time from the chat
+  config, then open side chats' selected rows, then the parent subagent
+  tab (nested chips). The tab strip renders the harness icon (brand
+  color when present) for idle SideChat/Subagent tabs; working chats
+  keep the mini spinner. Adaptation: roboco's tab strip inlines the
+  leading-slot icon (wave-4 #587 restructure) instead of upstream's
+  surface_chrome::tab_chip_icon, so the fallback branch maps
+  harness_icon onto the inlined `icon()`. Verified: cargo check -p
+  roboco-ui clean; shell:: tests 214 passed.

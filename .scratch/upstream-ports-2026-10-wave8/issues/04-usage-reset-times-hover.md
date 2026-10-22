@@ -23,13 +23,25 @@ account service adapts to the engine-local accounts model instead.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in c32447cde)
 
 **Verification budget:** `cargo check -p roboco-ui` + account usage
 tests. Source: `.scratch/upstream-drift/2026-10-22.md` § account-adjacent
 pair.
 
-- [ ] Reset-time tooltip shared between popover and Settings meters
-- [ ] Commit records upstream SHA `09beace00` (#873)
+- [x] Reset-time tooltip shared between popover and Settings meters
+- [x] Commit records upstream SHA `09beace00` (#873)
 
 ## Comments
+
+- Ported in commit c32447cde. Verified first that roboco's snapshot
+  carries `AgentUsageWindow.resets_at` (engine-local account probes) —
+  no engine plumbing needed and no cloud fetch involved; the helper
+  only formats snapshot data. New `accounts::usage_resets` + test
+  `usage_resets_lists_every_window` ported; the popover meters gain
+  `.id(("account-usage-meters", ix))` + the reset-times tooltip.
+- Excluded by intent: upstream's second hunk (deduping the Settings
+  page's inline `resets` string into `usage_resets`) has no counterpart
+  — roboco's Settings page renders resets inline per meter in its own
+  design (the information is already surfaced there), not as a tooltip
+  column.
