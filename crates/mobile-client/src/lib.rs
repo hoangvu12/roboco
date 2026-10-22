@@ -999,6 +999,7 @@ fn pending_entry(
         last_error: None,
         retry_at_ms: None,
         last_connected_ms: None,
+        proven_ms: None,
         info: None,
         engine_name: None,
         notice: None,

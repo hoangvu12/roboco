@@ -251,6 +251,10 @@ pub(crate) struct EngineEntry {
     pub last_error: Option<String>,
     pub retry_at_ms: Option<i64>,
     pub last_connected_ms: Option<i64>,
+    /// When the live link last proved itself (a feed frame or a probe
+    /// reply): the rows are at most this old. A send decides "idle" from
+    /// the rows only while this is recent (E1).
+    pub proven_ms: Option<i64>,
     /// The last live `EngineInfo` (identity + capabilities).
     pub info: Option<EngineInfo>,
     /// The engine's own device name (from its `Device` row).

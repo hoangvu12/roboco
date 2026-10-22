@@ -312,6 +312,7 @@ async fn run(mut ctx: EngineCtx) {
             entry.last_error = None;
             entry.retry_at_ms = None;
             entry.last_connected_ms = Some(super::now_ms());
+            entry.proven_ms = Some(super::now_ms());
             entry.info = Some(info.clone());
             entry.notice = verdict.notice.clone();
             entry.diagnostics.generation = generation;
@@ -580,6 +581,7 @@ async fn steady(
                                     update_entry(ctx, |entry| {
                                         entry.info = Some(info.clone());
                                         entry.notice = verdict.notice.clone();
+                                        entry.proven_ms = Some(super::now_ms());
                                     });
                                     publish(ctx);
                                     ack_refresh(&mut refresh_ack);
@@ -675,6 +677,7 @@ async fn steady(
                         let first = !frames_seen.contains(method);
                         frames_seen.insert(method);
                         apply_frame(ctx, &mut clock, method, value);
+                        update_entry(ctx, |entry| entry.proven_ms = Some(super::now_ms()));
                         if first {
                             missing_dirty = true;
                         }

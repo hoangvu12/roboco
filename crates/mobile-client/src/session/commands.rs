@@ -127,7 +127,86 @@ pub(crate) fn decide(
     Decision::Run
 }
 
+/// The rows count as current while the link proved itself within this
+/// (two health-probe intervals).
+pub(crate) const ROWS_CURRENT_MS: i64 = 10_000;
+
+/// How long a send waits for the engine's own word on whether the chat is
+/// busy before falling back to the rows.
+const BUSY_CHECK_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Clock skew tolerated when judging the engine's own session row on the
+/// phone's clock (the rows' staleness check runs on rebased stamps; this
+/// one reads the engine's raw ones).
+const ENGINE_ROW_SKEW_MS: i64 = 120_000;
+
+/// E1: a send the rows judged idle must be confirmed with the engine when
+/// the rows can't vouch for that — the session row still says
+/// Working/AwaitingInput but went stale (no heartbeat reached this phone),
+/// or the link has not proved itself recently (a thawed app on dead
+/// sockets). A `Run` into a turn that is in fact running becomes an
+/// immediate steer for a live Claude Code process and cuts the reply off.
+/// Pure.
+pub(crate) fn confirm_idle_with_engine(
+    row: Option<&roboco_proto::Session>,
+    proven_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    let row_says_busy = row.is_some_and(|session| {
+        matches!(
+            session.status,
+            roboco_proto::SessionStatus::Working | roboco_proto::SessionStatus::AwaitingInput
+        )
+    });
+    let rows_current = proven_ms.is_some_and(|at| now_ms - at <= ROWS_CURRENT_MS);
+    row_says_busy || !rows_current
+}
+
+/// The engine's answer (a `WatchSessions` frame): is this chat's turn
+/// running? A missing row is idle; an undecodable frame says nothing.
+/// Pure.
+pub(crate) fn engine_reports_busy(
+    frame: serde_json::Value,
+    raw_chat_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<bool> {
+    let decoded = crate::lenient::decode_rows::<roboco_proto::Session>(
+        frame,
+        &crate::lenient::session_substitutions(),
+        "chatId",
+    )
+    .ok()?;
+    let Some(session) = decoded.rows.iter().find(|row| row.chat_id == raw_chat_id) else {
+        return Some(false);
+    };
+    let running = matches!(
+        session.status,
+        roboco_proto::SessionStatus::Working | roboco_proto::SessionStatus::AwaitingInput
+    );
+    let age_ms = now.signed_duration_since(session.updated_at).num_milliseconds();
+    Some(running && age_ms <= roboco_proto::view::SESSION_STALE_MS + ENGINE_ROW_SKEW_MS)
+}
+
 impl SessionCore {
+    /// E1: ask the engine whether this chat's turn runs (see
+    /// [`confirm_idle_with_engine`]). `None` when it could not answer in
+    /// time.
+    async fn engine_says_busy(&self) -> Option<bool> {
+        let handle = self.engine_handle().ok()?;
+        let frame = handle
+            .first_item(
+                roboco_rpc::methods::WATCH_SESSIONS,
+                serde_json::json!({}),
+                BUSY_CHECK_BUDGET,
+            )
+            .await
+            .inspect_err(|error| {
+                tracing::info!(chat = %self.chat_id, %error, "busy check failed; deciding from the rows");
+            })
+            .ok()?;
+        engine_reports_busy(frame, &self.raw_chat_id, chrono::Utc::now())
+    }
+
     /// Send a message. The pending echo is created before the upload (the
     /// faded user row appears immediately, rendering the local image bytes
     /// from the read cache under `pending://` refs), replaced in place with
@@ -157,19 +236,32 @@ impl SessionCore {
             });
         }
 
-        let (decision, refs, message_id, config, cwd) = {
-            let composer = self.composer();
-            let starting = composer
-                .pending_sends
-                .iter()
-                .any(|p| p.kind == PendingKind::Run && p.state == SendState::Sending);
-            let decision = decide(
-                composer.live.turn_running,
+        let composer = self.composer();
+        let starting = composer
+            .pending_sends
+            .iter()
+            .any(|p| p.kind == PendingKind::Run && p.state == SendState::Sending);
+        let decide_with = |turn_running: bool| {
+            decide(
+                turn_running,
                 starting,
                 request.busy,
                 !request.attachments.is_empty(),
                 &composer.host.capabilities,
-            );
+            )
+        };
+        let mut decision = decide_with(composer.live.turn_running);
+        if decision == Decision::Run {
+            let row = self.row_inputs().session;
+            let proven = self.engine_handle().ok().and_then(|handle| handle.proven_ms());
+            if confirm_idle_with_engine(row.as_ref(), proven, crate::engines::now_ms())
+                && self.engine_says_busy().await == Some(true)
+            {
+                tracing::info!(chat = %self.chat_id, "the rows read idle but the engine is mid-turn; not starting a new run");
+                decision = decide_with(true);
+            }
+        }
+        let (decision, refs, message_id, config, cwd) = {
             let refs = request
                 .attachments
                 .iter()
@@ -639,5 +731,83 @@ mod tests {
         // a fresh run command (the engine holds it until the turn ends).
         let no_queue = caps(false, true, Some(true));
         assert_eq!(decide(true, false, BusyPolicy::Queue, false, &no_queue), Decision::Run);
+    }
+
+    fn session(status: roboco_proto::SessionStatus, age_ms: i64) -> roboco_proto::Session {
+        let updated = chrono::Utc::now() - chrono::TimeDelta::milliseconds(age_ms);
+        roboco_proto::Session {
+            last_completed_turn: None,
+            chat_id: "c1".into(),
+            device_id: "engine".into(),
+            status,
+            started_at: Some(updated),
+            updated_at: updated,
+            limit: None,
+            scheduled_resume: None,
+        }
+    }
+
+    /// E1: an idle-looking send is confirmed with the engine when the rows
+    /// can't vouch for it — never on a link that just proved itself with an
+    /// idle row.
+    #[test]
+    fn an_idle_send_is_confirmed_when_the_rows_cannot_vouch_for_it() {
+        use roboco_proto::SessionStatus::{AwaitingInput, Idle, Working};
+        let now = 1_000_000;
+        let fresh = Some(now - 2_000);
+        let old = Some(now - ROWS_CURRENT_MS - 1);
+        // Current rows, idle: decide locally (no extra round trip).
+        assert!(!confirm_idle_with_engine(Some(&session(Idle, 0)), fresh, now));
+        assert!(!confirm_idle_with_engine(None, fresh, now));
+        // The link has not proved itself lately (a thawed app): ask.
+        assert!(confirm_idle_with_engine(Some(&session(Idle, 0)), old, now));
+        assert!(confirm_idle_with_engine(None, None, now));
+        // A Working/AwaitingInput row that went stale reads idle locally,
+        // but the turn may well still run: ask.
+        assert!(confirm_idle_with_engine(Some(&session(Working, 60_000)), fresh, now));
+        assert!(confirm_idle_with_engine(Some(&session(AwaitingInput, 60_000)), fresh, now));
+    }
+
+    #[test]
+    fn the_engines_session_row_decides_busy() {
+        use roboco_proto::SessionStatus::{Idle, Working};
+        let now = chrono::Utc::now();
+        let frame = |rows: Vec<roboco_proto::Session>| serde_json::to_value(rows).unwrap();
+        assert_eq!(
+            engine_reports_busy(frame(vec![session(Working, 1_000)]), "c1", now),
+            Some(true)
+        );
+        assert_eq!(
+            engine_reports_busy(frame(vec![session(Idle, 1_000)]), "c1", now),
+            Some(false)
+        );
+        // Another chat's turn is not this one's; no row is idle.
+        assert_eq!(
+            engine_reports_busy(frame(vec![session(Working, 1_000)]), "other", now),
+            Some(false)
+        );
+        // A Working row the engine stopped heartbeating long ago (a dead
+        // backend) is not busy, even with clock skew allowed for.
+        assert_eq!(
+            engine_reports_busy(frame(vec![session(Working, 10 * 60_000)]), "c1", now),
+            Some(false)
+        );
+        // An unreadable answer says nothing.
+        assert_eq!(engine_reports_busy(serde_json::json!("nope"), "c1", now), None);
+    }
+
+    /// The busy check rides the real wire: a one-shot `WatchSessions` read
+    /// on the calls connection answers for an idle chat.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_busy_check_reads_the_engines_sessions() {
+        let rig = crate::test_support::Rig::start().await;
+        rig.core
+            .workspace
+            .create_chat("e1-chat", None, Some(&rig.core.device_id), None, None)
+            .unwrap();
+        let scoped = rig.client.scope(&rig.engine_id, "e1-chat");
+        let handle = rig.client.open_session(&scoped).unwrap();
+        assert_eq!(handle.core.engine_says_busy().await, Some(false));
+        rig.stop().await;
     }
 }
