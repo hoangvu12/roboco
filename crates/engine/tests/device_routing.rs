@@ -198,6 +198,61 @@ async fn worktree_settings_live_on_this_engine() {
     core.shutdown().await;
 }
 
+/// The engine-local companion of upstream #876's device-routing update: a
+/// terminal opened for a projectless chat runs in that chat's own scratch
+/// folder under the engine data dir — never the host's home. (Upstream
+/// asserts the same over the relay to device B; roboco has only this
+/// engine, ADR 0004, so the routing question collapses to this engine's
+/// own resolution.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projectless_terminal_runs_in_the_chats_scratch_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(&dir.path().join("engine"), "scratch-device");
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat", "chatId": "chat-term", "deviceId": core.device_id,
+            }),
+        )
+        .await
+        .expect("createChat");
+    let chat = core.workspace.chat("chat-term").unwrap().unwrap();
+    assert_eq!(chat.space_id, None);
+    let chat_cwd = chat.cwd.clone().unwrap();
+    assert!(
+        roboco_proto::projectless::is_scratch_cwd(&chat_cwd),
+        "{chat_cwd}"
+    );
+    assert!(core.workspace.read_spaces().unwrap().is_empty());
+
+    // The terminal resolves the chat's own scratch folder, created on open.
+    let session = client
+        .call(
+            methods::OPEN_TERMINAL,
+            serde_json::json!({ "chatId": "chat-term", "cols": 80, "rows": 24 }),
+        )
+        .await
+        .expect("open terminal");
+    let name = chat_cwd.rsplit('/').next().unwrap();
+    let expected = dir.path().join("engine").join("scratch").join(name);
+    assert_eq!(
+        std::path::Path::new(session["cwd"].as_str().unwrap()),
+        std::path::Path::new(&expected),
+        "cwd from the chat's scratch folder"
+    );
+    assert!(expected.is_dir(), "the folder is created on first use");
+    client
+        .call(
+            methods::CLOSE_TERMINAL,
+            serde_json::json!({ "terminalId": session["id"] }),
+        )
+        .await
+        .expect("close terminal");
+    core.shutdown().await;
+}
+
 /// The ported feature: an MCP standalone session (`kind: "chat"`) runs on
 /// this engine, lands parentless in the main Sessions list, replies through
 /// the id-matched wait, and keeps the side-chat guards.

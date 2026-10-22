@@ -26,6 +26,9 @@ pub mod capabilities {
     /// attaches engine-computed entry digests to transcript frames, so a
     /// reconnecting client can catch up with a delta instead of a reset.
     pub const TRANSCRIPT_RESUME_V1: &str = "transcript-resume-v1";
+    /// The host creates a projectless chat's scratch folder
+    /// (`crate::projectless`) when it runs; older hosts only know `~`.
+    pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -37,6 +40,7 @@ pub mod capabilities {
         HARNESS_UPDATES_V1,
         WEB_CLIENT,
         TRANSCRIPT_RESUME_V1,
+        PROJECTLESS_SCRATCH_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -172,7 +176,8 @@ mod tests {
                     "message-queue-edit-lease-v1",
                     "harness-updates-v1",
                     "web-client",
-                    "transcript-resume-v1"
+                    "transcript-resume-v1",
+                    "projectless-scratch-v1"
                 ],
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": 1,

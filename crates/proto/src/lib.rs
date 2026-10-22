@@ -13,6 +13,7 @@ pub mod invocation;
 pub mod layout;
 pub mod motion;
 pub mod preview;
+pub mod projectless;
 pub mod qr;
 pub mod remote;
 pub mod tailcat;

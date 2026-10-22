@@ -241,6 +241,9 @@ struct Inner {
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
+    /// [`crate::Repos::scratch_root`]; bare tests fall back to
+    /// `~/.roboco/scratch`.
+    scratch_root: OnceLock<std::path::PathBuf>,
     /// Fired with `(chat_id, cwd)` when a user prompt starts a turn (fresh
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
@@ -293,6 +296,7 @@ impl SessionsEngine {
                 engine_settings: crate::engine_settings::EngineSettingsStore::default(),
                 titles: OnceLock::new(),
                 generated_images: OnceLock::new(),
+                scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 agent_accounts: Mutex::new(None),
             }),
@@ -332,6 +336,11 @@ impl SessionsEngine {
         allowed_root: std::path::PathBuf,
     ) {
         let _ = self.inner.generated_images.set((uploads, allowed_root));
+    }
+
+    /// Where projectless chats' scratch folders resolve (set once at boot).
+    pub(crate) fn set_scratch_root(&self, root: std::path::PathBuf) {
+        let _ = self.inner.scratch_root.set(root);
     }
 
     /// Wire the chat auto-titler (called once at engine assembly). After each
@@ -808,10 +817,17 @@ impl SessionsEngine {
         startup_retry: bool,
         sent_at: Option<i64>,
     ) -> Result<String, EngineError> {
-        // Project-less chats store cwd `~` (the creating device can't know the
-        // host's home); expand it here, on the host, where the run spawns.
-        request.cwd = crate::repos::expand_home(&request.cwd)
-            .map_err(|error| EngineError::Other(error.to_string()))?;
+        // Project-less chats store a home-relative cwd (the creating client
+        // can't know the host's home); expand it here, on the host, where the
+        // run spawns, creating a new chat's scratch folder.
+        let scratch_root = self
+            .inner
+            .scratch_root
+            .get()
+            .cloned()
+            .unwrap_or_else(|| crate::repos::home_dir().join(".roboco").join("scratch"));
+        request.cwd = crate::repos::resolve_chat_cwd(&request.cwd, &scratch_root)
+            .map_err(EngineError::Other)?;
         // Native-only catalog entries have no portable file fallback. Reject
         // cross-harness delivery before recording or routing the user turn.
         roboco_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)

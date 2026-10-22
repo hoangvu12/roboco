@@ -522,12 +522,13 @@ fn resolve_open_terminal_cwd(
     explicit: Option<String>,
     chat_cwd: Option<String>,
     space_cwd: Option<String>,
-) -> Result<String, &'static str> {
+    scratch_root: &std::path::Path,
+) -> Result<String, String> {
     let raw = meaningful_cwd(explicit)
         .or_else(|| meaningful_cwd(chat_cwd))
         .or_else(|| meaningful_cwd(space_cwd))
         .unwrap_or_else(|| "~".to_string());
-    crate::repos::expand_home(&raw)
+    crate::repos::resolve_chat_cwd(&raw, scratch_root)
 }
 
 #[derive(Debug, Deserialize)]
@@ -931,7 +932,7 @@ impl EngineRpc {
                 return Ok(chat
                     .cwd
                     .map(|cwd| {
-                        crate::repos::expand_home(&cwd)
+                        crate::repos::resolve_chat_cwd(&cwd, &self.repos.scratch_root())
                             .map(std::path::PathBuf::from)
                             .unwrap_or_else(|_| crate::repos::home_dir())
                     })
@@ -3206,11 +3207,11 @@ impl RpcService for EngineRpc {
             }
             methods::OPEN_TERMINAL => {
                 let p: OpenTerminalParams = parse_params(params)?;
-// Prefer an explicit real path (new-chat canvas has no row yet);
+                // Prefer an explicit real path (new-chat canvas has no row yet);
                 // `space-canvas:{spaceId}` names the selected project so a
                 // missing/tilde cwd still lands in that folder. Project-less
-                // chats store cwd `~`, expanded here on the host, and a
-                // missing home is an error rather than a silent `/`.
+                // chats store a home-relative cwd, expanded here on the host,
+                // and a missing home is an error rather than a silent `/`.
                 let chat_cwd = self
                     .workspace
                     .chat(&p.chat_id)
@@ -3224,8 +3225,13 @@ impl RpcService for EngineRpc {
                         .flatten()
                         .map(|space| space.path)
                 });
-                let cwd = resolve_open_terminal_cwd(p.cwd, chat_cwd, space_cwd)
-                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let cwd = resolve_open_terminal_cwd(
+                    p.cwd,
+                    chat_cwd,
+                    space_cwd,
+                    &self.repos.scratch_root(),
+                )
+                .map_err(|error| RpcError::Failed(error.to_string()))?;
                 let session = self
                     .terminals
                     .open(&cwd, p.cols, p.rows)
@@ -3856,30 +3862,65 @@ mod tests {
             resolve_open_terminal_cwd(
                 Some("/proj".into()),
                 Some("/chat".into()),
-                Some("/space".into())
-            ).unwrap(),
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/proj"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(None, Some("/chat".into()), Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                None,
+                Some("/chat".into()),
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(Some("~".into()), None, Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                Some("~".into()),
+                None,
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/space",
             "tilde is a fallback, not an override of the selected project"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(None, None, Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                None,
+                None,
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/space"
         );
-        assert_eq!(resolve_open_terminal_cwd(None, None, None).unwrap(), home);
         assert_eq!(
-            resolve_open_terminal_cwd(Some("~".into()), Some("/chat".into()), None).unwrap(),
+            resolve_open_terminal_cwd(None, None, None, std::path::Path::new("/scratch")).unwrap(),
+            home
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(
+                Some("~".into()),
+                Some("/chat".into()),
+                None,
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(Some("  ".into()), Some("/chat".into()), None).unwrap(),
+            resolve_open_terminal_cwd(
+                Some("  ".into()),
+                Some("/chat".into()),
+                None,
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(canvas_space_id("space-canvas:s1"), Some("s1"));
