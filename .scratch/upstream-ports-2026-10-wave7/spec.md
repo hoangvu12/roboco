@@ -6,6 +6,16 @@ including both overdue 2026-10-09 recommendations; 3b71f9d3). Open: 05
 (prerequisite-gated), 20 (after 19), 21 PARKED on a product decision,
 22 (after 19). Continue on a fresh `wave7/ports` branch off main.
 
+2026-10-22 update: batch 2 (ticket 06) was abandoned mid-flight on a
+stale base — its uncommitted fold-ins (`05f5f2bf` ellipsis + `ae19fe31`
+SIDEBAR_MIN 242) are saved as `ticket-06-foldins.patch` beside this
+spec; re-apply them when ticket 06 ports. The 2026-10-22 drift note
+(`.scratch/upstream-drift/2026-10-22.md`) triaged the v0.2.112–114
+window and added riders: fold #909 (drag-reorder, wire change) + #901
+(archived toggle) into ticket 06; port ticket 07 as the `ac4acbc2` +
+`c8c717862` + `591824881` superset; ticket 12 is superseded by #895 —
+fold its wire entity into 07's superset; #903 (hover card) follows 07.
+
 Source: `.scratch/upstream-drift/2026-10-11.md` — the drift review of the
 `1074bc54..54954e4d` window (tags v0.2.108–v0.2.111), plus the carry-over
 backlog it re-triaged. The wave exists because the Zeron creator flagged
