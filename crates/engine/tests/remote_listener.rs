@@ -5,11 +5,11 @@ use roboco_engine::{EngineCore, EngineProfile, HarnessRegistry, pairing::Pairing
 use roboco_rpc::{connect_ws, connect_ws_authenticated, memory_client, methods};
 use serde_json::{Value, json};
 
-/// Generated media uses the same path jail on the local in-process surface
-/// and over a paired peer connection: the materialized upload reads back on
-/// both, while the agent-owned source path stays outside the jail on both.
+/// Generated media reads the same on the local in-process surface and over a
+/// paired peer connection, and with no path jail the agent-owned source path
+/// reads over the paired connection too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn generated_media_reads_share_the_jail_across_local_and_paired_rpc() {
+async fn generated_media_reads_match_across_local_and_paired_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let core = EngineCore::assemble_with_profile(
         EngineProfile::local(dir.path()).unwrap(),
@@ -70,14 +70,25 @@ async fn generated_media_reads_share_the_jail_across_local_and_paired_rpc() {
     assert_eq!(remote_image, local_image);
     assert_eq!(remote_image["mimeType"], "image/png");
     assert_eq!(remote_image["done"], true);
-    assert!(
-        rpc.call(
+    let source_read = rpc
+        .call(
             methods::READ_ATTACHMENT_CHUNK,
-            json!({"path": source, "offset": 0, "targetDeviceId": core.device_id})
+            json!({"path": source, "offset": 0, "targetDeviceId": core.device_id}),
         )
         .await
-        .is_err()
+        .unwrap();
+    assert_eq!(
+        STANDARD.decode(source_read["data"].as_str().unwrap()).unwrap(),
+        payload
     );
+    let image_read = rpc
+        .call(
+            methods::READ_IMAGE_CHUNK,
+            json!({"reference": source, "offset": 0, "targetDeviceId": core.device_id}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(image_read["data"], source_read["data"]);
     drop(rpc);
     drop(remote);
     core.shutdown().await;

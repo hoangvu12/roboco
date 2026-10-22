@@ -8234,6 +8234,7 @@ dependencies = [
  "nucleo-matcher",
  "portable-pty",
  "reqwest",
+ "resvg",
  "roboco-doc",
  "roboco-harness",
  "roboco-mcp",

@@ -842,7 +842,7 @@ async fn uploads_chunk_commit_readback_and_jail() {
     let mut assembled = Vec::new();
     let mut offset = 0u64;
     loop {
-        let chunk = uploads.read_chunk(&path, offset, &[]).expect("read chunk");
+        let chunk = uploads.read_chunk(&path, offset).expect("read chunk");
         assert_eq!(chunk.mime_type, "image/png");
         assert_eq!(chunk.name, "up-1-photo.png");
         assembled.extend(BASE64.decode(&chunk.data).expect("chunk base64"));
@@ -865,31 +865,25 @@ async fn uploads_chunk_commit_readback_and_jail() {
         "hole detected"
     );
 
-    // Path jail: files outside the uploads dir (and outside any allowed cwd
-    // root) are rejected, including traversal attempts and the dir itself.
+    // No path jail: any readable file outside the uploads dir reads back,
+    // including through `..`; the uploads dir itself is not a file.
     let outside = tmp.path().join("outside.png");
-    std::fs::write(&outside, b"nope").expect("outside file");
-    assert!(
-        uploads
-            .read_chunk(&outside.to_string_lossy(), 0, &[])
-            .is_err()
-    );
-    assert!(uploads.read_chunk("/etc/passwd", 0, &[]).is_err());
-    let sneaky = format!("{}/../outside.png", uploads.dir().display());
-    assert!(
-        uploads.read_chunk(&sneaky, 0, &[]).is_err(),
-        "traversal rejected"
-    );
-    // …but a workspace-known cwd root admits its files.
+    std::fs::write(&outside, b"yes").expect("outside file");
     let ok = uploads
-        .read_chunk(&outside.to_string_lossy(), 0, &[tmp.path().to_path_buf()])
-        .expect("cwd-rooted read");
-    assert_eq!(BASE64.decode(&ok.data).expect("data"), b"nope");
-    // Non-image extensions are refused even inside the jail (roboco parity).
+        .read_chunk(&outside.to_string_lossy(), 0)
+        .expect("outside read");
+    assert_eq!(BASE64.decode(&ok.data).expect("data"), b"yes");
+    let sneaky = format!("{}/../outside.png", uploads.dir().display());
+    let ok = uploads.read_chunk(&sneaky, 0).expect("dotted read");
+    assert_eq!(BASE64.decode(&ok.data).expect("data"), b"yes");
+    assert!(uploads.read_chunk(&uploads.dir().to_string_lossy(), 0).is_err());
+    // Non-image files read too, typed by their bytes.
     let text = PathBuf::from(uploads.dir()).join("notes.txt");
-    std::fs::create_dir_all(uploads.dir()).expect("uploads dir");
     std::fs::write(&text, b"text").expect("txt");
-    assert!(uploads.read_chunk(&text.to_string_lossy(), 0, &[]).is_err());
+    assert_eq!(
+        uploads.read_chunk(&text.to_string_lossy(), 0).expect("txt").mime_type,
+        "application/octet-stream"
+    );
 
     // Bogus upload ids never become paths.
     assert!(uploads.append("../evil", "aGk=", None).is_err());
@@ -1138,16 +1132,38 @@ async fn rpc_dispatch_for_m5c_methods() {
             .expect("base64"),
         payload
     );
-    // Jail holds over RPC too.
-    assert!(
-        client
-            .call(
-                methods::READ_ATTACHMENT_CHUNK,
-                serde_json::json!({ "path": "/etc/passwd", "offset": 0 })
-            )
-            .await
-            .is_err()
-    );
+    // No jail over RPC either: a file nowhere near the uploads dir reads.
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(project.join("shots")).expect("project");
+    std::fs::write(project.join("shots").join("x.png"), &payload).expect("shot");
+    let outside = client
+        .call(
+            methods::READ_ATTACHMENT_CHUNK,
+            serde_json::json!({ "path": project.join("shots").join("x.png"), "offset": 0 }),
+        )
+        .await
+        .expect("ReadAttachmentChunk outside uploads");
+    assert_eq!(outside["data"], chunk["data"]);
+
+    // ReadImageChunk resolves a relative reference against the chat's cwd.
+    core.workspace
+        .create_chat(
+            "img-chat",
+            None,
+            Some(&core.device_id),
+            None,
+            Some(project.to_string_lossy().into_owned()),
+        )
+        .expect("chat");
+    let relative = client
+        .call(
+            methods::READ_IMAGE_CHUNK,
+            serde_json::json!({ "reference": "./shots/x.png", "chatId": "img-chat", "offset": 0 }),
+        )
+        .await
+        .expect("ReadImageChunk");
+    assert_eq!(relative["data"], chunk["data"]);
+    assert_eq!(relative["done"], true);
 
     // Agent accounts: snapshot shape (this machine's real CLI state may or may
     // not include logins — assert the envelope, not the contents).

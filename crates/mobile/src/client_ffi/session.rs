@@ -876,6 +876,23 @@ impl CoreClient {
         let client = self.client.clone();
         on_runtime(async move { client.read_attachment(&device_id, &path).await }).await
     }
+
+    /// Bytes of any Markdown image reference through the engine
+    /// (`ReadImageChunk`; `chat_id` anchors relative paths). LRU-cached.
+    pub async fn read_image(
+        &self,
+        device_id: String,
+        reference: String,
+        chat_id: Option<String>,
+    ) -> CoreResult<Vec<u8>> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .read_image(&device_id, &reference, chat_id.as_deref())
+                .await
+        })
+        .await
+    }
 }
 
 // ── free functions ─────────────────────────────────────────────────────────
