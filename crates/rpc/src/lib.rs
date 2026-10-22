@@ -173,6 +173,8 @@ pub mod methods {
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
     pub const LIST_FOLDERS: &str = "ListFolders";
+    pub const GET_WORKTREE_SETTINGS: &str = "GetWorktreeSettings";
+    pub const SET_WORKTREE_SETTINGS: &str = "SetWorktreeSettings";
     pub const PREPARE_SPACE_PATH: &str = "PrepareSpacePath";
     /// The device's browse roots: home plus mounted drives/volumes.
     pub const LIST_DRIVES: &str = "ListDrives";

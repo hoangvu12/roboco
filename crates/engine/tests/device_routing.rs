@@ -138,6 +138,121 @@ async fn target_device_ids_must_name_this_engine() {
     core.shutdown().await;
 }
 
+/// The engine-local remnant of upstream's per-device worktree locations
+/// (upstream #530): preferences and their filesystem validation belong to
+/// THIS engine. There is no paired device to reconcile them with (ADR 0004):
+/// a foreign `targetDeviceId` fails closed on both worktree-settings methods,
+/// and saving always lands in this engine's own store.
+#[tokio::test]
+async fn worktree_settings_live_on_this_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(&dir.path().join("solo"), "solo-device");
+    let client = roboco_rpc::memory_client(core.rpc_service());
+
+    // Defaults before any choice: no custom directory, no override.
+    let initial = client
+        .call(methods::GET_WORKTREE_SETTINGS, json!({}))
+        .await
+        .expect("read defaults");
+    assert_eq!(initial["settings"]["useCustomDirectory"], false);
+    assert_eq!(initial["environmentOverride"], serde_json::Value::Null);
+
+    // A foreign target fails closed — the settings are this engine's alone.
+    for method in [methods::GET_WORKTREE_SETTINGS, methods::SET_WORKTREE_SETTINGS] {
+        let err = client
+            .call(
+                method,
+                json!({ "targetDeviceId": "device-elsewhere" }),
+            )
+            .await
+            .expect_err("foreign target must fail closed");
+        assert!(err.to_string().contains("not connected"), "{method}: {err}");
+    }
+
+    // Saving a custom location round-trips through this engine's own RPC.
+    let custom_worktrees = dir.path().join("custom-worktrees");
+    let saved = client
+        .call(
+            methods::SET_WORKTREE_SETTINGS,
+            json!({
+                "useCustomDirectory": true,
+                "customDirectory": custom_worktrees,
+            }),
+        )
+        .await
+        .expect("save worktree location");
+    let reread = client
+        .call(methods::GET_WORKTREE_SETTINGS, json!({}))
+        .await
+        .expect("read worktree location");
+    assert_eq!(saved, reread);
+    assert_eq!(
+        std::path::PathBuf::from(saved["effectiveDirectory"].as_str().unwrap()),
+        custom_worktrees.canonicalize().unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(core.repos.worktree_settings()).unwrap(),
+        reread,
+        "the RPC view and the engine's own state agree"
+    );
+    core.shutdown().await;
+}
+
+/// The engine-local companion of upstream #876's device-routing update: a
+/// terminal opened for a projectless chat runs in that chat's own scratch
+/// folder under the engine data dir — never the host's home. (Upstream
+/// asserts the same over the relay to device B; roboco has only this
+/// engine, ADR 0004, so the routing question collapses to this engine's
+/// own resolution.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projectless_terminal_runs_in_the_chats_scratch_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(&dir.path().join("engine"), "scratch-device");
+    let client = roboco_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat", "chatId": "chat-term", "deviceId": core.device_id,
+            }),
+        )
+        .await
+        .expect("createChat");
+    let chat = core.workspace.chat("chat-term").unwrap().unwrap();
+    assert_eq!(chat.space_id, None);
+    let chat_cwd = chat.cwd.clone().unwrap();
+    assert!(
+        roboco_proto::projectless::is_scratch_cwd(&chat_cwd),
+        "{chat_cwd}"
+    );
+    assert!(core.workspace.read_spaces().unwrap().is_empty());
+
+    // The terminal resolves the chat's own scratch folder, created on open.
+    let session = client
+        .call(
+            methods::OPEN_TERMINAL,
+            serde_json::json!({ "chatId": "chat-term", "cols": 80, "rows": 24 }),
+        )
+        .await
+        .expect("open terminal");
+    let name = chat_cwd.rsplit('/').next().unwrap();
+    let expected = dir.path().join("engine").join("scratch").join(name);
+    assert_eq!(
+        std::path::Path::new(session["cwd"].as_str().unwrap()),
+        std::path::Path::new(&expected),
+        "cwd from the chat's scratch folder"
+    );
+    assert!(expected.is_dir(), "the folder is created on first use");
+    client
+        .call(
+            methods::CLOSE_TERMINAL,
+            serde_json::json!({ "terminalId": session["id"] }),
+        )
+        .await
+        .expect("close terminal");
+    core.shutdown().await;
+}
+
 /// The ported feature: an MCP standalone session (`kind: "chat"`) runs on
 /// this engine, lands parentless in the main Sessions list, replies through
 /// the id-matched wait, and keeps the side-chat guards.

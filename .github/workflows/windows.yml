@@ -86,6 +86,14 @@ jobs:
         run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
       - name: Application and updater tests
         run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
+      - name: Worktree path compatibility
+        # Upstream #530: Windows path spellings for custom worktree locations —
+        # the proto device_paths lexical navigation plus the engine's
+        # worktree-location tests (path length limits, two-step add, aliases).
+        run: |
+          cargo nextest run --release --locked -p roboco-proto --lib device_paths -P ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo nextest run --release --locked -p roboco-engine --test worktree_on_run worktree_location_ -P ci
       - name: Engine, RPC, and harness unit tests
         run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
       - name: Mobile core crates

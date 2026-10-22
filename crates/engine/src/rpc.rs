@@ -522,12 +522,13 @@ fn resolve_open_terminal_cwd(
     explicit: Option<String>,
     chat_cwd: Option<String>,
     space_cwd: Option<String>,
-) -> Result<String, &'static str> {
+    scratch_root: &std::path::Path,
+) -> Result<String, String> {
     let raw = meaningful_cwd(explicit)
         .or_else(|| meaningful_cwd(chat_cwd))
         .or_else(|| meaningful_cwd(space_cwd))
         .unwrap_or_else(|| "~".to_string());
-    crate::repos::expand_home(&raw)
+    crate::repos::resolve_chat_cwd(&raw, scratch_root)
 }
 
 #[derive(Debug, Deserialize)]
@@ -931,7 +932,7 @@ impl EngineRpc {
                 return Ok(chat
                     .cwd
                     .map(|cwd| {
-                        crate::repos::expand_home(&cwd)
+                        crate::repos::resolve_chat_cwd(&cwd, &self.repos.scratch_root())
                             .map(std::path::PathBuf::from)
                             .unwrap_or_else(|_| crate::repos::home_dir())
                     })
@@ -2850,6 +2851,16 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "branch": branch }))
             }
+            methods::GET_WORKTREE_SETTINGS => RpcReply::value(&self.repos.worktree_settings()),
+            methods::SET_WORKTREE_SETTINGS => {
+                let settings: roboco_proto::WorktreeSettings = parse_params(params)?;
+                let status = self
+                    .repos
+                    .set_worktree_settings(settings)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&status)
+            }
             methods::LIST_FOLDERS => {
                 let p: ListFoldersParams = parse_params(params)?;
                 let listing = self
@@ -2909,93 +2920,130 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&matches)
             }
             methods::LIST_WORKSPACE_DIRECTORY => {
-                let request: roboco_proto::ListWorkspaceDirectoryRequest = parse_params(params)?;
-                let page = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.list_directory(request),
-                )
+                                // resolve_target nests the checkout-authorization git futures
+                // (workspace_checkout/linked_worktrees/checkout_identity), which
+                // grew with the worktree-location and projectless ports. Keep
+                // this arm behind an allocation like its diff cousins so the
+                // dispatcher's already-large stack frame does not carry it
+                // (m5: checkout_file_diff_text_rpc_fits_the_default_worker_stack).
+                Box::pin(async move {
+                    let request: roboco_proto::ListWorkspaceDirectoryRequest = parse_params(params)?;
+                    let page = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.list_directory(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace directory listing timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&page)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace directory listing timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&page)
             }
             methods::SEARCH_WORKSPACE_FILES => {
-                let request: roboco_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
-                let matches = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.search(request),
-                )
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
+                    let matches = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.search(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file search timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&matches)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file search timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&matches)
             }
             methods::READ_WORKSPACE_IMAGE => {
-                let request: roboco_proto::ReadWorkspaceImageRequest = parse_params(params)?;
-                let chunk = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.read_image(request),
-                )
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::ReadWorkspaceImageRequest = parse_params(params)?;
+                    let chunk = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.read_image(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("Workspace image read timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&chunk)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("Workspace image read timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&chunk)
             }
             methods::READ_WORKSPACE_FILE => {
-                let request: roboco_proto::ReadWorkspaceFileRequest = parse_params(params)?;
-                let file = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.read_file(request),
-                )
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::ReadWorkspaceFileRequest = parse_params(params)?;
+                    let file = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.read_file(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&file)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&file)
             }
             // Structural mutations run without the short file-RPC timeout: a
             // recursive delete over a large tree can outlast it.
             methods::DELETE_WORKSPACE_ENTRY => {
-                let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
-                let outcome = self
-                    .workspace_files
-                    .delete_entry(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::DeleteWorkspaceEntryRequest = parse_params(params)?;
+                    let outcome = self
+                        .workspace_files
+                        .delete_entry(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
+                .await
             }
             methods::MOVE_WORKSPACE_ENTRY => {
-                let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
-                let outcome = self
-                    .workspace_files
-                    .move_entry(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::MoveWorkspaceEntryRequest = parse_params(params)?;
+                    let outcome = self
+                        .workspace_files
+                        .move_entry(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
+                .await
             }
             methods::WRITE_WORKSPACE_FILE => {
-                let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;
-                let outcome = tokio::time::timeout(
-                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
-                    self.workspace_files.write_file(request),
-                )
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::WriteWorkspaceFileRequest = parse_params(params)?;
+                    let outcome = tokio::time::timeout(
+                        crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                        self.workspace_files.write_file(request),
+                    )
+                    .await
+                    .map_err(|_| RpcError::Failed("workspace file write timed out".into()))?
+                    .map_err(RpcError::from)?;
+                    RpcReply::value(&outcome)
+                })
                 .await
-                .map_err(|_| RpcError::Failed("workspace file write timed out".into()))?
-                .map_err(RpcError::from)?;
-                RpcReply::value(&outcome)
             }
             methods::WATCH_WORKSPACE_FILES => {
-                let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
-                let subscription = self
-                    .workspace_files
-                    .watch_files(request)
-                    .await
-                    .map_err(RpcError::from)?;
-                let stream = futures::stream::unfold(subscription, |mut subscription| async move {
-                    let changes = subscription.recv().await?;
-                    let value = serde_json::to_value(changes).ok()?;
-                    Some((value, subscription))
-                });
-                Ok(RpcReply::Stream(stream.boxed()))
+                                // Same stack bounding as the listing arm above.
+                Box::pin(async move {
+                    let request: roboco_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
+                    let subscription = self
+                        .workspace_files
+                        .watch_files(request)
+                        .await
+                        .map_err(RpcError::from)?;
+                    let stream = futures::stream::unfold(subscription, |mut subscription| async move {
+                        let changes = subscription.recv().await?;
+                        let value = serde_json::to_value(changes).ok()?;
+                        Some((value, subscription))
+                    });
+                    Ok(RpcReply::Stream(stream.boxed()))
+                })
+                .await
             }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
@@ -3195,32 +3243,42 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
-                let p: OpenTerminalParams = parse_params(params)?;
-// Prefer an explicit real path (new-chat canvas has no row yet);
-                // `space-canvas:{spaceId}` names the selected project so a
-                // missing/tilde cwd still lands in that folder. Project-less
-                // chats store cwd `~`, expanded here on the host, and a
-                // missing home is an error rather than a silent `/`.
-                let chat_cwd = self
-                    .workspace
-                    .chat(&p.chat_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|chat| chat.cwd);
-                let space_cwd = canvas_space_id(&p.chat_id).and_then(|space_id| {
-                    self.workspace
-                        .space(space_id)
+                // The cwd resolution below carries the same grown nested
+                // futures as the workspace-file arms; box it the same way.
+                Box::pin(async move {
+                    let p: OpenTerminalParams = parse_params(params)?;
+                    // Prefer an explicit real path (new-chat canvas has no row yet);
+                    // `space-canvas:{spaceId}` names the selected project so a
+                    // missing/tilde cwd still lands in that folder. Project-less
+                    // chats store a home-relative cwd, expanded here on the host,
+                    // and a missing home is an error rather than a silent `/`.
+                    let chat_cwd = self
+                        .workspace
+                        .chat(&p.chat_id)
                         .ok()
                         .flatten()
-                        .map(|space| space.path)
-                });
-                let cwd = resolve_open_terminal_cwd(p.cwd, chat_cwd, space_cwd)
+                        .and_then(|chat| chat.cwd);
+                    let space_cwd = canvas_space_id(&p.chat_id).and_then(|space_id| {
+                        self.workspace
+                            .space(space_id)
+                            .ok()
+                            .flatten()
+                            .map(|space| space.path)
+                    });
+                    let cwd = resolve_open_terminal_cwd(
+                        p.cwd,
+                        chat_cwd,
+                        space_cwd,
+                        &self.repos.scratch_root(),
+                    )
                     .map_err(|error| RpcError::Failed(error.to_string()))?;
-                let session = self
-                    .terminals
-                    .open(&cwd, p.cols, p.rows)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&session)
+                    let session = self
+                        .terminals
+                        .open(&cwd, p.cols, p.rows)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    RpcReply::value(&session)
+                })
+                .await
             }
             methods::SUBSCRIBE_TERMINAL => {
                 let p: SubscribeTerminalParams = parse_params(params)?;
@@ -3846,30 +3904,65 @@ mod tests {
             resolve_open_terminal_cwd(
                 Some("/proj".into()),
                 Some("/chat".into()),
-                Some("/space".into())
-            ).unwrap(),
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/proj"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(None, Some("/chat".into()), Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                None,
+                Some("/chat".into()),
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(Some("~".into()), None, Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                Some("~".into()),
+                None,
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/space",
             "tilde is a fallback, not an override of the selected project"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(None, None, Some("/space".into())).unwrap(),
+            resolve_open_terminal_cwd(
+                None,
+                None,
+                Some("/space".into()),
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/space"
         );
-        assert_eq!(resolve_open_terminal_cwd(None, None, None).unwrap(), home);
         assert_eq!(
-            resolve_open_terminal_cwd(Some("~".into()), Some("/chat".into()), None).unwrap(),
+            resolve_open_terminal_cwd(None, None, None, std::path::Path::new("/scratch")).unwrap(),
+            home
+        );
+        assert_eq!(
+            resolve_open_terminal_cwd(
+                Some("~".into()),
+                Some("/chat".into()),
+                None,
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(
-            resolve_open_terminal_cwd(Some("  ".into()), Some("/chat".into()), None).unwrap(),
+            resolve_open_terminal_cwd(
+                Some("  ".into()),
+                Some("/chat".into()),
+                None,
+                std::path::Path::new("/scratch")
+            )
+            .unwrap(),
             "/chat"
         );
         assert_eq!(canvas_space_id("space-canvas:s1"), Some("s1"));

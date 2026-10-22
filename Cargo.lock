@@ -8244,6 +8244,7 @@ dependencies = [
  "roboco-update",
  "rusqlite",
  "rust-embed",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",

@@ -124,9 +124,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Two strings name the same checkout root. Windows git writes
 /// forward-slash gitdir links while specs carry backslash paths (and either
 /// side may be a symlinked alias), so a raw string compare misses real reuse;
-/// canonical forms settle it, falling back to the raw compare.
+/// filesystem identity settles it, with canonical forms as the fallback for
+/// paths that don't resolve (both missing, exotic spellings).
 fn is_same_checkout(a: &str, b: &str) -> bool {
     if a == b {
+        return true;
+    }
+    if same_file::is_same_file(a, b).unwrap_or(false) {
         return true;
     }
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
@@ -2726,6 +2730,17 @@ impl DocHost {
                 // creates the row under our device id (we are about to host it).
                 if let Some(ws) = self.workspace() {
                     ws.claim_chat(chat_id, Some(&request.cwd))?;
+                    // Older clients send `~` for a projectless run; a chat
+                    // created with a scratch folder runs there instead.
+                    if roboco_proto::projectless::is_home_cwd(&request.cwd)
+                        && let Ok(Some(chat)) = ws.chat(chat_id)
+                        && let Some(cwd) = chat.cwd.filter(|cwd| {
+                            chat.space_id.is_none()
+                                && roboco_proto::projectless::is_scratch_cwd(cwd)
+                        })
+                    {
+                        request.cwd = cwd;
+                    }
                     // A pre-existing row (the client's createChat raced ahead)
                     // still carries the repo folder — repoint it at the fresh
                     // worktree, and stamp the actual `roboco/<name>` branch so
@@ -3232,7 +3247,6 @@ impl DocHost {
         if let Some(ws) = self.workspace()
             && let Ok(Some(chat)) = ws.chat(chat_id)
             && let Some(cwd) = chat.cwd
-            && cwd != spec.repo_path
             && crate::workspace_host::linked_worktree_root(std::path::Path::new(&cwd))
                 .is_some_and(|root| is_same_checkout(&root, &spec.repo_path))
         {

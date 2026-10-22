@@ -6,7 +6,8 @@
 //! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
 //! created under `~/.roboco/worktrees/<repoName>/<worktreeName>` (NOT the data
 //! dir — worktrees are user-facing working checkouts), with an auto-generated name +
-//! matching `roboco/<name>` branch. `ROBOCO_WORKTREES_DIR` overrides the root.
+//! matching `roboco/<name>` branch. Device preferences can choose another root;
+//! `ROBOCO_WORKTREES_DIR` takes precedence over those preferences.
 //!
 //! All git access is via subprocess (`tokio::process`) — never libgit2.
 
@@ -74,12 +75,16 @@ pub struct CheckoutIdentity {
 
 /// Best-effort home directory (the worktree root base).
 pub(crate) fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .filter(|s| !s.is_empty())
+    let variables = if cfg!(windows) {
+        ["USERPROFILE", "HOME"]
+    } else {
+        ["HOME", "USERPROFILE"]
+    };
+    variables
+        .into_iter()
+        .find_map(|name| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         })
         .unwrap_or_else(|| PathBuf::from("/"))
@@ -96,6 +101,24 @@ pub(crate) fn expand_home(cwd: &str) -> Result<String, &'static str> {
             .into_owned()),
         _ => Ok(cwd.to_string()),
     }
+}
+
+/// A chat cwd on this host: [`expand_home`], or a projectless chat's scratch
+/// folder under `scratch_root`, created on first use — createChat only names
+/// it, possibly on another device.
+pub(crate) fn resolve_chat_cwd(cwd: &str, scratch_root: &Path) -> Result<String, String> {
+    if !roboco_proto::projectless::is_scratch_cwd(cwd) {
+        return expand_home(cwd).map_err(str::to_string);
+    }
+    let name = cwd.trim().rsplit('/').next().unwrap_or_default();
+    let folder = scratch_root.join(name);
+    std::fs::create_dir_all(&folder).map_err(|error| {
+        format!(
+            "could not create the chat's folder {}: {error}",
+            folder.display()
+        )
+    })?;
+    Ok(folder.to_string_lossy().into_owned())
 }
 
 /// Resolve the host user's home for a session that explicitly uses `~`.
@@ -123,20 +146,10 @@ fn session_home_dir_with(
     Err("User home directory unavailable on this device")
 }
 
-/// Where new worktrees live. Deliberately NOT under the backend data dir —
-/// worktrees are user-facing working checkouts. `ROBOCO_WORKTREES_DIR` overrides
-/// (test isolation); empty reads as unset.
-fn default_worktrees_root() -> PathBuf {
-    std::env::var_os("ROBOCO_WORKTREES_DIR")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".roboco").join("worktrees"))
-}
-
 struct ReposInner {
     data_dir: PathBuf,
     device_id: String,
-    worktrees_root: PathBuf,
+    worktrees: crate::worktree_settings::WorktreePreferences,
     file_searches: std::sync::Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     http: reqwest::Client,
     github_avatars: std::sync::Mutex<HashMap<String, String>>,
@@ -179,19 +192,48 @@ impl Repos {
         &self.inner.data_dir
     }
 
-    /// `data_dir` holds `repos.json` + cloned/created repos; the worktree root
-    /// comes from `$ROBOCO_WORKTREES_DIR` or `~/.roboco/worktrees`.
-    pub fn new(data_dir: &Path, device_id: &str) -> Self {
-        Self::with_worktrees_root(data_dir, device_id, default_worktrees_root())
+    /// Where projectless chats' folders live on this host: the engine data
+    /// dir's `scratch` (`~/.roboco/scratch` for the default data dir), as
+    /// t3code keeps its under `~/.t3/scratch`.
+    pub(crate) fn scratch_root(&self) -> PathBuf {
+        self.inner.data_dir.join("scratch")
     }
 
-    /// Explicit worktree root (tests).
+    /// `data_dir` holds `repos.json` + cloned/created repos and the worktree
+    /// preferences. New worktrees use the custom location or
+    /// `~/.roboco/worktrees`; a nonempty `$ROBOCO_WORKTREES_DIR`
+    /// overrides both (including test isolation).
+    pub fn new(data_dir: &Path, device_id: &str) -> Self {
+        Self::with_worktree_preferences(
+            data_dir,
+            device_id,
+            home_dir().join(".roboco").join("worktrees"),
+            std::env::var_os("ROBOCO_WORKTREES_DIR")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+        )
+    }
+
+    /// Explicit default worktree root, without the environment override (tests).
     pub fn with_worktrees_root(data_dir: &Path, device_id: &str, worktrees_root: PathBuf) -> Self {
+        Self::with_worktree_preferences(data_dir, device_id, worktrees_root, None)
+    }
+
+    fn with_worktree_preferences(
+        data_dir: &Path,
+        device_id: &str,
+        worktrees_root: PathBuf,
+        environment_override: Option<PathBuf>,
+    ) -> Self {
         Self {
             inner: std::sync::Arc::new(ReposInner {
                 data_dir: data_dir.to_path_buf(),
                 device_id: device_id.to_string(),
-                worktrees_root,
+                worktrees: crate::worktree_settings::WorktreePreferences::open(
+                    data_dir,
+                    worktrees_root,
+                    environment_override,
+                ),
                 file_searches: std::sync::Mutex::new(HashMap::new()),
                 http: reqwest::Client::builder()
                     .timeout(GITHUB_AVATAR_TIMEOUT)
@@ -206,6 +248,17 @@ impl Repos {
                 git_runs: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
+    }
+
+    pub fn worktree_settings(&self) -> roboco_proto::WorktreeSettingsStatus {
+        self.inner.worktrees.status()
+    }
+
+    pub async fn set_worktree_settings(
+        &self,
+        settings: roboco_proto::WorktreeSettings,
+    ) -> Result<roboco_proto::WorktreeSettingsStatus, EngineError> {
+        self.inner.worktrees.set(settings).await
     }
 
     #[cfg(test)]
@@ -253,16 +306,17 @@ impl Repos {
         {
             use std::os::windows::process::CommandExt;
             cmd.as_std_mut().creation_flags(0x08000000);
+            // Let Git handle long native paths without persisting user config.
+            cmd.args(["-c", "core.longpaths=true"]);
         }
-        cmd.args(args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
+        cmd.args(args);
         cmd.stdin(std::process::Stdio::null());
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
+        let output = cmd.output().await.map_err(|e| {
+            EngineError::Other(format!("git {args:?} in {cwd:?} failed to start: {e}"))
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let message = stderr.trim();
@@ -340,15 +394,31 @@ impl Repos {
     /// Canonical identity shared by every chat operating in this exact worktree:
     /// `sha256(deviceId ‖ NUL ‖ canonical git dir)`.
     pub async fn checkout_identity(&self, path: &Path) -> Result<CheckoutIdentity, EngineError> {
-        let root = self
-            .git(&["rev-parse", "--show-toplevel"], Some(path))
-            .await?;
-        let git_dir = self
+        let out = self
             .git(
-                &["rev-parse", "--path-format=absolute", "--git-dir"],
+                &[
+                    "rev-parse",
+                    "--show-toplevel",
+                    "--path-format=absolute",
+                    "--git-dir",
+                ],
                 Some(path),
             )
             .await?;
+        let mut lines = out.lines();
+        let (root, git_dir) = match (lines.next(), lines.next(), lines.next()) {
+            (Some(root), Some(git_dir), None) => (root.to_owned(), git_dir.to_owned()),
+            // Fallback for a path with a `\n` in its name.
+            _ => (
+                self.git(&["rev-parse", "--show-toplevel"], Some(path))
+                    .await?,
+                self.git(
+                    &["rev-parse", "--path-format=absolute", "--git-dir"],
+                    Some(path),
+                )
+                .await?,
+            ),
+        };
         let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
         let canonical_git_dir =
             std::fs::canonicalize(&git_dir).unwrap_or_else(|_| PathBuf::from(&git_dir));
@@ -1122,11 +1192,21 @@ impl Repos {
             return list.paths.clone();
         }
         let listed = std::time::Instant::now();
-        let paths = self
-            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+        // NUL-terminated so a `\n` in a worktree's path can't forge another
+        // entry.
+        let out = match self
+            .git(&["worktree", "list", "--porcelain", "-z"], Some(repo_path))
             .await
-            .map(|out| linked_worktree_paths(&out))
-            .unwrap_or_default();
+        {
+            Ok(out) => out,
+            // Git before 2.36 has no `-z`.
+            Err(_) => self
+                .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+                .await
+                .map(|out| out.replace('\n', "\0"))
+                .unwrap_or_default(),
+        };
+        let paths = linked_worktree_paths(&out);
         if let Ok(mut lists) = self.inner.worktree_lists.lock() {
             lists.insert(
                 repo_path.to_path_buf(),
@@ -1189,8 +1269,8 @@ impl Repos {
 
     // ── worktrees ───────────────────────────────────────────────────────────
 
-    /// `git worktree add` an isolated checkout under
-    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh `roboco/<name>`
+    /// `git worktree add` an isolated checkout under the configured worktree
+    /// root's `<repoName>/<generatedName>`, on a fresh `roboco/<name>`
     /// branch off `branch`.
     pub async fn create_worktree(
         &self,
@@ -1201,8 +1281,23 @@ impl Repos {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "repo".to_string());
-        let base = self.inner.worktrees_root.join(&repo_name);
-        std::fs::create_dir_all(&base)?;
+        // Snapshot the destination once per creation. Changes never relocate
+        // existing worktrees or alter the cwd already stored on a chat.
+        let base = self.inner.worktrees.root().join(&repo_name);
+        // A location that contains the repository (e.g. its parent folder)
+        // would nest checkouts inside the primary one, where they show up as
+        // untracked embedded repositories.
+        let root = self.inner.worktrees.root();
+        if let (Ok(root), Ok(repo)) = (
+            std::fs::canonicalize(&root),
+            std::fs::canonicalize(repo_path),
+        ) && root.join(&repo_name).starts_with(&repo)
+        {
+            return Err(EngineError::Other(format!(
+                "Worktrees for {repo_name} would be created inside the repository at {}. Choose a different worktree location in Settings.",
+                repo_path.display()
+            )));
+        }
         // Auto-generate a name colliding with neither an existing dir nor branch.
         let existing: HashSet<String> = self
             .branches(repo_path)
@@ -1231,7 +1326,14 @@ impl Repos {
         let name =
             name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
         let path = base.join(&name);
+        #[cfg(windows)]
+        validate_windows_worktree_path(&path.to_string_lossy())?;
+        std::fs::create_dir_all(&base)?;
         let branch_name = format!("roboco/{name}");
+        #[cfg(windows)]
+        self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
+            .await?;
+        #[cfg(not(windows))]
         self.git(
             &[
                 "worktree",
@@ -1252,6 +1354,101 @@ impl Repos {
             name,
             checkout_id: Some(checkout.id),
         })
+    }
+
+    /// Git's built-in checkout passes `<destination>/.git` in GIT_DIR, whose
+    /// separate PATH_MAX - 40 check rejects some launchable Windows paths even
+    /// with core.longpaths enabled. Register first, then reset from the new
+    /// checkout using a short, relative GIT_DIR. Keep native add's hook and
+    /// failure semantics: incomplete checkouts are removed, hook failures
+    /// retain the populated worktree (the hook may have written user data).
+    #[cfg(any(windows, test))]
+    async fn add_worktree_in_two_steps(
+        &self,
+        repo_path: &Path,
+        path: &Path,
+        branch_name: &str,
+        base: &str,
+    ) -> Result<(), EngineError> {
+        #[cfg(windows)]
+        let git_path = windows_git_worktree_path(&path.to_string_lossy());
+        #[cfg(not(windows))]
+        let git_path = path.to_string_lossy();
+        self.git(
+            &[
+                "worktree",
+                "add",
+                "--no-checkout",
+                "-b",
+                branch_name,
+                &git_path,
+                base,
+            ],
+            Some(repo_path),
+        )
+        .await?;
+
+        let checkout = async {
+            let head = self
+                .git(
+                    &["--git-dir=.git", "rev-parse", "--verify", "HEAD"],
+                    Some(path),
+                )
+                .await?;
+            self.git(
+                &[
+                    "--git-dir=.git",
+                    "reset",
+                    "--hard",
+                    "--no-recurse-submodules",
+                ],
+                Some(path),
+            )
+            .await?;
+            Ok::<_, EngineError>(head)
+        }
+        .await;
+        let head = match checkout {
+            Ok(head) => head,
+            Err(error) => {
+                // Force is limited to the checkout this call just registered;
+                // a failed reset may have left partially written files. Like
+                // native worktree add, keep the new branch on failure.
+                if let Err(cleanup) = self
+                    .git(
+                        &["worktree", "remove", "--force", &git_path],
+                        Some(repo_path),
+                    )
+                    .await
+                {
+                    return Err(EngineError::Other(format!(
+                        "{error}; could not remove incomplete worktree {}: {cleanup}",
+                        path.display()
+                    )));
+                }
+                return Err(error);
+            }
+        };
+
+        // Match worktree add's null old OID, initial commit, and branch flag.
+        // Let Git find the configured hook and run it from the checkout, with
+        // no explicit GIT_DIR/GIT_WORK_TREE override in the hook environment.
+        let null_oid = "0".repeat(head.len());
+        self.git(
+            &[
+                "hook",
+                "run",
+                "--ignore-missing",
+                "post-checkout",
+                "--",
+                &null_oid,
+                &head,
+                "1",
+            ],
+            Some(path),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
@@ -1521,10 +1718,11 @@ async fn disposable_worker<T: Send + 'static>(
 
 /// Linked worktrees in `git worktree list --porcelain` output: every
 /// `worktree <path>` stanza after the first, which is the main checkout.
+/// NUL-terminated so a `\n` in a worktree's path can't forge another entry.
 fn linked_worktree_paths(porcelain: &str) -> Vec<PathBuf> {
     porcelain
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("worktree "))
+        .split('\0')
+        .filter_map(|line| line.strip_prefix("worktree "))
         .skip(1)
         .map(PathBuf::from)
         .collect()
@@ -2319,9 +2517,267 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Win32 process working directories remain limited to MAX_PATH even when
+/// file I/O supports extended paths. A usable worktree must be able to launch
+/// Git, hooks, and agents, not merely be created on disk. Count UTF-16 units,
+/// excluding the verbatim prefix and reserving the terminating NUL.
+#[cfg(any(windows, test))]
+pub(crate) fn validate_windows_worktree_path(path: &str) -> Result<(), EngineError> {
+    if windows_git_worktree_path(path).encode_utf16().count() >= 260 {
+        return Err(EngineError::Other(
+            "This worktree path is too long to start tools on Windows. Choose a shorter location, such as C:\\worktrees.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Git's worktree command normalizes backslashes to slashes, which breaks
+/// Win32 verbatim prefixes (`\\?\` becomes `//?/`). Keep native paths for
+/// filesystem access, but pass drive/UNC paths without that prefix to Git.
+#[cfg(any(windows, test))]
+fn windows_git_worktree_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        return format!("//{unc}");
+    }
+    if let Some(drive) = path.strip_prefix("//?/") {
+        let bytes = drive.as_bytes();
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1..3] == *b":/" {
+            return drive.to_owned();
+        }
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_worktree_paths_strip_only_drive_and_unc_verbatim_prefixes() {
+        for (native, expected) in [
+            (
+                r"\\?\C:\other disk\日本語\repo",
+                "C:/other disk/日本語/repo",
+            ),
+            (r"\\?\UNC\server\share\repo", "//server/share/repo"),
+            (r"C:\worktrees\repo", "C:/worktrees/repo"),
+            (r"\\server\share\repo", "//server/share/repo"),
+            ("//?/C:/worktrees/repo", "C:/worktrees/repo"),
+            ("//?/UNC/server/share/repo", "//server/share/repo"),
+        ] {
+            assert_eq!(super::windows_git_worktree_path(native), expected);
+        }
+        let suffix = "folder/".repeat(50);
+        assert_eq!(
+            super::windows_git_worktree_path(&format!("//?/C:/{suffix}")),
+            format!("C:/{suffix}")
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn windows_worktree_limit_counts_utf16_without_verbatim_prefix() {
+        for prefix in ["C:/", "//?/C:/", "//server/share/", "//?/UNC/server/share/"] {
+            let prefix_len = windows_git_worktree_path(prefix).encode_utf16().count();
+            let path = format!("{prefix}{}", "a".repeat(259 - prefix_len));
+            assert!(validate_windows_worktree_path(&path).is_ok());
+            assert!(validate_windows_worktree_path(&format!("{path}a")).is_err());
+        }
+        assert!(validate_windows_worktree_path(&format!("C:/{}", "日本語".repeat(80))).is_ok());
+        assert!(validate_windows_worktree_path(&format!("C:/{}", "😀".repeat(129))).is_err());
+    }
+
+    #[tokio::test]
+    async fn worktree_location_containing_the_repository_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = tmp.path().join("code");
+        let repo = code.join("roboco");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(&tmp.path().join("data"), "test", code.clone());
+        repos
+            .git(&["init", "-b", "main"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "init",
+                ],
+                Some(&repo),
+            )
+            .await
+            .unwrap();
+        let error = repos.create_worktree(&repo, "main").await.unwrap_err();
+        assert!(
+            error.to_string().contains("inside the repository"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_dir(&repo).unwrap().count(), 1, "only .git");
+        assert!(
+            repos
+                .branches(&repo)
+                .await
+                .unwrap()
+                .iter()
+                .all(|b| !b.starts_with("roboco/"))
+        );
+
+        // A sibling location for the same parent is fine.
+        let sibling =
+            Repos::with_worktrees_root(&tmp.path().join("data2"), "test", code.join("wt"));
+        let worktree = sibling.create_worktree(&repo, "main").await.unwrap();
+        assert!(Path::new(&worktree.path).starts_with(code.join("wt").join("roboco")));
+    }
+
+    async fn two_step_fixture(hook_exit: u8) -> (tempfile::TempDir, Repos, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(
+            &tmp.path().join("data"),
+            "test",
+            tmp.path().join("worktrees"),
+        );
+        repos
+            .git(&["init", "-b", "main"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "user.name", "Test"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "core.autocrlf", "false"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "user.email", "test@example.com"], Some(&repo))
+            .await
+            .unwrap();
+        std::fs::write(repo.join("README.txt"), "original checkout\n").unwrap();
+        std::fs::write(repo.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+        std::fs::create_dir(repo.join(".githooks")).unwrap();
+        let hook = repo.join(".githooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ntest -f README.txt || exit 42\nprintf '%s\\n' \"$1\" \"$2\" \"$3\" >> hook-arguments\nprintf ran >> hook-count\nexit {hook_exit}\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        repos.git(&["add", "."], Some(&repo)).await.unwrap();
+        repos
+            .git(&["commit", "-m", "fixture"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "core.hooksPath", ".githooks"], Some(&repo))
+            .await
+            .unwrap();
+        (tmp, repos, repo)
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_runs_configured_hook_once_after_checkout() {
+        let (tmp, repos, repo) = two_step_fixture(0).await;
+        let path = tmp.path().join("new checkout");
+        repos
+            .add_worktree_in_two_steps(&repo, &path, "roboco/test", "main")
+            .await
+            .unwrap();
+        let head = repos
+            .git(&["rev-parse", "HEAD"], Some(&repo))
+            .await
+            .unwrap();
+        let arguments = std::fs::read_to_string(path.join("hook-arguments")).unwrap();
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            ["0".repeat(head.len()), head, "1".into()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("hook-count")).unwrap(),
+            "ran"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("README.txt")).unwrap(),
+            "original checkout\n"
+        );
+        assert!(!repo.join("hook-count").exists());
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+        assert!(repos.refs(&repo).await.unwrap().iter().any(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_some_and(|listed| same_file::is_same_file(listed, &path).unwrap_or(false))
+        }));
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_removes_partial_checkout_when_reset_fails() {
+        let (tmp, repos, repo) = two_step_fixture(0).await;
+        repos
+            .git(&["config", "filter.fixture.smudge", "exit 1"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "filter.fixture.required", "true"], Some(&repo))
+            .await
+            .unwrap();
+        let path = tmp.path().join("failed checkout");
+        let error = repos
+            .add_worktree_in_two_steps(&repo, &path, "roboco/failed", "main")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("smudge"), "{error}");
+        assert!(!path.exists());
+        assert!(repos.refs(&repo).await.unwrap().iter().all(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_none_or(|listed| same_file::is_same_file(listed, &repo).unwrap_or(false))
+        }));
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.txt")).unwrap(),
+            "original checkout\n"
+        );
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_keeps_completed_checkout_when_hook_fails() {
+        let (tmp, repos, repo) = two_step_fixture(1).await;
+        let path = tmp.path().join("hook failure");
+        assert!(
+            repos
+                .add_worktree_in_two_steps(&repo, &path, "roboco/hook-failure", "main")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("hook-count")).unwrap(),
+            "ran"
+        );
+        assert!(path.join("README.txt").is_file());
+        assert!(repos.refs(&repo).await.unwrap().iter().any(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_some_and(|listed| same_file::is_same_file(listed, &path).unwrap_or(false))
+        }));
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+    }
 
     #[test]
     fn session_home_requires_an_explicit_usable_directory() {
@@ -2664,6 +3120,57 @@ tmpfs /run tmpfs rw 0 0
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_checkout_accepts_every_linked_worktree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let branch = tmp.path().join("branch");
+        let detached = tmp.path().join("detached");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        std::fs::create_dir_all(&elsewhere).expect("unrelated dir");
+        git_fixture(&root, &["init", "-b", "main"]);
+        git_fixture(&root, &["commit", "--allow-empty", "-m", "initial"]);
+        git_fixture(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &branch.to_string_lossy(),
+            ],
+        );
+        git_fixture(
+            &root,
+            &["worktree", "add", "--detach", &detached.to_string_lossy()],
+        );
+        let data = tmp.path().join("data");
+        let repos =
+            Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        for checkout in [&root, &branch, &detached] {
+            assert_eq!(
+                repos.workspace_checkout(&root, checkout).await,
+                std::fs::canonicalize(checkout).ok(),
+                "{}",
+                checkout.display()
+            );
+        }
+        // A newline in a worktree's path must not smuggle in another entry.
+        #[cfg(unix)]
+        {
+            let forged = tmp
+                .path()
+                .join(format!("forged\nworktree {}", elsewhere.display()));
+            git_fixture(
+                &root,
+                &["worktree", "add", "--detach", &forged.to_string_lossy()],
+            );
+        }
+        assert!(repos.workspace_checkout(&root, &elsewhere).await.is_none());
     }
 
     fn git_fixture(cwd: &Path, args: &[&str]) {

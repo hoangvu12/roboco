@@ -6,12 +6,14 @@
 pub mod agent;
 pub mod attachment_mentions;
 pub mod compat;
+pub mod device_paths;
 pub mod entities;
 pub mod file_mentions;
 pub mod invocation;
 pub mod layout;
 pub mod motion;
 pub mod preview;
+pub mod projectless;
 pub mod qr;
 pub mod remote;
 pub mod tailcat;

@@ -25,6 +25,7 @@ pub mod doc_host;
 pub mod engine_settings;
 mod fs_watch;
 pub mod harness_updates;
+pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
 pub mod listener;
@@ -53,6 +54,7 @@ pub mod uploads;
 mod web;
 pub mod workspace_files;
 pub mod workspace_host;
+mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
@@ -259,6 +261,7 @@ impl EngineCore {
         sessions.recover_scheduled_resumes();
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
+        sessions.set_scratch_root(repos.scratch_root());
         doc_host.set_repos(repos.clone());
         let change_requests = CheckoutChangeRequests::start(repos.clone(), &device_id);
         let workspace_files =
