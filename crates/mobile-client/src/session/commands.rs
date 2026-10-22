@@ -481,7 +481,7 @@ impl SessionCore {
                         .iter_mut()
                         .find(|p| p.message_id == message_id)
                     {
-                        pending.acked_at_ms = crate::engines::now_ms();
+                        pending.restart_clock(crate::engines::now_ms());
                     }
                 }
                 Ok(())
@@ -503,6 +503,9 @@ impl SessionCore {
     /// message id — the engine dedupes the user entry by it), and
     /// `RetryDelivery` for the acked ones (the engine re-issues dead
     /// Run/Steer attempts under a new command id with the same message id).
+    /// The banner clears at once (the restarted clocks read `Sending`), and
+    /// the transcript re-reads in full: a send the engine already wrote but
+    /// the stream missed is adopted by that reset.
     pub(crate) async fn retry_delivery(&self) -> Result<(), ClientError> {
         // A re-issued command re-arms the notification driver's
         // pending-send window (ticket 28), like the original send.
@@ -520,12 +523,14 @@ impl SessionCore {
                 }
                 if pending.acked_at_ms != 0 {
                     engine_retry = true;
-                    pending.acked_at_ms = now;
+                    pending.restart_clock(now);
                 } else {
                     reissue.push(pending.command.clone());
                 }
             }
         }
+        self.refresh();
+        self.heal.notify_one();
         for command in reissue {
             let _ = self.issue_command(command).await;
         }
@@ -538,7 +543,7 @@ impl SessionCore {
                 )
                 .await;
         }
-        self.recompute_composer();
+        self.refresh();
         Ok(())
     }
 }

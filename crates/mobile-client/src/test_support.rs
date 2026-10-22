@@ -34,6 +34,7 @@ pub(crate) fn test_timings() -> crate::timings::Timings {
         background_flush: Duration::from_secs(1),
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_millis(120_000),
+        undelivered_heal: Duration::from_secs(20),
         workspace_tick: Duration::from_millis(100),
         accounts_forced_deadline: Duration::from_millis(400),
         notify: NotifyTimings::default(),
