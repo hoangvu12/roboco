@@ -1,5 +1,6 @@
 //! Settings → Archived (feature-inventory §1.5): archived chats across
-//! devices, with Unarchive (Mutate setChatArchived false).
+//! devices, with Unarchive (Mutate setChatArchived false) and a confirmed
+//! Delete all (Mutate deleteChat per archived chat).
 
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -25,6 +26,11 @@ pub struct ArchivedPage {
     error: Option<SharedString>,
     /// Chat with an in-flight unarchive (button shows working state).
     busy: Option<String>,
+    /// Archived ids captured when Delete all was clicked. The dialog deletes
+    /// exactly these, never a chat archived while it was open.
+    delete_all_confirm: Option<Vec<String>>,
+    /// In-flight Delete all; held so repeat clicks can't start a second run.
+    delete_all_task: Option<Task<()>>,
     /// Row index under the pointer — drives the original's `group-hover`
     /// Unarchive reveal (`opacity-0 group-hover:opacity-100`).
     hovered: Option<usize>,
@@ -40,6 +46,8 @@ impl ArchivedPage {
             scroll: widgets::PageScroll::default(),
             error: None,
             busy: None,
+            delete_all_confirm: None,
+            delete_all_task: None,
             hovered: None,
             task: None,
             _observe: observe,
@@ -76,6 +84,129 @@ impl ArchivedPage {
             cx.notify();
         }
     }
+
+    fn request_delete_all(&mut self, cx: &mut Context<Self>) {
+        if self.delete_all_task.is_some() {
+            return;
+        }
+        let ids: Vec<String> = archived_chats(&self.state.read(cx).chats)
+            .into_iter()
+            .map(|chat| chat.id.clone())
+            .collect();
+        if !ids.is_empty() {
+            self.delete_all_confirm = Some(ids);
+            cx.notify();
+        }
+    }
+
+    /// Escape that reached Settings unclaimed closes the Delete all dialog
+    /// first, so it never closes Settings under the dialog (this page
+    /// outlives Settings, and the dialog would reopen with it).
+    pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.delete_all_confirm.take().is_none() {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    fn delete_all(&mut self, cx: &mut Context<Self>) {
+        let Some(ids) = self.delete_all_confirm.take() else {
+            return;
+        };
+        if self.delete_all_task.is_some() {
+            return;
+        }
+        self.error = None;
+        // One request per chat, like the sidebar's section archive: the
+        // registry tombstones each row, so it leaves this list and the
+        // sidebar's Archived shelf as soon as its delete lands. Roboco
+        // resolves each chat's engine per id (engine-local pairing) instead
+        // of holding one engine for the whole run.
+        self.delete_all_task = Some(cx.spawn(async move |this, cx| {
+            let mut failed = 0;
+            for chat_id in ids {
+                // Unarchived since the confirmation (here, or on another
+                // device): no longer part of what the user agreed to delete.
+                // The same read resolves the chat's engine target.
+                let (still_archived, engine) = this
+                    .update(cx, |page, cx| {
+                        let state = page.state.read(cx);
+                        (
+                            state
+                                .chats
+                                .iter()
+                                .any(|chat| chat.id == chat_id && chat.archived),
+                            state.target_for_id(&chat_id).ok(),
+                        )
+                    })
+                    .unwrap_or((false, None));
+                if !still_archived {
+                    continue;
+                }
+                let Some(engine) = engine else {
+                    failed += 1;
+                    continue;
+                };
+                let params = serde_json::json!({ "op": "deleteChat", "chatId": chat_id });
+                if engine.call(methods::MUTATE, params).await.is_err() {
+                    failed += 1;
+                }
+            }
+            this.update(cx, |page, cx| {
+                page.delete_all_task = None;
+                if failed > 0 {
+                    page.error = Some(delete_all_failure(failed).into());
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn render_delete_all_dialog(
+        &mut self,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let count = self.delete_all_confirm.as_ref()?.len();
+        let theme = Theme::of(cx).for_popup();
+        // Same card as the sidebar's single "Delete session?" confirmation.
+        let card = popover::dialog_card(&theme)
+            .child(popover::dialog_title(
+                &theme,
+                "Delete all archived sessions?",
+            ))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .child(popover::dialog_body(&theme, delete_all_body(count))),
+            )
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "delete-archived-cancel")
+                            .id("delete-archived-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.delete_all_confirm = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        popover::btn_danger(&theme, "Delete all")
+                            .id("delete-archived-confirm")
+                            .on_click(cx.listener(|this, _, _, cx| this.delete_all(cx))),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("delete-archived-dialog", viewport, card))
+    }
 }
 
 impl popover::ScrollRailHost for ArchivedPage {
@@ -89,7 +220,8 @@ impl popover::ScrollRailHost for ArchivedPage {
 }
 
 impl Render for ArchivedPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dialog = self.render_delete_all_dialog(window.viewport_size(), cx);
         let theme = Theme::of(cx).for_settings_surface();
         let now = chrono::Utc::now();
         let (rows, device_names): (Vec<Chat>, std::collections::HashMap<String, String>) = {
@@ -300,6 +432,27 @@ impl Render for ArchivedPage {
                 .into_any_element()
         };
 
+        let deleting = self.delete_all_task.is_some();
+        let delete_all = (count > 0).then(|| {
+            widgets::action_button(&theme, widgets::ActionTone::Danger)
+                .id("archived-delete-all")
+                .flex_none()
+                .when(deleting, |el| el.opacity(0.5).cursor_default())
+                .tab_index(0)
+                .role(gpui::Role::Button)
+                .focus_visible(|s| s.border_2().border_color(theme.accent))
+                .on_click(cx.listener(|this, _, _, cx| this.request_delete_all(cx)))
+                .child(
+                    crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                        .size(px(16.0))
+                        .text_color(gpui::white()),
+                )
+                .child(SharedString::from(if deleting {
+                    "Deleting…"
+                } else {
+                    "Delete all"
+                }))
+        });
         let scrollbar = popover::rail(self, "archived-page-scrollbar", &theme, cx);
         div()
             .id("archived-page-host")
@@ -314,15 +467,30 @@ impl Render for ArchivedPage {
                     .track_scroll(&self.scroll.scroll)
                     .child(
                         widgets::page_column()
-                            .child(widgets::page_header(
-                                &theme,
-                                "Archived sessions",
-                                (count > 0).then_some(count),
-                            ))
-                            .child(widgets::page_subtitle(
-                                &theme,
-                                "Hidden from the sidebar, never deleted. Unarchiving puts a session back on its device.",
-                            ))
+                            .child(
+                                // Delete all sits bottom-right, level with
+                                // the subtitle rather than the title.
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_end()
+                                    .gap(px(16.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(widgets::page_header(
+                                                &theme,
+                                                "Archived sessions",
+                                                (count > 0).then_some(count),
+                                            ))
+                                            .child(widgets::page_subtitle(
+                                                &theme,
+                                                "Hidden from the sidebar, never deleted. Unarchiving puts a session back on its device.",
+                                            )),
+                                    )
+                                    .children(delete_all),
+                            )
                             .when_some(self.error.clone(), |el, message| {
                                 el.child(
                                     widgets::error_strip(&theme, message)
@@ -338,6 +506,23 @@ impl Render for ArchivedPage {
                     ),
             )
             .children(scrollbar)
+            .children(dialog)
+    }
+}
+
+fn delete_all_body(count: usize) -> String {
+    match count {
+        1 => "1 archived session will be permanently deleted. This can’t be undone.".into(),
+        n => format!(
+            "{n} archived sessions will be permanently deleted. This can’t be undone."
+        ),
+    }
+}
+
+fn delete_all_failure(failed: usize) -> String {
+    match failed {
+        1 => "Couldn’t delete 1 archived session. Try again.".into(),
+        n => format!("Couldn’t delete {n} archived sessions. Try again."),
     }
 }
 
@@ -376,6 +561,128 @@ mod tests {
         let rows = archived_chats(&chats);
         let ids: Vec<&str> = rows.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["b", "c"]);
+    }
+
+    #[test]
+    fn delete_all_copy_handles_one_and_many() {
+        assert!(delete_all_body(1).starts_with("1 archived session will"));
+        assert!(delete_all_body(146).starts_with("146 archived sessions will"));
+    }
+
+    #[gpui::test]
+    fn delete_all_deletes_the_confirmed_archived_chats_and_reports_failures(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel(16);
+        let (replies, inbound) = tokio::sync::mpsc::channel(16);
+        let engine =
+            crate::state::EngineHandle::from_test_client(roboco_rpc::RpcClient::new(out, inbound));
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![
+                chat("live", false),
+                chat("b", true),
+                chat("c", true),
+                chat("restored", true),
+            ];
+            state.set_test_engine(engine);
+            state
+        });
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(crate::theme::Theme::dark());
+        });
+        let window = cx.add_window(|_, cx| ArchivedPage::new(state, cx));
+        window
+            .update(cx, |page, _, cx| {
+                // Escape closes the dialog before it can close Settings.
+                page.request_delete_all(cx);
+                assert!(page.dismiss_on_escape(cx));
+                assert!(page.delete_all_confirm.is_none());
+                assert!(!page.dismiss_on_escape(cx));
+                page.request_delete_all(cx);
+                assert_eq!(
+                    page.delete_all_confirm.as_deref(),
+                    Some(&["b".to_string(), "c".to_string(), "restored".to_string()][..])
+                );
+                // Archived while the dialog was open: not part of what the
+                // user confirmed, so it must survive.
+                page.state
+                    .update(cx, |state, _| state.chats.push(chat("late", true)));
+                page.delete_all(cx);
+                assert!(page.delete_all_confirm.is_none());
+            })
+            .unwrap();
+        for (index, expected) in ["b", "c"].into_iter().enumerate() {
+            // `EngineTarget::call` spawns onto the registry's runtime
+            // handle — this current_thread runtime — so `run_until_parked`
+            // first polls the GPUI task up to the spawn point, the pump
+            // drives the frame onto the wire, and a second
+            // `run_until_parked` lets the reply settle.
+            cx.run_until_parked();
+            for _ in 0..16 {
+                runtime.block_on(async {
+                    tokio::task::yield_now().await;
+                });
+            }
+            cx.run_until_parked();
+            let request: serde_json::Value = serde_json::from_str(
+                &requests
+                    .try_recv()
+                    .expect("Each confirmed archived chat must be deleted"),
+            )
+            .unwrap();
+            assert_eq!(request["params"]["op"], "deleteChat");
+            assert_eq!(request["params"]["chatId"], expected);
+            if index == 0 {
+                // Unarchived mid-run (e.g. on another device): spared.
+                window
+                    .update(cx, |page, _, cx| {
+                        page.state.update(cx, |state, _| {
+                            state
+                                .chats
+                                .iter_mut()
+                                .filter(|chat| chat.id == "restored")
+                                .for_each(|chat| chat.archived = false)
+                        })
+                    })
+                    .unwrap();
+            }
+            let reply = if index == 0 {
+                serde_json::json!({"id":request["id"],"err":"rejected"})
+            } else {
+                serde_json::json!({"id":request["id"],"ok":{"ok":true}})
+            };
+            runtime.block_on(async {
+                replies.send(reply.to_string()).await.unwrap();
+                while replies.capacity() < replies.max_capacity() {
+                    tokio::task::yield_now().await;
+                }
+            });
+        }
+        cx.run_until_parked();
+        assert!(
+            requests.try_recv().is_err(),
+            "Only the confirmed chats are deleted"
+        );
+        window
+            .update(cx, |page, _, cx| {
+                assert!(page.delete_all_task.is_none());
+                // Roboco surfaces the failure through the page's error strip
+                // (no toast module); it reads exactly the upstream copy.
+                assert_eq!(
+                    page.error.as_deref(),
+                    Some("Couldn’t delete 1 archived session. Try again.")
+                );
+                let _ = cx;
+            })
+            .unwrap();
     }
 
     #[test]
