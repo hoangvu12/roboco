@@ -20,12 +20,17 @@ pre-change shape exactly, so the hunk ports verbatim after the rename.
 
 **Blocked by:** None.
 
-**Status:** ready-for-agent
+**Status:** done (ported in 3f96c5e62)
 
 **Verification budget:** `cargo check -p roboco` (app binary). Source:
 `.scratch/upstream-drift/2026-10-22.md` § quick ports.
 
-- [ ] Worker-threads hunk ported with its comment
-- [ ] Commit records upstream SHA `50e33711a` (#843)
+- [x] Worker-threads hunk ported with its comment
+- [x] Commit records upstream SHA `50e33711a` (#843)
 
 ## Comments
+
+- Ported in commit 3f96c5e62. Single hunk applied verbatim to
+  `apps/roboco/src/main.rs` at the `Some(Command::Mcp)` arm after the
+  `zeron_mcp` → `roboco_mcp` rename; comment kept. No excluded hunks.
+  Verified with `cargo check -p roboco` (1 pre-existing warning, clean).
