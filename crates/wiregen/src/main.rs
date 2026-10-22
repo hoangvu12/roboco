@@ -151,6 +151,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::Worktree,
         roboco_proto::FolderEntry,
         roboco_proto::FolderListing,
+        roboco_proto::WorktreeSettings,
+        roboco_proto::WorktreeSettingsStatus,
         roboco_proto::DriveEntry,
         roboco_proto::DriveListing,
         roboco_proto::FileSearchMatch,

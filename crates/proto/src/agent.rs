@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(json["type"], "error");
         assert_eq!(json["kind"]["type"], "usageLimit");
         assert_eq!(json["kind"]["window"], "5-hour");
-        assert_eq!(json["kind"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(json["kind"]["resetsAt"], 1_762_675_400_000i64);
         assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), limited);
 
         let signed_out = AgentEvent::Error {

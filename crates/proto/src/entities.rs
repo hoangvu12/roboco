@@ -447,6 +447,25 @@ pub struct FolderListing {
     pub truncated: bool,
 }
 
+/// Device-local preferences, used only when creating a new worktree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WorktreeSettings {
+    pub use_custom_directory: bool,
+    /// Remembered even while the custom location is disabled.
+    pub custom_directory: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeSettingsStatus {
+    pub settings: WorktreeSettings,
+    pub default_directory: String,
+    pub effective_directory: String,
+    /// An explicit host environment override takes precedence over preferences.
+    pub environment_override: Option<String>,
+}
+
 /// A browse root beyond home: a mounted drive/volume (or the system root).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -2018,7 +2037,7 @@ mod tests {
         assert_eq!(value["status"], "errored");
         assert_eq!(value["limit"]["harness"], "claude-code");
         assert_eq!(value["limit"]["window"], "5-hour");
-        assert_eq!(value["limit"]["resetsAt"], 1_762_675_400_000);
+        assert_eq!(value["limit"]["resetsAt"], 1_762_675_400_000i64);
         assert_eq!(value["limit"]["accountId"], "slot-9f2c");
         assert_eq!(serde_json::from_value::<Session>(value).unwrap(), limited);
 
@@ -2056,7 +2075,7 @@ mod tests {
             fire_at: 1_762_675_400_000,
         });
         let value = serde_json::to_value(&armed).unwrap();
-        assert_eq!(value["scheduledResume"]["fireAt"], 1_762_675_400_000);
+        assert_eq!(value["scheduledResume"]["fireAt"], 1_762_675_400_000i64);
         assert_eq!(serde_json::from_value::<Session>(value).unwrap(), armed);
 
         // Nothing armed: the field is omitted, not null.
@@ -2072,7 +2091,7 @@ mod tests {
             "limit": {
                 "harness": "claude-code",
                 "window": "5-hour",
-                "resetsAt": 1_762_675_400_000,
+                "resetsAt": 1_762_675_400_000i64,
             },
             "updatedAt": "2026-10-16T12:00:00Z",
         });

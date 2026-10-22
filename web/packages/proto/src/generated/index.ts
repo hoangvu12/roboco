@@ -166,6 +166,8 @@ export * from "./WorkspaceTextEncoding";
 export * from "./WorkspaceWritableEncoding";
 export * from "./WorkspaceWritableLineEnding";
 export * from "./Worktree";
+export * from "./WorktreeSettings";
+export * from "./WorktreeSettingsStatus";
 export * from "./WorktreeSpec";
 export * from "./WriteWorkspaceFileOutcome";
 export * from "./WriteWorkspaceFileRequest";
