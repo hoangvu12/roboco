@@ -167,6 +167,8 @@ icon_assets![
     (FILE_DATA, "file-data"),
     (FILE_MARKDOWN, "file-markdown"),
     (FILE_IMAGE, "file-image"),
+    // A framed picture: the icon of `Image N` chips.
+    (GALLERY, "gallery"),
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
