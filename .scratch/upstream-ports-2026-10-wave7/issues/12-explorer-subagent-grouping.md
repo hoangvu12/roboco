@@ -1,4 +1,12 @@
-# 12 — Explorer: group finished subagents, running counts (upstream #647) — carry-over
+# 12 — Explorer: group finished subagents, running counts (upstream #647) — SUPERSEDED, folded into ticket 07
+
+**Status:** superseded (2026-10-22) — upstream #895 (`591824881`)
+deleted this feature's files-panel surface (`files/subagents.rs`) as
+the session card absorbed it. This ticket's surviving intent — the
+`Session.running_subagents` wire entity and as much of the pill shape
+as #895 consumes — folds into ticket 07's superset. Do not start this
+ticket; see `07-session-card-titlebar-toggles.md` and the 2026-10-22
+drift note.
 
 **What to build:** Port `0c4835d2` (#647): the Subagents section lists
 running subagents as plain rows and folds everything finished into a

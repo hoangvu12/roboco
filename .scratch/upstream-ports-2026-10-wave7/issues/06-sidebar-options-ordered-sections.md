@@ -1,4 +1,13 @@
-# 06 — Sidebar: view options in the titlebar, ordered sections, searchable popovers (upstream 05f5f2bf + ae19fe31 + 672cc144)
+# 06 — Sidebar: view options in the titlebar, ordered sections, searchable popovers (upstream 05f5f2bf + ae19fe31 + 672cc144 + riders 26c8e8404 + 81e04e1c5)
+
+**2026-10-22 re-scope:** two v0.2.112–114 riders fold into this ticket
+(see `.scratch/upstream-drift/2026-10-22.md`): `26c8e8404` (#909,
+reorder sidebar sections by dragging their header — per-section order
+keys minted between neighbours' keys as pins are, engine capability
+`sidebar-section-order-v1`) and `81e04e1c5` (#901, sidebar toggle for
+the Archived section). A head start on `05f5f2bf` + `ae19fe31` is saved
+as `ticket-06-foldins.patch` beside the wave-7 spec — apply it first
+(`git apply .scratch/upstream-ports-2026-10-wave7/ticket-06-foldins.patch`).
 
 **What to build:** Port the first half of the sidebar run as one ticket:
 `05f5f2bf` (drop the ellipsis from New project in project menus),
@@ -32,6 +41,11 @@ persistence module), and proto has no `sidebar_pins.rs`/order keys
 (pins ride `SetSidebarPins` in `crates/proto/src/entities.rs:1132`).
 
 **Steps:**
+0. `git apply` the saved fold-ins patch
+   (`.scratch/upstream-ports-2026-10-wave7/ticket-06-foldins.patch`) —
+   it carries the `05f5f2bf` ellipsis drop and the `ae19fe31`
+   SIDEBAR_MIN 242 + titlebar-cluster test; fold them into this
+   ticket's commit.
 1. `git show 672cc144` (18 files, +1001/−380), `05f5f2bf`, `ae19fe31`.
 2. Port the popover-search unification and the section-header/count-badge
    work into `shell/spaces.rs` + the picker surfaces.
@@ -46,6 +60,15 @@ persistence module), and proto has no `sidebar_pins.rs`/order keys
    drop the New project ellipsis.
 5. Port the registry tests (`crates/doc/src/registry/tests.rs` +76) for
    ordering/anchors.
+6. Fold in the rider `26c8e8404` (#909, drag-reorder): its proto hunk
+   (+52 on the `sidebar_pins.rs` this ticket creates) adds per-section
+   order keys; the doc-registry + drag-interaction hunks land on the
+   substrate from step 3. Its `crates/client` hunks adapt to roboco's
+   engine-client surfaces or drop if nothing consumes them; its
+   `crates/mobile` FFI hunks are Android parity — hold them for a
+   mobile follow-up. Wire change: run the wiregen gate again.
+7. Fold in the rider `81e04e1c5` (#901, Archived-section toggle,
+   `spaces.rs` +48 + `settings.rs` +7) on the same sections registry.
 
 **Excluded upstream hunks:** the device-sync transport/reconcile hunks
 of #487's line (pin write transport, registry snapshots, cross-device
@@ -67,5 +90,7 @@ popover hunks ride #484 (parked, ticket 21).
 - [ ] Order-key substrate adapted onto roboco's persistence (no
       device-sync semantics)
 - [ ] View options in the titlebar; Project filter toggle; SIDEBAR_MIN 242
+- [ ] Riders: #909 drag-reorder + #901 archived toggle folded in
 - [ ] Wiregen gate green; registry tests ported
 - [ ] Commit records upstream SHAs `672cc144` + `05f5f2bf` + `ae19fe31`
+      + `26c8e8404` + `81e04e1c5`
