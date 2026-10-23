@@ -1,10 +1,15 @@
 # Upstream ports 2026-10 wave 7: UI parity + backlog (v0.2.108–v0.2.111 window)
 
-Status: batch 1 merged to main (tickets 01–04, 11, 18 — the quick-port set,
-including both overdue 2026-10-09 recommendations; 3b71f9d3). Open: 05
-(chips), 06–09 (sidebar/UI-parity series), 10 (after 05), 12–17, 19
-(prerequisite-gated), 20 (after 19), 21 PARKED on a product decision,
-22 (after 19). Continue on a fresh `wave7/ports` branch off main.
+Status: **the sidebar/UI-parity series is DONE (2026-10-23)** — tickets
+05, 06, 07, 09, 10 landed (12 superseded into 07), executed as three
+parallel lane branches (wave7/sidebar, wave7/chips, wave7/toasts) and
+merged to main with all gates green (workspace check, wiregen, ui suite
+1673/1673). Batch 1 (tickets 01–04, 11, 18) landed earlier (3b71f9d3).
+Open: 08 (panels shared width — now unblocked, sequenced after the
+series per the drift note), 13–17 smalls, 19 (pin sync,
+prerequisite-gated), 20 (after 19), 22 (after 19), 21 PARKED on a
+product decision. Wave-8 ticket 13 (session hover card) is unblocked
+by 07 and queues with 08.
 
 2026-10-22 update: batch 2 (ticket 06) was abandoned mid-flight on a
 stale base — its uncommitted fold-ins (`05f5f2bf` ellipsis + `ae19fe31`

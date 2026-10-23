@@ -134,3 +134,12 @@ tests), `attachments::` (28), proto lib (104), engine uploads (14),
 Note: `queued_row_waits_for_attachment_bytes_then_sends_resolved_paths` is
 intermittently flaky on clean HEAD as well (verified via stash), so the rare
 red there is pre-existing, not from this port.
+
+## Rebase note (2026-10-23)
+
+During the rebase onto main after PRs #28/#29, the port's engine-side
+jail + uploads-octet hunks (`uploads.rs`, `m5c` test) were dropped in
+favor of main's newer jail-less `read_chunk` design (`2461c7932` +
+`7bd45c664`: any readable file, extension→sniff→octet-stream mime). That
+design is a superset of this port's read-back needs — queued restore
+still serves uploads of any type. The UI-side chip work is unaffected.
