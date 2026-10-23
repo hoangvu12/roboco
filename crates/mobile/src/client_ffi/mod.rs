@@ -90,6 +90,9 @@ impl CoreClient {
         engines: Vec<PairedEngine>,
         listener: Arc<dyn ClientListener>,
     ) -> CoreResult<Arc<Self>> {
+        // Core init: the client's link/reconnect tracing reaches logcat
+        // (idempotent; `core_version` usually installed it already).
+        crate::logcat::install();
         let engines: Vec<mc::PairedEngine> = engines.into_iter().map(Into::into).collect();
         let client = mc::Client::new(config.into(), engines, Arc::new(ListenerBridge(listener)))?;
         Ok(Arc::new(Self { client }))
