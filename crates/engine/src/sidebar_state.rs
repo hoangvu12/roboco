@@ -352,6 +352,40 @@ mod tests {
     }
 
     #[test]
+    fn sections_keep_their_placed_order_across_restarts() {
+        // The ordered-sections contract (upstream 672cc144 + #909, ported
+        // engine-local): membership and the section list carry their PLACED
+        // order — the array order is the wire contract, not activity.
+        let (_temp, store_root) = roots();
+        let store = SidebarStateStore::open(&store_root).unwrap();
+        store
+            .set_sections(
+                "local",
+                vec![
+                    section("focus", "Focus", &["second", "first"]),
+                    section("later", "Later", &[]),
+                ],
+            )
+            .unwrap();
+        // A reorder replaces the list with the new placement; the store never
+        // re-sorts members or sections.
+        store
+            .set_sections(
+                "local",
+                vec![
+                    section("later", "Later", &[]),
+                    section("focus", "Focus", &["first", "third", "second"]),
+                ],
+            )
+            .unwrap();
+        let reopened = SidebarStateStore::open(&store_root).unwrap();
+        let sections = &reopened.snapshot().sections_by_profile["local"];
+        assert_eq!(sections[0].id, "later");
+        assert_eq!(sections[1].id, "focus");
+        assert_eq!(sections[1].session_ids, ["first", "third", "second"]);
+    }
+
+    #[test]
     fn duplicate_and_empty_ids_heal_out_before_persisting() {
         let (_temp, store_root) = roots();
         let store = SidebarStateStore::open(&store_root).unwrap();

@@ -77,7 +77,7 @@ popover hunks ride #484 (parked, ticket 21).
 
 **Blocked by:** None (07 sequences after this).
 
-**Status:** ready-for-agent
+**Status:** done (ported in ce4447c20)
 
 **Verification budget:** `cargo check -p roboco-doc -p roboco-proto
 -p roboco-ui` + registry/picker tests; **wiregen gate must run**
@@ -85,12 +85,46 @@ popover hunks ride #484 (parked, ticket 21).
 `pnpm -C web codegen` if it fires). Source:
 `.scratch/upstream-drift/2026-10-11.md` § sidebar series.
 
-- [ ] Searchable popovers unified on the model-picker search row
-- [ ] Section headers + count badges; placed-order sections with anchors
-- [ ] Order-key substrate adapted onto roboco's persistence (no
+- [x] Searchable popovers unified on the model-picker search row
+- [x] Section headers + count badges; placed-order sections with anchors
+- [x] Order-key substrate adapted onto roboco's persistence (no
       device-sync semantics)
-- [ ] View options in the titlebar; Project filter toggle; SIDEBAR_MIN 242
-- [ ] Riders: #909 drag-reorder + #901 archived toggle folded in
-- [ ] Wiregen gate green; registry tests ported
-- [ ] Commit records upstream SHAs `672cc144` + `05f5f2bf` + `ae19fe31`
+- [x] View options in the titlebar; Project filter toggle; SIDEBAR_MIN 242
+- [x] Riders: #909 drag-reorder + #901 archived toggle folded in
+- [x] Wiregen gate green; registry tests ported
+- [x] Commit records upstream SHAs `672cc144` + `05f5f2bf` + `ae19fe31`
       + `26c8e8404` + `81e04e1c5`
+
+## Comments
+
+- 2026-10-23 (port): landed as one commit carrying `05f5f2bf` + `ae19fe31`
+  (via the saved fold-ins patch) + `672cc144` + riders `26c8e8404` (#909)
+  and `81e04e1c5` (#901).
+- Order-key substrate adaptation: upstream's per-member/per-section
+  fractional `orderKey`s + HLC clocks + registry rows exist only to make
+  CONCURRENT CROSS-DEVICE writes converge. Roboco's engine-local store
+  (`engine/sidebar_state.rs`, LWW ordered-list replaces over
+  `SetSidebarSections`/`WatchSidebarState`, ADR 0004) already carries
+  order in the arrays, so the port lands the placed-order CONTRACT:
+  membership lists members in placed order (assign with after/before
+  anchors; anchorless appends — the legacy shape), sections keep their
+  placed order (drag-reorder splices the list + pushes the snapshot —
+  roboco's equivalent of `SidebarSectionChange::Move`), and the sidebar
+  renders section members in placed order instead of recency. The
+  `SidebarSection` proto doc comment now states the array-order wire
+  contract; wiregen regenerated (`SidebarSection.ts` doc — the type shape
+  is unchanged) and the `--check` gate is green.
+- Deliberately excluded: upstream's `SidebarSectionChange` wire enum +
+  `sidebar-section-order-v1` engine capability (device-sync machinery —
+  there is no older-engine gate to guard: the bulk replace has always
+  preserved list order); `crates/client` hunks (cloud); PR-repository
+  popover hunks (pull_requests.rs absent — rides parked #484/ticket 21);
+  `crates/mobile` FFI `pin_session_at`/`place_session` (ticket step 6:
+  Android parity held for a mobile follow-up); iOS hunks; the registry
+  cross-device convergence tests (replaced by the engine-side placed-order
+  restart test + the UI placed-order/drag tests).
+- `ProjectIcons` (the shared artwork pipeline the pickers need) was
+  extracted from Shell's inline cache into upstream's standalone-struct
+  shape; roboco's engine resolution for a space (local engine, or the
+  engine owning one of the project's chats) rides
+  `project_icon::space_engine`.

@@ -110,6 +110,16 @@ describe("sidebar-sections (pure rules)", () => {
     expect(remaining.map((row) => row.chat.id)).toEqual(["c2"]);
   });
 
+  it("section_rows_keep_the_members_placed_order_not_recency", () => {
+    // Upstream 672cc144 (ported engine-local): a section lists its members
+    // in the `sessionIds` array order — the placed order drags write —
+    // rather than the rows' recency order.
+    const sections = [section("a", "A", ["c3", "c1", "c2"])];
+    const rows = chatRows(["c1", "c2", "c3"]);
+    const { groups } = sectionRows(sections, rows);
+    expect(groups[0]!.rows.map((row) => row.chat.id)).toEqual(["c3", "c1", "c2"]);
+  });
+
   it("custom_section_keyed_height_is_the_band_header_and_open_body", () => {
     const collapsed = customSectionKeyedHeight(section("a", "A", [], true), [], true, true);
     expect(collapsed).toBe(12 + 28);

@@ -219,7 +219,7 @@ impl Shell {
         }
         cx.notify();
         if let Some(chat_id) = committed_pin {
-            self.assign_sidebar_section(&chat_id, None, cx);
+            self.assign_sidebar_section(&chat_id, None, None, None, cx);
         }
         next
     }

@@ -110,39 +110,42 @@ export function sectionMembership(
 
 /**
  * `render_active_rows`' custom groups: one bucket per section IN ORDER
- * holding the claimed rows (whatever the section lists, filtered to the
- * rows that exist), plus the remaining unclaimed rows for the regular
- * groups. Collapsed sections still claim their rows — they render as the
- * header alone but their members never fall through to the regular list.
- * A chat listed by two sections lands in the first (the healed store keeps
- * ids unique within a section; cross-section duplicates resolve first-wins).
+ * holding the claimed rows in the section's PLACED order (the
+ * `sessionIds` array order — upstream 672cc144, ported engine-local),
+ * plus the remaining unclaimed rows for the regular groups. Collapsed
+ * sections still claim their rows — they render as the header alone but
+ * their members never fall through to the regular list. A chat listed by
+ * two sections lands in the first (the healed store keeps ids unique
+ * within a section; cross-section duplicates resolve first-wins).
  */
 export function sectionRows<T extends { chat: { id: string } }>(
   sections: readonly SidebarSection[],
   rows: readonly T[],
 ): { groups: { section: SidebarSection; rows: T[] }[]; remaining: T[] } {
-  const claimed = new Map<string, T[]>();
-  for (const section of sections) {
-    claimed.set(section.id, []);
-  }
+  // First-wins claim (cross-section duplicates resolve to the first
+  // section, as the desktop's custom_groups loop does)…
+  const claimedBy = new Map<string, string>();
   const remaining: T[] = [];
   for (const row of rows) {
-    let placed = false;
-    for (const section of sections) {
-      if (section.sessionIds.includes(row.chat.id)) {
-        claimed.get(section.id)!.push(row);
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
+    const section = sections.find((candidate) =>
+      candidate.sessionIds.includes(row.chat.id),
+    );
+    if (section) {
+      claimedBy.set(row.chat.id, section.id);
+    } else {
       remaining.push(row);
     }
   }
+  const rowsById = new Map(rows.map((row) => [row.chat.id, row]));
   return {
     groups: sections.map((section) => ({
       section,
-      rows: claimed.get(section.id) ?? [],
+      // …then members keep their placed order, as the desktop does, not
+      // recency: unknown ids (deleted sessions) drop out.
+      rows: section.sessionIds
+        .filter((id) => claimedBy.get(id) === section.id)
+        .map((id) => rowsById.get(id)!)
+        .filter((row): row is T => row !== undefined),
     })),
     remaining,
   };

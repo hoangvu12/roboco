@@ -326,15 +326,47 @@ impl Shell {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let state = self.state.read(cx);
         // The chat's owning engine resolves the connection for remote artwork;
         // local icons never touch it.
-        let engine = state.target_for_id(chat_id).ok();
-        let space = state
+        let engine = self.state.read(cx).target_for_id(chat_id).ok();
+        let space = self
+            .state
+            .read(cx)
             .chats
             .iter()
             .find(|chat| chat.id == chat_id)
-            .and_then(|chat| state.space_for_chat(chat));
+            .and_then(|chat| self.state.read(cx).space_for_chat(chat))
+            .cloned();
+        self.project_icons.render(
+            &self.state,
+            space.as_ref(),
+            engine,
+            self.active_sidebar_pin_profile_key(cx),
+            selected,
+            cx,
+        )
+    }
+}
+
+/// Shared artwork pipeline for the sidebar and the repository pickers. Each
+/// owner keeps the entities alive; loading stays off the render thread and
+/// has a deadline.
+#[derive(Default)]
+pub(crate) struct ProjectIcons {
+    entries: std::cell::RefCell<std::collections::HashMap<String, Entity<ProjectIcon>>>,
+}
+
+impl ProjectIcons {
+    pub(crate) fn render<V: 'static>(
+        &self,
+        state: &Entity<AppState>,
+        space: Option<&roboco_proto::Space>,
+        engine: Option<crate::engine_registry::EngineTarget>,
+        profile: Option<String>,
+        selected: bool,
+        cx: &mut Context<V>,
+    ) -> AnyElement {
+        let state = state.read(cx);
         let representative = space.map(|space| state.representative_space(space));
         let name = representative
             .map(|space| space.display_name().to_string())
@@ -369,26 +401,22 @@ impl Shell {
         };
         let key = format!(
             "{:?}:{:?}:{}:{:?}:{}",
-            self.active_sidebar_pin_profile_key(cx),
-            context.target_device_id,
-            context.cwd,
-            context.checkout_id,
-            name
+            profile, context.target_device_id, context.cwd, context.checkout_id, name
         );
         // Don't cache a remote miss before a connection exists.
         if context.target_device_id.is_some() && engine.is_none() {
             return monogram(&name, &seed, selected, Theme::of(cx));
         }
-        let mut cache = self.project_icons.borrow_mut();
+        let mut cache = self.entries.borrow_mut();
         cache.retain(|_, entity| entity.read(cx).refreshed.elapsed() < Duration::from_secs(300));
         let entity = cache
             .entry(key)
             .or_insert_with(|| {
                 let entity =
                     cx.new(|cx| ProjectIcon::new(name.clone(), seed.clone(), context, engine, cx));
-                // The monogram below is drawn by the shell (it needs the row's
-                // selected state, which the shared entity can't hold), so the
-                // shell must redraw when artwork lands.
+                // The owner draws the selected monogram and redraws when
+                // artwork lands (the shared entity can't hold the row's
+                // selected state).
                 cx.observe(&entity, |_, _, cx| cx.notify()).detach();
                 entity
             })
@@ -399,6 +427,24 @@ impl Shell {
         }
         entity.into_any_element()
     }
+}
+
+/// The engine that can serve a space's artwork: the local engine for this
+/// device's own space, else the engine owning one of the project's chats
+/// (engine-local ADR 0004 — a remote device's space is reachable only
+/// through an engine this registry holds a chat for).
+pub(crate) fn space_engine(
+    state: &AppState,
+    space: &roboco_proto::Space,
+) -> Option<crate::engine_registry::EngineTarget> {
+    if state.local_device_id.as_deref() == Some(&space.device_id) {
+        return state.local_target().ok();
+    }
+    state
+        .chats
+        .iter()
+        .find(|chat| chat.space_id.as_deref() == Some(&space.id))
+        .and_then(|chat| state.target_for_id(&chat.id).ok())
 }
 
 #[cfg(test)]

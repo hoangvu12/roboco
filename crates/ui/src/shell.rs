@@ -72,7 +72,7 @@ mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
-mod project_icon;
+pub(crate) mod project_icon;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1332,6 +1332,35 @@ struct PinnedSessionDragState {
     autoscroll_active: bool,
 }
 
+/// Drag payload for reordering custom sections by their header.
+#[derive(Clone)]
+pub(super) struct SidebarSectionDrag {
+    pub(super) section_id: String,
+    pub(super) profile_key: String,
+    /// The section order the drag started from.
+    pub(super) ids: std::sync::Arc<Vec<String>>,
+}
+
+/// Live reorder of the custom sections. The lifted section rides under the
+/// pointer while its siblings slide between slots, as pinned rows do.
+pub(super) struct SidebarSectionDragState {
+    pub(super) payload: SidebarSectionDrag,
+    pub(super) from: usize,
+    pub(super) over: usize,
+    /// Natural slot heights at lift, shared by hit testing and displacement.
+    pub(super) heights: Vec<f32>,
+    /// The first slot's top in the list's content coordinates.
+    pub(super) top: f32,
+    /// The slots' left edge within the list, and their width.
+    pub(super) left: f32,
+    pub(super) width: f32,
+    /// The pointer's offset below the lifted section's top.
+    pub(super) grab_y: f32,
+    pub(super) pointer: gpui::Point<gpui::Pixels>,
+    pub(super) siblings: std::collections::HashMap<String, SidebarSessionSlide>,
+    pub(super) generation: u64,
+}
+
 type SidebarKeyedRow = (String, f32, AnyElement);
 
 struct SidebarSessionRows {
@@ -1875,8 +1904,9 @@ pub struct Shell {
     sidebar_view_trigger_focus: gpui::FocusHandle,
     /// Current pinned-row metrics shared by hit testing and displacement animations.
     sidebar_pinned_heights: Vec<f32>,
-    project_icons:
-        std::cell::RefCell<std::collections::HashMap<String, Entity<project_icon::ProjectIcon>>>,
+    /// Shared artwork cache for the sidebar's project icons (each owner
+    /// keeps its entries alive; see [`project_icon::ProjectIcons`]).
+    project_icons: project_icon::ProjectIcons,
     /// Hovered row whose status is replaced by the archive control.
     chat_status_hover: Option<String>,
     /// Set by an archive-pill click until the pointer next moves. gpui only
@@ -1891,6 +1921,9 @@ pub struct Shell {
     pinned_session_drag_generation: u64,
     sidebar_session_transfer: Option<SidebarSessionTransfer>,
     sidebar_session_return: Option<SidebarSessionReturn>,
+    sidebar_section_drag: Option<SidebarSectionDragState>,
+    /// Each custom section's painted bounds, measured every frame.
+    sidebar_section_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     /// Pending pin intents are scoped to the active profile (68306a17's
     /// ui-local port: no engine roundtrip, the ledger orders rapid drops).
     sidebar_pin_write: Option<sidebar_pins::PendingSidebarPins>,
@@ -2286,6 +2319,8 @@ impl Shell {
             pinned_session_drag_generation: 0,
             sidebar_session_transfer: None,
             sidebar_session_return: None,
+            sidebar_section_drag: None,
+            sidebar_section_bounds: Default::default(),
             sidebar_pin_write: None,
             sidebar_pin_write_generation: 0,
             sidebar_pin_write_notice: None,
@@ -5772,7 +5807,7 @@ impl Shell {
             return;
         }
         if pinned && self.raw_sidebar_pins(cx).contains(&chat_id) {
-            self.assign_sidebar_section(&chat_id, None, cx);
+            self.assign_sidebar_section(&chat_id, None, None, None, cx);
             cx.notify();
             return;
         }
@@ -5792,7 +5827,7 @@ impl Shell {
         // moment (upstream gated this on the Local scope and let the pin
         // ack clear it for synced profiles).
         if self.apply_sidebar_pin_change(profile_key, change, cx) && pinned {
-            self.assign_sidebar_section(&chat_id, None, cx);
+            self.assign_sidebar_section(&chat_id, None, None, None, cx);
         }
         cx.notify();
     }
@@ -6349,6 +6384,42 @@ impl Shell {
         titlebar_new_session_alpha(
             matches!(self.route, Route::Chat),
             self.state.read(cx).selected_chat.is_some(),
+        )
+    }
+
+    /// The sidebar's view options ride the titlebar at the sidebar's trailing
+    /// edge, sliding and fading with it as it collapses. They never cross
+    /// back over the control cluster on a narrow sidebar.
+    fn render_sidebar_options_titlebar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let sidebar = self.sidebar_now();
+        let reveal = (sidebar / self.settings.sidebar_width.max(1.0)).clamp(0.0, 1.0);
+        if reveal <= 0.01 {
+            return None;
+        }
+        let cluster_end = self.eval_tween(
+            self.titlebar_tween,
+            cluster_buttons_start(
+                cfg!(target_os = "macos"),
+                self.fullscreen.unwrap_or(false),
+                self.linux_left_caption_count(),
+            ),
+        ) + CLUSTER_BUTTONS_WIDTH
+            + TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
+        let left = (sidebar - Theme::SPACE_SM - 24.0).max(cluster_end + TITLEBAR_GROUP_GAP);
+        let theme = Theme::of(cx).clone();
+        let trigger = self.render_sidebar_view_trigger(&theme, cx);
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(left))
+                .h(px(Theme::TITLEBAR_HEIGHT))
+                .pt(px(Theme::TITLEBAR_TOP_PAD))
+                .flex()
+                .items_center()
+                .opacity(reveal)
+                .child(trigger)
+                .into_any_element(),
         )
     }
 
@@ -7848,6 +7919,11 @@ impl Shell {
         {
             self.cancel_pinned_session_drag(cx);
         }
+        if self.sidebar_section_drag.is_some()
+            && (!cx.has_active_drag() || !self.sidebar_section_drag_is_valid(cx))
+        {
+            self.cancel_sidebar_section_drag(cx);
+        }
         // Keyed rows: (stable key, estimated height, element) — the key + height
         // list drives the §1.6 resort FLIP diff below (attention-bucket
         // promotions glide; cleared rows just go).
@@ -7857,7 +7933,7 @@ impl Shell {
             .map(|(row, height)| self.render_moving_sidebar_session(row, height, theme));
         let pinned_count = session_rows.pinned_count;
         let custom_count = session_rows.custom_count;
-        let keyed = session_rows.rows;
+        let mut keyed = session_rows.rows;
         let regular_count = session_rows.regular_count;
         let regular_start = pinned_count + custom_count;
         let ungrouped = self.settings.sidebar_organization == SidebarOrganization::InOneList;
@@ -7932,6 +8008,7 @@ impl Shell {
         }
         if self.pinned_session_drag.is_none()
             && self.sidebar_session_transfer.is_none()
+            && self.sidebar_section_drag.is_none()
             && self.sidebar_prev_order != order
         {
             let key_order_changed = sidebar_key_order_changed(&self.sidebar_prev_order, &order);
@@ -7973,10 +8050,32 @@ impl Shell {
                     .is_none_or(|drag| drag.preview.as_ref().is_none_or(|gap| gap.pinned))
             })
             .map(|drag| (drag.from, drag.over, drag.prev_over, drag.epoch));
+        // A lifted custom section leaves an empty slot behind and paints in
+        // the list's movement layer; its siblings slide around the gap.
+        let section_offsets = self
+            .sidebar_section_drag_offsets()
+            .filter(|(_, offsets)| offsets.len() == custom_count);
+        let lifted_section = section_offsets.as_ref().and_then(|(from, _)| {
+            let height = self.sidebar_section_drag.as_ref()?.heights[*from];
+            let (_, _, slot) = keyed.get_mut(pinned_count + from)?;
+            let placeholder = div().flex_none().h(px(height)).into_any_element();
+            let section = std::mem::replace(slot, placeholder);
+            self.render_lifted_sidebar_section(section, theme)
+        });
         let list_items: Vec<AnyElement> = keyed
             .into_iter()
             .enumerate()
             .map(|(ix, (key, _, element))| {
+                if let Some((_, offsets)) = &section_offsets
+                    && let Some(offset) =
+                        ix.checked_sub(pinned_count).and_then(|ix| offsets.get(ix))
+                {
+                    return div()
+                        .relative()
+                        .top(px(*offset))
+                        .child(element)
+                        .into_any_element();
+                }
                 if ix < pinned_count
                     && let Some((from, over, prev_over, drag_epoch)) = pinned_drag
                 {
@@ -8052,6 +8151,7 @@ impl Shell {
             let regular_empty = regular_items.is_empty();
             let pinned_group = show_pinned_section
                 .then(|| self.render_pinned_section(pinned_items, pinned_body_height, theme, cx));
+            let section_bounds = self.sidebar_section_bounds.clone();
             div()
                 .id("sidebar-active-sessions")
                 .flex()
@@ -8059,7 +8159,20 @@ impl Shell {
                 .gap(px(SIDEBAR_LIST_GAP))
                 .pb(px(Theme::SPACE_SM))
                 .when_some(pinned_group, |el, group| el.child(group))
-                .children(custom_items)
+                // Each section's painted slot measures the reorder's hit
+                // testing and displacement.
+                .when(!custom_items.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(SIDEBAR_LIST_GAP))
+                            .on_children_prepainted(move |bounds, _, _| {
+                                *section_bounds.borrow_mut() = bounds;
+                            })
+                            .children(custom_items),
+                    )
+                })
                 .when(
                     !regular_items.is_empty() || self.sidebar_session_transfer.is_some(),
                     |el| {
@@ -8202,6 +8315,17 @@ impl Shell {
                             this.cancel_sidebar_session_transfer(cx);
                         },
                     ))
+                    // A section reorder lands wherever it is released in the list.
+                    .on_drag_move::<SidebarSectionDrag>(cx.listener(
+                        |this, event: &gpui::DragMoveEvent<SidebarSectionDrag>, _, cx| {
+                            this.track_sidebar_section_drag(event.event.position, cx);
+                        },
+                    ))
+                    .on_drop::<SidebarSectionDrag>(cx.listener(
+                        |this, payload: &SidebarSectionDrag, _, cx| {
+                            this.finish_sidebar_section_drag(payload, cx);
+                        },
+                    ))
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .flex_col()
@@ -8210,7 +8334,8 @@ impl Shell {
                     .pt(px(SIDEBAR_LIST_PAD_TOP))
                     .child(active_list)
                     .children(archived_section)
-                    .children(moving_row),
+                    .children(moving_row)
+                    .children(lifted_section),
             )),
         )
         .fade_overflow_y(&self.sidebar_scroll);
@@ -12383,6 +12508,7 @@ impl Render for Shell {
                     )
                     .child(div().absolute().top_0().left_0().right_0().child(title_bar))
                     .child(self.render_titlebar_cluster(cx))
+                    .children(self.render_sidebar_options_titlebar(cx))
                     .children(overlays);
                 root.child(sidebar_tone)
                     .child(motion::fade_in("phase-app", page))
@@ -12676,6 +12802,20 @@ mod tests {
         // Rebrand guard (upstream d92d56a2 links at zeronsh): the banner
         // must never send users to the upstream repository.
         assert_eq!(GITHUB_REPO_URL, "https://github.com/hoangvu12/roboco");
+    }
+
+    #[test]
+    fn narrowest_sidebar_keeps_its_options_button_beside_the_titlebar_controls() {
+        for is_macos in [true, false] {
+            let cluster_end = cluster_buttons_start(is_macos, false, 0)
+                + CLUSTER_BUTTONS_WIDTH
+                + TITLEBAR_ACTION_SLOT_WIDTH;
+            let options_right = cluster_end + TITLEBAR_GROUP_GAP + 24.0;
+            assert!(
+                options_right + Theme::SPACE_SM <= SIDEBAR_MIN,
+                "options button ends at {options_right} in a {SIDEBAR_MIN} sidebar"
+            );
+        }
     }
 
     #[test]
