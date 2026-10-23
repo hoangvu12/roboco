@@ -33,7 +33,8 @@ use crate::uploads::{AttachmentChunk, Uploads, read_file_chunk, sniff_mime};
 /// Same chunk size and per-image cap as `ReadAttachmentChunk`.
 const CHUNK_BYTES: usize = 45_000;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
-/// Total budget of cached remote/rendered images, and how long one lives.
+/// Total budget of cached remote/rendered images, and how long one lives
+/// unread.
 const CACHE_BUDGET: usize = 64 * 1024 * 1024;
 const CACHE_TTL: Duration = Duration::from_secs(120);
 /// How long a failed URL fetch answers from memory instead of refetching.
@@ -43,6 +44,7 @@ const FAILURE_TTL: Duration = Duration::from_secs(15);
 /// with its own error instead of a client timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+const FETCH_DEADLINE: Duration = Duration::from_secs(24);
 /// Rasterized SVGs: twice the intrinsic size, with the long side kept
 /// between these bounds.
 const SVG_MIN_SIDE: f32 = 512.0;
@@ -70,9 +72,13 @@ struct Cache {
 }
 
 impl Cache {
+    /// A hit refreshes the entry: the TTL slides and eviction is least
+    /// recently used, so a long chunked read keeps its bytes to the end.
     fn get(&mut self, key: &str) -> Option<Arc<Loaded>> {
         self.expire();
-        self.entries.get(key).map(|(_, loaded)| loaded.clone())
+        let (at, loaded) = self.entries.get_mut(key)?;
+        *at = Instant::now();
+        Some(loaded.clone())
     }
 
     fn put(&mut self, key: String, loaded: Arc<Loaded>) {
@@ -184,9 +190,16 @@ impl ImageRefs {
         .await
         .map_err(|e| EngineError::Other(e.to_string()))??;
         if !is_svg_path(&path) && !file_is_svg(&path) {
-            return tokio::task::spawn_blocking(move || read_file_chunk(&path, offset))
-                .await
-                .map_err(|e| EngineError::Other(e.to_string()))?;
+            return tokio::task::spawn_blocking(move || {
+                // An image read answers with an image or an error, never
+                // bytes a client would cache and fail to decode.
+                if !crate::uploads::has_known_image_extension(&path) && !file_sniffs_as_image(&path) {
+                    return Err(EngineError::Other(format!("{} is not an image", path.display())));
+                }
+                read_file_chunk(&path, offset)
+            })
+            .await
+            .map_err(|e| EngineError::Other(e.to_string()))?;
         }
         let key = cache_key("svg", &path.to_string_lossy());
         let loaded = match self.cached(&key) {
@@ -230,7 +243,12 @@ impl ImageRefs {
         if let Some(error) = lock(&self.cache).failure(&key) {
             return Err(EngineError::Other(error));
         }
-        match self.fetch(url).await {
+        // One deadline over the whole fetch (a GitHub `blob` page costs two
+        // requests), under the clients' 30 s call deadline.
+        let fetched = tokio::time::timeout(FETCH_DEADLINE, self.fetch(url))
+            .await
+            .unwrap_or_else(|_| Err(EngineError::Other(format!("Fetching {url} timed out"))));
+        match fetched {
             Ok(loaded) => Ok(self.store(key, loaded)),
             Err(error) => {
                 lock(&self.cache)
@@ -308,6 +326,10 @@ async fn finish(
         (None, Some(declared)) => declared,
         (None, None) => "application/octet-stream".to_owned(),
     };
+    if !mime_type.starts_with("image/") {
+        // An error page, a JSON body…: an error, so nothing caches it.
+        return Err(EngineError::Other(format!("{name} is not an image ({mime_type})")));
+    }
     if mime_type != "image/svg+xml" {
         return Ok(Loaded {
             name,
@@ -513,24 +535,31 @@ fn file_uri_path(rest: &str) -> String {
 }
 
 fn percent_decode(text: &str) -> String {
+    String::from_utf8_lossy(&percent_decode_bytes(text)).into_owned()
+}
+
+/// `%XX` escapes (two ASCII hex digits, nothing else) to their bytes; any
+/// other `%` stays as written.
+fn percent_decode_bytes(text: &str) -> Vec<u8> {
+    fn hex(digit: u8) -> Option<u8> {
+        (digit as char).to_digit(16).map(|value| value as u8)
+    }
     let raw = text.as_bytes();
     let mut out = Vec::with_capacity(raw.len());
     let mut at = 0;
     while at < raw.len() {
         if raw[at] == b'%'
-            && let Some(byte) = raw
-                .get(at + 1..at + 3)
-                .and_then(|hex| std::str::from_utf8(hex).ok())
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            && let Some(&[high, low]) = raw.get(at + 1..at + 3)
+            && let (Some(high), Some(low)) = (hex(high), hex(low))
         {
-            out.push(byte);
+            out.push((high << 4) | low);
             at += 3;
         } else {
             out.push(raw[at]);
             at += 1;
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// `data:[<mime>][;base64],<payload>` → (mime, bytes).
@@ -555,7 +584,8 @@ fn decode_data_uri(uri: &str) -> Option<(String, Vec<u8>)> {
             .or_else(|_| URL_SAFE_NO_PAD.decode(compact))
             .ok()?
     } else {
-        percent_decode(payload).into_bytes()
+        // Raw bytes: a lossy UTF-8 pass would mangle `%89PNG…`.
+        percent_decode_bytes(payload)
     };
     Some((mime, bytes))
 }
@@ -589,16 +619,19 @@ fn is_svg_path(path: &Path) -> bool {
 
 /// Extensionless files may still be SVG (`diagram` written by a tool).
 fn file_is_svg(path: &Path) -> bool {
+    !crate::uploads::has_known_image_extension(path) && file_sniff(path) == Some("image/svg+xml")
+}
+
+fn file_sniffs_as_image(path: &Path) -> bool {
+    file_sniff(path).is_some()
+}
+
+fn file_sniff(path: &Path) -> Option<&'static str> {
     use std::io::Read;
-    if crate::uploads::has_known_image_extension(path) {
-        return false;
-    }
     let mut head = [0u8; 512];
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
+    let mut file = std::fs::File::open(path).ok()?;
     let n = file.read(&mut head).unwrap_or(0);
-    sniff_mime(&head[..n]) == Some("image/svg+xml")
+    sniff_mime(&head[..n])
 }
 
 #[cfg(test)]
@@ -686,6 +719,41 @@ mod tests {
         assert!(is_absolute_reference(r"\\server\share\x.png"));
         assert!(!is_absolute_reference("C:x.png"));
         assert!(!is_absolute_reference("shots/x.png"));
+    }
+
+    #[test]
+    fn percent_escapes_need_two_hex_digits() {
+        assert_eq!(percent_decode("a%20b%2Fc%2fd"), "a b/c/d");
+        // `from_str_radix` would read `+1` and `-1` as numbers.
+        assert_eq!(percent_decode("50%+1 %-1 %g0 %2"), "50%+1 %-1 %g0 %2");
+        assert_eq!(percent_decode_bytes("%89PNG%ff"), b"\x89PNG\xff");
+    }
+
+    #[tokio::test]
+    async fn data_uri_payloads_decode_to_raw_bytes() {
+        let (_dir, refs) = fixture();
+        let chunk = read_all(&refs, "data:image/png,%89PNG%0D%0A%1A%0Afixture", None).await;
+        assert_eq!(decode(&chunk), PNG);
+        assert_eq!(chunk.mime_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn non_images_are_errors() {
+        let (dir, refs) = fixture();
+        assert!(refs.read_chunk("data:text/plain,hello", None, 0).await.is_err());
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, "not an image").unwrap();
+        let error = refs
+            .read_chunk(&notes.to_string_lossy(), None, 0)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("is not an image"), "{error}");
+        // An extensionless file with image bytes still loads.
+        let shot = dir.path().join("shot");
+        std::fs::write(&shot, PNG).unwrap();
+        let chunk = read_all(&refs, &shot.to_string_lossy(), None).await;
+        assert_eq!(decode(&chunk), PNG);
+        assert_eq!(chunk.mime_type, "image/png");
     }
 
     #[tokio::test]

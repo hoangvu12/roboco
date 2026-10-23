@@ -345,9 +345,33 @@ pub(crate) fn sniff_mime(head: &[u8]) -> Option<&'static str> {
         };
     }
     let text = String::from_utf8_lossy(head);
-    let text = text.trim_start_matches('\u{feff}').trim_start();
-    (text.starts_with("<svg") || (text.starts_with('<') && text.contains("<svg")))
-        .then_some("image/svg+xml")
+    starts_svg_document(text.trim_start_matches('\u{feff}')).then_some("image/svg+xml")
+}
+
+/// SVG markup: `<svg`, optionally after an XML declaration, comments or an
+/// SVG doctype. HTML that merely embeds an `<svg>` is not an SVG file.
+fn starts_svg_document(mut text: &str) -> bool {
+    loop {
+        text = text.trim_start();
+        if text.starts_with("<svg")
+            || text
+                .get(.."<!DOCTYPE svg".len())
+                .is_some_and(|head| head.eq_ignore_ascii_case("<!DOCTYPE svg"))
+        {
+            return true;
+        }
+        let end = if text.starts_with("<?xml") {
+            text.find("?>").map(|at| at + 2)
+        } else if text.starts_with("<!--") {
+            text.find("-->").map(|at| at + 3)
+        } else {
+            None
+        };
+        match end {
+            Some(end) => text = &text[end..],
+            None => return false,
+        }
+    }
 }
 
 fn chunk_files(dir: &Path) -> Result<Vec<(u64, PathBuf)>, EngineError> {
@@ -578,7 +602,16 @@ mod tests {
         assert_eq!(sniff_mime(b"\0\0\0\x18ftypheic"), Some("image/heic"));
         assert_eq!(sniff_mime(b"\xef\xbb\xbf  <svg xmlns='x'/>"), Some("image/svg+xml"));
         assert_eq!(sniff_mime(b"<?xml version='1.0'?>\n<svg/>"), Some("image/svg+xml"));
+        assert_eq!(
+            sniff_mime(b"<?xml version='1.0'?>\n<!-- Inkscape -->\n<!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'x'>\n<svg/>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(sniff_mime(b"<!doctype svg><svg/>"), Some("image/svg+xml"));
         assert_eq!(sniff_mime(b"<html><body/>"), None);
+        // HTML that embeds an icon is still HTML.
+        assert_eq!(sniff_mime(b"<!DOCTYPE html><html><body><svg/></body></html>"), None);
+        assert_eq!(sniff_mime(b"<?xml version='1.0'?>\n<html><svg/></html>"), None);
+        assert_eq!(sniff_mime(b"<div><svg/></div>"), None);
         assert_eq!(sniff_mime(b"plain"), None);
     }
 }
