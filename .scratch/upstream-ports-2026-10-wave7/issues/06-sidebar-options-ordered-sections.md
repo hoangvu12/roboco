@@ -91,7 +91,10 @@ popover hunks ride #484 (parked, ticket 21).
       device-sync semantics)
 - [x] View options in the titlebar; Project filter toggle; SIDEBAR_MIN 242
 - [x] Riders: #909 drag-reorder + #901 archived toggle folded in
-- [x] Wiregen gate green; registry tests ported
+- [x] Wiregen gate green; registry tests ported (adapted: the upstream
+      registry cross-device convergence tests are device-sync semantics —
+      replaced by the engine-side placed-order restart test plus the UI
+      placed-order/drag/anchor tests; see Comments)
 - [x] Commit records upstream SHAs `672cc144` + `05f5f2bf` + `ae19fe31`
       + `26c8e8404` + `81e04e1c5`
 
