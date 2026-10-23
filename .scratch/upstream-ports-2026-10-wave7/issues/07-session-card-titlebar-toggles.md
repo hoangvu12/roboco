@@ -50,19 +50,59 @@ card; anything referencing sync rooms.
 **Blocked by:** 06 (the titlebar option slot this builds on lands there;
 sequence after it to avoid double-conflicting `shell.rs`/`tabs.rs`).
 
-**Status:** ready-for-agent
+**Status:** done (ported in aa8603dde)
 
 **Verification budget:** `cargo check -p roboco-ui -p roboco-engine` +
 shell tests; **wiregen gate must run** for the `running_subagents`
 wire addition. Source: `.scratch/upstream-drift/2026-10-11.md` and
 `.scratch/upstream-drift/2026-10-22.md` § sidebar series.
 
-- [ ] `session_info.rs` ported as the superset (incl. #867 + #895);
+- [x] `session_info.rs` ported as the superset (incl. #867 + #895);
       `actions_ui.rs` slimmed by the same delta
-- [ ] Explorer panels absorbed (`files/sections.rs` deleted); ticket
+- [x] Explorer panels absorbed (`files/sections.rs` deleted); ticket
       12's `Session.running_subagents` wire entity folded in
-- [ ] Titlebar session-card + folder-tree explorer toggles with icons
-- [ ] Tests ported (incl. `panel_interaction_tests.rs`); no cloud
+- [x] Titlebar session-card + folder-tree explorer toggles with icons
+- [x] Tests ported (incl. `panel_interaction_tests.rs`); no cloud
       surfaces restored
-- [ ] Commit records upstream SHAs `ac4acbc2` + `6774a37a` +
+- [x] Commit records upstream SHAs `ac4acbc2` + `6774a37a` +
       `c8c717862` + `591824881` + the `0c4835d2` wire slice
+
+## Comments
+
+- 2026-10-23 (port): landed as one commit carrying `ac4acbc2` (the base
+  card + tabs/shell reframe), `6774a37a` (titlebar frame-style session-card
+  toggle + `folder-tree.svg` on the explorer toggle — the `list-rows.svg`
+  retirement is moot: roboco never carried it), `c8c717862` (#867: shows
+  beside a roomy transcript without narrowing it, floats over a tight one
+  as a click-away popover; `session_info_hidden` persists the hide),
+  `591824881` (#895: the lanes card — side chats + subagents sections
+  stacked under the session card, shared-height scrolling, inline side-chat
+  rename with lane paging + scroll-into-view, toggle count badge over
+  running subagents AND working side chats, `popover::rail_for` for a
+  view's second rail), and `0c4835d2`'s wire slice (`Session.running_subagents`
+  + engine publication + `view::running_subagents` staleness gate + the
+  workspace-doc mirror row). Ticket 12's wire entity therefore landed in
+  this commit (see its file).
+- `running_pill.rs` is carried as roboco's minimal shape of #647's pill
+  (`mark_titlebar_button` + the painted `CountBadge`): the sidebar-row
+  pills and the breathing glow rode the files-panel surface #895 deleted
+  upstream, which roboco also deleted here — nothing else consumes them.
+  #647's files-panel subagents surface is NOT ported (dead upstream).
+- `files/sections.rs` (1547 lines, the 731697b6 explorer footer) deleted as
+  upstream deleted it — the card absorbs the panels. Its `subagent_rows`/
+  `child_chat_rows` data model moved into `session_lanes.rs` (upstream's
+  home). The WEB app keeps its own explorer footer (upstream #895 was
+  desktop-only; the web client has no session card), with type-fixture
+  updates for the new Session field.
+- Roboco-side fix found by the ported tests: `Shell::render`'s deferred
+  mounted-focus healer stole focus from a session-card rename during the
+  card's reveal (upstream has no healer). The restore is now skipped while
+  a rename is revealing (`chat_rename_revealing`).
+- Deliberately excluded: upstream's `EngineBootConfig` cloud fields in the
+  test setup (edge_url/workos/org — roboco has none), the `panel_interaction_tests`
+  panel-lifecycle suite (rides the #677 panels port, wave-7 ticket 08 — only
+  the card-specific #895 tests were ported), `harness/mock.rs`'s +178 mock
+  events (roboco's tests drive state directly), `crates/client` demo
+  fixtures (cloud), iOS hunks, and #647's dead files-panel subagents
+  surface. Wiregen regenerated (`Session.ts` gains `runningSubagents`);
+  `--check` gate green.

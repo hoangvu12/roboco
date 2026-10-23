@@ -304,6 +304,7 @@ fn session(chat_id: &str, device_id: &str, status: SessionStatus) -> Session {
         updated_at: ts(3_500),
         limit: None,
         scheduled_resume: None,
+        running_subagents: 0,
     }
 }
 

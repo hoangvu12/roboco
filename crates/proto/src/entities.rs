@@ -324,6 +324,16 @@ pub struct Session {
     /// engines and on chats with nothing armed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_resume: Option<ScheduledResume>,
+    /// Subagents of this chat streaming right now. Rides the session row (and
+    /// its staleness window) so every client's sidebar can badge a chat it
+    /// has not opened; read it through `view::running_subagents`.
+    /// Engine-local note: upstream published this through the synced
+    /// workspace registry so every device's sidebar badged unopened chats;
+    /// roboco's paired clients read the same engine's session stream, so
+    /// the field carries the same meaning engine-locally. Optional on the
+    /// wire (older rows count zero).
+    #[serde(default)]
+    pub running_subagents: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -2024,6 +2034,7 @@ mod tests {
             updated_at: Utc.with_ymd_and_hms(2026, 10, 16, 12, 0, 0).unwrap(),
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 
@@ -2104,5 +2115,13 @@ mod tests {
         let old = serde_json::from_value::<Session>(legacy).unwrap();
         assert!(old.limit.is_some());
         assert_eq!(old.scheduled_resume, None);
+        // The running-subagent count rides the row additively as well: an
+        // engine from before it existed counts zero, and a fresh row
+        // serializes it (never skipped — zero is a real count).
+        assert_eq!(old.running_subagents, 0);
+        assert_eq!(
+            serde_json::to_value(&armed).unwrap()["runningSubagents"],
+            serde_json::json!(0)
+        );
     }
 }

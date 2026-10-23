@@ -178,6 +178,7 @@ function status(rawId: string, fields: Partial<ChatStatus> = {}): ChatStatus {
     startedAt: null,
     updatedAt: new Date().toISOString(),
     limit: null,
+    runningSubagents: 0,
     scheduledResume: null,
     ...fields,
   };

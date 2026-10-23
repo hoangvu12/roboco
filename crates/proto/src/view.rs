@@ -72,6 +72,15 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
     }
 }
 
+/// Subagents running under a chat, staleness-checked like
+/// [`effective_indicator`]: a session row nobody has refreshed inside
+/// [`SESSION_STALE_MS`] belongs to a dead engine and counts nothing. Pure.
+pub fn running_subagents(session: Option<&Session>, now: DateTime<Utc>) -> u32 {
+    session
+        .filter(|s| now.signed_duration_since(s.updated_at).num_milliseconds() <= SESSION_STALE_MS)
+        .map_or(0, |s| s.running_subagents)
+}
+
 /// Banner text for a Limited chat's reset time ("resets in 45m", "resets in
 /// 2h 05m"). A reset already past reads as due — the honest offer is Resume,
 /// not a countdown into the past. Pure.
@@ -343,6 +352,36 @@ mod project_tests {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+
+    #[test]
+    fn running_subagents_count_only_while_the_session_row_is_fresh() {
+        let now = Utc::now();
+        let running = |updated_at: DateTime<Utc>| Session {
+            last_completed_turn: None,
+            chat_id: "chat".into(),
+            device_id: "dev".into(),
+            status: SessionStatus::Working,
+            started_at: None,
+            updated_at,
+            limit: None,
+            scheduled_resume: None,
+            running_subagents: 3,
+        };
+        assert_eq!(
+            running_subagents(Some(&running(now - chrono::Duration::seconds(10))), now),
+            3
+        );
+        // A crashed engine's row must not badge a chat forever.
+        assert_eq!(
+            running_subagents(
+                Some(&running(now - chrono::Duration::milliseconds(SESSION_STALE_MS + 1))),
+                now
+            ),
+            0
+        );
+        // An older client's row without the field reads as zero.
+        assert_eq!(running_subagents(None, now), 0);
+    }
 
     #[test]
     fn engine_connection_controls_the_shell() {
@@ -782,6 +821,7 @@ mod limited_tests {
             updated_at: Utc::now(),
             limit,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 
@@ -947,6 +987,7 @@ mod notification_tests {
             updated_at: updated,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         };
         let working = SessionNotificationState::new(&session(SessionStatus::Working, fresh), now);
         assert_eq!(working.indicator, Indicator::Working);

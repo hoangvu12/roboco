@@ -2046,6 +2046,7 @@ mod tests {
             last_completed_turn: None,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         };
         // No mid-turn capability is required for a live mailbox delivery.
         let sent = tools

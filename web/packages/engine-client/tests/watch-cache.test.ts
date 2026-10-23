@@ -66,6 +66,9 @@ const fakeStatus = (chatId: string, status: SessionStatus = "working"): ChatStat
   startedAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-01T00:00:01Z",
   lastCompletedTurn: null,
+  // Older engines never wrote the count; the wire type treats its absence
+  // the same as zero.
+  runningSubagents: 0,
 });
 
 const fakeConnectivity = (state: ConnectivityState): Connectivity => ({

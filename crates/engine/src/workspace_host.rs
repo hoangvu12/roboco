@@ -1127,6 +1127,7 @@ mod tests {
             updated_at: at,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 

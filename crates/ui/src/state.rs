@@ -609,8 +609,18 @@ pub use roboco_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_limit_reset,
     format_scheduled_resume, format_time_ago, gate_phase, group_chats, project_label,
-    sort_active, sort_chats, sort_spaces, sort_tabs,
+    running_subagents, sort_active, sort_chats, sort_spaces, sort_tabs,
 };
+
+/// What a session row shows that ticks with the clock rather than with its
+/// content: the staleness-checked indicator and running-subagent count. A
+/// change in either must repaint even when the row itself is untouched.
+fn session_presence(session: &Session, now: DateTime<Utc>) -> (Indicator, u32) {
+    (
+        effective_indicator(Some(session), now),
+        running_subagents(Some(session), now),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // AppState entity
@@ -723,7 +733,7 @@ pub struct AppState {
     device_presentation: Option<Vec<(Device, bool, String)>>,
     // Presence ticks also retire stale remote session indicators. Remember
     // their last published appearance even when the device rows stay online.
-    session_presence_presentation: Vec<Indicator>,
+    session_presence_presentation: Vec<(Indicator, u32)>,
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
     pub connectivity: roboco_proto::Connectivity,
@@ -857,10 +867,10 @@ fn is_text_append(frame: &TranscriptFrame) -> bool {
 }
 
 /// Each session's indicator at `now` (the lease-dependent part of a frame).
-fn session_presence_at(sessions: &[Session], now: DateTime<Utc>) -> Vec<Indicator> {
+fn session_presence_at(sessions: &[Session], now: DateTime<Utc>) -> Vec<(Indicator, u32)> {
     sessions
         .iter()
-        .map(|session| effective_indicator(Some(session), now))
+        .map(|session| session_presence(session, now))
         .collect()
 }
 
@@ -2147,6 +2157,13 @@ impl AppState {
                 (format!("@ {tag}"), offline)
             }
         }
+    }
+
+    /// Subagents running under `chat_id` right now (the engine's count on its
+    /// session row; 0 once that row goes stale). Every client paired to the
+    /// engine can ask, opened chat or not.
+    pub fn running_subagents_for(&self, chat_id: &str, now: DateTime<Utc>) -> u32 {
+        running_subagents(self.session_for(chat_id), now)
     }
 
     pub fn session_for(&self, chat_id: &str) -> Option<&Session> {
@@ -4037,6 +4054,7 @@ mod tests {
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 
@@ -4081,6 +4099,7 @@ mod tests {
             updated_at: now,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         };
         assert!(state.apply_sessions_at(vec![row.clone()], now));
         row.updated_at = now + TimeDelta::seconds(30);
@@ -4114,6 +4133,7 @@ mod tests {
             updated_at: now,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }];
         let mut row = device("host", "Host");
         row.last_seen_at = Some(now);

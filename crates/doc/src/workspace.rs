@@ -506,6 +506,10 @@ impl WorkspaceDoc {
             )?,
             None => row.delete("scheduledResume")?,
         }
+        // The running-subagent count rides the session row (upstream
+        // #647's wire entity): mirrors like any status field so a client
+        // reading the doc instead of the live stream sees the same badge.
+        row.insert("runningSubagents", session.running_subagents as i64)?;
         self.doc.commit();
         Ok(())
     }
@@ -805,6 +809,9 @@ pub(crate) struct RawSession {
     limit: Option<roboco_proto::SessionLimit>,
     #[serde(default)]
     scheduled_resume: Option<roboco_proto::ScheduledResume>,
+    /// Subagents streaming when the row was mirrored; older docs count 0.
+    #[serde(default)]
+    running_subagents: u32,
 }
 
 impl From<RawSession> for Session {
@@ -818,6 +825,7 @@ impl From<RawSession> for Session {
             updated_at: dt(raw.updated_at),
             limit: raw.limit,
             scheduled_resume: raw.scheduled_resume,
+            running_subagents: raw.running_subagents,
         }
     }
 }
@@ -928,6 +936,7 @@ mod tests {
             updated_at: ts(3_500),
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 

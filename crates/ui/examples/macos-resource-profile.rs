@@ -159,6 +159,7 @@ fn main() -> anyhow::Result<()> {
                             updated_at: chrono::Utc::now(),
                             limit: None,
                             scheduled_resume: None,
+                            running_subagents: 0,
                         }]);
                     })
                 });

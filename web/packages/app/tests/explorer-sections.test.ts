@@ -229,6 +229,7 @@ describe("fingerprint_tracks_membership_and_status", () => {
         startedAt: null,
         lastCompletedTurn: null,
         updatedAt: new Date(now).toISOString(),
+        runningSubagents: 0,
       })),
     );
     expect(working).not.toBe(one);

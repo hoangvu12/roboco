@@ -50,6 +50,7 @@ function status(fields: Partial<ChatStatus>): ChatStatus {
     startedAt: null,
     updatedAt: "2026-09-16T11:59:30Z",
     lastCompletedTurn: null,
+    runningSubagents: 0,
     ...fields,
   };
 }

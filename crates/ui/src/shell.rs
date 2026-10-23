@@ -72,7 +72,11 @@ mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
+#[cfg(test)]
+mod panel_interaction_tests;
 pub(crate) mod project_icon;
+mod session_info;
+mod session_lanes;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1357,7 +1361,7 @@ pub(super) struct SidebarSectionDragState {
     /// The pointer's offset below the lifted section's top.
     pub(super) grab_y: f32,
     pub(super) pointer: gpui::Point<gpui::Pixels>,
-    pub(super) siblings: std::collections::HashMap<String, SidebarSessionSlide>,
+    pub(in crate::shell) siblings: std::collections::HashMap<String, SidebarSessionSlide>,
     pub(super) generation: u64,
 }
 
@@ -1572,11 +1576,11 @@ enum SplashPhase {
 const CHAT_RENAME_REVEAL_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Which list draws a chat's inline title editor: the sidebar's session row,
-/// or the side-chat row in the explorer's Chats footer.
+/// or the side-chat branch in the session card's lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatRenameSurface {
     Sidebar,
-    Explorer,
+    SessionCard,
 }
 
 /// A chat title edited in place on its row (double-click, or Rename in the
@@ -1987,6 +1991,24 @@ pub struct Shell {
     debug_gate: Option<GatePhase>,
     debug_upload: Option<String>,
     sidebar_tween: Option<WidthTween>,
+    /// The session card's reveal (0 closed → 1 open).
+    session_info_tween: Option<WidthTween>,
+    /// Whether the card showed last frame; a change starts the reveal tween.
+    session_info_shown: bool,
+    /// The card opened over a transcript too narrow to show it beside.
+    session_info_overlay: bool,
+    /// Whether the card showed at the toggle's press (see
+    /// `note_session_info_press`).
+    session_info_pressed_open: Option<bool>,
+    /// The card last showed docked beside the transcript (else over it).
+    session_info_docked: bool,
+    /// The room the transcript last held free for the docked card, eased
+    /// back from as the card hides because the column stopped fitting it.
+    session_info_last_reserve: f32,
+    /// The lanes card's folds and pages.
+    session_lanes: session_lanes::LaneState,
+    /// The working-tree diffs behind the card's branch-row totals.
+    session_diffs: session_info::SessionDiffs,
     sidebar_edge_bounce: Option<motion::ResizeEdgeBounce>,
     /// Boundary currently held during a sidebar drag. Cleared on re-entry or
     /// release so the next genuine edge crossing can acknowledge the limit.
@@ -2359,6 +2381,14 @@ impl Shell {
             debug_gate,
             debug_upload,
             sidebar_tween: None,
+            session_info_tween: None,
+            session_info_shown: false,
+            session_info_overlay: false,
+            session_info_pressed_open: None,
+            session_info_docked: false,
+            session_info_last_reserve: 0.0,
+            session_lanes: session_lanes::LaneState::default(),
+            session_diffs: session_info::SessionDiffs::default(),
             sidebar_edge_bounce: None,
             sidebar_resize_edge: None,
             pane_resize_active: None,
@@ -3649,14 +3679,6 @@ impl Shell {
                     FilesEvent::CloseReady => {
                         this.on_file_close_ready(RightSurface::File(id), &event_panel_key, cx)
                     }
-                    // Footer rows exist on the explorer only; an editor
-                    // surface never emits them.
-                    FilesEvent::OpenSubagent { .. }
-                    | FilesEvent::OpenChildChat(_)
-                    | FilesEvent::RenameChildChat(_)
-                    | FilesEvent::ChildChatContextMenu { .. }
-                    | FilesEvent::NewChildChat
-                    | FilesEvent::ForkChat => {}
                     FilesEvent::CloseCancelled => {
                         this.cancel_file_close(RightSurface::File(id), cx)
                     }
@@ -5518,28 +5540,27 @@ impl Shell {
         else {
             return;
         };
-        // The sidebar lists only top-level chats; side chats live in the
-        // explorer's Chats footer. Either way the row must be on screen
-        // first: a field on a hidden row would take keystrokes unseen.
+        // The sidebar lists only top-level chats; side chats ride the
+        // session card's lanes. Either way the row must be on screen first:
+        // a field on a hidden row would take keystrokes unseen.
         let surface = if parent.is_some() {
-            ChatRenameSurface::Explorer
+            ChatRenameSurface::SessionCard
         } else {
             ChatRenameSurface::Sidebar
         };
         let revealed = match surface {
             ChatRenameSurface::Sidebar => self.reveal_sidebar_chat(&chat_id, cx),
-            // The footer lists the open chat's live side chats; it reveals
-            // the row itself once handed the rename.
-            ChatRenameSurface::Explorer => {
+            // The lanes list the open chat's live side chats: show the card
+            // and page its lane to the branch.
+            ChatRenameSurface::SessionCard => {
                 !archived
                     && parent.as_deref() == Some(self.active_chat.as_str())
-                    && self.files_panel_open(cx)
-                    && self.files.contains_key(&self.panel_key(cx))
+                    && self.reveal_session_lane_chat(&chat_id, cx)
             }
         };
         if !revealed {
             // The sidebar explains its own refusals.
-            if surface == ChatRenameSurface::Explorer {
+            if surface == ChatRenameSurface::SessionCard {
                 self.sidebar_notice = Some("Open this side chat's parent to rename it".into());
             }
             cx.notify();
@@ -5579,7 +5600,6 @@ impl Shell {
             _events: events,
             _blur: None,
         });
-        self.sync_explorer_chat_rename(cx);
         cx.notify();
     }
 
@@ -5604,7 +5624,6 @@ impl Shell {
         let Some(rename) = self.chat_rename.take() else {
             return;
         };
-        self.sync_explorer_chat_rename(cx);
         let title = rename.input.read(cx).text().trim().to_string();
         let unchanged = self
             .state
@@ -5621,18 +5640,6 @@ impl Shell {
             );
         }
         cx.notify();
-    }
-
-    /// Hand the explorer footers the side-chat rename to draw (or clear it).
-    fn sync_explorer_chat_rename(&mut self, cx: &mut Context<Self>) {
-        let rename = self
-            .chat_rename
-            .as_ref()
-            .filter(|rename| rename.surface == ChatRenameSurface::Explorer)
-            .map(|rename| (rename.chat_id.clone(), rename.input.clone()));
-        for files in self.files.values() {
-            files.update(cx, |files, cx| files.set_chat_rename(rename.clone(), cx));
-        }
     }
 
     /// Scroll the sidebar so the renamed row (painted at `row`) clears the
@@ -6199,8 +6206,8 @@ impl Shell {
     /// The unified window titlebar: chat → the session tab strip; settings →
     /// the section label. Full-width on the glass shell; the traffic lights
     /// and control cluster overlay its left end.
-    fn render_title_bar(&mut self, viewport_height: Pixels, cx: &mut Context<Self>) -> AnyElement {
-        self.render_session_title_bar(viewport_height, cx)
+    fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_session_title_bar(cx)
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -9183,13 +9190,12 @@ impl Shell {
                     .child(
                         popover::menu_row(&theme, false, format!("chat-menu-rename-{chat_id}"))
                             .id("chat-menu-rename")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                // A side chat's title is edited on its row
-                                // under the file tree: dock the explorer
-                                // when the menu came from its tab.
-                                if is_side_chat && !this.files_panel_open(cx) {
-                                    this.add_files_surface(window, cx);
-                                }
+                            .debug_selector(|| "chat-menu-rename".into())
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                // A side chat's title is edited on its branch
+                                // in the session card's lanes (upstream #895):
+                                // the rename reveals the card itself, never
+                                // the file explorer.
                                 this.open_rename_chat(rename_id.clone(), cx)
                             }))
                             .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
@@ -9709,9 +9715,17 @@ impl Shell {
         }
         self.composer
             .update(cx, |composer, cx| composer.set_dock_frame(dock_frame, cx));
+        // The session card: docked, the transcript holds its room free on
+        // the right and the composer follows the column left by half of it,
+        // so column and card center together; over a column too tight for
+        // that, it floats once opened.
+        let (session_docked, session_reveal, session_reserve) =
+            self.session_info_frame(has_selection, cx);
+        self.transcript
+            .update(cx, |transcript, cx| transcript.set_right_reserve(session_reserve, cx));
         let composer_width = self.composer_dock.borrow_mut().layout_width(
             composer_target_width(
-                main_content_width,
+                main_content_width - session_reserve,
                 transcript_width_setting,
                 has_selection,
             ),
@@ -9861,7 +9875,19 @@ impl Shell {
             Empty.into_any_element()
         };
 
-        let status = self.render_status_strip(composer_width, cx);
+        let status = div()
+            .relative()
+            .left(px(-session_reserve / 2.0))
+            .child(self.render_status_strip(composer_width, cx));
+        let session_card = self.render_session_info(
+            session_docked,
+            session_reveal,
+            self.viewport_height
+                - Theme::TITLEBAR_HEIGHT
+                - self.bottom_stack.get()
+                - 24.0,
+            cx,
+        );
         // Attachment dropzone over the ENTIRE conversation column (transcript
         // + composer, not just the pill). OS images keep using the upload
         // pipeline; workspace files/directories and file tabs become the same
@@ -9937,6 +9963,7 @@ impl Shell {
                         ))
                 },
             )
+            .children(session_card)
             .when_some(harness_update_card, |column, chip| {
                 // Home notices stay anchored to the window bottom, behind the
                 // dock. Clip paint and hitboxes at the same measured terminal
@@ -10011,6 +10038,7 @@ impl Shell {
                                 div()
                                     .id("persistent-composer")
                                     .relative()
+                                    .left(px(-session_reserve / 2.0))
                                     .w(px(composer_width))
                                     .opacity(composer_opacity)
                                     .mx_auto()
@@ -11806,10 +11834,23 @@ fn header_icon_button(
     theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    let muted = theme.text_muted;
+    let glyph = icon(icon_path).size(px(16.0)).text_color(theme.text_muted);
+    header_icon_button_with(id, glyph, label, on_click)
+}
+
+/// [`header_icon_button`] for a glyph that is already an element (a
+/// hand-drawn frame glyph, a spinner, a brand mark): the same chrome and
+/// click-swallowing, with the caller owning what the button shows.
+fn header_icon_button_with(
+    id: &'static str,
+    glyph: impl IntoElement,
+    label: &'static str,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     let fade_key = format!("header-icon-{id}");
     div()
         .id(id)
+        .debug_selector(|| id.into())
         .size(px(28.0))
         .flex_none()
         .flex()
@@ -11834,7 +11875,7 @@ fn header_icon_button(
             on_click(event, window, cx)
         })
         .tooltip(crate::settings::widgets::text_tooltip(label))
-        .child(icon(icon_path).size(px(16.0)).text_color(muted))
+        .child(glyph)
 }
 
 impl Render for Shell {
@@ -12071,8 +12112,15 @@ impl Render for Shell {
         }
         let shortcut_focus = self.shortcut_focus.clone();
         let (preferred_focus, unfocused) = self.navigation_focus_fallback(cx);
+        // A rename revealing its row owns the window's focus for the reveal:
+        // the session card's lanes animate in before the editor mounts, and
+        // the mounted-focus healer must not hand that focus to the composer
+        // in the gap (sidebar rows are always mounted; the card is not).
+        let rename_revealing = self.chat_rename_revealing();
         window.defer(cx, move |window, cx| {
-            restore_mounted_focus(&shortcut_focus, &preferred_focus, &unfocused, window, cx);
+            if !rename_revealing {
+                restore_mounted_focus(&shortcut_focus, &preferred_focus, &unfocused, window, cx);
+            }
         });
 
         // Modifier events follow focus too. Reconcile from the window's input
@@ -12464,7 +12512,7 @@ impl Render for Shell {
                 } else {
                     Empty.into_any_element()
                 };
-                let title_bar = self.render_title_bar(window.viewport_size().height, cx);
+                let title_bar = self.render_title_bar(cx);
                 // Sidebar tone: a slightly lighter column behind the sidebar.
                 // Its width rides the same tween as the sidebar, so the tone
                 // melts away with the collapse instead of vanishing in a frame.
@@ -13091,6 +13139,7 @@ mod tests {
             updated_at,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 

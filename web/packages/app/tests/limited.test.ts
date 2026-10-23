@@ -94,6 +94,7 @@ describe("limitedBannerShows", () => {
     updatedAt: new Date(NOW).toISOString(),
     lastCompletedTurn: null,
     limit: limit({ resetsAt: ms(60) }),
+    runningSubagents: 0,
   };
 
   it("shows for a Limited row with no send in flight", () => {

@@ -6267,6 +6267,7 @@ mod tests {
                 updated_at: chrono::Utc::now(),
                 limit: None,
                 scheduled_resume: None,
+                running_subagents: 0,
             }]);
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -6333,6 +6334,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     limit: None,
                     scheduled_resume: None,
+                    running_subagents: 0,
                 }]);
             });
             pickers.update(cx, |pickers, cx| {
@@ -6361,6 +6363,7 @@ mod tests {
                         - chrono::Duration::milliseconds(roboco_proto::view::SESSION_STALE_MS + 5_000),
                     limit: None,
                     scheduled_resume: None,
+                    running_subagents: 0,
                 }]);
             });
             assert!(!pickers.read(cx).harness_locked(cx), "a stale Working row unlocks");
@@ -8419,6 +8422,7 @@ mod tests {
                         updated_at: chrono::Utc::now(),
                         limit: None,
                         scheduled_resume: None,
+                        running_subagents: 0,
                     }]);
                     cx.notify();
                 });

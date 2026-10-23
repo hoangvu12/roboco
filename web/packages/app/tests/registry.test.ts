@@ -64,7 +64,7 @@ function device(id: string, name: string, lastSeenAt: string | null): Device {
 }
 
 function statusRow(chatId: string, deviceId: string): Session {
-  return { chatId, deviceId, status: "idle", updatedAt: "2026-09-19T10:00:00Z", startedAt: null, lastCompletedTurn: null };
+  return { chatId, deviceId, status: "idle", updatedAt: "2026-09-19T10:00:00Z", startedAt: null, lastCompletedTurn: null, runningSubagents: 0 };
 }
 
 // ---------------------------------------------------------------------------

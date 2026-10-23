@@ -28,4 +28,15 @@ limit?: SessionLimit | null,
  * Limited chat (see [`ScheduledResume`]). Absent on rows from older
  * engines and on chats with nothing armed.
  */
-scheduledResume?: ScheduledResume | null, };
+scheduledResume?: ScheduledResume | null, 
+/**
+ * Subagents of this chat streaming right now. Rides the session row (and
+ * its staleness window) so every client's sidebar can badge a chat it
+ * has not opened; read it through `view::running_subagents`.
+ * Engine-local note: upstream published this through the synced
+ * workspace registry so every device's sidebar badged unopened chats;
+ * roboco's paired clients read the same engine's session stream, so
+ * the field carries the same meaning engine-locally. Optional on the
+ * wire (older rows count zero).
+ */
+runningSubagents: number, };

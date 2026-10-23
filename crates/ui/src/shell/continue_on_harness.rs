@@ -743,6 +743,7 @@ mod tests {
             // Ticket 07's additive field: nothing armed in this fixture
             // (the banner's Resume-at-reset offer stays out of the way).
             scheduled_resume: None,
+            running_subagents: 0,
         };
         (chat, session)
     }
