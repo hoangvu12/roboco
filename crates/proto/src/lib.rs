@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod attachment_mentions;
+pub mod chat_mentions;
 pub mod compat;
 pub mod device_paths;
 pub mod entities;
