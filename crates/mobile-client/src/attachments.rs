@@ -413,21 +413,108 @@ pub async fn read_attachment_chunks(
     engine: &EngineHandle,
     path: &str,
 ) -> Result<Vec<u8>, ClientError> {
+    read_chunks(
+        engine,
+        roboco_rpc::methods::READ_ATTACHMENT_CHUNK,
+        serde_json::json!({ "path": path }),
+        READ_CHUNK_TIMEOUT,
+    )
+    .await
+}
+
+/// Per-chunk limit of `ReadImageChunk`: its first chunk may wait on the
+/// engine's own URL fetch (≤ 20 s) and an SVG render.
+const READ_IMAGE_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Loop `ReadImageChunk` for any image reference (`chatId` anchors relative
+/// paths on the engine). An engine older than the method answers
+/// `Unsupported`; the caller decides on a fallback.
+pub async fn read_image_chunks(
+    engine: &EngineHandle,
+    reference: &str,
+    chat_id: Option<&str>,
+) -> Result<Vec<u8>, ClientError> {
+    let mut params = serde_json::json!({ "reference": reference });
+    if let Some(chat_id) = chat_id.filter(|id| !id.is_empty()) {
+        params["chatId"] = chat_id.into();
+    }
+    read_chunks(
+        engine,
+        roboco_rpc::methods::READ_IMAGE_CHUNK,
+        params,
+        READ_IMAGE_CHUNK_TIMEOUT,
+    )
+    .await
+}
+
+/// The best path an engine without `ReadImageChunk` can serve for a
+/// reference: a `file:` URI's path, otherwise the reference itself.
+pub fn legacy_attachment_path(reference: &str) -> String {
+    let Some(rest) = reference
+        .get(..5)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("file:"))
+        .map(|_| &reference[5..])
+    else {
+        return reference.to_owned();
+    };
+    let path = match rest.strip_prefix("//") {
+        Some(rest) => match rest.find('/') {
+            Some(at) if at == 0 || rest[..at].eq_ignore_ascii_case("localhost") => &rest[at..],
+            Some(_) => return format!("//{}", percent_decode(rest)),
+            None => rest,
+        },
+        None => rest,
+    };
+    let path = percent_decode(path);
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        path[1..].to_owned()
+    } else {
+        path
+    }
+}
+
+/// `%XX` escapes (two ASCII hex digits, nothing else) decoded; any other
+/// `%` stays as written.
+fn percent_decode(text: &str) -> String {
+    fn hex(digit: u8) -> Option<u8> {
+        (digit as char).to_digit(16).map(|value| value as u8)
+    }
+    let raw = text.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut at = 0;
+    while at < raw.len() {
+        if raw[at] == b'%'
+            && let Some(&[high, low]) = raw.get(at + 1..at + 3)
+            && let (Some(high), Some(low)) = (hex(high), hex(low))
+        {
+            out.push((high << 4) | low);
+            at += 3;
+        } else {
+            out.push(raw[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The shared chunk loop: `params` plus a moving `offset` until `done`.
+async fn read_chunks(
+    engine: &EngineHandle,
+    method: &str,
+    mut params: serde_json::Value,
+    per_chunk: Duration,
+) -> Result<Vec<u8>, ClientError> {
     let mut name = String::new();
     let mut b64 = String::new();
     let mut offset: u64 = 0;
     for _ in 0..MAX_READ_CHUNKS {
-        let reply = tokio::time::timeout(
-            READ_CHUNK_TIMEOUT,
-            engine.call(
-                roboco_rpc::methods::READ_ATTACHMENT_CHUNK,
-                serde_json::json!({ "path": path, "offset": offset }),
-            ),
-        )
-        .await
-        .map_err(|_| ClientError::HostUnavailable {
-            message: "attachment read timed out".into(),
-        })??;
+        params["offset"] = offset.into();
+        let reply = tokio::time::timeout(per_chunk, engine.call(method, params.clone()))
+            .await
+            .map_err(|_| ClientError::HostUnavailable {
+                message: "attachment read timed out".into(),
+            })??;
         let (chunk, done, next) = match (
             reply.get("data").and_then(serde_json::Value::as_str),
             reply.get("done").and_then(serde_json::Value::as_bool),
@@ -436,7 +523,7 @@ pub async fn read_attachment_chunks(
             (Some(chunk), Some(done), Some(next)) => (chunk, done, next),
             _ => {
                 return Err(ClientError::HostError {
-                    message: "malformed ReadAttachmentChunk reply".into(),
+                    message: format!("malformed {method} reply"),
                 })
             }
         };
@@ -455,7 +542,7 @@ pub async fn read_attachment_chunks(
         }
         if next <= offset {
             return Err(ClientError::HostError {
-                message: "ReadAttachmentChunk stopped advancing".into(),
+                message: format!("{method} stopped advancing"),
             });
         }
         offset = next;
@@ -528,6 +615,24 @@ impl AttachmentCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_paths_unwrap_file_uris() {
+        assert_eq!(legacy_attachment_path("/tmp/a.png"), "/tmp/a.png");
+        assert_eq!(legacy_attachment_path("file:///tmp/a%20b.png"), "/tmp/a b.png");
+        assert_eq!(legacy_attachment_path("FILE:///C:/Users/me/a.png"), "C:/Users/me/a.png");
+        assert_eq!(legacy_attachment_path("file://localhost/tmp/a.png"), "/tmp/a.png");
+        assert_eq!(legacy_attachment_path("file://server/share/a.png"), "//server/share/a.png");
+        assert_eq!(legacy_attachment_path("shots/a.png"), "shots/a.png");
+    }
+
+    #[test]
+    fn percent_escapes_need_two_hex_digits() {
+        assert_eq!(percent_decode("a%20b%2Fc%2fd"), "a b/c/d");
+        // `from_str_radix` would read `+1` and `-1` as numbers.
+        assert_eq!(percent_decode("50%+1 %-1 %g0 %2"), "50%+1 %-1 %g0 %2");
+        assert_eq!(legacy_attachment_path("file:///tmp/100%+1.png"), "/tmp/100%+1.png");
+    }
 
     #[test]
     fn trailer_round_trips() {
@@ -649,5 +754,31 @@ impl crate::Client {
             .attachments
             .put(handle.engine_id(), path, Arc::new(bytes.clone()));
         Ok(bytes)
+    }
+
+    /// Bytes of any image reference, read through the engine owning
+    /// `device_id` (`ReadImageChunk`: paths, `~`, relative to `chat_id`'s
+    /// cwd, `file:`/`roboco-file:`/`data:` URIs, `http(s)` URLs fetched by
+    /// the engine, SVG as PNG). An engine older than the method gets the
+    /// reference as a plain `ReadAttachmentChunk` path instead. Own uploads
+    /// answer from the read cache; nothing else is cached here, since a
+    /// file or URL can change and the app keeps its own decoded-image cache.
+    pub async fn read_image(
+        &self,
+        device_id: &str,
+        reference: &str,
+        chat_id: Option<&str>,
+    ) -> Result<Vec<u8>, ClientError> {
+        let handle = crate::catalog_live::resolve_engine(&self.inner, device_id)?;
+        // Own uploads are seeded under their plain path.
+        if let Some(bytes) = self.inner.attachments.get(handle.engine_id(), reference) {
+            return Ok((*bytes).clone());
+        }
+        match read_image_chunks(&handle, reference, chat_id).await {
+            Err(ClientError::Unsupported { .. }) => {
+                read_attachment_chunks(&handle, &legacy_attachment_path(reference)).await
+            }
+            other => other,
+        }
     }
 }

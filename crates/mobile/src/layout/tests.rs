@@ -174,6 +174,64 @@ fn markdown_images_keep_text_order_and_container_geometry() {
     }
 }
 
+/// Every image reference the frame places, in row order.
+fn image_widgets(source: &str) -> Vec<(String, Option<String>)> {
+    let mut w = worker(390.0);
+    w.input = transcript_one(source);
+    let frame = w.pass();
+    let mut out = Vec::new();
+    for i in 0..frame.row_count() {
+        for widget in &frame.display(i).unwrap().widgets {
+            if let display::WidgetKind::Image { reference } = &widget.kind {
+                out.push((reference.clone(), widget.payload.clone()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn html_img_tags_become_image_widgets() {
+    let block = image_widgets("<p align=\"center\">\n  <img src=\"docs/shot.png\" alt=\"Shot\" width=\"400\">\n</p>\n");
+    assert_eq!(block, [("docs/shot.png".to_owned(), Some("Shot".to_owned()))]);
+    let inline = image_widgets("Here: <img src='https://example.com/a.png'> done");
+    assert_eq!(inline, [("https://example.com/a.png".to_owned(), Some("Image".to_owned()))]);
+    // No raw tag text is left behind.
+    let mut w = worker(390.0);
+    w.input = transcript_one("<div><img src=\"x.svg\"></div>\n");
+    let frame = w.pass();
+    for i in 0..frame.row_count() {
+        assert!(!frame.display(i).unwrap().text.contains('<'));
+    }
+}
+
+#[test]
+fn reference_style_images_become_image_widgets() {
+    let widgets = image_widgets("![Chart][chart]\n\n[chart]: ./out/chart.png\n");
+    assert_eq!(widgets, [("./out/chart.png".to_owned(), Some("Chart".to_owned()))]);
+}
+
+#[test]
+fn image_links_keep_the_image_and_the_link() {
+    for source in [
+        "[![Badge](https://img.shields.io/badge/x-y-green.svg)](https://example.com)",
+        "<a href=\"https://example.com\"><img src=\"https://img.shields.io/badge/x-y-green.svg\" alt=\"Badge\"></a>\n",
+    ] {
+        let mut w = worker(390.0);
+        w.input = transcript_one(source);
+        let frame = w.pass();
+        let mut found = false;
+        let mut linked = false;
+        for i in 0..frame.row_count() {
+            let display = frame.display(i).unwrap();
+            found |= display.widgets.iter().any(|widget| matches!(&widget.kind,
+                display::WidgetKind::Image { reference } if reference == "https://img.shields.io/badge/x-y-green.svg"));
+            linked |= display.links.iter().any(|link| link.url == "https://example.com");
+        }
+        assert!(found && linked, "{source}");
+    }
+}
+
 #[test]
 fn streaming_markdown_images_converge_without_duplicate_widgets() {
     let source = "Before ![First](/a.png) after.\n\n![](/empty-alt.png)";

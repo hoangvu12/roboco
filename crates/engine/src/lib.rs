@@ -27,6 +27,7 @@ mod fs_watch;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod http_error;
+pub mod image_refs;
 pub mod instance_lock;
 pub mod listener;
 mod model_catalogs;
@@ -209,7 +210,6 @@ impl EngineCore {
     ) -> Result<Self, EngineError> {
         let data_dir = profile.device_root();
         std::fs::create_dir_all(data_dir)?;
-        let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
@@ -276,10 +276,7 @@ impl EngineCore {
             local_device_name(&device_id),
         )
         .map_err(|e| EngineError::Other(e.to_string()))?;
-        let uploads = Uploads::from_root_with_fallback(
-            profile.uploads_root(),
-            legacy_uploads_root.as_deref(),
-        );
+        let uploads = Uploads::from_root(profile.uploads_root());
         // Queued-attachment support: the doc host resolves `pending://` refs
         // against this store and pushes staged bytes to remote hosts.
         doc_host.set_uploads(uploads.clone());

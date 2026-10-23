@@ -252,6 +252,11 @@ pub mod methods {
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";
     pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
+    /// Any image reference an agent writes in Markdown — paths (absolute,
+    /// `~`, relative to the chat's cwd), `file:`/`roboco-file:`/`data:` URIs
+    /// and `http(s)` URLs the engine fetches; SVG comes back as PNG. Params
+    /// `{reference, chatId?, offset}` → the `ReadAttachmentChunk` reply.
+    pub const READ_IMAGE_CHUNK: &str = "ReadImageChunk";
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";

@@ -41,24 +41,40 @@ private const val PercentByte: Byte = 0x25
  * TRANSCRIPT-D4 no-ops), a Windows drive path (7, before the scheme
  * row), any other scheme (8, the system), and anything scheme-less (9).
  * Scheme matching is ASCII case-insensitive (RFC 3986; iOS's
- * case-sensitive `url.scheme == "http"` is adapted). There is no path
- * parsing, decoding or resolution (TRANSCRIPT-D4).
+ * case-sensitive `url.scheme == "http"` is adapted). File-shaped links
+ * (rows 5–7 and 9) that name an image open the viewer with the link
+ * verbatim as the reference — the engine's `ReadImageChunk` resolves it —
+ * and stay the TRANSCRIPT-D4 no-ops otherwise.
  */
 fun routeLink(url: String): LinkRoute {
     val raw = url.trim()
     if (raw.isEmpty() || raw.startsWith("#")) return LinkRoute.Ignore
     val scheme = SchemeRegex.find(raw)?.groupValues?.get(1)?.lowercase(Locale.ROOT)
+    val fileShaped = scheme == null ||
+        scheme == "roboco-file" ||
+        scheme == "file" ||
+        WindowsDriveRegex.containsMatchIn(raw)
     return when {
-        scheme == null -> LinkRoute.Ignore
+        fileShaped -> if (namesImageFile(raw)) LinkRoute.Preview(raw) else LinkRoute.Ignore
         scheme == "http" || scheme == "https" -> LinkRoute.Web(raw)
         scheme == "roboco-preview" -> previewRef(raw)?.let { LinkRoute.Preview(it) }
             ?: LinkRoute.Ignore
         scheme == "roboco-invoke" -> LinkRoute.Ignore
-        scheme == "roboco-file" -> LinkRoute.Ignore
-        scheme == "file" -> LinkRoute.Ignore
-        WindowsDriveRegex.containsMatchIn(raw) -> LinkRoute.Ignore
         else -> LinkRoute.External(raw)
     }
+}
+
+/** Image file extensions a file-shaped link opens in the viewer. */
+private val ImageExtensions = setOf(
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "svgz", "bmp", "avif", "heic", "heif", "ico", "tif", "tiff",
+)
+
+/** Whether a file-shaped link's last path segment (before `?`/`#`) has an image extension. */
+internal fun namesImageFile(link: String): Boolean {
+    val path = link.substringBefore('#').substringBefore('?').trimEnd('/', '\\')
+    val name = path.substringAfterLast('/').substringAfterLast('\\')
+    val dot = name.lastIndexOf('.')
+    return dot > 0 && name.substring(dot + 1).lowercase(Locale.ROOT) in ImageExtensions
 }
 
 /**

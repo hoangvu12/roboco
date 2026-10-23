@@ -10,10 +10,10 @@
 //! Attachments live only on the host device — every read proxies through the
 //! owning device via `ReadAttachmentChunk`; nothing is mirrored to the edge.
 //!
-//! `read_chunk` serves transcript images back in 45KB base64 chunks. Path jail:
-//! only files under the uploads dir or a workspace-known chat cwd are readable
-//! (the RPC layer supplies the cwd roots) — and only supported image types, as
-//! in roboco.
+//! `read_chunk` serves transcript images back in 45KB base64 chunks from any
+//! file the engine's OS user can read. There is no path jail: every RPC is
+//! already authenticated, and a paired device can run agents with full file
+//! access, so a jail here was never a real boundary — it only hid images.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -99,10 +99,6 @@ struct UploadsInner {
     dir: PathBuf,
     /// Chunk staging (`{uploads_root}/tmp/{uploadId}/`).
     tmp: PathBuf,
-    /// Historical roots accepted for reads only. Writes and staging never use
-    /// them. RwLock: a local-profile import adds its source root at runtime so
-    /// imported transcripts resolve without an engine restart.
-    read_only_roots: std::sync::RwLock<Vec<PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -118,42 +114,17 @@ impl Uploads {
 
     /// Use an already-resolved profile uploads directory.
     pub fn from_root(dir: &Path) -> Self {
-        Self::from_root_with_fallback(dir, None)
-    }
-
-    /// Use a profile root for all writes and an optional legacy read-only root.
-    pub fn from_root_with_fallback(dir: &Path, legacy_read_root: Option<&Path>) -> Self {
         Self {
             inner: Arc::new(UploadsInner {
                 tmp: dir.join("tmp"),
                 dir: dir.to_path_buf(),
-                read_only_roots: std::sync::RwLock::new(
-                    legacy_read_root
-                        .into_iter()
-                        .map(Path::to_path_buf)
-                        .collect(),
-                ),
             }),
         }
     }
 
-    /// The durable uploads dir (a path-jail root).
+    /// The durable uploads dir.
     pub fn dir(&self) -> &Path {
         &self.inner.dir
-    }
-
-    /// Accept `root` for reads from now on (idempotent). Profile import calls
-    /// this so transcripts that embed absolute paths under the local profile's
-    /// uploads root keep resolving after the switch to a synced profile.
-    pub fn add_read_only_root(&self, root: &Path) {
-        let mut roots = self
-            .inner
-            .read_only_roots
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !roots.iter().any(|r| r == root) {
-            roots.push(root.to_path_buf());
-        }
     }
 
     /// Stage one base64 chunk. Positional (`seq`) writes are IDEMPOTENT: a client
@@ -240,39 +211,21 @@ impl Uploads {
             .then(|| target.to_string_lossy().to_string())
     }
 
-    /// Read one 45KB chunk of an attachment. `extra_roots` are the workspace's
-    /// known chat cwds — together with the uploads dir they form the path jail.
-    pub fn read_chunk(
-        &self,
-        path: &str,
-        offset: u64,
-        extra_roots: &[PathBuf],
-    ) -> Result<AttachmentChunk, EngineError> {
-        use std::io::{Read, Seek};
-        let file = self.inspect(path, extra_roots)?;
-        let size = file.size;
-        let start = offset.min(size);
-        let next_offset = (start + READ_CHUNK_BYTES).min(size);
-        // Read ONLY this chunk's byte range — never the whole file per chunk.
-        let mut buf = vec![0u8; (next_offset - start) as usize];
-        let mut handle = std::fs::File::open(&file.resolved)?;
-        handle.seek(std::io::SeekFrom::Start(start))?;
-        let mut read = 0usize;
-        while read < buf.len() {
-            let n = handle.read(&mut buf[read..])?;
-            if n == 0 {
-                break;
-            }
-            read += n;
+    /// Read one 45KB chunk of an attachment: a `pending://` ref (resolved
+    /// against this device's uploads dir) or any readable file path.
+    pub fn read_chunk(&self, path: &str, offset: u64) -> Result<AttachmentChunk, EngineError> {
+        read_file_chunk(&self.resolve_attachment_path(path)?, offset)
+    }
+
+    /// The file an attachment reference names: a landed `pending://` ref's
+    /// committed path, otherwise the path itself.
+    pub fn resolve_attachment_path(&self, path: &str) -> Result<PathBuf, EngineError> {
+        if is_pending_ref(path) {
+            return self.resolve_pending(path).map(PathBuf::from).ok_or_else(|| {
+                EngineError::Other("Attachment has not arrived on this device yet".into())
+            });
         }
-        buf.truncate(read);
-        Ok(AttachmentChunk {
-            name: file.name,
-            mime_type: file.mime_type,
-            data: BASE64.encode(&buf),
-            next_offset,
-            done: next_offset >= size,
-        })
+        Ok(PathBuf::from(path))
     }
 
     // ── internals ───────────────────────────────────────────────────────────
@@ -320,121 +273,105 @@ impl Uploads {
         }
     }
 
-    fn inspect(&self, path: &str, extra_roots: &[PathBuf]) -> Result<InspectedFile, EngineError> {
-        let outside = || EngineError::Other("Attachment is outside the upload cache".into());
-        // Queued-attachment refs resolve against this device's uploads dir
-        // (present only once the transfer landed) — then jail as usual.
-        let resolved_ref;
-        let path = if is_pending_ref(path) {
-            resolved_ref = self.resolve_pending(path).ok_or_else(outside)?;
-            resolved_ref.as_str()
-        } else {
-            path
+}
+
+/// Read one 45KB chunk of any readable file. The MIME type comes from the
+/// extension, then the leading bytes, then `application/octet-stream`.
+pub(crate) fn read_file_chunk(path: &Path, offset: u64) -> Result<AttachmentChunk, EngineError> {
+    use std::io::{Read, Seek};
+    let meta = std::fs::metadata(path)
+        .map_err(|e| EngineError::Other(format!("Can't read {}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(EngineError::Other("Attachment is not a file".into()));
+    }
+    let size = meta.len();
+    if size > MAX_BYTES {
+        return Err(EngineError::Other("Attachment is too large".into()));
+    }
+    let mut handle = std::fs::File::open(path)?;
+    let mime_type = match mime_by_ext(path) {
+        Some(mime) => mime,
+        None => {
+            let mut head = [0u8; 512];
+            let n = handle.read(&mut head)?;
+            sniff_mime(&head[..n]).unwrap_or("application/octet-stream")
+        }
+    };
+    let start = offset.min(size);
+    let next_offset = (start + READ_CHUNK_BYTES).min(size);
+    // Read ONLY this chunk's byte range — never the whole file per chunk.
+    let mut buf = vec![0u8; (next_offset - start) as usize];
+    handle.seek(std::io::SeekFrom::Start(start))?;
+    let mut read = 0usize;
+    while read < buf.len() {
+        let n = handle.read(&mut buf[read..])?;
+        if n == 0 {
+            break;
+        }
+        read += n;
+    }
+    buf.truncate(read);
+    Ok(AttachmentChunk {
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "attachment".into()),
+        mime_type: mime_type.to_string(),
+        data: BASE64.encode(&buf),
+        next_offset,
+        done: next_offset >= size,
+    })
+}
+
+/// The image type a file's leading bytes declare, if any.
+pub(crate) fn sniff_mime(head: &[u8]) -> Option<&'static str> {
+    if let Some((_, mime)) = raster_signature(head) {
+        return Some(mime);
+    }
+    if head.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+    if head.starts_with(b"II*\0") || head.starts_with(b"MM\0*") {
+        return Some("image/tiff");
+    }
+    if head.starts_with(b"\0\0\x01\0") {
+        return Some("image/x-icon");
+    }
+    if head.get(4..8) == Some(b"ftyp") {
+        return match head.get(8..12)? {
+            b"avif" | b"avis" => Some("image/avif"),
+            b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1" => Some("image/heic"),
+            _ => None,
         };
-        // Jail lexically BEFORE any filesystem call: tool chips send paths an
-        // agent printed, and merely opening `\\host\share\a.png` (or an autofs
-        // `/net/host/…`) reaches out to that host — on Windows with the
-        // user's NTLM credentials. Roots match in raw and canonical form
-        // (`/var` vs `/private/var`, symlinked cwds).
-        let read_roots = self
-            .inner
-            .read_only_roots
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let requested = lexical_components(Path::new(path)).ok_or_else(outside)?;
-        let roots: Vec<&PathBuf> = std::iter::once(&self.inner.dir)
-            .chain(read_roots.iter())
-            .chain(extra_roots.iter())
-            .collect();
-        let lexically_allowed = roots.iter().any(|root| {
-            let canonical = std::fs::canonicalize(root).ok();
-            [Some(root.as_path()), canonical.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter_map(lexical_components)
-                .any(|root| requested.len() > root.len() && requested.starts_with(&root))
-        });
-        if !lexically_allowed {
-            return Err(outside());
-        }
-        // Canonicalize BOTH sides so symlinks can't escape.
-        let resolved = std::fs::canonicalize(path).map_err(|_| outside())?;
-        let allowed = roots
-            .iter()
-            .filter_map(|root| std::fs::canonicalize(root).ok())
-            .any(|root| resolved.starts_with(&root) && resolved != root);
-        if !allowed {
-            return Err(outside());
-        }
-        let meta = std::fs::metadata(&resolved)?;
-        if !meta.is_file() {
-            return Err(EngineError::Other("Attachment is not a file".into()));
-        }
-        if meta.len() > MAX_BYTES {
-            return Err(EngineError::Other("Attachment is too large".into()));
-        }
-        let mime_type = mime_by_ext(&resolved)
-            .ok_or_else(|| EngineError::Other("Attachment is not a supported image".into()))?;
-        Ok(InspectedFile {
-            name: resolved
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "attachment".into()),
-            mime_type: mime_type.to_string(),
-            size: meta.len(),
-            resolved,
-        })
     }
+    let text = String::from_utf8_lossy(head);
+    starts_svg_document(text.trim_start_matches('\u{feff}')).then_some("image/svg+xml")
 }
 
-struct InspectedFile {
-    resolved: PathBuf,
-    name: String,
-    mime_type: String,
-    size: u64,
-}
-
-/// An absolute local path's components with `.`/`..` resolved WITHOUT
-/// touching the filesystem. `None` for relative or drive-relative paths and
-/// for any Windows prefix but a drive letter (UNC, `\\.\` devices, verbatim
-/// non-disk). `C:` and `\\?\C:` agree; Windows compares case-insensitively.
-fn lexical_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
-    use std::path::{Component, Prefix};
-    if !path.is_absolute() {
-        return None;
-    }
-    let mut out: Vec<std::ffi::OsString> = Vec::new();
-    // Prefix + root: `/..` is `/`, so `..` never pops below them.
-    let mut anchor = 0;
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => match prefix.kind() {
-                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
-                    out.push(format!("{}:", drive.to_ascii_uppercase() as char).into());
-                    anchor = out.len();
-                }
-                _ => return None,
-            },
-            Component::RootDir => {
-                out.push(std::path::MAIN_SEPARATOR_STR.into());
-                anchor = out.len();
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if out.len() > anchor {
-                    out.pop();
-                }
-            }
-            Component::Normal(name) => {
-                #[cfg(windows)]
-                out.push(name.to_string_lossy().to_lowercase().into());
-                #[cfg(not(windows))]
-                out.push(name.to_os_string());
-            }
+/// SVG markup: `<svg`, optionally after an XML declaration, comments or an
+/// SVG doctype. HTML that merely embeds an `<svg>` is not an SVG file.
+fn starts_svg_document(mut text: &str) -> bool {
+    loop {
+        text = text.trim_start();
+        if text.starts_with("<svg")
+            || text
+                .get(.."<!DOCTYPE svg".len())
+                .is_some_and(|head| head.eq_ignore_ascii_case("<!DOCTYPE svg"))
+        {
+            return true;
+        }
+        let end = if text.starts_with("<?xml") {
+            text.find("?>").map(|at| at + 2)
+        } else if text.starts_with("<!--") {
+            text.find("-->").map(|at| at + 3)
+        } else {
+            None
+        };
+        match end {
+            Some(end) => text = &text[end..],
+            None => return false,
         }
     }
-    Some(out)
 }
 
 fn chunk_files(dir: &Path) -> Result<Vec<(u64, PathBuf)>, EngineError> {
@@ -495,6 +432,10 @@ fn sanitize(file_name: &str) -> String {
     }
 }
 
+pub(crate) fn has_known_image_extension(path: &Path) -> bool {
+    mime_by_ext(path).is_some()
+}
+
 fn mime_by_ext(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
@@ -505,7 +446,8 @@ fn mime_by_ext(path: &Path) -> Option<&'static str> {
         "bmp" => Some("image/bmp"),
         "tif" | "tiff" => Some("image/tiff"),
         "avif" => Some("image/avif"),
-        "heic" => Some("image/heic"),
+        "heic" | "heif" => Some("image/heic"),
+        "ico" => Some("image/x-icon"),
         _ => None,
     }
 }
@@ -617,78 +559,60 @@ mod tests {
     }
 
     #[test]
-    fn network_and_escaping_paths_are_refused_before_touching_the_filesystem() {
+    fn reads_any_readable_file_outside_the_uploads_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
         let uploads = Uploads::from_root(dir.path());
-        let roots = [workspace.path().to_path_buf()];
-        std::fs::write(workspace.path().join("shot.png"), b"png").unwrap();
-        std::fs::write(elsewhere.path().join("shot.png"), b"png").unwrap();
-        let inside = workspace.path().join("shot.png");
-        assert!(
-            uploads
-                .read_chunk(inside.to_str().unwrap(), 0, &roots)
-                .is_ok()
-        );
-        let escape = workspace
+        let shot = elsewhere.path().join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let escape = dir
             .path()
             .join("..")
             .join(elsewhere.path().file_name().unwrap())
             .join("shot.png");
-        let mut paths = vec![
-            r"\\host\share\x.png".to_string(),
-            "//host/share/x.png".into(),
-            r"\\?\UNC\host\share\x.png".into(),
-            r"\\.\pipe\x.png".into(),
-            "file:////host/share/x.png".into(),
-            "/net/somehost/x.png".into(),
-            "C:x.png".into(),
-            "shot.png".into(),
-            escape.to_string_lossy().into_owned(),
-        ];
-        // A link from outside every root into one canonicalizes inside the
-        // jail; refusing it proves the lexical check runs before any
-        // filesystem call on the requested path.
-        #[cfg(unix)]
-        {
-            let link = elsewhere.path().join("link");
-            std::os::unix::fs::symlink(workspace.path(), &link).unwrap();
-            paths.push(link.join("shot.png").to_string_lossy().into_owned());
+        for path in [shot.clone(), escape] {
+            let chunk = uploads.read_chunk(&path.to_string_lossy(), 0).unwrap();
+            assert_eq!(BASE64.decode(chunk.data).unwrap(), b"png");
+            assert_eq!(chunk.mime_type, "image/png");
+            assert!(chunk.done);
         }
-        for path in paths {
-            let error = uploads
-                .read_chunk(&path, 0, &roots)
-                .expect_err(&format!("accepted {path:?}"));
-            assert!(
-                error.to_string().contains("outside the upload cache"),
-                "{path:?}: {error}"
-            );
-        }
+        // No extension: the leading bytes name the type, else octet-stream.
+        let bare = elsewhere.path().join("screenshot");
+        std::fs::write(&bare, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert_eq!(
+            uploads.read_chunk(&bare.to_string_lossy(), 0).unwrap().mime_type,
+            "image/png"
+        );
+        let notes = elsewhere.path().join("notes.txt");
+        std::fs::write(&notes, b"text").unwrap();
+        assert_eq!(
+            uploads.read_chunk(&notes.to_string_lossy(), 0).unwrap().mime_type,
+            "application/octet-stream"
+        );
+        // Missing files and directories still fail.
+        assert!(uploads.read_chunk(&elsewhere.path().join("missing.png").to_string_lossy(), 0).is_err());
+        assert!(uploads.read_chunk(&elsewhere.path().to_string_lossy(), 0).is_err());
     }
 
     #[test]
-    fn lexical_components_resolve_dots_and_refuse_non_disk_prefixes() {
-        let lexical = |path: &str| lexical_components(Path::new(path));
-        assert_eq!(lexical("/a/./b/../c/../.."), lexical("/"));
-        assert_eq!(lexical("/a/b/../c.png"), lexical("/a/c.png"));
-        assert_eq!(lexical("relative/c.png"), None);
-        #[cfg(windows)]
-        {
-            assert_eq!(lexical(r"\\?\c:\A\b.png"), lexical(r"C:\a\B.PNG"));
-            assert_eq!(lexical(r"C:\..\..\a.png"), lexical(r"C:\a.png"));
-            for path in [
-                r"\\host\share\x.png",
-                "//host/share/x.png",
-                r"\\?\UNC\host\share\x.png",
-                r"\\.\pipe\x.png",
-                r"\\?\pipe\x.png",
-                "C:x.png",
-                r"\x.png",
-            ] {
-                assert_eq!(lexical(path), None, "{path}");
-            }
-        }
+    fn sniffs_image_types_from_leading_bytes() {
+        assert_eq!(sniff_mime(b"\xff\xd8\xff\xe0"), Some("image/jpeg"));
+        assert_eq!(sniff_mime(b"BM\0\0"), Some("image/bmp"));
+        assert_eq!(sniff_mime(b"\0\0\0\x1cftypavif"), Some("image/avif"));
+        assert_eq!(sniff_mime(b"\0\0\0\x18ftypheic"), Some("image/heic"));
+        assert_eq!(sniff_mime(b"\xef\xbb\xbf  <svg xmlns='x'/>"), Some("image/svg+xml"));
+        assert_eq!(sniff_mime(b"<?xml version='1.0'?>\n<svg/>"), Some("image/svg+xml"));
+        assert_eq!(
+            sniff_mime(b"<?xml version='1.0'?>\n<!-- Inkscape -->\n<!DOCTYPE svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'x'>\n<svg/>"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(sniff_mime(b"<!doctype svg><svg/>"), Some("image/svg+xml"));
+        assert_eq!(sniff_mime(b"<html><body/>"), None);
+        // HTML that embeds an icon is still HTML.
+        assert_eq!(sniff_mime(b"<!DOCTYPE html><html><body><svg/></body></html>"), None);
+        assert_eq!(sniff_mime(b"<?xml version='1.0'?>\n<html><svg/></html>"), None);
+        assert_eq!(sniff_mime(b"<div><svg/></div>"), None);
+        assert_eq!(sniff_mime(b"plain"), None);
     }
 }
 
@@ -942,7 +866,7 @@ mod generated_image_tests {
             assert_eq!(image.size, bytes.len() as u64);
             assert_eq!(std::fs::read(&image.path).unwrap(), bytes);
             assert!(source.exists());
-            let reply = uploads.read_chunk(&image.path, 0, &[]).unwrap();
+            let reply = uploads.read_chunk(&image.path, 0).unwrap();
             assert_eq!(BASE64.decode(reply.data).unwrap(), bytes);
             assert_eq!(reply.mime_type, mime);
             assert!(reply.done);

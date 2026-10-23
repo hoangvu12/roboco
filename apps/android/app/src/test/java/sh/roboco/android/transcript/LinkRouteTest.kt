@@ -45,32 +45,38 @@ class LinkRouteTest {
     }
 
     @Test
-    fun theRobocoAndFileSchemesAreIgnored() {
+    fun robocoFileLinksOpenImagesAndIgnoreTheRest() {
         assertEquals(LinkRoute.Ignore, routeLink("roboco-invoke:7b7d"))
-        assertEquals(LinkRoute.Ignore, routeLink("roboco-file:src/a%20file.png"))
+        assertEquals(LinkRoute.Preview("roboco-file:src/a%20file.png"), routeLink("roboco-file:src/a%20file.png"))
+        assertEquals(LinkRoute.Preview("ROBOCO-FILE:x.png"), routeLink("ROBOCO-FILE:x.png"))
         assertEquals(LinkRoute.Ignore, routeLink("roboco-file:src/components/"))
-        assertEquals(LinkRoute.Ignore, routeLink("ROBOCO-FILE:x.png"))
+        assertEquals(LinkRoute.Ignore, routeLink("roboco-file:src/main.rs"))
     }
 
     @Test
-    fun schemelessPathsAreIgnoredPerTranscriptD4() {
-        for (url in listOf("assets/logo.png", "src/main.rs:42", "src/a.png#L3", "/abs/shot.webp", "icon.svg")) {
+    fun schemelessImagePathsOpenTheViewerOtherPathsAreIgnored() {
+        for (url in listOf("assets/logo.png", "src/a.png#L3", "/abs/shot.webp", "icon.svg", "~/x.png", "a/../b.png")) {
+            assertEquals(url, LinkRoute.Preview(url), routeLink(url))
+        }
+        for (url in listOf("src/main.rs:42", "docs/README.md", "src/")) {
             assertEquals(url, LinkRoute.Ignore, routeLink(url))
         }
     }
 
     @Test
-    fun windowsDrivePathsAreIgnoredNotExternal() {
-        // `C:` looks like a scheme; the drive check (row 7) runs before
-        // the scheme row (8).
-        assertEquals(LinkRoute.Ignore, routeLink("C:\\work\\shot.png"))
-        assertEquals(LinkRoute.Ignore, routeLink("C:/work/shot.png"))
+    fun windowsDrivePathsOpenImagesNotExternal() {
+        // `C:` looks like a scheme; the drive check runs before the
+        // scheme row.
+        assertEquals(LinkRoute.Preview("C:\\work\\shot.png"), routeLink("C:\\work\\shot.png"))
+        assertEquals(LinkRoute.Preview("C:/work/shot.png"), routeLink("C:/work/shot.png"))
+        assertEquals(LinkRoute.Ignore, routeLink("C:/work/notes.txt"))
     }
 
     @Test
-    fun fileUrisAreIgnoredAndNeverReachView() {
-        assertEquals(LinkRoute.Ignore, routeLink("file:///abs/x.png"))
-        assertEquals(LinkRoute.Ignore, routeLink("file://host/x.png"))
+    fun fileUrisOpenImagesAndNeverReachView() {
+        assertEquals(LinkRoute.Preview("file:///abs/x.png"), routeLink("file:///abs/x.png"))
+        assertEquals(LinkRoute.Preview("file://host/x.png"), routeLink("file://host/x.png"))
+        assertEquals(LinkRoute.Ignore, routeLink("file:///abs/notes.txt"))
     }
 
     @Test
@@ -85,7 +91,7 @@ class LinkRouteTest {
 
     @Test
     fun anchorsEmptyAndBareNamesAreIgnored() {
-        for (url in listOf("#install", "", "Makefile", "~/x.png", "a/../b.png")) {
+        for (url in listOf("#install", "", "Makefile", ".png")) {
             assertEquals(url, LinkRoute.Ignore, routeLink(url))
         }
     }

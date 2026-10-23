@@ -44,6 +44,8 @@ reqwest.workspace = true
 ignore.workspace = true
 nucleo-matcher.workspace = true
 ts-rs.workspace = true
+# SVG transcript images rasterize to PNG for clients without an SVG decoder.
+resvg = "0.46"
 
 same-file = "1"
 tempfile.workspace = true

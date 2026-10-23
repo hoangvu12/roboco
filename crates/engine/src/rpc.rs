@@ -55,7 +55,9 @@
 //! - Uploads (§3.7): `UploadChunk {uploadId, data, seq?}`,
 //!   `UploadCommit {uploadId, fileName}` → `{path}`,
 //!   `ReadAttachmentChunk {path, offset}` → `{name, mimeType, data, nextOffset,
-//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds).
+//!   done}` (any readable file; no path jail), and `ReadImageChunk
+//!   {reference, chatId?, offset}` → the same reply for any Markdown image
+//!   reference (`image_refs.rs`).
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
@@ -642,6 +644,17 @@ struct ReadAttachmentChunkParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ReadImageChunkParams {
+    reference: String,
+    /// The chat whose cwd anchors relative paths.
+    #[serde(default)]
+    chat_id: Option<String>,
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FetchToolBlobParams {
     /// Doc-resident sidecar ref (`{chatId}/{partId}` or `…​.diff`).
     blob_ref: String,
@@ -792,6 +805,7 @@ pub struct EngineRpc {
     change_requests: CheckoutChangeRequests,
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
+    image_refs: crate::image_refs::ImageRefs,
     agent_accounts: AgentAccounts,
     updater: Option<roboco_update::Updater>,
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
@@ -835,6 +849,7 @@ impl EngineRpc {
             previews: None,
             change_requests,
             diff_sync,
+            image_refs: crate::image_refs::ImageRefs::new(uploads.clone()),
             uploads,
             agent_accounts,
             updater: None,
@@ -3419,22 +3434,34 @@ impl RpcService for EngineRpc {
             }
             methods::READ_ATTACHMENT_CHUNK => {
                 let p: ReadAttachmentChunkParams = parse_params(params)?;
-                // Path jail: the uploads dir plus every workspace-known chat cwd.
-                let roots: Vec<std::path::PathBuf> = self
-                    .workspace
-                    .read_chats()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|chat| chat.cwd)
-                    .map(std::path::PathBuf::from)
-                    .collect();
                 let uploads = self.uploads.clone();
-                let chunk = tokio::task::spawn_blocking(move || {
-                    uploads.read_chunk(&p.path, p.offset, &roots)
-                })
-                .await
-                .map_err(|e| RpcError::Failed(e.to_string()))?
-                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let chunk = tokio::task::spawn_blocking(move || uploads.read_chunk(&p.path, p.offset))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
+            methods::READ_IMAGE_CHUNK => {
+                let p: ReadImageChunkParams = parse_params(params)?;
+                // Relative references resolve against the chat's working
+                // folder (`~` and projectless scratch cwds expanded).
+                let cwd = p
+                    .chat_id
+                    .as_deref()
+                    .and_then(|chat_id| self.workspace.chat(chat_id).ok().flatten())
+                    .and_then(|chat| {
+                        crate::repos::resolve_chat_cwd(
+                            chat.cwd.as_deref().unwrap_or("~"),
+                            &self.repos.scratch_root(),
+                        )
+                        .ok()
+                    })
+                    .map(std::path::PathBuf::from);
+                let chunk = self
+                    .image_refs
+                    .read_chunk(&p.reference, cwd, p.offset)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
             methods::FETCH_TOOL_BLOB => {

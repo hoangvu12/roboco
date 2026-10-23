@@ -7,6 +7,7 @@ import android.graphics.ImageDecoder
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
@@ -18,6 +19,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.withContext
 
 /**
@@ -26,15 +29,19 @@ import kotlinx.coroutines.withContext
  * path, so the reference alone is never enough. The length-prefix shape
  * of iOS's `"\(device.utf8.count):\(device)\(reference)"` is data-class
  * equality here: `ImageKey("a", "bc") != ImageKey("ab", "c")` for the
- * same reason — neither pair collides.
+ * same reason — neither pair collides. [chatId] scopes the entry to one
+ * chat: a relative `shots/a.png` names a different file in every chat's
+ * cwd.
  */
-data class ImageKey(val engineDeviceId: String, val reference: String)
+data class ImageKey(val engineDeviceId: String, val reference: String, val chatId: String = "")
 
 /**
- * Where attachment bytes come from. Production is
- * `AttachmentReader { d, p -> core.client.readAttachment(d, p) }`
- * (android-app#08: a UniFFI `suspend` fn that throws `CoreException` and
- * runs on the Rust runtime — call it directly, never inside `runBlocking`).
+ * Where engine-served bytes come from ([ImageSource.Engine]). Production
+ * is `AttachmentReader { d, r -> core.client.readImage(d, r, chatId) }`
+ * (the engine's `ReadImageChunk`, falling back to `ReadAttachmentChunk`
+ * on older engines; android-app#08: a UniFFI `suspend` fn that throws
+ * `CoreException` and runs on the Rust runtime — call it directly, never
+ * inside `runBlocking`).
  */
 fun interface AttachmentReader {
     suspend fun read(engineDeviceId: String, reference: String): ByteArray
@@ -55,31 +62,12 @@ fun interface ImageDecode {
 /** One decoded picture; [full] = no downsampling was applied. */
 class DecodedImage(val bitmap: ImageBitmap, val full: Boolean)
 
-/** Long-side cap of `decode(bytes, 0)` (full-size loads, tickets 125/126). */
-internal const val FullSideCap = 4096
-
-/** A Windows drive-absolute reference (`C:\\…` or `C:/…`). */
-private val drivePath = Regex("^[A-Za-z]:[\\\\/]")
-
 /**
- * Whether an image reference can be served by `readAttachment` at all
- * (ticket 137, Roboco's no-RPC adaptation). The engine's path jail serves
- * only absolute paths and `pending://` upload references: POSIX absolute
- * (`/…`), Windows drive-absolute (`C:\\…`, `C:/…`) and `\\\\…` UNC/verbatim
- * paths are **fetchable** (the engine decides whether to serve them), as
- * is any `pending://…` reference. Everything else — `http(s)://` (the
- * phone never fetches HTTP image URLs, #817), `data:`, `file:`,
- * `roboco-file:`, relative paths and the empty string — is refused
- * without a round trip: the tile fails synchronously, and no engine id
- * is even read.
+ * Long-side cap of `decode(bytes, 0)` (full-size loads, tickets 125/126):
+ * well past any phone screen, so the zoomed viewer stays sharp, while a
+ * worst-case bitmap stays at 64 MB.
  */
-fun isFetchableImageReference(ref: String): Boolean = when {
-    ref.isEmpty() -> false
-    ref.startsWith("pending://") -> true
-    drivePath.containsMatchIn(ref) -> true
-    ref.startsWith("/") || ref.startsWith("\\\\") -> true
-    else -> false
-}
+internal const val FullSideCap = 4096
 
 /**
  * The real decoder (ticket 66 step 1): `ImageDecoder` with EXIF
@@ -137,6 +125,7 @@ class TranscriptImageLoader(
     maxBytes: Int = defaultMaxBytes(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
     private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(2),
+    private val web: WebImageFetcher = PlatformWebImageFetcher,
 ) : ComponentCallbacks2 {
 
     private val lru = object : LruCache<ImageKey, DecodedImage>(maxBytes) {
@@ -157,10 +146,10 @@ class TranscriptImageLoader(
         lru.get(key)?.takeIf { it.full || maxOf(it.bitmap.width, it.bitmap.height) >= sidePx }?.bitmap
 
     /**
-     * Cache → in-flight deferred → read + decode. Null on any failure
-     * (not cached; a later call tries again). The read runs wherever the
-     * [AttachmentReader] decides (the Rust runtime), the decode on
-     * [decodeDispatcher] — never on main.
+     * Cache → in-flight deferred → [fetchAndDecode]. Null on any failure
+     * (not cached; a later call tries again). The engine read runs
+     * wherever the [AttachmentReader] decides (the Rust runtime), the web
+     * fetch on IO, the decode on [decodeDispatcher] — never on main.
      */
     suspend fun load(key: ImageKey, sidePx: Int, reader: AttachmentReader): ImageBitmap? {
         cached(key, sidePx)?.let { return it }
@@ -174,14 +163,13 @@ class TranscriptImageLoader(
         lateinit var fresh: Deferred<DecodedImage?>
         fresh = scope.async(start = CoroutineStart.LAZY) {
             try {
-                val bytes = reader.read(key.engineDeviceId, key.reference)
-                val decoded = withContext(decodeDispatcher) { decode.decode(bytes, sidePx) }
+                val decoded = fetchAndDecode(key, sidePx, reader)
                 store(key, decoded)
                 decoded
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                null // read error or undecodable bytes: stay empty, no retry
+                null // every source failed: stay empty; the tile schedules the retry
             } finally {
                 // Only this load's own entry: a later load may own the key.
                 inflight.remove(pair, fresh)
@@ -195,22 +183,41 @@ class TranscriptImageLoader(
      * Full-size decode (long side ≤ [FullSideCap]) for the viewer (125)
      * and image-chip links (126). Not stored in the tile LRU, not deduped.
      */
-    suspend fun loadFull(key: ImageKey, reader: AttachmentReader): ImageBitmap? {
-        val bytes = try {
-            reader.read(key.engineDeviceId, key.reference)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return null
+    suspend fun loadFull(key: ImageKey, reader: AttachmentReader): ImageBitmap? = try {
+        fetchAndDecode(key, 0, reader).bitmap
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Try each of the reference's [imageSources] in order — the bytes
+     * *and* their decode, so an SVG the phone fetched itself (undecodable
+     * here) still gets the engine's PNG rendering — and throw the last
+     * failure when none works. The engine is skipped while no engine id is
+     * known.
+     */
+    private suspend fun fetchAndDecode(key: ImageKey, sidePx: Int, reader: AttachmentReader): DecodedImage {
+        var failure: Exception? = null
+        for (source in imageSources(key.reference)) {
+            try {
+                val bytes = when (source) {
+                    ImageSource.Inline -> decodeDataUri(key.reference) ?: throw IOException("malformed data: URI")
+                    ImageSource.Web -> web.fetch(key.reference)
+                    ImageSource.Engine -> {
+                        if (key.engineDeviceId.isBlank()) throw IOException("no engine for ${key.reference}")
+                        reader.read(key.engineDeviceId, key.reference)
+                    }
+                }
+                return withContext(decodeDispatcher) { decode.decode(bytes, sidePx) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failure = e
+            }
         }
-        val decoded = try {
-            withContext(decodeDispatcher) { decode.decode(bytes, 0) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            return null
-        }
-        return decoded.bitmap
+        throw failure ?: IOException("no image source for ${key.reference}")
     }
 
     /** Drops every cached picture (also [onTrimMemory]'s background path). */
@@ -287,35 +294,34 @@ class TranscriptImageLoader(
 /**
  * One session's view of the loader (ticket 66): fixes the engine
  * ([engineDeviceId] — `{ controller.hostDeviceId }`, ticket 51, read at
- * call time) and the [reader]. A blank engine id (no host yet) means no
- * read and no cache entry, and (137) an unfetchable reference — `http(s)`,
- * `data:`, other URI schemes, relative paths — short-circuits to a null
- * result **before** the engine id is read or the reader is called, so the
- * tile fails without a round trip.
+ * call time), the [reader] (bound to the session's chat, so relative
+ * references resolve against its cwd) and [retries], which fires when that
+ * engine reconnects so failed tiles try again at once. Only a blank
+ * reference short-circuits; a blank engine id (no host yet) still lets
+ * `data:` and web images load — only the engine source is skipped.
  */
 class TranscriptImageBinding(
     private val loader: TranscriptImageLoader,
     private val engineDeviceId: () -> String,
     private val reader: AttachmentReader,
+    val retries: Flow<Unit> = emptyFlow(),
+    /** The chat [reader] resolves relative references in (part of the cache key). */
+    private val chatId: String = "",
 ) {
+    private fun key(reference: String) = ImageKey(engineDeviceId(), reference, chatId)
+
     fun cached(reference: String, sidePx: Int): ImageBitmap? {
         if (!isFetchableImageReference(reference)) return null
-        val id = engineDeviceId()
-        if (id.isBlank()) return null
-        return loader.cached(ImageKey(id, reference), sidePx)
+        return loader.cached(key(reference), sidePx)
     }
 
     suspend fun load(reference: String, sidePx: Int): ImageBitmap? {
         if (!isFetchableImageReference(reference)) return null
-        val id = engineDeviceId()
-        if (id.isBlank()) return null
-        return loader.load(ImageKey(id, reference), sidePx, reader)
+        return loader.load(key(reference), sidePx, reader)
     }
 
     suspend fun loadFull(reference: String): ImageBitmap? {
         if (!isFetchableImageReference(reference)) return null
-        val id = engineDeviceId()
-        if (id.isBlank()) return null
-        return loader.loadFull(ImageKey(id, reference), reader)
+        return loader.loadFull(key(reference), reader)
     }
 }

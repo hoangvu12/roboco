@@ -109,14 +109,34 @@ class TranscriptImageLoaderTest {
     private fun bmp(w: Int, h: Int, full: Boolean = false): DecodedImage =
         DecodedImage(ImageBitmap(w, h), full)
 
+    /** The phone's web fetch: serves [bytes] or fails, counting fetches. */
+    private class FakeWeb(private val bytes: ByteArray? = null) : WebImageFetcher {
+        val fetches = mutableListOf<String>()
+
+        override suspend fun fetch(url: String): ByteArray {
+            fetches += url
+            return bytes ?: throw IOException("unreachable from the phone: $url")
+        }
+    }
+
+    /** Decodes everything except [refused] bytes (an SVG the phone can't read). */
+    private class SelectiveDecode(private val refused: ByteArray) : ImageDecode {
+        override fun decode(bytes: ByteArray, sidePx: Int): DecodedImage {
+            if (bytes.contentEquals(refused)) throw IOException("undecodable here")
+            return DecodedImage(ImageBitmap(bytes.size, 1), full = true)
+        }
+    }
+
     private fun TestScope.newLoader(
         decode: ImageDecode,
         maxBytes: Int = 16 * 1024 * 1024,
+        web: WebImageFetcher = FakeWeb(),
     ): TranscriptImageLoader = TranscriptImageLoader(
         decode = decode,
         maxBytes = maxBytes,
         scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
         decodeDispatcher = StandardTestDispatcher(testScheduler),
+        web = web,
     )
 
     /** PNG bytes of a `w × h` uniform picture (tiny, decodable). */
@@ -329,26 +349,88 @@ class TranscriptImageLoaderTest {
         assertEquals(2, reader.reads.get())
     }
 
-    // ---------------------------------------------------- fetchable guard
+    // ---------------------------------------------------- source fallback
 
     @Test
-    fun unfetchableReferencesShortCircuitBeforeTheEngineIdOrReader() = runTest {
+    fun webImagesComeFromThePhoneWithoutAnEngineRead() = runTest {
         val reader = FakeReader()
-        val loader = newLoader(ScriptedDecode(listOf(bmp(100, 100))))
-        val engineIdReads = AtomicInteger()
-        val binding = TranscriptImageBinding(
-            loader,
-            { engineIdReads.incrementAndGet().toString() },
-            reader,
-        )
+        val web = FakeWeb(bytes = byteArrayOf(1, 2, 3))
+        val loader = newLoader(ScriptedDecode(listOf(bmp(100, 100))), web = web)
+        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
 
-        assertNull(binding.cached("https://example.com/a.png", 300))
-        assertNull(binding.load("https://example.com/a.png", 300))
-        assertNull(binding.loadFull("data:image/png;base64,xyz"))
-        assertNull(binding.loadFull("assets/shot.png"))
-        assertEquals("the engine id is never read", 0, engineIdReads.get())
+        assertNotNull(binding.load("https://example.com/a.png", 300))
+        assertEquals(listOf("https://example.com/a.png"), web.fetches)
+        assertEquals("the direct fetch was enough", 0, reader.reads.get())
+        assertNotNull(binding.cached("https://example.com/a.png", 100))
+    }
+
+    @Test
+    fun aWebImageThePhoneCannotReachFallsBackToTheEngine() = runTest {
+        val reader = FakeReader()
+        val web = FakeWeb(bytes = null) // localhost on the PC, a LAN host…
+        val loader = newLoader(ScriptedDecode(listOf(bmp(100, 100))), web = web)
+        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
+
+        assertNotNull(binding.load("http://localhost:3000/shot.png", 300))
+        assertEquals(1, web.fetches.size)
+        assertEquals("the engine fetched it instead", 1, reader.reads.get())
+    }
+
+    @Test
+    fun bytesThePhoneCannotDecodeFallBackToTheEnginesRendering() = runTest {
+        // An SVG: the phone fetches it but ImageDecoder can't read it; the
+        // engine's rasterized PNG (the reader's bytes) decodes.
+        val svg = "<svg/>".toByteArray()
+        val reader = FakeReader()
+        val loader = newLoader(SelectiveDecode(refused = svg), web = FakeWeb(bytes = svg))
+        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
+
+        assertNotNull(binding.load("https://example.com/logo.svg", 300))
+        assertEquals(1, reader.reads.get())
+        // The same for a data: URI holding SVG.
+        assertNotNull(binding.loadFull("data:image/svg+xml,<svg/>"))
+        assertEquals(2, reader.reads.get())
+    }
+
+    @Test
+    fun dataUrisDecodeOnThePhoneEvenWithoutAnEngine() = runTest {
+        val reader = FakeReader()
+        val web = FakeWeb()
+        val loader = newLoader(ScriptedDecode(listOf(bmp(1, 1, full = true))), web = web)
+        val binding = TranscriptImageBinding(loader, { "" }, reader)
+
+        assertNotNull(binding.load("data:image/png;base64,iVBORw0KGgo=", 300))
         assertEquals(0, reader.reads.get())
-        assertNull(loader.cached(ImageKey("1", "https://example.com/a.png"), 300))
+        assertTrue(web.fetches.isEmpty())
+    }
+
+    @Test
+    fun everyOtherReferenceIsReadThroughTheEngineAsWritten() = runTest {
+        val seen = mutableListOf<String>()
+        val reader = AttachmentReader { _, reference -> seen += reference; byteArrayOf(1) }
+        val refs = listOf("shots/a.png", "~/x.png", "file:///C:/a%20b.png", "roboco-file:docs/x.svg", "/tmp/x.png")
+        val loader = newLoader(ScriptedDecode(refs.map { bmp(10, 10, full = true) }))
+        val binding = TranscriptImageBinding(loader, { "e1" }, reader, chatId = "chat-1")
+
+        for (ref in refs) assertNotNull(ref, binding.load(ref, 300))
+        assertEquals(refs, seen)
+        // Cached per chat: the same relative path in another chat misses.
+        assertNotNull(loader.cached(ImageKey("e1", "shots/a.png", "chat-1"), 10))
+        assertNull(loader.cached(ImageKey("e1", "shots/a.png", "chat-2"), 10))
+    }
+
+    @Test
+    fun aBlankReferenceShortCircuitsBeforeAnySource() = runTest {
+        val reader = FakeReader()
+        val web = FakeWeb()
+        val loader = newLoader(ScriptedDecode(emptyList()), web = web)
+        val binding = TranscriptImageBinding(loader, { "e1" }, reader)
+
+        assertNull(binding.cached("", 300))
+        assertNull(binding.load(" ", 300))
+        assertNull(binding.loadFull(""))
+        assertEquals(0, reader.reads.get())
+        assertTrue(web.fetches.isEmpty())
     }
 
     // ------------------------------------------------------------- loadFull

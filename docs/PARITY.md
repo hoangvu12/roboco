@@ -30,7 +30,7 @@ not built yet).
 | ListHarnesses / ListModels | done | Relay-forwardable. |
 | Run/Subscribe/Interrupt/Steer/RespondInput RPCs | done (changed shape) | Deliberate redesign: these ride the durable doc command queue (`QueueCommand {run|steer|interrupt|respondInput}`) instead of device-addressed RPCs — same capability, offline-tolerant. |
 | Repos/folders/worktrees RPCs | done | All eight methods, relay-forwardable. |
-| Uploads / ReadAttachmentChunk | done | Chunked staging → durable file; path-jailed reads; attachments live only on the host device. |
+| Uploads / ReadAttachmentChunk | done | Chunked staging → durable file; reads serve any file the engine's user can read (no path jail); attachments live only on the host device. `ReadImageChunk` (Roboco addition) reads any Markdown image reference. |
 | Terminals RPCs | done | Open/Subscribe/Write/Resize/Close, forwardable. |
 | Agent-account RPCs | done | Full login/activate/forget/poll surface, forwardable. |
 | LocalDevice | done | `{deviceId}`; IPC-only (never forwarded). |

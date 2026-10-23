@@ -302,6 +302,18 @@ fn absolute_destination_with_spaces(destination: &str) -> bool {
     if !destination.contains(' ') {
         return false;
     }
+    if is_drive_destination(destination) {
+        // `C:\Users\me\My Shots\a.png` / `C:/…`: the same envelope, with
+        // either separator (backslashes before letters stay literal).
+        let file_name = destination.rsplit(['/', '\\']).next().unwrap_or_default();
+        return !destination.ends_with(['/', '\\'])
+            && !destination.contains(['?', '"', '<', '>'])
+            && !destination.chars().any(char::is_control)
+            && !destination
+                .split(['/', '\\'])
+                .any(|part| matches!(part, "." | ".."))
+            && file_name.contains('.');
+    }
     let path = match destination.strip_prefix("file://") {
         Some(rest) => {
             // Only an empty host keeps this a file path; `file://localhost`
@@ -328,6 +340,15 @@ fn absolute_destination_with_spaces(destination: &str) -> bool {
     }
     let file_name = path.rsplit('/').next().unwrap_or(path);
     destination.starts_with("file://") || file_name.contains('.')
+}
+
+/// A Windows drive-absolute destination (`C:\…` or `C:/…`).
+fn is_drive_destination(destination: &str) -> bool {
+    let bytes = destination.as_bytes();
+    bytes.len() > 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 /// A fence opener: up to three leading spaces, then at least three backticks
@@ -572,7 +593,9 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
             vec![parse_table(cur, align)]
         }
         Tag::HtmlBlock => {
-            // Render raw HTML blocks as plain text (roboco's markdown does the same).
+            // Render raw HTML blocks as plain text (roboco's markdown does the
+            // same) — unless they hold `<img>` tags: those become images,
+            // with the block's other markup dropped.
             let mut text = String::new();
             loop {
                 match cur.next_event() {
@@ -580,6 +603,9 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
                     Some(Event::End(_)) | None => break,
                     Some(_) => {}
                 }
+            }
+            if let Some(runs) = html_image_runs(&text, &InlineStyle::default()) {
+                return vec![Block::Paragraph { runs }];
             }
             let text = text.trim_end_matches('\n').to_string();
             if text.is_empty() {
@@ -713,7 +739,34 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
         }
         Event::SoftBreak => push(runs, " ".into(), style.clone()),
         Event::HardBreak => push(runs, "\n".into(), style.clone()),
-        Event::Html(t) | Event::InlineHtml(t) => push(runs, t.into_string(), style.clone()),
+        Event::Html(t) | Event::InlineHtml(t) => {
+            if let Some(href) = html_anchor_open(&t) {
+                // `<a href="…">…</a>` arrives one tag per event: its content
+                // links to `href` (an `<img>` inside becomes a linked image).
+                // An unclosed anchor ends with its container or at the next
+                // block (a tight list item's nested list).
+                let mut inner = style.clone();
+                inner.link = Some(href);
+                while let Some(event) = cur.peek_event() {
+                    match event {
+                        Event::End(_) => break,
+                        Event::Start(tag) if is_block_tag(tag) => break,
+                        Event::Html(t) | Event::InlineHtml(t) if is_html_anchor_close(t) => {
+                            cur.bump();
+                            break;
+                        }
+                        _ => parse_inline_event(cur, runs, &inner),
+                    }
+                }
+            } else if is_html_anchor_close(&t) {
+                // A stray `</a>` (its opener had no `href`, or was in another
+                // container) is dropped.
+            } else if let Some(images) = html_image_runs(&t, style) {
+                runs.extend(images);
+            } else {
+                push(runs, t.into_string(), style.clone());
+            }
+        }
         Event::TaskListMarker(done) => {
             let mut style = style.clone();
             style.task = Some(TaskMarker {
@@ -740,17 +793,12 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
                         .iter()
                         .map(|run| run.text.as_str())
                         .collect();
-                    inner.image = Some(InlineImage {
-                        source: dest_url.to_string(),
-                        alt: alt.clone(),
-                        title: title.to_string(),
-                        link: style.link.clone(),
-                    });
-                    inner.link = Some(dest_url.into_string());
-                    runs.push(InlineRun {
-                        text: alt,
-                        style: inner,
-                    });
+                    runs.push(image_run(
+                        dest_url.into_string(),
+                        alt,
+                        title.into_string(),
+                        style,
+                    ));
                     return;
                 }
                 Tag::Link { dest_url, .. } => {
@@ -763,6 +811,205 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
         // `End` is consumed by the container loop; anything else is ignored.
         _ => {}
     }
+}
+
+/// One image run: its text is the alt, it links to its own source, and an
+/// enclosing link (`[![a](img)](href)`, `<a href><img></a>`) rides along.
+fn image_run(source: String, alt: String, title: String, style: &InlineStyle) -> InlineRun {
+    let mut inner = style.clone();
+    inner.image = Some(InlineImage {
+        source: source.clone(),
+        alt: alt.clone(),
+        title,
+        link: style.link.clone(),
+    });
+    inner.link = Some(source);
+    InlineRun { text: alt, style: inner }
+}
+
+/// The runs of raw HTML that holds `<img>` tags: each image with a source
+/// becomes an image run (linked when inside `<a href>`), text between tags
+/// is kept with whitespace collapsed, and every other tag is dropped.
+/// `None` when the HTML has no usable `<img>`, so callers keep it as text.
+fn html_image_runs(html: &str, style: &InlineStyle) -> Option<Vec<InlineRun>> {
+    if !html.to_ascii_lowercase().contains("<img") {
+        return None;
+    }
+    let mut runs = Vec::new();
+    let mut link_style = style.clone();
+    let mut images = 0;
+    let mut text = String::new();
+    let flush = |text: &mut String, runs: &mut Vec<InlineRun>, style: &InlineStyle| {
+        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !collapsed.is_empty() {
+            runs.push(InlineRun {
+                text: decode_entities(&collapsed),
+                style: style.clone(),
+            });
+        }
+        text.clear();
+    };
+    let mut rest = html;
+    while let Some(open) = rest.find('<') {
+        text.push_str(&rest[..open]);
+        let Some(close) = tag_end(&rest[open..]) else {
+            // An unterminated tag (still streaming) stays text.
+            text.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let tag = &rest[open + 1..open + close];
+        rest = &rest[open + close + 1..];
+        let (name, attributes) = html_tag(tag);
+        match name.as_str() {
+            "img" => {
+                let source = attribute(attributes, "src")
+                    .or_else(|| first_srcset_url(attribute(attributes, "srcset")?))
+                    .filter(|source| !source.trim().is_empty());
+                if let Some(source) = source {
+                    flush(&mut text, &mut runs, &link_style);
+                    runs.push(image_run(
+                        source.trim().to_owned(),
+                        attribute(attributes, "alt").unwrap_or_default(),
+                        attribute(attributes, "title").unwrap_or_default(),
+                        &link_style,
+                    ));
+                    images += 1;
+                }
+            }
+            "a" => {
+                flush(&mut text, &mut runs, &link_style);
+                if let Some(href) = attribute(attributes, "href") {
+                    link_style.link = Some(href);
+                }
+            }
+            "/a" => {
+                flush(&mut text, &mut runs, &link_style);
+                link_style.link = style.link.clone();
+            }
+            "br" => text.push('\n'),
+            _ => text.push(' '),
+        }
+    }
+    text.push_str(rest);
+    flush(&mut text, &mut runs, &link_style);
+    (images > 0).then_some(runs)
+}
+
+/// The offset of the `>` that closes the tag `html` opens with, skipping
+/// any `>` inside a quoted attribute value (`alt="x > y"`).
+fn tag_end(html: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut after_equals = false;
+    for (at, c) in html.char_indices() {
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '>' => return Some(at),
+            '"' | '\'' if after_equals => quote = Some(c),
+            _ => {}
+        }
+        if !c.is_whitespace() {
+            after_equals = c == '=';
+        }
+    }
+    None
+}
+
+/// `<a … href="x" …>` → `x`.
+fn html_anchor_open(html: &str) -> Option<String> {
+    let tag = html.trim().strip_prefix('<')?.strip_suffix('>')?;
+    let (name, attributes) = html_tag(tag);
+    if name != "a" {
+        return None;
+    }
+    attribute(attributes, "href")
+}
+
+fn is_html_anchor_close(html: &str) -> bool {
+    html.trim()
+        .strip_prefix('<')
+        .and_then(|tag| tag.strip_suffix('>'))
+        .is_some_and(|tag| html_tag(tag).0 == "/a")
+}
+
+/// A tag's lowercase name (`img`, `/a`) and its attribute text.
+fn html_tag(tag: &str) -> (String, &str) {
+    let tag = tag.trim().trim_end_matches('/');
+    let end = tag
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(tag.len());
+    (tag[..end].to_ascii_lowercase(), &tag[end..])
+}
+
+/// One attribute's value (quoted or bare), entities decoded.
+fn attribute(attributes: &str, wanted: &str) -> Option<String> {
+    let mut rest = attributes;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '/');
+        if rest.is_empty() {
+            return None;
+        }
+        let name_end = rest
+            .find(|c: char| c.is_whitespace() || c == '=' || c == '/')
+            .unwrap_or(rest.len());
+        let name = &rest[..name_end];
+        rest = rest[name_end..].trim_start();
+        let value = if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            let (value, remainder) = match after.chars().next() {
+                Some(quote @ ('"' | '\'')) => {
+                    let body = &after[1..];
+                    let end = body.find(quote).unwrap_or(body.len());
+                    (&body[..end], body.get(end + 1..).unwrap_or_default())
+                }
+                _ => {
+                    let end = after
+                        .find(|c: char| c.is_whitespace())
+                        .unwrap_or(after.len());
+                    (&after[..end], &after[end..])
+                }
+            };
+            rest = remainder;
+            Some(value)
+        } else {
+            None
+        };
+        if name.eq_ignore_ascii_case(wanted) {
+            return Some(decode_entities(value.unwrap_or_default()));
+        }
+        if name.is_empty() {
+            // Stray `=`: skip a byte so the scan always advances.
+            rest = rest.get(1..).unwrap_or_default();
+        }
+    }
+}
+
+/// `srcset="a.png 1x, b.png 2x"` → `a.png`.
+fn first_srcset_url(srcset: String) -> Option<String> {
+    srcset
+        .split(',')
+        .next()?
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+}
+
+fn decode_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_owned();
+    }
+    text.replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 /// Promote bare `http(s)://` URLs into link runs — GFM's autolink extension,
@@ -1731,5 +1978,103 @@ mod image_model_tests {
         assert_eq!(images[1].source, "b.png");
         assert!(images[1].alt.is_empty());
         assert_eq!(runs.first().unwrap().text, "Before ");
+    }
+
+    fn images_of(source: &str) -> Vec<InlineImage> {
+        parse_full(source)
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.block {
+                Block::Paragraph { runs } => Some(runs.clone()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|run| run.style.image)
+            .collect()
+    }
+
+    #[test]
+    fn html_img_blocks_become_images() {
+        let images = images_of(
+            "<p align=\"center\">\n  <img src=\"shots/a b.png\" alt=\"A &amp; B\" width=\"300\">\n  <img srcset='hi.png 2x, lo.png 1x'/>\n</p>\n",
+        );
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].source, "shots/a b.png");
+        assert_eq!(images[0].alt, "A & B");
+        assert_eq!(images[1].source, "hi.png");
+        // No raw markup survives as text.
+        let tree = parse_full("<div><img src=x.png></div>\n");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        assert!(runs.iter().all(|run| !run.text.contains('<')), "{runs:?}");
+        // HTML without an image keeps the literal-text rendering.
+        let tree = parse_full("<div>hi</div>\n");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        assert_eq!(runs[0].text, "<div>hi</div>");
+    }
+
+    #[test]
+    fn inline_html_img_and_anchor_wrapped_images() {
+        let images = images_of(
+            "See <img src=\"/tmp/x.png\" title=t> and <a href=\"https://e.com\"><img src=y.png alt=Y></a> done",
+        );
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].source, "/tmp/x.png");
+        assert_eq!(images[0].title, "t");
+        assert_eq!(images[0].link, None);
+        assert_eq!(images[1].source, "y.png");
+        assert_eq!(images[1].alt, "Y");
+        assert_eq!(images[1].link.as_deref(), Some("https://e.com"));
+        let block = images_of("<a href=\"https://e.com\"><img src=\"z.png\"></a>\n");
+        assert_eq!(block[0].link.as_deref(), Some("https://e.com"));
+    }
+
+    #[test]
+    fn img_attributes_may_quote_a_closing_bracket() {
+        for source in [
+            "See <img alt=\"x > y\" src=\"a.png\"> here",
+            "<p><img alt='x > y' src=a.png></p>\n",
+        ] {
+            let images = images_of(source);
+            assert_eq!(images.len(), 1, "{source}");
+            assert_eq!(images[0].alt, "x > y", "{source}");
+            assert_eq!(images[0].source, "a.png", "{source}");
+        }
+        assert_eq!(tag_end("<img alt=\"a>b\">rest"), Some(14));
+        // An apostrophe outside a value is no quote.
+        assert_eq!(tag_end("<img alt=don't src=x>"), Some(20));
+        // An unterminated value (still streaming) has no end yet.
+        assert_eq!(tag_end("<img alt=\"a>b"), None);
+    }
+
+    #[test]
+    fn stray_and_unclosed_anchors() {
+        let tree = parse_full("a </a> b\n");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        assert!(runs.iter().all(|run| !run.text.contains("</a>")), "{runs:?}");
+        // An unclosed anchor in a tight item stops at the nested list.
+        let tree = parse_full("- <a href=\"https://e.com\">x\n  - nested\n");
+        let Block::List { items, .. } = &tree.blocks[0].block else {
+            panic!("expected list");
+        };
+        assert!(matches!(items[0][0], Block::Paragraph { .. }), "{:?}", items[0]);
+        assert!(matches!(items[0][1], Block::List { .. }), "{:?}", items[0]);
+    }
+
+    #[test]
+    fn reference_style_and_spaced_drive_path_images() {
+        let images = images_of("![Shot][s] and ![s]\n\n[s]: /tmp/shot.png \"T\"\n");
+        assert_eq!(images.len(), 2);
+        assert!(images.iter().all(|image| image.source == "/tmp/shot.png"));
+        assert_eq!(images[0].title, "T");
+        let images = images_of(r"![w](C:\Users\me\My Shots\a.png) ![u](C:/My Shots/b.png)");
+        assert_eq!(images.len(), 2, "{images:?}");
+        assert_eq!(images[0].source, r"C:\Users\me\My Shots\a.png");
+        assert_eq!(images[1].source, "C:/My Shots/b.png");
     }
 }

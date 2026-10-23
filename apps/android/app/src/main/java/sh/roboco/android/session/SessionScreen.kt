@@ -50,6 +50,7 @@ import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
 import sh.roboco.android.transcript.TranscriptTapGate
+import sh.roboco.android.transcript.engineReconnects
 import sh.roboco.android.transcript.firstUserBubbleInRoot
 import sh.roboco.android.transcript.rememberLinkRouter
 import sh.roboco.android.transcript.transcriptBottomInset
@@ -240,7 +241,13 @@ fun SessionScreen(
     val density = LocalDensity.current
     val binding = remember(controller, attachments) {
         attachments?.let {
-            TranscriptImageBinding(TranscriptImageLoader.get(context), { controller.hostDeviceId }, it)
+            TranscriptImageBinding(
+                loader = TranscriptImageLoader.get(context),
+                engineDeviceId = { controller.hostDeviceId },
+                reader = it,
+                retries = engineReconnects(context, { controller.hostDeviceId }),
+                chatId = controller.chatId,
+            )
         }
     }
     // 126: the link router. Its viewer request is its own, not the tile's
@@ -293,6 +300,7 @@ fun SessionScreen(
                 openImage = openImage,
                 loadImage = binding::load,
                 cachedImage = binding::cached,
+                imageRetries = binding.retries,
                 openSubagent = openSubagent,
             )
         } else {
