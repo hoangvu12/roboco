@@ -48,7 +48,21 @@ data class OngoingContent(
     val tapChatId: String?,
     /** `setRequestPromotedOngoing` — see [ongoingContent]. */
     val promoteLiveUpdate: Boolean,
+    /**
+     * True while runs are Working (the indeterminate progress bar and
+     * `CATEGORY_PROGRESS`); false for the idle "Staying connected" content.
+     */
+    val working: Boolean = true,
 )
+
+/** The idle content's copy (ADR 0010; new copy, no iOS/web source). */
+object OngoingCopy {
+    const val IdleTitle = "Staying connected"
+
+    /** "Keeping 1 engine connected" / "Keeping 2 engines connected". */
+    fun idleText(engineCount: Int): String =
+        if (engineCount == 1) "Keeping 1 engine connected" else "Keeping $engineCount engines connected"
+}
 
 /**
  * Derive the content. `apiPromotionPossible` folds the API check (36+) and
@@ -60,15 +74,26 @@ data class OngoingContent(
 fun ongoingContent(input: OngoingInput, nowMs: Long, apiPromotionPossible: Boolean): OngoingContent {
     val working = input.working
     if (working.isEmpty()) {
-        // Never rendered: the controller stops the service instead.
+        // The service is up with nothing Working: the linger after the
+        // last run, or Stay connected (ADR 0010). A quiet status line, no
+        // chronometer, no progress, never promoted; the tap opens the app.
+        val text = buildString {
+            append(OngoingCopy.idleText(input.engineCount))
+            if (input.awaiting > 0) {
+                append(" · ")
+                append(input.awaiting)
+                append(if (input.awaiting == 1) " needs you" else " need you")
+            }
+        }
         return OngoingContent(
-            title = "",
-            text = "",
+            title = OngoingCopy.IdleTitle,
+            text = text,
             chip = "",
-            whenMs = nowMs,
+            whenMs = null,
             subText = null,
             tapChatId = null,
             promoteLiveUpdate = false,
+            working = false,
         )
     }
     if (working.size == 1) {

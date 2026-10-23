@@ -105,15 +105,20 @@ class NetworkOnlineTracker(initialNetwork: Long?, initialOnline: Boolean) {
     }
 
     /**
-     * `onLinkPropertiesChanged`: true when the current network's
-     * addresses changed after they were first seen (a new IP on the same
-     * Wi-Fi). The first reading only records them.
+     * `onLinkPropertiesChanged`, fed only the **routable** addresses
+     * ([isRoutableAddress]): true when an address the current network had
+     * went away (the old IP on the same Wi-Fi is gone, so sockets bound to
+     * it are dead). Additions alone (a new IPv6 privacy address, a second
+     * prefix) and link-local churn are not a change: the existing sockets
+     * still work, and `setNetworkChanged` would tear down healthy links.
+     * The first reading only records them; a default-network switch is
+     * reported by [switched], not here.
      */
     fun linkChanged(net: Long, linkAddresses: Set<String>): Boolean {
         if (net != current) return false
         val previous = addresses
         addresses = linkAddresses
-        return previous != null && previous != linkAddresses
+        return previous != null && !linkAddresses.containsAll(previous)
     }
 
     /** `onAvailable`: a new (or handover) default network. */
@@ -141,6 +146,15 @@ class NetworkOnlineTracker(initialNetwork: Long?, initialOnline: Boolean) {
         return false
     }
 }
+
+/**
+ * An address a socket to an engine can be bound to: not link-local
+ * (fe80::/10, 169.254/16), loopback, wildcard or multicast. Private LAN
+ * ranges and IPv6 ULAs count — LAN engines are reached over them. The
+ * filter [NetworkOnlineTracker.linkChanged] is fed through.
+ */
+fun java.net.InetAddress.isRoutableAddress(): Boolean =
+    !isLinkLocalAddress && !isLoopbackAddress && !isAnyLocalAddress && !isMulticastAddress
 
 /**
  * The process lifecycle hooks (android-ui-parity #35), registered **once
@@ -290,8 +304,12 @@ class AppLifecycleHooks internal constructor(
                             network: Network,
                             linkProperties: LinkProperties,
                         ) {
+                            // Only routable addresses count: link-local
+                            // (fe80::/10, 169.254/16) churn never warrants
+                            // a rebuild (see NetworkOnlineTracker.linkChanged).
                             val addresses = linkProperties.linkAddresses
-                                .map { it.toString() }
+                                .filter { it.address.isRoutableAddress() }
+                                .map { it.address.hostAddress.orEmpty() }
                                 .toSet()
                             if (tracker.linkChanged(network.networkHandle, addresses)) {
                                 hooks.networkChanged()

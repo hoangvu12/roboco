@@ -30,9 +30,16 @@ data class RunWatchState(
     val liveUpdateDismissed: Boolean,
     /** True while the foreground service should be up. */
     val active: Boolean,
+    /**
+     * True while "Stay connected in background" holds the service (ADR
+     * 0010): the service runs as `specialUse` (no time limit) instead of
+     * `dataSync`. False whenever [active] is false.
+     */
+    val persistent: Boolean = false,
 ) {
     val contentKey: String
-        get() = working.joinToString("|") { "${it.chatId}:${it.title}" } + "#$awaiting"
+        get() = working.joinToString("|") { "${it.chatId}:${it.title}" } +
+            "#$awaiting@$engineCount"
 }
 
 /**
@@ -43,16 +50,39 @@ data class RunWatchState(
  * connections and their notifications live.
  *
  * Inputs: `RunActivity` from the core, the process foreground state, the
- * notifications-on gate and the paired-engine count. Behaviour (the
- * ticket's Lifecycle table):
- * - **Start** while the app is foreground AND `working` is non-empty AND
- *   notifications are on (API 31+ forbids background FGS starts — the
- *   exception is caught and logged, never crashes);
+ * notifications-on gate, the paired-engine count and the Stay connected
+ * preference. Behaviour (the ticket's Lifecycle table, amended by ADR
+ * 0010):
+ * - **Start** while the app is foreground AND (`working` is non-empty AND
+ *   notifications are on, OR Stay connected is on) (API 31+ forbids
+ *   background FGS starts — the exception is caught and logged, never
+ *   crashes);
  * - **Keep** while `working` is non-empty, foreground or not (a run that
  *   starts while the service is up is included);
- * - **Stop** after `working` has been empty for 15 s continuously (the
- *   queue-handoff grace — the desktop's "coalesced working states"), or
- *   at once when notifications turn off or the last engine is forgotten;
+ * - **Linger** for [LINGER_MS] (2 min) after `working` empties (ADR
+ *   0010). It covers the queue-handoff flicker (the desktop's "coalesced
+ *   working states", the old 15 s grace) and, mainly, the time between
+ *   the Done notification and the user's tap: Android 14+ freezes a cached
+ *   app ~10 s after its service stops, and the engine drops the silent
+ *   sockets 45 s later, so a tap within the linger lands on live sockets
+ *   instead of a reconnect. Longer would leave the "Staying connected"
+ *   notification up for no one; most taps come within a minute or two;
+ * - **Stop** after the linger, or at once when notifications turn off or
+ *   the last engine is forgotten (unless Stay connected holds it; the
+ *   last engine forgotten stops it either way);
+ * - **Stay connected** (the opt-in Settings toggle, ADR 0010): while on
+ *   and ≥ 1 engine is paired the service runs whether or not a run is
+ *   Working and whether or not notifications are on, so the process and
+ *   its sockets live in the background; [RunWatchState.persistent] tells
+ *   the service to run as `specialUse` (no time limit). Off restores the
+ *   rules above. It still only *starts* while the app is foreground (the
+ *   toggle lives in Settings, and every later app open retries);
+ * - **Background-started runs:** with the service down there is no way
+ *   to cover them. Android 12+ refuses `startForegroundService` from the
+ *   background (no exemption applies: no FCM, no exact alarm, no battery
+ *   optimisation opt-out), and a cached Android 14+ process is frozen and
+ *   never sees the run start anyway. A run that starts while the service
+ *   is up (a run, the linger or Stay connected) is kept;
  * - **onTimeout** (the API 35+ dataSync budget): the flag latches (forcing
  *   `active` false — the service `stopSelf()`s in its callback), a quiet
  *   "Background updates paused" notification posts; the next foreground
@@ -83,8 +113,9 @@ class RunWatchController(
     private var engineCount: Int = 0
     private var notificationsOn: Boolean = false
     private var foreground: Boolean = false
+    private var stayConnected: Boolean = false
 
-    /** When `working` became empty; the 15 s stop grace counts from here. */
+    /** When `working` became empty; the linger counts from here. */
     private var emptySinceMs: Long? = null
 
     private var budgetExhausted: Boolean = false
@@ -128,9 +159,9 @@ class RunWatchController(
                 // not): a dismissed Live Update may be promoted again.
                 if (workingSetChanged) liveUpdateDismissed = false
             } else if (hadWorking) {
-                // The grace opens only when the last run LEAVES Working:
+                // The linger opens only when the last run LEAVES Working:
                 // an activity that was never non-empty must not hold (or
-                // start) the service for 15 s.
+                // start) the service.
                 emptySinceMs = clock()
             }
             update()
@@ -156,6 +187,14 @@ class RunWatchController(
     fun onNotificationsOn(on: Boolean) {
         synchronized(gate) {
             notificationsOn = on
+            update()
+        }
+    }
+
+    /** Settings → "Stay connected in background" (ADR 0010). */
+    fun onStayConnected(on: Boolean) {
+        synchronized(gate) {
+            stayConnected = on
             update()
         }
     }
@@ -206,22 +245,30 @@ class RunWatchController(
 
     // ── the decision ─────────────────────────────────────────────────────
 
-    private fun stateOf(active: Boolean) = RunWatchState(
+    private fun stateOf(active: Boolean, persistent: Boolean = false) = RunWatchState(
         working = working,
         awaiting = awaiting,
         engineCount = engineCount,
         budgetExhausted = budgetExhausted,
         liveUpdateDismissed = liveUpdateDismissed,
         active = active,
+        persistent = active && persistent,
     )
 
+    /** Stay connected holds the service on its own (ADR 0010). */
+    private fun persistent(): Boolean = stayConnected && engineCount > 0
+
     private fun shouldRun(): Boolean {
+        // Stay connected runs as specialUse: neither the dataSync budget
+        // nor the notifications gate applies (the user asked for the
+        // connection itself, not only for its notifications).
+        if (persistent()) return true
         if (budgetExhausted) return false
         if (!notificationsOn || engineCount == 0) return false
         if (working.isNotEmpty()) return true
-        // The 15 s stop grace: Working flickers across queue handoffs.
+        // The linger: queue handoffs, and the tap on the Done notification.
         val since = emptySinceMs ?: return false
-        return clock() - since < STOP_GRACE_MS
+        return clock() - since < LINGER_MS
     }
 
     private fun update() {
@@ -244,17 +291,24 @@ class RunWatchController(
                 Log.w(TAG, "RunWatchService start not permitted: $error")
             }
         }
-        _state.value = stateOf(run)
+        _state.value = stateOf(run, persistent())
         scheduleStopCheck(run)
     }
 
-    /** A run stopping on the grace needs a wake at the deadline. */
+    /**
+     * A service held only by the linger needs a wake at its deadline. The
+     * wake is re-armed from the linger's own start, so turning Stay
+     * connected off mid-linger still stops on time.
+     */
     private fun scheduleStopCheck(run: Boolean) {
-        if (run && working.isEmpty() && emptySinceMs != null) {
+        val since = emptySinceMs
+        if (run && working.isEmpty() && since != null && !persistent()) {
             if (stopCheck?.isActive != true) {
+                val wait = (since + LINGER_MS - clock()).coerceAtLeast(0L) + 50
                 stopCheck = scope.launch {
-                    delay(STOP_GRACE_MS + 50)
+                    delay(wait)
                     synchronized(gate) {
+                        stopCheck = null
                         if (working.isEmpty()) update()
                     }
                 }
@@ -265,8 +319,15 @@ class RunWatchController(
         }
     }
 
-    private companion object {
-        const val TAG = "RobocoRunWatch"
-        const val STOP_GRACE_MS = 15_000L
+    companion object {
+        private const val TAG = "RobocoRunWatch"
+
+        /**
+         * How long the service outlives the last Working run (ADR 0010):
+         * long enough to tap the Done notification and come back to live
+         * sockets, short enough that the ongoing notification does not
+         * linger for no one. See the class KDoc.
+         */
+        const val LINGER_MS = 120_000L
     }
 }

@@ -251,17 +251,27 @@ class Notifier(private val context: Context) {
             .brand()
             .setContentTitle(content.title)
             .setContentText(content.text)
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setCategory(
+                if (content.working) {
+                    NotificationCompat.CATEGORY_PROGRESS
+                } else {
+                    NotificationCompat.CATEGORY_SERVICE
+                },
+            )
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setShowWhen(content.whenMs != null)
             .setWhen(content.whenMs ?: System.currentTimeMillis())
             .setUsesChronometer(content.whenMs != null)
-            .setProgress(0, 0, true)
-            .setShortCriticalText(content.chip)
             .setRequestPromotedOngoing(content.promoteLiveUpdate)
             .apply {
+                // The idle "Staying connected" content (ADR 0010) has no
+                // progress bar and no status chip.
+                if (content.working) {
+                    setProgress(0, 0, true)
+                    setShortCriticalText(content.chip)
+                }
                 if (content.subText != null) setSubText(content.subText)
                 setContentIntent(
                     if (content.tapChatId != null) {
@@ -271,7 +281,7 @@ class Notifier(private val context: Context) {
                     },
                 )
                 if (onDeleteDismissed != null) setDeleteIntent(onDeleteDismissed)
-                if (android.os.Build.VERSION.SDK_INT >= 36) {
+                if (content.working && android.os.Build.VERSION.SDK_INT >= 36) {
                     setStyle(
                         NotificationCompat.ProgressStyle()
                             .setProgressIndeterminate(true),

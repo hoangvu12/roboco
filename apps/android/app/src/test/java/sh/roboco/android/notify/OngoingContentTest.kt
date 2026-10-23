@@ -190,15 +190,32 @@ class OngoingContentTest {
     // -------------------------------------------------- empty
 
     @Test
-    fun anEmptyWorkingSetRendersNothing() {
+    fun anEmptyWorkingSetRendersTheIdleStayingConnectedContent() {
+        // The linger after the last run, or Stay connected (ADR 0010).
         val content = ongoingContent(
             OngoingInput(working = emptyList(), awaiting = 0, engineCount = 2, liveUpdateDismissed = false),
             now,
             apiPromotionPossible = true,
         )
-        assertEquals("", content.title)
+        assertEquals("Staying connected", content.title)
+        assertEquals("Keeping 2 engines connected", content.text)
         assertEquals("", content.chip)
-        assertNull(content.tapChatId)
-        assertFalse(content.promoteLiveUpdate)
+        assertNull("no chronometer", content.whenMs)
+        assertNull(content.subText)
+        assertNull("the tap opens the app root", content.tapChatId)
+        assertFalse("never promoted", content.promoteLiveUpdate)
+        assertFalse("no progress", content.working)
+    }
+
+    @Test
+    fun theIdleContentCountsOneEngineAndTheChatsThatNeedYou() {
+        fun idle(engines: Int, awaiting: Int) = ongoingContent(
+            OngoingInput(working = emptyList(), awaiting = awaiting, engineCount = engines, liveUpdateDismissed = false),
+            now,
+            apiPromotionPossible = false,
+        ).text
+        assertEquals("Keeping 1 engine connected", idle(1, 0))
+        assertEquals("Keeping 1 engine connected · 1 needs you", idle(1, 1))
+        assertEquals("Keeping 3 engines connected · 2 need you", idle(3, 2))
     }
 }

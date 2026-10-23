@@ -493,7 +493,8 @@ class RobocoApplication : Application() {
     /**
      * The run-watching foreground service's controller (android-app#28):
      * starts `RunWatchService` while any run is Working and notifications
-     * are on, stops it 15 s after the last run leaves Working. Never owns
+     * are on, stops it 2 min after the last run leaves Working, and keeps
+     * it up while "Stay connected in background" is on (ADR 0010). Never owns
      * sockets — the core client does; the service keeps the process out
      * of the cached/frozen set.
      */
@@ -677,6 +678,12 @@ class RobocoApplication : Application() {
         }
         applicationScope.launch {
             notificationPrefs.state.collect { refreshNotificationsOn() }
+        }
+        // ADR 0010: Settings → "Stay connected in background" holds the
+        // service (false until the DataStore read lands; the flip from
+        // Settings arrives while the app is visible, so the start is legal).
+        applicationScope.launch {
+            prefs.stayConnected.collect { runWatch.onStayConnected(it) }
         }
         if (core is CoreStatus.Loaded) {
             workspaceFeed.start()

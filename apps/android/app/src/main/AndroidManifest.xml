@@ -21,6 +21,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- ADR 0010: "Stay connected in background" runs the same service as
+         specialUse (API 34+, normal permission, no time limit). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <!-- The QR scanner (ui-parity #138). CAMERA implies the camera
          features as required=true, which would hide the app from
@@ -94,14 +97,21 @@
             android:exported="false"
             android:theme="@style/Theme.Roboco.Scanner"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode" />
-        <!-- android-app#28: the run-watching foreground service (type
-             dataSync; type decision table in the ticket). Runs only while a
-             run is Working and notifications are on; never started from the
-             background, never at boot. -->
+        <!-- android-app#28 + ADR 0010: the run-watching foreground service.
+             dataSync while a run is Working (and for the 2 min linger after
+             it) with notifications on; specialUse while the opt-in "Stay
+             connected in background" setting holds it (dataSync is
+             time-limited on API 35+, specialUse is not). Never started from
+             the background, never at boot. The subtype property is the
+             justification Play would review; Roboco ships no Play build. -->
         <service
             android:name=".background.RunWatchService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Opt-in setting: keeps the user's own paired engine connections (self-hosted coding-agent desktop, LAN or tunnel WebSocket) open while the app is in the background, so run status and completion notifications arrive live. No push service exists (no FCM by design)." />
+        </service>
         <!-- android-next#04: the PackageInstaller status receiver. No
              intent filter and exported=false — the only way in is the
              explicit mutable PendingIntent ApkInstaller hands to

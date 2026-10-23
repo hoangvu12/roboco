@@ -48,6 +48,14 @@ object PrefKeys {
 
     /** `"<1|0>|<engineId>|<sectionId>"` offline overrides (see [sh.roboco.android.sessions.FoldState]). */
     val SECTION_FOLD_OVERRIDES = stringSetPreferencesKey("sectionFoldOverrides")
+
+    /**
+     * Settings → Background → "Stay connected in background" (ADR 0010):
+     * keep the run-watching foreground service, and so the process and its
+     * engine connections, up while the app is backgrounded. Absent = off.
+     * Phone-local, never sent to an engine.
+     */
+    val STAY_CONNECTED = booleanPreferencesKey("stayConnectedInBackground")
 }
 
 /**
@@ -95,6 +103,14 @@ class Prefs(
     /** The user's appearance choice — `System` until the disk read lands. */
     val appearance: StateFlow<Appearance> = _appearance.asStateFlow()
 
+    private val _stayConnected = MutableStateFlow(false)
+
+    /**
+     * "Stay connected in background" (ADR 0010) — `false` until the disk
+     * read lands and whenever the key is absent (opt-in).
+     */
+    val stayConnected: StateFlow<Boolean> = _stayConnected.asStateFlow()
+
     private val loaded = CompletableDeferred<Unit>()
 
     /** Set by the first [setGroupByProject]: the user's choice beats a later-arriving first read. */
@@ -104,6 +120,10 @@ class Prefs(
     @Volatile
     private var appearanceTouched = false
 
+    /** Same rule for [setStayConnected]: a flip before the load wins. */
+    @Volatile
+    private var stayConnectedTouched = false
+
     init {
         scope.launch(io) {
             val preferences = store.data.catch { emit(emptyPreferences()) }.first()
@@ -112,6 +132,9 @@ class Prefs(
             // wins over whatever the disk holds.
             if (!appearanceTouched) {
                 _appearance.value = Appearance.fromStored(preferences[PrefKeys.APPEARANCE] ?: 0)
+            }
+            if (!stayConnectedTouched) {
+                _stayConnected.value = preferences[PrefKeys.STAY_CONNECTED] ?: false
             }
             loaded.complete(Unit)
         }
@@ -153,6 +176,21 @@ class Prefs(
         _appearance.value = a
         scope.launch(io) {
             store.edit { it[PrefKeys.APPEARANCE] = _appearance.value.storedValue }
+        }
+    }
+
+    /**
+     * Flip "Stay connected in background" (ADR 0010), the
+     * [setGroupByProject] shape: no-op when unchanged, the StateFlow flips
+     * at once (the run-watch controller starts or stops the service on
+     * it), the write lands in the background with the current value.
+     */
+    fun setStayConnected(on: Boolean) {
+        if (on == _stayConnected.value) return
+        stayConnectedTouched = true
+        _stayConnected.value = on
+        scope.launch(io) {
+            store.edit { it[PrefKeys.STAY_CONNECTED] = _stayConnected.value }
         }
     }
 }
