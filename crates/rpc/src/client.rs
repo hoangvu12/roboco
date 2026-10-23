@@ -145,13 +145,15 @@ impl RpcClient {
         self
     }
 
-    /// Whether any byte arrived on the socket after `since` (pongs count).
-    /// A health check that timed out while this holds was queued behind a
-    /// large frame, not lost. Always `false` without a socket clock.
-    pub fn received_since(&self, since: tokio::time::Instant) -> bool {
+    /// Bytes read off the socket so far, control frames included (`0`
+    /// without a socket clock). A health check compares it before and
+    /// after: a reply that timed out while real data kept arriving was
+    /// queued behind a large frame, not lost. Keepalive pings and pongs move
+    /// it by a few bytes only, so callers demand more than that.
+    pub fn bytes_received(&self) -> u64 {
         self.progress
             .as_ref()
-            .is_some_and(|progress| progress.last_read() > since)
+            .map_or(0, crate::pump::Progress::bytes_read)
     }
 
     /// Resolves when the transport stops accepting frames.

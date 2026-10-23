@@ -1728,6 +1728,81 @@ async fn a_frozen_transcript_connection_is_replaced() {
     client.shutdown();
 }
 
+/// The thaw: the phone's process was frozen, so its timers never fired,
+/// and every socket it holds is dead without a close (the engine dropped
+/// them, the FINs were lost). The client still believes it is Connected.
+/// Coming back to the foreground alone must catch the open chat up within
+/// seconds: an immediate wake probe fails the dead link, the transcript
+/// connection closes with it, and the chat resubscribes on the new link.
+/// Before, the foreground only reset the probe timer and the chat sat on a
+/// dead socket until the next probe and lag check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thawed_app_on_dead_sockets_catches_up_within_seconds() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let engine_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let core = engine_core(engine_dir.path());
+    let direct = serve(&core, engine_dir.path()).await;
+    let proxy = support::stall_proxy::StallProxy::start(direct.address).await;
+    let url = format!("http://{}/pair#token={}", proxy.address, {
+        let store = roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap();
+        store.create_code("test", 300).unwrap().credential
+    });
+    // The periodic checks are far apart, as for a process whose timers sat
+    // frozen: only the foreground event can notice the dead link in time.
+    let timings = roboco_mobile_client::timings::Timings {
+        probe_every: Duration::from_secs(60),
+        lag_every: Duration::from_secs(60),
+        lag_timeout: Duration::from_secs(60),
+        ..support::test_timings()
+    };
+    let client = Client::new_with_timings(
+        support::test_config(data_dir.path()),
+        Vec::new(),
+        Arc::new(Recorder::default()),
+        timings,
+    )
+    .unwrap();
+    let record = client.pair_engine(&url, None).await.unwrap();
+    wait_for_view(&client, &record.engine_id, "connected", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    let handle = client
+        .open_session(&client.scope(&record.engine_id, "same-chat"))
+        .unwrap();
+    wait_until(|| handle.snapshot().hydrated, "the first reset lands").await;
+    // Freeze: every open socket dies silently; the engine keeps writing.
+    proxy.sever();
+    core.doc_host
+        .open("same-chat")
+        .unwrap()
+        .write_user_message("while-frozen", "written while the phone slept", 1, None)
+        .unwrap();
+    assert_eq!(
+        client.engine(&record.engine_id).unwrap().state,
+        EngineState::Connected,
+        "the client still believes it is connected"
+    );
+    // Thaw.
+    let thawed = Instant::now();
+    client.on_foreground();
+    wait_until(
+        || handle.snapshot().entries.iter().any(|e| e.id == "while-frozen"),
+        "the entry written during the freeze reaches the open chat",
+    )
+    .await;
+    let caught_up = thawed.elapsed();
+    eprintln!("thaw to new entry on screen: {caught_up:?}");
+    assert!(
+        caught_up < Duration::from_secs(10),
+        "the chat took {caught_up:?} to catch up after the thaw"
+    );
+    client.shutdown();
+    drop(proxy);
+    core.shutdown().await;
+}
+
 /// The slow streaming test (`--ignored`): `ROBOCO_MOCK_CHARS` streams
 /// N-char deltas with pacing, and the snapshot's tail entry grows in place
 /// — the Arc-stable apply keeps the entry id stable across appends.

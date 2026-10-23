@@ -79,6 +79,8 @@ pub(crate) enum EngineCommand {
         /// Bytes reached the feed while the probe waited (a reply queued
         /// behind a large frame, not a dead link).
         progressing: bool,
+        /// A wake probe (foreground, network change), not the periodic one.
+        wake: bool,
     },
     /// A calls-connection redial finished.
     CallsResult {
@@ -423,10 +425,14 @@ async fn steady(
     let mut frames_seen: HashSet<&'static str> = HashSet::new();
     let mut clock = SessionClock::default();
     let mut spare: Option<Arc<RpcClient>> = None;
+    // The periodic probe and the wake probe (foreground, network change) run
+    // independently: a thaw must not wait on a regular probe that started
+    // with the long budget.
     let mut probe_in_flight = false;
-    // A network-change verification is waiting on the probe in flight: if
-    // it fails, the tunnel is rebuilt along with the link.
-    let mut verifying = false;
+    let mut wake_probe_in_flight = false;
+    // A network change is waiting on the wake probe: if it fails, the tunnel
+    // is rebuilt along with the link.
+    let mut verify_requested = false;
     let mut calls_retry_at: Option<Instant> = None;
     let mut refresh_ack: Option<oneshot::Sender<()>> = None;
     let mut refresh_deadline = Box::pin(tokio::time::sleep(timings.refresh_cap));
@@ -468,9 +474,9 @@ async fn steady(
                     calls_retry_at = None;
                     spawn_calls_dial(ctx, generation);
                 }
-                if !probe_in_flight {
+                if !probe_in_flight && !wake_probe_in_flight {
                     probe_in_flight = true;
-                    spawn_probe(ctx, &feed, generation, timings.identity_timeout);
+                    spawn_probe(ctx, &feed, generation, timings.identity_timeout, false);
                 }
             }
             command = ctx.command_rx.recv() => {
@@ -491,9 +497,9 @@ async fn steady(
                         // event is fresh already.
                         if !stale(at, dial_started) {
                             probe_timer.reset();
-                            if !probe_in_flight {
-                                probe_in_flight = true;
-                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout);
+                            if !wake_probe_in_flight {
+                                wake_probe_in_flight = true;
+                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout, true);
                             }
                         }
                         if spare.is_none() {
@@ -504,11 +510,11 @@ async fn steady(
                         // A network change: keep a link that still answers;
                         // rebuild the tunnel only when it does not.
                         if !stale(at, dial_started) {
-                            verifying = true;
+                            verify_requested = true;
                             probe_timer.reset();
-                            if !probe_in_flight {
-                                probe_in_flight = true;
-                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout);
+                            if !wake_probe_in_flight {
+                                wake_probe_in_flight = true;
+                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout, true);
                             }
                         }
                     }
@@ -525,9 +531,9 @@ async fn steady(
                     }
                     Some(EngineCommand::Refresh(ack)) => {
                         probe_timer.reset();
-                        if !probe_in_flight {
+                        if !probe_in_flight && !wake_probe_in_flight {
                             probe_in_flight = true;
-                            spawn_probe(ctx, &feed, generation, timings.identity_timeout);
+                            spawn_probe(ctx, &feed, generation, timings.identity_timeout, false);
                         }
                         refresh_ack = Some(ack);
                         refresh_deadline
@@ -553,10 +559,14 @@ async fn steady(
                             client.close();
                         }
                     }
-                    Some(EngineCommand::ProbeResult { generation: probe_generation, result, progressing }) => {
-                        probe_in_flight = false;
+                    Some(EngineCommand::ProbeResult { generation: probe_generation, result, progressing, wake }) => {
+                        if wake {
+                            wake_probe_in_flight = false;
+                        } else {
+                            probe_in_flight = false;
+                        }
                         if probe_generation == generation {
-                            let verified = std::mem::take(&mut verifying);
+                            let network_check = wake && std::mem::take(&mut verify_requested);
                             match result {
                                 Ok(info) => {
                                     if entry_field(ctx, |entry| entry.paired.device_id.clone())
@@ -598,14 +608,12 @@ async fn steady(
                                         );
                                     }
                                     RpcError::Transport(_) | RpcError::Closed => {
-                                        tracing::info!(engine = %ctx.engine_id, error = %err, verified, "health probe failed");
-                                        let timed_out = matches!(&err, RpcError::Transport(message) if message == PROBE_TIMEOUT);
-                                        if verified || timed_out {
+                                        tracing::info!(engine = %ctx.engine_id, error = %err, wake, network_check, "health probe failed");
+                                        if network_check {
                                             // A network change the link did
-                                            // not survive, or a tunnel that
-                                            // takes requests but never
-                                            // answers: rebuild the tunnel.
-                                            invalidate_route(ctx, "health probe failed");
+                                            // not survive: the next dial
+                                            // must bind the new interface.
+                                            invalidate_route(ctx, "the link failed its network-change check");
                                         }
                                         return LinkEnd::Drop {
                                             error: match err {
@@ -1230,27 +1238,40 @@ fn forward_stream(
 /// The transport error a health probe that got no reply in time reports.
 const PROBE_TIMEOUT: &str = "Engine health check timed out";
 
+/// Bytes that must arrive during a timed-out health check for it to count
+/// as slow rather than dead. Both ends ping every 15 s, so a few bytes of
+/// pings and pongs prove nothing about a stalled stream; a reply queued
+/// behind a big frame comes with kilobytes of that frame.
+const PROGRESS_BYTES: u64 = 8 * 1024;
+
 /// `EngineInfo` on the feed within `budget`. A timeout reports whether
 /// bytes reached the feed meanwhile (`progressing`): a slow reply behind a
 /// big frame, not a dead link.
-fn spawn_probe(ctx: &EngineCtx, feed: &Arc<RpcClient>, generation: u64, budget: Duration) {
+fn spawn_probe(
+    ctx: &EngineCtx,
+    feed: &Arc<RpcClient>,
+    generation: u64,
+    budget: Duration,
+    wake: bool,
+) {
     let command_tx = command_tx_of(ctx);
     let feed = feed.clone();
     crate::runtime::shared().spawn(async move {
-        let started = tokio::time::Instant::now();
+        let before = feed.bytes_received();
         let (result, progressing) =
             match tokio::time::timeout(budget, feed.call_as(methods::ENGINE_INFO, json!({}))).await
             {
                 Ok(result) => (result, false),
                 Err(_) => (
                     Err(RpcError::Transport(PROBE_TIMEOUT.into())),
-                    feed.received_since(started),
+                    feed.bytes_received().saturating_sub(before) >= PROGRESS_BYTES,
                 ),
             };
         let _ = command_tx.send(EngineCommand::ProbeResult {
             generation,
             result,
             progressing,
+            wake,
         });
     });
 }
@@ -1286,12 +1307,19 @@ fn maybe_refill_spare(ctx: &EngineCtx) {
     if ctx.spare_refill.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
-    let refilling = ctx.spare_refill.clone();
+    /// Clears the in-flight flag however the dial ends.
+    struct Refilling(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Refilling {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let refilling = Refilling(ctx.spare_refill.clone());
     let command_tx = command_tx_of(ctx);
     let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
         let dialed = target.connect().await;
-        refilling.store(false, std::sync::atomic::Ordering::Release);
+        drop(refilling);
         match dialed {
             Ok(client) => {
                 let _ = command_tx.send(EngineCommand::StoreSpare(Arc::new(client)));
@@ -1460,7 +1488,7 @@ pub(crate) fn spawn_lag_check(
                 }
                 _ = tokio::time::sleep(timings.lag_every) => {}
             }
-            let asked = tokio::time::Instant::now();
+            let before = client.bytes_received();
             let reply = tokio::select! {
                 _ = engine_cancel.cancelled() => return,
                 _ = &mut link_ended => {
@@ -1478,7 +1506,7 @@ pub(crate) fn spawn_lag_check(
             // bytes are still arriving (a big reset over a relay) is slow,
             // not frozen.
             if reply.is_err() {
-                if client.received_since(asked) {
+                if client.bytes_received().saturating_sub(before) >= PROGRESS_BYTES {
                     tracing::info!("transcript connection slow but receiving; keeping it");
                     continue;
                 }

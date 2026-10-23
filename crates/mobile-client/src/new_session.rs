@@ -769,7 +769,9 @@ mod tests {
         rig.stop().await;
     }
 
-    /// A projectless chat lands on the host device with `~` as its cwd.
+    /// A projectless chat lands on the host device in its own scratch
+    /// folder under `~/.roboco/scratch/` (upstream #876: home is never the
+    /// cwd).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn create_session_projectless_runs_on_the_host() {
         let rig = Rig::start().await;
@@ -796,7 +798,13 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         };
         assert_eq!(chat.space_id, None);
-        assert_eq!(chat.cwd.as_deref(), Some("~"));
+        assert!(
+            chat.cwd
+                .as_deref()
+                .is_some_and(|cwd| cwd.starts_with("~/.roboco/scratch/")),
+            "a projectless chat gets its own scratch folder: {:?}",
+            chat.cwd
+        );
         let raw_device = rig.raw_device_id();
         assert_eq!(chat.device_id, raw_device);
         let row = rig.wait_for_session_row(&chat_id).await;

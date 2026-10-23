@@ -704,13 +704,16 @@ impl Client {
             self.drop_tailcat_tunnels();
         }
         if online {
+            // Only a backoff wait is cut short: a dial in flight finishes on
+            // its own (a redial request would tear down the link it
+            // produces), and an offline engine resumes when the network
+            // flag flips.
             let state = lock(&self.inner.engines);
-            for entry in state.entries.iter().filter(|entry| {
-                !matches!(
-                    entry.state,
-                    EngineState::Connected | EngineState::Parked { .. }
-                )
-            }) {
+            for entry in state
+                .entries
+                .iter()
+                .filter(|entry| entry.state == EngineState::Reconnecting)
+            {
                 let _ = entry.command_tx.send(EngineCommand::dial_now());
             }
         } else {
@@ -757,10 +760,12 @@ impl Client {
         self.inner.foreground.send_replace(true);
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
+            // A dial in flight (Connecting) finishes on its own; an offline
+            // engine waits for the network.
             let command = match entry.state {
-                EngineState::Parked { .. } => continue,
                 EngineState::Connected => EngineCommand::foreground(),
-                _ => EngineCommand::dial_now(),
+                EngineState::Reconnecting => EngineCommand::dial_now(),
+                _ => continue,
             };
             let _ = entry.command_tx.send(command);
         }

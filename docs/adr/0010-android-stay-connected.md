@@ -5,7 +5,7 @@ only while a run is Working. A run started from the phone often ends while
 the user is in another app: the service stopped 15 s later, Android 14+
 froze the cached process about 10 s after that, and the engine dropped the
 silent sockets 45 s later, so tapping the Done notification landed on a
-reconnect. With no push channel (ADR 0004, no FCM) the only way to keep the
+reconnect. With no push channel (ADR 0009, no FCM) the only way to keep the
 connections live is to keep the process in a foreground service. We
 decided:
 

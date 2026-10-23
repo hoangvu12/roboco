@@ -318,6 +318,8 @@ pub(crate) struct SessionCore {
     /// (the undelivered-send heal). A permit stored while no subscription
     /// is open is consumed by the next one.
     pub(crate) heal: Notify,
+    /// Serializes sends from their busy decision to their pending echo.
+    pub(crate) send_gate: tokio::sync::Mutex<()>,
 }
 
 impl SessionCore {
@@ -378,6 +380,7 @@ impl SessionCore {
             subscription_live: AtomicBool::new(false),
             transcript_task: Mutex::new(None),
             heal: Notify::new(),
+            send_gate: tokio::sync::Mutex::new(()),
         })
     }
 

@@ -42,6 +42,7 @@ struct Activity {
     completed_write_ms: AtomicU64,
     writing: AtomicBool,
     blocked_write: AtomicBool,
+    read_bytes: AtomicU64,
 }
 
 /// Shared byte-activity clock. It sends no extra frames and allocates once
@@ -57,6 +58,7 @@ impl Progress {
             completed_write_ms: AtomicU64::new(0),
             writing: AtomicBool::new(false),
             blocked_write: AtomicBool::new(false),
+            read_bytes: AtomicU64::new(0),
         }))
     }
     fn record(&self, write: bool) {
@@ -68,9 +70,9 @@ impl Progress {
         let ms = self.0.origin.elapsed().as_millis() as u64;
         clock.store(ms, Ordering::Relaxed);
     }
-    /// When a byte last arrived (the connection's start if none has).
-    pub(crate) fn last_read(&self) -> tokio::time::Instant {
-        self.0.origin + Duration::from_millis(self.0.read_ms.load(Ordering::Relaxed))
+    /// Bytes read off the socket so far (control frames included).
+    pub(crate) fn bytes_read(&self) -> u64 {
+        self.0.read_bytes.load(Ordering::Relaxed)
     }
     fn latest(&self, write_only: bool) -> tokio::time::Instant {
         let write = self.0.write_ms.load(Ordering::Relaxed);
@@ -178,6 +180,10 @@ impl<S: AsyncRead + Unpin> AsyncRead for ProgressIo<S> {
         let result = Pin::new(&mut this.inner).poll_read(cx, buf);
         if buf.filled().len() > before {
             this.progress.record(false);
+            this.progress
+                .0
+                .read_bytes
+                .fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
         }
         result
     }

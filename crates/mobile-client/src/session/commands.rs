@@ -208,7 +208,8 @@ impl SessionCore {
     }
 
     /// Send a message. The pending echo is created before the upload (the
-    /// faded user row appears immediately, rendering the local image bytes
+    /// faded user row appears at once — after the E1 busy check, when the
+    /// rows could not vouch for an idle chat — rendering the local image bytes
     /// from the read cache under `pending://` refs), replaced in place with
     /// the real host paths once the upload commits, and adopted when the
     /// engine's user entry lands with the same id.
@@ -236,6 +237,10 @@ impl SessionCore {
             });
         }
 
+        // One send decides at a time, until its echo exists: a second send
+        // racing the first one's busy check must see the first as a Run in
+        // flight (`starting`), never decide Run itself.
+        let gate = self.send_gate.lock().await;
         let composer = self.composer();
         let starting = composer
             .pending_sends
@@ -254,11 +259,21 @@ impl SessionCore {
         if decision == Decision::Run {
             let row = self.row_inputs().session;
             let proven = self.engine_handle().ok().and_then(|handle| handle.proven_ms());
-            if confirm_idle_with_engine(row.as_ref(), proven, crate::engines::now_ms())
-                && self.engine_says_busy().await == Some(true)
-            {
-                tracing::info!(chat = %self.chat_id, "the rows read idle but the engine is mid-turn; not starting a new run");
-                decision = decide_with(true);
+            if confirm_idle_with_engine(row.as_ref(), proven, crate::engines::now_ms()) {
+                // No answer: trust a Working row even though it went stale
+                // (queueing on an idle chat only delays the message; a run
+                // into a live turn cuts its reply off).
+                let row_says_busy = row.as_ref().is_some_and(|session| {
+                    matches!(
+                        session.status,
+                        roboco_proto::SessionStatus::Working
+                            | roboco_proto::SessionStatus::AwaitingInput
+                    )
+                });
+                if self.engine_says_busy().await.unwrap_or(row_says_busy) {
+                    tracing::info!(chat = %self.chat_id, "the rows read idle but the engine is mid-turn; not starting a new run");
+                    decision = decide_with(true);
+                }
             }
         }
         let (decision, refs, message_id, config, cwd) = {
@@ -335,6 +350,7 @@ impl SessionCore {
             ));
             self.refresh();
         }
+        drop(gate);
         // Ticket 28: the notification driver's pending-send window opens
         // here (this device issued a Run/Steer `QueueCommand`); it closes
         // when the session is seen Working after it or after 30 s.
@@ -786,8 +802,9 @@ mod tests {
             engine_reports_busy(frame(vec![session(Working, 1_000)]), "other", now),
             Some(false)
         );
-        // A Working row the engine stopped heartbeating long ago (a dead
-        // backend) is not busy, even with clock skew allowed for.
+        // A Working row the engine stopped heartbeating long ago (a run
+        // that died without settling) is not busy, even with clock skew
+        // allowed for.
         assert_eq!(
             engine_reports_busy(frame(vec![session(Working, 10 * 60_000)]), "c1", now),
             Some(false)

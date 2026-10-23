@@ -404,6 +404,13 @@ func (t *tunnel) probe(ctx context.Context) error {
 	defer cancel()
 	started := time.Now()
 	_, err := t.tc.DiscoPing(attempt)
+	if ctx.Err() != nil {
+		// The caller gave up mid-probe: that says nothing about the tunnel.
+		// Caching it would let another dial of the same burst reset a
+		// healthy tunnel on this caller's cancellation.
+		debugLogf("adapter: health probe of %p abandoned by its caller: %v", t.tc, ctx.Err())
+		return err
+	}
 	t.probedAt, t.probeErr = time.Now(), err
 	if err == nil {
 		t.handshaken.Store(true)
@@ -583,6 +590,10 @@ func writeState(path string, state *stateFile) error {
 // secret Tailcat address or raw relay endpoints.
 func redactError(operation string, _ error) error { return errors.New(operation + " failed") }
 
+// firstBytesTimeout bounds how long an awaitFirstBytes proxy waits for an
+// accepted connection to speak before dropping it.
+const firstBytesTimeout = 30 * time.Second
+
 type proxy struct {
 	listener net.Listener
 	dial     func(context.Context) (net.Conn, error)
@@ -628,7 +639,11 @@ func (p *proxy) serve(local net.Conn) {
 	var first []byte
 	if p.awaitFirstBytes {
 		buf := make([]byte, 4096)
+		// A caller that connects and never speaks must not hold this
+		// goroutine (and its socket) until Close.
+		_ = local.SetReadDeadline(time.Now().Add(firstBytesTimeout))
 		n, _ := local.Read(buf)
+		_ = local.SetReadDeadline(time.Time{})
 		if n == 0 {
 			// Hung up (or failed) before sending anything: a liveness
 			// check of the listener, not a caller. Don't dial for it.
