@@ -79,13 +79,24 @@ fun decodeDataUri(reference: String): ByteArray? {
 
 private fun percentDecode(text: String): String = String(percentDecodeBytes(text), Charsets.UTF_8)
 
-private fun percentDecodeBytes(text: String): ByteArray {
+/** The value of an ASCII hex digit, or -1 (no sign, unlike `toIntOrNull(16)`). */
+private fun hexDigit(b: Byte): Int = when (val c = b.toInt()) {
+    in '0'.code..'9'.code -> c - '0'.code
+    in 'a'.code..'f'.code -> c - 'a'.code + 10
+    in 'A'.code..'F'.code -> c - 'A'.code + 10
+    else -> -1
+}
+
+/** `%XX` escapes decoded to bytes; a `%` not followed by two hex digits stays literal. */
+internal fun percentDecodeBytes(text: String): ByteArray {
     val raw = text.toByteArray(Charsets.UTF_8)
     val out = ByteArrayOutputStream(raw.size)
     var at = 0
     while (at < raw.size) {
         val hex = if (raw[at] == '%'.code.toByte() && at + 2 < raw.size) {
-            String(raw, at + 1, 2, Charsets.US_ASCII).toIntOrNull(16)
+            val hi = hexDigit(raw[at + 1])
+            val lo = hexDigit(raw[at + 2])
+            if (hi >= 0 && lo >= 0) hi * 16 + lo else null
         } else {
             null
         }
@@ -170,6 +181,13 @@ fun imageRetryDelayMs(attempt: Int): Long {
     val exponent = (attempt.coerceAtLeast(1) - 1).coerceAtMost(5)
     return min(2_000L shl exponent, 60_000L)
 }
+
+/**
+ * Automatic retries a failed tile makes on its own backoff before it stops
+ * (2 + 4 + 8 + 16 + 32 + 60 + 60 + 60 s ≈ 4 min). After that only a
+ * reconnect or a tap tries again, and either restarts the count.
+ */
+const val MaxAutoImageRetries = 8
 
 /**
  * One emission each time [connected] turns true after the first value:

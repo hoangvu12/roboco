@@ -42,6 +42,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.rememberSmoothRoundedShape
 import sh.roboco.android.image.imageViewerSource
+import sh.roboco.android.transcript.MaxAutoImageRetries
 import sh.roboco.android.transcript.TranscriptActions
 import sh.roboco.android.transcript.imageRetryDelayMs
 import sh.roboco.android.transcript.isFetchableImageReference
@@ -99,8 +100,9 @@ private class TileState {
  * source failed, or for a blank reference (set synchronously, no RPC).
  * Failures are never cached, and a Failed tile retries by itself: at once
  * when [TranscriptActions.imageRetries] fires (the engine reconnected),
- * otherwise after [imageRetryDelayMs]'s growing backoff (2 s … 1 min).
- * The tile is clickable in **every**
+ * otherwise after [imageRetryDelayMs]'s growing backoff (2 s … 1 min),
+ * at most [MaxAutoImageRetries] times in a row (≈ 4 min); then only a
+ * reconnect or a tap retries. The tile is clickable in **every**
  * state: Loaded opens the viewer through [TranscriptActions.openImage]
  * with the unclipped window rect (`positionInWindow` + size —
  * `boundsInWindow` would clip to ancestors) and the alt text as the
@@ -169,14 +171,24 @@ fun ImageTile(
 
     // The automatic retry: a Failed tile waits for the engine to come back
     // or for its backoff, whichever is first, then re-asks the loader. A
-    // new failure re-keys this with a longer wait.
+    // new failure re-keys this with a longer wait. Past
+    // [MaxAutoImageRetries] the backoff stops and only a reconnect (or a
+    // tap) tries again; a reconnect restarts the count.
     if (st.status == ImageTileStatus.Failed && fetchable && st.failures > 0) {
         LaunchedEffect(reference, st.failures) {
-            withTimeoutOrNull(imageRetryDelayMs(st.failures)) {
-                // A finite (or empty) signal must not end the wait early.
+            val reconnected = if (st.failures <= MaxAutoImageRetries) {
+                withTimeoutOrNull(imageRetryDelayMs(st.failures)) {
+                    // A finite (or empty) signal must not end the wait early.
+                    if (currentActions.imageRetries.firstOrNull() == null) awaitCancellation()
+                    true
+                } ?: false
+            } else {
                 if (currentActions.imageRetries.firstOrNull() == null) awaitCancellation()
+                true
             }
-            if (st.claimed == reference) st.attempt++
+            if (st.claimed != reference) return@LaunchedEffect
+            if (reconnected) st.failures = 0
+            st.attempt++
         }
     }
 
@@ -237,6 +249,7 @@ fun ImageTile(
                         )
                     }
                 } else if (fetchable) {
+                    st.failures = 0 // a fresh automatic-retry budget
                     st.attempt++ // retry: restarts the effect above
                 }
             },

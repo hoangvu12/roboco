@@ -57,9 +57,11 @@ import sh.roboco.android.transcript.AttachmentReader
 import sh.roboco.android.transcript.DecodedImage
 import sh.roboco.android.transcript.ImageDecode
 import sh.roboco.android.transcript.ImageKey
+import sh.roboco.android.transcript.MaxAutoImageRetries
 import sh.roboco.android.transcript.TranscriptActions
 import sh.roboco.android.transcript.TranscriptImageBinding
 import sh.roboco.android.transcript.TranscriptImageLoader
+import sh.roboco.android.transcript.imageRetryDelayMs
 
 /**
  * The tile's state machine (ticket 137, at `w393dp-h852dp-xxhdpi` → d = 3,
@@ -487,6 +489,44 @@ class ImageTileStatesTest {
         reconnected.tryEmit(Unit)
         driveFrames { statusOrNull() == ImageTileStatus.Loaded }
         assertEquals(2, reader.reads.get())
+    }
+
+    @Test
+    fun automaticRetriesStopAtTheCapAndAReconnectRestartsThem() {
+        val reader = FakeReader(failRefs = setOf("/a.png"))
+        val reconnected = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val binding = TranscriptImageBinding(newLoader(), { "e1" }, reader, retries = reconnected)
+        val actions = TranscriptActions(
+            cachedImage = binding::cached,
+            loadImage = binding::load,
+            imageRetries = binding.retries,
+        )
+
+        freezeClock()
+        compose.setContent { Host { TestTile("/a.png", actions) } }
+        driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        assertEquals(1, reader.reads.get())
+
+        // Each automatic retry after its own backoff, up to the cap.
+        for (failures in 1..MaxAutoImageRetries) {
+            compose.mainClock.advanceTimeBy(imageRetryDelayMs(failures))
+            driveFrames { reader.reads.get() == failures + 1 }
+            driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        }
+        assertEquals(MaxAutoImageRetries + 1, reader.reads.get())
+
+        // Past the cap the tile waits: ten more minutes, no read.
+        compose.mainClock.advanceTimeBy(600_000)
+        frames()
+        assertEquals("no automatic retry past the cap", MaxAutoImageRetries + 1, reader.reads.get())
+
+        // A reconnect retries at once …
+        reconnected.tryEmit(Unit)
+        driveFrames { reader.reads.get() == MaxAutoImageRetries + 2 }
+        driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        // … and restarts the backoff from its first 2 s step.
+        compose.mainClock.advanceTimeBy(imageRetryDelayMs(1) + 100)
+        driveFrames { reader.reads.get() == MaxAutoImageRetries + 3 }
     }
 
     // ---------------------------------------------------------- the claim

@@ -85,6 +85,18 @@ class ImageReferenceTest {
     }
 
     @Test
+    fun percentEscapesNeedTwoRealHexDigits() {
+        assertArrayEquals(byteArrayOf(0x41, 0x2F, 0xFF.toByte()), percentDecodeBytes("%41%2f%FF"))
+        // A sign is not a hex digit (`toIntOrNull(16)` would take "+1" / "-1").
+        assertArrayEquals("%+1%-1".toByteArray(), percentDecodeBytes("%+1%-1"))
+        // Non-hex and truncated escapes stay literal.
+        assertArrayEquals("%zz%4".toByteArray(), percentDecodeBytes("%zz%4"))
+        assertArrayEquals("100%".toByteArray(), percentDecodeBytes("100%"))
+        assertArrayEquals("a+b".toByteArray(), decodeDataUri("data:text/plain,a%2Bb"))
+        assertArrayEquals("%+1".toByteArray(), decodeDataUri("data:text/plain,%+1"))
+    }
+
+    @Test
     fun retriesBackOffUpToAMinute() {
         assertEquals(2_000L, imageRetryDelayMs(1))
         assertEquals(4_000L, imageRetryDelayMs(2))
@@ -92,6 +104,9 @@ class ImageReferenceTest {
         assertEquals(60_000L, imageRetryDelayMs(6))
         assertEquals(60_000L, imageRetryDelayMs(50))
         assertEquals(2_000L, imageRetryDelayMs(0))
+        // The automatic budget is about four minutes.
+        val budget = (1..MaxAutoImageRetries).sumOf { imageRetryDelayMs(it) }
+        assertEquals(242_000L, budget)
     }
 
     @Test
