@@ -99,8 +99,8 @@ const val LAB_IMAGES_PROMPT = "Show the calculation screenshot."
 /**
  * The `--ez images true` lab's assistant reply (ticket 137, the pr817 demo
  * fixture `transcripts.rs:616-621`, verbatim): the served workspace PNG
- * (960 × 540), its separate download link, and a missing image whose path
- * the engine jail refuses (`/tmp`).
+ * (960 × 540), its separate download link, and a missing image (no file
+ * at that `/tmp` path).
  */
 const val LAB_IMAGES_FIXTURE =
     "Here are the screenshots.\n\n" +
@@ -111,8 +111,9 @@ const val LAB_IMAGES_FIXTURE =
 /**
  * The lab's markdown-image edge cases (ticket 137): inline tiles in text
  * order, a quoted tile, a listed tile, a linked tile with its caption
- * link, an unfetchable remote (immediately Failed, no read), a relative
- * path (ditto), and the heading/table-cell **linked-alt fallback** that
+ * link, a remote URL (the phone fetches it, then the lab reader as the
+ * engine fallback), a relative path (the lab reader, which has no such
+ * file), and the heading/table-cell **linked-alt fallback** that
  * #817 keeps because those still call `prepare_runs` directly.
  */
 const val LAB_IMAGES_EXTRAS_FIXTURE =
@@ -188,8 +189,8 @@ internal suspend fun serveLabFixture(delayMs: Long, w: Int, h: Int): ByteArray {
 /**
  * The lab's image attachment source (ticket 137, `--ez images true`): the
  * deterministic stand-in for `readAttachment` — the two workspace PNGs
- * after 600 ms, `IOException` for anything else after 300 ms (the engine
- * jail refusing `/tmp/...`), with a per-reference read count so the lab
+ * after 600 ms, `IOException` for anything else after 300 ms (no such file
+ * on the engine), with a per-reference read count so the lab
  * tests and the retry demo can pin the RPC count.
  */
 object LabImageReader : AttachmentReader {

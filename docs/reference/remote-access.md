@@ -230,6 +230,7 @@ Capability strings are never reused or removed within a protocol generation.
 | Transcript resume on reconnect | `transcript-resume-v1` |
 | `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
 | Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
+| Transcript images by any reference (`ReadImageChunk{reference, chatId?}`: relative/`~`/`file:`/`roboco-file:`/`data:` references, engine-side URL fetch, SVG → PNG) | none (`unknown method` → the core falls back to `ReadAttachmentChunk` with the reference as a path; web and `data:` images still load on the phone) |
 
 ## Transcript resume
 

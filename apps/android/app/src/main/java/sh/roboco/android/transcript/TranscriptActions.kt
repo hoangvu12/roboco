@@ -4,6 +4,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.geometry.Rect
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * One link tap (ticket 126). Both rects are in window px: [rowBounds]
@@ -60,6 +62,11 @@ class TranscriptActions(
      * animation and no read. Cheap and main-thread safe.
      */
     val cachedImage: (reference: String, sidePx: Int) -> ImageBitmap? = { _, _ -> null },
+    /**
+     * Fires when the image source came back (the engine reconnected): a
+     * Failed tile retries at once instead of waiting out its backoff.
+     */
+    val imageRetries: Flow<Unit> = emptyFlow(),
     /** The mono tool-detail sheet for a Detail widget (127). */
     val showDetail: (title: String, text: String) -> Unit = { _, _ -> },
     /** Row menu "Select Text" (128) → this ticket's Select Text sheet. */

@@ -145,7 +145,7 @@ class LinkRouterTest {
     // -------------------------------------------------------- no-ops and co
 
     @Test
-    fun fileShapedLinksDoNothing() = runTest {
+    fun fileShapedNonImageLinksDoNothing() = runTest {
         val launcher = RecordingLauncher()
         val loads = mutableListOf<String>()
         val shown = mutableListOf<String>()
@@ -154,7 +154,7 @@ class LinkRouterTest {
             loadFull = { reference -> loads += reference; null },
             showImage = { reference, _, _ -> shown += reference },
         )
-        for (url in listOf("assets/logo.png", "roboco-file:src/lib.rs", "file:///x.png", "C:\\x.png")) {
+        for (url in listOf("assets/notes.md", "roboco-file:src/lib.rs", "file:///x.txt", "C:\\x.log")) {
             r.open(tap(url))
         }
         advanceUntilIdle()
@@ -162,6 +162,25 @@ class LinkRouterTest {
         assertTrue("no launcher view calls: ${launcher.views}", launcher.views.isEmpty())
         assertTrue("no loads: $loads", loads.isEmpty())
         assertTrue("no viewer: $shown", shown.isEmpty())
+    }
+
+    @Test
+    fun fileShapedImageLinksOpenTheViewer() = runTest {
+        val bitmap = ImageBitmap(4, 4)
+        for (url in listOf("assets/logo.png", "roboco-file:shots/a%20b.png", "file:///x.png", "C:\\x.png")) {
+            val launcher = RecordingLauncher()
+            val loads = mutableListOf<String>()
+            val shown = mutableListOf<String>()
+            router(
+                launcher,
+                loadFull = { reference -> loads += reference; bitmap },
+                showImage = { reference, _, _ -> shown += reference },
+            ).open(tap(url))
+            advanceUntilIdle()
+            assertEquals(url, listOf(url), loads)
+            assertEquals(url, listOf(url), shown)
+            assertTrue(launcher.views.isEmpty())
+        }
     }
 
     @Test

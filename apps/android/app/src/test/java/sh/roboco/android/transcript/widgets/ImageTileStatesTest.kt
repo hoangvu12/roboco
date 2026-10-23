@@ -35,6 +35,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -66,7 +67,9 @@ import sh.roboco.android.transcript.TranscriptImageLoader
  * values/hints (ports of pr817's `testLoadingFailureAndRetryRemainAccessible`
  * and `testLoadedImageKeepsAltTextAndOpens`), the de-duplicated retry (a
  * tap during Loading joins the in-flight read; a tap after Failed starts
- * a fresh one), the synchronous unfetchable failure with no RPC, the
+ * a fresh one), every non-blank reference reaching the engine (only a
+ * blank one fails synchronously), the automatic backoff and reconnect
+ * retries, the
  * claim (a late result for an old reference is cached but never shown, a
  * late failure never shown at all), the instant Loading → Loaded swap
  * (no cross-fade remains), the compact tile's full state text, and the
@@ -391,14 +394,14 @@ class ImageTileStatesTest {
         assertEquals(ImageTileStatus.Failed, node().config[ImageTileStatusKey])
     }
 
-    // ------------------------------------------------- unfetchable refs
+    // ------------------------------------------ every reference is tried
 
     @Test
-    fun unfetchableReferencesFailSynchronouslyAndTapsDoNothing() {
+    fun relativeAndUriReferencesReachTheEngineOnlyBlankFailsAtOnce() {
         val reader = FakeReader()
         val binding = TranscriptImageBinding(newLoader(), { "e1" }, reader)
         val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
-        val refs = listOf("https://example.com/a.png", "data:image/png;base64,iVBOR", "assets/shot.png")
+        val refs = listOf("assets/shot.png", "file:///tmp/a.png", "roboco-file:a.png", "")
 
         compose.setContent {
             Host {
@@ -418,21 +421,72 @@ class ImageTileStatesTest {
         }
         compose.waitForIdle()
         val nodes = compose.onAllNodesWithTag("transcript-image").fetchSemanticsNodes()
-        assertEquals(3, nodes.size)
-        nodes.forEach {
-            assertEquals("failed in the first frame", ImageTileStatus.Failed, it.config[ImageTileStatusKey])
-            assertEquals(ImageTileCopy.Failed, it.config[SemanticsProperties.StateDescription])
+        assertEquals(4, nodes.size)
+        nodes.take(3).forEach {
+            assertEquals(ImageTileStatus.Loaded, it.config[ImageTileStatusKey])
         }
-        assertEquals("no RPC at all", 0, reader.reads.get())
+        assertEquals("a blank reference fails in the first frame", ImageTileStatus.Failed, nodes[3].config[ImageTileStatusKey])
+        assertEquals("one engine read per non-blank reference", 3, reader.reads.get())
+    }
 
-        // Three tiles share the tag: tap the first one (onNodeWithTag
-        // demands exactly one match).
-        compose.onAllNodesWithTag("transcript-image")[0].performTouchInput { click(center) }
-        compose.waitForIdle()
-        compose.onAllNodesWithTag("transcript-image").fetchSemanticsNodes().forEach {
-            assertEquals("unfetchable stays Failed", ImageTileStatus.Failed, it.config[ImageTileStatusKey])
+    // ------------------------------------------------- automatic retries
+
+    @Test
+    fun aFailedTileRetriesOnItsOwnWithABackoff() {
+        val reader = FakeReader(failRefs = setOf("/a.png"))
+        val binding = TranscriptImageBinding(newLoader(), { "e1" }, reader)
+        val actions = TranscriptActions(cachedImage = binding::cached, loadImage = binding::load)
+
+        freezeClock()
+        compose.setContent { Host { TestTile("/a.png", actions) } }
+        driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        assertEquals(1, reader.reads.get())
+
+        // Not before the first 2 s backoff …
+        compose.mainClock.advanceTimeBy(1_500)
+        frames()
+        assertEquals(1, reader.reads.get())
+        // … then once; the next wait doubles to 4 s.
+        compose.mainClock.advanceTimeBy(600)
+        driveFrames { reader.reads.get() == 2 }
+        driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        compose.mainClock.advanceTimeBy(3_000)
+        frames()
+        assertEquals("the second wait is longer", 2, reader.reads.get())
+        compose.mainClock.advanceTimeBy(1_200)
+        driveFrames { reader.reads.get() == 3 }
+    }
+
+    @Test
+    fun aReconnectRetriesAFailedTileAtOnce() {
+        val failing = AtomicInteger(1)
+        val reader = object : AttachmentReader {
+            val reads = AtomicInteger()
+            override suspend fun read(engineDeviceId: String, reference: String): ByteArray {
+                reads.incrementAndGet()
+                if (failing.getAndDecrement() > 0) throw IOException("engine offline")
+                return byteArrayOf(1)
+            }
         }
-        assertEquals("still no RPC after the tap", 0, reader.reads.get())
+        val reconnected = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        val binding = TranscriptImageBinding(newLoader(), { "e1" }, reader, retries = reconnected)
+        val actions = TranscriptActions(
+            cachedImage = binding::cached,
+            loadImage = binding::load,
+            imageRetries = binding.retries,
+        )
+
+        freezeClock()
+        compose.setContent { Host { TestTile("/a.png", actions) } }
+        driveFrames { statusOrNull() == ImageTileStatus.Failed }
+        frames()
+        assertEquals(1, reader.reads.get())
+
+        // Well inside the 2 s backoff, the engine comes back.
+        compose.mainClock.advanceTimeBy(300)
+        reconnected.tryEmit(Unit)
+        driveFrames { statusOrNull() == ImageTileStatus.Loaded }
+        assertEquals(2, reader.reads.get())
     }
 
     // ---------------------------------------------------------- the claim

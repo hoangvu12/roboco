@@ -26,9 +26,9 @@ import sh.roboco.android.design.uiStyle
  * The tile's three states (ticket 137; iOS `TranscriptImageView.swift`'s
  * Loading/Loaded/Failed): every `WidgetKind.Image` tile — markdown images,
  * user thumbnails and assistant image rows alike — enters Loading on a
- * cache miss, Loaded on a sync hit or a successful load, Failed on any
- * failure (read error, path jail refusal, blank engine id, undecodable
- * bytes, or a reference that is not fetchable at all).
+ * cache miss, Loaded on a sync hit or a successful load, Failed once
+ * every image source failed (or for a blank reference) — and a Failed
+ * tile retries on its own.
  */
 enum class ImageTileStatus { Loading, Loaded, Failed }
 

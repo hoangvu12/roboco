@@ -36,10 +36,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import kotlin.math.ceil
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withTimeoutOrNull
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.rememberSmoothRoundedShape
 import sh.roboco.android.image.imageViewerSource
 import sh.roboco.android.transcript.TranscriptActions
+import sh.roboco.android.transcript.imageRetryDelayMs
 import sh.roboco.android.transcript.isFetchableImageReference
 
 /**
@@ -67,7 +71,8 @@ val ImageTileAlphaKey = SemanticsPropertyKey<Float>("ImageTileAlpha")
  * writing a snapshot state read earlier in the same composition would
  * force a backward-write recomposition. [attempt] counts retries: bumping
  * it restarts the load effect (iOS's `activateImage` on a failed tile
- * re-asks the loader).
+ * re-asks the loader). [failures] counts consecutive failed loads; it sets
+ * the automatic retry's backoff and resets on success or a new reference.
  */
 @Stable
 private class TileState {
@@ -75,6 +80,7 @@ private class TileState {
     var bitmap by mutableStateOf<ImageBitmap?>(null)
     var status by mutableStateOf(ImageTileStatus.Loading)
     var attempt by mutableIntStateOf(0)
+    var failures by mutableIntStateOf(0)
 }
 
 /**
@@ -89,10 +95,12 @@ private class TileState {
  * on a sync hit — visible in the first frame, no blink — or a successful
  * load, an **instant** swap (137 removed 66's 200 ms cross-fade), the
  * picture aspect-**fit** (137 changed it from fill) and centred; **Failed**
- * ("Image unavailable … Tap to retry." / warning glyph) on any failure —
- * read error, path jail refusal, blank engine id, undecodable bytes, or a
- * reference [isFetchableImageReference] rejects (set synchronously, no
- * RPC). Failures are never cached. The tile is clickable in **every**
+ * ("Image unavailable … Tap to retry." / warning glyph) once every image
+ * source failed, or for a blank reference (set synchronously, no RPC).
+ * Failures are never cached, and a Failed tile retries by itself: at once
+ * when [TranscriptActions.imageRetries] fires (the engine reconnected),
+ * otherwise after [imageRetryDelayMs]'s growing backoff (2 s … 1 min).
+ * The tile is clickable in **every**
  * state: Loaded opens the viewer through [TranscriptActions.openImage]
  * with the unclipped window rect (`positionInWindow` + size —
  * `boundsInWindow` would clip to ancestors) and the alt text as the
@@ -132,6 +140,7 @@ fun ImageTile(
         // frame on every row recompose). An unfetchable reference fails
         // in this same first frame, with no RPC at all.
         st.claimed = reference
+        st.failures = 0
         val hit = if (fetchable) currentActions.cachedImage(reference, sidePx) else null
         st.bitmap = hit
         st.status = when {
@@ -155,6 +164,20 @@ fun ImageTile(
         if (st.claimed != reference) return@LaunchedEffect // the claim check (iOS :279)
         st.bitmap = img
         st.status = if (img != null) ImageTileStatus.Loaded else ImageTileStatus.Failed
+        st.failures = if (img != null) 0 else st.failures + 1
+    }
+
+    // The automatic retry: a Failed tile waits for the engine to come back
+    // or for its backoff, whichever is first, then re-asks the loader. A
+    // new failure re-keys this with a longer wait.
+    if (st.status == ImageTileStatus.Failed && fetchable && st.failures > 0) {
+        LaunchedEffect(reference, st.failures) {
+            withTimeoutOrNull(imageRetryDelayMs(st.failures)) {
+                // A finite (or empty) signal must not end the wait early.
+                if (currentActions.imageRetries.firstOrNull() == null) awaitCancellation()
+            }
+            if (st.claimed == reference) st.attempt++
+        }
     }
 
     var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }

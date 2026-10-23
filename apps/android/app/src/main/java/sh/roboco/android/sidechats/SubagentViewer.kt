@@ -69,6 +69,7 @@ import sh.roboco.android.transcript.AttachmentReader
 import sh.roboco.android.transcript.TranscriptActions
 import sh.roboco.android.transcript.TranscriptHost
 import sh.roboco.android.transcript.TranscriptImageBinding
+import sh.roboco.android.transcript.engineReconnects
 import sh.roboco.android.transcript.TranscriptImageLoader
 import sh.roboco.android.transcript.TranscriptState
 import sh.roboco.android.transcript.rememberLinkRouter
@@ -236,10 +237,14 @@ class SubagentRoute internal constructor(
         }
     }
 
-    /** The attachment reader for the transcript's images (the host device's files). */
+    /**
+     * The image reader for the transcript (the host engine's `readImage`).
+     * Relative references resolve against the spawner's cwd — the chat's,
+     * for a subagent spawned by the chat itself.
+     */
     internal val attachments: AttachmentReader = object : AttachmentReader {
         override suspend fun read(engineDeviceId: String, reference: String): ByteArray =
-            client.readAttachment(engineDeviceId, reference)
+            client.readImage(engineDeviceId, reference, spawnerId)
     }
 
     @Composable
@@ -415,7 +420,13 @@ internal fun SubagentScreen(route: SubagentRoute, modifier: Modifier = Modifier)
     val viewer = LocalImageViewer.current
     val density = LocalDensity.current
     val binding = remember(route) {
-        TranscriptImageBinding(TranscriptImageLoader.get(context), { route.hostDeviceId }, route.attachments)
+        TranscriptImageBinding(
+            loader = TranscriptImageLoader.get(context),
+            engineDeviceId = { route.hostDeviceId },
+            reader = route.attachments,
+            retries = engineReconnects(context, { route.hostDeviceId }),
+            chatId = route.spawnerId,
+        )
     }
     val router = rememberLinkRouter(
         loadFull = { reference -> binding.loadFull(reference) },
@@ -452,6 +463,7 @@ internal fun SubagentScreen(route: SubagentRoute, modifier: Modifier = Modifier)
             openImage = openImage,
             loadImage = binding::load,
             cachedImage = binding::cached,
+            imageRetries = binding.retries,
             openSubagent = { docId, title, frozen ->
                 opener?.open(
                     SubagentOpenRequest(

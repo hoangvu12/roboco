@@ -54,7 +54,7 @@ class MarkdownImageLabTest {
      */
     private val servedAlt = "Calculation result: 8"
 
-    /** The missing image (outside the engine's path jail). */
+    /** The missing image (no file at that path on the engine). */
     private val missing = "/tmp/calculator-result/missing.png"
 
     private val scenario: ActivityScenarioRule<TranscriptLabActivity> =
