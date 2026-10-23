@@ -221,6 +221,7 @@ impl popover::ScrollRailHost for ArchivedPage {
 
 impl Render for ArchivedPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::toast::take_error(&mut self.error, cx);
         let dialog = self.render_delete_all_dialog(window.viewport_size(), cx);
         let theme = Theme::of(cx).for_settings_surface();
         let now = chrono::Utc::now();
@@ -491,17 +492,6 @@ impl Render for ArchivedPage {
                                     )
                                     .children(delete_all),
                             )
-                            .when_some(self.error.clone(), |el, message| {
-                                el.child(
-                                    widgets::error_strip(&theme, message)
-                                        .id("archived-error")
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.error = None;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
                             .child(body),
                     ),
             )
@@ -674,13 +664,12 @@ mod tests {
         window
             .update(cx, |page, _, cx| {
                 assert!(page.delete_all_task.is_none());
-                // Roboco surfaces the failure through the page's error strip
-                // (no toast module); it reads exactly the upstream copy.
+                // Roboco surfaces the failure through a toast; it reads
+                // exactly the upstream copy.
                 assert_eq!(
-                    page.error.as_deref(),
-                    Some("Couldn’t delete 1 archived session. Try again.")
+                    crate::toast::messages(cx).first().map(|m| m.to_string()),
+                    Some("Couldn’t delete 1 archived session. Try again.".to_owned())
                 );
-                let _ = cx;
             })
             .unwrap();
     }

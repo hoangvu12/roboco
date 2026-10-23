@@ -101,9 +101,9 @@ pub(super) struct PendingSidebarPins {
 }
 
 impl Shell {
-    pub(super) fn set_pin_write_notice(&mut self, message: SharedString) {
+    pub(super) fn set_pin_write_notice(&mut self, message: SharedString, cx: &mut App) {
         self.sidebar_pin_write_notice = Some(message.clone());
-        self.sidebar_notice = Some(message);
+        self.show_notice(crate::toast::ToastKind::Error, message, cx);
     }
 
     pub(super) fn clear_pin_write_notice(&mut self) {
@@ -158,6 +158,7 @@ impl Shell {
             if pending.unconfirmed {
                 self.set_pin_write_notice(
                     "Waiting for the previous pin change to settle.".into(),
+                    cx,
                 );
                 cx.notify();
                 return false;
@@ -208,7 +209,7 @@ impl Shell {
         match result {
             Ok(()) => self.clear_pin_write_notice(),
             Err(error) => {
-                self.set_pin_write_notice(format!("Couldn't save pins: {error}").into());
+                self.set_pin_write_notice(format!("Couldn't save pins: {error}").into(), cx);
             }
         }
         let pending = self.sidebar_pin_write.as_mut().unwrap();
@@ -239,6 +240,7 @@ impl Shell {
             pending.unconfirmed = true;
             self.set_pin_write_notice(
                 "Couldn't confirm pins. Queued edits were cancelled; waiting before allowing more pin changes.".into(),
+                cx,
             );
             cx.notify();
         }

@@ -220,7 +220,7 @@ impl Shell {
             return;
         }
         let Some(engine) = state.engine().cloned() else {
-            self.sidebar_notice = Some("Engine not connected".into());
+            self.show_notice(crate::toast::ToastKind::Error, "Engine not connected", cx);
             cx.notify();
             return;
         };
@@ -249,8 +249,7 @@ impl Shell {
                         .engine()
                         .is_some_and(|current| current.same_connection(&engine))
                     {
-                        this.sidebar_notice =
-                            Some(format!("Could not archive {failed} sessions. Try again.").into());
+                        this.show_notice(crate::toast::ToastKind::Error, format!("Could not archive {failed} sessions. Try again."), cx);
                         cx.notify();
                     }
                 });
@@ -1065,6 +1064,38 @@ mod tests {
         cx.simulate_click(fork.center(), gpui::Modifiers::none());
         cx.run_until_parked();
         assert!(cx.debug_bounds("session-info").is_none());
+    }
+
+    #[gpui::test]
+    fn copying_from_the_copy_submenu_shows_a_toast(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let window = test_shell(cx, dir.path());
+        window
+            .update(cx, |shell, _, cx| {
+                prepare(shell, cx);
+                shell.debug_gate = Some(GatePhase::Ready);
+                shell.chat_menu.open(ChatMenuState {
+                    chat_id: "regular".into(),
+                    tab: None,
+                    position: gpui::point(px(40.0), px(120.0)),
+                    page: ChatMenuPage::Copy,
+                });
+                cx.notify();
+            })
+            .unwrap();
+        let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+        // The item sits in the submenu, outside the menu card: pressing it
+        // must copy rather than dismiss the menu first.
+        let item = cx
+            .debug_bounds("chat-copy-roboco")
+            .expect("the Copy submenu is open");
+        cx.simulate_click(item.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(crate::toast::messages(cx).len(), 1, "one toast");
+        });
+        assert!(cx.debug_bounds("toaster").is_some(), "the shell paints it");
     }
 
     #[gpui::test]

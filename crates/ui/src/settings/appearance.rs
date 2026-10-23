@@ -3401,6 +3401,7 @@ impl EventEmitter<AppearanceSettingsEvent> for AppearancePage {}
 
 impl Render for AppearancePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::toast::take_error(&mut self.background_error, cx);
         let theme = Theme::of(cx).for_settings_surface();
         let availability = typography::availability(cx);
         let fixed = theme.font_sans_fixed.clone();
@@ -3814,17 +3815,6 @@ impl Render for AppearancePage {
                             )),
                     )
                     .child(effect_control)
-                    .into_any_element(),
-            );
-        }
-        if let Some(error) = self.background_error.clone() {
-            settings_rows.push(
-                div()
-                    .mx(px(16.0))
-                    .py(px(10.0))
-                    .border_t_1()
-                    .border_color(widgets::row_divider(&theme))
-                    .child(widgets::error_strip(&theme, error).mt_0())
                     .into_any_element(),
             );
         }

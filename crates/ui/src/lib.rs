@@ -68,6 +68,7 @@ mod tailcat_pairing;
 pub mod terminal;
 pub mod theme;
 pub mod theme_library;
+pub mod toast;
 mod todo_panel;
 pub mod transcript;
 pub mod typography;

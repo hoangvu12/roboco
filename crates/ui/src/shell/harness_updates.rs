@@ -712,8 +712,7 @@ impl Shell {
                     && !matches!(&error, roboco_rpc::RpcError::Failed(message)
                         if method == methods::APPLY_HARNESS_UPDATE && message == "update cancelled")
                 {
-                    shell.sidebar_notice =
-                        Some(format!("Agent update: {error}").into());
+                    shell.show_notice(crate::toast::ToastKind::Error, format!("Agent update: {error}"), cx);
                 }
                 cx.notify();
             })

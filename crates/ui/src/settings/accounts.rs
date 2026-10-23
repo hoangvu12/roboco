@@ -1768,6 +1768,7 @@ impl popover::ScrollRailHost for AccountsPage {
 
 impl Render for AccountsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::toast::take_error(&mut self.error, cx);
         let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
         let viewport = window.viewport_size();
@@ -2073,17 +2074,6 @@ impl Render for AccountsPage {
                                  detects the live session, keeps each account backed up, and \
                                  can swap between them.",
                             ))
-                            .when_some(self.error.clone(), |el, message| {
-                                el.child(
-                                    widgets::error_strip(&theme, message)
-                                        .id("accounts-action-error")
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.error = None;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
                             .children(sections)
                             // Footer note (roboco: `mt-6 text-[12px] leading-relaxed
                             // text-muted-foreground/60`).

@@ -4312,7 +4312,7 @@ impl Shell {
             (active, archived)
         };
         if active.is_none() && archived.is_none() {
-            self.sidebar_notice = Some("Clear the project filter to rename this session".into());
+            self.show_notice(crate::toast::ToastKind::Error, "Clear the project filter to rename this session", cx);
             return false;
         }
         if let Some(chat) = &active {
