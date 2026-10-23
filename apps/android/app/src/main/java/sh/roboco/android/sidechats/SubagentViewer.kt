@@ -129,6 +129,12 @@ class SubagentRoute internal constructor(
     val title: String,
     /** The transcript whose spawn chip this is (its chat, or the subagent above). */
     val spawnerId: String,
+    /**
+     * The chat at the root of the spawn chain ([spawnerId] itself unless
+     * this is a nested spawn): relative image references resolve against
+     * its cwd, which a subagent doc id has none of.
+     */
+    val rootChatId: String,
     /** The spawner's display title, for the subtitle. */
     val parentTitle: String,
     /** The engine device that serves attachments (`composer.host.deviceId`). */
@@ -239,12 +245,12 @@ class SubagentRoute internal constructor(
 
     /**
      * The image reader for the transcript (the host engine's `readImage`).
-     * Relative references resolve against the spawner's cwd — the chat's,
-     * for a subagent spawned by the chat itself.
+     * Relative references resolve against the root chat's cwd
+     * ([rootChatId]), however deep the spawn.
      */
     internal val attachments: AttachmentReader = object : AttachmentReader {
         override suspend fun read(engineDeviceId: String, reference: String): ByteArray =
-            client.readImage(engineDeviceId, reference, spawnerId)
+            client.readImage(engineDeviceId, reference, rootChatId)
     }
 
     @Composable
@@ -282,6 +288,8 @@ data class SubagentOpenRequest(
     /** The transcript the card sits in: the chat, or the subagent above. */
     val spawnerId: String,
     val parentTitle: String,
+    /** The chat at the root of the spawn chain (relative images resolve in its cwd). */
+    val rootChatId: String = spawnerId,
 )
 
 /**
@@ -308,6 +316,7 @@ suspend fun buildSubagentRoute(
             docId = request.docId,
             title = request.title,
             spawnerId = request.spawnerId,
+            rootChatId = request.rootChatId,
             parentTitle = request.parentTitle,
             hostDeviceId = host,
             client = client,
@@ -425,7 +434,7 @@ internal fun SubagentScreen(route: SubagentRoute, modifier: Modifier = Modifier)
             engineDeviceId = { route.hostDeviceId },
             reader = route.attachments,
             retries = engineReconnects(context, { route.hostDeviceId }),
-            chatId = route.spawnerId,
+            chatId = route.rootChatId,
         )
     }
     val router = rememberLinkRouter(
@@ -472,6 +481,7 @@ internal fun SubagentScreen(route: SubagentRoute, modifier: Modifier = Modifier)
                         frozen = frozen,
                         spawnerId = route.docId,
                         parentTitle = route.title,
+                        rootChatId = route.rootChatId,
                     ),
                 )
             },
