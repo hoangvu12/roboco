@@ -474,24 +474,25 @@ pub fn legacy_attachment_path(reference: &str) -> String {
     }
 }
 
+/// `%XX` escapes (two ASCII hex digits, nothing else) decoded; any other
+/// `%` stays as written.
 fn percent_decode(text: &str) -> String {
+    fn hex(digit: u8) -> Option<u8> {
+        (digit as char).to_digit(16).map(|value| value as u8)
+    }
     let raw = text.as_bytes();
     let mut out = Vec::with_capacity(raw.len());
     let mut at = 0;
     while at < raw.len() {
-        let hex = raw
-            .get(at + 1..at + 3)
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match hex {
-            Some(byte) if raw[at] == b'%' => {
-                out.push(byte);
-                at += 3;
-            }
-            _ => {
-                out.push(raw[at]);
-                at += 1;
-            }
+        if raw[at] == b'%'
+            && let Some(&[high, low]) = raw.get(at + 1..at + 3)
+            && let (Some(high), Some(low)) = (hex(high), hex(low))
+        {
+            out.push((high << 4) | low);
+            at += 3;
+        } else {
+            out.push(raw[at]);
+            at += 1;
         }
     }
     String::from_utf8_lossy(&out).into_owned()
@@ -626,6 +627,14 @@ mod tests {
     }
 
     #[test]
+    fn percent_escapes_need_two_hex_digits() {
+        assert_eq!(percent_decode("a%20b%2Fc%2fd"), "a b/c/d");
+        // `from_str_radix` would read `+1` and `-1` as numbers.
+        assert_eq!(percent_decode("50%+1 %-1 %g0 %2"), "50%+1 %-1 %g0 %2");
+        assert_eq!(legacy_attachment_path("file:///tmp/100%+1.png"), "/tmp/100%+1.png");
+    }
+
+    #[test]
     fn trailer_round_trips() {
         let paths = vec!["/tmp/a.png".to_owned(), pending_ref("u1", "b.png")];
         let text = with_attachments("look", &paths);
@@ -751,8 +760,9 @@ impl crate::Client {
     /// `device_id` (`ReadImageChunk`: paths, `~`, relative to `chat_id`'s
     /// cwd, `file:`/`roboco-file:`/`data:` URIs, `http(s)` URLs fetched by
     /// the engine, SVG as PNG). An engine older than the method gets the
-    /// reference as a plain `ReadAttachmentChunk` path instead. Cached like
-    /// attachments; a relative reference's key includes its chat.
+    /// reference as a plain `ReadAttachmentChunk` path instead. Own uploads
+    /// answer from the read cache; nothing else is cached here, since a
+    /// file or URL can change and the app keeps its own decoded-image cache.
     pub async fn read_image(
         &self,
         device_id: &str,
@@ -764,19 +774,11 @@ impl crate::Client {
         if let Some(bytes) = self.inner.attachments.get(handle.engine_id(), reference) {
             return Ok((*bytes).clone());
         }
-        let key = format!("image\0{}\0{reference}", chat_id.unwrap_or_default());
-        if let Some(bytes) = self.inner.attachments.get(handle.engine_id(), &key) {
-            return Ok((*bytes).clone());
-        }
-        let bytes = match read_image_chunks(&handle, reference, chat_id).await {
+        match read_image_chunks(&handle, reference, chat_id).await {
             Err(ClientError::Unsupported { .. }) => {
-                read_attachment_chunks(&handle, &legacy_attachment_path(reference)).await?
+                read_attachment_chunks(&handle, &legacy_attachment_path(reference)).await
             }
-            other => other?,
-        };
-        self.inner
-            .attachments
-            .put(handle.engine_id(), &key, Arc::new(bytes.clone()));
-        Ok(bytes)
+            other => other,
+        }
     }
 }

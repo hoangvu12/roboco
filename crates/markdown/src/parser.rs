@@ -743,11 +743,14 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
             if let Some(href) = html_anchor_open(&t) {
                 // `<a href="…">…</a>` arrives one tag per event: its content
                 // links to `href` (an `<img>` inside becomes a linked image).
+                // An unclosed anchor ends with its container or at the next
+                // block (a tight list item's nested list).
                 let mut inner = style.clone();
                 inner.link = Some(href);
                 while let Some(event) = cur.peek_event() {
                     match event {
                         Event::End(_) => break,
+                        Event::Start(tag) if is_block_tag(tag) => break,
                         Event::Html(t) | Event::InlineHtml(t) if is_html_anchor_close(t) => {
                             cur.bump();
                             break;
@@ -755,6 +758,9 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
                         _ => parse_inline_event(cur, runs, &inner),
                     }
                 }
+            } else if is_html_anchor_close(&t) {
+                // A stray `</a>` (its opener had no `href`, or was in another
+                // container) is dropped.
             } else if let Some(images) = html_image_runs(&t, style) {
                 runs.extend(images);
             } else {
@@ -846,7 +852,7 @@ fn html_image_runs(html: &str, style: &InlineStyle) -> Option<Vec<InlineRun>> {
     let mut rest = html;
     while let Some(open) = rest.find('<') {
         text.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find('>') else {
+        let Some(close) = tag_end(&rest[open..]) else {
             // An unterminated tag (still streaming) stays text.
             text.push_str(&rest[open..]);
             rest = "";
@@ -888,6 +894,30 @@ fn html_image_runs(html: &str, style: &InlineStyle) -> Option<Vec<InlineRun>> {
     text.push_str(rest);
     flush(&mut text, &mut runs, &link_style);
     (images > 0).then_some(runs)
+}
+
+/// The offset of the `>` that closes the tag `html` opens with, skipping
+/// any `>` inside a quoted attribute value (`alt="x > y"`).
+fn tag_end(html: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut after_equals = false;
+    for (at, c) in html.char_indices() {
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '>' => return Some(at),
+            '"' | '\'' if after_equals => quote = Some(c),
+            _ => {}
+        }
+        if !c.is_whitespace() {
+            after_equals = c == '=';
+        }
+    }
+    None
 }
 
 /// `<a … href="x" …>` → `x`.
@@ -2000,6 +2030,40 @@ mod image_model_tests {
         assert_eq!(images[1].link.as_deref(), Some("https://e.com"));
         let block = images_of("<a href=\"https://e.com\"><img src=\"z.png\"></a>\n");
         assert_eq!(block[0].link.as_deref(), Some("https://e.com"));
+    }
+
+    #[test]
+    fn img_attributes_may_quote_a_closing_bracket() {
+        for source in [
+            "See <img alt=\"x > y\" src=\"a.png\"> here",
+            "<p><img alt='x > y' src=a.png></p>\n",
+        ] {
+            let images = images_of(source);
+            assert_eq!(images.len(), 1, "{source}");
+            assert_eq!(images[0].alt, "x > y", "{source}");
+            assert_eq!(images[0].source, "a.png", "{source}");
+        }
+        assert_eq!(tag_end("<img alt=\"a>b\">rest"), Some(14));
+        // An apostrophe outside a value is no quote.
+        assert_eq!(tag_end("<img alt=don't src=x>"), Some(20));
+        // An unterminated value (still streaming) has no end yet.
+        assert_eq!(tag_end("<img alt=\"a>b"), None);
+    }
+
+    #[test]
+    fn stray_and_unclosed_anchors() {
+        let tree = parse_full("a </a> b\n");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        assert!(runs.iter().all(|run| !run.text.contains("</a>")), "{runs:?}");
+        // An unclosed anchor in a tight item stops at the nested list.
+        let tree = parse_full("- <a href=\"https://e.com\">x\n  - nested\n");
+        let Block::List { items, .. } = &tree.blocks[0].block else {
+            panic!("expected list");
+        };
+        assert!(matches!(items[0][0], Block::Paragraph { .. }), "{:?}", items[0]);
+        assert!(matches!(items[0][1], Block::List { .. }), "{:?}", items[0]);
     }
 
     #[test]
