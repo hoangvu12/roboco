@@ -63,6 +63,11 @@ pub struct Timings {
     pub sync_deadline: Duration,
     /// Health probe cadence: `EngineInfo` on the feed.
     pub probe_every: Duration,
+    /// The budget of the probe a foreground or a network change runs at
+    /// once: a thawed app must not wait out `identity_timeout` on a socket
+    /// that died while it was frozen. A slow reply whose bytes are still
+    /// arriving does not fail it.
+    pub wake_probe_timeout: Duration,
     /// Transcript lag check cadence and its reply budget; a transcript
     /// connection that misses the budget is closed.
     pub lag_every: Duration,
@@ -76,6 +81,10 @@ pub struct Timings {
     /// An acked but un-adopted send reads `Failed` after this (ticket 08's
     /// `UNDELIVERED_GRACE_MS`, upstream `connectivity.rs`).
     pub undelivered_grace: Duration,
+    /// After the grace expires with the engine connected, the session
+    /// forces one plain-reset resubscribe; the send reads `Failed` if that
+    /// reset has not adopted it within this.
+    pub undelivered_heal: Duration,
     /// The workspace store's re-derive tick: refreshes time labels and
     /// the 45 s staleness edge (ticket 07).
     pub workspace_tick: Duration,
@@ -98,12 +107,14 @@ impl Default for Timings {
             subscribe_timeout: Duration::from_secs(15),
             sync_deadline: Duration::from_secs(20),
             probe_every: Duration::from_secs(5),
+            wake_probe_timeout: Duration::from_secs(4),
             lag_every: Duration::from_secs(10),
             lag_timeout: Duration::from_secs(15),
             cache_debounce: Duration::from_millis(300),
             background_flush: Duration::from_secs(2),
             refresh_cap: Duration::from_secs(3),
             undelivered_grace: Duration::from_secs(120),
+            undelivered_heal: Duration::from_secs(20),
             workspace_tick: Duration::from_secs(1),
             accounts_forced_deadline: Duration::from_secs(45),
             notify: NotifyTimings::default(),

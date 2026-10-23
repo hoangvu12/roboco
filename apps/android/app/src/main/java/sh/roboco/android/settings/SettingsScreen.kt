@@ -29,10 +29,13 @@ import sh.roboco.android.shell.TitleMode
 /**
  * The Settings screen (android-ui-parity #103): the Compose port of
  * `MoreViewController` — a thin assembly. [LargeTitleScaffold]'s large
- * "Settings" title (25) over one `LazyColumn` that stacks the seven
+ * "Settings" title (25) over one `LazyColumn` that stacks the eight
  * section emitters, in this order: **Agent Accounts (android-next#05),
- * Devices (102), Notifications (99), Appearance (96), Wallpaper (97),
- * Sessions (100), About (101)**.
+ * Devices (102), Notifications (99), Background (ADR 0010's Stay
+ * connected), Appearance (96), Wallpaper (97), Sessions (100), About
+ * (101)**. The design gallery and its goldens still show the seven iOS
+ * sections; Background is Android-only and joins them when the goldens
+ * are next recorded on CI.
  * Every row's look is ticket 70's; every row's behaviour is its section
  * ticket's; this screen owns only:
  *
@@ -89,6 +92,9 @@ enum class SettingsSection(val key: String) {
     AgentAccounts("agent-accounts"),
     Devices("devices"),
     Notifications("notifications"),
+
+    /** ADR 0010's "Stay connected in background" (Android-only, no iOS slot). */
+    Background("background"),
     Appearance("appearance"),
     Wallpaper("wallpaper"),
     Sessions("sessions"),
@@ -125,6 +131,7 @@ fun settingsSectionFor(id: String): SettingsSection? = when {
         id == DevicesRowIds.Pair -> SettingsSection.Devices
 
     id.startsWith("notify:") -> SettingsSection.Notifications
+    id.startsWith("background:") -> SettingsSection.Background
     id.startsWith("appearance:") -> SettingsSection.Appearance
     id.startsWith("wallpaper:") -> SettingsSection.Wallpaper
     id == SessionsSettingsRow.GroupByProject.id ||
@@ -186,6 +193,10 @@ fun SettingsScreen(
     onGroupByProjectChange: (Boolean) -> Unit =
         (LocalContext.current.applicationContext as RobocoApplication).prefs::setGroupByProject,
     about: AboutSectionState = rememberAboutSectionState(),
+    stayConnected: StateFlow<Boolean> =
+        (LocalContext.current.applicationContext as RobocoApplication).prefs.stayConnected,
+    onStayConnectedChange: (Boolean) -> Unit =
+        (LocalContext.current.applicationContext as RobocoApplication).prefs::setStayConnected,
 ) {
     val listState = rememberLazyListState()
     // 26: the tab's scroll-to-top handler for a re-select at the root; a
@@ -199,12 +210,18 @@ fun SettingsScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { notifications.refreshStatus() }
     val group by groupByProject.collectAsState()
     val onGroup by rememberUpdatedState(onGroupByProjectChange)
+    val stay by stayConnected.collectAsState()
+    val onStay by rememberUpdatedState(onStayConnectedChange)
     val nav = LocalNavStack.current
     val sessionsStrings = sessionsSettingsStrings()
     SettingsScreenContent(listState, modifier, topInset, trailing) {
         agentAccountsSection(accounts)
         devicesSection(devices)
         notificationSection(notifications)
+        backgroundSettingsSection(
+            stayConnected = { stay },
+            onStayConnectedChange = { onStay(it) },
+        )
         appearanceSection(appearance)
         wallpaperSection(wallpaper)
         sessionsSettingsSection(

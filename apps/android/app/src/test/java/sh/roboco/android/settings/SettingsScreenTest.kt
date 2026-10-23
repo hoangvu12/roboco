@@ -143,6 +143,10 @@ class SettingsScreenTest {
     private val groupFlow = MutableStateFlow(false)
     private val groupChanges = mutableListOf<Boolean>()
 
+    /** ADR 0010's wiring: the Stay connected flow and the writer recorder. */
+    private val stayFlow = MutableStateFlow(false)
+    private val stayChanges = mutableListOf<Boolean>()
+
     /** 99's test seam: a private prefs file, a mutable fake status, a counting request. */
     private val testPrefs by lazy {
         NotificationPrefs(context.getSharedPreferences("settings-screen-test", Context.MODE_PRIVATE))
@@ -265,6 +269,8 @@ class SettingsScreenTest {
                                                 groupByProject = groupFlow,
                                                 onGroupByProjectChange = { groupChanges += it },
                                                 about = about,
+                                                stayConnected = stayFlow,
+                                                onStayConnectedChange = { stayChanges += it },
                                             )
                                         } else if (entry.route is EngineDetailRoute) {
                                             // The page reads this test's engines (with e1), not
@@ -343,7 +349,7 @@ class SettingsScreenTest {
 
     @Test
     @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
-    fun rowsAppearInSettingsSectionOrderAndAllSevenSectionsArePresent() {
+    fun rowsAppearInSettingsSectionOrderAndAllSectionsArePresent() {
         mount()
 
         val rows = settingsRows()
@@ -360,7 +366,7 @@ class SettingsScreenTest {
             last = ordinal
         }
         assertEquals(
-            "all seven sections are on screen",
+            "every section is on screen",
             SettingsSection.entries.toSet(),
             rows.map { settingsSectionFor(it.first) }.toSet(),
         )
@@ -368,13 +374,15 @@ class SettingsScreenTest {
 
     @Test
     @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
-    fun headersReadAgentAccountsDevicesNotificationsAppearanceWallpaperSessionsAbout() {
+    fun headersReadAgentAccountsDevicesNotificationsBackgroundAppearanceWallpaperSessionsAbout() {
         mount()
         val headings = compose.onAllNodes(headingMatcher).fetchSemanticsNodes()
             .map { node ->
                 node.config.getOrNull(SemanticsProperties.Text)?.joinToString(separator = "") { it.text } ?: ""
             }
-        val expected = listOf("Agent Accounts", "Devices", "Notifications", "Appearance", "Wallpaper", "Sessions", "About")
+        val expected = listOf(
+            "Agent Accounts", "Devices", "Notifications", "Background", "Appearance", "Wallpaper", "Sessions", "About",
+        )
         var searchFrom = 0
         for (header in expected) {
             val local = headings.subList(searchFrom, headings.size).indexOf(header)
@@ -410,6 +418,8 @@ class SettingsScreenTest {
     @Test
     fun tappingAnAppearanceRowWritesThePreferenceThroughTheSeam() {
         mount()
+        // The Background section (ADR 0010) pushes Appearance below the fold.
+        scrollToRow("appearance:2")
         row("appearance:2").performClick()
         compose.waitForIdle()
         assertEquals(listOf(Appearance.Dark), picks)
@@ -564,6 +574,21 @@ class SettingsScreenTest {
         compose.runOnUiThread { groupFlow.value = true }
         compose.waitForIdle()
         switchNode("groupByProject").assertIsOn()
+    }
+
+    @Test
+    // Tall window: the Background row sits below the 874 dp fold.
+    @Config(sdk = [36], qualifiers = "w402dp-h3000dp-xxhdpi")
+    fun flippingStayConnectedCallsTheWriterAndTheSwitchFollowsTheFlow() {
+        mount()
+        switchNode(BackgroundSettingsCopy.StayConnectedId).assertIsOff()
+        switchNode(BackgroundSettingsCopy.StayConnectedId).performClick()
+        compose.waitForIdle()
+        assertEquals(listOf(true), stayChanges)
+
+        compose.runOnUiThread { stayFlow.value = true }
+        compose.waitForIdle()
+        switchNode(BackgroundSettingsCopy.StayConnectedId).assertIsOn()
     }
 
     @Test

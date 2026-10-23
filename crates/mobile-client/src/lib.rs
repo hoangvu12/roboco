@@ -633,7 +633,7 @@ impl Client {
                     restart = Some((task, entry.paired.engine_id.clone()));
                 }
                 _ => {
-                    let _ = entry.command_tx.send(EngineCommand::DialNow);
+                    let _ = entry.command_tx.send(EngineCommand::dial_now());
                 }
             }
         }
@@ -657,7 +657,7 @@ impl Client {
                 .map(|entry| {
                     let (ack, receipt) = oneshot::channel();
                     if entry.state != EngineState::Connected {
-                        let _ = entry.command_tx.send(EngineCommand::DialNow);
+                        let _ = entry.command_tx.send(EngineCommand::dial_now());
                     }
                     let _ = entry.command_tx.send(EngineCommand::Refresh(ack));
                     receipt
@@ -694,7 +694,8 @@ impl Client {
     /// OS network path: `false` only for a definitive "no network" —
     /// every non-parked engine becomes `Offline`, pending dials are
     /// cancelled, and no dial attempts run. `true` resets the backoff and
-    /// dials every engine now.
+    /// dials every engine that is not connected now; a connected link is
+    /// left alone (the platform repeats `true` on every network callback).
     pub fn set_network_online(&self, online: bool) {
         let was_online = self.inner.network.send_replace(online);
         if online && !was_online {
@@ -703,9 +704,17 @@ impl Client {
             self.drop_tailcat_tunnels();
         }
         if online {
+            // Only a backoff wait is cut short: a dial in flight finishes on
+            // its own (a redial request would tear down the link it
+            // produces), and an offline engine resumes when the network
+            // flag flips.
             let state = lock(&self.inner.engines);
-            for entry in &state.entries {
-                let _ = entry.command_tx.send(EngineCommand::DialNow);
+            for entry in state
+                .entries
+                .iter()
+                .filter(|entry| entry.state == EngineState::Reconnecting)
+            {
+                let _ = entry.command_tx.send(EngineCommand::dial_now());
             }
         } else {
             let mut state = lock(&self.inner.engines);
@@ -720,15 +729,19 @@ impl Client {
     }
 
     /// The OS default network changed (another `Network`, or its link
-    /// properties): drop every Tailcat tunnel so the next dial binds the new
-    /// interface, and dial those engines now. Android's netmon only polls
-    /// every 10 minutes, so it may not notice by itself. Direct engines are
-    /// untouched.
+    /// properties). A connected Tailcat engine is verified first: an
+    /// immediate probe on a short budget, and only a failed one rebuilds
+    /// the tunnel (so the next dial binds the new interface) and redials —
+    /// a network event must not kill a link that still works. A Tailcat
+    /// engine that is down rebuilds its tunnel and dials now. Android's
+    /// netmon only polls every 10 minutes, so it may not notice by itself.
+    /// Direct engines are untouched.
     pub fn set_network_changed(&self) {
-        self.drop_tailcat_tunnels();
         let state = lock(&self.inner.engines);
-        for entry in state.entries.iter().filter(|entry| entry.route.is_tailcat()) {
-            let _ = entry.command_tx.send(EngineCommand::DialNow);
+        for entry in state.entries.iter().filter(|entry| {
+            entry.route.is_tailcat() && !matches!(entry.state, EngineState::Parked { .. })
+        }) {
+            let _ = entry.command_tx.send(EngineCommand::verify());
         }
     }
 
@@ -740,19 +753,21 @@ impl Client {
     }
 
     /// The app is foreground: probe every connected feed immediately (this
-    /// catches sockets Doze killed) and dial everything else now.
-    /// Re-open spares.
+    /// catches sockets Doze or a frozen process killed) and dial everything
+    /// else now. Re-open spares. One command per engine: a second one
+    /// queued behind the first used to redial the link the first produced.
     pub fn on_foreground(&self) {
         self.inner.foreground.send_replace(true);
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
-            let _ = entry.command_tx.send(EngineCommand::Foreground);
-            if !matches!(
-                entry.state,
-                EngineState::Connected | EngineState::Parked { .. }
-            ) {
-                let _ = entry.command_tx.send(EngineCommand::DialNow);
-            }
+            // A dial in flight (Connecting) finishes on its own; an offline
+            // engine waits for the network.
+            let command = match entry.state {
+                EngineState::Connected => EngineCommand::foreground(),
+                EngineState::Reconnecting => EngineCommand::dial_now(),
+                _ => continue,
+            };
+            let _ = entry.command_tx.send(command);
         }
     }
 
@@ -989,6 +1004,7 @@ fn pending_entry(
         last_error: None,
         retry_at_ms: None,
         last_connected_ms: None,
+        proven_ms: None,
         info: None,
         engine_name: None,
         notice: None,
@@ -1034,6 +1050,7 @@ fn start_supervision(
         foreground: inner.foreground.subscribe(),
         cache,
         initial_feed,
+        spare_refill: Arc::default(),
     };
     let task = engines::link::supervise(ctx);
     update_engine(inner, engine_id, |entry| {

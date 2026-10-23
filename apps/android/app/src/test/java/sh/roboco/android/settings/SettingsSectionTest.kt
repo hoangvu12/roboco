@@ -18,12 +18,13 @@ class SettingsSectionTest {
     // ------------------------------------------------------- the order
 
     @Test
-    fun entriesAreTheSevenSectionsInDisplayOrder() {
+    fun entriesAreTheEightSectionsInDisplayOrder() {
         assertEquals(
             listOf(
                 SettingsSection.AgentAccounts,
                 SettingsSection.Devices,
                 SettingsSection.Notifications,
+                SettingsSection.Background,
                 SettingsSection.Appearance,
                 SettingsSection.Wallpaper,
                 SettingsSection.Sessions,
@@ -42,6 +43,7 @@ class SettingsSectionTest {
         assertEquals("agent-accounts", SettingsSection.AgentAccounts.key)
         assertEquals("devices", SettingsSection.Devices.key)
         assertEquals("notifications", SettingsSection.Notifications.key)
+        assertEquals("background", SettingsSection.Background.key)
         assertEquals("appearance", SettingsSection.Appearance.key)
         assertEquals("wallpaper", SettingsSection.Wallpaper.key)
         assertEquals("sessions", SettingsSection.Sessions.key)
@@ -84,6 +86,12 @@ class SettingsSectionTest {
         assertEquals(SettingsSection.Notifications, settingsSectionFor("notify:done"))
         assertEquals(SettingsSection.Notifications, settingsSectionFor("notify:input"))
         assertEquals(SettingsSection.Notifications, settingsSectionFor("notify:failed"))
+    }
+
+    @Test
+    fun theStayConnectedRowMapsToBackground() {
+        assertEquals(SettingsSection.Background, settingsSectionFor(BackgroundSettingsCopy.StayConnectedId))
+        assertEquals(SettingsSection.Background, settingsSectionFor("background:stayConnected"))
     }
 
     @Test

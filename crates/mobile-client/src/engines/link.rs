@@ -46,11 +46,21 @@ pub(crate) type CommandSender = mpsc::UnboundedSender<EngineCommand>;
 /// Commands to one engine's supervisor. The public surface (`DialNow`,
 /// `Refresh`, …) comes from the client and `EngineHandle`;
 /// `ProbeResult`, `CallsResult` and `StoreSpare` are internal completions.
+///
+/// The event commands (`DialNow`, `Foreground`, `Verify`) carry the instant
+/// they were issued, and a supervisor ignores one issued before its current
+/// dial started: that dial already answered it. Without the stamp a queued
+/// `DialNow` left over from the backoff wait tore down the link it had
+/// just produced.
 pub(crate) enum EngineCommand {
     /// Reset backoff and dial now (`reconnect_engine`, network back).
-    DialNow,
+    DialNow { at: Instant },
     /// Foreground: probe the feed immediately, refill the spare.
-    Foreground,
+    Foreground { at: Instant },
+    /// The OS network changed under a Tailcat route: probe a connected
+    /// feed at once and rebuild the tunnel only if it fails; a link that is
+    /// down rebuilds the tunnel and dials now.
+    Verify { at: Instant },
     /// Background: flush pending cache writes, then close the spare.
     Background,
     /// Pull-to-refresh: probe now; ack on a fresh frame, a probe reply, a
@@ -66,6 +76,11 @@ pub(crate) enum EngineCommand {
     ProbeResult {
         generation: u64,
         result: Result<EngineInfo, RpcError>,
+        /// Bytes reached the feed while the probe waited (a reply queued
+        /// behind a large frame, not a dead link).
+        progressing: bool,
+        /// A wake probe (foreground, network change), not the periodic one.
+        wake: bool,
     },
     /// A calls-connection redial finished.
     CallsResult {
@@ -75,6 +90,26 @@ pub(crate) enum EngineCommand {
     /// An auxiliary dial (spare, transcript) was refused on upgrade: the
     /// session is revoked — park, exactly like a refused feed dial.
     DialRefused,
+}
+
+impl EngineCommand {
+    pub(crate) fn dial_now() -> Self {
+        Self::DialNow { at: Instant::now() }
+    }
+
+    pub(crate) fn foreground() -> Self {
+        Self::Foreground { at: Instant::now() }
+    }
+
+    pub(crate) fn verify() -> Self {
+        Self::Verify { at: Instant::now() }
+    }
+}
+
+/// Whether an event command issued `at` is answered by a dial that started
+/// at `dial_started` (issued before it: stale, ignore).
+fn stale(at: Instant, dial_started: Instant) -> bool {
+    at < dial_started
 }
 
 /// Everything one supervisor task needs. The task owns the live
@@ -92,6 +127,8 @@ pub(crate) struct EngineCtx {
     pub(crate) cache: EngineCacheHandle,
     /// A feed connection minted by `pair_engine`, adopted as the first link.
     pub(crate) initial_feed: Option<Arc<RpcClient>>,
+    /// A spare refill dial is in flight.
+    pub(crate) spare_refill: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How the steady loop ended.
@@ -109,6 +146,19 @@ enum LinkEnd {
         message: String,
     },
     Cancelled,
+}
+
+impl std::fmt::Display for LinkEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinkEnd::Drop { error: Some(error) } => write!(f, "dropped: {error}"),
+            LinkEnd::Drop { error: None } => f.write_str("dropped: connection closed"),
+            LinkEnd::Offline => f.write_str("network offline"),
+            LinkEnd::Redial => f.write_str("redial requested"),
+            LinkEnd::Parked { reason, .. } => write!(f, "parked: {reason:?}"),
+            LinkEnd::Cancelled => f.write_str("cancelled"),
+        }
+    }
 }
 
 /// One frame (or end-of-stream) forwarded from a feed subscription.
@@ -186,7 +236,7 @@ async fn run(mut ctx: EngineCtx) {
                                 park_revoked(&ctx).await;
                                 return;
                             }
-                            drop_with_retry(&mut ctx, &mut backoff, err.to_string()).await;
+                            drop_with_retry(&mut ctx, &mut backoff, err.to_string(), started).await;
                             continue;
                         }
                     },
@@ -199,11 +249,10 @@ async fn run(mut ctx: EngineCtx) {
             Err(err) => {
                 if err == IDENTITY_TIMEOUT {
                     // A tunnel that connects but never answers: rebuild it.
-                    if let Some(route) = entry_field(&ctx, |entry| entry.route.clone()) {
-                        route.invalidate();
-                    }
+                    invalidate_route(&ctx, "identity timed out");
                 }
-                drop_with_retry(&mut ctx, &mut backoff, err).await;
+                feed.close();
+                drop_with_retry(&mut ctx, &mut backoff, err, started).await;
                 continue;
             }
         };
@@ -247,7 +296,11 @@ async fn run(mut ctx: EngineCtx) {
         let (mut frames, unsupported) = match subscribe_feeds(&feed, &timings).await {
             Ok(subs) => subs,
             Err(err) => {
-                drop_with_retry(&mut ctx, &mut backoff, err).await;
+                feed.close();
+                if let Some(calls) = &calls {
+                    calls.close();
+                }
+                drop_with_retry(&mut ctx, &mut backoff, err, started).await;
                 continue;
             }
         };
@@ -261,6 +314,7 @@ async fn run(mut ctx: EngineCtx) {
             entry.last_error = None;
             entry.retry_at_ms = None;
             entry.last_connected_ms = Some(super::now_ms());
+            entry.proven_ms = Some(super::now_ms());
             entry.info = Some(info.clone());
             entry.notice = verdict.notice.clone();
             entry.diagnostics.generation = generation;
@@ -295,22 +349,47 @@ async fn run(mut ctx: EngineCtx) {
         maybe_refill_spare(&ctx);
         let outcome = steady(
             &mut ctx,
-            feed,
-            calls,
+            feed.clone(),
+            calls.clone(),
             &mut frames,
             generation,
             &mut unsupported,
             &timings,
+            started,
         )
         .await;
+        tracing::info!(
+            engine = %ctx.engine_id,
+            generation,
+            lived_ms = started.elapsed().as_millis() as u64,
+            end = %outcome,
+            "engine link ended"
+        );
         // A pending debounced save dies with the steady loop: write it now
         // so a link drop right after a frame never loses the cache write.
         write_cache(&ctx);
-        // Clear the live slots so watch tasks wait for the next link.
-        update_entry(&ctx, |entry| {
-            entry.feed_slot.send_replace(None);
-            entry.calls_slot.send_replace(None);
+        // Clear the live slots so watch tasks wait for the next link. The
+        // transcript connections handed out under this link close with it
+        // (their lag checks watch the feed slot).
+        let held = mutate_entry(&ctx, |entry| {
+            (
+                entry.feed_slot.send_replace(None),
+                entry.calls_slot.send_replace(None),
+            )
         });
+        // Close the old sockets now (with a Close frame where the socket
+        // still takes one) instead of leaving them for the engine's 45 s
+        // silence lease. The calls slot may hold a client the steady loop
+        // redialed.
+        feed.close();
+        if let Some(calls) = &calls {
+            calls.close();
+        }
+        if let Some((feed_slot, calls_slot)) = held {
+            for live in feed_slot.into_iter().chain(calls_slot) {
+                live.client.close();
+            }
+        }
         match outcome {
             LinkEnd::Cancelled => return,
             LinkEnd::Redial => {
@@ -325,7 +404,7 @@ async fn run(mut ctx: EngineCtx) {
             LinkEnd::Drop { error } => {
                 backoff.maybe_reset(started.elapsed());
                 let error = error.unwrap_or_else(|| "connection to the engine lost".into());
-                drop_with_retry(&mut ctx, &mut backoff, error).await;
+                drop_with_retry(&mut ctx, &mut backoff, error, started).await;
                 continue;
             }
         }
@@ -341,11 +420,19 @@ async fn steady(
     generation: u64,
     unsupported: &mut Vec<&'static str>,
     timings: &Timings,
+    dial_started: Instant,
 ) -> LinkEnd {
     let mut frames_seen: HashSet<&'static str> = HashSet::new();
     let mut clock = SessionClock::default();
     let mut spare: Option<Arc<RpcClient>> = None;
+    // The periodic probe and the wake probe (foreground, network change) run
+    // independently: a thaw must not wait on a regular probe that started
+    // with the long budget.
     let mut probe_in_flight = false;
+    let mut wake_probe_in_flight = false;
+    // A network change is waiting on the wake probe: if it fails, the tunnel
+    // is rebuilt along with the link.
+    let mut verify_requested = false;
     let mut calls_retry_at: Option<Instant> = None;
     let mut refresh_ack: Option<oneshot::Sender<()>> = None;
     let mut refresh_deadline = Box::pin(tokio::time::sleep(timings.refresh_cap));
@@ -387,19 +474,48 @@ async fn steady(
                     calls_retry_at = None;
                     spawn_calls_dial(ctx, generation);
                 }
-                if !probe_in_flight {
+                if !probe_in_flight && !wake_probe_in_flight {
                     probe_in_flight = true;
-                    spawn_probe(ctx, &feed, generation, timings);
+                    spawn_probe(ctx, &feed, generation, timings.identity_timeout, false);
                 }
             }
             command = ctx.command_rx.recv() => {
                 match command {
                     None => return LinkEnd::Cancelled,
-                    Some(EngineCommand::DialNow) => return LinkEnd::Redial,
-                    Some(EngineCommand::Foreground) => {
-                        probe_timer.reset();
+                    Some(EngineCommand::DialNow { at }) => {
+                        if stale(at, dial_started) {
+                            tracing::debug!(engine = %ctx.engine_id, "ignoring a redial request this link already answered");
+                        } else {
+                            return LinkEnd::Redial;
+                        }
+                    }
+                    Some(EngineCommand::Foreground { at }) => {
+                        // Back from the background (a thaw: the sockets may
+                        // have died while the process was frozen): prove the
+                        // feed now, on a short budget, instead of a full
+                        // probe interval later. A link dialed after the
+                        // event is fresh already.
+                        if !stale(at, dial_started) {
+                            probe_timer.reset();
+                            if !wake_probe_in_flight {
+                                wake_probe_in_flight = true;
+                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout, true);
+                            }
+                        }
                         if spare.is_none() {
                             maybe_refill_spare(ctx);
+                        }
+                    }
+                    Some(EngineCommand::Verify { at }) => {
+                        // A network change: keep a link that still answers;
+                        // rebuild the tunnel only when it does not.
+                        if !stale(at, dial_started) {
+                            verify_requested = true;
+                            probe_timer.reset();
+                            if !wake_probe_in_flight {
+                                wake_probe_in_flight = true;
+                                spawn_probe(ctx, &feed, generation, timings.wake_probe_timeout, true);
+                            }
                         }
                     }
                     Some(EngineCommand::Background) => {
@@ -409,13 +525,15 @@ async fn steady(
                         cache_flush = None;
                         write_cache(ctx);
                         flush_cache(ctx, timings.background_flush).await;
-                        spare = None;
+                        if let Some(spare) = spare.take() {
+                            spare.close();
+                        }
                     }
                     Some(EngineCommand::Refresh(ack)) => {
                         probe_timer.reset();
-                        if !probe_in_flight {
+                        if !probe_in_flight && !wake_probe_in_flight {
                             probe_in_flight = true;
-                            spawn_probe(ctx, &feed, generation, timings);
+                            spawn_probe(ctx, &feed, generation, timings.identity_timeout, false);
                         }
                         refresh_ack = Some(ack);
                         refresh_deadline
@@ -437,11 +555,18 @@ async fn steady(
                     Some(EngineCommand::StoreSpare(client)) => {
                         if spare.is_none() && *ctx.foreground.borrow() && !ctx.cancel.is_cancelled() {
                             spare = Some(client);
+                        } else {
+                            client.close();
                         }
                     }
-                    Some(EngineCommand::ProbeResult { generation: probe_generation, result }) => {
-                        probe_in_flight = false;
+                    Some(EngineCommand::ProbeResult { generation: probe_generation, result, progressing, wake }) => {
+                        if wake {
+                            wake_probe_in_flight = false;
+                        } else {
+                            probe_in_flight = false;
+                        }
                         if probe_generation == generation {
+                            let network_check = wake && std::mem::take(&mut verify_requested);
                             match result {
                                 Ok(info) => {
                                     if entry_field(ctx, |entry| entry.paired.device_id.clone())
@@ -466,16 +591,36 @@ async fn steady(
                                     update_entry(ctx, |entry| {
                                         entry.info = Some(info.clone());
                                         entry.notice = verdict.notice.clone();
+                                        entry.proven_ms = Some(super::now_ms());
                                     });
                                     publish(ctx);
                                     ack_refresh(&mut refresh_ack);
                                 }
                                 Err(err) => match err {
-                                    RpcError::Transport(_) => {
-                                        return LinkEnd::Drop { error: Some(err.to_string()) }
+                                    RpcError::Transport(_) if progressing => {
+                                        // Bytes kept arriving: the reply is
+                                        // queued behind a large frame (a
+                                        // transcript reset over a relay),
+                                        // not lost. Keep the link.
+                                        tracing::info!(
+                                            engine = %ctx.engine_id,
+                                            "health probe slow but the feed is receiving; keeping the link"
+                                        );
                                     }
-                                    RpcError::Closed => {
-                                        return LinkEnd::Drop { error: None }
+                                    RpcError::Transport(_) | RpcError::Closed => {
+                                        tracing::info!(engine = %ctx.engine_id, error = %err, wake, network_check, "health probe failed");
+                                        if network_check {
+                                            // A network change the link did
+                                            // not survive: the next dial
+                                            // must bind the new interface.
+                                            invalidate_route(ctx, "the link failed its network-change check");
+                                        }
+                                        return LinkEnd::Drop {
+                                            error: match err {
+                                                RpcError::Closed => None,
+                                                other => Some(other.to_string()),
+                                            },
+                                        };
                                     }
                                     // The engine answered with an error: the
                                     // connection is alive, the call failed.
@@ -540,6 +685,7 @@ async fn steady(
                         let first = !frames_seen.contains(method);
                         frames_seen.insert(method);
                         apply_frame(ctx, &mut clock, method, value);
+                        update_entry(ctx, |entry| entry.proven_ms = Some(super::now_ms()));
                         if first {
                             missing_dirty = true;
                         }
@@ -879,9 +1025,17 @@ async fn park(ctx: &EngineCtx, reason: ParkReason, message: String) {
 }
 
 /// Record a drop, schedule the retry, and wait out the backoff
-/// (interruptibly: `reconnect_engine`, foreground, network loss, or
-/// cancellation all cut it short).
-async fn drop_with_retry(ctx: &mut EngineCtx, backoff: &mut Backoff, error: String) {
+/// (interruptibly: `reconnect_engine`, foreground, a network change,
+/// network loss, or cancellation all cut it short). An event command
+/// issued before the failed dial started was answered by that dial and
+/// does not cut the wait.
+async fn drop_with_retry(
+    ctx: &mut EngineCtx,
+    backoff: &mut Backoff,
+    error: String,
+    dial_started: Instant,
+) {
+    tracing::info!(engine = %ctx.engine_id, %error, "engine link down; retrying");
     update_entry(ctx, |entry| {
         if !matches!(
             entry.state,
@@ -905,7 +1059,17 @@ async fn drop_with_retry(ctx: &mut EngineCtx, backoff: &mut Backoff, error: Stri
             _ = &mut sleep => return,
             command = ctx.command_rx.recv() => {
                 match command {
-                    Some(EngineCommand::DialNow) | Some(EngineCommand::Foreground) => return,
+                    Some(EngineCommand::DialNow { at } | EngineCommand::Foreground { at })
+                        if !stale(at, dial_started) =>
+                    {
+                        return;
+                    }
+                    Some(EngineCommand::Verify { at }) if !stale(at, dial_started) => {
+                        // The link is down and the network moved: the next
+                        // dial binds the new interface.
+                        invalidate_route(ctx, "network changed while reconnecting");
+                        return;
+                    }
                     Some(EngineCommand::Background) => {
                         write_cache(ctx);
                         flush_cache(ctx, ctx.timings.background_flush).await
@@ -1071,19 +1235,56 @@ fn forward_stream(
     });
 }
 
-fn spawn_probe(ctx: &EngineCtx, feed: &Arc<RpcClient>, generation: u64, timings: &Timings) {
+/// The transport error a health probe that got no reply in time reports.
+const PROBE_TIMEOUT: &str = "Engine health check timed out";
+
+/// Bytes that must arrive during a timed-out health check for it to count
+/// as slow rather than dead. Both ends ping every 15 s, so a few bytes of
+/// pings and pongs prove nothing about a stalled stream; a reply queued
+/// behind a big frame comes with kilobytes of that frame.
+const PROGRESS_BYTES: u64 = 8 * 1024;
+
+/// `EngineInfo` on the feed within `budget`. A timeout reports whether
+/// bytes reached the feed meanwhile (`progressing`): a slow reply behind a
+/// big frame, not a dead link.
+fn spawn_probe(
+    ctx: &EngineCtx,
+    feed: &Arc<RpcClient>,
+    generation: u64,
+    budget: Duration,
+    wake: bool,
+) {
     let command_tx = command_tx_of(ctx);
     let feed = feed.clone();
-    let budget = timings.identity_timeout;
     crate::runtime::shared().spawn(async move {
-        let result =
+        let before = feed.bytes_received();
+        let (result, progressing) =
             match tokio::time::timeout(budget, feed.call_as(methods::ENGINE_INFO, json!({}))).await
             {
-                Ok(result) => result,
-                Err(_) => Err(RpcError::Transport("Engine health check timed out".into())),
+                Ok(result) => (result, false),
+                Err(_) => (
+                    Err(RpcError::Transport(PROBE_TIMEOUT.into())),
+                    feed.bytes_received().saturating_sub(before) >= PROGRESS_BYTES,
+                ),
             };
-        let _ = command_tx.send(EngineCommand::ProbeResult { generation, result });
+        let _ = command_tx.send(EngineCommand::ProbeResult {
+            generation,
+            result,
+            progressing,
+            wake,
+        });
     });
+}
+
+/// Drop the engine's Tailcat tunnel (a no-op for direct routes) so the next
+/// dial opens a fresh one.
+fn invalidate_route(ctx: &EngineCtx, why: &str) {
+    if let Some(route) = entry_field(ctx, |entry| entry.route.clone()) {
+        if route.is_tailcat() {
+            tracing::info!(engine = %ctx.engine_id, why, "rebuilding the Tailcat tunnel");
+        }
+        route.invalidate();
+    }
 }
 
 fn spawn_calls_dial(ctx: &EngineCtx, generation: u64) {
@@ -1095,16 +1296,31 @@ fn spawn_calls_dial(ctx: &EngineCtx, generation: u64) {
     });
 }
 
-/// Refill the spare in the background (at most one per engine, only while
-/// the app is foreground).
+/// Refill the spare in the background (at most one refill dial in flight
+/// per engine, only while the app is foreground): each trigger used to
+/// start its own dial, and every surplus connection was dialed only to be
+/// dropped.
 fn maybe_refill_spare(ctx: &EngineCtx) {
     if !*ctx.foreground.borrow() || ctx.cancel.is_cancelled() {
         return;
     }
+    if ctx.spare_refill.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    /// Clears the in-flight flag however the dial ends.
+    struct Refilling(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Refilling {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let refilling = Refilling(ctx.spare_refill.clone());
     let command_tx = command_tx_of(ctx);
     let target = entry_pair(ctx);
     crate::runtime::shared().spawn(async move {
-        match target.connect().await {
+        let dialed = target.connect().await;
+        drop(refilling);
+        match dialed {
             Ok(client) => {
                 let _ = command_tx.send(EngineCommand::StoreSpare(Arc::new(client)));
             }
@@ -1230,27 +1446,70 @@ fn emit(ctx: &EngineCtx, f: impl FnOnce(&crate::events::EventPump)) {
 
 /// The lag check for a handed-out transcript connection: an `EngineInfo`
 /// on the connection itself — its reply comes back behind every frame the
-/// engine queued before it, so a missing reply proves the connection is
-/// frozen. Close it; ticket 08 resubscribes on a fresh one.
+/// engine queued before it, so a missing reply with no bytes arriving
+/// proves the connection is frozen. Close it; ticket 08 resubscribes on a
+/// fresh one.
+///
+/// The connection also closes when the link it was handed out under ends
+/// (the feed slot leaves that generation): a link that died with the
+/// network (or a frozen process) took this socket with it, and the session
+/// must resubscribe on the next link instead of waiting out the lag check.
 pub(crate) fn spawn_lag_check(
     client: Arc<RpcClient>,
     engine_cancel: CancellationToken,
     timings: Timings,
+    mut feed_slot: watch::Receiver<Option<super::LiveClient>>,
 ) {
+    let link = feed_slot.borrow_and_update().as_ref().map(|live| live.generation);
     crate::runtime::shared().spawn(async move {
-        loop {
-            tokio::time::sleep(timings.lag_every).await;
-            if engine_cancel.is_cancelled() {
-                return;
+        let link_ended = async {
+            let Some(link) = link else {
+                // Handed out between links: only the lag check applies.
+                return std::future::pending::<()>().await;
+            };
+            loop {
+                if feed_slot.changed().await.is_err() {
+                    return;
+                }
+                let current = feed_slot.borrow_and_update().as_ref().map(|live| live.generation);
+                if current != Some(link) {
+                    return;
+                }
             }
-            let reply = tokio::time::timeout(
-                timings.lag_timeout,
-                client.call(methods::ENGINE_INFO, json!({})),
-            )
-            .await;
+        };
+        tokio::pin!(link_ended);
+        loop {
+            tokio::select! {
+                _ = engine_cancel.cancelled() => return,
+                _ = &mut link_ended => {
+                    tracing::debug!("engine link ended; closing its transcript connection");
+                    client.close();
+                    return;
+                }
+                _ = tokio::time::sleep(timings.lag_every) => {}
+            }
+            let before = client.bytes_received();
+            let reply = tokio::select! {
+                _ = engine_cancel.cancelled() => return,
+                _ = &mut link_ended => {
+                    tracing::debug!("engine link ended; closing its transcript connection");
+                    client.close();
+                    return;
+                }
+                reply = tokio::time::timeout(
+                    timings.lag_timeout,
+                    client.call(methods::ENGINE_INFO, json!({})),
+                ) => reply,
+            };
             // Any answer, even an error, came through in order; a dead
-            // connection ends its streams on its own.
+            // connection ends its streams on its own. A late reply whose
+            // bytes are still arriving (a big reset over a relay) is slow,
+            // not frozen.
             if reply.is_err() {
+                if client.bytes_received().saturating_sub(before) >= PROGRESS_BYTES {
+                    tracing::info!("transcript connection slow but receiving; keeping it");
+                    continue;
+                }
                 tracing::warn!("transcript connection frozen; closing it");
                 client.close();
                 return;

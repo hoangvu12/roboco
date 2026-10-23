@@ -178,15 +178,20 @@ pub(crate) struct DecodedFrame {
 
 /// Run the transcript subscription for one session until cancelled.
 /// Structure: an outer resubscribe loop over an inner frame loop. A desync
-/// breaks the inner loop with an immediate resubscribe (backoff curve
-/// untouched); a stream end or a closed connection breaks it with the
-/// backoff; the backoff resets once frames flow.
+/// (or the undelivered-send heal) breaks the inner loop with an immediate
+/// plain-reset resubscribe (backoff curve untouched); a stream end or a
+/// closed connection breaks it with the backoff; the backoff resets once
+/// frames flow, and an engine reconnect cuts a running backoff short.
+///
+/// An engine outage never ends the task, however long it lasts: the
+/// session stays registered while the task lives, so an exit here would
+/// freeze the chat until the process dies.
 pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
     let Ok(handle) = core.engine_handle() else {
         return;
     };
     let mut backoff = RESUBSCRIBE_BACKOFF;
-    // Set by a desync: the next subscribe goes without `resume`.
+    // Set by a desync or a heal: the next subscribe goes without `resume`.
     let mut after_desync = false;
     loop {
         if cancel.is_cancelled() {
@@ -194,8 +199,11 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
         }
         // A disconnected engine: wait for the fleet to report Connected
         // instead of spinning dial attempts.
-        if !wait_while_disconnected(&handle, &core, &cancel).await {
-            return;
+        match wait_while_disconnected(&handle, &core, &cancel).await {
+            Wait::Cancelled => return,
+            // A fresh link: the old failures say nothing about it.
+            Wait::Reconnected => backoff = RESUBSCRIBE_BACKOFF,
+            Wait::Connected => {}
         }
         let resume = resume_for_attempt(&mut after_desync, || resume_summary(&core));
         let first_open = {
@@ -210,9 +218,10 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
         );
         let connection = match handle.transcript_connection().await {
             Ok(connection) => connection,
-            Err(_) => {
+            Err(error) => {
+                tracing::debug!(chat = %core.chat_id, %error, "transcript connection failed");
                 core.set_subscription_down(Some(next_attempt_ms(backoff)));
-                if !sleep_cancellable(sleep_backoff(&mut backoff), &cancel).await {
+                if !backoff_sleep(&handle, &core, sleep_backoff(&mut backoff), &cancel).await {
                     return;
                 }
                 continue;
@@ -224,7 +233,7 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
             Err(error) => {
                 tracing::debug!(chat = %core.chat_id, %error, "transcript subscribe failed");
                 core.set_subscription_down(Some(next_attempt_ms(backoff)));
-                if !sleep_cancellable(sleep_backoff(&mut backoff), &cancel).await {
+                if !backoff_sleep(&handle, &core, sleep_backoff(&mut backoff), &cancel).await {
                     return;
                 }
                 continue;
@@ -240,8 +249,20 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
                 _ = cancel.cancelled() => return,
                 item = subscription.recv() => match item {
                     Some(item) => item,
-                    None => break, // Stream ended (lag close, link drop).
+                    None => {
+                        // Stream ended (lag close, link drop).
+                        tracing::debug!(chat = %core.chat_id, "transcript stream ended");
+                        break;
+                    }
                 },
+                _ = core.heal.notified() => {
+                    // An acked send is missing past its grace: the stream
+                    // may have dropped its entry. Re-read the whole
+                    // transcript (a plain reset, the desync path).
+                    immediate = true;
+                    after_desync = true;
+                    break;
+                }
             };
             let Some(decoded) = decode_item(item, &handle.key()) else {
                 // Malformed beyond repair: resubscribe on the delay (in case
@@ -282,7 +303,9 @@ pub(crate) async fn run(core: Arc<SessionCore>, cancel: CancellationToken) {
             }
         }
         core.set_subscription_down(if immediate { None } else { Some(next_attempt_ms(backoff)) });
-        if !immediate && !sleep_cancellable(sleep_backoff(&mut backoff), &cancel).await {
+        if !immediate
+            && !backoff_sleep(&handle, &core, sleep_backoff(&mut backoff), &cancel).await
+        {
             return;
         }
     }
@@ -361,42 +384,95 @@ async fn sleep_cancellable(delay: Duration, cancel: &CancellationToken) -> bool 
     }
 }
 
-/// Wait until the engine is connected (or the session ends). `false` when
-/// the session was cancelled.
+/// Sleep out a resubscribe backoff, cut short when the engine reconnects
+/// meanwhile (a disconnected → connected edge): the thaw after a frozen
+/// app must not wait out a backoff that grew during the outage. `false`
+/// when the session was cancelled.
+async fn backoff_sleep(
+    handle: &EngineHandle,
+    core: &Arc<SessionCore>,
+    delay: Duration,
+    cancel: &CancellationToken,
+) -> bool {
+    let Some(mut fleet) = core.fleet() else {
+        return sleep_cancellable(delay, cancel).await;
+    };
+    let until = tokio::time::Instant::now() + delay;
+    let mut was_connected = handle.is_connected();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return false,
+            _ = tokio::time::sleep_until(until) => return true,
+            changed = fleet.changed() => {
+                if changed.is_err() {
+                    // The client is shutting down: plain sleep.
+                    return sleep_cancellable(
+                        until.saturating_duration_since(tokio::time::Instant::now()),
+                        cancel,
+                    )
+                    .await;
+                }
+                let connected = handle.is_connected();
+                if connected && !was_connected {
+                    return true;
+                }
+                was_connected = connected;
+            }
+        }
+    }
+}
+
+/// How [`wait_while_disconnected`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    /// The engine was connected already.
+    Connected,
+    /// The engine came back after an outage.
+    Reconnected,
+    /// The session was cancelled (or the client is gone).
+    Cancelled,
+}
+
+/// Wait until the engine is connected or the session ends — however long
+/// the outage lasts. An exit on a deadline here killed the chat's feed for
+/// good: the session stayed registered and uncancelled, so a reopen handed
+/// back the dead core.
 async fn wait_while_disconnected(
     handle: &EngineHandle,
     core: &Arc<SessionCore>,
     cancel: &CancellationToken,
-) -> bool {
+) -> Wait {
     if handle.is_connected() {
-        return true;
+        return Wait::Connected;
     }
     core.set_subscription_down(handle.retry_at_ms());
     let Some(mut fleet) = core.fleet() else {
-        return false;
+        return Wait::Cancelled;
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let started = tokio::time::Instant::now();
     loop {
         if cancel.is_cancelled() {
-            return false;
+            return Wait::Cancelled;
         }
         if handle.is_connected() {
-            return true;
+            tracing::debug!(
+                chat = %core.chat_id,
+                waited_ms = started.elapsed().as_millis() as u64,
+                "engine back; resubscribing the transcript"
+            );
+            return Wait::Reconnected;
         }
         let until = tokio::time::Instant::now() + Duration::from_secs(1);
         tokio::select! {
-            _ = cancel.cancelled() => return false,
+            _ = cancel.cancelled() => return Wait::Cancelled,
             changed = fleet.changed() => {
                 if changed.is_err() {
-                    // The client is shutting down; wait out the poll window
-                    // rather than spin.
+                    // The client is shutting down (its cancel ends this
+                    // session too); poll rather than spin until then.
                     tokio::time::sleep_until(until).await;
                 }
             }
-            _ = tokio::time::sleep_until(until.min(deadline)) => {}
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return handle.is_connected();
+            _ = tokio::time::sleep_until(until) => {}
         }
     }
 }
@@ -453,6 +529,7 @@ impl SessionCore {
         let history_pending = frame.history_pending;
         let wire_frame = frame.update.frame;
         let revision;
+        let mut heal_settled = false;
         {
             let mut state = lock(&self.state);
             // Opening-tail rule: a `historyPending` preview is adopted only
@@ -491,8 +568,22 @@ impl SessionCore {
             if !ids.is_empty() {
                 state.pending.retain(|p| !ids.contains(&p.message_id));
             }
+            // The heal's verdict: a full reset after the heal request that
+            // did not adopt a healing send means the engine never wrote
+            // it — it reads `Failed` on the watch task's next refresh.
+            if is_reset && !history_pending {
+                for pending in state.pending.iter_mut() {
+                    if pending.heal_requested_at_ms != 0 && !pending.heal_settled {
+                        pending.heal_settled = true;
+                        heal_settled = true;
+                    }
+                }
+            }
             state.transcript_revision += 1;
             revision = state.transcript_revision;
+        }
+        if heal_settled {
+            self.wake.notify_one();
         }
         self.publish_transcript(revision);
         // The composer reads the entries too (`open_input`, the streaming

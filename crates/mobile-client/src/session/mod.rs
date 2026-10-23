@@ -308,6 +308,18 @@ pub(crate) struct SessionCore {
     /// evicted-but-held session revives.
     tasks: Mutex<CancellationToken>,
     subscription_live: AtomicBool,
+    /// The running transcript task: its generation and its cancel token
+    /// (`None` once it ended). A task that ended without its session being
+    /// cancelled is respawned on reopen and on view attach, so a dead feed
+    /// never outlives the session; a task whose token was cancelled is on
+    /// its way out and never blocks a revival's fresh spawn.
+    transcript_task: Mutex<Option<(u64, CancellationToken)>>,
+    /// Asks the transcript task for one immediate plain-reset resubscribe
+    /// (the undelivered-send heal). A permit stored while no subscription
+    /// is open is consumed by the next one.
+    pub(crate) heal: Notify,
+    /// Serializes sends from their busy decision to their pending echo.
+    pub(crate) send_gate: tokio::sync::Mutex<()>,
 }
 
 impl SessionCore {
@@ -366,10 +378,12 @@ impl SessionCore {
             touched_ms: std::sync::atomic::AtomicI64::new(crate::engines::now_ms()),
             tasks: Mutex::new(tasks),
             subscription_live: AtomicBool::new(false),
+            transcript_task: Mutex::new(None),
+            heal: Notify::new(),
+            send_gate: tokio::sync::Mutex::new(()),
         })
     }
 
-    /// A handle to the owning engine.
     /// A handle to the owning engine. Fails with `Closed` once the client
     /// shut down or the engine was forgotten.
     pub(crate) fn engine_handle(&self) -> Result<EngineHandle, ClientError> {
@@ -618,17 +632,19 @@ impl SessionCore {
                 roboco_proto::view::effective_indicator(Some(session), chrono::Utc::now())
             })
             .unwrap_or(roboco_proto::view::Indicator::None);
-        let grace = self
-            .client
-            .upgrade()
-            .map(|inner| inner.timings.undelivered_grace.as_millis() as i64)
-            .unwrap_or(UNDELIVERED_GRACE_MS);
+        let (grace, heal) = self.delivery_windows();
         let now = crate::engines::now_ms();
-        let (states_changed, publish) = {
+        let (states_changed, publish, request_heal) = {
             let mut state = lock(&self.state);
             let mut states_changed = false;
+            let mut request_heal = false;
             for pending in state.pending.iter_mut() {
-                let next = pending::send_state(now, pending.acked_at_ms, engine_connected, grace);
+                let (next, heal_now) =
+                    pending::delivery_state(now, pending, engine_connected, grace, heal);
+                if heal_now {
+                    pending.heal_requested_at_ms = now;
+                    request_heal = true;
+                }
                 if pending.state != next {
                     pending.state = next;
                     states_changed = true;
@@ -647,8 +663,12 @@ impl SessionCore {
                 || published.working != working
                 || published.streaming != streaming
                 || published.hydrated != state.hydrated;
-            (states_changed, publish)
+            (states_changed, publish, request_heal)
         };
+        if request_heal {
+            tracing::info!(chat = %self.chat_id, "acked send unseen past its grace; resubscribing");
+            self.heal.notify_one();
+        }
         if publish {
             self.publish_transcript_bump();
         }
@@ -664,6 +684,18 @@ impl SessionCore {
                 store.set_send_state(&self.chat_id, headline);
             }
         }
+    }
+
+    /// The undelivered grace and heal windows, in ms (production defaults
+    /// once the client is gone).
+    pub(crate) fn delivery_windows(&self) -> (i64, i64) {
+        let defaults = crate::timings::Timings::default();
+        let (grace, heal) = self
+            .client
+            .upgrade()
+            .map(|inner| (inner.timings.undelivered_grace, inner.timings.undelivered_heal))
+            .unwrap_or((defaults.undelivered_grace, defaults.undelivered_heal));
+        (grace.as_millis() as i64, heal.as_millis() as i64)
     }
 
     pub(crate) fn publish_transcript_bump(&self) {
@@ -784,6 +816,7 @@ impl SessionCore {
         self.touch();
         if attached && !was {
             self.revive_if_needed();
+            self.ensure_transcript_task();
             self.mark_seen();
         }
     }
@@ -810,10 +843,22 @@ impl SessionCore {
         let Some(inner) = self.client.upgrade() else {
             return;
         };
-        self.revive_tasks();
+        // `re_register` swaps in the fresh token only when it re-inserts
+        // the core: a core another open replaced stays cancelled rather
+        // than holding a live token with no tasks behind it.
         if inner.sessions.re_register(self) {
             spawn_session_tasks(self);
         }
+    }
+
+    /// Respawn the transcript task when it ended while the session lives
+    /// (defence in depth: the task only returns on cancellation or a gone
+    /// client today, but a dead feed must never outlive its session).
+    pub(crate) fn ensure_transcript_task(self: &Arc<Self>) {
+        if self.is_cancelled() {
+            return;
+        }
+        spawn_transcript_task(self);
     }
 }
 
@@ -890,14 +935,10 @@ async fn watch_task(core: Arc<SessionCore>, cancel: CancellationToken) {
         return;
     };
     loop {
-        let grace = core
-            .client
-            .upgrade()
-            .map(|inner| inner.timings.undelivered_grace)
-            .unwrap_or(Duration::from_millis(UNDELIVERED_GRACE_MS as u64));
+        let (grace, heal) = core.delivery_windows();
         let deadline = {
             let state = lock(&core.state);
-            pending::next_grace_deadline(&state.pending, grace.as_millis() as i64).map(|ms| {
+            pending::next_grace_deadline(&state.pending, grace, heal).map(|ms| {
                 let remaining = (ms - crate::engines::now_ms()).max(0);
                 tokio::time::Instant::now() + Duration::from_millis(remaining as u64)
             })
@@ -923,14 +964,41 @@ async fn watch_task(core: Arc<SessionCore>, cancel: CancellationToken) {
     }
 }
 
+/// Spawn the transcript task unless one is already running.
+fn spawn_transcript_task(core: &Arc<SessionCore>) {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let cancel = core.tasks_token();
+    let generation = {
+        let mut slot = lock(&core.transcript_task);
+        if slot.as_ref().is_some_and(|(_, token)| !token.is_cancelled()) {
+            return;
+        }
+        let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+        *slot = Some((generation, cancel.clone()));
+        generation
+    };
+    /// Clears the slot however the task ends (return or panic), unless a
+    /// newer task already took it.
+    struct Running(Arc<SessionCore>, u64);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let mut slot = lock(&self.0.transcript_task);
+            if slot.as_ref().is_some_and(|(generation, _)| *generation == self.1) {
+                *slot = None;
+            }
+        }
+    }
+    let running = Running(core.clone(), generation);
+    crate::runtime::shared().spawn(async move {
+        transcript::run(running.0.clone(), cancel).await;
+        drop(running);
+    });
+}
+
 /// Spawn (or restart) one session's three tasks.
 fn spawn_session_tasks(core: &Arc<SessionCore>) {
     let cancel = core.tasks_token();
-    let transcript_core = core.clone();
-    let transcript_cancel = cancel.clone();
-    crate::runtime::shared().spawn(async move {
-        transcript::run(transcript_core, transcript_cancel).await;
-    });
+    spawn_transcript_task(core);
     // A read-only subagent doc has no composer and nothing queues on it:
     // its `WatchQueue` would only hold a calls-connection stream open
     // (and pin the doc on the engine) for a list that stays empty.
@@ -977,12 +1045,15 @@ impl SessionRegistry {
         lock(&self.inner).sessions.get(chat_id).cloned()
     }
 
+    /// Put a revived core back and give it a fresh task token — only when
+    /// nobody replaced it with a fresh core. The swap happens under the
+    /// registry lock, so no open sees the re-inserted core still cancelled.
     pub(crate) fn re_register(&self, core: &Arc<SessionCore>) -> bool {
         let mut registry = lock(&self.inner);
-        // Only when nobody replaced it with a fresh core.
         if registry.sessions.contains_key(&core.chat_id) {
             return false;
         }
+        core.revive_tasks();
         registry
             .sessions
             .insert(core.chat_id.clone(), core.clone());
@@ -1022,14 +1093,18 @@ impl SessionRegistry {
         raw_chat_id: &str,
         read_only: bool,
     ) -> Arc<SessionCore> {
-        {
+        let open = {
             let registry = lock(&self.inner);
-            if let Some(core) = registry.sessions.get(chat_id) {
-                if !core.is_cancelled() {
-                    core.touch();
-                    return core.clone();
-                }
-            }
+            registry
+                .sessions
+                .get(chat_id)
+                .filter(|core| !core.is_cancelled())
+                .cloned()
+        };
+        if let Some(core) = open {
+            core.touch();
+            core.ensure_transcript_task();
+            return core;
         }
         let tasks = inner.client_cancel.child_token();
         let cache = Client::from_inner(inner.clone())

@@ -107,6 +107,43 @@ impl RuntimeConfig {
         self.harness_id == harness_id && self.harness.same_runtime(&self.request, request)
     }
 
+    /// Why `request` can't reuse this runtime, for the restart log: the
+    /// harness, or the launch settings that differ (by wire name). The
+    /// per-message fields (prompt, attachments, resume material) never
+    /// count. A replacement kills background agents, so an unexplained one
+    /// must be diagnosable from the log alone.
+    fn change_reason(&self, harness_id: HarnessId, request: &RunRequest) -> String {
+        if self.harness_id != harness_id {
+            return format!("harness changed ({:?} -> {harness_id:?})", self.harness_id);
+        }
+        const PER_MESSAGE: &[&str] = &[
+            "prompt",
+            "attachments",
+            "resume",
+            "providerFork",
+            "resumeFallbackHistory",
+        ];
+        let (Ok(serde_json::Value::Object(old)), Ok(serde_json::Value::Object(new))) = (
+            serde_json::to_value(&self.request),
+            serde_json::to_value(request),
+        ) else {
+            return "launch settings differ".to_owned();
+        };
+        let mut fields: Vec<&str> = old
+            .keys()
+            .chain(new.keys())
+            .map(String::as_str)
+            .filter(|key| !PER_MESSAGE.contains(key) && old.get(*key) != new.get(*key))
+            .collect();
+        fields.sort_unstable();
+        fields.dedup();
+        if fields.is_empty() {
+            "the harness reads the same settings differently".to_owned()
+        } else {
+            format!("changed: {}", fields.join(", "))
+        }
+    }
+
     /// How `request` reaches this runtime: `Some(false)` as is, `Some(true)`
     /// with its configuration adopted in place first
     /// ([`Harness::reconfigures_in_place`]), `None` only by replacing it.
@@ -849,19 +886,27 @@ impl SessionsEngine {
                         .is_none_or(|live| live == fingerprint)
                 },
             );
+            let route = h.runtime_config.route(harness_id, &request);
+            // Why this send can't reuse the runtime, for the restart log.
+            let restart_reason = match route {
+                Some(_) if !same_login => Some("harness login changed".to_owned()),
+                Some(_) => None,
+                None => Some(h.runtime_config.change_reason(harness_id, &request)),
+            };
             (
                 h.run_id.clone(),
                 h.steerable && !h.retiring.load(std::sync::atomic::Ordering::Acquire),
-                h.runtime_config
-                    .route(harness_id, &request)
-                    .filter(|_| same_login),
+                route.filter(|_| same_login),
                 h.steer_tx.clone(),
                 h.routed_steers.clone(),
                 h.fork_history_sent.clone(),
                 h.retiring.clone(),
+                restart_reason,
             )
         });
-        if let Some((run_id, steerable, route, steer_tx, ledger, history_sent, retiring)) = routed {
+        if let Some((run_id, steerable, route, steer_tx, ledger, history_sent, retiring, restart_reason)) =
+            routed
+        {
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
             let same_runtime = route.is_some();
@@ -978,6 +1023,7 @@ impl SessionsEngine {
             if !same_runtime {
                 tracing::info!(
                     chat = %chat_id,
+                    reason = restart_reason.as_deref().unwrap_or("unknown"),
                     "restarting live harness to apply changed run configuration"
                 );
             }

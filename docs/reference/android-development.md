@@ -66,7 +66,24 @@ cd apps/android
 ./gradlew :app:installDebug           # installs the split matching the device's ABI
 adb shell am start -n sh.roboco.android/.MainActivity
 adb logcat -s Roboco                  # core load/version handshake logs
+adb logcat -s RobocoCore              # the Rust core's tracing (links, reconnects, probes)
+adb logcat -s RobocoRunWatch          # the foreground service's starts and stops
 ```
+
+The Rust core installs a logcat `tracing` subscriber at init
+(`crates/mobile/src/logcat.rs`, Android only): INFO and above for the
+`roboco*` crates, WARN and above for dependencies, one line per event as
+`target: message key=value …` under the `RobocoCore` tag.
+
+### The foreground service
+
+`RunWatchService` keeps the process (and its engine connections) alive in
+the background while a run is Working and for 2 minutes after the last
+one; Settings → Background → "Stay connected in background" keeps it up
+indefinitely ([ADR 0010](../adr/0010-android-stay-connected.md)). Check it
+with `adb shell dumpsys activity services sh.roboco.android`: the
+`foregroundServiceType` reads `dataSync` for run watching and `specialUse`
+for Stay connected (API 34+).
 
 ABI splits (android-app#31) apply to every variant, so debug APKs are named
 after their ABI too: `app-arm64-v8a-debug.apk`, `app-x86_64-debug.apk`. A

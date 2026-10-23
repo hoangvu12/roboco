@@ -149,6 +149,21 @@ fn write<T: Serialize + ?Sized>(path: &Path, value: &T) -> io::Result<()> {
     serde_json::to_writer(temporary.as_file_mut(), value)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
+    // Windows refuses to replace a file another handle has open (a reader,
+    // an indexer or a virus scanner, for a moment): "Access is denied".
+    // Retry the rename a few times before giving up on this save.
+    let mut delay = std::time::Duration::from_millis(25);
+    for _ in 0..4 {
+        match temporary.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::PermissionDenied => {
+                temporary = error.file;
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }

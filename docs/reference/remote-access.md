@@ -305,9 +305,54 @@ also works across an engine restart on the same data dir.
   so a bad summary cannot loop.
 - If `roboco_doc::apply_update_digests` returns `false`, drop the stored
   digests: the update changed entries but carried none (an older engine).
+- A subscription outlives any engine outage: it waits for the engine to come
+  back (however long that takes) and resubscribes as soon as it does, never
+  sitting out a backoff that grew during the outage. Only closing the chat
+  ends it.
+- A send acked by the engine but still missing from the transcript after its
+  grace period (120 s on Android) forces one plain-reset resubscribe; the send
+  shows as undelivered only if that reset arrives without it.
 
 Resume never changes `contextUsage`, the `replayBaseline` watermark (the first
 frame of a stream always carries it, so resumed catch-up content is treated as
 history and not animated), or `diff_transcript`'s behaviour on streams that did
 not opt in — a plain subscription is byte-for-byte what it was before the
 capability existed.
+
+## Mobile link liveness
+
+A phone's process is frozen in the background and its sockets die with it, so
+the Android core (`crates/mobile-client`) treats coming back as the common case.
+None of this changes the wire.
+
+- **Coming back to the foreground** probes a connected engine at once, with a
+  short budget (4 s), instead of waiting for the next 5 s probe. A link that
+  fails the probe reconnects; a link that is down dials immediately.
+- **One reconnect per event.** Lifecycle commands are stamped with the time they
+  were issued, and a command issued before the current dial started is ignored,
+  so one foreground or network event never redials the link it just produced.
+  A network-online report doesn't touch a connected engine.
+- **Network changes** first verify a connected Tailcat link with that same
+  probe; the tunnel is rebuilt only if the probe fails.
+- **Slow isn't dead.** A health probe or transcript lag check that times out
+  while bytes are still arriving (a large reset queued over a relay) keeps the
+  connection.
+- **Transcript connections end with their link.** When a link ends, the
+  transcript connections opened under it close too, and the open chat
+  resubscribes on the next link.
+- **Clean closes.** Both sides send a WebSocket Close (bounded at 500 ms)
+  whenever they drop a session on purpose, and the Tailcat adapter drains
+  in-tunnel TCP before it tears a tunnel down. The engine no longer waits out
+  its 45 s silence lease for sockets a client abandoned. The engine log tells
+  `peer closed without Close frame` apart from `silent past lease`, and each
+  line carries a `conn` id.
+- **Tailcat dials** get 15 s for the WebSocket upgrade, since the loopback
+  accepts at once and then dials the engine through the tunnel. A failed tunnel
+  dial resets the shared Tailcat client only if a health ping to the engine
+  also fails.
+- **Sending while the agent works queues.** When the rows say a chat is idle
+  but can't vouch for it (its Working row went stale, or the link hasn't proved
+  itself within 10 s), a send asks the engine first, with a one-shot
+  `WatchSessions` read. If a turn is running, the message follows the busy
+  policy (queue by default) instead of starting a run that would cut the reply
+  off.

@@ -36,7 +36,9 @@ display lists at Rust coordinates with the same font bytes.
 - Notifications v1 are local: a foreground service holds engine connections
   while any run is active and posts local notifications using the desktop's
   done / needs-input / failed rule and chimes. Engine-originated push
-  (UnifiedPush, ntfy, FCM) needs its own ADR.
+  (UnifiedPush, ntfy, FCM) needs its own ADR. Amended by ADR 0010: the
+  service lingers 2 minutes after the last run, and an opt-in "Stay
+  connected in background" setting keeps it up indefinitely (`specialUse`).
 - Tablets get the list-detail layout iOS has (`SplitRootController`).
 - Ids: `sh.roboco.android`, deep links `roboco://…`, mention links
   `roboco-file:`.

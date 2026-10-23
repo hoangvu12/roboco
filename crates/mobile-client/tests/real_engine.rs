@@ -196,6 +196,67 @@ async fn listener_restart_reconnects_with_a_new_generation() {
     core.shutdown().await;
 }
 
+fn generation_of(client: &Client, engine_id: &str) -> u64 {
+    client.engine(engine_id).unwrap().diagnostics.generation
+}
+
+/// Lifecycle events never tear down a healthy link, and one event costs
+/// at most one reconnect: the foreground and network-online callbacks used
+/// to queue both `Foreground` and `DialNow`; the backoff wait took one,
+/// and the new link read the other as a redial request and dropped itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lifecycle_events_cost_at_most_one_reconnect() {
+    let engine_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let core = support::core(engine_dir.path());
+    let mut listener = serve(&core, engine_dir.path()).await;
+    let port = listener.address.port();
+    let url = pairing_url(&listener, engine_dir.path(), None);
+    let client = test_client(data_dir.path(), Vec::new(), Arc::new(Recorder::default()));
+    let record = client.pair_engine(&url, None).await.unwrap();
+    let engine_id = record.engine_id.clone();
+    wait_for_view(&client, &engine_id, "connected", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    // A connected engine: foreground and network-online keep the link.
+    let healthy = generation_of(&client, &engine_id);
+    client.on_foreground();
+    client.set_network_online(true);
+    client.set_network_online(true);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let view = client.engine(&engine_id).unwrap();
+    assert_eq!(view.state, EngineState::Connected);
+    assert_eq!(
+        view.diagnostics.generation, healthy,
+        "a lifecycle event redialed a healthy link"
+    );
+    // A dropped engine: the thaw's foreground event reconnects exactly once.
+    listener.stop().await;
+    wait_for_view(&client, &engine_id, "reconnecting", |view| {
+        view.state == EngineState::Reconnecting
+    })
+    .await;
+    let mut listener = serve_on_port(&core, engine_dir.path(), port).await;
+    client.on_foreground();
+    client.set_network_online(true);
+    wait_for_view(&client, &engine_id, "connected again", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let view = client.engine(&engine_id).unwrap();
+    assert_eq!(view.state, EngineState::Connected);
+    assert_eq!(
+        view.diagnostics.generation,
+        healthy + 1,
+        "the reconnect after the outage must be a single link"
+    );
+    client.shutdown();
+    listener.stop().await;
+    core.shutdown().await;
+}
+
 /// After `PairingStore::revoke` and a listener restart, the engine becomes
 /// `Parked { Revoked }` (HTTP 401 on upgrade — the Rust client never sees
 /// a 4401 close code) and makes no further dial attempts.

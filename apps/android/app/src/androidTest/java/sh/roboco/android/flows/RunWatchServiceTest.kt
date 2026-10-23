@@ -16,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import sh.roboco.android.MainActivity
 import sh.roboco.android.RobocoApplication
+import sh.roboco.android.background.RunWatchController
 import sh.roboco.android.background.RunWatchService
 import sh.roboco.android.notify.NotificationPrefs
 
@@ -28,8 +29,8 @@ import sh.roboco.android.notify.NotificationPrefs
  *
  * - while a run is Working on the **slow** fixture engine the service is
  *   present;
- * - ≤ 20 s after the last run leaves Working (the 15 s stop grace plus a
- *   re-check window) it is gone.
+ * - after the last run leaves Working and the 2 min linger (ADR 0010)
+ *   runs out, it is gone.
  */
 @RunWith(AndroidJUnit4::class)
 class RunWatchServiceTest {
@@ -54,9 +55,11 @@ class RunWatchServiceTest {
 
     @Test
     fun theServiceIsAbsentWhenNothingIsWorking() {
-        // The fixture is idle and the 15 s stop grace long expired.
-        Thread.sleep(20_000)
-        assertFalse("the service must be gone 20 s after the last run", servicePresent())
+        // The fixture is idle; a run from an earlier test in this process
+        // may still hold the 2 min linger (ADR 0010), so wait it out.
+        app.prefs.setStayConnected(false)
+        compose.waitUntil(timeoutMillis = RunWatchController.LINGER_MS + 20_000) { !servicePresent() }
+        assertFalse("the service must be gone once the linger ran out", servicePresent())
     }
 
     @Test
@@ -86,8 +89,8 @@ class RunWatchServiceTest {
         compose.waitUntil(timeoutMillis = 15_000) { servicePresent() }
         assertTrue("the service must be present while a run is Working", servicePresent())
 
-        // The run settles, the 15 s grace passes, the service is gone.
-        compose.waitUntil(timeoutMillis = 60_000) { !servicePresent() }
+        // The run settles, the 2 min linger passes, the service is gone.
+        compose.waitUntil(timeoutMillis = RunWatchController.LINGER_MS + 45_000) { !servicePresent() }
         assertFalse("the service must be gone after the last run leaves Working", servicePresent())
     }
 

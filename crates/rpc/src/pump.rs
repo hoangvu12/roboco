@@ -42,6 +42,7 @@ struct Activity {
     completed_write_ms: AtomicU64,
     writing: AtomicBool,
     blocked_write: AtomicBool,
+    read_bytes: AtomicU64,
 }
 
 /// Shared byte-activity clock. It sends no extra frames and allocates once
@@ -57,6 +58,7 @@ impl Progress {
             completed_write_ms: AtomicU64::new(0),
             writing: AtomicBool::new(false),
             blocked_write: AtomicBool::new(false),
+            read_bytes: AtomicU64::new(0),
         }))
     }
     fn record(&self, write: bool) {
@@ -67,6 +69,10 @@ impl Progress {
         };
         let ms = self.0.origin.elapsed().as_millis() as u64;
         clock.store(ms, Ordering::Relaxed);
+    }
+    /// Bytes read off the socket so far (control frames included).
+    pub(crate) fn bytes_read(&self) -> u64 {
+        self.0.read_bytes.load(Ordering::Relaxed)
     }
     fn latest(&self, write_only: bool) -> tokio::time::Instant {
         let write = self.0.write_ms.load(Ordering::Relaxed);
@@ -174,6 +180,10 @@ impl<S: AsyncRead + Unpin> AsyncRead for ProgressIo<S> {
         let result = Pin::new(&mut this.inner).poll_read(cx, buf);
         if buf.filled().len() > before {
             this.progress.record(false);
+            this.progress
+                .0
+                .read_bytes
+                .fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
         }
         result
     }
@@ -251,6 +261,9 @@ pub async fn pump_with_timing<S>(
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let progress = ws.progress;
+    let conn = NEXT_CONNECTION.fetch_add(1, Ordering::Relaxed);
+    let opened = tokio::time::Instant::now();
+    let age_ms = || opened.elapsed().as_millis() as u64;
     let (mut sink, mut stream) = ws.socket.split();
     // Each direction owns its await points. A full TCP send buffer must not
     // stop reads or silence detection; a full consumer inbox must not stop
@@ -263,9 +276,9 @@ pub async fn pump_with_timing<S>(
             let frame = tokio::select! {
                 frame = out_rx.recv() => match frame {
                     Some(text) => WsMessage::Text(text),
-                    // Tear down immediately: a close handshake can itself
-                    // block on the failed uplink we are trying to release.
-                    None => return,
+                    // Every sender is gone: this side is done with the
+                    // session.
+                    None => return Exit::LocalClose,
                 },
                 _ = ping.tick() => WsMessage::Ping(Vec::new()),
             };
@@ -279,8 +292,8 @@ pub async fn pump_with_timing<S>(
                     .await,
                 Ok(Ok(()))
             ) {
-                tracing::warn!("rpc socket write failed or stopped progressing; dropping session");
-                return;
+                tracing::warn!(conn, age_ms = age_ms(), "rpc socket write failed or stopped progressing; dropping session");
+                return Exit::Failed;
             }
         }
     };
@@ -290,11 +303,31 @@ pub async fn pump_with_timing<S>(
                 .while_progressing(lease, false, stream.next())
                 .await
             {
-                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(None) => return,
+                Ok(Some(Ok(WsMessage::Close(_)))) => {
+                    tracing::debug!(conn, age_ms = age_ms(), "rpc peer closed the session");
+                    return Exit::PeerClosed;
+                }
+                Ok(None) => return Exit::PeerClosed,
                 Ok(Some(Ok(frame))) => frame,
-                _ => {
-                    tracing::warn!("rpc socket silent past lease or failed; dropping session");
-                    return;
+                Ok(Some(Err(error))) => {
+                    // A peer that went away without a Close frame (an app
+                    // killed or frozen, a torn-down tunnel) is not a stall:
+                    // tell the two apart in the log.
+                    if closed_without_handshake(&error) {
+                        tracing::warn!(conn, age_ms = age_ms(), %error, "rpc peer closed without Close frame; dropping session");
+                    } else {
+                        tracing::warn!(conn, age_ms = age_ms(), %error, "rpc socket failed; dropping session");
+                    }
+                    return Exit::Failed;
+                }
+                Err(()) => {
+                    tracing::warn!(
+                        conn,
+                        age_ms = age_ms(),
+                        lease_s = lease.as_secs(),
+                        "rpc socket silent past lease; dropping session"
+                    );
+                    return Exit::Failed;
                 }
             };
             if let WsMessage::Text(text) = frame
@@ -305,15 +338,67 @@ pub async fn pump_with_timing<S>(
                     Ok(Ok(()))
                 )
             {
-                tracing::warn!("rpc socket consumer closed or stalled; dropping session");
-                return;
+                if in_tx.is_closed() {
+                    return Exit::LocalClose;
+                }
+                tracing::warn!(conn, age_ms = age_ms(), "rpc socket consumer stalled; dropping session");
+                return Exit::Failed;
             }
         }
     };
-    tokio::select! {
-        _ = writer => {},
-        _ = reader => {},
-        _ = in_tx.closed() => {},
+    let exit = tokio::select! {
+        exit = writer => exit,
+        exit = reader => exit,
+        // The consumer let go (`RpcClient::close`, or the client dropped).
+        _ = in_tx.closed() => Exit::LocalClose,
+    };
+    match exit {
+        // Say goodbye: without a Close frame the peer only learns from its
+        // silence lease (45 s). Bounded — the close can itself block on the
+        // failed uplink being released; control frames may sit between the
+        // fragments of an interrupted message.
+        Exit::LocalClose => {
+            let _ = tokio::time::timeout(CLOSE_BUDGET, sink.close()).await;
+        }
+        // Flush the Close reply tungstenite queued for the peer.
+        Exit::PeerClosed => {
+            let _ = tokio::time::timeout(CLOSE_BUDGET, sink.flush()).await;
+        }
+        Exit::Failed => {}
+    }
+}
+
+/// How a session pump ended.
+enum Exit {
+    /// This side let go of the session.
+    LocalClose,
+    /// The peer closed it (Close frame or end of stream).
+    PeerClosed,
+    /// A stall, a lease expiry or a transport error.
+    Failed,
+}
+
+/// The bound on sending (or flushing) a Close frame on the way out.
+const CLOSE_BUDGET: Duration = Duration::from_millis(500);
+
+/// Per-process session numbering, so one connection's log lines can be
+/// told apart from the others'.
+static NEXT_CONNECTION: AtomicU64 = AtomicU64::new(1);
+
+/// A socket that ended without the closing handshake (reset or EOF).
+fn closed_without_handshake(error: &tokio_tungstenite::tungstenite::Error) -> bool {
+    use tokio_tungstenite::tungstenite::Error;
+    use tokio_tungstenite::tungstenite::error::ProtocolError;
+    match error {
+        Error::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        Error::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
     }
 }
 
@@ -397,6 +482,41 @@ mod tests {
         let h = harness().await;
         stall(&h).await;
         drop(h.rx);
+        finishes(h.task, Duration::from_secs(1)).await;
+    }
+
+    /// Wait for the peer to see a Close frame (other frames are skipped).
+    async fn sees_close(server: &mut WebSocketStream<DuplexStream>) -> bool {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(frame) = server.next().await {
+                match frame {
+                    Ok(WsMessage::Close(_)) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// A local close (the client dropped or `RpcClient::close`, which ends
+    /// the inbound receiver) says goodbye with a Close frame: abandoning
+    /// the socket silently left the engine waiting out its 45 s lease.
+    #[tokio::test(start_paused = true)]
+    async fn a_local_close_sends_a_close_frame() {
+        let mut h = harness().await;
+        drop(h.rx);
+        assert!(sees_close(&mut h.server).await, "no Close frame reached the peer");
+        finishes(h.task, Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_outbound_sender_sends_a_close_frame() {
+        let mut h = harness().await;
+        drop(h.tx);
+        assert!(sees_close(&mut h.server).await, "no Close frame reached the peer");
         finishes(h.task, Duration::from_secs(1)).await;
     }
 

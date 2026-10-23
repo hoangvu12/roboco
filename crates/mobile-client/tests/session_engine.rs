@@ -1437,6 +1437,73 @@ async fn the_session_recovers_when_the_engine_restarts() {
     rig.client.shutdown();
 }
 
+/// The frozen-chat regression: an outage longer than 30 s used to end the
+/// transcript task for good (the session stayed registered and uncancelled,
+/// so a reopen handed back the dead core). The subscription now waits out
+/// any outage and picks up what the engine wrote meanwhile and after.
+///
+/// The outage stands in for the phone's freeze/thaw cycle: the app is
+/// backgrounded mid-run, the process freezes, the engine drops the silent
+/// sockets after its 45 s lease, and the user taps the notification. The
+/// time from the reconnect to the new entry on screen is bounded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_transcript_survives_a_freeze_past_the_engine_lease() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let mut rig = rig().await;
+    let handle = rig.open();
+    wait_until(|| handle.snapshot().hydrated, "the first reset lands").await;
+    rig.listener.stop();
+    wait_for_view(&rig.client, &rig.engine_id, "disconnected", |view| {
+        view.state != EngineState::Connected
+    })
+    .await;
+    // Past the old 30 s give-up and the engine's 45 s socket lease.
+    tokio::time::sleep(Duration::from_secs(46)).await;
+    rig.core
+        .doc_host
+        .open("same-chat")
+        .unwrap()
+        .write_user_message("during-outage", "written while offline", 1, None)
+        .unwrap();
+    let thawed = Instant::now();
+    rig.restart_listener().await;
+    wait_for_view(&rig.client, &rig.engine_id, "reconnected", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    rig.core
+        .doc_host
+        .open("same-chat")
+        .unwrap()
+        .write_user_message("after-outage", "written after the reconnect", 2, None)
+        .unwrap();
+    wait_until(
+        || {
+            let snapshot = handle.snapshot();
+            ["during-outage", "after-outage"]
+                .iter()
+                .all(|id| snapshot.entries.iter().any(|e| e.id == *id))
+        },
+        "both entries reach the open session",
+    )
+    .await;
+    let caught_up = thawed.elapsed();
+    eprintln!("thaw to new entry on screen: {caught_up:?}");
+    // The resubscribe follows the reconnect directly: no backoff that grew
+    // during the outage (up to 30 s) is waited out first.
+    assert!(
+        caught_up < Duration::from_secs(10),
+        "the chat took {caught_up:?} to catch up after the thaw"
+    );
+    // A reopen returns the same, still-live session.
+    let reopened = rig.open();
+    assert!(
+        reopened.snapshot().entries.iter().any(|e| e.id == "after-outage"),
+        "the reopened session shows the live transcript"
+    );
+    rig.client.shutdown();
+}
+
 /// `SendState::Sending` while the send is in flight, and `turn_running`
 /// only once the host reports Working or the tail streams — never from the
 /// pending send itself (#777). The upload window makes the in-flight state
@@ -1659,6 +1726,81 @@ async fn a_frozen_transcript_connection_is_replaced() {
     );
     assert!(!handle.snapshot().history_pending);
     client.shutdown();
+}
+
+/// The thaw: the phone's process was frozen, so its timers never fired,
+/// and every socket it holds is dead without a close (the engine dropped
+/// them, the FINs were lost). The client still believes it is Connected.
+/// Coming back to the foreground alone must catch the open chat up within
+/// seconds: an immediate wake probe fails the dead link, the transcript
+/// connection closes with it, and the chat resubscribes on the new link.
+/// Before, the foreground only reset the probe timer and the chat sat on a
+/// dead socket until the next probe and lag check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thawed_app_on_dead_sockets_catches_up_within_seconds() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let engine_dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let core = engine_core(engine_dir.path());
+    let direct = serve(&core, engine_dir.path()).await;
+    let proxy = support::stall_proxy::StallProxy::start(direct.address).await;
+    let url = format!("http://{}/pair#token={}", proxy.address, {
+        let store = roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap();
+        store.create_code("test", 300).unwrap().credential
+    });
+    // The periodic checks are far apart, as for a process whose timers sat
+    // frozen: only the foreground event can notice the dead link in time.
+    let timings = roboco_mobile_client::timings::Timings {
+        probe_every: Duration::from_secs(60),
+        lag_every: Duration::from_secs(60),
+        lag_timeout: Duration::from_secs(60),
+        ..support::test_timings()
+    };
+    let client = Client::new_with_timings(
+        support::test_config(data_dir.path()),
+        Vec::new(),
+        Arc::new(Recorder::default()),
+        timings,
+    )
+    .unwrap();
+    let record = client.pair_engine(&url, None).await.unwrap();
+    wait_for_view(&client, &record.engine_id, "connected", |view| {
+        view.state == EngineState::Connected
+    })
+    .await;
+    let handle = client
+        .open_session(&client.scope(&record.engine_id, "same-chat"))
+        .unwrap();
+    wait_until(|| handle.snapshot().hydrated, "the first reset lands").await;
+    // Freeze: every open socket dies silently; the engine keeps writing.
+    proxy.sever();
+    core.doc_host
+        .open("same-chat")
+        .unwrap()
+        .write_user_message("while-frozen", "written while the phone slept", 1, None)
+        .unwrap();
+    assert_eq!(
+        client.engine(&record.engine_id).unwrap().state,
+        EngineState::Connected,
+        "the client still believes it is connected"
+    );
+    // Thaw.
+    let thawed = Instant::now();
+    client.on_foreground();
+    wait_until(
+        || handle.snapshot().entries.iter().any(|e| e.id == "while-frozen"),
+        "the entry written during the freeze reaches the open chat",
+    )
+    .await;
+    let caught_up = thawed.elapsed();
+    eprintln!("thaw to new entry on screen: {caught_up:?}");
+    assert!(
+        caught_up < Duration::from_secs(10),
+        "the chat took {caught_up:?} to catch up after the thaw"
+    );
+    client.shutdown();
+    drop(proxy);
+    core.shutdown().await;
 }
 
 /// The slow streaming test (`--ignored`): `ROBOCO_MOCK_CHARS` streams

@@ -220,8 +220,20 @@ async fn a_tailcat_engine_pairs_and_reconnects_from_its_stored_record() {
     .await;
     let mut generation = view.diagnostics.generation;
 
-    // 3. A forced tunnel drop (what a network change does) heals.
+    // 3a. A network change verifies a healthy link and keeps it: no tunnel
+    //     drop, no redial (the probe answers through the live tunnel).
     client.set_network_changed();
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let view = client.engine(&record.engine_id).unwrap();
+    assert_eq!(view.state, EngineState::Connected, "a network change kept the link");
+    assert_eq!(
+        view.diagnostics.generation, generation,
+        "a network change must not redial a link that still answers"
+    );
+
+    // 3b. A real tunnel drop (the network went away and came back) heals.
+    client.set_network_online(false);
+    client.set_network_online(true);
     let view = wait_for(&client, &record.engine_id, "after a tunnel drop", |view| {
         view.state == EngineState::Connected && view.diagnostics.generation > generation
     })

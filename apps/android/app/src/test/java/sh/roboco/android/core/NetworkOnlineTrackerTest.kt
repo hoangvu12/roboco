@@ -1,5 +1,6 @@
 package sh.roboco.android.core
 
+import java.net.InetAddress
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -108,15 +109,50 @@ class NetworkOnlineTrackerTest {
     }
 
     @Test
-    fun newAddressesOnTheCurrentNetworkAreAChangeAfterTheFirstReading() {
+    fun aLostAddressOnTheCurrentNetworkIsAChangeAfterTheFirstReading() {
         val tracker = NetworkOnlineTracker(initialNetwork = 1, initialOnline = true)
-        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5/24")))
-        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5/24")))
-        assertTrue(tracker.linkChanged(1, setOf("192.168.1.9/24")))
+        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5")))
+        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5")))
+        // The old IP went away (DHCP renumbered): rebuild.
+        assertTrue(tracker.linkChanged(1, setOf("192.168.1.9")))
         // Another network's link properties are ignored.
-        assertFalse(tracker.linkChanged(2, setOf("10.0.0.2/8")))
+        assertFalse(tracker.linkChanged(2, setOf("10.0.0.2")))
         // A handover resets the reading: the new network's first one is no change.
         tracker.available(2)
-        assertFalse(tracker.linkChanged(2, setOf("10.0.0.2/8")))
+        assertFalse(tracker.linkChanged(2, setOf("10.0.0.2")))
+    }
+
+    @Test
+    fun addedAddressesAloneAreNotAChange() {
+        // A new IPv6 privacy address or a second prefix on the same
+        // network: the existing sockets still work, no rebuild.
+        val tracker = NetworkOnlineTracker(initialNetwork = 1, initialOnline = true)
+        tracker.linkChanged(1, setOf("192.168.1.5"))
+        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5", "2001:db8::a")))
+        assertFalse(tracker.linkChanged(1, setOf("192.168.1.5", "2001:db8::a", "2001:db8::b")))
+        // The privacy address rotates out: one went away, rebuild.
+        assertTrue(tracker.linkChanged(1, setOf("192.168.1.5", "2001:db8::b")))
+    }
+
+    @Test
+    fun onlyRoutableAddressesCount() {
+        fun routable(literal: String) = InetAddress.getByName(literal).isRoutableAddress()
+        assertTrue(routable("192.168.1.5"))
+        assertTrue(routable("10.0.0.2"))
+        assertTrue(routable("100.64.1.2"))
+        assertTrue(routable("2001:db8::1"))
+        assertTrue("IPv6 ULAs are LAN-routable", routable("fd12:3456::1"))
+        assertFalse(routable("fe80::1"))
+        assertFalse(routable("169.254.10.1"))
+        assertFalse(routable("127.0.0.1"))
+        assertFalse(routable("::1"))
+        assertFalse(routable("0.0.0.0"))
+        assertFalse(routable("ff02::1"))
+        // So a link-local-only churn never reaches the tracker as a change.
+        val tracker = NetworkOnlineTracker(initialNetwork = 1, initialOnline = true)
+        val before = listOf("192.168.1.5", "fe80::1").filter(::routable).toSet()
+        val after = listOf("192.168.1.5", "fe80::2").filter(::routable).toSet()
+        tracker.linkChanged(1, before)
+        assertFalse(tracker.linkChanged(1, after))
     }
 }

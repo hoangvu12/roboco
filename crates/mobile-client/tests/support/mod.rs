@@ -175,12 +175,14 @@ pub fn test_timings() -> Timings {
         subscribe_timeout: Duration::from_secs(2),
         sync_deadline: Duration::from_secs(5),
         probe_every: Duration::from_millis(200),
+        wake_probe_timeout: Duration::from_secs(1),
         lag_every: Duration::from_millis(300),
         lag_timeout: Duration::from_millis(400),
         cache_debounce: Duration::from_millis(50),
         background_flush: Duration::from_secs(1),
         refresh_cap: Duration::from_secs(1),
         undelivered_grace: Duration::from_secs(2),
+        undelivered_heal: Duration::from_secs(2),
         workspace_tick: Duration::from_millis(100),
         // android-next#05: the forced-usage deadline shrinks so the
         // stall-proxy test cuts a frozen probe in well under a second, and

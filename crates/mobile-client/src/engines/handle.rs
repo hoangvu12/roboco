@@ -172,6 +172,12 @@ impl EngineHandle {
         &self.key
     }
 
+    /// When the live link last proved its rows current (a feed frame or a
+    /// probe reply), epoch ms.
+    pub(crate) fn proven_ms(&self) -> Option<i64> {
+        self.entry(|entry| entry.proven_ms).ok().flatten()
+    }
+
     /// The next scheduled redial, while reconnecting (the view's
     /// `retry_at_ms`).
     pub(crate) fn retry_at_ms(&self) -> Option<i64> {
@@ -206,9 +212,50 @@ impl EngineHandle {
     /// not connected.
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, ClientError> {
         let method = method.to_owned();
-        // The availability check and the connection pick are synchronous —
-        // a disconnected engine fails within microseconds, never queues.
-        let client = self.entry(|entry| {
+        let client = self.call_client()?;
+        let params = wire_params(&self.key, &method, params).map_err(rpc_error_to_client_error)?;
+        let deadline = call_deadline(&method);
+        let result = tokio::time::timeout(deadline, client.call(&method, params))
+            .await
+            .map_err(|_| ClientError::HostUnavailable {
+                message: "Engine request timed out".into(),
+            })
+            .and_then(|result| result.map_err(rpc_error_to_client_error))?;
+        Ok(result)
+    }
+
+    /// The current value of a stream, asked once: subscribe on the calls
+    /// connection, take the first item (every watch sends its current value
+    /// first) within `budget`, and cancel. A point-in-time read of state the
+    /// engine only serves as a watch.
+    pub(crate) async fn first_item(
+        &self,
+        method: &str,
+        params: Value,
+        budget: Duration,
+    ) -> Result<Value, ClientError> {
+        let client = self.call_client()?;
+        let params = wire_params(&self.key, method, params).map_err(rpc_error_to_client_error)?;
+        tokio::time::timeout(budget, async {
+            let mut subscription = client
+                .subscribe_checked(method, params)
+                .await
+                .map_err(rpc_error_to_client_error)?;
+            subscription.recv().await.ok_or_else(|| ClientError::HostUnavailable {
+                message: "Engine connection closed".into(),
+            })
+        })
+        .await
+        .map_err(|_| ClientError::HostUnavailable {
+            message: "Engine request timed out".into(),
+        })?
+    }
+
+    /// The connection a call rides: calls, else the feed. The availability
+    /// check and the pick are synchronous — a disconnected engine fails
+    /// within microseconds, never queues.
+    fn call_client(&self) -> Result<Arc<RpcClient>, ClientError> {
+        self.entry(|entry| {
             match entry.state {
                 EngineState::Parked { .. } => Err(ClientError::Auth {
                     message: "Engine is parked; pair again to connect.".into(),
@@ -235,16 +282,7 @@ impl EngineHandle {
             calls.or(feed).ok_or_else(|| ClientError::HostUnavailable {
                 message: "Engine is offline; reconnecting".into(),
             })
-        })??;
-        let params = wire_params(&self.key, &method, params).map_err(rpc_error_to_client_error)?;
-        let deadline = call_deadline(&method);
-        let result = tokio::time::timeout(deadline, client.call(&method, params))
-            .await
-            .map_err(|_| ClientError::HostUnavailable {
-                message: "Engine request timed out".into(),
-            })
-            .and_then(|result| result.map_err(rpc_error_to_client_error))?;
-        Ok(result)
+        })?
     }
 
     pub async fn call_as<T: DeserializeOwned>(
@@ -371,7 +409,7 @@ impl EngineHandle {
         // stop, or when this connection is dropped.
         let cancel = self.engine_cancel.child_token();
         let lag_cancel = cancel.clone();
-        super::link::spawn_lag_check(client.clone(), lag_cancel, timings);
+        super::link::spawn_lag_check(client.clone(), lag_cancel, timings, self.feed_slot.clone());
         Ok(TranscriptConnection {
             client,
             engine_id: self.key.0.clone(),
