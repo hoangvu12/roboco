@@ -361,7 +361,9 @@ class LimitedBannerTest {
             "Resumed on b@example.com — continuing where the chat left off.",
             chrome.limited?.notice,
         )
-        assertNull(banner.pickerMenu())
+        // The re-loaded ranks serve the next picker open (the switch
+        // cleared the list; the reload re-populated it).
+        assertTrue(banner.pickerMenu() != null)
     }
 
     @Test
