@@ -67,3 +67,20 @@ stranded awaiting-input side chat and its runtime then reaps.
 **Out of scope:** tickets 01 (zombie reaper) and 02 (park budget) —
 complementary: 01 buries what dies, 02 bounds the parked, 03 makes
 nothing survive the engine itself.
+
+## Comments
+
+**2026-10-24 — implemented on `session-process-hygiene` (03800d7c7).**
+Fix A: `dies_with_parent` (PR_SET_PDEATHSIG + the getppid fork-race
+re-check) stamps every harness spawn — centrally in `acp::child::
+configure` (pi + ACP adapters, including the one-shot probes) and at
+the claude/codex/opencode/cursor spawn sites; Linux only (no prctl on
+macOS — and roboco is never PID 1 there; Windows Job Objects already
+own the tree). Verified live with a self-SIGKILLed helper test process.
+Terminal panes are intentionally unstamped, as scoped. Fix B: BOTH legs
+— ask-time auto-answer for a side chat whose parent is deleted or
+archived, and `stop_turn` drains the stopped parent's live side chats'
+pending questions empty. A live parent's questions still wait untouched
+(tested). Archived-parent draining beyond stop (delete/archive of a
+parent with live children) rides the ask-time check for new questions;
+a dedicated archive-time sweep remains a possible follow-up.

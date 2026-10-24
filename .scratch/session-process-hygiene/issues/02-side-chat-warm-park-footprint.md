@@ -71,3 +71,16 @@ observable differences are lower memory and no zombie pile-up
   evictions).
 
 **Out of scope:** zombie reaping (ticket 01); harness-specific teardown.
+
+## Comments
+
+**2026-10-24 — implemented on `session-process-hygiene` (03800d7c7).**
+Landed as the recommended design: default window unchanged everywhere,
+`ROBOCO_WARM_SESSIONS` (default 8, `0` = no cap) retires the
+oldest-idle parked runtime through the existing clean interrupt path
+(`Inner::note_parked`/`clear_parked`; lock order: `parked` is never held
+while `runs`/`statuses` are taken — see `remove_run`). Exemptions as
+specified (`turn.background_live()`, `running_subagents > 0`,
+`is_active`). The memory-pressure trigger was skipped (option 3 marked
+optional; the count cap already bounds the "lots of side chats" shape).
+The window-as-setting surface (option 3) remains open as a follow-up.

@@ -53,3 +53,22 @@ the SIGKILL escalation still orphans; the reaper remains the fix.
 **Out of scope:** memory footprint of parked (live) sessions — ticket 02;
 ops guidance for running headless under tini/dumb-init (one paragraph in
 `docs/reference/` is fine to add if convenient).
+
+## Comments
+
+**2026-10-24 — implemented on `session-process-hygiene` (03800d7c7).**
+Design as sketched, with one refinement discovered while testing: the
+registry only needs to cover children whose zombie window can exceed the
+scan's proof window (the pty shells, registered at terminals spawn; plus
+harness CLIs via `acp::Child::new` as cheap insurance), because the
+two-scan min-age rule alone protects every ephemeral helper an owner
+waits within milliseconds. `scan_adopted_zombies` (Linux, /proc-based —
+a waitid WNOWAIT enumeration cannot list all zombies without consuming)
+sights zombies on one scan and buries on the next, skipping registered
+pids; the engine starts it at assembly when `getpid() == 1` only (other
+hosts' init reaps). Children-first teardown landed in
+`acp/child.rs::shutdown` as specified. Note: `tree_teardown_reaches_…`
+was already failing on this dev box *before* any change — the terminated
+orphan zombies under PID 1 and `kill(pid, 0)` succeeds on a zombie —
+so its "ended" assertion now reads /proc state; CI runners (real init)
+were unaffected.
