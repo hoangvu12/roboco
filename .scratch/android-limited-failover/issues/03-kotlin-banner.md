@@ -68,3 +68,18 @@ Two-axis code-review fixes (standards + spec):
 - arm/cancel failures toast (the desktop's Mutate-error toast), never
   the failover notice line;
 - signed-out picker rows attach no switch at all.
+
+## Comments (CI round)
+
+CI compiled and validated the port (run 40067795681):
+- ubuntu + windows `android` jobs green: the Rust core, the UniFFI
+  bindings, the Kotlin compile and all 5,113 JVM unit tests;
+- `android-emulator` (the instrumented flow suite) green.
+Two fix rounds on the way: the original SessionBottomStack edit batch
+had been rejected atomically (only its tags/gapPx hunks landed — CI
+caught the missing `limited` parameter and a duplicate `model`
+argument), and one of my own test assertions was wrong (the reloaded
+ranks after a switch are the point, not a null menu). The remaining CI
+reds match the v0.12.0 baseline exactly (goldens job, tablet-adb flake,
+the gpui `present_if_needed` browser-fixture breakage) and the port
+fixed the baseline's own mobile-core failure (the E0063 rider).
