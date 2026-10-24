@@ -98,6 +98,22 @@ pub struct InputRequest {
     pub questions: Vec<UserInputQuestion>,
 }
 
+/// A Limited chat's usage-limit record, the client-side copy of the proto
+/// `SessionLimit` (the harness as its wire string, `"claude-code"`).
+/// Rides [`ComposerState`] while the chat's status row reads Limited —
+/// the banner, Resume and the account failover act on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLimitInfo {
+    /// Wire harness id (`"claude-code"`, `"codex"`, …).
+    pub harness: String,
+    /// The harness's own window label ("5-hour", "weekly", …).
+    pub window: String,
+    /// Epoch millis when the window resets, when known.
+    pub resets_at_ms: Option<i64>,
+    /// The harness account the limit hit (the engine slot id).
+    pub account_id: Option<String>,
+}
+
 /// Everything the composer and its status strip render. Transcript rows are
 /// NOT here — they live in [`super::SessionSnapshot`].
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +141,13 @@ pub struct ComposerState {
     /// The last message this device submitted (scroll-to-own-send target).
     pub last_submitted_message_id: Option<String>,
     pub context_usage: Option<ContextUsage>,
+    /// The usage-limit record while the chat reads Limited (the proto
+    /// `Session` row's `limit`, presented on top of the errored status —
+    /// `effective_indicator`'s one rule, shared with every surface).
+    pub limit: Option<SessionLimitInfo>,
+    /// The armed Resume-at-reset continuation's fire time (epoch ms),
+    /// while one is armed on the Limited chat.
+    pub scheduled_resume_fire_at_ms: Option<i64>,
 }
 
 impl Default for ComposerState {
@@ -156,6 +179,8 @@ impl Default for ComposerState {
             queue_error: None,
             last_submitted_message_id: None,
             context_usage: None,
+            limit: None,
+            scheduled_resume_fire_at_ms: None,
         }
     }
 }
@@ -202,6 +227,28 @@ pub(crate) fn build_composer(
         host_indicator,
         ChatIndicator::Working | ChatIndicator::AwaitingInput
     );
+    // The usage-limit record while the row reads Limited: `Errored` with
+    // a `limit` (proto `view::effective_indicator` — no staleness gate on
+    // Errored rows; the record lives exactly as long as the status).
+    let (limit, scheduled_resume_fire_at_ms) = inputs
+        .session
+        .as_ref()
+        .filter(|s| {
+            roboco_proto::view::effective_indicator(Some(s), now)
+                == roboco_proto::view::Indicator::Limited
+        })
+        .map(|s| {
+            (
+                s.limit.clone().map(|limit| SessionLimitInfo {
+                    harness: wire_harness(&limit.harness),
+                    window: limit.window,
+                    resets_at_ms: limit.resets_at,
+                    account_id: limit.account_id,
+                }),
+                s.scheduled_resume.map(|resume| resume.fire_at),
+            )
+        })
+        .unwrap_or((None, None));
     ComposerState {
         chat_id: core.chat_id.clone(),
         revision: state.composer_revision,
@@ -245,7 +292,17 @@ pub(crate) fn build_composer(
         queue_error: state.queue_error.clone(),
         last_submitted_message_id: state.last_submitted.clone(),
         context_usage: state.context_usage,
+        limit,
+        scheduled_resume_fire_at_ms,
     }
+}
+
+/// The proto harness enum's wire string (`"claude-code"`).
+fn wire_harness(h: &roboco_proto::HarnessId) -> String {
+    serde_json::to_value(h)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn fresh(session: &Session, now: chrono::DateTime<chrono::Utc>) -> bool {
@@ -341,6 +398,104 @@ mod tests {
             limit: None,
             scheduled_resume: None,
             running_subagents: 0,
+        }
+    }
+
+    /// An errored row carrying a limit record — the Limited presentation.
+    fn limited_session_row(limit: Option<roboco_proto::SessionLimit>) -> Session {
+        session_row(roboco_proto::SessionStatus::Errored, TimeDelta::seconds(1)).limit_set(limit)
+    }
+
+    /// A Limited row: the harness, its window, the reset moment and the
+    /// account the limit hit ride the composer while the row reads
+    /// Limited (errored + a record); an armed continuation rides beside
+    /// it. Anything else (Working, plain errored, no record) leaves the
+    /// composer's limited fields empty.
+    #[test]
+    fn a_limited_row_carries_its_limit_and_scheduled_resume() {
+        let core = test_core();
+        let now = chrono::Utc::now();
+        let reset = now + TimeDelta::hours(4);
+        let mut session = limited_session_row(Some(roboco_proto::SessionLimit {
+            harness: roboco_proto::HarnessId::ClaudeCode,
+            window: "5-hour".into(),
+            resets_at: Some(reset.timestamp_millis()),
+            account_id: Some("slot-1".into()),
+        }));
+        session.scheduled_resume = Some(roboco_proto::ScheduledResume {
+            fire_at: reset.timestamp_millis(),
+        });
+        let composer = build_composer(
+            &core,
+            &RowInputs {
+                chat: Some(chat_row(false)),
+                session: Some(session),
+                engine_connected: true,
+                engine_name: None,
+                engine_device_id: Some("engine".into()),
+                capabilities: vec![],
+                retry_at_ms: None,
+            },
+            None,
+        );
+        let limit = composer.limit.expect("limited row carries the record");
+        assert_eq!(limit.harness, "claude-code");
+        assert_eq!(limit.window, "5-hour");
+        assert_eq!(limit.resets_at_ms, Some(reset.timestamp_millis()));
+        assert_eq!(limit.account_id.as_deref(), Some("slot-1"));
+        assert_eq!(composer.scheduled_resume_fire_at_ms, Some(reset.timestamp_millis()));
+
+        // A plain errored row (no record) is not Limited.
+        let composer = build_composer(
+            &core,
+            &RowInputs {
+                chat: Some(chat_row(false)),
+                session: Some(limited_session_row(None)),
+                engine_connected: true,
+                engine_name: None,
+                engine_device_id: Some("engine".into()),
+                capabilities: vec![],
+                retry_at_ms: None,
+            },
+            None,
+        );
+        assert_eq!(composer.limit, None);
+        assert_eq!(composer.scheduled_resume_fire_at_ms, None);
+
+        // A working row with a stale record is not Limited either (the
+        // record rides exactly as long as the errored status).
+        let working = session_row(roboco_proto::SessionStatus::Working, TimeDelta::seconds(1))
+            .limit_set(Some(roboco_proto::SessionLimit {
+                harness: roboco_proto::HarnessId::ClaudeCode,
+                window: "5-hour".into(),
+                resets_at: None,
+                account_id: None,
+            }));
+        let composer = build_composer(
+            &core,
+            &RowInputs {
+                chat: Some(chat_row(false)),
+                session: Some(working),
+                engine_connected: true,
+                engine_name: None,
+                engine_device_id: Some("engine".into()),
+                capabilities: vec![],
+                retry_at_ms: None,
+            },
+            None,
+        );
+        assert_eq!(composer.limit, None);
+    }
+
+    /// Test helper: set the row's limit record (the fixture builder).
+    trait SessionRowExt {
+        fn limit_set(self, limit: Option<roboco_proto::SessionLimit>) -> Session;
+    }
+
+    impl SessionRowExt for Session {
+        fn limit_set(mut self, limit: Option<roboco_proto::SessionLimit>) -> Session {
+            self.limit = limit;
+            self
         }
     }
 

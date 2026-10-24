@@ -187,6 +187,8 @@ fun chipMenuComposerState(
     queueError = null,
     lastSubmittedMessageId = null,
     contextUsage = contextUsage,
+    limit = null,
+    scheduledResumeFireAtMs = null,
 )
 
 /**

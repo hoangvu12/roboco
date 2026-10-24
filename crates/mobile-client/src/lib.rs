@@ -32,6 +32,7 @@ pub mod clock;
 pub mod compat;
 pub mod engines;
 pub mod events;
+pub mod failover;
 pub mod files;
 pub mod host_paths;
 pub mod lenient;

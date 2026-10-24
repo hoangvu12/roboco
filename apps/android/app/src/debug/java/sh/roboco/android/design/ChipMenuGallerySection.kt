@@ -365,6 +365,8 @@ private fun galleryComposerState(): ComposerState = ComposerState(
     queueError = null,
     lastSubmittedMessageId = null,
     contextUsage = ContextUsage(tokens = GALLERY_CONTEXT_MEASURED.tokens, window = GALLERY_CONTEXT_MEASURED.window),
+    limit = null,
+    scheduledResumeFireAtMs = null,
 )
 
 internal fun gallerySessionRow(config: ChatConfig, modelLabel: String): SessionRow = SessionRow(

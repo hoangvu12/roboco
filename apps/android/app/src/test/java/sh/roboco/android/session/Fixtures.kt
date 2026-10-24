@@ -17,6 +17,7 @@ import uniffi.roboco_core.PullRequest
 import uniffi.roboco_core.PullRequestState
 import uniffi.roboco_core.RoomState
 import uniffi.roboco_core.SessionRow
+import uniffi.roboco_core.SessionLimit
 import uniffi.roboco_core.TranscriptView
 import uniffi.roboco_core.NoHandle
 
@@ -39,6 +40,8 @@ internal fun composerState(
     queueError: String? = null,
     chatId: String = "chat-a",
     contextUsage: ContextUsage? = null,
+    limit: SessionLimit? = null,
+    scheduledResumeFireAtMs: Long? = null,
 ): ComposerState = ComposerState(
     chatId = chatId,
     revision = 1uL,
@@ -74,6 +77,8 @@ internal fun composerState(
     queueError = queueError,
     lastSubmittedMessageId = null,
     contextUsage = contextUsage,
+    limit = limit,
+    scheduledResumeFireAtMs = scheduledResumeFireAtMs,
 )
 
 /** A session row with only the fields [baseChrome] and the chips read set apart. */

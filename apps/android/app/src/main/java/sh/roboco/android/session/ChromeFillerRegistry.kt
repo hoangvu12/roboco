@@ -56,6 +56,11 @@ class ChromeFillerRegistry {
          * context menu's account half; it owns no chip of its own. */
         const val USAGE_CHIP = 22
 
+        /** The failover port (orchestration v2 ticket 09 + 07's pills):
+         * after the usage chip, before 73's banner — the Limited card's
+         * chrome derivation and its actions. */
+        const val LIMITED = 25
+
         /** Ticket 73 (banner). */
         const val BANNER = 30
 

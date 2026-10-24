@@ -88,6 +88,7 @@ internal object BottomStackTags {
 
     /** One slot's box. */
     fun forSlot(slot: BottomStackSlot): String = when (slot) {
+        BottomStackSlot.Limited -> "bottom-stack-limited"
         BottomStackSlot.Pill -> "bottom-stack-pill"
         BottomStackSlot.Queue -> "bottom-stack-queue"
         BottomStackSlot.Questions -> "bottom-stack-questions"
@@ -323,7 +324,11 @@ fun SessionBottomStack(
                 val motion = state.motions.getValue(entry.slot)
                 val extent = motion.extent()
                 if (extent > 0.5f || entry.shown) {
-                    val gapPx = if (entry.slot == BottomStackSlot.Pill || entry.slot == BottomStackSlot.Queue) {
+                    val gapPx = if (
+                        entry.slot == BottomStackSlot.Limited ||
+                        entry.slot == BottomStackSlot.Pill ||
+                        entry.slot == BottomStackSlot.Queue
+                    ) {
                         spacingPx
                     } else {
                         0f

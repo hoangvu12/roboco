@@ -105,7 +105,7 @@ object BottomStackMetrics {
             0f
         } else {
             when (slot) {
-                BottomStackSlot.Pill, BottomStackSlot.Queue -> h + spacing
+                BottomStackSlot.Limited, BottomStackSlot.Pill, BottomStackSlot.Queue -> h + spacing
                 BottomStackSlot.Questions, BottomStackSlot.Composer -> h
             }
         }

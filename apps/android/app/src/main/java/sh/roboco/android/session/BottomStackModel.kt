@@ -30,6 +30,8 @@ data class BottomStackModel(
     val queueCount: Int = 0,
     /** `chrome.banner != None` (73: `chrome.banner` never holds `Editing`). */
     val bannerShown: Boolean = false,
+    /** The Limited banner card (the failover port): `chrome.limited != null`. */
+    val limitedShown: Boolean = false,
     /** Ticket 83's edit-lease flag (73's display overlay; never structural). */
     val editing: Boolean = false,
 ) {
@@ -63,6 +65,7 @@ data class BottomStackModel(
             questionsShown = chrome.questions != null,
             queueCount = chrome.queue.size,
             bannerShown = chrome.banner != SessionChrome.Banner.None,
+            limitedShown = chrome.limited != null,
             editing = editing,
         )
     }
@@ -78,10 +81,12 @@ data class BottomStackModel(
 fun isStructural(old: BottomStackModel, new: BottomStackModel): Boolean =
     old.questionsShown != new.questionsShown ||
         old.queueCount != new.queueCount ||
-        old.bannerShown != new.bannerShown
+        old.bannerShown != new.bannerShown ||
+        old.limitedShown != new.limitedShown
 
-/** The four stack slots, top to bottom (`SessionViewController.swift:122`). */
-enum class BottomStackSlot { Pill, Queue, Questions, Composer }
+/** The five stack slots, top to bottom (`SessionViewController.swift:122`
+ *  plus the Limited banner above the pill row). */
+enum class BottomStackSlot { Limited, Pill, Queue, Questions, Composer }
 
 /**
  * What the container tells one slot during its composition. The slots are

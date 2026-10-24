@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.QuestionActions
+import sh.roboco.android.composer.DeliveryMode
 import sh.roboco.android.composer.QuestionPort
 import sh.roboco.android.composer.SessionQuestionsSlot
 import sh.roboco.android.composer.rememberQuestionPanelState
@@ -380,6 +381,19 @@ fun SessionScreen(
         }
     }
 
+    // 9.7 The failover port: the Limited banner's filler. Its Resume pill
+    //     sends the fixed continue prompt through the composer's normal
+    //     send (the failure pill and the draft survive), so the seam is
+    //     bound here where the binding lives — the desktop's
+    //     `composer.resume_limited` rule. Without commands (tests,
+    //     previews) the seam stays null and Resume is a logged no-op.
+    val limitedBanner = controller.filler<LimitedBanner>()
+    SideEffect {
+        limitedBanner?.send = composerBinding?.let { binding ->
+            { text -> binding.onSend(text, emptyList(), DeliveryMode.Queue) }
+        }
+    }
+
     // 9.65 Ticket 84: bind the entry-retained saver to the live composer
     //     and 83's controller — the late load while the store was not warm
     //     at seeding, the dispose-time safety-net save (85's dispose-time
@@ -500,6 +514,23 @@ fun SessionScreen(
     ) {
         SessionBottomStack(
             state = bottomState,
+            model = model,
+            // The failover port: the Limited banner card rides the stack's
+            // Limited slot (above the pill row) while the chat reads
+            // Limited. The filler owns the actions and the picker menu;
+            // the card is pure chrome + the two callbacks.
+            limited = {
+                chrome.limited?.let { limitedState ->
+                    LimitedBannerCard(
+                        limited = limitedState,
+                        onAction = { action -> limitedBanner?.act(action) },
+                        switchMenu = { limitedBanner?.pickerMenu() },
+                        onSwitchMenuOpen = { limitedBanner?.refreshForPicker() },
+                        glassVisible = glassVisible,
+                        animateGlass = animateGlass,
+                    )
+                }
+            },
             model = model,
             transcript = { insets ->
                 OpenRevealLayers(

@@ -357,6 +357,8 @@ private class GallerySessionCore(private val onLog: (String) -> Unit) : SessionC
         queueError = null,
         lastSubmittedMessageId = null,
         contextUsage = null,
+        limit = null,
+        scheduledResumeFireAtMs = null,
     )
 
     override fun sessionRow(): SessionRow? = null

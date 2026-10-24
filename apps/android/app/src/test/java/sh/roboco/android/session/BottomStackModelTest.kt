@@ -36,6 +36,9 @@ class BottomStackModelTest {
         // The banner flipped none ↔ some.
         assertTrue(isStructural(BottomStackModel(), BottomStackModel(bannerShown = true)))
         assertTrue(isStructural(BottomStackModel(bannerShown = true), BottomStackModel()))
+        // The Limited banner appeared or vanished (the failover port).
+        assertTrue(isStructural(BottomStackModel(), BottomStackModel(limitedShown = true)))
+        assertTrue(isStructural(BottomStackModel(limitedShown = true), BottomStackModel()))
     }
 
     @Test

@@ -54,8 +54,10 @@ import sh.roboco.android.pairing.LaunchPairRedeemer
 import sh.roboco.android.pairing.PairedEngineStore
 import sh.roboco.android.session.CanWriteFiller
 import sh.roboco.android.session.ChromeFillerRegistry
+import sh.roboco.android.session.CoreLimitedCore
 import sh.roboco.android.session.CoreSessionCore
 import sh.roboco.android.session.CoreSessionOpener
+import sh.roboco.android.session.LimitedBanner
 import sh.roboco.android.session.QuestionsChromeFiller
 import sh.roboco.android.session.SessionChipsFiller
 import sh.roboco.android.session.StatusBanner
@@ -598,6 +600,16 @@ class RobocoApplication : Application() {
         // touches no FFI.
         chromeFillers.register(ChromeFillerRegistry.USAGE_CHIP) { _ ->
             SessionAccountUsage(CoreAccountsCore(client = ::clientOrNull))
+        }
+        // The failover port (orchestration v2 ticket 09 + 07's pills): the
+        // Limited banner — derives `SessionChrome.limited` from the
+        // composer's limit record, loads the failover candidates behind
+        // the banner (TTL 30 s), and runs the strip's actions (Resume,
+        // arm/cancel the durable resume, the account switch). Slot 25,
+        // after the usage chip, before 73's banner. The loads and
+        // switches run on the filler's own IO scope; fill touches no FFI.
+        chromeFillers.register(ChromeFillerRegistry.LIMITED) { core ->
+            LimitedBanner(CoreLimitedCore((core as CoreSessionCore).client))
         }
         // Ticket 82 (queue panel): the queue mapping into
         // `SessionChrome.queue` — gate labels, `visibleText`, order —

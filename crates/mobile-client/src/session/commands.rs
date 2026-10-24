@@ -760,6 +760,7 @@ mod tests {
             updated_at: updated,
             limit: None,
             scheduled_resume: None,
+            running_subagents: 0,
         }
     }
 

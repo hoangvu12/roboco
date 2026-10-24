@@ -156,6 +156,8 @@ class SessionUsageChipTest {
             queueError = null,
             lastSubmittedMessageId = null,
             contextUsage = null,
+            limit = null,
+            scheduledResumeFireAtMs = null,
         ),
         row = SessionRow(
             id = "chat-a",

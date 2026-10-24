@@ -350,6 +350,26 @@ pub struct ComposerState {
     /// Scroll-to-own-send target.
     pub last_submitted_message_id: Option<String>,
     pub context_usage: Option<ContextUsage>,
+    /// The usage-limit record while the chat reads Limited (the banner,
+    /// Resume and the account failover act on it).
+    pub limit: Option<SessionLimit>,
+    /// The armed Resume-at-reset continuation's fire time (epoch ms).
+    pub scheduled_resume_fire_at_ms: Option<i64>,
+}
+
+/// A Limited chat's usage-limit record: the window it hit, when it
+/// resets, and the harness account that hit it (the failover picker's
+/// "switching FROM").
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SessionLimit {
+    /// Wire harness id (`"claude-code"`, `"codex"`, …).
+    pub harness: String,
+    /// The harness's own window label ("5-hour", "weekly", …).
+    pub window: String,
+    /// Epoch millis when the window resets, when known.
+    pub resets_at_ms: Option<i64>,
+    /// The harness account the limit hit (the engine slot id).
+    pub account_id: Option<String>,
 }
 
 impl From<mc::ComposerState> for ComposerState {
@@ -387,6 +407,13 @@ impl From<mc::ComposerState> for ComposerState {
                 tokens: usage.tokens,
                 window: usage.window,
             }),
+            limit: composer.limit.map(|limit| SessionLimit {
+                harness: limit.harness,
+                window: limit.window,
+                resets_at_ms: limit.resets_at_ms,
+                account_id: limit.account_id,
+            }),
+            scheduled_resume_fire_at_ms: composer.scheduled_resume_fire_at_ms,
         }
     }
 }

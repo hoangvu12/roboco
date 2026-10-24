@@ -75,36 +75,38 @@ fn harness_wire(h: &roboco_proto::HarnessId) -> String {
         .unwrap_or_default()
 }
 
+impl From<roboco_proto::AgentAccount> for AgentAccount {
+    fn from(a: roboco_proto::AgentAccount) -> Self {
+        Self {
+            id: a.id,
+            harness: harness_wire(&a.harness),
+            email: a.email,
+            plan_label: a.plan_label,
+            active: a.active,
+            usage_windows: a
+                .usage_windows
+                .into_iter()
+                .map(|w| AgentUsageWindow {
+                    label: w.label,
+                    used_fraction: w.used_fraction.clamp(0.0, 1.0),
+                    resets_at_ms: w.resets_at.map(|t| t.timestamp_millis()),
+                })
+                .collect(),
+            usage_fetched_at_ms: a.usage_fetched_at,
+            usage_error: a.usage_error,
+            display_name: a.display_name,
+            organization: a.organization,
+            api_key: a.auth_kind == Some(roboco_proto::AgentAuthKind::ApiKey),
+            switchable: a.switchable,
+            provider: a.provider,
+        }
+    }
+}
+
 impl From<roboco_proto::AgentAccountsSnapshot> for AgentAccountsSnapshot {
     fn from(s: roboco_proto::AgentAccountsSnapshot) -> Self {
         Self {
-            accounts: s
-                .accounts
-                .into_iter()
-                .map(|a| AgentAccount {
-                    id: a.id,
-                    harness: harness_wire(&a.harness),
-                    email: a.email,
-                    plan_label: a.plan_label,
-                    active: a.active,
-                    usage_windows: a
-                        .usage_windows
-                        .into_iter()
-                        .map(|w| AgentUsageWindow {
-                            label: w.label,
-                            used_fraction: w.used_fraction.clamp(0.0, 1.0),
-                            resets_at_ms: w.resets_at.map(|t| t.timestamp_millis()),
-                        })
-                        .collect(),
-                    usage_fetched_at_ms: a.usage_fetched_at,
-                    usage_error: a.usage_error,
-                    display_name: a.display_name,
-                    organization: a.organization,
-                    api_key: a.auth_kind == Some(roboco_proto::AgentAuthKind::ApiKey),
-                    switchable: a.switchable,
-                    provider: a.provider,
-                })
-                .collect(),
+            accounts: s.accounts.into_iter().map(Into::into).collect(),
             warnings: s
                 .warnings
                 .into_iter()

@@ -51,6 +51,10 @@ data class SessionChrome(
     val uploadProgress: Double? = null,
     /** `composer.queueError`. Derived for iOS parity but never rendered (decision COMPOSER-D2). */
     val error: String? = null,
+    /** The Limited banner (the failover port): non-null while the chat's
+     *  status row reads Limited — errored with a usage-limit record. The
+     *  card rides the bottom stack above the pill row. */
+    val limited: LimitedChrome? = null,
 ) {
     /**
      * Roboco's banner set (android-app#22 §Status pill) instead of iOS's

@@ -10,9 +10,12 @@
 //!
 //! `workspace.rs` carries the workspace reads/mutations and the catalog
 //! label helpers (ticket 07); `accounts.rs` the agent-accounts records,
-//! calls and usage levels (android-next#05).
+//! calls and usage levels (android-next#05); `failover.rs` the Limited
+//! chat's resume-on-another-account records and calls (orchestration v2
+//! ticket 09's mobile half).
 
 mod accounts;
+mod failover;
 mod new_session;
 mod notify;
 mod session;
@@ -20,6 +23,7 @@ mod types;
 mod workspace;
 
 pub use accounts::*;
+pub use failover::*;
 pub use new_session::*;
 pub use notify::*;
 pub use session::*;
