@@ -47,3 +47,11 @@ ticket 03).
   `client_ffi/session.rs`; refactored the accounts snapshot conversion to
   a reusable `From<roboco_proto::AgentAccount>` the failover rows share.
   Three conversion tests.
+
+## Comments (review round)
+
+- The FFI `harness_wire` copies deduplicated onto the accounts module's
+  (now `pub(crate)`); the `From<ResumeAccountCandidates>` conversion
+  keeps `Into::into` directly.
+- Added the composer-limit conversion test the standards review asked
+  for (`composer_state_carries_the_limit_and_scheduled_resume`).

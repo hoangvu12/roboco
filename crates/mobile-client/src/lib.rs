@@ -81,8 +81,8 @@ pub use session::{
     BusyPolicy, ComposerState, HostCapabilities, HostInfo, InputRequest, LiveStatus,
     OutgoingAttachment, PendingKind, PendingSend, QueueEditAction, QueueEditFinish, QueueEditLease,
     QueueEditStart, QueueGate, QueueItem, RoomState, SendOutcome, SendRequest, SessionHandle,
-    SessionSnapshot, SnapshotWatch, SubagentRow, SubagentState, UNDELIVERED_GRACE_MS,
-    subagent_title,
+    SessionLimitInfo, SessionSnapshot, SnapshotWatch, SubagentRow, SubagentState,
+    UNDELIVERED_GRACE_MS, subagent_title,
 };
 // `SendState` binds once at the crate root, through workspace (07's
 // canonical re-export): session/pending re-exports the same type, so

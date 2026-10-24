@@ -52,11 +52,12 @@ impl Client {
         account_id: Option<&str>,
     ) -> Result<ResumeOnAccountOutcome, ClientError> {
         let (handle, raw) = self.resolve(chat_id)?;
+        let mut params = serde_json::json!({ "chatId": raw });
+        if let Some(id) = account_id {
+            params["accountId"] = serde_json::Value::String(id.to_owned());
+        }
         let value = handle
-            .call(
-                roboco_rpc::methods::RESUME_ON_ANOTHER_ACCOUNT,
-                serde_json::json!({ "chatId": raw, "accountId": account_id }),
-            )
+            .call(roboco_rpc::methods::RESUME_ON_ANOTHER_ACCOUNT, params)
             .await?;
         serde_json::from_value(value).map_err(|error| ClientError::HostError {
             message: format!("undecodable resume-on-account outcome: {error}"),

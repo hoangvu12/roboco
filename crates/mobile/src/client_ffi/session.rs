@@ -1005,6 +1005,30 @@ pub fn config_for_model(config: ChatConfig, model: ModelInfo) -> ChatConfig {
 mod tests {
     use super::*;
 
+    /// The Limited banner's fields ride the FFI composer verbatim: the
+    /// limit record converts field for field (the harness as its wire
+    /// string) and the armed continuation's fire time beside it.
+    #[test]
+    fn composer_state_carries_the_limit_and_scheduled_resume() {
+        let composer: ComposerState = mc::ComposerState {
+            limit: Some(mc::SessionLimitInfo {
+                harness: "claude-code".into(),
+                window: "5-hour".into(),
+                resets_at_ms: Some(45 * 60_000),
+                account_id: Some("slot-1".into()),
+            }),
+            scheduled_resume_fire_at_ms: Some(45 * 60_000),
+            ..Default::default()
+        }
+        .into();
+        let limit = composer.limit.expect("the record rides the composer");
+        assert_eq!(limit.harness, "claude-code");
+        assert_eq!(limit.window, "5-hour");
+        assert_eq!(limit.resets_at_ms, Some(45 * 60_000));
+        assert_eq!(limit.account_id.as_deref(), Some("slot-1"));
+        assert_eq!(composer.scheduled_resume_fire_at_ms, Some(45 * 60_000));
+    }
+
     /// The #664 rule: reasoning reset, option filtering, an unchanged valid
     /// effort.
     #[test]

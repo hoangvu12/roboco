@@ -240,7 +240,7 @@ pub(crate) fn build_composer(
         .map(|s| {
             (
                 s.limit.clone().map(|limit| SessionLimitInfo {
-                    harness: wire_harness(&limit.harness),
+                    harness: super::wire_harness(&limit.harness),
                     window: limit.window,
                     resets_at_ms: limit.resets_at,
                     account_id: limit.account_id,
@@ -295,14 +295,6 @@ pub(crate) fn build_composer(
         limit,
         scheduled_resume_fire_at_ms,
     }
-}
-
-/// The proto harness enum's wire string (`"claude-code"`).
-fn wire_harness(h: &roboco_proto::HarnessId) -> String {
-    serde_json::to_value(h)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
 }
 
 fn fresh(session: &Session, now: chrono::DateTime<chrono::Utc>) -> bool {

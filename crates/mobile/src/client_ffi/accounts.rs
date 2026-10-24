@@ -68,7 +68,7 @@ pub struct AgentAccountsSnapshot {
 }
 
 /// The proto harness enum's wire string (`"claude-code"`).
-fn harness_wire(h: &roboco_proto::HarnessId) -> String {
+pub(crate) fn harness_wire(h: &roboco_proto::HarnessId) -> String {
     serde_json::to_value(h)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))

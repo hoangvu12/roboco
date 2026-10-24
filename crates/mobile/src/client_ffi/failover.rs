@@ -11,7 +11,7 @@ use roboco_proto::RESUME_CONTINUE_PROMPT;
 
 use super::CoreClient;
 use super::CoreResult;
-use super::accounts::AgentAccount;
+use super::accounts::{AgentAccount, harness_wire};
 use super::on_runtime;
 
 // ── the records ────────────────────────────────────────────────────────────
@@ -75,28 +75,19 @@ impl From<roboco_proto::ResumeOnAccountOutcome> for ResumeSwitchOutcome {
     }
 }
 
-/// The proto harness enum's wire string (`"claude-code"`).
-fn harness_wire(h: &roboco_proto::HarnessId) -> String {
-    serde_json::to_value(h)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
 impl From<roboco_proto::ResumeAccountCandidates> for ResumeCandidates {
     fn from(list: roboco_proto::ResumeAccountCandidates) -> Self {
-        let into_row = |account: roboco_proto::AgentAccount| AgentAccount::from(account);
         Self {
             chat_id: list.chat_id,
             harness: harness_wire(&list.harness),
             limited_account_id: list.limited_account_id,
-            candidates: list.candidates.into_iter().map(into_row).collect(),
-            signed_out: list.signed_out.into_iter().map(into_row).collect(),
+            candidates: list.candidates.into_iter().map(Into::into).collect(),
+            signed_out: list.signed_out.into_iter().map(Into::into).collect(),
         }
     }
 }
 
-// ── the calls ──────────────────────────────────────────────────────────────
+// ── the calls ──────────────────────────────────────────────────────
 
 #[uniffi::export]
 impl CoreClient {

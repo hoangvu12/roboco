@@ -388,10 +388,13 @@ fun SessionScreen(
     //     `composer.resume_limited` rule. Without commands (tests,
     //     previews) the seam stays null and Resume is a logged no-op.
     val limitedBanner = controller.filler<LimitedBanner>()
+    val limitedToaster = LocalToaster.current
     SideEffect {
         limitedBanner?.send = composerBinding?.let { binding ->
             { text -> binding.onSend(text, emptyList(), DeliveryMode.Queue) }
         }
+        // Arm/cancel failures toast, like the desktop's Mutate errors.
+        limitedBanner?.toaster = limitedToaster
     }
 
     // 9.65 Ticket 84: bind the entry-retained saver to the live composer

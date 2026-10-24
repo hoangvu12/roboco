@@ -190,9 +190,10 @@ class LimitedBannerTest {
             listOf(LimitedAction.RESUME, LimitedAction.SWITCH_ACCOUNT),
             limitedActions(LimitedChrome(window = "5-hour", switchAvailable = true), now),
         )
-        // A switch in flight hides the pill; a failed load offers Retry.
+        // The switch pill stays while a switch runs (the card no-ops its
+        // tap); a failed load offers Retry.
         assertEquals(
-            listOf(LimitedAction.RESUME),
+            listOf(LimitedAction.RESUME, LimitedAction.SWITCH_ACCOUNT),
             limitedActions(LimitedChrome(window = "5-hour", switchAvailable = true, switching = true), now),
         )
         assertEquals(
@@ -407,7 +408,7 @@ class LimitedBannerTest {
     }
 
     @Test
-    fun arm_and_cancel_reach_the_core() = runTest {
+    fun arm_and_cancel_reach_the_core_and_the_retry_pill_reasks() = runTest {
         val core = FakeLimitedCore()
         val banner = banner(core, PinnedClock(), this)
         banner.fill(SessionChrome(), input())
@@ -416,6 +417,10 @@ class LimitedBannerTest {
         advanceUntilIdle()
         banner.act(LimitedAction.CANCEL_RESUME)
         advanceUntilIdle()
-        assertEquals(listOf("candidates", "arm", "cancel"), core.calls)
+        // The Retry pill re-asks for the candidates (the desktop's
+        // retry_failover) — a fourth load.
+        banner.act(LimitedAction.RETRY_ACCOUNTS)
+        advanceUntilIdle()
+        assertEquals(listOf("candidates", "arm", "cancel", "candidates"), core.calls)
     }
 }

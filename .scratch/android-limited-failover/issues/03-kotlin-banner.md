@@ -51,3 +51,20 @@ Blocked by: 02
   sources (uiStyle/GlassSurface/GlassMenuState/MenuItem signatures, the
   uniffi record field names, the JNA-free test seams: `continuePrompt`
   and `logW` are injectable like `StatusBanner`'s).
+
+## Comments (review round)
+
+Two-axis code-review fixes (standards + spec):
+- the Retry pill now re-asks for the candidates (the desktop's
+  `retry_failover`) instead of being inert;
+- `maybeLoad` gates the FIRST load on the switchable harness (the
+  desktop's `switchable`), is `@Synchronized` (the fill lane vs main),
+  and a failed load drops the stale list (the desktop clears
+  `failover.loaded` on Err);
+- a chat-id change resets the per-chat state (chat-scoping, defensive
+  on a per-route filler);
+- the Switch pill stays while a switch runs (the card no-ops the tap),
+  matching the desktop's greyed rows;
+- arm/cancel failures toast (the desktop's Mutate-error toast), never
+  the failover notice line;
+- signed-out picker rows attach no switch at all.

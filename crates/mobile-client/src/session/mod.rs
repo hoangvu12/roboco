@@ -37,7 +37,7 @@ use crate::engines::EngineHandle;
 use crate::{ClientError, lock};
 
 pub use commands::{BusyPolicy, OutgoingAttachment, SendOutcome, SendRequest};
-pub use composer::{ComposerState, HostCapabilities, HostInfo, InputRequest, LiveStatus, RoomState};
+pub use composer::{ComposerState, HostCapabilities, HostInfo, InputRequest, LiveStatus, RoomState, SessionLimitInfo};
 pub use pending::{PendingKind, PendingSend, SendState, UNDELIVERED_GRACE_MS};
 pub use queue::{QueueEditAction, QueueEditFinish, QueueEditLease, QueueEditStart, QueueGate, QueueItem};
 pub use transcript::apply_frame_arc;

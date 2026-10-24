@@ -53,3 +53,10 @@ and the web client but have no phone-side wrapper.
 - Note: `cargo test -p roboco-mobile-client --test real_engine` fails on
   clean main in this sandbox (network-flaky, 3 failures with and without
   the change); the lib suite is green.
+
+## Comments (review round)
+
+- `accountId` is omitted from the wire when `None` (the web's shape),
+  not sent as null.
+- The composer's `wire_harness` helper dropped for the session module's
+  existing `pub(crate)` one.

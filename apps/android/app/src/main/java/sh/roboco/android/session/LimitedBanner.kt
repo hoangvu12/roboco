@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import sh.roboco.android.design.Toaster
 import sh.roboco.android.design.glass.Menu
 import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.design.glass.MenuSection
@@ -126,7 +127,9 @@ fun limitedActions(limited: LimitedChrome, nowMs: Long): List<LimitedAction> {
         actions += LimitedAction.CANCEL_RESUME
     }
     actions += LimitedAction.RESUME
-    if (limited.switchAvailable && !limited.switching) {
+    if (limited.switchAvailable) {
+        // The pill stays while a switch runs (the desktop keeps it and
+        // greys the rows); the card no-ops its tap until the switch lands.
         actions += LimitedAction.SWITCH_ACCOUNT
     }
     if (limited.retry) {
@@ -243,6 +246,12 @@ class LimitedBanner(
     @Volatile
     var send: (suspend (String) -> Unit)? = null
 
+    /** The screen wiring (the app toaster): arm/cancel failures toast,
+     *  like the desktop's Mutate errors — never the banner's notice line
+     *  (that one belongs to the failover outcomes alone). */
+    @Volatile
+    var toaster: Toaster? = null
+
     /** The loaded candidate list (the picker's source). */
     @Volatile
     private var loaded: ResumeCandidates? = null
@@ -267,6 +276,10 @@ class LimitedBanner(
     @Volatile
     private var chatId: String = ""
 
+    /** The limited chat's harness as of the last fill (the load gate). */
+    @Volatile
+    private var currentHarness: String = ""
+
     /** The invalidate handle [bind] stores (the controller's trigger). */
     @Volatile
     private var invalidate: () -> Unit = {}
@@ -284,16 +297,27 @@ class LimitedBanner(
      * needs is in [input] plus the filler's own snapshot.
      */
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
-        chatId = input.chatId
+        // A route's filler serves exactly one chat; a chat id change (a
+        // reused controller) drops the other chat's list and notice —
+        // the desktop's chat-scoped line "never shows on another chat".
+        if (input.chatId != chatId) {
+            chatId = input.chatId
+            loaded = null
+            loadedAtMs = 0L
+            failed = false
+            notice = null
+        }
         val limit = input.composer.limit
         if (limit == null) {
             // The banner is gone (the chat resumed, or the record was
             // cleared): its notice goes with it, like the desktop's
             // chat-scoped line the chat's own state supersedes.
             notice = null
+            currentHarness = ""
             return chrome.copy(limited = null)
         }
-        maybeLoad()
+        currentHarness = limit.harness
+        maybeLoad(limit.harness)
         val list = loaded
         return chrome.copy(
             limited = LimitedChrome(
@@ -310,19 +334,23 @@ class LimitedBanner(
     }
 
     /**
-     * The load policy: a limited banner with no list, or one older than
-     * the TTL (usage meters move as turns run); never while a load is in
-     * flight or after a failure (the Retry pill or the picker's re-open
-     * asks again). The switchable-harness gate keeps an unsupported
-     * harness from ever asking.
+     * The load policy: a limited banner on a switchable harness with no
+     * list, or one older than the TTL (usage meters move as turns run);
+     * never while a load is in flight or after a failure (the Retry pill
+     * or the picker's re-open asks again). `@Synchronized` closes the
+     * check-then-act between the controller's IO lane (`fill`) and main
+     * (`refreshForPicker`) — one launch, never two.
      */
-    private fun maybeLoad() {
+    @Synchronized
+    private fun maybeLoad(harness: String) {
         val chat = chatId
         if (chat.isEmpty() || loading || failed) return
+        // The switchable-harness gate up front: an unsupported harness
+        // (the desktop's `switchable`) never asks at all.
+        if (!harnessOffersFailover(harness)) return
         val now = nowMs()
         val list = loaded
         if (list != null && now - loadedAtMs < FAILOVER_LIST_TTL_MS) return
-        if (list != null && !harnessOffersFailover(list.harness)) return
         loading = true
         scope.launch {
             try {
@@ -334,8 +362,12 @@ class LimitedBanner(
                 loading = false
                 throw cancelled
             } catch (t: Throwable) {
-                // A failed load is remembered: the card offers Retry and
-                // the plain Resume stays; no error spam (like iOS's `try?`).
+                // A failed load is remembered and the stale list drops
+                // (the desktop clears `failover.loaded` on Err): the card
+                // offers Retry and the plain Resume stays; no error spam
+                // (like iOS's `try?`).
+                loaded = null
+                loadedAtMs = 0L
                 failed = true
                 logW("failover candidates failed to load", t)
             } finally {
@@ -346,15 +378,16 @@ class LimitedBanner(
     }
 
     /**
-     * The picker just opened: forget a failure and re-rank — usage meters
-     * move as turns run, so every open asks once more (the desktop's
-     * `toggle_failover`). Main thread; the load itself runs on [io].
+     * The picker just opened or the Retry pill was tapped: forget a
+     * failure and re-rank — usage meters move as turns run, so every
+     * open asks once more (the desktop's `toggle_failover` /
+     * `retry_failover`, one body). Main thread; the load itself runs on
+     * [io].
      */
     fun refreshForPicker() {
         if (failed) failed = false
-        if (loading) return
         loadedAtMs = 0L
-        maybeLoad()
+        maybeLoad(currentHarness)
         invalidate()
     }
 
@@ -388,7 +421,7 @@ class LimitedBanner(
                                 } else {
                                     "limited-picker-account-${row.account.id}"
                                 },
-                            ) { switch(if (row.signedOut) null else row.account.id) }
+                            ) { if (!row.signedOut) switch(row.account.id) }
                         },
                     ),
                 )
@@ -409,10 +442,11 @@ class LimitedBanner(
             LimitedAction.RESUME_AT_RESET -> arm()
             LimitedAction.CANCEL_RESUME -> cancel()
             LimitedAction.RESUME -> resume()
-            LimitedAction.SWITCH_ACCOUNT, LimitedAction.RETRY_ACCOUNTS -> {
-                // The card routes these itself (the menu open / the retry);
-                // arriving here is a wiring slip, not a crash.
-            }
+            // Retry re-asks for the candidate list (the desktop's
+            // `retry_failover`); the Switch pill opens the picker in the
+            // card itself.
+            LimitedAction.RETRY_ACCOUNTS -> refreshForPicker()
+            LimitedAction.SWITCH_ACCOUNT -> Unit
         }
     }
 
@@ -428,7 +462,9 @@ class LimitedBanner(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
-                notice = "Could not schedule the resume: ${errorText(t)}"
+                // The desktop toasts Mutate errors; the banner's notice
+                // line belongs to the failover outcomes alone.
+                toaster?.show("Couldn't schedule the resume: ${errorText(t)}")
                 logW("scheduleResumeAtReset failed", t)
             }
             invalidate()
@@ -445,7 +481,7 @@ class LimitedBanner(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
-                notice = "Could not cancel the resume: ${errorText(t)}"
+                toaster?.show("Couldn't cancel the resume: ${errorText(t)}")
                 logW("cancelScheduledResume failed", t)
             }
             invalidate()
