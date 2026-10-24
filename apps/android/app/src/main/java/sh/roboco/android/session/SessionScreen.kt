@@ -534,7 +534,6 @@ fun SessionScreen(
                     )
                 }
             },
-            model = model,
             transcript = { insets ->
                 OpenRevealLayers(
                     state.reveal,

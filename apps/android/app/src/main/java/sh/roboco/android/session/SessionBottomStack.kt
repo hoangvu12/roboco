@@ -157,6 +157,7 @@ fun SessionBottomStack(
     state: BottomStackState,
     model: BottomStackModel,
     transcript: @Composable (SessionBottomInsets) -> Unit,
+    limited: @Composable BottomStackSlotScope.() -> Unit = {},
     pill: @Composable BottomStackSlotScope.() -> Unit,
     queue: @Composable BottomStackSlotScope.() -> Unit,
     questions: @Composable BottomStackSlotScope.() -> Unit,
@@ -174,6 +175,7 @@ fun SessionBottomStack(
     // SideEffect's animateGlass flip recomposes exactly this body once —
     // the slots never see the flag flip mid-measure.
     val animateGlass = tracker.animateGlass
+    val limitedScope = SlotScopeImpl(shown = model.limitedShown, glassVisible = model.limitedShown, animateGlass = animateGlass)
     val pillScope = SlotScopeImpl(shown = model.pillShown, glassVisible = true, animateGlass = animateGlass)
     val queueScope = SlotScopeImpl(shown = model.queueShown, glassVisible = model.queueCount > 0, animateGlass = animateGlass)
     val questionsScope = SlotScopeImpl(shown = model.questionsShown, glassVisible = model.questionsShown, animateGlass = animateGlass)
@@ -190,6 +192,7 @@ fun SessionBottomStack(
     // and re-places only, never recomposing the slots. A scope change
     // (or the caller's fresher slot lambda, through rememberUpdatedState)
     // recomposes them.
+    val limitedContent = rememberSlotContent(BottomStackSlot.Limited, limitedScope, stackAlpha, limited)
     val pillContent = rememberSlotContent(BottomStackSlot.Pill, pillScope, stackAlpha, pill)
     val queueContent = rememberSlotContent(BottomStackSlot.Queue, queueScope, stackAlpha, queue)
     val questionsContent = rememberSlotContent(BottomStackSlot.Questions, questionsScope, stackAlpha, questions)
@@ -234,8 +237,10 @@ fun SessionBottomStack(
         val wPx = stackWidthPx.roundToInt()
         val xPx = stackX.roundToInt()
 
-        // The four slots, subcomposed and measured at the stack width. The
+        // The five slots, subcomposed and measured at the stack width. The
         // pill hugs its own width up to w; the others are pinned to w.
+        val limitedPlaceable = subcompose(BottomStackSlot.Limited, limitedContent).first()
+            .measure(Constraints.fixedWidth(wPx))
         val pillPlaceable = subcompose(BottomStackSlot.Pill, pillContent).first()
             .measure(Constraints(minWidth = 0, maxWidth = wPx, minHeight = 0, maxHeight = Constraints.Infinity))
         val queuePlaceable = subcompose(BottomStackSlot.Queue, queueContent).first()
@@ -247,6 +252,7 @@ fun SessionBottomStack(
 
         // The pill row is at least the pill's pinned 30 dp height.
         val pillHeight = max(BottomStackMetrics.PillHeight.toPx(), pillPlaceable.height.toFloat())
+        val limitedHeight = limitedPlaceable.height.toFloat()
         val queueHeight = queuePlaceable.height.toFloat()
         val questionsHeight = questionsPlaceable.height.toFloat()
         val composerHeight = composerPlaceable.height.toFloat()
@@ -257,6 +263,7 @@ fun SessionBottomStack(
 
         // The slots in stack order, top to bottom (SessionViewController.swift:122).
         val slots = listOf(
+            SlotPlacement(BottomStackSlot.Limited, limitedPlaceable, limitedHeight, model.limitedShown),
             SlotPlacement(BottomStackSlot.Pill, pillPlaceable, pillHeight, model.pillShown),
             SlotPlacement(BottomStackSlot.Queue, queuePlaceable, queueHeight, model.queueShown),
             SlotPlacement(BottomStackSlot.Questions, questionsPlaceable, questionsHeight, model.questionsShown),
