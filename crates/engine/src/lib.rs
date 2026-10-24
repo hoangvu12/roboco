@@ -32,10 +32,10 @@ pub mod instance_lock;
 pub mod listener;
 mod model_catalogs;
 pub mod pairing;
-pub mod remote_access;
 pub mod profile;
 pub mod project_actions;
 pub mod registry;
+pub mod remote_access;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
@@ -72,9 +72,9 @@ pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry, smoke_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
-pub use sidebar_state::SidebarStateStore;
 pub use run_journal::{JournalError, RunJournal};
 pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
+pub use sidebar_state::SidebarStateStore;
 pub use source_control::{
     BranchHeadContext, ChangeRequestError, ChangeRequestProvider, ChangeRequestResolution,
     ChangeRequestResolver, CheckoutChangeRequestLookup, CheckoutSourceContext, GitHubCli,
@@ -468,7 +468,10 @@ impl EngineRuntime {
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Self {
-        Self { config, network: Default::default() }
+        Self {
+            config,
+            network: Default::default(),
+        }
     }
 
     pub fn with_network(mut self, options: remote_access::NetworkOptions) -> Self {
@@ -562,11 +565,24 @@ impl Engine {
             core.set_updater(updater);
         }
         tracing::info!(device_id = %core.device_id, "engine core assembled");
+        // Container deployments run this engine as PID 1, which inherits
+        // every orphaned descendant (an MCP bridge whose agent won the exit
+        // race, a tool process killed with its run, anything started inside
+        // a terminal pane) — and PID 1 must reap them or the zombie census
+        // grows forever. On any other host the platform init already does
+        // this, so the reaper stays off (session-process-hygiene ticket 01).
+        #[cfg(target_os = "linux")]
+        if std::process::id() == 1 {
+            tracing::info!("engine is PID 1: adopting the orphan-zombie reaper");
+            tokio::spawn(orphan_zombie_reaper());
+        }
         // Managed ACP adapters install in the background at boot (agents
         // whose CLI is present but whose adapter isn't yet), so a first chat
         // never waits on — or dies inside — an npm run.
         roboco_harness::acp::prewarm_managed_adapters();
-        core.remote_access.initialize(core.rpc_service(), network).await;
+        core.remote_access
+            .initialize(core.rpc_service(), network)
+            .await;
 
         Ok(EngineRuntime { core })
     }
@@ -614,7 +630,9 @@ impl Engine {
                         println!("{}", roboco_proto::qr::qr_terminal(url));
                     }
                 }
-                Err(error) => tracing::warn!(%error, "pairing URL unavailable; configure --pairing-base-url"),
+                Err(error) => {
+                    tracing::warn!(%error, "pairing URL unavailable; configure --pairing-base-url")
+                }
             }
         }
 
@@ -631,6 +649,28 @@ impl Engine {
         server.abort();
         runtime.shutdown().await;
         Ok(())
+    }
+}
+
+/// Bury zombie children nobody will ever wait for, every 5s, once the
+/// process has been dead for one full period (two consecutive sightings —
+/// an owner that waits its own child does so in milliseconds, so nothing
+/// legitimate is ever stolen; directly-spawned pids are also skipped via
+/// the ownership registry). See `roboco_harness::process::scan_adopted_zombies`.
+#[cfg(target_os = "linux")]
+async fn orphan_zombie_reaper() {
+    const PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+    let mut interval = tokio::time::interval(PERIOD);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut seen = std::collections::HashMap::new();
+    let mut buried = 0usize;
+    loop {
+        interval.tick().await;
+        let reaped = roboco_harness::process::scan_adopted_zombies(&mut seen, PERIOD);
+        if reaped > 0 {
+            buried += reaped;
+            tracing::info!(reaped, total = buried, "buried adopted orphan zombies");
+        }
     }
 }
 
@@ -685,7 +725,8 @@ pub async fn serve_engine_ipc(
     // Discover the owning engine even when its IPC port was assigned dynamically.
     // Callers still validate EngineInfo against this directory's device identity;
     // the file alone is not a liveness or authorization signal.
-    let endpoint = serde_json::json!({"port": listener.local_addr()?.port(), "pid": std::process::id()});
+    let endpoint =
+        serde_json::json!({"port": listener.local_addr()?.port(), "pid": std::process::id()});
     let temporary = data_dir.join(format!("engine-ipc-{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&temporary, serde_json::to_vec(&endpoint)?)?;
     if let Err(error) = std::fs::rename(&temporary, data_dir.join("engine-ipc.json")) {

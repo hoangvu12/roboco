@@ -146,8 +146,7 @@ fn launch_reading(head: &[u8]) -> LaunchReading {
                     .get("is_error")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false)
-                    || value.get("subtype").and_then(serde_json::Value::as_str)
-                        == Some("error");
+                    || value.get("subtype").and_then(serde_json::Value::as_str) == Some("error");
                 return if errored {
                     LaunchReading::Refused
                 } else {
@@ -454,6 +453,8 @@ impl ClaudeHarness {
     fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        // Crash ownership: the kernel kills this CLI if the engine dies.
+        crate::process::dies_with_parent(&mut cmd);
         cmd.args(Self::launch_args(request));
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
@@ -497,6 +498,7 @@ impl ClaudeHarness {
             cmd.current_dir(cwd);
         }
         crate::compose_child_path(&mut cmd, &exe);
+        crate::process::dies_with_parent(&mut cmd);
         cmd.args([
             "--print",
             "--input-format",
@@ -780,9 +782,10 @@ impl ClaudeHarness {
         // fresh session still knows the conversation. Plain resumes carry
         // no fallback and keep today's behavior: pass `--resume` and let
         // the CLI report the bad id itself.
-        if let (Some(resume), Some(history)) =
-            (request.resume.clone(), request.resume_fallback_history.clone())
-            && !session_known(&config_root, &resume).await
+        if let (Some(resume), Some(history)) = (
+            request.resume.clone(),
+            request.resume_fallback_history.clone(),
+        ) && !session_known(&config_root, &resume).await
         {
             tracing::debug!(
                 target: "roboco_harness::claude",
@@ -878,6 +881,7 @@ impl ClaudeHarness {
             } else {
                 Normalizer::new()
             };
+            crate::process::dies_with_parent(&mut cmd);
             let mut child = cmd.spawn().map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -976,8 +980,7 @@ impl ClaudeHarness {
                     .take()
                     .or_else(|| request.resume_fallback_history.take());
                 let mut probe = [0u8; 1024];
-                let bound =
-                    tokio::time::Instant::now() + LAUNCH_PROBE_BOUND;
+                let bound = tokio::time::Instant::now() + LAUNCH_PROBE_BOUND;
                 let outcome = loop {
                     tokio::select! {
                         biased;
@@ -1028,8 +1031,7 @@ impl ClaudeHarness {
 
             // The probe's consumed byte rides ahead of the pipe (no output
             // is lost); an empty head is every unprobed launch.
-            let stdout_lines =
-                BufReader::new(std::io::Cursor::new(head).chain(stdout)).lines();
+            let stdout_lines = BufReader::new(std::io::Cursor::new(head).chain(stdout)).lines();
             let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
             tokio::spawn(run_session(Session {
                 normalizer,

@@ -4,11 +4,14 @@ use std::ops::{Deref, DerefMut};
 use crate::process::{Child as ProcessChild, Command};
 
 /// Creation-time process ownership. Unix puts the adapter in a private
-/// process group so descendants reap with it; Windows spawns job-contained
+/// process group so descendants reap with it and stamps crash ownership
+/// (the kernel kills the child if we die); Windows spawns job-contained
 /// (`process::windows`), which already owns the whole tree.
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(unix)]
+    crate::process::dies_with_parent(command);
     for key in [
         "CLAUDECODE",
         "CLAUDE_CODE_ENTRYPOINT",
@@ -27,6 +30,10 @@ pub(crate) struct Child {
 
 impl Child {
     pub(crate) fn new(inner: ProcessChild) -> Self {
+        // The orphan reaper must never steal this child's exit status from
+        // its owner: record it until it is gone (the registry self-prunes).
+        #[cfg(unix)]
+        crate::process::ownership::register(inner.id());
         Self {
             #[cfg(unix)]
             group: Some(-(inner.id().expect("newly spawned ACP child") as i32)),
@@ -43,6 +50,16 @@ impl Child {
             (Some(_), Some(pid)) => crate::process::descendants(pid).await,
             _ => Vec::new(),
         };
+        // Children FIRST, while the adapter still lives to reap them: a
+        // simultaneous group TERM lets the adapter win the exit race, and
+        // every child that dies after it is reparented to init as a zombie
+        // (one `roboco mcp` bridge leaked per reaped session, measured).
+        // Signaling the tree first means the adapter buries its own
+        // children; only a child that outlives `grace` is killed past it.
+        #[cfg(unix)]
+        if !tree.is_empty() {
+            crate::process::terminate_tree(&tree, grace).await;
+        }
         #[cfg(unix)]
         if let Some(group) = self.group.take() {
             crate::send_signal(&group, crate::Signal::Term);
@@ -63,8 +80,12 @@ impl Child {
             }
         }
         crate::shutdown_child(&mut self.inner, grace).await;
+        // A second, cheap sweep for anything that respawned or appeared
+        // between the snapshot and the adapter's death.
         #[cfg(unix)]
-        crate::process::terminate_tree(&tree, grace).await;
+        if !tree.is_empty() {
+            crate::process::terminate_tree(&tree, grace).await;
+        }
     }
 
     pub(crate) fn request_group_shutdown(&self) {

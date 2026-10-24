@@ -668,6 +668,7 @@ impl Server {
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
+        crate::process::dies_with_parent(&mut cmd);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -2532,9 +2533,7 @@ async fn fork_session(
         .or_else(|| created.get("id"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| {
-            HarnessError::Protocol("opencode session fork returned no id".into())
-        })
+        .ok_or_else(|| HarnessError::Protocol("opencode session fork returned no id".into()))
 }
 
 /// One message-list entry reduced to what a fork cut needs: (id, role).
@@ -2618,7 +2617,11 @@ async fn session_messages(
             .and_then(Value::as_str)
             .filter(|cursor| !cursor.is_empty())
             .map(str::to_owned);
-        for item in unwrap_data(response).as_array().cloned().unwrap_or_default() {
+        for item in unwrap_data(response)
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+        {
             if let Some(entry) = message_id_and_role(&item) {
                 messages.push(entry);
             }
@@ -2628,7 +2631,7 @@ async fn session_messages(
             (Protocol::V2, Some(_)) if page + 1 == MAX_MESSAGE_PAGES => {
                 return Err(HarnessError::Protocol(
                     "opencode message list never reached its end".into(),
-                ))
+                ));
             }
             (Protocol::V2, Some(next)) => cursor = Some(next),
         }
@@ -2766,10 +2769,7 @@ fn prompt_body(
     }
     let mut body = serde_json::Map::new();
     body.insert("parts".into(), Value::Array(parts));
-    body.insert(
-        "messageID".into(),
-        Value::String(message_id.to_owned()),
-    );
+    body.insert("messageID".into(), Value::String(message_id.to_owned()));
     if let Some((provider, model)) = model {
         body.insert(
             "model".into(),
@@ -2916,9 +2916,7 @@ async fn post_prompt(
         // The command turn's provider ref (ticket 20), emitted before the
         // endpoint's own request so it precedes every event the turn
         // streams. 2.x commands carry no client id — no ref for them.
-        if id_carried
-            && !send(event_tx, turn_ref_event(session_id, user_message_id)).await
-        {
+        if id_carried && !send(event_tx, turn_ref_event(session_id, user_message_id)).await {
             return Err(HarnessError::Protocol(
                 "opencode event consumer closed".into(),
             ));
@@ -3191,7 +3189,15 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                         let msg = format!(
                             "Giving up after {attempt} provider retries: {message}. {STALL_HINT}"
                         );
-                        if !send(event_tx, AgentEvent::Error { message: msg, kind: None }).await {
+                        if !send(
+                            event_tx,
+                            AgentEvent::Error {
+                                message: msg,
+                                kind: None,
+                            },
+                        )
+                        .await
+                        {
                             return BusOutcome::ConsumerGone;
                         }
                         let _ = server.abort_session(session_id, dir).await;
@@ -3201,7 +3207,15 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                             "The provider is failing and opencode is retrying (attempt \
                              {attempt}): {message}"
                         );
-                        if !send(event_tx, AgentEvent::Error { message: msg, kind: None }).await {
+                        if !send(
+                            event_tx,
+                            AgentEvent::Error {
+                                message: msg,
+                                kind: None,
+                            },
+                        )
+                        .await
+                        {
                             return BusOutcome::ConsumerGone;
                         }
                     }
@@ -3246,7 +3260,16 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             if kind == "session.error" {
                 turn.error = Some(message.clone());
             }
-            if !duplicate && !send(event_tx, AgentEvent::Error { message, kind: None }).await {
+            if !duplicate
+                && !send(
+                    event_tx,
+                    AgentEvent::Error {
+                        message,
+                        kind: None,
+                    },
+                )
+                .await
+            {
                 return BusOutcome::ConsumerGone;
             }
             BusOutcome::Continue

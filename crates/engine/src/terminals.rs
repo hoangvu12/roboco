@@ -247,13 +247,9 @@ impl Terminals {
         #[cfg(windows)]
         let initial_script: Option<tempfile::NamedTempFile> = None;
         #[cfg(windows)]
-        let (master, mut child) = windows::open(
-            &shell,
-            cwd,
-            clamp_size(cols, rows),
-            environment,
-        )
-        .map_err(|e| EngineError::Other(format!("could not open Windows terminal: {e}")))?;
+        let (master, mut child) =
+            windows::open(&shell, cwd, clamp_size(cols, rows), environment)
+                .map_err(|e| EngineError::Other(format!("could not open Windows terminal: {e}")))?;
         #[cfg(not(windows))]
         let (master, mut child, initial_script, bootstrap) = {
             let pty = native_pty_system();
@@ -296,6 +292,11 @@ impl Terminals {
             (pair.master, child, initial_script, bootstrap)
         };
         let killer = child.clone_killer();
+        // The orphan reaper must not steal this shell's exit status: the
+        // terminals reaper waits it on its own schedule (up to a minute
+        // after exit), which is longer than the zombie scan's proof window.
+        #[cfg(unix)]
+        roboco_harness::process::ownership::register(child.process_id());
         let reader = master
             .try_clone_reader()
             .map_err(|e| EngineError::Other(format!("pty reader: {e}")))?;
@@ -759,7 +760,9 @@ mod windows_tests {
         let mut rx = terminals.subscribe(&session.id, None).expect("subscribe");
         let mut events = Vec::new();
         collect_until(&mut rx, &mut events, |events| {
-            events.iter().any(|e| matches!(e, TerminalEvent::Exit { .. }))
+            events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::Exit { .. }))
         })
         .await;
         assert_eq!(

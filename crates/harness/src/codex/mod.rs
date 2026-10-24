@@ -196,6 +196,7 @@ impl CodexHarness {
             cmd.current_dir(cwd);
         }
         crate::compose_child_path(&mut cmd, &exe);
+        crate::process::dies_with_parent(&mut cmd);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -252,6 +253,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        crate::process::dies_with_parent(&mut cmd);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -753,6 +755,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        crate::process::dies_with_parent(&mut cmd);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
@@ -2145,9 +2148,7 @@ async fn steer_as_new_turn(
                 return false;
             }
             match router.adopt_started(id) {
-                Some(started) => {
-                    send(event_tx, turn_ref_event(thread_id, &started)).await
-                }
+                Some(started) => send(event_tx, turn_ref_event(thread_id, &started)).await,
                 None => steered,
             }
         }

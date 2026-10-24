@@ -362,6 +362,7 @@ impl Harness for CursorHarness {
             cmd.env("ROBOCO_CURSOR_STATE_DIR", state::state_root());
         }
         crate::compose_child_path(&mut cmd, &exe);
+        crate::process::dies_with_parent(&mut cmd);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }

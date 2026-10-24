@@ -32,8 +32,8 @@ use roboco_doc::{
 use roboco_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
 use roboco_proto::{
     AgentErrorKind, AgentEvent, DoneStatus, HarnessId, ResumeAccountCandidates,
-    ResumeOnAccountOutcome, RunRequest, ScheduledResume, Session, SessionLimit,
-    SessionStatus, UserInputAnswer, UserInputQuestion,
+    ResumeOnAccountOutcome, RunRequest, ScheduledResume, Session, SessionLimit, SessionStatus,
+    UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -285,6 +285,15 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// Warm-park bookkeeping (session-process-hygiene ticket 02): chat ids
+    /// of parked persistent sessions → `(run_id, when they parked)`.
+    /// Beyond the warm budget (ROBOCO_WARM_SESSIONS, default 8) the
+    /// oldest-idle parked runtime is retired through the same clean
+    /// interrupt path the idle reaper uses, so a burst of side chats keeps
+    /// only its recent tail warm — the parked experience is unchanged for
+    /// everything a parent is still iterating, and a retired session simply
+    /// resumes on its next message.
+    parked: Mutex<HashMap<String, (String, std::time::Instant)>>,
     /// Harness accounts (engine assembly; absent in bare tests): usage-limit
     /// records read the active login's cached windows (which account the
     /// limit hit, reset-time fill — ticket 06), and a run that fails with a
@@ -328,6 +337,7 @@ impl SessionsEngine {
                 sessions_tx,
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
+                parked: Mutex::new(HashMap::new()),
                 notices: crate::completion_notices::CompletionNotices::default(),
                 scheduled_resumes: crate::scheduled_resumes::ScheduledResumes::default(),
                 engine_settings: crate::engine_settings::EngineSettingsStore::default(),
@@ -726,7 +736,8 @@ impl SessionsEngine {
         let live = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.runtime_config.harness_id,
-                h.steerable && request.is_none_or(|(id, r)| h.runtime_config.route(id, r).is_some()),
+                h.steerable
+                    && request.is_none_or(|(id, r)| h.runtime_config.route(id, r).is_some()),
             )
         });
         live.is_some_and(|(harness, routable)| routable && !self.steers_mid_turn(harness))
@@ -879,13 +890,12 @@ impl SessionsEngine {
             // runtime launched) downgrades ANY route — including an in-place
             // reconfiguration — to "replace the runtime": the warm process
             // must not run the next turn on the old token.
-            let same_login = h.credential_fingerprint.as_deref().is_none_or(
-                |fingerprint| {
-                    live_login
-                        .as_deref()
-                        .is_none_or(|live| live == fingerprint)
-                },
-            );
+            let same_login = h
+                .credential_fingerprint
+                .as_deref()
+                .is_none_or(|fingerprint| {
+                    live_login.as_deref().is_none_or(|live| live == fingerprint)
+                });
             let route = h.runtime_config.route(harness_id, &request);
             // Why this send can't reuse the runtime, for the restart log.
             let restart_reason = match route {
@@ -904,8 +914,16 @@ impl SessionsEngine {
                 restart_reason,
             )
         });
-        if let Some((run_id, steerable, route, steer_tx, ledger, history_sent, retiring, restart_reason)) =
-            routed
+        if let Some((
+            run_id,
+            steerable,
+            route,
+            steer_tx,
+            ledger,
+            history_sent,
+            retiring,
+            restart_reason,
+        )) = routed
         {
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
@@ -1067,9 +1085,7 @@ impl SessionsEngine {
         // and starting the retry fresh silently dropped a good conversation.
         let mut resume_injected = false;
         if request.resume.is_none() {
-            request.resume = self
-                .inner
-                .resume_for(chat_id, &request.cwd, harness_id);
+            request.resume = self.inner.resume_for(chat_id, &request.cwd, harness_id);
             resume_injected = request.resume.is_some();
         }
         // A fork's first run continues the SOURCE's provider session
@@ -1162,9 +1178,11 @@ impl SessionsEngine {
                 // start under: later dispatches compare against a fresh read
                 // and replace this runtime when the login has changed.
                 credential_fingerprint: live_login.clone(),
-                notifiable: Mutex::new(
-                    self.notifiable_parent_for(chat_id, origin_chat_id.as_deref(), sent_at),
-                ),
+                notifiable: Mutex::new(self.notifiable_parent_for(
+                    chat_id,
+                    origin_chat_id.as_deref(),
+                    sent_at,
+                )),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
@@ -1417,6 +1435,7 @@ impl SessionsEngine {
     pub async fn stop_turn(&self, chat_id: &str) -> Result<bool, EngineError> {
         const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
         crate::completion_notices::stop_parent(self, chat_id);
+        self.drain_side_chat_questions(chat_id);
         let target = lock(&self.inner.runs)
             .get(chat_id)
             .filter(|h| {
@@ -1444,6 +1463,42 @@ impl SessionsEngine {
         }
         tracing::warn!(chat = %chat_id, "turn stop did not settle; tearing the runtime down");
         self.terminate(chat_id).await
+    }
+
+    /// Un-strand a stopped parent's side chats (session-process-hygiene
+    /// ticket 03): a live side chat parked on a question whose parent just
+    /// stopped can never be answered — nobody is coming — so answer each
+    /// one empty, the same unpark `stop_turn` gives its own pending
+    /// questions. The child's turn then settles and the idle reaper takes
+    /// its runtime; nothing user-visible changes while a parent still owes
+    /// answers (only a STOP reaches here).
+    fn drain_side_chat_questions(&self, parent_chat_id: &str) {
+        let Some(ws) = self.inner.workspace() else {
+            return;
+        };
+        let children: Vec<String> = ws
+            .read_chats()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|chat| chat.parent_chat_id.as_deref() == Some(parent_chat_id))
+            .map(|chat| chat.id)
+            .collect();
+        for child in children {
+            let pending: Vec<_> = lock(&self.inner.runs)
+                .get(&child)
+                .map(|h| lock(&h.pending_inputs).drain().collect())
+                .unwrap_or_default();
+            for (request_id, tx) in pending {
+                tracing::info!(
+                    chat = %child,
+                    request = %request_id,
+                    "answering a side chat's question empty: its parent was stopped"
+                );
+                let _ = tx.send(Vec::new());
+                self.inner
+                    .publish(&child, &AgentEvent::InputResolved { request_id });
+            }
+        }
     }
 
     /// Tear the chat's live runtime down (protocol interrupt, then the
@@ -1531,7 +1586,11 @@ impl SessionsEngine {
         // the next dispatch would fail) against an unregistered harness, and
         // its display name names it in the refusal below.
         let harness = self.inner.registry.resolve(config.harness)?;
-        if chat.config.as_ref().is_some_and(|existing| existing.harness == config.harness) {
+        if chat
+            .config
+            .as_ref()
+            .is_some_and(|existing| existing.harness == config.harness)
+        {
             return Err(EngineError::Other(format!(
                 "Chat is already on {}",
                 harness.display_name()
@@ -1655,11 +1714,9 @@ impl SessionsEngine {
                     })
                     .and_then(|e| {
                         e.parts.iter().find_map(|p| match p {
-                            MessagePart::Text { text, .. } => Some((
-                                e.id.clone(),
-                                text.clone(),
-                                e.origin_chat_id.clone(),
-                            )),
+                            MessagePart::Text { text, .. } => {
+                                Some((e.id.clone(), text.clone(), e.origin_chat_id.clone()))
+                            }
                             _ => None,
                         })
                     })
@@ -1691,11 +1748,9 @@ impl SessionsEngine {
                 self.inner.journal.steer_consumed(&chat_id, user_id)
             });
             let prompt = match prompt {
-                Some((id, _text, origin)) if notice_revival => Some((
-                    id,
-                    roboco_proto::RESUME_CONTINUE_PROMPT.to_string(),
-                    origin,
-                )),
+                Some((id, _text, origin)) if notice_revival => {
+                    Some((id, roboco_proto::RESUME_CONTINUE_PROMPT.to_string(), origin))
+                }
                 Some((user_id, _text, origin)) if steer_consumed => Some((
                     format!("auto-resume-continue:{chat_id}:{user_id}"),
                     roboco_proto::RESUME_CONTINUE_PROMPT.to_string(),
@@ -1759,9 +1814,7 @@ impl SessionsEngine {
                 let notifiable = prompt
                     .as_ref()
                     .and_then(|(_, _, origin)| origin.as_deref())
-                    .and_then(|origin| {
-                        self.notifiable_parent_for(&chat_id, Some(origin), None)
-                    })
+                    .and_then(|origin| self.notifiable_parent_for(&chat_id, Some(origin), None))
                     .filter(|parent| {
                         !crate::completion_notices::chat_archived(self, &chat_id)
                             && !crate::completion_notices::chat_archived(self, parent)
@@ -1773,9 +1826,7 @@ impl SessionsEngine {
                             side_chat_id: chat_id.clone(),
                             settle,
                             outcome: crate::completion_notices::Outcome::Interrupted {
-                                reason: Some(
-                                    crate::completion_notices::INTERRUPTED_REASON.into(),
-                                ),
+                                reason: Some(crate::completion_notices::INTERRUPTED_REASON.into()),
                             },
                         },
                     );
@@ -1875,11 +1926,9 @@ impl SessionsEngine {
             .ok_or_else(|| {
                 EngineError::Other(format!("chat {chat_id} is not Limited: no limit record"))
             })?;
-        let fire_at = limit
-            .resets_at
-            .ok_or_else(|| EngineError::Other(
-                "the limit's reset time is unknown — use Resume instead".into(),
-            ))?;
+        let fire_at = limit.resets_at.ok_or_else(|| {
+            EngineError::Other("the limit's reset time is unknown — use Resume instead".into())
+        })?;
         if fire_at <= now_ms() {
             return Err(EngineError::Other(
                 "the limit has already reset — use Resume instead".into(),
@@ -2407,11 +2456,7 @@ impl Inner {
     /// one shared meaning for "the account is limited until"). Engines
     /// without an accounts store (bare tests) record without either.
     /// `None` when the classification was not a usage limit.
-    async fn limit_record(
-        &self,
-        harness: HarnessId,
-        kind: AgentErrorKind,
-    ) -> Option<SessionLimit> {
+    async fn limit_record(&self, harness: HarnessId, kind: AgentErrorKind) -> Option<SessionLimit> {
         let AgentErrorKind::UsageLimit { window, resets_at } = kind else {
             return None;
         };
@@ -2683,7 +2728,10 @@ impl Inner {
                     .is_ok_and(|a| std::fs::canonicalize(cwd).is_ok_and(|b| a == b))
         };
         if let Some(known) = lock(&self.harness_sessions).get(chat_id).cloned() {
-            if known.harness.is_some_and(|recorded| recorded != for_harness) {
+            if known
+                .harness
+                .is_some_and(|recorded| recorded != for_harness)
+            {
                 // Another harness's conversation: fall through to the row,
                 // never resume it here.
             } else {
@@ -2703,8 +2751,9 @@ impl Inner {
                     // The row's own config names another harness: its stored
                     // session id is that harness's, not this run's.
                 } else {
-                    return (!session_id.is_empty() && cwd_ok(session_cwd.as_deref().unwrap_or("")))
-                        .then_some(session_id);
+                    return (!session_id.is_empty()
+                        && cwd_ok(session_cwd.as_deref().unwrap_or("")))
+                    .then_some(session_id);
                 }
             }
         }
@@ -2771,9 +2820,131 @@ impl Inner {
     }
 
     fn remove_run(&self, chat_id: &str, run_id: &str) {
-        let mut runs = lock(&self.runs);
-        if runs.get(chat_id).is_some_and(|h| h.run_id == run_id) {
-            runs.remove(chat_id);
+        {
+            let mut runs = lock(&self.runs);
+            if runs.get(chat_id).is_some_and(|h| h.run_id == run_id) {
+                runs.remove(chat_id);
+            }
+        }
+        // The runtime that parked this chat is gone: drop its warm-park
+        // bookkeeping too (a newer run's park would re-add its own entry).
+        // Taken AFTER releasing `runs` — `note_parked` inspects `runs` while
+        // holding `parked`, so the two locks must never nest the other way.
+        lock(&self.parked).remove(chat_id);
+    }
+
+    /// A persistent session just parked: record it and, past `budget` warm
+    /// runtimes (0 = no cap), retire the oldest-idle one — the same clean
+    /// interrupt the 30-minute idle reaper uses, just earlier. Never a
+    /// runtime that is not truly idle: background work the agent reports,
+    /// live subagent sinks, and awaiting-input chats are all exempt.
+    ///
+    /// Lock order: `parked` is snapshot-and-release before `runs`/`statuses`
+    /// are inspected, and re-taken to apply the decision — see `remove_run`.
+    fn note_parked(&self, chat_id: &str, run_id: &str, budget: usize) {
+        lock(&self.parked).insert(
+            chat_id.to_owned(),
+            (run_id.to_owned(), std::time::Instant::now()),
+        );
+        if budget == 0 {
+            return;
+        }
+        loop {
+            // Oldest-first snapshot, no locks held during the checks below.
+            let mut candidates: Vec<(String, (String, std::time::Instant))> = lock(&self.parked)
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            candidates.sort_by_key(|(_, (_, at))| *at);
+            if candidates.len() <= budget {
+                return;
+            }
+            let mut victim: Option<String> = None;
+            let mut stale: Vec<String> = Vec::new();
+            for (chat, (run, _)) in &candidates {
+                if chat == chat_id {
+                    continue; // never the runtime that just parked
+                }
+                let (gone, evictable) = {
+                    // One lock at a time: `runs` is released before
+                    // `statuses` is taken, and `parked` was released before
+                    // both — no nesting to deadlock against.
+                    let background = {
+                        let runs = lock(&self.runs);
+                        match runs.get(chat) {
+                            None => None,                                  // the runtime already exited
+                            Some(handle) if handle.run_id != *run => None, // a newer run owns the chat
+                            Some(handle) => Some(handle.turn.background_live()),
+                        }
+                    };
+                    match background {
+                        None => (true, true),
+                        Some(true) => (false, false), // live background work holds it
+                        Some(false) => {
+                            let busy = lock(&self.statuses)
+                                .get(chat)
+                                .is_some_and(|s| is_active(s) || s.running_subagents > 0);
+                            (false, !busy)
+                        }
+                    }
+                };
+                if gone {
+                    stale.push(chat.clone()); // bookkeeping for a runtime that is no more
+                } else if evictable {
+                    victim = Some(chat.clone());
+                    break;
+                }
+            }
+            let mut parked = lock(&self.parked);
+            for chat in &stale {
+                parked.remove(chat);
+            }
+            if stale.is_empty() && victim.is_none() {
+                return; // nothing removable: keep the park (memory, not liveness)
+            }
+            let Some(victim_chat) = victim else {
+                continue; // stale cleanup may bring us under budget — recheck
+            };
+            if !parked.contains_key(&victim_chat) {
+                drop(parked);
+                continue; // re-parked/unparked under us — retry
+            }
+            let victim_run = parked.remove(&victim_chat).expect("checked").0;
+            drop(parked);
+            tracing::info!(
+                chat = %victim_chat,
+                "warm-park budget exceeded: retiring the oldest idle session"
+            );
+            if let Some(handle) = lock(&self.runs).get(&victim_chat) {
+                if handle.run_id == victim_run {
+                    handle.interrupt_token.cancel();
+                }
+            }
+        }
+    }
+
+    fn clear_parked(&self, chat_id: &str) {
+        lock(&self.parked).remove(chat_id);
+    }
+
+    /// Whether `chat_id` is an agent-created side chat whose parent is gone
+    /// (deleted, or archived out of the sidebar): nobody can ever answer a
+    /// question it asks, so the engine must not let one strand its runtime.
+    fn side_chat_parent_gone(&self, chat_id: &str) -> bool {
+        let Some(ws) = self.workspace() else {
+            return false;
+        };
+        let parent = ws
+            .chat(chat_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.parent_chat_id);
+        let Some(parent) = parent else {
+            return false;
+        };
+        match ws.chat(&parent).ok().flatten() {
+            None => true,
+            Some(parent) => parent.archived,
         }
     }
 }
@@ -2924,13 +3095,10 @@ fn is_harness_switch_seam(entry: &SessionMessageEntry) -> bool {
 
 /// The chat a fork seam copied its transcript from.
 fn fork_seam_source(entry: &SessionMessageEntry) -> Option<String> {
-    entry
-        .parts
-        .iter()
-        .find_map(|part| match part {
-            MessagePart::Fork { source_chat_id, .. } => Some(source_chat_id.clone()),
-            _ => None,
-        })
+    entry.parts.iter().find_map(|part| match part {
+        MessagePart::Fork { source_chat_id, .. } => Some(source_chat_id.clone()),
+        _ => None,
+    })
 }
 
 /// Whether the provider routes this prompt as a native command: its delivered
@@ -3361,7 +3529,10 @@ fn spawn_notice_record(
     }
     let engine = SessionsEngine { inner };
     tokio::spawn(async move {
-        crate::completion_notices::record_and_deliver(&engine, &side_chat, &parent, settle, outcome).await;
+        crate::completion_notices::record_and_deliver(
+            &engine, &side_chat, &parent, settle, outcome,
+        )
+        .await;
     });
 }
 
@@ -3561,8 +3732,10 @@ async fn drive_run(
                     // (rewriting the encoded envelope can double-convert); OpenCode
                     // converts the canonical selection itself, at the provider.
                     if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
-                        wire_request.prompt =
-                            roboco_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
+                        wire_request.prompt = roboco_proto::invocation::harness_prompt(
+                            &wire_request.prompt,
+                            harness_id,
+                        );
                         // The fork fallback rides the same conversion the
                         // pasted prompt would get (Codex: file mentions), so a
                         // refused fork's fresh session reads a transcript as
@@ -3572,9 +3745,9 @@ async fn drive_run(
                         if let Some(fork) = wire_request.provider_fork.as_mut()
                             && let Some(history) = fork.fallback_history.clone()
                         {
-                            fork.fallback_history = Some(
-                                roboco_proto::invocation::harness_prompt(&history, harness_id),
-                            );
+                            fork.fallback_history = Some(roboco_proto::invocation::harness_prompt(
+                                &history, harness_id,
+                            ));
                         }
                         if let Some(history) = wire_request.resume_fallback_history.clone() {
                             wire_request.resume_fallback_history = Some(
@@ -3594,7 +3767,7 @@ async fn drive_run(
                 })
                 .boxed()),
             }
-        },
+        }
         Err(error) => Err(error),
     };
     let mut stream = match started {
@@ -3728,6 +3901,15 @@ async fn drive_run(
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_millis)
         .unwrap_or(std::time::Duration::from_secs(30 * 60));
+    // Warm-park budget (session-process-hygiene ticket 02): how many parked
+    // persistent sessions may stay warm at once. The default keeps every
+    // recent chat instant; a burst of side chats beyond it retires the
+    // oldest-idle tail (the parked window itself is unchanged). `0` = no
+    // cap. `ROBOCO_WARM_SESSIONS` overrides (tests).
+    let warm_budget = std::env::var("ROBOCO_WARM_SESSIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(8);
     // A live subagent stretches the window, but never unbounded: every
     // driver's subagent terminal is a best-effort vendor signal (claude's
     // untagged task_notification, grok's subagent_finished, codex thread
@@ -4034,6 +4216,7 @@ async fn drive_run(
                     idle_since = Some(tokio::time::Instant::now());
                     reap_deferred_until = None;
                     self_continued_turn = false;
+                    inner.note_parked(&chat_id, &run_id, warm_budget);
                     // The watchdog finalized a completed turn (no native
                     // Done): same rule as a Done — the turn's ref must not
                     // leak into whatever turn follows in this runtime.
@@ -4285,13 +4468,37 @@ async fn drive_run(
             let pending = lock(&inner.runs)
                 .get(&chat_id)
                 .map(|h| h.pending_inputs.clone());
-            let known = pending.is_some_and(|p| lock(&p).contains_key(request_id));
+            let known = pending
+                .as_ref()
+                .is_some_and(|p| lock(&p).contains_key(request_id));
             if !known {
                 tracing::warn!(
                     chat = %chat_id,
                     request = %request_id,
                     "dropping harness-emitted InputRequested (unknown id; \
                      the engine input bridge owns this lifecycle)"
+                );
+                continue;
+            }
+            // A side chat whose parent is gone (deleted or archived) can
+            // never have its question answered: answer it empty right here
+            // so the turn settles and the idle reaper can take the runtime —
+            // instead of disarming the reaper forever on a question nobody
+            // owes an answer to (session-process-hygiene ticket 03).
+            if inner.side_chat_parent_gone(&chat_id)
+                && let Some(tx) = pending.as_ref().and_then(|p| lock(&p).remove(request_id))
+            {
+                tracing::info!(
+                    chat = %chat_id,
+                    request = %request_id,
+                    "answering a side chat's question empty: its parent is gone"
+                );
+                let _ = tx.send(Vec::new());
+                inner.publish(
+                    &chat_id,
+                    &AgentEvent::InputResolved {
+                        request_id: request_id.clone(),
+                    },
                 );
                 continue;
             }
@@ -4346,6 +4553,7 @@ async fn drive_run(
                     "parked session resumed by self-continued agent output"
                 );
                 idle_since = None;
+                inner.clear_parked(&chat_id);
                 self_continued_turn = true;
                 // The park cleared the fold; rotate to a fresh entry and
                 // fall through — this event is the new segment's first part.
@@ -4356,10 +4564,12 @@ async fn drive_run(
                 match &event {
                     AgentEvent::Steered { .. } => {
                         idle_since = None;
+                        inner.clear_parked(&chat_id);
                         inner.set_status(&chat_id, SessionStatus::Working, true);
                     }
                     AgentEvent::Done { .. } => {
                         idle_since = None;
+                        inner.clear_parked(&chat_id);
                     }
                     // A question with NO turn behind it (post-turn permission
                     // noise): answer it empty right here. Un-parking into
@@ -4494,7 +4704,9 @@ async fn drive_run(
                 .filter(|h| h.run_id == run_id)
                 .and_then(|h| lock(&h.routed_steers).pop_front());
             if let Some(steer) = &confirmed {
-                inner.journal.note_steer_consumed(&chat_id, &steer.message_id);
+                inner
+                    .journal
+                    .note_steer_consumed(&chat_id, &steer.message_id);
             }
             inner.publish(&chat_id, &event);
             // A steer boundary means a real prompt owns the turn again — its
@@ -4753,6 +4965,7 @@ async fn drive_run(
                 idle_since = Some(tokio::time::Instant::now());
                 reap_deferred_until = None;
                 self_continued_turn = false;
+                inner.note_parked(&chat_id, &run_id, warm_budget);
                 // The turn is over: its provider turn ref must not leak into
                 // the next turn's segments. Harnesses that emit the ref
                 // before their segments (Claude, Codex, OpenCode) re-stamp
@@ -4836,9 +5049,7 @@ async fn drive_run(
     // accounts lookup is the only await in the exit path, so it runs before
     // the handle goes away rather than racing a fresh dispatch's status.
     let limit = match (final_status, last_error_kind) {
-        (SessionStatus::Errored, Some(kind)) => {
-            inner.limit_record(harness_id, kind).await
-        }
+        (SessionStatus::Errored, Some(kind)) => inner.limit_record(harness_id, kind).await,
         _ => None,
     };
     if limit.is_some() {
@@ -4872,12 +5083,21 @@ async fn drive_run(
         // ever via a NEW record whose reset advances past the last fired
         // continuation (the loop guard), never from the failure of the
         // continuation itself.
-        SessionsEngine { inner: inner.clone() }.maybe_auto_arm_resume(&chat_id, limit);
+        SessionsEngine {
+            inner: inner.clone(),
+        }
+        .maybe_auto_arm_resume(&chat_id, limit);
     }
     if let (Some(parent), Some((status, error))) = (notifiable, final_done) {
         let completed_turn = final_turn_completed;
         if let Some(outcome) = final_outcome(status, error.as_deref(), completed_turn) {
-            spawn_notice_record(inner.clone(), chat_id.clone(), parent, final_settle, outcome);
+            spawn_notice_record(
+                inner.clone(),
+                chat_id.clone(),
+                parent,
+                final_settle,
+                outcome,
+            );
         }
     }
     // A busy parent's notices waited — never steered mid-turn (ticket 13):
@@ -5104,7 +5324,11 @@ mod tests {
             ),
             ("a1", roboco_doc::MessageRole::Assistant, "partial output"),
             ("u2", roboco_doc::MessageRole::User, "current request"),
-            ("u3", roboco_doc::MessageRole::User, "future pending request"),
+            (
+                "u3",
+                roboco_doc::MessageRole::User,
+                "future pending request",
+            ),
         ] {
             doc.push_message(&roboco_doc::SessionMessageEntry {
                 origin_chat_id: None,
@@ -5497,8 +5721,7 @@ mod tests {
         }));
         let dir = tempfile::tempdir().unwrap();
         let core =
-            crate::EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock)
-                .unwrap();
+            crate::EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock).unwrap();
         let chat = "chat-sink-spin";
         core.sessions
             .dispatch(chat, HarnessId::Mock, request(), None, None, None)
