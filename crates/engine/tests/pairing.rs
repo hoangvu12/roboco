@@ -20,6 +20,7 @@ async fn engine(dir: &std::path::Path) -> (EngineCore, String, tokio::task::Join
         listener,
         core.rpc_service(),
         PairingStore::open(dir).unwrap(),
+        roboco_engine::rooms::RoomStore::open(dir).unwrap(),
     ));
     (core, base, task)
 }
