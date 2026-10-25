@@ -17,7 +17,7 @@ registry semantics; relay-directory growth is a known separate hygiene item
 
 **Blocked by:** 01 (room store, book, presentation endpoint).
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 

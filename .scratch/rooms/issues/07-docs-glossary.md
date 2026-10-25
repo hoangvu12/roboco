@@ -15,7 +15,7 @@ gate catalogue. Cross-link ADR 0011 from the ADR index conventions.
 **Blocked by:** 01 (wire names settle; lands with or after the first
 engine implementation).
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 

@@ -19,7 +19,7 @@ was asleep during join appears after the next heal pass.
 
 **Blocked by:** 01 (engine surface; the FFI surface grows in the same repo).
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 

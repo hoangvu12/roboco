@@ -20,7 +20,7 @@ own-session revokes per member. Room UI is hidden when a member engine lacks
 existing for the checklist to be meaningful, but ships against engine
 verifiers alone.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 
