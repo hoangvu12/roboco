@@ -23,6 +23,17 @@ import {
   DialogTitle,
 } from "../components/ui/Dialog";
 import { webDeviceLabel, type StoredEngine } from "../lib/engine-store";
+import { useRooms, roomStore } from "../state/rooms";
+import {
+  describeRoomJoinError,
+  describeRoomJoinResult,
+  joinRoom,
+  offlineRoomMembers,
+  originSupportsRooms,
+  roomMemberOfEngine,
+  type EngineRoomMembership,
+  type OfflineRoomMemberRow as OfflineRoomMember,
+} from "../lib/rooms";
 import { deviceOnline, type EnginePresence } from "../lib/view";
 import { describeRedeemError } from "../lib/pairing-errors";
 import { engineConnection, settingsDeviceName } from "../lib/settings-engine";
@@ -73,6 +84,7 @@ export function DevicesSettingsPage() {
   const client = session?.client ?? null;
   const fleet = useFleet();
   const registry = useFleetRegistry();
+  const rooms = useRooms();
   const now = useNow(15_000);
   const [pairingUrl, setPairingUrl] = useState("");
   const [pairingBusy, setPairingBusy] = useState(false);
@@ -80,6 +92,18 @@ export function DevicesSettingsPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [rename, setRename] = useState<RenameDialog | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The room join (rooms#05): one paste of the `roboco-room:` invite,
+  // redeemed member-by-member through the engine serving this page. Hidden
+  // unless that engine advertises `rooms-v1` (version skew degrades to
+  // absence, ADR 0011); the room UI lives in Settings, joined engines
+  // appear in the lists below — no new grouping layer.
+  const roomsSupported = useMemo(
+    () => originSupportsRooms(fleet, registry, typeof window !== "undefined" ? window.location.origin : ""),
+    [fleet, registry],
+  );
+  const [roomInvite, setRoomInvite] = useState("");
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [roomResult, setRoomResult] = useState<string | null>(null);
 
   // A new engine (a successful pair) rebuilds the session; reset the page.
   useEffect(() => {
@@ -175,6 +199,35 @@ export function DevicesSettingsPage() {
     })();
   }
 
+  function join() {
+    if (roomBusy) {
+      return;
+    }
+    const invite = roomInvite.trim();
+    if (invite.length === 0) {
+      return;
+    }
+    setRoomBusy(true);
+    setError(null);
+    setRoomResult(null);
+    void (async () => {
+      try {
+        // Per-member failures land as offline members in the result and the
+        // room record — they are not an error strip; a refusal (bad invite,
+        // damaged persisted state) is.
+        const result = await joinRoom(invite, webDeviceLabel(), { fleet: fleetStore, rooms: roomStore });
+        setRoomResult(describeRoomJoinResult(result));
+        if (result.joined.length > 0) {
+          setRoomInvite("");
+        }
+      } catch (cause) {
+        setError(describeRoomJoinError(cause));
+      } finally {
+        setRoomBusy(false);
+      }
+    })();
+  }
+
   function forget(baseUrl: string) {
     fleetStore.remove(baseUrl);
   }
@@ -206,6 +259,8 @@ export function DevicesSettingsPage() {
   }
 
   const deviceCount = engineHostDevices.length + clientDevices.length;
+  /** Room members that show as offline engines (the invite's member list). */
+  const offlineMembers = useMemo(() => offlineRoomMembers(rooms, fleet), [rooms, fleet]);
 
   /** Render each device once, keeping engine actions on its host row. */
   const renderDeviceRow = (device: Device, ix: number) => {
@@ -227,6 +282,7 @@ export function DevicesSettingsPage() {
           now={now}
           onCopyId={() => copyId(device.id)}
           registry={registry}
+          roomMember={engineKey !== null ? roomMemberOfEngine(rooms, engineKey) : null}
         />
       );
     }
@@ -288,14 +344,56 @@ export function DevicesSettingsPage() {
           Paste an HTTPS pairing link or a <code>roboco-tailcat:…</code> invite. Tailcat pairing
           runs on the server that serves this page.
         </p>
+        {roomsSupported ? (
+          <>
+            <form
+              className="settings-pairing-row"
+              onSubmit={(event) => {
+                event.preventDefault();
+                join();
+              }}
+            >
+              <input
+                className="input mono"
+                type="text"
+                placeholder="Paste a roboco-room:… invite"
+                value={roomInvite}
+                onChange={(event) => setRoomInvite(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="submit"
+                className="btn btn-solid"
+                disabled={roomBusy || roomInvite.trim().length === 0}
+              >
+                {roomBusy ? "Joining…" : "Join room"}
+              </button>
+            </form>
+            <p className="settings-pairing-hint">
+              One paste reaches every member: each is redeemed through the engine serving this
+              page, and appears in the lists below — offline members stay listed until they join.
+            </p>
+            {roomResult !== null && (
+              <p className="settings-pairing-hint" role="status">
+                {roomResult}
+              </p>
+            )}
+          </>
+        ) : null}
       </section>
 
       {partition.kind === "unknown" ? (
         <section className="settings-card">
-          {deviceCount === 0 ? (
+          {deviceCount === 0 && offlineMembers.length === 0 ? (
             <p className="settings-empty settings-empty-devices">No engines or devices yet. Pair one above.</p>
           ) : (
-            devices.map(renderDeviceRow)
+            <>
+              {devices.map(renderDeviceRow)}
+              {offlineMembers.map((member) => (
+                <OfflineRoomMemberRow key={member.key} member={member} />
+              ))}
+            </>
           )}
         </section>
       ) : (
@@ -308,10 +406,15 @@ export function DevicesSettingsPage() {
           )}
           <div className="settings-section-header"><h2>Other devices</h2></div>
           <section className="settings-card">
-            {partition.others.length === 0 ? (
+            {partition.others.length === 0 && offlineMembers.length === 0 ? (
               <p className="settings-empty">Pair another device to see it here.</p>
             ) : (
-              partition.others.map(renderDeviceRow)
+              <>
+                {partition.others.map(renderDeviceRow)}
+                {offlineMembers.map((member) => (
+                  <OfflineRoomMemberRow key={member.key} member={member} />
+                ))}
+              </>
             )}
           </section>
         </>
@@ -336,6 +439,8 @@ interface EngineHostDeviceRowProps {
   readonly now: number;
   readonly onCopyId: () => void;
   readonly registry: EngineRegistrySnapshot;
+  /** The room membership behind this engine, when it was joined via a room. */
+  readonly roomMember: EngineRoomMembership | null;
 }
 
 /** One paired engine host — device tile styling, engine actions on the row. */
@@ -375,6 +480,12 @@ function EngineHostDeviceRow(props: EngineHostDeviceRowProps) {
           )}
           <span className="settings-meta-dot" aria-hidden="true">·</span>
           {registryConnection.label}
+          {props.roomMember !== null && (
+            <>
+              <span className="settings-meta-dot" aria-hidden="true">·</span>
+              {`room ${props.roomMember.roomName} · ${props.roomMember.label}`}
+            </>
+          )}
           {!props.online && (
             <>
               <span className="settings-meta-dot" aria-hidden="true">·</span>
@@ -494,6 +605,32 @@ function DeviceRow(props: {
         <Icon name="pen" size={14} />
         Rename
       </button>
+    </div>
+  );
+}
+
+/**
+ * One room member that is not an engine yet (rooms#05): the invite's member
+ * list filling the gap a failed or sleeping redeem leaves. The row reuses
+ * the devices list's tile, presence-dot, and meta conventions — the
+ * existing offline treatment, no new grouping layer — and stays display-only
+ * (a re-join is another paste of the invite; presentations are repeatable).
+ */
+function OfflineRoomMemberRow({ member }: { readonly member: OfflineRoomMember }) {
+  return (
+    <div className="settings-row device-row" data-room-member={member.key}>
+      <div className="row-tile device-tile" aria-hidden="true">
+        <Icon name={platformGlyph("")} size={16} className="row-tile-icon" />
+        <span className="presence-dot presence-off" />
+      </div>
+      <div className="settings-row-main">
+        <span className="settings-row-title">{member.label}</span>
+        <span className="settings-meta-line">
+          Room {member.roomName}
+          <span className="settings-meta-dot" aria-hidden="true">·</span>
+          Offline
+        </span>
+      </div>
     </div>
   );
 }
