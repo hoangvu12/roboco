@@ -77,8 +77,11 @@ pub fn pending_refs_in(text: &str) -> Vec<String> {
         })
         .collect()
 }
-/// Hard cap on an assembled file.
-const MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// Hard cap on an assembled file. 100 MB (ADR 0011, the rooms feature's
+/// taildrop payload): the engine advertises `uploads-100mb-v1` whenever it
+/// accepts files this large; older engines enforce 32 MB, so clients clamp
+/// to the legacy 24 MB client cap until they see the capability string.
+const MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// Multiple of 3 so independent base64 chunks concatenate losslessly.
 const READ_CHUNK_BYTES: u64 = 45_000;
 
@@ -141,13 +144,18 @@ impl Uploads {
         if at > 1_000_000 {
             return Err(EngineError::Other("Invalid chunk index".into()));
         }
-        // Base64 inflates by ~4/3; bound the staged payload against the file cap.
+        // Base64 inflates by ~4/3; bound the staged payload against the file
+        // cap. The chars→bytes estimate counts the final chunk's `=` padding
+        // as data (≤ 2 chars, up to 2 bytes over), so the streaming check
+        // carries that slack — an exactly-`MAX_BYTES` file (whole-file base64
+        // of 4·⌈n/3⌉ chars) must pass. `commit` measures the decoded bytes
+        // exactly and stays the authority.
         let staged: u64 = chunk_files(&dir)?
             .iter()
             .filter(|(seq, _)| *seq != at)
             .map(|(_, path)| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
             .sum();
-        if (staged + data.len() as u64) * 3 / 4 > MAX_BYTES {
+        if (staged + data.len() as u64) * 3 / 4 > MAX_BYTES + 2 {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(EngineError::Other("Upload too large".into()));
         }
@@ -244,7 +252,7 @@ impl Uploads {
     }
 
     /// Reclaim staging dirs whose newest chunk is older than the TTL (an upload
-    /// abandoned mid-stream must not hold up to 32MB forever).
+    /// abandoned mid-stream must not hold up to 100MB forever).
     fn sweep(&self) {
         let Ok(entries) = std::fs::read_dir(&self.inner.tmp) else {
             return;
@@ -506,6 +514,81 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"local");
         assert!(!dir.path().join("tmp").join("upload-1").exists());
+    }
+
+    #[test]
+    fn append_enforces_the_100mb_cap_at_the_exact_decoded_boundary() {
+        // `append` bounds the staged base64 payload's decoded size
+        // (`(staged + data) * 3 / 4 > MAX_BYTES + 2`, the slack covering the
+        // final chunk's `=` padding). The boundary lands between 139 810 137
+        // total chars (accepted: 100 MB + 2 padding bytes of estimate) and
+        // 139 810 138 (rejected). A pre-staged SPARSE chunk file carries the
+        // bulk of the staged bytes, so the test never materializes them.
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = Uploads::from_root(dir.path());
+        let staged = |len: u64| {
+            let at = dir.path().join("tmp").join("upload-b").join("000000.b64");
+            let _ = std::fs::remove_dir_all(at.parent().unwrap());
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::File::create(&at).unwrap().set_len(len).unwrap();
+        };
+        // 139 810 133 + 4 staged chars: the estimate reads exactly
+        // MAX_BYTES + 2 — accepted (a real 100 MB file stages 139 810 136
+        // chars and lands here too).
+        staged(139_810_133);
+        uploads.append("upload-b", "aGk=", Some(1)).unwrap();
+        // One more char in total tips the estimate past the slack.
+        staged(139_810_134);
+        let error = uploads.append("upload-b", "aGk=", Some(1)).unwrap_err();
+        assert_eq!(error.to_string(), "Upload too large");
+        // The rejected upload's staging is reclaimed, not left to the TTL.
+        assert!(!dir.path().join("tmp").join("upload-b").exists());
+    }
+
+    #[test]
+    fn sweep_over_multi_hundred_mb_dirs_stays_off_the_chunk_path() {
+        // `sweep` runs at the top of every `append`, which the listener's
+        // `UploadChunk` handler invokes synchronously — a staging area
+        // holding several hundred megabytes must not slow that path down.
+        // The sweep never reads chunk CONTENT (file metadata only), so the
+        // bulk is staged as sparse files: hundreds of MB declared, none
+        // written.
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = Uploads::from_root(dir.path());
+        for name in ["upload-huge", "upload-huge-2"] {
+            let staging = dir.path().join("tmp").join(name);
+            std::fs::create_dir_all(&staging).unwrap();
+            for seq in 0..3u64 {
+                let at = staging.join(format!("{seq:06}.b64"));
+                std::fs::File::create(&at)
+                    .unwrap()
+                    .set_len(50 * 1024 * 1024)
+                    .unwrap();
+            }
+        }
+        // A realistic in-flight upload beside them: 100 MB across 200 chunks.
+        let busy = dir.path().join("tmp").join("upload-live");
+        std::fs::create_dir_all(&busy).unwrap();
+        for seq in 0..200u64 {
+            let at = busy.join(format!("{seq:06}.b64"));
+            std::fs::File::create(&at)
+                .unwrap()
+                .set_len(680_000)
+                .unwrap();
+        }
+        let started = std::time::Instant::now();
+        uploads.append("upload-fresh", "aGk=", Some(0)).unwrap();
+        let sweep = started.elapsed();
+        // ~410 MB across 206 files: metadata-only work, well under a second
+        // even on CI disks. The bound is deliberately loose — it exists to
+        // catch a content-reading sweep, not to measure disk speed.
+        assert!(
+            sweep < Duration::from_secs(5),
+            "sweep over multi-hundred-MB staging took {sweep:?}"
+        );
+        // The live upload is fresh: nothing was reclaimed.
+        assert!(busy.exists());
+        assert!(dir.path().join("tmp").join("upload-huge").exists());
     }
 
     #[test]

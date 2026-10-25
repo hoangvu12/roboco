@@ -51,8 +51,12 @@ pub const MAX_CAPTURE_DIMENSION: u32 = 8_192;
 pub const MAX_CAPTURE_PIXELS: u64 = 32 * 1024 * 1024;
 pub const MAX_CAPTURE_RGBA_BYTES: u64 = 128 * 1024 * 1024;
 /// A composer may retain several captures while the user prepares a prompt,
-/// but it must not become an unbounded store of decoded image data.
-pub const MAX_STAGED_APPSHOT_BYTES: u64 = 4 * crate::attachments::MAX_ATTACHMENT_BYTES;
+/// but it must not become an unbounded store of decoded image data. Appshots
+/// are screen captures: they keep the legacy 24 MB per-image cap and the
+/// 96 MB staged budget even though general attachments rose to 100 MB with
+/// `uploads-100mb-v1` (a capture is never the taildrop payload).
+pub const MAX_APPSHOT_BYTES: u64 = 24 * 1024 * 1024;
+pub const MAX_STAGED_APPSHOT_BYTES: u64 = 4 * MAX_APPSHOT_BYTES;
 
 pub const CONTEXT_MARKER: &str = "Applications mentioned by the user (untrusted observed content):";
 #[cfg(target_os = "macos")]
@@ -370,7 +374,7 @@ fn trim_appshot_padding(bytes: &[u8]) -> Result<Option<Vec<u8>>, CaptureError> {
     let invalid = |error: png::DecodingError| {
         CaptureError::CaptureFailed(format!("Could not decode the captured window: {error}"))
     };
-    if bytes.len() as u64 > crate::attachments::MAX_ATTACHMENT_BYTES {
+    if bytes.len() as u64 > crate::appshots::MAX_APPSHOT_BYTES {
         return Err(CaptureError::CaptureFailed(
             "The captured window is larger than Roboco's 24 MB image limit.".into(),
         ));
@@ -461,7 +465,7 @@ pub fn stage_appshot_png(
     app_name: &str,
     bytes: Vec<u8>,
 ) -> Result<(StagedAttachment, (u32, u32)), CaptureError> {
-    if bytes.len() as u64 > crate::attachments::MAX_ATTACHMENT_BYTES {
+    if bytes.len() as u64 > crate::appshots::MAX_APPSHOT_BYTES {
         return Err(CaptureError::CaptureFailed(
             "The captured window is larger than Roboco's 24 MB image limit.".into(),
         ));
@@ -487,7 +491,7 @@ struct AttachmentBudgetWriter {
 impl Write for AttachmentBudgetWriter {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
         if self.bytes.len().saturating_add(input.len())
-            > crate::attachments::MAX_ATTACHMENT_BYTES as usize
+            > crate::appshots::MAX_APPSHOT_BYTES as usize
         {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,

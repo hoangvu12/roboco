@@ -200,7 +200,7 @@ pub(super) async fn capture_target(target: CaptureTarget) -> Result<CapturedApps
             CaptureError::CaptureFailed(format!("Could not inspect portal screenshot: {error}"))
         })?
         .len();
-    if file_len > crate::attachments::MAX_ATTACHMENT_BYTES {
+    if file_len > crate::appshots::MAX_APPSHOT_BYTES {
         return Err(CaptureError::CaptureFailed(
             "The portal screenshot is larger than Roboco's 24 MB image limit.".into(),
         ));
@@ -209,12 +209,12 @@ pub(super) async fn capture_target(target: CaptureTarget) -> Result<CapturedApps
         CaptureError::CaptureFailed(format!("Could not open portal screenshot: {error}"))
     })?;
     let mut bytes = Vec::with_capacity(file_len as usize);
-    file.take(crate::attachments::MAX_ATTACHMENT_BYTES + 1)
+    file.take(crate::appshots::MAX_APPSHOT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| {
             CaptureError::CaptureFailed(format!("Could not read portal screenshot: {error}"))
         })?;
-    if bytes.len() as u64 > crate::attachments::MAX_ATTACHMENT_BYTES {
+    if bytes.len() as u64 > crate::appshots::MAX_APPSHOT_BYTES {
         return Err(CaptureError::CaptureFailed(
             "The portal screenshot changed size while it was being read.".into(),
         ));

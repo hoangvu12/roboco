@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { Chat, EngineInfo, SessionGrant } from "@roboco/proto";
 import { EngineClient } from "../src/client";
-import { ENGINE_INFO, MUTATE, REVOKE_PAIRING_SESSION, WATCH_CHATS } from "../src/methods";
+import { ENGINE_INFO, MUTATE, READ_ATTACHMENT_CHUNK, REVOKE_PAIRING_SESSION, UPLOAD_CHUNK, UPLOAD_COMMIT, WATCH_CHATS } from "../src/methods";
 import { redeemPairingCode } from "../src/pairing";
 import { EngineWatchCache } from "../src/watch-cache";
 import { delay, statusWhen, trackedFactory, waitUntil } from "./helpers/ws";
@@ -247,6 +247,81 @@ describe("conformance against a real engine: the watch cache", () => {
       cacheClient.close();
     }
   }, 60_000);
+});
+
+describe("conformance against a real engine: the upload path", () => {
+  // Ticket 06's upload health check: the web upload ladder's wire half —
+  // UploadChunk (680 000 b64 chars, 3-wide) → UploadCommit →
+  // ReadAttachmentChunk loop — against the REAL example engine, at a size
+  // the old 32 MB engine cap refused. The engine's 100 MB cap boundary is
+  // covered by the engine's own tests; here the payload is 33 MB —
+  // deliberately past the legacy engine cap, far under the new one.
+  const UPLOAD_CHUNK_B64_CHARS = 680_000;
+  const CONCURRENCY = 3;
+
+  test("advertises uploads-100mb-v1 and round-trips a 33 MB upload", async () => {
+    const info = await client!.call<EngineInfo>(ENGINE_INFO, {});
+    expect(info.capabilities).toContain("uploads-100mb-v1");
+
+    const total = 33 * 1024 * 1024;
+    const payload = Buffer.alloc(total);
+    for (let i = 0; i < total; i++) {
+      payload[i] = (i * 31) % 251;
+    }
+    const b64 = payload.toString("base64");
+    const chunks: string[] = [];
+    for (let start = 0; start < b64.length; start += UPLOAD_CHUNK_B64_CHARS) {
+      chunks.push(b64.slice(start, Math.min(start + UPLOAD_CHUNK_B64_CHARS, b64.length)));
+    }
+    expect(chunks.length, "33 MB ≈ 68 chunks of ~510 KB").toBe(68);
+
+    const uploadId = `conformance-${Date.now()}`;
+    let next = 0;
+    const failures: unknown[] = [];
+    const workers = Array.from({ length: CONCURRENCY }, async () => {
+      for (;;) {
+        const seq = next++;
+        if (seq >= chunks.length) {
+          return;
+        }
+        try {
+          await client!.call(UPLOAD_CHUNK, { uploadId, seq, data: chunks[seq] });
+        } catch (error) {
+          failures.push(error);
+          return;
+        }
+      }
+    });
+    await Promise.all(workers);
+    expect(failures).toEqual([]);
+
+    const committed = await client!.call<{ path: string }>(UPLOAD_COMMIT, {
+      uploadId,
+      fileName: "conformance-payload.bin",
+    });
+    expect(typeof committed.path).toBe("string");
+    expect(committed.path.endsWith("conformance-payload.bin")).toBe(true);
+
+    // Read-back: 45 000-byte chunks until done, reassembling by hash.
+    const { createHash } = await import("node:crypto");
+    const expected = createHash("sha256").update(payload).digest("hex");
+    const hasher = createHash("sha256");
+    let offset = 0;
+    for (;;) {
+      const chunk = await client!.call<{
+        data: string;
+        nextOffset: number;
+        done: boolean;
+      }>(READ_ATTACHMENT_CHUNK, { path: committed.path, offset });
+      hasher.update(Buffer.from(chunk.data, "base64"));
+      offset = chunk.nextOffset;
+      if (chunk.done) {
+        break;
+      }
+    }
+    expect(offset).toBe(total);
+    expect(hasher.digest("hex")).toBe(expected);
+  }, 120_000);
 });
 
 describe("conformance against a real engine: revoked sessions", () => {

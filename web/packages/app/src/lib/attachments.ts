@@ -27,8 +27,31 @@ const ATTACHED_HEADER_LOOSE = "attached images (local files";
 // Limits and constants (port of attachments.rs MAX_/UPLOAD_/READ_)
 // ---------------------------------------------------------------------------
 
-/** One-attachment size cap (24 MB) — matches the engine's jail. */
-export const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
+/** One-attachment hard ceiling (100 MB), raised with `uploads-100mb-v1`
+ *  (ADR 0011): the taildrop payload covers videos and archives, and 100 MB
+ *  still rides the chunked `UploadChunk`/`UploadCommit` pipeline (~206
+ *  chunks of ~510 KB, inside the 1 MiB relay frame budget). */
+export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+/** The legacy one-attachment cap. Engines without `uploads-100mb-v1` still
+ *  enforce 32 MB server-side, so clients clamp to 24 MB against them —
+ *  exactly today's behavior for old-engine fleets. */
+export const LEGACY_MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
+
+/** The per-file upload cap for one engine: 100 MB when its capabilities
+ *  advertise `uploads-100mb-v1`, the legacy 24 MB otherwise (unknown
+ *  capabilities — offline or mid-handshake — get the safe legacy cap). */
+export function attachmentCapBytes(capabilities: readonly string[] | null | undefined): number {
+  return capabilities?.includes("uploads-100mb-v1")
+    ? MAX_ATTACHMENT_BYTES
+    : LEGACY_MAX_ATTACHMENT_BYTES;
+}
+
+/** The user-facing cap message for a refused file (stageFile/stageBytes
+ *  copy, `N MB max`). */
+function tooLargeMessage(name: string, maxBytes: number): string {
+  return `${name} is too large (${Math.round(maxBytes / (1024 * 1024))} MB max).`;
+}
 
 // ---------------------------------------------------------------------------
 // Staged-strip geometry (composer.rs:288-296) — the pill height depends on
@@ -67,8 +90,10 @@ export function attachmentStripHeight(count: number, innerWidth: number): number
 export const UPLOAD_CHUNK_B64_CHARS = 680_000;
 
 /** Safety cap on the read-back loop (a stuck offset or runaway host stops
- *  here, mirroring `state.ts MAX_ATTACHMENT_READ_CHUNKS`). */
-const MAX_READ_CHUNKS = 1_000;
+ *  here, mirroring `state.ts MAX_ATTACHMENT_READ_CHUNKS`). 45 000-byte
+ *  chunks × 2 400 ≈ 108 MB: the full 100 MB cap plus headroom, so a
+ *  max-size attachment reads back instead of tripping the guard. */
+const MAX_READ_CHUNKS = 2_400;
 
 /** Per-call deadlines (state.ts uploadAttachment): a stalled-but-open link
  *  never fails an RPC on its own, so every call races a timer. */
@@ -81,9 +106,12 @@ const UPLOAD_CONCURRENCY = 3;
 
 /** Whole-attachment deadline. Scales with chunk count, capped (a flapping
  *  link that succeeds on retry 2-of-3 never trips the consecutive-failure
- *  abort — bound the WHOLE send instead). */
-function attachmentDeadlineMs(nChunks: number): number {
-  return Math.min(120_000 + 15_000 * nChunks, 900_000);
+ *  abort — bound the WHOLE send instead). The 15 s/chunk slope tolerates a
+ *  ~34 KB/s link, and since `uploads-100mb-v1` a 100 MB upload (~206
+ *  chunks) needs 3 120 s at that slope, so the cap rose 900 s → 3 600 s to
+ *  stay size-proportional — a slow link still fits a max-size upload. */
+export function attachmentDeadlineMs(nChunks: number): number {
+  return Math.min(120_000 + 15_000 * nChunks, 3_600_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,24 +262,34 @@ export interface StagedAttachment {
   readonly naturalSize: { width: number; height: number } | null;
 }
 
-/** Stage bytes with a guessed format (e.g. clipboard paste). */
-export function stageBytes(name: string | null, bytes: Uint8Array): StagedAttachment {
+/** Stage bytes with a guessed format (e.g. clipboard paste). `maxBytes` is
+ *  the composer's effective cap (see [`attachmentCapBytes`]); the default is
+ *  the hard ceiling. */
+export function stageBytes(
+  name: string | null,
+  bytes: Uint8Array,
+  maxBytes: number = MAX_ATTACHMENT_BYTES,
+): StagedAttachment {
   const detected = formatByBytes(bytes);
   if (detected === null) {
     throw new Error("Only image files can be attached (PNG, JPEG, GIF, WebP, SVG, BMP, or TIFF).");
   }
-  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`${name ?? defaultName()} is too large (24 MB max).`);
+  if (bytes.byteLength > maxBytes) {
+    throw new Error(tooLargeMessage(name ?? defaultName(), maxBytes));
   }
   const baseName = name && name.length > 0 ? name : defaultName();
   return finalizeStage(baseName, detected, bytes);
 }
 
 /** Stage a picked file. `File` is the browser `File` (subclass of Blob);
- *  we keep the bytes raw for upload and a data-URL thumbnail for the strip. */
-export function stageFile(file: { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }): Promise<StagedAttachment> {
-  if (file.size > MAX_ATTACHMENT_BYTES) {
-    return Promise.reject(new Error(`${file.name} is too large (24 MB max).`));
+ *  we keep the bytes raw for upload and a data-URL thumbnail for the strip.
+ *  `maxBytes` is the composer's effective cap (see [`attachmentCapBytes`]). */
+export function stageFile(
+  file: { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> },
+  maxBytes: number = MAX_ATTACHMENT_BYTES,
+): Promise<StagedAttachment> {
+  if (file.size > maxBytes) {
+    return Promise.reject(new Error(tooLargeMessage(file.name, maxBytes)));
   }
   return file
     .arrayBuffer()
@@ -629,17 +667,35 @@ export interface UploadedAttachment {
   readonly path: string;
 }
 
+/** The upload client — `EngineClient` satisfies it. `engineInfo` is the
+ *  capability source for the send-time cap clamp (ticket 06). */
+export interface UploadCaller {
+  call(method: string, params?: unknown): Promise<unknown>;
+  readonly engineInfo?: { readonly capabilities?: readonly string[] } | null;
+}
+
 /** Upload a batch of staged attachments to the chat's host device. The
  *  caller mints each `uploadId` (we use the staged id so the wire-level
  *  identity matches the strip's row key). Sequential per-attachment so
  *  a failed upload fails the whole send with a clear error. */
 export async function uploadAttachments(
-  client: { call(method: string, params: unknown): Promise<unknown> },
+  client: UploadCaller,
   attachments: readonly StagedAttachment[],
   progress: UploadProgress | null,
 ): Promise<readonly UploadedAttachment[]> {
   if (attachments.length === 0) {
     return [];
+  }
+  // Send-time clamp (ticket 06): files staged under the 100 MB ceiling must
+  // still fit this engine's cap — one without `uploads-100mb-v1` enforces
+  // the legacy 24 MB server-side. Fail with the size message before any
+  // bytes move (and before the base64 pass), instead of grinding a transfer
+  // the engine rejects mid-stream.
+  const maxBytes = attachmentCapBytes(client.engineInfo?.capabilities);
+  for (const att of attachments) {
+    if (att.bytes.byteLength > maxBytes) {
+      throw new Error(tooLargeMessage(att.name, maxBytes));
+    }
   }
   const totalBytes = attachments.reduce((sum, att) => sum + att.bytes.byteLength, 0);
   let uploadedSoFar = 0;
@@ -667,7 +723,7 @@ export async function uploadAttachments(
  *  [`UPLOAD_CONCURRENCY`] `UploadChunk` calls, then `UploadCommit`. Each
  *  call races a per-deadline timer; transient blips retry once. */
 async function uploadOne(
-  client: { call(method: string, params: unknown): Promise<unknown> },
+  client: UploadCaller,
   attachment: StagedAttachment,
   onChunk: (deltaBytes: number) => void,
 ): Promise<string> {
@@ -743,7 +799,7 @@ async function uploadOne(
  *  re-collide in lockstep. `seq` slots are idempotent engine-side, so a blind
  *  re-send is safe. */
 async function sendChunk(
-  client: { call(method: string, params: unknown): Promise<unknown> },
+  client: UploadCaller,
   uploadId: string,
   seq: number,
   data: string,
@@ -815,7 +871,7 @@ function bytesToBinaryString(bytes: Uint8Array): string {
 /** Race a JSON call against a wall-clock deadline. Mirrors the desktop's
  *  `call_with_timeout` (state.ts uploadAttachment). */
 async function callWithTimeout(
-  client: { call(method: string, params: unknown): Promise<unknown> },
+  client: UploadCaller,
   method: string,
   params: unknown,
   timeoutMs: number,
@@ -848,7 +904,7 @@ export interface DecodedAttachmentImage {
  *  base64. Returns `null` on any timeout / RPC error / malformed chunk /
  *  stuck offset / over-cap loop (defensive, never infinite). */
 export async function readAttachmentImage(
-  client: { call(method: string, params: unknown): Promise<unknown> },
+  client: UploadCaller,
   path: string,
 ): Promise<DecodedAttachmentImage | null> {
   let name = "";

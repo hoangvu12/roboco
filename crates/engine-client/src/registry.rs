@@ -401,6 +401,21 @@ pub fn call_deadline(method: &str) -> Duration {
         // client leash is the only cut-off).
         return Duration::from_secs(900);
     }
+    if matches!(
+        method,
+        methods::UPLOAD_CHUNK | methods::UPLOAD_COMMIT | methods::READ_ATTACHMENT_CHUNK
+    ) {
+        // Attachment calls carry their own ladder (the 90 s/30 s per-chunk
+        // and 150 s commit timeouts race timers in `attachments.rs`); the
+        // inner default of 30 s would fire first on a slow link — exactly
+        // the bug the web client fixed for its own transport. A 100 MB
+        // upload over a slow tailcat link needs chunk calls that outlast
+        // the ladder's per-chunk budget, and the whole-file deadline
+        // (size-proportional since `uploads-100mb-v1`) is the real bound.
+        // Mirrors the mobile client's `call_deadline` and the web client's
+        // `#timeoutFor` long budget.
+        return Duration::from_secs(900);
+    }
     if method == methods::LIST_MODELS || method == methods::LIST_COMMANDS {
         return Duration::from_secs(100);
     }

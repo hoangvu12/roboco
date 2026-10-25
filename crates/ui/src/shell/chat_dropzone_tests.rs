@@ -341,7 +341,7 @@ fn external_files() -> (tempfile::TempDir, gpui::ExternalPaths) {
         .unwrap();
     std::fs::write(dir.path().join("shot.png"), png.into_inner()).unwrap();
     std::fs::create_dir(dir.path().join("folder")).unwrap();
-    // Sparse, so the test never writes 24 MB to disk.
+    // Sparse, so the test never writes 100 MB to disk.
     std::fs::File::create(dir.path().join("huge.bin"))
         .unwrap()
         .set_len(crate::attachments::MAX_ATTACHMENT_BYTES + 1)
@@ -435,7 +435,7 @@ fn external_file_drops_stage_files_and_refuse_folders_and_oversize_files(cx: &mu
             );
             assert_eq!(
                 dropped.read(cx).visible_failure().as_deref(),
-                Some("folder is not a file. huge.bin is too large (24 MB max)."),
+                Some("folder is not a file. huge.bin is too large (100 MB max)."),
                 "target={target:?}"
             );
             for other in targets[n + 1..].iter().map(|other| composer(shell, *other)) {
