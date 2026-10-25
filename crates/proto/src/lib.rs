@@ -17,6 +17,7 @@ pub mod preview;
 pub mod projectless;
 pub mod qr;
 pub mod remote;
+pub mod room;
 pub mod tailcat;
 pub mod view;
 pub mod workspace;

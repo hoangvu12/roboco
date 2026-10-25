@@ -129,6 +129,40 @@ Create and list accept `--json`. Create accepts `--ttl-seconds` from 1 to 3600.
 Only create prints a secret; list shows session identifiers, labels, last-seen
 timestamps, and revocation state. Revocation rejects the session's next connection.
 
+## Rooms
+
+Rooms (ADR 0011) are hostless reachability groups: a shared secret plus an
+address book, copied to every member. A room shares reachability, never data —
+each chat still belongs to exactly one engine, and nothing syncs between
+members. Joining an engine stores only a SHA-256 verifier of the room secret
+(the pairing invariant: no usable room secret is ever at rest on an engine)
+plus the member addresses, persisted with the same 0600 discipline as relay
+`connect.json` entries.
+
+```sh
+roboco engine room join 'roboco-room:…'
+roboco engine room list
+roboco engine room leave ROOM_ID
+```
+
+The commands work while the engine is running. An invite
+(`roboco-room:<base64url(json)>`) is a secret — paste it, never commit it;
+the CLI stores the verifier and discards the secret. Sessions minted through
+a room are ordinary sessions: listed in `roboco engine pairing list`, revoked
+the same way. Eviction is rotate-then-revoke — mint a new invite, `room join`
+it, `room leave` the old room, then revoke the sessions it minted.
+
+Clients join by presenting the secret: `POST /room/present {secret, label}`
+on a member engine's listener (redeem-style, before any session) verifies
+against the stored verifier and mints an ordinary session labeled by the
+presenter. Presentations are repeatable — re-presenting with the same label
+reuses the room's session — and failed presentations are throttled. The
+session-authenticated `GetRoomBook` (which additionally requires presenting
+the room secret, because member addresses are transport secrets) and
+`UpdateRoomBook` (union-merge) maintain the book. Room code never mutates
+remote-access settings: joining only works on engines that are already
+reachable, so unlike `CreateTailcatInvite` there is no settings escalation.
+
 ## Saved settings
 
 `remote-access.json` lives beside the engine's other settings:
@@ -232,6 +266,7 @@ Capability strings are never reused or removed within a protocol generation.
 | Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
 | Transcript images by any reference (`ReadImageChunk{reference, chatId?}`: relative/`~`/`file:`/`roboco-file:`/`data:` references, engine-side URL fetch, SVG → PNG) | none (`unknown method` → the core falls back to `ReadAttachmentChunk` with the reference as a path; web and `data:` images still load on the phone) |
 | Attachments up to 100 MB per file | `uploads-100mb-v1` |
+| Rooms (`/room/present`, `GetRoomBook`, `UpdateRoomBook`) | `rooms-v1` (older engines answer `unknown method`; clients hide room UI on its absence) |
 
 ## Transcript resume
 
