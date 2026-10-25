@@ -782,6 +782,7 @@ pub async fn serve_engine_remote(
     let paired = Arc::new(tailcat_relay::PairedListenerContext {
         data_dir: data_dir_buf.clone(),
         tailcat_relays: tailcat_relays.clone(),
+        adapter: None,
     });
     let task = tokio::spawn(listener::serve_listener_with_policy(
         socket,
