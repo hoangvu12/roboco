@@ -48,3 +48,8 @@ surfaces) + Windows build/test on a Windows host. Source:
 - [ ] Tool image previews + selectable output ported
 - [ ] Windows host verification recorded
 - [ ] Commit records upstream SHA `e5466c53` (UI half)
+
+- 2026-10-25: upstream #1026 (`ea3dcc811`) adds the link-destination
+  settings (Default browser / Open links in-app / In-app browser) + PR-link
+  handling that fold into this lane; only its linux-browser test fix ports
+  now (wave-9 ticket 16). See `.scratch/upstream-drift/2026-10-25.md` § B5.

@@ -43,3 +43,9 @@ run -p roboco-ui --lib` + one gpui example build. Source:
 - [ ] Top-level pins + all `[patch]` revs bumped together
 - [ ] Workspace check + ui tests green
 - [ ] Commit records the pin SHAs and the sync branch used
+
+- 2026-10-25: **Superseded by wave-9 ticket 11**
+  (`.scratch/upstream-ports-2026-10-wave9/issues/11-gpui-pin-sync.md`) —
+  upstream #966 moved the pins again (zui `0dc69aa25`, gpui-component
+  `6ffe5e575`); the wave-9 ticket carries the new target and the fork-sync
+  steps. Tickets 20/22 below this one stay gated on the wave-9 ticket.
