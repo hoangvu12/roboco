@@ -14,8 +14,9 @@ use roboco_engine::{
 use roboco_engine_client::rooms::RoomMemberSession;
 use roboco_engine_client::{FileSessionStore, LocalEngine, RegistryOptions};
 use roboco_proto::room::{RoomInvite, RoomMember};
+use roboco_rpc::{RpcReply, methods};
 use serde_json::json;
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc, sync::Mutex};
 
 const SECRET: &str = "qVS3lF5i5vNbcJW7DVoG_fW1NlK8kCqy39s2ZwAhHfN";
 
@@ -64,7 +65,9 @@ impl RoomDialer for MapDialer {
 /// A real member engine over loopback, with the data dir its room store and
 /// pairing store live in.
 struct MemberEngine {
-    core: EngineCore,
+    /// Keeps the assembled core (its stores and service) alive for the
+    /// engine's lifetime in the test.
+    _core: EngineCore,
     listener: roboco_engine::EngineListener,
     dir: tempfile::TempDir,
 }
@@ -104,7 +107,7 @@ async fn member_engine() -> MemberEngine {
     .await
     .unwrap();
     MemberEngine {
-        core,
+        _core: core,
         listener,
         dir,
     }
@@ -410,9 +413,10 @@ async fn creating_seeds_the_book_from_the_local_engine() {
         "the refusal names the missing route: {error}"
     );
 
-    // A selected engine without a Tailcat route lands in `unavailable`,
-    // never in the book: the address comes from the engine's own invite
-    // mint (`CreateTailcatInvite`), which that engine cannot serve.
+    // A selected engine whose remote access is off lands in `unavailable`,
+    // never in the book — and room code never mutates its settings: the
+    // engine's remote-access file was never even created (the pre-guard
+    // flow's `CreateTailcatInvite` mint would have written it, force-enabled).
     record_address(bare_dir.path(), "tcBARE").unwrap();
     let remote = member_engine().await;
     let code = PairingStore::open(remote.dir.path())
@@ -429,6 +433,8 @@ async fn creating_seeds_the_book_from_the_local_engine() {
         )
         .await
         .unwrap();
+    // The guard talks to the engine, so its entry must be live first.
+    wait_connected(&bare_registry, 2).await;
     let created = bare_ops
         .create("Fleet", &[MemberPick::Engine(key)], "My desktop")
         .await
@@ -440,13 +446,19 @@ async fn creating_seeds_the_book_from_the_local_engine() {
     );
     assert_eq!(created.unavailable.len(), 1);
     assert!(
-        created.unavailable[0].contains("no Tailcat route"),
-        "the unavailable reason is fixed text: {}",
+        created.unavailable[0].contains("enable its Tailcat route first"),
+        "the unavailable note tells the user what to do: {}",
         created.unavailable[0]
     );
     assert!(
         !created.unavailable[0].starts_with("tc"),
         "no address leaks into the unavailable reason"
+    );
+    // The no-mutation proof: remote access was off, so no mint ever ran —
+    // the settings file the old mint would have force-written never exists.
+    assert!(
+        !remote.dir.path().join("remote-access.json").exists(),
+        "room code must never write remote-access settings"
     );
 }
 
@@ -542,4 +554,222 @@ fn engine_labels_fall_back_to_identity_not_secrets() {
     // A key the snapshot does not know labels as an engine, never an
     // address or credential.
     assert_eq!(engine_label(&snapshot, &EngineKey("gone".into())), "Engine");
+}
+
+/// A recording stand-in engine: answers `EngineInfo`, `GetRemoteAccess`
+/// with a caller-chosen snapshot, and — only when the caller armed it —
+/// mints `CreateTailcatInvite` for a caller-chosen address. Every method it
+/// is asked is recorded, so tests can prove the create flow never sends the
+/// mint (the settings-mutating RPC) against engines not already serving
+/// their Tailcat route.
+struct RecordingEngine {
+    info: roboco_proto::EngineInfo,
+    snapshot: serde_json::Value,
+    invite_address: Option<String>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl RecordingEngine {
+    fn new(snapshot: serde_json::Value, invite_address: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            info: roboco_proto::EngineInfo::current(
+                "member-engine".into(),
+                roboco_proto::WorkspaceScope::Local,
+                None,
+            ),
+            snapshot,
+            invite_address,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn count(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.as_str() == method)
+            .count()
+    }
+}
+
+#[async_trait::async_trait]
+impl roboco_rpc::RpcService for RecordingEngine {
+    async fn handle(
+        &self,
+        method: &str,
+        _params: serde_json::Value,
+    ) -> Result<RpcReply, roboco_rpc::RpcError> {
+        self.calls.lock().unwrap().push(method.to_owned());
+        match method {
+            methods::ENGINE_INFO => RpcReply::value(&self.info),
+            methods::GET_REMOTE_ACCESS => RpcReply::value(&self.snapshot),
+            methods::CREATE_TAILCAT_INVITE => match &self.invite_address {
+                Some(address) => {
+                    // The real mint embeds the engine's published address
+                    // plus a single-use code; only the address matters here.
+                    let invite = roboco_engine::tailcat::TailcatInvite::new(
+                        address,
+                        "oneSecondCodeNeverRedeemed",
+                        i64::MAX,
+                    )
+                    .unwrap();
+                    RpcReply::value(&json!({
+                        "id": "code-1",
+                        "url": invite.encode().unwrap(),
+                        "expiresAt": i64::MAX,
+                    }))
+                }
+                None => Err(roboco_rpc::RpcError::Failed("tailcat route is off".into())),
+            },
+            other => Err(roboco_rpc::RpcError::UnknownMethod(other.into())),
+        }
+    }
+}
+
+/// A registry whose only entry talks to a recording engine (the local-key
+/// entry is instantly live — no supervision, no watches).
+fn recording_registry(engine: Arc<RecordingEngine>) -> EngineRegistry {
+    let client = Arc::new(roboco_rpc::memory_client(engine));
+    let info = roboco_proto::EngineInfo::current(
+        "member-engine".into(),
+        roboco_proto::WorkspaceScope::Local,
+        None,
+    );
+    EngineRegistry::test_local(info, client)
+}
+
+/// An engine already serving its Tailcat route (remote access on, loopback
+/// listener): the create flow asks it for its address, and the minted
+/// address lands in the book — exactly one guard call and one mint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_mints_the_address_of_an_engine_already_serving_tailcat() {
+    let dir = tempfile::tempdir().unwrap();
+    record_address(dir.path(), "tcLOCAL").unwrap();
+    let engine = RecordingEngine::new(
+        json!({
+            "status": {
+                "enabled": true,
+                "configuredEnabled": true,
+                "address": "127.0.0.1:27655",
+                "source": "test",
+                "error": null,
+            },
+            "sessions": []
+        }),
+        Some("tcSHAPEDMEMBER1".into()),
+    );
+    let registry = recording_registry(engine.clone());
+    let ops = RoomOps::with_dialer(
+        dir.path().to_path_buf(),
+        registry,
+        MapDialer::new(HashMap::new()),
+    );
+    let created = ops
+        .create(
+            "Home fleet",
+            &[MemberPick::Engine(EngineKey::local())],
+            "My desktop",
+        )
+        .await
+        .unwrap();
+    // The local engine plus the minted member address.
+    assert_eq!(created.invite.members.len(), 2);
+    assert!(
+        created
+            .invite
+            .members
+            .iter()
+            .any(|member| member.address == "tcSHAPEDMEMBER1")
+    );
+    assert!(created.unavailable.is_empty());
+    // One guard, one mint — nothing else reached the engine.
+    assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1);
+    assert_eq!(engine.count(methods::CREATE_TAILCAT_INVITE), 1);
+}
+
+/// Engines not already serving Tailcat never see the mint: remote access on
+/// with a LAN listener (network transport) or remote access off both skip
+/// the engine with the enable-first note — room code never flips an
+/// engine's remote-access settings, and no address leaks into the note.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_never_mints_against_engines_without_a_tailcat_route() {
+    for (name, snapshot) in [
+        (
+            "network transport",
+            json!({
+                "status": {
+                    "enabled": true,
+                    "configuredEnabled": true,
+                    "address": "0.0.0.0:27655",
+                    "source": "test",
+                    "error": null,
+                },
+                "sessions": []
+            }),
+        ),
+        (
+            "remote access off",
+            json!({
+                "status": {
+                    "enabled": false,
+                    "configuredEnabled": false,
+                    "address": null,
+                    "source": "test",
+                    "error": null,
+                },
+                "sessions": []
+            }),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        record_address(dir.path(), "tcLOCAL").unwrap();
+        // The mint is ARMED: if the guard fails, the RPC would be sent and
+        // the address would land in the book — the count is the proof.
+        let engine = RecordingEngine::new(snapshot, Some("tcNEVERMINTED".into()));
+        let registry = recording_registry(engine.clone());
+        let ops = RoomOps::with_dialer(
+            dir.path().to_path_buf(),
+            registry,
+            MapDialer::new(HashMap::new()),
+        );
+        let created = ops
+            .create(
+                "Home fleet",
+                &[MemberPick::Engine(EngineKey::local())],
+                "My desktop",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.invite.members.len(),
+            1,
+            "{name}: only the local engine is in the book"
+        );
+        assert!(
+            !created
+                .invite
+                .members
+                .iter()
+                .any(|member| member.address == "tcNEVERMINTED"),
+            "{name}: the minted address never reached the book"
+        );
+        assert_eq!(created.unavailable.len(), 1, "{name}");
+        assert!(
+            created.unavailable[0].contains("enable its Tailcat route first"),
+            "{name}: the note says what to do: {}",
+            created.unavailable[0]
+        );
+        assert!(
+            !created.unavailable[0].contains("tc"),
+            "{name}: no address in the note"
+        );
+        // The proof: the guard asked, the mint was never sent.
+        assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1, "{name}");
+        assert_eq!(
+            engine.count(methods::CREATE_TAILCAT_INVITE),
+            0,
+            "{name}: the settings-mutating RPC must never be sent"
+        );
+    }
 }

@@ -885,7 +885,9 @@ impl Render for RoomsPage {
                                 .flex_none()
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text_muted)
-                                .child(SharedString::from("Not in the room — no Tailcat route")),
+                                .child(SharedString::from(
+                                    "Not in the room — enable its Tailcat route first",
+                                )),
                         ),
                 );
             }

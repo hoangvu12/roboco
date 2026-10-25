@@ -91,15 +91,64 @@ pub fn local_member_label(snapshot: &RegistrySnapshot) -> String {
     }
 }
 
+/// The client-visible signature of an engine already serving its Tailcat
+/// route. The Tailcat transport's listener is by construction a loopback
+/// serve target (`listener_bind` routes Tailcat through `serve_target`,
+/// which rejects non-loopback), so an engine with remote access off, or a
+/// LAN-bound network listener, never matches.
+///
+/// This is the C4a guard: room code must never mutate remote-access
+/// settings, and `CreateTailcatInvite` force-enables and persists Tailcat —
+/// so the mint only ever runs against engines already in this shape, where
+/// its settings save is byte-idempotent (enabled, Tailcat transport,
+/// loopback bind). Engines not in the shape are skipped with an
+/// enable-first note; nothing is ever enabled for them.
+async fn tailcat_shape(target: &EngineTarget) -> TailcatShape {
+    let Ok(snapshot) = target.call(methods::GET_REMOTE_ACCESS, json!({})).await else {
+        return TailcatShape::Unreachable;
+    };
+    let enabled = snapshot["status"]["enabled"].as_bool().unwrap_or(false);
+    let loopback = snapshot["status"]["address"]
+        .as_str()
+        .and_then(|address| address.parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|address| address.ip().is_loopback());
+    if enabled && loopback {
+        TailcatShape::Serves
+    } else {
+        TailcatShape::Off
+    }
+}
+
+/// What an engine's remote-access state says about its Tailcat route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TailcatShape {
+    /// Remote access is on and the listener is the loopback serve target:
+    /// the engine runs the Tailcat transport, and the address it publishes
+    /// is the one the room book wants.
+    Serves,
+    /// Remote access is off, or the listener is a LAN bind: room code never
+    /// enables it — the user does, on that engine.
+    Off,
+    /// The engine could not be asked.
+    Unreachable,
+}
+
+/// The fixed note for a member engine the create flow must skip: label-only,
+/// telling the user what to do, never naming an address.
+const ENABLE_TAILCAT_FIRST: &str = "enable its Tailcat route first (Settings → Remote access on that engine), then re-create or rotate to add it";
+
 /// The address a room book carries for one member engine: the address the
 /// engine's one-second `CreateTailcatInvite` embeds (durable transport
 /// handle). The invite's single-use token is never redeemed — it expires
 /// unused a second after minting; rooms present a secret, not a pair code.
+/// Callers must first prove the engine already serves its Tailcat route
+/// ([`tailcat_shape`]): the mint persists Tailcat settings, so it is only
+/// safe where those settings are already the ones it would write.
 async fn member_address(target: &EngineTarget) -> anyhow::Result<String> {
     let reply = target
         .call(methods::CREATE_TAILCAT_INVITE, json!({"ttlSeconds": 1}))
         .await
-        .map_err(|_| anyhow::anyhow!("the engine has no Tailcat route to reach it by"))?;
+        .map_err(|_| anyhow::anyhow!("the engine's Tailcat route is unavailable"))?;
     let url = reply
         .get("url")
         .and_then(|value| value.as_str())
@@ -277,13 +326,27 @@ impl RoomOps {
             };
             let label = engine_label(&self.registry.snapshot(), key);
             match self.registry.target(key) {
-                Ok(target) => match member_address(&target).await {
-                    Ok(address) => members.push(RoomMember {
-                        label: trim_member_label(&label),
-                        address,
-                    }),
-                    Err(error) => unavailable.push(format!("{label}: {error}")),
-                },
+                Ok(target) => {
+                    // The C4a guard: only engines already serving their
+                    // Tailcat route are asked for an address. Room code
+                    // never enables anything — engines without the route
+                    // are skipped with an enable-first note.
+                    match tailcat_shape(&target).await {
+                        TailcatShape::Serves => match member_address(&target).await {
+                            Ok(address) => members.push(RoomMember {
+                                label: trim_member_label(&label),
+                                address,
+                            }),
+                            Err(error) => unavailable.push(format!("{label}: {error}")),
+                        },
+                        TailcatShape::Off => {
+                            unavailable.push(format!("{label}: {ENABLE_TAILCAT_FIRST}"))
+                        }
+                        TailcatShape::Unreachable => {
+                            unavailable.push(format!("{label}: engine is offline"))
+                        }
+                    }
+                }
                 Err(_) => unavailable.push(format!("{label}: engine is offline")),
             }
         }
