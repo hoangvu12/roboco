@@ -301,7 +301,24 @@ struct Inner {
     /// A `Mutex` (not `OnceLock`) so a test's isolated store can swap in over
     /// the detected one — every reader must see one store.
     agent_accounts: Mutex<Option<crate::agent_accounts::AgentAccounts>>,
+    /// Whether this machine's Codex CLI can start ([`Inner::ensure_codex_starts`]):
+    /// a global npm install without optional dependencies has no native
+    /// binary, and every Codex run would fail at spawn.
+    codex_check: tokio::sync::Mutex<CodexCheck>,
 }
+
+/// The Codex install check: done once it passes; a failed repair is retried
+/// after [`CODEX_REPAIR_RETRY`] (a network blip mid-install must not leave
+/// Codex broken until the engine restarts).
+#[derive(Default)]
+enum CodexCheck {
+    #[default]
+    Unchecked,
+    Passed,
+    FailedAt(std::time::Instant),
+}
+
+const CODEX_REPAIR_RETRY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -346,6 +363,7 @@ impl SessionsEngine {
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 agent_accounts: Mutex::new(None),
+                codex_check: tokio::sync::Mutex::new(CodexCheck::Unchecked),
             }),
         }
     }
@@ -2969,6 +2987,34 @@ fn note_fork_history_session(doc: &SessionDoc, carried: bool, session_id: &str) 
 }
 
 impl Inner {
+    /// Before the first Codex run: a machine whose global npm Codex lacks
+    /// its native binary (an optional dependency) fails every spawn, so
+    /// reinstall it once. Later runs wait on a repair in progress (the check
+    /// mutex is held across the reinstall); a failed repair is retried
+    /// after [`CODEX_REPAIR_RETRY`].
+    async fn ensure_codex_starts(&self) {
+        let mut check = self.codex_check.lock().await;
+        match *check {
+            CodexCheck::Passed => return,
+            CodexCheck::FailedAt(at) if at.elapsed() < CODEX_REPAIR_RETRY => return,
+            _ => {}
+        }
+        *check = match roboco_harness::codex::npm_repair::repair().await {
+            Ok(roboco_harness::codex::npm_repair::Repair::NotNeeded) => CodexCheck::Passed,
+            Ok(roboco_harness::codex::npm_repair::Repair::Repaired { version }) => {
+                tracing::info!(%version, "reinstalled Codex with its native binary");
+                CodexCheck::Passed
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Codex is missing its native binary and the reinstall failed"
+                );
+                CodexCheck::FailedAt(std::time::Instant::now())
+            }
+        };
+    }
+
     /// `prompt` with the transcript a provider session lacks in front of it,
     /// or `None` when it lacks nothing. A side chat's fresh session gets its
     /// budgeted copied transcript (`current` excluded); a main chat's fresh
@@ -3726,6 +3772,14 @@ async fn drive_run(
                     controls.execution_lease = Some(lease);
                     if let Some(listener) = inner.turn_listener.get() {
                         listener(&chat_id, &request.cwd);
+                    }
+                    // A global npm Codex without its native binary (an
+                    // optional dependency some machines skip) fails every
+                    // spawn: check once before the first run and reinstall
+                    // the same version with optional dependencies. The chat
+                    // reads as Working while that runs (upstream #969).
+                    if harness_id == HarnessId::Codex {
+                        inner.ensure_codex_starts().await;
                     }
                     let mut wire_request = request;
                     // Cursor's bridge converted every message before JSON encoding
