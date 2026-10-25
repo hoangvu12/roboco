@@ -7,7 +7,9 @@
 //! keeps its final width while the outer surface clips it.
 
 use super::*;
-use roboco_proto::{HarnessId, HarnessUpdatePhase as Phase, HarnessUpdateStatus};
+use roboco_proto::{
+    HarnessId, HarnessUpdateFailureKind, HarnessUpdatePhase as Phase, HarnessUpdateStatus,
+};
 
 /// `{harness,latest}` discoveries already delivered as a desktop banner
 /// during this viewport lifetime.
@@ -72,9 +74,20 @@ fn action(status: &HarnessUpdateStatus) -> Option<(&'static str, Option<&'static
         Phase::WaitingForIdle | Phase::Preparing | Phase::Downloading => {
             Some(("Cancel", Some(methods::CANCEL_HARNESS_UPDATE)))
         }
+        Phase::Failed if status.can_apply && install_failed(status) => {
+            Some(("Retry update", Some(methods::APPLY_HARNESS_UPDATE)))
+        }
         Phase::Failed => Some(("Check again", Some(methods::CHECK_HARNESS_UPDATES))),
         _ => None,
     }
+}
+
+/// The update itself failed (not a check): its release is still known.
+fn install_failed(status: &HarnessUpdateStatus) -> bool {
+    status
+        .error
+        .as_ref()
+        .is_some_and(|error| error.kind == HarnessUpdateFailureKind::Install)
 }
 
 fn right_inset(has_button: bool) -> f32 {
@@ -106,7 +119,13 @@ fn detail(status: &HarnessUpdateStatus) -> String {
             .error
             .as_ref()
             .map(|e| e.message.clone())
-            .unwrap_or_else(|| "Couldn’t check for updates".into()),
+            .unwrap_or_else(|| {
+                if install_failed(status) {
+                    "Update failed".into()
+                } else {
+                    "Couldn’t check for updates".into()
+                }
+            }),
         _ => "Checking for updates…".into(),
     }
 }
@@ -339,6 +358,7 @@ impl Shell {
                 Phase::Installing => format!("Updating {name}…"),
                 Phase::Verifying => format!("Verifying {name}…"),
                 Phase::Updated => format!("{name} updated"),
+                Phase::Failed if install_failed(status) => format!("{name} update failed"),
                 Phase::Failed => format!("{name} update check failed"),
                 _ => return None,
             }
@@ -712,7 +732,11 @@ impl Shell {
                     && !matches!(&error, roboco_rpc::RpcError::Failed(message)
                         if method == methods::APPLY_HARNESS_UPDATE && message == "update cancelled")
                 {
-                    shell.show_notice(crate::toast::ToastKind::Error, format!("Agent update: {error}"), cx);
+                    shell.show_notice(
+                        crate::toast::ToastKind::Error,
+                        format!("Agent update: {error}"),
+                        cx,
+                    );
                 }
                 cx.notify();
             })

@@ -59,6 +59,7 @@ export * from "./HarnessDescriptor";
 export * from "./HarnessId";
 export * from "./HarnessInstallSource";
 export * from "./HarnessUpdateFailure";
+export * from "./HarnessUpdateFailureKind";
 export * from "./HarnessUpdatePhase";
 export * from "./HarnessUpdatePolicy";
 export * from "./HarnessUpdateProgress";

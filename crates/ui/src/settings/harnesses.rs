@@ -31,8 +31,8 @@ use roboco_engine::registry::TitleSettings;
 use roboco_engine::registry::{HarnessDescriptor, descriptor_enabled};
 use roboco_proto::Model;
 use roboco_proto::{
-    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, HarnessUpdatePhase,
-    HarnessUpdatePolicy, HarnessUpdateStatus,
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, HarnessUpdateFailureKind,
+    HarnessUpdatePhase, HarnessUpdatePolicy, HarnessUpdateStatus,
 };
 use roboco_rpc::methods;
 
@@ -109,6 +109,16 @@ const UPDATE_POLICIES: [(HarnessUpdatePolicy, &str, &str); 3] = [
 /// tone. Up-to-date providers, checks in flight and providers whose updates
 /// aren't monitored show just the version, so rows don't flash through
 /// states while checks run.
+///
+/// The failure was the update itself (its release is still known, so it can
+/// be retried), not a failed check.
+fn install_failed(status: &HarnessUpdateStatus) -> bool {
+    status
+        .error
+        .as_ref()
+        .is_some_and(|error| error.kind == HarnessUpdateFailureKind::Install)
+}
+
 fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedString, gpui::Hsla) {
     let installed = status
         .installed_version
@@ -141,6 +151,7 @@ fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedS
         HarnessUpdatePhase::Installing => with("Installing…"),
         HarnessUpdatePhase::Verifying => with("Verifying…"),
         HarnessUpdatePhase::Updated => with("Updated"),
+        HarnessUpdatePhase::Failed if install_failed(status) => with("Update failed"),
         HarnessUpdatePhase::Failed => with("Couldn't check for updates"),
     };
     let color = match status.phase {
@@ -1473,6 +1484,11 @@ impl HarnessesPage {
                             if status.can_apply =>
                         {
                             ("harness-update", "Update", true)
+                        }
+                        HarnessUpdatePhase::Failed
+                            if status.can_apply && install_failed(status) =>
+                        {
+                            ("harness-update", "Retry update", true)
                         }
                         HarnessUpdatePhase::WaitingForIdle
                         | HarnessUpdatePhase::Preparing

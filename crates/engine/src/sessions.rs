@@ -197,6 +197,12 @@ struct RunHandle {
     /// login is not fingerprinted (no account store, a Keychain login, a
     /// harness roboco never reads).
     credential_fingerprint: Option<String>,
+    /// Which CLI binary this runtime's processes launched from (real path,
+    /// size, mtime — [`binary_identity`]): a parked session whose binary
+    /// changed on disk since it started (the CLI updated itself, or was
+    /// updated out of band — upstream #974) is replaced before its next
+    /// turn, so it never runs an update's stale image back in.
+    binary: Option<String>,
     /// The parent chat this run's CURRENT turn owes a completion notice to
     /// (orchestration v2): set when the turn's starting message or a steer
     /// within it came from the notifying parent that created the chat,
@@ -208,6 +214,19 @@ struct RunHandle {
     /// is unambiguously before the stop (cancelled with it) or after it
     /// (re-dispatched to a fresh runtime — never lost).
     retiring: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Which CLI binary a run of `harness` launches now: its real path, size and
+/// modification time. `None` when the harness has no CLI or it can't be found.
+fn binary_identity(harness: &dyn Harness) -> Option<String> {
+    let path = std::fs::canonicalize(harness.executable_path()?).ok()?;
+    let metadata = path.metadata().ok()?;
+    Some(format!(
+        "{}:{:?}:{}",
+        path.display(),
+        metadata.modified().ok(),
+        metadata.len()
+    ))
 }
 
 /// One accepted-but-unconfirmed steer: enough to re-dispatch it verbatim.
@@ -702,6 +721,42 @@ impl SessionsEngine {
             .is_some_and(HarnessDescriptor::steers_mid_turn)
     }
 
+    /// Whether a session parked between turns runs a CLI binary other than
+    /// the one a run would launch now (the CLI updated itself, or was updated
+    /// outside roboco, since it started — upstream #974). Same guards as the
+    /// credential-fingerprint replacement: never mid-turn, never with
+    /// background work on it, never on an unknown binary.
+    async fn binary_changed(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
+        harness: Arc<dyn Harness>,
+        started_with: Option<&str>,
+    ) -> bool {
+        let Some(started_with) = started_with else {
+            return false;
+        };
+        if self.turn_in_flight(chat_id) || self.holds_background_work(chat_id) {
+            return false;
+        }
+        // Resolving the CLI can probe candidates' versions (blocking).
+        let now = tokio::task::spawn_blocking(move || binary_identity(harness.as_ref()))
+            .await
+            .ok()
+            .flatten();
+        match now {
+            Some(now) if now != started_with => {
+                tracing::info!(
+                    chat = %chat_id,
+                    harness = ?harness_id,
+                    "agent CLI changed on disk; replacing the parked session"
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Whether this chat has a turn in flight — streaming, or parked on a
     /// question it is still owed an answer to (see [`is_active`]). A persistent
     /// session parked BETWEEN turns is not: it holds a warm child with nothing
@@ -930,6 +985,8 @@ impl SessionsEngine {
                 h.fork_history_sent.clone(),
                 h.retiring.clone(),
                 restart_reason,
+                h.binary.clone(),
+                h.runtime_config.harness.clone(),
             )
         });
         if let Some((
@@ -941,8 +998,21 @@ impl SessionsEngine {
             history_sent,
             retiring,
             restart_reason,
+            binary,
+            live_harness,
         )) = routed
         {
+            // A parked session whose CLI binary changed on disk since it
+            // started (the CLI updated itself, or an out-of-band update —
+            // upstream #974): replace it before its next turn, with the same
+            // guards as a login change below.
+            let binary_stale = self
+                .binary_changed(chat_id, harness_id, live_harness, binary.as_deref())
+                .await;
+            let route = if binary_stale { None } else { route };
+            let restart_reason = binary_stale
+                .then(|| "agent CLI binary changed on disk".to_owned())
+                .or(restart_reason);
             let user_id = message_id.clone().unwrap_or_else(new_id);
             let mut bootstrap = None;
             let same_runtime = route.is_some();
@@ -1080,6 +1150,16 @@ impl SessionsEngine {
             return Ok(String::new());
         }
         let harness = self.inner.registry.resolve(harness_id)?;
+        // The CLI binary this run launches from, stamped on its handle: a
+        // later dispatch replaces the runtime when it changed on disk
+        // (resolving can probe candidate versions — blocking).
+        let binary = {
+            let harness = harness.clone();
+            tokio::task::spawn_blocking(move || binary_identity(harness.as_ref()))
+                .await
+                .ok()
+                .flatten()
+        };
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         handle.write_user_message(
@@ -1196,6 +1276,7 @@ impl SessionsEngine {
                 // start under: later dispatches compare against a fresh read
                 // and replace this runtime when the login has changed.
                 credential_fingerprint: live_login.clone(),
+                binary,
                 notifiable: Mutex::new(self.notifiable_parent_for(
                     chat_id,
                     origin_chat_id.as_deref(),
