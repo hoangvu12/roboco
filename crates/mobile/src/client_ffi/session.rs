@@ -930,7 +930,10 @@ pub fn parse_user_message(content: String) -> ParsedUserMessage {
     mc::attachments::parse_user_message(&content).into()
 }
 
-/// Largest attachment the composer may pick (bytes).
+/// Largest attachment the composer may pick (bytes): the 100 MB hard
+/// ceiling that rides `uploads-100mb-v1`. The per-engine limit may be
+/// lower — the send path clamps to the legacy 24 MB against engines that
+/// don't advertise the capability.
 #[uniffi::export]
 pub fn max_attachment_bytes() -> u64 {
     mc::attachments::MAX_ATTACHMENT_BYTES as u64
@@ -1146,7 +1149,7 @@ mod tests {
         let parsed = parse_user_message(full);
         assert_eq!(parsed.text, "look");
         assert_eq!(parsed.images.len(), 1);
-        assert_eq!(max_attachment_bytes(), 24 * 1024 * 1024);
+        assert_eq!(max_attachment_bytes(), 100 * 1024 * 1024);
         // The scheme separator stays a literal `/`; only the path is
         // percent-encoded.
         assert_eq!(

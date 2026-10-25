@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   ATTACHMENT_ONLY_TEXT,
   AttachmentUploadError,
+  LEGACY_MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_BYTES,
   UPLOAD_CHUNK_B64_CHARS,
+  attachmentCapBytes,
+  attachmentDeadlineMs,
   attachmentStripHeight,
   chunkRanges,
   ensureExtension,
@@ -12,6 +16,7 @@ import {
   appshotPresentationTitle,
   parseUserMessageImages,
   stageBytes,
+  stageFile,
   uploadAttachments,
   userMessageRailText,
   withAttachments,
@@ -77,6 +82,111 @@ describe("chunkRanges", () => {
     const ranges = chunkRanges(UPLOAD_CHUNK_B64_CHARS * 2);
     expect(ranges).toHaveLength(2);
     expect(ranges[1]!.end).toBe(UPLOAD_CHUNK_B64_CHARS * 2);
+  });
+
+  it("chunks a 100 MB file into 206 relay-safe chunks", () => {
+    // 100 MB base64-encodes to 139 810 136 chars (4·⌈n/3⌉) — the ticket's
+    // "100 MB ≈ 200 chunks of ~510 KB" plan, exactly.
+    const ranges = chunkRanges(139_810_136);
+    expect(ranges).toHaveLength(206);
+    expect(ranges[0]!.start % 4).toBe(0);
+    expect(ranges.at(-1)!.end).toBe(139_810_136);
+  });
+});
+
+describe("the 100 MB upload cap (ticket 06, uploads-100mb-v1)", () => {
+  it("the hard ceiling is 100 MB and the legacy clamp is 24 MB", () => {
+    expect(MAX_ATTACHMENT_BYTES).toBe(100 * 1024 * 1024);
+    expect(LEGACY_MAX_ATTACHMENT_BYTES).toBe(24 * 1024 * 1024);
+  });
+
+  it("attachmentCapBytes follows the engine capability", () => {
+    expect(attachmentCapBytes(["uploads-100mb-v1"])).toBe(MAX_ATTACHMENT_BYTES);
+    expect(
+      attachmentCapBytes(["composer-references-v1", "message-queue-v1"]),
+    ).toBe(LEGACY_MAX_ATTACHMENT_BYTES);
+    // Unknown capabilities (offline, mid-handshake): the safe legacy cap.
+    expect(attachmentCapBytes(undefined)).toBe(LEGACY_MAX_ATTACHMENT_BYTES);
+    expect(attachmentCapBytes(null)).toBe(LEGACY_MAX_ATTACHMENT_BYTES);
+    expect(attachmentCapBytes([])).toBe(LEGACY_MAX_ATTACHMENT_BYTES);
+  });
+
+  it("the whole-file deadline stays size-proportional up to 1 hour", () => {
+    // The 15 s/chunk slope: a one-chunk screenshot ~2.2 minutes.
+    expect(attachmentDeadlineMs(1)).toBe(135_000);
+    // A 100 MB upload (~206 chunks) gets ~53 minutes — a ~34 KB/s slow
+    // link still fits (ADR 0011's taildrop).
+    expect(attachmentDeadlineMs(206)).toBe(3_210_000);
+    // Still bounded — nothing spins for hours.
+    expect(attachmentDeadlineMs(1_000)).toBe(3_600_000);
+  });
+
+  it("staging refuses a file past the effective cap at the exact boundary", async () => {
+    const pngHead = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    // Exactly at a small effective cap: accepted.
+    const atCap = new Uint8Array(10);
+    atCap.set(pngHead);
+    expect(() => stageBytes("a.png", atCap, 10)).not.toThrow();
+    // One byte over: refused with the N MB message (rounded).
+    const over = new Uint8Array(11);
+    over.set(pngHead);
+    expect(() => stageBytes("a.png", over, 10)).toThrow(
+      "a.png is too large (0 MB max).",
+    );
+    // The default cap is the 100 MB hard ceiling; a picked file's size is
+    // metadata, so the refusal costs no bytes.
+    const huge: { name: string; size: number; arrayBuffer(): Promise<ArrayBuffer> } = {
+      name: "video.mp4",
+      size: MAX_ATTACHMENT_BYTES + 1,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+    };
+    await expect(stageFile(huge)).rejects.toThrow("video.mp4 is too large (100 MB max).");
+  });
+
+  it("uploadAttachments clamps to the engine's cap before any bytes move", async () => {
+    // 25 MB: under the 100 MB hard ceiling (staging accepted it), over the
+    // 24 MB clamp for an engine without `uploads-100mb-v1`.
+    const oversized: StagedAttachment = {
+      id: "att-1",
+      name: "big.bin",
+      format: "png",
+      bytes: new Uint8Array(25 * 1024 * 1024),
+      previewUrl: "",
+      naturalSize: null,
+    };
+    const calls: string[] = [];
+    const legacyEngine = {
+      engineInfo: { capabilities: [] },
+      async call(method: string): Promise<unknown> {
+        calls.push(method);
+        return { ok: true };
+      },
+    };
+    // The size refusal surfaces verbatim, NOT wrapped in the offline copy.
+    await expect(uploadAttachments(legacyEngine, [oversized], null)).rejects.toThrow(
+      "big.bin is too large (24 MB max).",
+    );
+    expect(calls).toEqual([]);
+
+    // The same file is fine against an advertising engine: the ladder runs
+    // (chunk + commit) and returns the host path.
+    const advertising = {
+      engineInfo: { capabilities: ["uploads-100mb-v1"] },
+      async call(method: string, params: unknown): Promise<unknown> {
+        calls.push(method);
+        if (method === "UploadCommit") {
+          expect((params as { uploadId: string }).uploadId).toBe("att-1");
+        }
+        return method === "UploadCommit" ? { path: "/uploads/att-1-big.bin" } : { ok: true };
+      },
+    };
+    const uploaded = await uploadAttachments(advertising, [oversized], null);
+    expect(uploaded).toEqual([
+      { uploadId: "att-1", fileName: "big.bin", path: "/uploads/att-1-big.bin" },
+    ]);
+    // 25 MB → 34 952 536 b64 chars → 52 chunks, then the commit.
+    expect(calls.filter((method) => method === "UploadChunk")).toHaveLength(52);
+    expect(calls.filter((method) => method === "UploadCommit")).toHaveLength(1);
   });
 });
 

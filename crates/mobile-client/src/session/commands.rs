@@ -220,10 +220,20 @@ impl SessionCore {
                 message: "empty message".into(),
             });
         }
+        // The per-engine upload cap (ticket 06): the engine handle's info is
+        // not yet needed below, so read it without failing — an engine whose
+        // info is unknown clamps to the safe legacy 24 MB.
+        let attachment_cap = crate::attachments::attachment_cap(
+            self.engine_handle().ok().and_then(|handle| handle.engine_info()).as_ref(),
+        );
         for attachment in &request.attachments {
-            if attachment.data.len() > crate::attachments::MAX_ATTACHMENT_BYTES {
+            if attachment.data.len() > attachment_cap {
                 return Err(ClientError::InvalidArgument {
-                    message: format!("{} is larger than 24 MB", attachment.name),
+                    message: format!(
+                        "{} is larger than {} MB",
+                        attachment.name,
+                        attachment_cap / (1024 * 1024)
+                    ),
                 });
             }
         }
