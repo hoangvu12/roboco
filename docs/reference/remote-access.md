@@ -131,37 +131,130 @@ timestamps, and revocation state. Revocation rejects the session's next connecti
 
 ## Rooms
 
-Rooms (ADR 0011) are hostless reachability groups: a shared secret plus an
-address book, copied to every member. A room shares reachability, never data —
-each chat still belongs to exactly one engine, and nothing syncs between
-members. Joining an engine stores only a SHA-256 verifier of the room secret
-(the pairing invariant: no usable room secret is ever at rest on an engine)
-plus the member addresses, persisted with the same 0600 discipline as relay
-`connect.json` entries.
+A room (ADR 0011) is a hostless reachability group: a shared secret plus an
+address book, copied to every member, with no engine in charge. A room shares
+reachability, never data — each chat still belongs to exactly one engine
+(ADR 0004) and nothing syncs or relays between members. A client joins once
+and is introduced to every member; joined engines appear in the existing
+engine lists with no new grouping layer (v1 keeps rooms in Settings). The room
+id is derived from the secret, not minted, so every engine and client holding
+the same secret addresses the same room with no coordinator.
+
+Engines hold verifiers only. Joining an engine stores a SHA-256 verifier of
+the room secret and discards the secret itself — the pairing invariant: no
+usable room secret is ever at rest on an engine. The secret lives with
+clients: app config on the desktop, Keystore on Android, browser storage on
+the web. Room state follows the `pairing.sqlite3` precedent — `rooms` and
+`room_presentations` tables in the pairing database (the who-is-allowed-in
+data domain), created `IF NOT EXISTS` with no migration machinery — plus the
+book at `{data_dir}/rooms/{id}/book.json`, written 0600 with the same
+discipline as relay `connect.json` entries: member addresses are transport
+secrets.
+
+A member must be online to welcome a joiner — v1 has no delegated minting and
+no liveness probing. A sleeping member shows offline, exactly like an
+unreachable paired engine, and is retried on the client's next reconnect.
+Books merge as unions, maintained by clients, so a stale address on one member
+self-corrects from another, and presentations are repeatable, so an
+interrupted join self-heals.
+
+### Room invites
+
+The invite is the room serialized: `roboco-room:` followed by base64url-no-pad
+of `{"v":1,"name":"…","secret":"…","members":[{"label":"…","address":"…"}]}`.
+QR codes render the invite string. It carries the room secret and every member
+address, so it is an ADR 0008 secret: written 0600 wherever files are
+involved, never logged, and decode errors describe only the invite's shape —
+a bad invite fails without quoting its contents. Paste it, never commit it.
+
+### Joining
+
+Engines join with the CLI (works while the engine is running; the CLI shares
+the pairing database through WAL, and `ROBOCO_DATA_DIR` selects another
+engine installation):
 
 ```sh
-roboco engine room join 'roboco-room:…'
-roboco engine room list
-roboco engine room leave ROOM_ID
+roboco engine room join 'roboco-room:…'   # stores the verifier, prints the room id
+roboco engine room list                   # id, label, member count
+roboco engine room leave ROOM_ID          # forget the verifier and the book
 ```
 
-The commands work while the engine is running. An invite
-(`roboco-room:<base64url(json)>`) is a secret — paste it, never commit it;
-the CLI stores the verifier and discards the secret. Sessions minted through
-a room are ordinary sessions: listed in `roboco engine pairing list`, revoked
-the same way. Eviction is rotate-then-revoke — mint a new invite, `room join`
-it, `room leave` the old room, then revoke the sessions it minted.
+`join` and `list` accept `--json`. The CLI never prints or logs the invite;
+`join` stores the verifier and discards the secret. Sessions minted through a
+room are ordinary sessions — listed in `roboco engine pairing list`, revoked
+the same way.
 
-Clients join by presenting the secret: `POST /room/present {secret, label}`
-on a member engine's listener (redeem-style, before any session) verifies
-against the stored verifier and mints an ordinary session labeled by the
-presenter. Presentations are repeatable — re-presenting with the same label
-reuses the room's session — and failed presentations are throttled. The
-session-authenticated `GetRoomBook` (which additionally requires presenting
-the room secret, because member addresses are transport secrets) and
-`UpdateRoomBook` (union-merge) maintain the book. Room code never mutates
-remote-access settings: joining only works on engines that are already
-reachable, so unlike `CreateTailcatInvite` there is no settings escalation.
+Clients join per platform:
+
+- **Desktop**: **Settings → Rooms**. Create a room — the secret is minted with
+  the OS CSPRNG and the book is seeded from the local engine plus the paired
+  engines you pick — and the invite is shown as a QR plus a copyable string.
+  Join by pasting an invite: the app dials each member directly through its
+  existing per-engine Tailcat machinery, presents per member, and keeps the
+  room secret in the desktop client config. The desktop's own engine joins
+  through the same store the CLI uses.
+- **Android**: **Join room** on the Pair page — scan the desktop's QR or paste
+  the invite. The app dials each member through its existing per-engine
+  routes and presents with a device label; every member then appears as an
+  ordinary paired engine. The room secret is a Keystore-encrypted blob. A
+  member that was asleep during the join is retried on the next app start or
+  network change — a partial join persists and heals without user action.
+- **Web**: **Join room** beside the pair flow — paste the invite once. For
+  each member the browser calls the origin engine's
+  `POST /pairing/room-redeem {invite, target, label}`: the origin engine dials
+  the target from its own book, relays the presentation over its tunnel, and
+  returns the target's session grant with its base URL rewritten to
+  `…/tailcat-relay/{id}`; the existing relay byte pump then carries the
+  traffic. The origin engine relays the secret in transit but never persists
+  it; the browser keeps each member's session credential — and the room
+  secret — in browser storage, scoped to the origin, like any relayed engine.
+
+### Presentations and the address book
+
+A client joins a member by presenting the secret: `POST /room/present
+{secret, label}` on the member's listener (redeem-style, before any session)
+verifies against the stored verifier and mints an ordinary session labeled by
+the presenter. Presentations are repeatable — re-presenting with the same
+label reissues the room's session for that label (a fresh credential, the
+same session id), so retries and self-healing never mint unbounded sessions.
+Failed presentations are throttled: at most five refusals inside 60 s, then
+further failures answer throttled. Verification happens before the throttle
+check, so a member holding the secret is never locked out by someone else's
+failed guesses, and refusals log shape only.
+
+The session-authenticated `GetRoomBook {roomId, secret}` and `UpdateRoomBook
+{roomId, members}` maintain the book. `GetRoomBook` additionally requires
+presenting the room secret, because member addresses are transport secrets;
+`UpdateRoomBook` union-merges entries — a stale address is corrected by a
+fresh one arriving, never by deletion — and replies with the fresh snapshot.
+Clients union the books of every member they can reach and push the merged
+book back; engines never gossip with each other.
+
+Room code never mutates remote-access settings: joining only works on engines
+that are already reachable, so unlike `CreateTailcatInvite` there is no
+settings escalation. Engines advertise the `rooms-v1` capability, and clients
+hide room UI on its absence instead of showing error toasts.
+
+### Eviction: rotate, then revoke
+
+A room gates future introductions, not existing sessions: a member's sessions
+stay valid on every engine until revoked there, and v1 has no cross-engine
+revocation. Eviction is rotate-then-revoke:
+
+1. **Rotate.** Mint a new secret and re-invite — engines re-join with
+   `roboco engine room join`, clients through their platform's join flow. The
+   rotate flow is a guided checklist: it lists who still holds the old secret
+   and tracks which members have re-presented with the new one.
+2. **Drop the old room.** `roboco engine room leave ROOM_ID` on every engine
+   forgets the old verifier and its book, after which the old secret matches
+   no room anywhere. Keep the old room until the checklist shows every
+   legitimate holder re-presented — while the old verifier exists, a holder
+   of the old secret can still present to it.
+3. **Revoke.** The old room's sessions are ordinary sessions:
+   `roboco engine pairing list` shows them by label, and
+   `roboco engine pairing revoke SESSION_ID` rejects the session's next
+   connection. Run it on every member engine, once per session the old room
+   minted.
 
 ## Saved settings
 
@@ -187,10 +280,12 @@ a request URL.
 ## Using several engines
 
 Paired engines reconnect automatically when the desktop starts. Their chats and
-spaces appear in the existing sidebar with device labels. Pick a device in the
-space palette, then choose a folder; the composer space chip identifies where the
-new chat will run. You can also enter an absolute path for that engine. An existing
-folder opens on Enter; a missing folder offers **Create and add**.
+spaces appear in the existing sidebar with device labels. Engines joined
+through a room (see Rooms) appear here too, exactly like paired ones. Pick a
+device in the space palette, then choose a folder; the composer space chip
+identifies where the new chat will run. You can also enter an absolute path
+for that engine. An existing folder opens on Enter; a missing folder offers
+**Create and add**.
 
 Settings → Devices shows connection state and lets you forget a paired engine.
 Forgetting removes its saved connection and client cache. Revoke the session on
@@ -265,7 +360,7 @@ Capability strings are never reused or removed within a protocol generation.
 | `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
 | Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
 | Transcript images by any reference (`ReadImageChunk{reference, chatId?}`: relative/`~`/`file:`/`roboco-file:`/`data:` references, engine-side URL fetch, SVG → PNG) | none (`unknown method` → the core falls back to `ReadAttachmentChunk` with the reference as a path; web and `data:` images still load on the phone) |
-| Attachments up to 100 MB per file | `uploads-100mb-v1` |
+| Attachments up to 100 MB per file (legacy caps without it: 24 MB client-side, 32 MB engine-side) | `uploads-100mb-v1` |
 | Rooms (`/room/present`, `GetRoomBook`, `UpdateRoomBook`) | `rooms-v1` (older engines answer `unknown method`; clients hide room UI on its absence) |
 
 ## Transcript resume
