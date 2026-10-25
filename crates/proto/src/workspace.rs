@@ -29,6 +29,10 @@ pub mod capabilities {
     /// The host creates a projectless chat's scratch folder
     /// (`crate::projectless`) when it runs; older hosts only know `~`.
     pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
+    /// The engine serves the room surface (ADR 0011): the room store, the
+    /// `/room/present` listener route, and the book RPCs. Rooms share
+    /// reachability, never data.
+    pub const ROOMS_V1: &str = "rooms-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -41,6 +45,7 @@ pub mod capabilities {
         WEB_CLIENT,
         TRANSCRIPT_RESUME_V1,
         PROJECTLESS_SCRATCH_V1,
+        ROOMS_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -177,7 +182,8 @@ mod tests {
                     "harness-updates-v1",
                     "web-client",
                     "transcript-resume-v1",
-                    "projectless-scratch-v1"
+                    "projectless-scratch-v1",
+                    "rooms-v1"
                 ],
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": 1,
@@ -190,6 +196,14 @@ mod tests {
     fn transcript_resume_is_advertised() {
         assert!(capabilities::CURRENT.contains(&capabilities::TRANSCRIPT_RESUME_V1));
         assert!(capabilities::current().contains(&capabilities::TRANSCRIPT_RESUME_V1.to_string()));
+    }
+
+    #[test]
+    fn rooms_is_advertised() {
+        assert!(capabilities::CURRENT.contains(&capabilities::ROOMS_V1));
+        assert!(capabilities::current().contains(&capabilities::ROOMS_V1.to_string()));
+        let info = EngineInfo::current("device-1".into(), WorkspaceScope::Local, None);
+        assert!(info.supports(capabilities::ROOMS_V1));
     }
 
     #[test]
