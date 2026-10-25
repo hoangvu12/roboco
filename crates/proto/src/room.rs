@@ -349,12 +349,14 @@ mod tests {
             .decode(payload.strip_prefix(INVITE_PREFIX).unwrap())
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-        let keys: Vec<&str> = value
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
+        // Sorted before comparing: serde_json's Map is a BTreeMap here, but a
+        // workspace build that pulls the ui-linked crates enables serde_json's
+        // `preserve_order` feature (via GPUI), flipping the Map to IndexMap and
+        // its key order to insertion order. Key order on the wire is
+        // irrelevant — the assertion is "exactly the frozen fields, none
+        // missing, none extra".
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
         assert_eq!(keys, ["members", "name", "secret", "v"]);
         assert_eq!(value["v"], 1);
         assert_eq!(value["name"], "Home fleet");
