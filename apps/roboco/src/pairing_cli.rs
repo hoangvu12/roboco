@@ -1,8 +1,11 @@
-//! Pairing administration uses SQLite; Tailcat setup talks to the owning engine.
+//! Pairing and room administration use SQLite; Tailcat setup talks to the
+//! owning engine. Rooms (ADR 0011) share reachability, never data.
 use anyhow::Context as _;
 use clap::Subcommand;
 use roboco_engine::pairing::{DEFAULT_TTL_SECONDS, PairingStore, pairing_url};
+use roboco_engine::rooms::RoomStore;
 use roboco_engine::tailcat::{INVITE_PREFIX, TailcatClient, TailcatInvite, read_recorded_address};
+use roboco_proto::room::RoomInvite;
 
 #[derive(Subcommand)]
 pub enum EngineCommand {
@@ -15,6 +18,11 @@ pub enum EngineCommand {
     Tailcat {
         #[command(subcommand)]
         command: TailcatCommand,
+    },
+    /// Join, list, and leave rooms (ADR 0011).
+    Room {
+        #[command(subcommand)]
+        command: RoomCommand,
     },
 }
 
@@ -185,9 +193,84 @@ fn tailcat(command: TailcatCommand, data_dir: &std::path::Path) -> anyhow::Resul
     }
 }
 
+/// Room administration (ADR 0011). Rooms are hostless reachability groups:
+/// joining stores only a verifier of the room secret plus the member
+/// address book; clients that present the secret mint ordinary sessions.
+#[derive(Subcommand)]
+pub enum RoomCommand {
+    /// Join a room from a `roboco-room:` invite. Only a verifier of the
+    /// secret is stored; the invite itself is never printed or logged.
+    Join {
+        /// The `roboco-room:` invite (it is a secret: paste it, never commit it).
+        invite: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List joined rooms with their member counts.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Leave a room: forget its verifier and address book. Sessions it
+    /// minted are ordinary sessions — revoke them with `pairing revoke`.
+    Leave { room_id: String },
+}
+
+/// Room administration works directly on the pairing-domain store, so it
+/// runs while an engine owns the data directory (WAL coordinates the two
+/// processes) — the same boundary `roboco engine pairing` uses.
+fn room(command: RoomCommand, data_dir: &std::path::Path) -> anyhow::Result<()> {
+    let store = RoomStore::open(data_dir)?;
+    match command {
+        RoomCommand::Join { invite, json } => {
+            // Decode errors describe only the invite's shape (ADR 0008);
+            // nothing here prints the invite or its secret.
+            let invite = RoomInvite::decode(&invite)?;
+            let record = store.join(invite)?;
+            if json {
+                println!("{}", serde_json::to_string(&record)?);
+            } else {
+                println!(
+                    "Joined \"{}\" ({} members). Room id: {}",
+                    record.label,
+                    record.book.members.len(),
+                    record.id
+                );
+                println!(
+                    "Clients that present this room's secret mint ordinary sessions; leave with `roboco engine room leave {}`.",
+                    record.id
+                );
+            }
+        }
+        RoomCommand::List { json } => {
+            let rooms = store.list()?;
+            if json {
+                println!("{}", serde_json::to_string(&rooms)?);
+            } else if rooms.is_empty() {
+                println!("No joined rooms.");
+            } else {
+                for room in rooms {
+                    println!(
+                        "{}\t{}\t{} members",
+                        room.id,
+                        room.label,
+                        room.book.members.len()
+                    );
+                }
+            }
+        }
+        RoomCommand::Leave { room_id } => {
+            anyhow::ensure!(store.leave(&room_id)?, "no room found: {room_id}");
+            println!("Left {room_id}");
+        }
+    }
+    Ok(())
+}
+
 pub fn run(command: EngineCommand, data_dir: &std::path::Path) -> anyhow::Result<()> {
     let command = match command {
         EngineCommand::Tailcat { command } => return tailcat(command, data_dir),
+        EngineCommand::Room { command } => return room(command, data_dir),
         EngineCommand::Pairing { command } => command,
     };
     let store = PairingStore::open(data_dir)?;
