@@ -16,7 +16,7 @@ machinery, which are unchanged.
 
 **Blocked by:** None — independent of the room tickets.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 

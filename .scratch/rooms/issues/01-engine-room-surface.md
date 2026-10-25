@@ -23,7 +23,7 @@ engines that are already reachable, so no settings escalation exists.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 **Parent:** `.scratch/rooms/spec.md`
 
