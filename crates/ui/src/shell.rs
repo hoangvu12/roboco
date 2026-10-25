@@ -667,6 +667,10 @@ pub fn apply_keymap(
 pub enum SettingsSection {
     Devices,
     RemoteAccess,
+    /// Rooms (ADR 0011): create, join, and manage reachability groups.
+    /// Visible only while the local engine advertises `rooms-v1` — the nav
+    /// filters it dynamically (capability hiding, never error toasts).
+    Rooms,
     /// Which harnesses the composer offers (enable/disable toggles) —
     /// labeled "Providers".
     Harnesses,
@@ -688,7 +692,7 @@ pub enum SettingsSection {
 impl SettingsSection {
     /// Sections shown in Settings, grouped by spacing alone: preferences,
     /// providers and devices, then workspace data.
-    pub const ALL: [SettingsSection; 12] = [
+    pub const ALL: [SettingsSection; 13] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
@@ -698,6 +702,7 @@ impl SettingsSection {
         SettingsSection::Agents,
         SettingsSection::Devices,
         SettingsSection::RemoteAccess,
+        SettingsSection::Rooms,
         SettingsSection::Files,
         SettingsSection::Appshots,
         SettingsSection::Archived,
@@ -724,6 +729,7 @@ impl SettingsSection {
         match self {
             SettingsSection::Devices => "devices",
             SettingsSection::RemoteAccess => "remote-access",
+            SettingsSection::Rooms => "rooms",
             SettingsSection::Harnesses => "providers",
             SettingsSection::Agents => "agents",
             SettingsSection::Appearance => "appearance",
@@ -742,6 +748,7 @@ impl SettingsSection {
         Some(match slug {
             "devices" => SettingsSection::Devices,
             "remote-access" => SettingsSection::RemoteAccess,
+            "rooms" => SettingsSection::Rooms,
             "providers" | "harnesses" => SettingsSection::Harnesses,
             "agents" => SettingsSection::Agents,
             "appearance" => SettingsSection::Appearance,
@@ -761,13 +768,13 @@ impl SettingsSection {
     fn starts_nav_group(self) -> bool {
         matches!(self, Self::Harnesses | Self::Files)
     }
-
     /// Sidebar + header label (roboco settings-sidebar.tsx SECTIONS / __root.tsx
     /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
             SettingsSection::Devices => "Devices",
             SettingsSection::RemoteAccess => "Remote access",
+            SettingsSection::Rooms => "Rooms",
             SettingsSection::Harnesses => "Providers",
             SettingsSection::Agents => "Accounts",
             SettingsSection::Appearance => "Appearance",
@@ -1854,6 +1861,7 @@ pub struct Shell {
     nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     remote_access_page: Option<Entity<crate::settings::remote_access::RemoteAccessPage>>,
+    rooms_page: Option<Entity<crate::settings::rooms::RoomsPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
@@ -2314,6 +2322,7 @@ impl Shell {
             nav,
             devices_page: None,
             remote_access_page: None,
+            rooms_page: None,
             archived_page: None,
             appearance_page: None,
             files_settings_page: None,
@@ -5530,6 +5539,17 @@ impl Shell {
                     .clone()
                     .into_any_element()
             }
+            SettingsSection::Rooms => {
+                if self.rooms_page.is_none() {
+                    let state = self.state.clone();
+                    self.rooms_page =
+                        Some(cx.new(|cx| crate::settings::rooms::RoomsPage::new(state, cx)));
+                }
+                match &self.rooms_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
             SettingsSection::Devices => {
                 if self.devices_page.is_none() {
                     let state = self.state.clone();
@@ -7182,6 +7202,15 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Rooms in the settings nav only while the local engine advertises
+    /// `rooms-v1` — the capability check that hides room UI on old engines
+    /// instead of showing error toasts (C5).
+    fn rooms_supported(&self, cx: &App) -> bool {
+        self.state
+            .read(cx)
+            .local_engine_supports(roboco_proto::capabilities::ROOMS_V1)
+    }
+
     /// Roving section tabs, grouped by spacing alone: preferences, providers
     /// and devices, then workspace data.
     fn render_settings_nav(
@@ -7191,9 +7220,16 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let rooms = self.rooms_supported(cx);
+        // Capability hiding (C5): Rooms leaves the nav when the local engine
+        // lacks rooms-v1 — the section is unreachable, never erroring.
+        let nav_visible = move |item: &SettingsSection| {
+            item.visible_in_nav() && (*item != SettingsSection::Rooms || rooms)
+        };
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
             SettingsSection::RemoteAccess => icons::KEY_MINIMALISTIC,
+            SettingsSection::Rooms => icons::REMOTE_SERVER,
             SettingsSection::Harnesses => icons::WIDGET,
             SettingsSection::Agents => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
@@ -7228,7 +7264,7 @@ impl Shell {
                         .children(
                             SettingsSection::ALL
                                 .into_iter()
-                                .filter(|item| item.visible_in_nav())
+                                .filter(nav_visible)
                                 .map(|item| {
                                     let index = SettingsSection::ALL
                                         .iter()
@@ -7266,9 +7302,14 @@ impl Shell {
                                     .tab_stop(selected)
                                     .on_key_down(cx.listener(
                                         move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            let rooms = this.rooms_supported(cx);
                                             let items: Vec<_> = SettingsSection::ALL
                                                 .into_iter()
-                                                .filter(|s| s.visible_in_nav())
+                                                .filter(|item| {
+                                                    item.visible_in_nav()
+                                                        && (*item != SettingsSection::Rooms
+                                                            || rooms)
+                                                })
                                                 .collect();
                                             let current =
                                                 items.iter().position(|s| *s == item).unwrap_or(0);

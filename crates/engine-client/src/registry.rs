@@ -15,6 +15,8 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+use crate::rooms::{RoomGrant, RoomMemberSession};
+
 const PREFIX: &str = "engine:v1:";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EngineKey(pub String);
@@ -732,9 +734,57 @@ impl EngineRegistry {
             .json()
             .await
             .map_err(|_| anyhow::anyhow!("Invalid pairing response"))?;
+        self.adopt_engine(&base, &grant.credential, keepalive).await
+    }
+
+    /// Present a room secret to one member engine and adopt it as an
+    /// ordinary paired engine (ADR 0011): `POST {base}/room/present
+    /// {secret, label}` mints a session labeled by the presenter, and the
+    /// registry wires that session in exactly like a pairing — saved
+    /// credential, supervised reconnect, cache rows. `address` only labels
+    /// the returned record (it is a transport secret and never logged).
+    pub async fn join_room_member(
+        &self,
+        base: &str,
+        address: &str,
+        secret: &str,
+        label: &str,
+        keepalive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> anyhow::Result<RoomMemberSession> {
+        anyhow::ensure!(
+            self.inner.configuration_error.is_none(),
+            "Saved engine configuration needs repair before joining rooms"
+        );
+        // Fixed-text failures: the presentation's own errors never echo the
+        // secret (ADR 0008), and adopt errors quote at most a loopback URL.
+        let grant: RoomGrant = crate::rooms::present_room_member(base, secret, label)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let key = self
+            .adopt_engine(base, &grant.credential, keepalive)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(RoomMemberSession {
+            address: address.to_owned(),
+            engine_key: key.0,
+            session_id: grant.session.id,
+        })
+    }
+
+    /// Wire one authenticated credential into the registry: connect the
+    /// WebSocket, read `EngineInfo`, persist the saved entry, publish, and
+    /// start supervision. The tail both `pair` and `join_room_member`
+    /// share — a room-minted session is an ordinary paired engine in every
+    /// respect (ADR 0011).
+    async fn adopt_engine(
+        &self,
+        base: &str,
+        credential: &str,
+        keepalive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> anyhow::Result<EngineKey> {
         let endpoint = base.replacen("http", "ws", 1);
         let client =
-            Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, &grant.credential).await?);
+            Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
         let info: EngineInfo = tokio::time::timeout(
             Duration::from_secs(10),
             client.call_as(methods::ENGINE_INFO, json!({})),
@@ -745,7 +795,7 @@ impl EngineRegistry {
         let saved = SavedEngine {
             key: key.clone(),
             endpoint,
-            credential: grant.credential,
+            credential: credential.to_owned(),
             info: info.clone(),
         };
         lock(&self.inner.state).entries.insert(
