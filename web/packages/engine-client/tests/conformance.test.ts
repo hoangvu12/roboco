@@ -8,6 +8,8 @@ import type { Chat, EngineInfo, SessionGrant } from "@roboco/proto";
 import { EngineClient } from "../src/client";
 import { ENGINE_INFO, MUTATE, READ_ATTACHMENT_CHUNK, REVOKE_PAIRING_SESSION, UPLOAD_CHUNK, UPLOAD_COMMIT, WATCH_CHATS } from "../src/methods";
 import { redeemPairingCode } from "../src/pairing";
+import { encodeRoomInvite } from "../src/room-invite";
+import { redeemRoomMemberViaOrigin } from "../src/room-redeem";
 import { EngineWatchCache } from "../src/watch-cache";
 import { delay, statusWhen, trackedFactory, waitUntil } from "./helpers/ws";
 
@@ -322,6 +324,93 @@ describe("conformance against a real engine: the upload path", () => {
     expect(offset).toBe(total);
     expect(hasher.digest("hex")).toBe(expected);
   }, 120_000);
+});
+
+describe("conformance against a real engine: rooms", () => {
+  // rooms#05's wire half against the REAL engine. The full redeem
+  // round-trip (dial + relayed presentation + grant + byte pump) needs a
+  // SECOND engine to relay to and a scripted tailcat adapter — the rig
+  // `crates/engine/tests/room_relay.rs` builds; the one-engine example
+  // cannot host it, and the dial surface is engine-tested there. What this
+  // harness CAN pin is everything before the dial: the capability, the
+  // route's CORS-open preflight, the shape refusals' fixed texts — and the
+  // decisive cross-implementation check: the REAL engine decodes an invite
+  // this TS codec built (the unknown-target 404 runs only after a
+  // successful decode), answering with the label-only error text.
+  const ROOM_SECRET = "conformance-room-secret-0123456789abcdef";
+  const invite = encodeRoomInvite({
+    v: 1,
+    name: "Conformance fleet",
+    secret: ROOM_SECRET,
+    members: [{ label: "server", address: "tcCONFORMANCE1" }],
+  });
+
+  test("advertises rooms-v1", async () => {
+    const info = await client!.call<EngineInfo>(ENGINE_INFO, {});
+    expect(info.capabilities).toContain("rooms-v1");
+  });
+
+  test("the room-redeem route is CORS-open like its pairing siblings", async () => {
+    const preflight = await fetch(`${engine!.endpoint}/pairing/room-redeem`, {
+      method: "OPTIONS",
+      headers: { origin: "https://web.example" },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+    expect(preflight.headers.get("access-control-allow-methods") ?? "").toContain("POST");
+  });
+
+  test("shape refusals answer fixed texts, never the payload", async () => {
+    const junk = await fetch(`${engine!.endpoint}/pairing/room-redeem`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not json",
+    });
+    expect(junk.status).toBe(400);
+    expect(await junk.text()).toBe("expected JSON { invite, target, label }");
+
+    // A room invite is required: a tailcat invite is refused with its own
+    // fixed text.
+    const tailcat = await fetch(`${engine!.endpoint}/pairing/room-redeem`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        invite: "roboco-tailcat:eyJ2IjoxfQ",
+        target: "server",
+        label: "Conformance web",
+      }),
+    });
+    expect(tailcat.status).toBe(400);
+    expect((await tailcat.json()).error).toBe("a room invite starts with roboco-room:");
+  });
+
+  test("the real engine decodes the TS codec's invite: label-only 404 for an unknown target", async () => {
+    // The engine must parse our invite (version, name, secret, members)
+    // before it can resolve the target — a 404 naming the label proves the
+    // two codecs agree; a 400 would mean they do not.
+    const missing = await fetch(`${engine!.endpoint}/pairing/room-redeem`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ invite, target: "laptop", label: "Conformance web" }),
+    });
+    expect(missing.status).toBe(404);
+    const body = (await missing.json()) as { error: string };
+    expect(body.error).toContain("laptop");
+    expect(body.error).not.toContain(ROOM_SECRET);
+    expect(body.error).not.toContain("tcCONFORMANCE1");
+
+    // And through the client codec: the same refusal surfaces label-only.
+    const error = await redeemRoomMemberViaOrigin(invite, "laptop", "Conformance web", {
+      originBaseUrl: engine!.endpoint,
+    }).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("laptop");
+    expect((error as Error).message).not.toContain(ROOM_SECRET);
+    expect((error as Error).message).not.toContain(invite);
+  });
 });
 
 describe("conformance against a real engine: revoked sessions", () => {
