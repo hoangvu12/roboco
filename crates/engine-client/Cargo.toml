@@ -24,6 +24,9 @@ base64 = "0.22"
 reqwest.workspace = true
 tempfile.workspace = true
 sha2.workspace = true
+# Room secrets are minted from OS randomness (ADR 0011) — the same source
+# the engine's pairing store uses for pairing codes.
+getrandom = "0.3"
 
 [dev-dependencies]
 # Tests drive real `EngineCore`s over loopback; the library itself must never

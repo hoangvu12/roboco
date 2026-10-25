@@ -10,6 +10,7 @@
 
 pub mod cache;
 pub mod registry;
+pub mod rooms;
 pub mod routing;
 
 use crate::registry::{Reconnect, SavedEngine};
