@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::frame::{
     Frame,
     coding::{Data, OpCode},
@@ -34,6 +35,21 @@ const SILENCE_LEASE: Duration = Duration::from_secs(45);
 // complete application message. This exposes a slowly draining TCP buffer
 // through returning pongs without changing the application protocol.
 const FRAGMENT_BYTES: usize = 4096;
+
+/// The WebSocket config both ends of the local RPC dial/accept with
+/// (upstream acd7c9ba7): [`crate::client::MAX_MESSAGE_BYTES`] as both the
+/// message and the frame cap, so a peer still on tungstenite's defaults
+/// (an older app build sending one unfragmented 18 MiB+ frame — a long
+/// chat's transcript watch) is accepted instead of dropping the session.
+/// Every write this side makes is already fragmented well under the default
+/// frame cap, so only inbound runaways ever meet the ceiling.
+pub(crate) fn transport_config() -> WebSocketConfig {
+    WebSocketConfig {
+        max_message_size: Some(crate::client::MAX_MESSAGE_BYTES),
+        max_frame_size: Some(crate::client::MAX_MESSAGE_BYTES),
+        ..WebSocketConfig::default()
+    }
+}
 
 struct Activity {
     origin: tokio::time::Instant,
@@ -234,15 +250,18 @@ where
 
 /// Drive one RPC session: outbound text lines from `out_rx`, inbound text
 /// lines to `in_tx`. Protocol-level pings keep the link liveness observable;
-/// non-text frames never reach the ndjson layer.
+/// non-text frames never reach the ndjson layer. Returns why the session
+/// died when it wasn't a clean close (the transport's close reason — see
+/// `RpcClient::close_reason`), `None` for a clean close.
 pub(crate) async fn pump<S>(
     ws: Connection<S>,
     out_rx: mpsc::Receiver<String>,
     in_tx: mpsc::Sender<String>,
-) where
+) -> Option<String>
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    pump_with_timing(ws, out_rx, in_tx, PING_INTERVAL, SILENCE_LEASE).await;
+    pump_with_timing(ws, out_rx, in_tx, PING_INTERVAL, SILENCE_LEASE).await
 }
 
 /// Drive a session's ordered frames with independent reads and writes.
@@ -251,13 +270,15 @@ pub(crate) async fn pump<S>(
 /// the consumer. Expiry closes the entire session: callers must fail pending
 /// RPCs as `Closed` and reconnect, never resume a partial send. Dropping
 /// this future or the inbound receiver releases both socket halves.
+/// Returns the close reason on a failed session, `None` on a clean close.
 pub async fn pump_with_timing<S>(
     ws: Connection<S>,
     mut out_rx: mpsc::Receiver<String>,
     in_tx: mpsc::Sender<String>,
     ping_interval: Duration,
     lease: Duration,
-) where
+) -> Option<String>
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let progress = ws.progress;
@@ -286,14 +307,19 @@ pub async fn pump_with_timing<S>(
             // Never resume a canceled send on this socket: it may have
             // written only part of a frame. The caller replays unacknowledged
             // requests on a fresh connection; pending RPCs fail as Closed.
-            if !matches!(
-                progress
-                    .while_progressing(lease, true, send_message(&mut sink, frame))
-                    .await,
-                Ok(Ok(()))
-            ) {
-                tracing::warn!(conn, age_ms = age_ms(), "rpc socket write failed or stopped progressing; dropping session");
-                return Exit::Failed;
+            match progress
+                .while_progressing(lease, true, send_message(&mut sink, frame))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(conn, age_ms = age_ms(), %error, "rpc socket write failed; dropping session");
+                    return Exit::Failed(format!("sending to the socket failed: {error}"));
+                }
+                Err(()) => {
+                    tracing::warn!(conn, age_ms = age_ms(), "rpc socket write stopped progressing; dropping session");
+                    return Exit::Failed("sending to the socket stalled".into());
+                }
             }
         }
     };
@@ -312,13 +338,16 @@ pub async fn pump_with_timing<S>(
                 Ok(Some(Err(error))) => {
                     // A peer that went away without a Close frame (an app
                     // killed or frozen, a torn-down tunnel) is not a stall:
-                    // tell the two apart in the log.
+                    // tell the two apart in the log and in the close reason.
                     if closed_without_handshake(&error) {
                         tracing::warn!(conn, age_ms = age_ms(), %error, "rpc peer closed without Close frame; dropping session");
+                        return Exit::Failed(format!(
+                            "the peer closed without a Close frame: {error}"
+                        ));
                     } else {
                         tracing::warn!(conn, age_ms = age_ms(), %error, "rpc socket failed; dropping session");
+                        return Exit::Failed(format!("reading the socket failed: {error}"));
                     }
-                    return Exit::Failed;
                 }
                 Err(()) => {
                     tracing::warn!(
@@ -327,7 +356,10 @@ pub async fn pump_with_timing<S>(
                         lease_s = lease.as_secs(),
                         "rpc socket silent past lease; dropping session"
                     );
-                    return Exit::Failed;
+                    return Exit::Failed(format!(
+                        "the socket went silent past its {} s lease",
+                        lease.as_secs()
+                    ));
                 }
             };
             if let WsMessage::Text(text) = frame
@@ -342,7 +374,7 @@ pub async fn pump_with_timing<S>(
                     return Exit::LocalClose;
                 }
                 tracing::warn!(conn, age_ms = age_ms(), "rpc socket consumer stalled; dropping session");
-                return Exit::Failed;
+                return Exit::Failed("the RPC reader stopped accepting frames".into());
             }
         }
     };
@@ -359,23 +391,27 @@ pub async fn pump_with_timing<S>(
         // fragments of an interrupted message.
         Exit::LocalClose => {
             let _ = tokio::time::timeout(CLOSE_BUDGET, sink.close()).await;
+            None
         }
         // Flush the Close reply tungstenite queued for the peer.
         Exit::PeerClosed => {
             let _ = tokio::time::timeout(CLOSE_BUDGET, sink.flush()).await;
+            None
         }
-        Exit::Failed => {}
+        Exit::Failed(reason) => Some(reason),
     }
 }
 
-/// How a session pump ended.
+/// How a session pump ended. `Failed` carries the transport's close reason
+/// (upstream acd7c9ba7: surfaced through `RpcClient::close_reason` so the
+/// failure surface can say which it was instead of a generic "went away").
 enum Exit {
     /// This side let go of the session.
     LocalClose,
     /// The peer closed it (Close frame or end of stream).
     PeerClosed,
-    /// A stall, a lease expiry or a transport error.
-    Failed,
+    /// A stall, a lease expiry or a transport error, and why.
+    Failed(String),
 }
 
 /// The bound on sending (or flushing) a Close frame on the way out.
@@ -423,7 +459,7 @@ mod tests {
         server: WebSocketStream<DuplexStream>,
         tx: mpsc::Sender<String>,
         rx: mpsc::Receiver<String>,
-        task: JoinHandle<()>,
+        task: JoinHandle<Option<String>>,
     }
 
     async fn harness() -> Harness {
@@ -450,9 +486,11 @@ mod tests {
         tokio::task::yield_now().await;
     }
 
-    async fn finishes(mut task: JoinHandle<()>, within: Duration) {
+    async fn finishes(mut task: JoinHandle<Option<String>>, within: Duration) {
         match tokio::time::timeout(within, &mut task).await {
-            Ok(result) => result.expect("socket pump panicked"),
+            Ok(result) => {
+                result.expect("socket pump panicked");
+            }
             Err(_) => {
                 task.abort();
                 panic!("socket pump did not terminate within {within:?}");

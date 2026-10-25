@@ -43,6 +43,9 @@ pub struct RpcClient {
     /// The socket's byte clock, for a WebSocket dial (`None` for in-memory
     /// and stdio duplexes).
     progress: Option<crate::pump::Progress>,
+    /// Why the transport failed, when it did; set before the inbound channel
+    /// closes. `None` for in-memory transports and a clean close.
+    close_reason: Arc<std::sync::OnceLock<String>>,
 }
 
 /// Owned stream receiver whose drop immediately cancels the server task.
@@ -137,6 +140,7 @@ impl RpcClient {
             next_id: AtomicU64::new(1),
             reader,
             progress: None,
+            close_reason: Arc::default(),
         }
     }
 
@@ -154,6 +158,16 @@ impl RpcClient {
         self.progress
             .as_ref()
             .map_or(0, crate::pump::Progress::bytes_read)
+    }
+
+    /// Why the connection failed (an oversized frame, a reset socket, a
+    /// silent link torn down by its lease), once the transport has gone
+    /// away; `None` for a clean close or an in-memory transport. The
+    /// registry's connection-drop surface reports this instead of a generic
+    /// "Engine connection closed", so a long transcript can't look like a
+    /// crash loop (upstream acd7c9ba7).
+    pub fn close_reason(&self) -> Option<String> {
+        self.close_reason.get().cloned()
     }
 
     /// Resolves when the transport stops accepting frames.
@@ -486,22 +500,24 @@ pub async fn connect_ws_authenticated_within(
     connect_ws_with_session(url, Some(credential), handshake).await
 }
 
-/// Per-message size ceiling for client WebSocket connections. #621 measured
-/// a 16.4 MB transcript reset; tungstenite 0.24's 64 MiB default would drop a
-/// growing one, so every client dial ([`connect_ws`] and
-/// [`connect_ws_authenticated`], desktop and mobile alike) raises the ceiling
-/// to 256 MiB (the engine's server side stays at defaults: client→engine
-/// frames are small).
-pub const MAX_MESSAGE_BYTES: usize = 256 << 20;
+/// Per-message (and, from older peers that don't fragment, per-frame) size
+/// ceiling for local RPC WebSocket connections, both dial and accept.
+/// #621 measured a 16.4 MB transcript reset under tungstenite 0.24's 64 MiB
+/// default message cap, and a long chat's transcript watch reply (~18 MiB)
+/// exceeds the 16 MiB default *frame* cap outright. Both ends fragment their
+/// writes well under the defaults, so the raised cap only matters for a peer
+/// on stock defaults — accepting its unfragmented frame beats dropping the
+/// session and replaying the failure on every reconnect (upstream
+/// acd7c9ba7 raised it to 512 MiB for exactly that). Local IPC behind the
+/// bearer/session token: the cap only stops runaways.
+pub const MAX_MESSAGE_BYTES: usize = 512 << 20;
 
 async fn connect_ws_with_session(
     url: &str,
     credential: Option<&str>,
     handshake: std::time::Duration,
 ) -> Result<RpcClient, RpcError> {
-    use tokio_tungstenite::tungstenite::{
-        client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
-    };
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue};
     let mut request = url
         .into_client_request()
         .map_err(|_| RpcError::Transport("invalid engine URL".into()))?;
@@ -543,11 +559,7 @@ async fn connect_ws_with_session(
         tokio_tungstenite::client_async_tls_with_config(
             request,
             io,
-            Some(WebSocketConfig {
-                max_message_size: Some(MAX_MESSAGE_BYTES),
-                max_frame_size: Some(MAX_MESSAGE_BYTES),
-                ..Default::default()
-            }),
+            Some(crate::pump::transport_config()),
             None,
         ),
     )
@@ -556,15 +568,27 @@ async fn connect_ws_with_session(
     .map_err(dial_error)?;
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
-    tokio::spawn(crate::pump::pump(
-        crate::pump::Connection {
-            socket: ws,
-            progress: progress.clone(),
-        },
-        out_rx,
-        in_tx,
-    ));
-    Ok(RpcClient::new(out_tx, in_rx).with_progress(progress))
+    let client = RpcClient::new(out_tx, in_rx).with_progress(progress.clone());
+    // The transport's close reason is set before the inbound channel ends,
+    // so a caller awaiting `closed()` can read it right after.
+    let close_reason = client.close_reason.clone();
+    let url = url.to_owned();
+    tokio::spawn(async move {
+        if let Some(reason) = crate::pump::pump(
+            crate::pump::Connection {
+                socket: ws,
+                progress,
+            },
+            out_rx,
+            in_tx,
+        )
+        .await
+        {
+            tracing::warn!(%reason, %url, "rpc: lost the connection");
+            let _ = close_reason.set(reason);
+        }
+    });
+    Ok(client)
 }
 
 #[cfg(test)]
