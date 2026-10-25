@@ -29,6 +29,11 @@ pub mod capabilities {
     /// The host creates a projectless chat's scratch folder
     /// (`crate::projectless`) when it runs; older hosts only know `~`.
     pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
+    /// The engine accepts whole-file uploads up to 100 MB (`Uploads::MAX_BYTES`).
+    /// Older engines enforce 32 MB server-side; clients use 100 MB only when
+    /// the engine advertises this string, clamping to the legacy 24 MB client
+    /// cap otherwise.
+    pub const UPLOADS_100MB_V1: &str = "uploads-100mb-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -41,6 +46,7 @@ pub mod capabilities {
         WEB_CLIENT,
         TRANSCRIPT_RESUME_V1,
         PROJECTLESS_SCRATCH_V1,
+        UPLOADS_100MB_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -177,7 +183,8 @@ mod tests {
                     "harness-updates-v1",
                     "web-client",
                     "transcript-resume-v1",
-                    "projectless-scratch-v1"
+                    "projectless-scratch-v1",
+                    "uploads-100mb-v1"
                 ],
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": 1,
@@ -190,6 +197,14 @@ mod tests {
     fn transcript_resume_is_advertised() {
         assert!(capabilities::CURRENT.contains(&capabilities::TRANSCRIPT_RESUME_V1));
         assert!(capabilities::current().contains(&capabilities::TRANSCRIPT_RESUME_V1.to_string()));
+    }
+
+    #[test]
+    fn uploads_100mb_is_advertised() {
+        assert_eq!(capabilities::UPLOADS_100MB_V1, "uploads-100mb-v1");
+        assert!(capabilities::CURRENT.contains(&capabilities::UPLOADS_100MB_V1));
+        let info = EngineInfo::current("device-1".into(), WorkspaceScope::Local, None);
+        assert!(info.supports(capabilities::UPLOADS_100MB_V1));
     }
 
     #[test]
