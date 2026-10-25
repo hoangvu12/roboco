@@ -26,6 +26,8 @@ The [remote access specification](.scratch/remote-access/spec.md) defines the pa
 
 Remote access is opt-in. Pairing exchanges a short-lived, single-use code for a non-expiring, revocable client session. The engine stores hashed verifiers. Pairing URLs carry their code in a fragment. Native clients send credentials through authorization headers rather than request URLs.
 
+Rooms ([ADR 0011](docs/adr/0011-rooms.md)) extend pairing without changing that rule: a client joins a hostless room once and is introduced to every member engine, gaining reachability only — no chat, document, or setting crosses engines.
+
 The additional remote bind serves HTTP pairing and WebSocket RPC with mandatory credentials. The engine serves plain HTTP/WS; operators supply internet reachability and TLS through their own tunnels. Remote clients use the same RPC capabilities as local clients.
 
 The client registry owns a supervised connection to every paired engine. Sidebar rows retain their device grouping, and operations route to their owning engine. Cached session lists and open transcripts support offline reading. Disconnected engines refuse writes and reconnect with capped backoff. No engine synchronizes its sessions, settings, queue, or search index to another engine.
