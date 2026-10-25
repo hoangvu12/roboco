@@ -104,6 +104,9 @@ fn codex_mcp_overrides(mcp: &roboco_proto::McpServer) -> Vec<(String, Value)> {
         (key("command"), mcp.command.clone().into()),
         (key("args"), json!(mcp.args)),
         (key("env"), json!(mcp.env)),
+        // `never` forbids approval prompts; explicitly approve our injected
+        // server's tools so Codex does not reject calls that need approval.
+        (key("default_tools_approval_mode"), "approve".into()),
     ]
 }
 
@@ -2666,6 +2669,10 @@ mod mcp_injection_tests {
         assert_eq!(
             overrides["mcp_servers.roboco.env"],
             json!({ "ROBOCO_CHAT_ID": "chat-1" })
+        );
+        assert_eq!(
+            overrides["mcp_servers.roboco.default_tools_approval_mode"],
+            "approve"
         );
     }
 }
