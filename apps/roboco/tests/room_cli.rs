@@ -151,6 +151,16 @@ async fn the_cli_joins_lists_and_leaves_against_a_running_engine() {
     // remote-access settings (the CreateTailcatInvite anti-pattern).
     assert_eq!(std::fs::read(&settings).unwrap(), settings_before);
 
+    core.shutdown().await;
+    remote.stop().await;
+    // Drop the engine before the disk walk: the live pairing store holds
+    // sqlite WAL/SHM byte-range locks, and Windows refuses concurrent reads
+    // of a locked region with a sharing violation (Linux tolerates them, so
+    // the walk only ever tripped on the Windows runners).
+    drop(client);
+    drop(core);
+    drop(remote);
+
     // Nothing on disk carries the secret.
     for entry in walk(dir.path()) {
         let bytes = std::fs::read(&entry).unwrap();
@@ -160,9 +170,6 @@ async fn the_cli_joins_lists_and_leaves_against_a_running_engine() {
             entry.display()
         );
     }
-
-    core.shutdown().await;
-    remote.stop().await;
 }
 
 #[test]
