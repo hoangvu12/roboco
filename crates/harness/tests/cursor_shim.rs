@@ -856,7 +856,7 @@ impl SessionFixture {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let mut child = tokio::process::Command::new("node")
             .arg(self.dir.path().join("shim.mjs"))
-            .env("ZERON_CURSOR_STATE_DIR", self.dir.path().join("state"))
+            .env("ROBOCO_CURSOR_STATE_DIR", self.dir.path().join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

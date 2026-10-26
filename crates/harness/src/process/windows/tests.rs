@@ -51,7 +51,7 @@ fn parked_child_helper() {
 
 #[test]
 fn stdin_eof_helper() {
-    if let Some(marker) = std::env::var_os("ZERON_TEST_STDIN_EOF_MARKER") {
+    if let Some(marker) = std::env::var_os("ROBOCO_TEST_STDIN_EOF_MARKER") {
         let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
         std::fs::write(marker, "eof").unwrap();
     }
@@ -60,7 +60,7 @@ fn eof_command(marker: &std::path::Path) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "process::windows::tests::stdin_eof_helper"])
-        .env("ZERON_TEST_STDIN_EOF_MARKER", marker)
+        .env("ROBOCO_TEST_STDIN_EOF_MARKER", marker)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -75,7 +75,7 @@ fn eof_command(marker: &std::path::Path) -> Command {
 async fn teardown_waits_on_stdin_eof_only_when_one_is_coming() {
     let grace = Duration::from_secs(20);
     let mut parked = parked_command();
-    parked.env("ZERON_TEST_PARKED_CHILD", "1");
+    parked.env("ROBOCO_TEST_PARKED_CHILD", "1");
     let mut child = parked.spawn().unwrap();
     let started = Instant::now();
     crate::shutdown_child(&mut child, grace).await;
@@ -431,7 +431,7 @@ async fn bare_batch_program_resolves_from_child_path() {
 /// Records every argument after argv[0] when spawned by the shim tests.
 #[test]
 fn shim_target_helper() {
-    let Some(file) = std::env::var_os("ZERON_TEST_SHIM_ARGS_FILE") else {
+    let Some(file) = std::env::var_os("ROBOCO_TEST_SHIM_ARGS_FILE") else {
         return;
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -451,7 +451,7 @@ const SHIM_HEAD: &str = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r
 
 async fn run_recording(mut command: Command, received: &std::path::Path) -> Vec<String> {
     command
-        .env("ZERON_TEST_SHIM_ARGS_FILE", received)
+        .env("ROBOCO_TEST_SHIM_ARGS_FILE", received)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
