@@ -483,3 +483,35 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
 - **Verification:** `--test claude` **34/34** (2 ignored as before);
   `--lib` 419/420 (the pre-existing container-passwd antigravity failure
   only); `--test claude_refresh_lock` 1/1.
+
+- **2026-10-27 — 06 8/8: opencode startup retries + readiness (upstream
+  bafc60661 + b0a9846ba's opencode slices).**
+  - `spawn` splits into a retry loop + `spawn_once` with
+    `SpawnFailure::{Retryable, Fatal}`: a server that exits at startup on a
+    transient fault — opencode's shared SQLite "database is locked"
+    / sqlite_busy, or the port claimed between our release and its bind
+    (EADDRINUSE / "address already in use" / "failed to start server. is
+    port" / WSAEADDRINUSE's "only one usage of each socket address") — is
+    relaunched on a fresh port, 4 attempts backing off linearly from 250ms
+    (more often needed on Windows, whose file locks are mandatory and whose
+    malware scan holds new WAL files).
+  - Transient faults are matched **per stderr line** (the tail keeps only
+    the last few, and Node prints EADDRINUSE above a stack trace that
+    scrolls it out); stderr reads through `lossy_lines` and closes the tail
+    at EOF, and the exit report waits for the drain.
+  - Readiness: the version is probed up front (it picks both the MCP config
+    shape and the probe order — `Protocol::detect_preferring` rotates the
+    1.x endpoint first for 1.x, sparing a refused loopback connect of the
+    wrong generation); stdout is piped and drained (a full pipe would block
+    the server's next write), and its "server listening on" line wakes the
+    probe immediately instead of finishing the poll interval. The timeout
+    names the version and the TESTED_SINCE 1.14 floor. A probe with no cwd
+    runs from home (never the engine's working directory — System32 for a
+    GUI/service launch).
+  - Roboco differences kept: no per-run env map (upstream's run_env /
+    OPENCODE_SERVER_USERNAME are Roboco's excluded surface).
+  - Tests: new `startup_retries_a_port_taken_before_bind` (a node fixture
+    that loses the port race once — EADDRINUSE above 12 stack frames — then
+    serves; upstream's exact shape).
+- **Verification:** `--lib opencode` **73/73** (incl. the new retry test);
+  `--test opencode` **31/31**.
