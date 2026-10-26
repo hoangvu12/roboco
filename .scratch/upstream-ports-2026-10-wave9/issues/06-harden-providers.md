@@ -515,3 +515,9 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
     serves; upstream's exact shape).
 - **Verification:** `--lib opencode` **73/73** (incl. the new retry test);
   `--test opencode` **31/31**.
+
+- **Remaining (dated 2026-10-27):** pi's rpc/session hardening + the Rust
+  pi_rpc peer (upstream 2e151ca65's pi slice: pi/mod.rs +312, rpc.rs +180,
+  ui.rs +144, sessions.rs +45, normalize.rs +12, PROTOCOL.md, pi_rpc.rs
+  fixture +40/tests +125) — the largest single remaining unit, banked for
+  the next turn. Everything else the ticket lists is landed.
