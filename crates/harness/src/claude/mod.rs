@@ -69,7 +69,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use roboco_proto::{
@@ -170,6 +170,12 @@ const LAUNCH_PROBE_BOUND: Duration = Duration::from_secs(60);
 /// Shown when a chat's Claude session could not be restored.
 const SESSION_LOST: &str = "The previous Claude session could not be restored, so this chat \
      continues in a new one without its earlier context.";
+
+/// The CLI's answer to `--resume` with a session it has no conversation
+/// for (it exits right after).
+fn no_conversation(text: &str) -> bool {
+    text.contains("No conversation found")
+}
 
 /// Whether the CLI's own session store knows `session_id` — one
 /// `<config>/projects/*/{session_id}.jsonl` file (the same walk
@@ -407,6 +413,10 @@ impl ClaudeHarness {
             // Required by the CLI alongside `-p --output-format stream-json`.
             "--verbose",
             "--include-partial-messages",
+            // Echo each user message back on stdout: the session loop takes
+            // that replay as the CLI's confirmation a message joined the
+            // conversation (a steer's boundary detection, upstream #977).
+            "--replay-user-messages",
             // Newer Claude models emit no readable thinking text unless a
             // summary is asked for (raw reasoning stays provider-private).
             "--thinking-display",
@@ -455,7 +465,7 @@ impl ClaudeHarness {
         args
     }
 
-    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
+    fn build_command(exe: &PathBuf, request: &RunRequest) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
         // Crash ownership: the kernel kills this CLI if the engine dies.
@@ -513,10 +523,18 @@ impl ClaudeHarness {
             // Mandatory with --print + stream-json output; without it the
             // CLI exits immediately with a usage error.
             "--verbose",
+            // Discovery runs on every catalog refresh and workspace open:
+            // the user's SessionStart hooks must not fire for it. MCP
+            // servers stay — their prompts are commands too.
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
         ]);
+        // Nor may it attach to (or install into) a running IDE.
+        cmd.env("CLAUDE_CODE_AUTO_CONNECT_IDE", "0")
+            .env("CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL", "1");
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -525,7 +543,13 @@ impl ClaudeHarness {
                 HarnessError::Io(e)
             }
         })?;
+        let stderr_tail = crate::StderrTail::default();
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(read_stderr(stderr, stderr_tail.clone()));
+        }
         let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            let lock_dir = refresh_lock::config_dir();
+            refresh_lock::settle(&lock_dir, refresh_lock::SETTLE_MAX).await;
             shutdown_child(&mut child, self.kill_grace).await;
             return Err(HarnessError::Protocol("claude child has no stdio".into()));
         };
@@ -536,12 +560,22 @@ impl ClaudeHarness {
                 "request_id": PROBE_ID,
                 "request": { "subtype": "initialize" },
             });
-            stdin
-                .write_all(format!("{request}\n").as_bytes())
-                .await
-                .map_err(HarnessError::Io)?;
-            stdin.flush().await.map_err(HarnessError::Io)?;
-            let mut lines = BufReader::new(stdout).lines();
+            // A CLI that fails on startup may exit before reading: the
+            // write then fails (EPIPE), and that is the same exit before
+            // answering — read on to its stdout's end and report its
+            // status and stderr (upstream #977).
+            let sent = match stdin.write_all(format!("{request}\n").as_bytes()).await {
+                Ok(()) => stdin.flush().await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = sent {
+                tracing::debug!(
+                    target: "roboco_harness::claude",
+                    %error,
+                    "initialize request not delivered to the discovery probe"
+                );
+            }
+            let mut lines = crate::lossy_lines::lossy_lines(stdout);
             while let Some(line) = lines.next_line().await.map_err(HarnessError::Io)? {
                 let Ok(frame) = serde_json::from_str::<Value>(&line) else {
                     continue;
@@ -560,13 +594,29 @@ impl ClaudeHarness {
                         .unwrap_or("initialize control request failed");
                     return Err(HarnessError::Protocol(msg.into()));
                 }
-                return Ok(response);
+                return Ok(Some(response));
             }
-            Err(HarnessError::Protocol(
-                "claude exited before answering the initialize control request".into(),
-            ))
+            Ok(None)
         };
-        let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        let result = tokio::time::timeout(PROBE_TIMEOUT, discovery).await;
+        let result = match result {
+            Ok(Ok(Some(response))) => Ok(response),
+            Ok(Ok(None)) => {
+                // Exited before answering: why is in its status and stderr.
+                let status = child.try_wait().ok().flatten();
+                stderr_tail.wait_closed().await;
+                Err(HarnessError::Protocol(format!(
+                    "{} before answering the initialize control request",
+                    crate::crash_message("claude", status, &stderr_tail)
+                )))
+            }
+            Ok(Err(error)) => Err(error),
+            // A CLI stuck on its own startup (an auth prompt, a broken
+            // config) usually says so on stderr.
+            Err(_) => Err(HarnessError::Protocol(probe_timeout_message(
+                stderr_tail.snapshot(),
+            ))),
+        };
         // A probe starts right when an expired login gets refreshed, and
         // answers before that refresh is saved: retire it in the background
         // once no refresh is in flight, stdin still open (EOF would make the
@@ -578,10 +628,23 @@ impl ClaudeHarness {
             drop(stdin);
             shutdown_child(&mut child, kill_grace).await;
         });
-        match result {
-            Ok(inner) => inner,
-            Err(_) => Err(HarnessError::Protocol("Claude initialize timed out".into())),
-        }
+        result
+    }
+}
+
+/// How long the discovery probe waits: a cold start on Windows or behind
+/// Bedrock can take well over 10s.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// The discovery probe's timeout, with what the CLI printed (redacted).
+fn probe_timeout_message(stderr: Option<String>) -> String {
+    let timed_out = format!(
+        "Claude initialize timed out after {}s",
+        PROBE_TIMEOUT.as_secs()
+    );
+    match stderr {
+        Some(tail) => format!("{timed_out}: {}", crate::redact_secrets(&tail)),
+        None => timed_out,
     }
 }
 
@@ -869,7 +932,7 @@ impl ClaudeHarness {
                     "the CLI refused the fork launch; starting fresh with the budgeted history"
                 );
             }
-            let mut cmd = self.build_command(&exe, &request);
+            let mut cmd = Self::build_command(&exe, &request);
             if let Some(flags) = &fork_flags {
                 cmd.args(flags.clone());
             }
@@ -919,46 +982,20 @@ impl ClaudeHarness {
             // preview discovery can tell the chat's dev servers from the
             // user's own (see [`roboco_proto::ORIGIN_ENV`]).
             crate::apply_origin(&mut cmd, controls.origin.as_deref());
-            let mut child = cmd.spawn().map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-                } else {
-                    HarnessError::Io(e)
-                }
-            })?;
-
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
-            let mut stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
-            let stderr_tail = crate::StderrTail::default();
-            if let Some(stderr) = child.stderr.take() {
-                let tail = stderr_tail.clone();
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        tracing::debug!(target: "roboco_harness::claude", "stderr: {line}");
-                        tail.push(&line);
-                    }
-                });
-            }
-
-            let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<StdinMsg>();
             // Roboco's RunRequest carries no per-run env map (upstream's did);
             // the process env locates the credential dir the CLI locks.
             let lock_dir = refresh_lock::config_dir();
-            tokio::spawn(stdin_writer(stdin, stdin_rx, lock_dir.clone()));
+            let Runtime {
+                mut child,
+                mut stdin,
+                mut stdout,
+                stderr_tail,
+            } = launch_spawn(cmd, &exe, &request, &lock_dir)?;
             if !title_only {
                 // The opening control request: `perTaskStopAffordance` tells the
                 // CLI this host stops tasks individually, so an interrupt ends
                 // the turn and spares background agents.
-                let _ = stdin_tx.send(StdinMsg::Line(wire::initialize_request_line(
-                    "roboco_initialize",
-                )));
+                let _ = stdin.line(wire::initialize_request_line("roboco_initialize"));
             }
 
             // The first prompt as the first stdin user line (streaming-input
@@ -981,7 +1018,7 @@ impl ClaudeHarness {
                 &first_command,
                 &images,
             );
-            let _ = stdin_tx.send(StdinMsg::Line(first));
+            let _ = stdin.line(first);
 
             // The launch's acceptance probe (ticket 18): the CLI proves the
             // launch as it speaks — anything it writes is buffered in `head`
@@ -1069,9 +1106,10 @@ impl ClaudeHarness {
                 }
             }
 
-            // The probe's consumed byte rides ahead of the pipe (no output
+            // The probe's consumed bytes ride ahead of the pipe (no output
             // is lost); an empty head is every unprobed launch.
-            let stdout_lines = BufReader::new(std::io::Cursor::new(head).chain(stdout)).lines();
+            let stdout_lines =
+                crate::lossy_lines::lossy_lines(std::io::Cursor::new(head).chain(stdout));
             let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
             if let Some(message) = resume_notice {
                 let _ = event_tx.try_send(Ok(AgentEvent::Error {
@@ -1082,10 +1120,12 @@ impl ClaudeHarness {
             tokio::spawn(run_session(Session {
                 normalizer,
                 title_only,
+                exe,
+                launched: request.clone(),
                 child,
                 stdout_lines,
                 first_command,
-                stdin_tx,
+                stdin,
                 event_tx,
                 controls,
                 config: request,
@@ -1104,11 +1144,114 @@ impl ClaudeHarness {
     }
 }
 
+#[derive(Clone)]
 enum StdinMsg {
     Line(String),
     /// Close stdin (end of steering input): the CLI finishes the current turn
     /// and exits, which ends the run stream at stdout EOF.
     Close,
+}
+
+/// The run's stdin, through its writer task. Until the CLI reports its
+/// session, a resuming run keeps a copy of everything it wrote: when the
+/// session cannot be restored, the fresh process is told the same things
+/// (upstream #977's relaunch-fresh).
+struct Stdin {
+    tx: mpsc::UnboundedSender<StdinMsg>,
+    replay: Option<Vec<StdinMsg>>,
+}
+
+impl Stdin {
+    fn new(stdin: ChildStdin, keep_for_replay: bool, lock_dir: PathBuf) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(stdin_writer(stdin, rx, lock_dir));
+        Self {
+            tx,
+            replay: keep_for_replay.then(Vec::new),
+        }
+    }
+
+    /// False once the writer is gone (the child died).
+    fn send(&mut self, msg: StdinMsg) -> bool {
+        if let Some(replay) = &mut self.replay {
+            replay.push(msg.clone());
+        }
+        self.tx.send(msg).is_ok()
+    }
+
+    fn line(&mut self, line: String) -> bool {
+        self.send(StdinMsg::Line(line))
+    }
+
+    /// Before the CLI's teardown: Windows gives it its grace to exit on
+    /// stdin EOF, which the writer holds off while any sender (a pending
+    /// permission answer's) is alive. Unix teardown signals instead; its
+    /// order is unchanged.
+    fn close_for_teardown(&self) {
+        #[cfg(windows)]
+        let _ = self.tx.send(StdinMsg::Close);
+    }
+}
+
+/// Drain a child's stderr into the shared tail; EOF closes it so a crash
+/// report never waits out a live pipe.
+async fn read_stderr(stderr: impl tokio::io::AsyncRead + Unpin, tail: crate::StderrTail) {
+    let mut lines = crate::lossy_lines::lossy_lines(stderr);
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::debug!(target: "roboco_harness::claude", "stderr: {line}");
+        tail.push(&line);
+    }
+    tail.close();
+}
+
+/// One launched CLI process and its stdio (the stdout pipe still raw: the
+/// launch probe reads its lead bytes before the line reader wraps them).
+struct Runtime {
+    child: Child,
+    stdin: Stdin,
+    stdout: crate::process::ChildStdout,
+    stderr_tail: crate::StderrTail,
+}
+
+/// Spawn a fully prepared launch command and wire up its stdio: the stderr
+/// drain, the stdin writer (keeping a replay copy for a resuming run), and
+/// the raw stdout pipe for the launch probe to read first.
+fn launch_spawn(
+    mut cmd: Command,
+    exe: &std::path::Path,
+    request: &RunRequest,
+    lock_dir: &std::path::Path,
+) -> Result<Runtime, HarnessError> {
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            HarnessError::NotInstalled(crate::executable::binary_hint(exe))
+        } else {
+            HarnessError::Io(e)
+        }
+    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
+    let stderr_tail = crate::StderrTail::default();
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(read_stderr(stderr, stderr_tail.clone()));
+    }
+    let stdin = Stdin::new(
+        stdin,
+        request.resume.is_some(),
+        lock_dir.to_path_buf(),
+    );
+    Ok(Runtime {
+        child,
+        stdin,
+        stdout,
+        stderr_tail,
+    })
 }
 
 /// Anthropic's API caps inline images at 5MB of raw bytes; larger files stay
@@ -1214,22 +1357,27 @@ async fn stdin_writer(
     }
 }
 
-/// The session's stdout line source: the fork probe's consumed lead byte
-/// (chained back ahead of the pipe, so no output is lost) then the child's
-/// stdout. The head is empty for every launch that was never probed — a
-/// plain, resumed, or title launch behaves exactly as before.
-type StdoutLines = tokio::io::Lines<
-    BufReader<tokio::io::Chain<std::io::Cursor<Vec<u8>>, crate::process::ChildStdout>>,
+/// The session's stdout line source: the probe's consumed bytes chained
+/// back ahead of the pipe (no output is lost), then the child's stdout —
+/// the head is empty for every launch that was never probed, and for the
+/// relaunch-fresh process. Lossy framing: one bad byte must not end the
+/// reader as though the CLI had exited.
+type StdoutLines = crate::lossy_lines::LossyLines<
+    tokio::io::Chain<std::io::Cursor<Vec<u8>>, crate::process::ChildStdout>,
 >;
 
 struct Session {
     normalizer: Normalizer,
     title_only: bool,
+    /// What the process was launched from, for a fresh relaunch when its
+    /// session cannot be restored.
+    exe: PathBuf,
+    launched: RunRequest,
     child: Child,
     stdout_lines: StdoutLines,
     /// The uuid the opening prompt was written with.
     first_command: String,
-    stdin_tx: mpsc::UnboundedSender<StdinMsg>,
+    stdin: Stdin,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
     /// The configuration the process runs with now: its launch request, then
@@ -1250,17 +1398,19 @@ async fn run_session(session: Session) {
     let Session {
         normalizer: mut norm,
         title_only,
+        exe,
+        launched,
         mut child,
         mut stdout_lines,
         first_command,
-        stdin_tx,
+        mut stdin,
         event_tx,
         controls,
         mut config,
         interrupt_grace,
         kill_grace,
         lock_dir,
-        stderr_tail,
+        mut stderr_tail,
     } = session;
     let RunControls {
         execution_lease: _execution_lease,
@@ -1317,8 +1467,80 @@ async fn run_session(session: Session) {
     // [`crate::shutdown_agent`]).
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<crate::process::Tracked> = Vec::new();
+    // A resumed session the CLI turns out to have no conversation for is
+    // relaunched fresh, once (see [`no_conversation`]).
+    let mut restore_fallback = launched.resume.is_some();
+    let mut relaunch = false;
+    // Our configuration requests the CLI has not answered yet (`set_model`,
+    // `apply_flag_settings`): what each asked for, and when we stop waiting.
+    const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+    let mut pending_controls: std::collections::HashMap<
+        String,
+        (&'static str, Value, tokio::time::Instant),
+    > = std::collections::HashMap::new();
+    // A configuration request failed or went unanswered: the live process
+    // may not run what `config` says, so the next change re-sends it all.
+    let mut config_unsure = false;
+    // What the CLI last refused, per request kind. Every message carrying
+    // the same configuration asks again; its refusal was already shown, and
+    // is shown again only once the ask changes or has succeeded.
+    let mut refused: std::collections::HashMap<&'static str, Value> =
+        std::collections::HashMap::new();
 
     'main: loop {
+        if std::mem::take(&mut relaunch) {
+            // The CLI had no conversation for the session and exited
+            // without starting one. Everything written to it goes to a
+            // fresh process; its own init reports the new session id.
+            let replay = stdin.replay.take().unwrap_or_default();
+            if matches!(child.try_wait(), Ok(None)) {
+                refresh_lock::settle(&lock_dir, refresh_lock::SETTLE_MAX).await;
+            }
+            stdin.close_for_teardown();
+            shutdown_child(&mut child, kill_grace).await;
+            let mut fresh = launched.clone();
+            fresh.resume = None;
+            let mut cmd = ClaudeHarness::build_command(&exe, &fresh);
+            if let Some(mcp) = &fresh.mcp {
+                // Roboco's own server rides beside the user's configured
+                // servers: the CLI merges an inline JSON config with
+                // settings-sourced ones.
+                cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
+            }
+            crate::process::dies_with_parent(&mut cmd);
+            // The relaunch is the same run: its agents inherit the origin.
+            crate::apply_origin(&mut cmd, _origin.as_deref());
+            match launch_spawn(cmd, &exe, &fresh, &lock_dir) {
+                Ok(runtime) => {
+                    child = runtime.child;
+                    stdout_lines = crate::lossy_lines::lossy_lines(
+                        std::io::Cursor::new(Vec::new()).chain(runtime.stdout),
+                    );
+                    stdin = runtime.stdin;
+                    stderr_tail = runtime.stderr_tail;
+                }
+                Err(error) => {
+                    let _ = event_tx.send(Err(error)).await;
+                    break 'main;
+                }
+            }
+            for msg in replay {
+                if !stdin.send(msg) {
+                    break;
+                }
+            }
+            if event_tx
+                .send(Ok(AgentEvent::Error {
+                    message: SESSION_LOST.to_owned(),
+                    kind: None,
+                }))
+                .await
+                .is_err()
+            {
+                break 'main;
+            }
+        }
+        let control_deadline = pending_controls.values().map(|(_, _, at)| *at).min();
         tokio::select! {
             line = stdout_lines.next_line() => match line {
                 Ok(Some(line)) => {
@@ -1336,9 +1558,53 @@ async fn run_session(session: Session) {
                             continue;
                         }
                     };
+                    // A resumed session the CLI turns out to have no
+                    // conversation for: its first result says so before any
+                    // conversation started. Relaunch fresh, once, replaying
+                    // everything written (upstream #977).
+                    if restore_fallback
+                        && !interrupted
+                        && !norm.started()
+                        && let Frame::Result(result) = &frame
+                        && result
+                            .errors
+                            .iter()
+                            .any(|e| e.as_str().is_some_and(no_conversation))
+                    {
+                        tracing::info!(
+                            target: "roboco_harness::claude",
+                            session = ?launched.resume,
+                            "session could not be restored; relaunching fresh"
+                        );
+                        restore_fallback = false;
+                        relaunch = true;
+                        continue;
+                    }
                     if let Frame::ControlResponse(response) = &frame {
-                        if stopping.as_deref() == Some(response.response.request_id.as_str()) {
+                        let response = &response.response;
+                        if stopping.as_deref() == Some(response.request_id.as_str()) {
                             stop_settle_at = Some(tokio::time::Instant::now() + STOP_SETTLE);
+                        }
+                        let error = response.error_message();
+                        if let Some((what, asked, _)) = pending_controls.remove(&response.request_id) {
+                            if let Some(error) = &error {
+                                config_unsure = true;
+                                if refused.get(what) != Some(&asked) {
+                                    refused.insert(what, asked);
+                                    if event_tx.send(Ok(AgentEvent::Error {
+                                        message: format!("Claude could not change its {what}: {error}"),
+                                        kind: None,
+                                    })).await.is_err() { break 'main; }
+                                }
+                            } else {
+                                refused.remove(what);
+                            }
+                        } else if let Some(error) = error {
+                            tracing::warn!(
+                                target: "roboco_harness::claude",
+                                request = %response.request_id,
+                                "control request failed: {error}"
+                            );
                         }
                         continue;
                     }
@@ -1352,9 +1618,9 @@ async fn run_session(session: Session) {
                             let line = control_response_line(&req.request_id, serde_json::json!({
                                 "behavior": "deny", "message": "Tools are disabled for title generation"
                             }));
-                            let _ = stdin_tx.send(StdinMsg::Line(line));
+                            let _ = stdin.line(line);
                         } else {
-                            handle_control_request(req, &request_input, &stdin_tx);
+                            handle_control_request(req, &request_input, &stdin.tx);
                         }
                         continue;
                     }
@@ -1421,6 +1687,11 @@ async fn run_session(session: Session) {
                         );
                         continue;
                     }
+                    // The session is the CLI's now: nothing left to replay.
+                    if norm.started() {
+                        restore_fallback = false;
+                        stdin.replay = None;
+                    }
                     for ev in norm.normalize(frame, interrupted || stopping.is_some()) {
                         match &ev {
                             AgentEvent::ToolCall { id, .. } => {
@@ -1482,7 +1753,19 @@ async fn run_session(session: Session) {
                         }
                     }
                 }
-                Ok(None) => break 'main, // stdout EOF: the CLI exited
+                // stdout EOF: the CLI exited. An older CLI says it has no
+                // conversation for the session on stderr alone.
+                Ok(None) => {
+                    if restore_fallback && !interrupted && !norm.started() {
+                        stderr_tail.wait_closed().await;
+                        if stderr_tail.snapshot().is_some_and(|tail| no_conversation(&tail)) {
+                            restore_fallback = false;
+                            relaunch = true;
+                            continue;
+                        }
+                    }
+                    break 'main;
+                }
                 Err(e) => {
                     let _ = event_tx.send(Err(HarnessError::Io(e))).await;
                     break 'main;
@@ -1494,22 +1777,26 @@ async fn run_session(session: Session) {
                     // A message of ours now owns whatever result comes next.
                     active_since_stop = true;
                     // A changed configuration applies before the prompt, on
-                    // the same stdin the CLI reads in order.
+                    // the same stdin the CLI reads in order. A request that
+                    // failed or went unanswered before leaves the live
+                    // process unsure of what it runs: re-send everything.
                     if let Some(next) = msg.config {
                         reconfigures += 1;
-                        if model_arg(&next) != model_arg(&config) {
-                            let line = wire::set_model_request_line(
-                                &format!("roboco_model_{reconfigures}"),
-                                model_arg(&next).as_deref(),
-                            );
-                            if stdin_tx.send(StdinMsg::Line(line)).is_err() { break 'main; }
+                        let resend = std::mem::take(&mut config_unsure);
+                        let deadline = tokio::time::Instant::now() + CONTROL_TIMEOUT;
+                        if resend || model_arg(&next) != model_arg(&config) {
+                            let id = format!("roboco_model_{reconfigures}");
+                            let model = model_arg(&next);
+                            let line = wire::set_model_request_line(&id, model.as_deref());
+                            pending_controls.insert(id, ("model", Value::from(model), deadline));
+                            if !stdin.line(line) { break 'main; }
                         }
-                        if flag_settings(&next) != flag_settings(&config) {
-                            let line = wire::apply_flag_settings_line(
-                                &format!("roboco_settings_{reconfigures}"),
-                                flag_settings(&next),
-                            );
-                            if stdin_tx.send(StdinMsg::Line(line)).is_err() { break 'main; }
+                        if resend || flag_settings(&next) != flag_settings(&config) {
+                            let id = format!("roboco_settings_{reconfigures}");
+                            let settings = flag_settings(&next);
+                            let line = wire::apply_flag_settings_line(&id, settings.clone());
+                            pending_controls.insert(id, ("settings", settings, deadline));
+                            if !stdin.line(line) { break 'main; }
                         }
                         config = *next;
                     }
@@ -1523,13 +1810,13 @@ async fn run_session(session: Session) {
                     );
                     pending_steers.push_back(id.clone());
                     commands.written(id);
-                    if stdin_tx.send(StdinMsg::Line(line)).is_err() { break 'main; }
+                    if !stdin.line(line) { break 'main; }
                 }
                 None => {
                     // Mailbox closed: end the input so the run can finish
                     // after the current turn.
                     steering_open = false;
-                    let _ = stdin_tx.send(StdinMsg::Close);
+                    let _ = stdin.send(StdinMsg::Close);
                 }
             },
 
@@ -1545,7 +1832,7 @@ async fn run_session(session: Session) {
                 stopping = Some(id.clone());
                 stop_settle_at = None;
                 stop_done_at = None;
-                if stdin_tx.send(StdinMsg::Line(wire::stop_turn_request_line(&id))).is_err() {
+                if !stdin.line(wire::stop_turn_request_line(&id)) {
                     break 'main;
                 }
                 // A turn end held for steer replays is that turn's real end:
@@ -1589,7 +1876,7 @@ async fn run_session(session: Session) {
                 if let Some(pid) = child.id() {
                     torn_down = crate::process::descendants(pid).await;
                 }
-                let _ = stdin_tx.send(StdinMsg::Line(wire::interrupt_request_line("int_1")));
+                let _ = stdin.line(wire::interrupt_request_line("int_1"));
                 // Escalate if the CLI doesn't wind down within the grace
                 // periods: SIGTERM (kills bash trees, runs SessionEnd hooks),
                 // then SIGKILL — neither while a login refresh is being
@@ -1623,6 +1910,21 @@ async fn run_session(session: Session) {
                     break 'main;
                 }
                 any_done = true;
+            },
+
+            // A configuration request the CLI never answered: assume the
+            // worst, so the next change re-sends everything.
+            _ = tokio::time::sleep_until(control_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if control_deadline.is_some() => {
+                let now = tokio::time::Instant::now();
+                pending_controls.retain(|id, (_, _, at)| {
+                    let waiting = *at > now;
+                    if !waiting {
+                        tracing::warn!(target: "roboco_harness::claude", request = %id, "control request unanswered");
+                    }
+                    waiting
+                });
+                config_unsure = true;
             },
 
             _ = event_tx.closed() => break 'main,
@@ -1665,6 +1967,11 @@ async fn run_session(session: Session) {
     if matches!(child.try_wait(), Ok(None)) {
         refresh_lock::settle(&lock_dir, refresh_lock::SETTLE_MAX).await;
     }
+    // Windows teardown gives the child its grace to exit on stdin EOF; the
+    // writer task would otherwise hold the pipe open while any clone of the
+    // sender (a pending permission answer's) is alive. Unix teardown
+    // signals the child instead; unchanged.
+    stdin.close_for_teardown();
     crate::shutdown_agent(&mut child, torn_down, kill_grace).await;
     if let Some(handle) = escalation {
         handle.abort();

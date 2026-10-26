@@ -442,3 +442,44 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
     `a_refused_notification_opt_out_is_retried_without_it`.
 - **Verification:** `--test codex` **42/42** (4 ignored as before);
   `--lib codex` **52/52**.
+
+- **2026-10-27 — 06 7/7: claude/mod.rs runtime restructure (upstream
+  2e151ca65's claude slice: Stdin replay, relaunch-fresh, control
+  deadlines, probe stderr).**
+  - **Stdin replay**: a `Stdin` struct wraps the writer task and keeps a
+    copy of every line written until the CLI reports its session
+    (`norm.started()`); `handle_control_request`'s permission answers ride
+    the raw tx (never replayed). `--replay-user-messages` joins the launch
+    args (upstream added it; the session loop's User-frame steer
+    confirmations were written expecting it).
+  - **relaunch-fresh**: a resume the CLI turns out to have no conversation
+    for — an ERRORED first `result` whose errors say "No conversation
+    found" (live 2.1.309), or an older CLI saying it on stderr alone at
+    stdout EOF — kills the child (after the refresh-lock settle), relaunches
+    fresh (no `--resume`), replays the recorded stdin, and emits the
+    SESSION_LOST notice. Once per run (`restore_fallback`); a session that
+    started (`norm.started()`) clears the replay and the fallback.
+  - **control deadlines**: `set_model` / `apply_flag_settings` steers track
+    their request ids in `pending_controls` with a 30s deadline; a refusal
+    reports "Claude could not change its {model|settings}: …" once per
+    ask (the `refused` map), marks `config_unsure` so the next change
+    re-sends everything, and a request that goes entirely unanswered times
+    out to the same unsure state. Teardown closes stdin first on Windows
+    (the writer would otherwise hold the pipe while a permission answer's
+    clone lives).
+  - **lossy lines + probe stderr**: the session's stdout and the stderr
+    drains read through `lossy_lines` (one bad byte no longer ends the
+    reader as though the CLI exited); the stderr reader closes the tail at
+    EOF. `probe_initialize` pipes stderr into a tail, tolerates the
+    initialize write failing (EPIPE = the CLI exited — read to the end and
+    report status + stderr via `crash_message`), runs with
+    `--settings {"disableAllHooks":true}` and the IDE-attach env vars off,
+    and its timeout grew 10s → 25s with the redacted stderr tail in the
+    message.
+  - Tests: new `a_resume_without_a_conversation_relaunches_fresh` and
+    `a_resume_the_cli_reports_missing_only_on_stderr_also_relaunches`
+    (fixture's `scenario:resume-check`, stale-* / stderr-only-* resume
+    ids, live 2.1.309 shape).
+- **Verification:** `--test claude` **34/34** (2 ignored as before);
+  `--lib` 419/420 (the pre-existing container-passwd antigravity failure
+  only); `--test claude_refresh_lock` 1/1.
