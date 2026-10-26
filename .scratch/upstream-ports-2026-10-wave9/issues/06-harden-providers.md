@@ -521,3 +521,61 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
   ui.rs +144, sessions.rs +45, normalize.rs +12, PROTOCOL.md, pi_rpc.rs
   fixture +40/tests +125) — the largest single remaining unit, banked for
   the next turn. Everything else the ticket lists is landed.
+
+- **2026-10-27 — 06 9/9: pi rpc/session hardening + the Rust pi_rpc peer
+  (upstream 2e151ca65's pi slice; the last remaining unit — the
+  remaining-queue is now empty).**
+  - **wire.rs (upstream rpc.rs)**: a 32 MiB frame bound — an oversized
+    frame (a huge tool result, a hostile peer) costs that frame, not the
+    run: the bytes are dropped and reading resumes at the next newline,
+    with an incremental newline scan (the naive whole-buffer rescan was
+    quadratic on a huge unterminated frame — found and fixed with a
+    full-size 33 MiB regression test, 350 ms). `parse_frame` +
+    `replace_lone_surrogates` repair the one thing JS emits that
+    serde_json refuses — a lone UTF-16 surrogate escape (a string sliced
+    mid-pair) — into U+FFFD instead of costing the frame. `close_input`
+    ends the writer (pi's stdin) once the queued lines are written, for
+    Windows' teardown grace; `PiClient::close_input_for_teardown`.
+  - **Dialogs (upstream ui.rs)**: a `Dialogs` registry replaces the
+    detached per-dialog task — dialogs are answered exactly once (the
+    open-id mutex), pi's own `timeout` is honored (ms; 0 = none, a
+    negative one is already expired → answered cancelled before it is
+    shown, one too large for a Duration is as good as none), and
+    `cancel(&client)` answers every open dialog `cancelled` at a turn's
+    end, an interrupt, and the run's teardown (the process may live on;
+    an extension awaiting its dialog would wait forever).
+  - **Settle barrier (upstream mod.rs, carried into Roboco's probe
+    architecture)**: `auto_retry_start` bumps the settle generation — a
+    retry, like compaction, can end with no settle event after it (the
+    compaction_start parity). A QUEUED prompt disposition now arms the
+    settle probe (after the re-arm grace): input pi leaves queued while
+    idle has no settle event coming, and the probe's clear_queue recovery
+    re-delivers it as the next turn's prompt (Roboco's equivalent of
+    upstream's idle-queue re-poll and bound).
+  - **extension_error (upstream normalize.rs)**: a throwing extension
+    handler is the extension's failure, not the turn's — shown as an
+    Error event, never fatal (was: logged only, invisible).
+  - **The Rust pi_rpc peer (upstream fixtures/pi_rpc.rs + tests/pi_rpc.rs +
+    the Windows CI slot)**: `harness-pi-fixture` (a `native-fixture` bin)
+    speaks the first-party wire over real stdio with worker-thread turns
+    (state queries and prompt acceptance keep flowing while a run
+    streams), scripting: a normal turn, an errored message, a rejected
+    prompt, a recovered auto-retry, handled, compaction after the settle
+    barrier, extension errors, stdout noise with a lone surrogate, a
+    33 MiB oversized frame, a steer rejected mid-run, input left queued
+    while idle, and a crash. `tests/pi_rpc.rs` (7 tests) drives it
+    through the terminal contract, the compaction-after-barrier, the
+    noise/surrogate/oversized tolerance, the rejected steer, the
+    strand-recovery (two Dones: the stranded attempt, then the recovered
+    message's own turn — Roboco's parked-session contract), and the
+    resume round trip. windows.yml's portable line gains `--test pi_rpc`
+    (the peer replaced the "still shell-based, stays out" note).
+  - Roboco's PROTOCOL notes live in the module header (no separate
+    PROTOCOL.md): the settle-generation list gains `auto_retry_start`.
+- **Verification:** `--lib pi` **37/37** (incl. the new wire tests: the
+  full-size oversized-frame regression, the noise/surrogate/skip stream
+  test, and the surrogate-repair unit test); `--test pi` **60/60**;
+  `--features native-fixture --test pi_rpc` **7/7**. NOTE: the pi suite
+  must run with `ROBOCO_MCP_SERVER` unset — a leaked instance of that env
+  var in the orchestrating shell trips the fixture's
+  only-when-injected guard and fails 57/60 spuriously.
