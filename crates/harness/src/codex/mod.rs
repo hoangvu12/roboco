@@ -820,6 +820,9 @@ impl CodexHarness {
                     tracing::debug!(target: "roboco_harness::codex", "stderr: {line}");
                     tail.push(&line);
                 }
+                // EOF: the crash report's wait_closed() must never wait out
+                // a live pipe (upstream #977).
+                tail.close();
             });
         }
 
@@ -1159,20 +1162,28 @@ async fn run_session(session: Session) {
     // engine attaches the chat's budgeted history to the continuation so a
     // fresh thread still knows the conversation.
     let mut resume_fallback: Option<String> = None;
+    // The notice a fresh-start resume fallback owes the user (upstream
+    // #977): the new reply will not know the earlier conversation.
+    let mut restore_notice: Option<String> = None;
     let setup = async {
-        client
-            .request(
-                "initialize",
-                json!({
-                    "clientInfo": {
-                        "name": "roboco-native",
-                        "title": "Roboco",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                    "capabilities": { "experimentalApi": true },
-                }),
-            )
-            .await?;
+        // An app-server that predates notification opt-outs may refuse the
+        // capability outright; the opt-out is an optimization, so ask again
+        // without it. A refusal (not an exit) keeps the client open.
+        let mut opt_out = true;
+        loop {
+            match client.request("initialize", initialize_params(opt_out)).await {
+                Ok(_) => break,
+                Err(e) if opt_out && !client.is_closed() => {
+                    tracing::debug!(
+                        target: "roboco_harness::codex",
+                        "initialize refused ({e}); retrying without notification opt-outs"
+                    );
+                    opt_out = false;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         client.notify("initialized", None);
 
         let mut start_params = start_params.clone();
@@ -1221,25 +1232,47 @@ async fn run_session(session: Session) {
         } else if let Some(resume) = &request.resume {
             let mut p = start_params.clone();
             p.insert("threadId".into(), Value::String(resume.clone()));
-            match client.request("thread/resume", Value::Object(p)).await {
+            match resume_thread(&client, Value::Object(p)).await {
                 Ok(thread) => thread,
-                // A missing/foreign rollout falls back to a fresh thread.
-                Err(e) => {
+                // A conversation that is gone (no rollout, a thread id Codex
+                // never issued) falls back to a fresh thread — visibly: the
+                // reply will not know the earlier conversation.
+                Err(e) if resume_unrecoverable(&e) => {
                     if command_request(&request.prompt, resume)?.is_some() {
                         return Err(e);
                     }
-                    tracing::debug!(
+                    tracing::warn!(
                         target: "roboco_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
+                    let reason = match &e {
+                        HarnessError::Protocol(message) => message.clone(),
+                        other => other.to_string(),
+                    };
                     // A refused resume with the engine's budgeted fallback
                     // history (ticket 09's account-failover continuation):
-                    // the fresh thread still owes the chat its context.
+                    // the fresh thread still owes the chat its context, so
+                    // the notice says a summary is carried, not that all
+                    // context is lost.
                     resume_fallback = request.resume_fallback_history.clone();
+                    restore_notice = Some(if resume_fallback.is_some() {
+                        format!(
+                            "Couldn't resume the earlier Codex conversation ({reason}), so this \
+                             reply starts a new one from the conversation summary."
+                        )
+                    } else {
+                        format!(
+                            "Couldn't restore the earlier Codex conversation ({reason}), so this \
+                             reply starts a new one without its context."
+                        )
+                    });
                     client
                         .request("thread/start", Value::Object(start_params.clone()))
                         .await?
                 }
+                // A dead process or a refusal a fresh thread would hit too:
+                // fail the run rather than silently dropping its history.
+                Err(e) => return Err(e),
             }
         } else {
             client
@@ -1249,17 +1282,20 @@ async fn run_session(session: Session) {
         let thread_id = thread["thread"]["id"].as_str().unwrap_or("").to_owned();
         let mut children = subagents::Subagents::new(thread_id.clone());
         children.restore(&thread["thread"]);
-        Ok::<_, HarnessError>((thread_id, children))
+        Ok::<_, HarnessError>((thread_id, children, restore_notice))
     };
-    let (thread_id, mut children) = tokio::select! {
+    let (thread_id, mut children, restore_notice) = tokio::select! {
         res = setup => match res {
             Ok(thread_id) => thread_id,
             Err(e) => {
+                // A crash under handshake/thread/start reports its exit and
+                // what it printed, not a bare "exited before responding".
+                let error = setup_failure(e, &client, &mut child, &stderr_tail).await;
                 let _ = event_tx
                     .send(Ok(AgentEvent::Done {
                         status: DoneStatus::Errored,
                         result: None,
-                        error: Some(e.to_string()),
+                        error: Some(error),
                         session_id: None,
                     }))
                     .await;
@@ -1337,6 +1373,14 @@ async fn run_session(session: Session) {
         shutdown_child(&mut child, kill_grace).await;
         return;
     }
+    // The lost conversation said out loud, once, before the reply runs
+    // (upstream #977): the fresh thread does not know what came before.
+    if let Some(message) = restore_notice
+        && !send(&event_tx, AgentEvent::Error { message, kind: None }).await
+    {
+        shutdown_child(&mut child, kill_grace).await;
+        return;
+    }
 
     let mut router = TurnRouter::default();
     match start_turn(&client, turn_params(&live, &delivered_prompt)).await {
@@ -1352,11 +1396,12 @@ async fn run_session(session: Session) {
             }
         }
         Err(e) => {
+            let error = setup_failure(e, &client, &mut child, &stderr_tail).await;
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                     session_id: Some(thread_id.clone()),
                 }))
                 .await;
@@ -2140,6 +2185,89 @@ fn check_codex_version(version: Option<&semver::Version>) -> Result<(), HarnessE
             )))
         }
         _ => Ok(()),
+    }
+}
+
+/// High-volume notifications nothing here consumes: the turn's running diff
+/// and every command's / patch's output stream. Opting out at `initialize`
+/// spares the wire (and the reader) from parsing them only to drop them.
+const OPTED_OUT_NOTIFICATIONS: &[&str] = &[
+    "turn/diff/updated",
+    "item/commandExecution/outputDelta",
+    "item/fileChange/outputDelta",
+];
+
+fn initialize_params(opt_out: bool) -> Value {
+    let mut capabilities = json!({ "experimentalApi": true });
+    if opt_out {
+        capabilities["optOutNotificationMethods"] = json!(OPTED_OUT_NOTIFICATIONS);
+    }
+    json!({
+        "clientInfo": {
+            "name": "roboco-native",
+            "title": "Roboco",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "capabilities": capabilities,
+    })
+}
+
+/// A setup request's failure as display text. When the app-server died
+/// under it, "exited before responding" says nothing: report its exit
+/// status and last stderr lines instead.
+async fn setup_failure(
+    error: HarnessError,
+    client: &RpcClient,
+    child: &mut Child,
+    stderr_tail: &crate::StderrTail,
+) -> String {
+    // Only a lost answer: a refusal that arrived before the exit says more.
+    if !client.is_closed() || !crate::jsonrpc::transport_lost(&error) {
+        return error.to_string();
+    }
+    stderr_tail.wait_closed().await;
+    let status = match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
+        Ok(Ok(status)) => Some(status),
+        _ => child.try_wait().ok().flatten(),
+    };
+    crate::crash_message("codex app-server", status, stderr_tail)
+}
+
+/// Whether a `thread/resume` failure means the conversation is gone for
+/// good (no rollout on this machine, a thread id Codex never issued), so a
+/// fresh thread is the only way forward. Anything else — a dead process, a
+/// config error — would fail a fresh start too, or lose history needlessly.
+fn resume_unrecoverable(error: &HarnessError) -> bool {
+    let HarnessError::Protocol(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    !crate::jsonrpc::transport_lost(error)
+        && [
+            "no rollout",
+            "not found",
+            "invalid session id",
+            "invalid thread id",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+}
+
+/// `thread/resume`, unarchiving the thread first when Codex reports it
+/// archived (the CLI's own archive command, or another client's).
+async fn resume_thread(client: &RpcClient, params: Value) -> Result<Value, HarnessError> {
+    match client.request("thread/resume", params.clone()).await {
+        Err(HarnessError::Protocol(message)) if message.contains("is archived") => {
+            tracing::info!(
+                target: "roboco_harness::codex",
+                "thread/resume: thread archived; unarchiving it"
+            );
+            client
+                .request("thread/unarchive", json!({ "threadId": params["threadId"] }))
+                .await?;
+            client.request("thread/resume", params).await
+        }
+        other => other,
     }
 }
 

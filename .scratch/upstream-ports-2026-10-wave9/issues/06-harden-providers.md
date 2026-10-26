@@ -401,3 +401,44 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
   1 failure is the pre-existing container-passwd antigravity test, verified
   failing at wave-start base d42b1819e); `--test acp` 67/67; `--test
   claude` 32/32; `--test codex` 38/38; `--lib codex::normalize` 24/24.
+
+- **2026-10-27 — 06 6/6: Codex notification opt-out + the thread/resume
+  rework (upstream d10d88a92, the deferred remainder now that run_errors is
+  merged).**
+  - `initialize` opts out of the high-volume notifications nothing here
+    consumes (`turn/diff/updated`, `item/commandExecution/outputDelta`,
+    `item/fileChange/outputDelta`) via `optOutNotificationMethods`; an
+    app-server that predates the capability refuses the handshake and the
+    run asks again without it (the opt-out is an optimization — a refusal,
+    not an exit, keeps the client open and is retried once).
+  - `thread/resume` classification: a conversation that is gone (no
+    rollout, unknown id — `resume_unrecoverable`) falls back to a fresh
+    thread and **says so in the reply** — one `Error` notice after
+    SessionStarted, "Couldn't restore the earlier Codex conversation
+    (…)" — not classified by `provider_problem` (it is not a
+    sign-in/limit failure); with ticket 09's budgeted fallback history
+    the wording says the summary is carried. An archived thread is
+    unarchived (`thread/unarchive`) and resumed; any other failure (bad
+    config, a dead process) fails the run rather than silently dropping
+    its history. The native-command guard is kept: a resume whose prompt
+    is a native command fails instead of restarting fresh.
+  - `setup_failure`: a crash under handshake/thread/start reports the
+    exit status and stderr tail (upstream: "says nothing" → report what
+    the process printed), used on both the setup select's error arm and
+    the first-turn start error; the stderr reader task closes the tail at
+    EOF so the report never waits out a live pipe.
+  - Fixture: `resume-archived` / `resume-broken` / `crash-on-thread-start`
+    modes (live 0.164.0 wording for the archived refusal),
+    `FAKE_CODEX_REJECT_OPT_OUT` (process env — Roboco's RunRequest has no
+    env map — behind a dedicated lock; concurrent fixtures take the same
+    benign reject-and-retry path and the fixture's happy-path opt-out
+    assertion guards on the flag's absence), and the opt-out assertion on
+    the initialize line.
+  - Tests: `resume_falls_back_to_fresh_thread` extended to the notice
+    contract (exactly one notice, prefix, unclassified, Done Completed);
+    new `an_archived_thread_is_unarchived_and_resumed`,
+    `a_resume_refusal_fails_the_run_instead_of_starting_fresh`,
+    `a_crash_during_thread_setup_reports_its_stderr`,
+    `a_refused_notification_opt_out_is_retried_without_it`.
+- **Verification:** `--test codex` **42/42** (4 ignored as before);
+  `--lib codex` **52/52**.

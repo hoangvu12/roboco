@@ -53,7 +53,6 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use roboco_proto::{
@@ -4230,7 +4229,9 @@ async fn run_session(session: Session) {
     };
     let mut prompt_stall_deadline: Option<tokio::time::Instant> =
         prompt_stall.map(|d| tokio::time::Instant::now() + d);
-    let mut current_prompt = PromptInput::new(
+    // The first prompt's attachments inline when the agent advertises
+    // image prompts (upstream #977); later messages build their own.
+    let initial_prompt = PromptInput::new(
         prompt_transform(request.reasoning, &request.prompt),
         &request.attachments,
         inline_images,
@@ -4239,7 +4240,7 @@ async fn run_session(session: Session) {
     let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some(prompt_turn(
         client.clone(),
         session_id.clone(),
-        current_prompt.clone(),
+        initial_prompt,
         current_prompt_id.clone(),
     ));
     // Steers waiting for the turn boundary (agents without the extension, or
@@ -5137,7 +5138,6 @@ async fn run_session(session: Session) {
                             prompt_complete_extension.then(|| format!("roboco-p{prompt_seq}"));
                         prompt_stall_deadline =
                             prompt_stall.map(|d| tokio::time::Instant::now() + d);
-                        current_prompt = next_prompt.clone();
                         turn = Some(prompt_turn(
                             client.clone(),
                             session_id.clone(),
