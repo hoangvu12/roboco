@@ -96,6 +96,14 @@ jobs:
           cargo nextest run --release --locked -p roboco-engine --test worktree_on_run worktree_location_ -P ci
       - name: Engine, RPC, and harness unit tests
         run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
+      - name: Preview discovery tests
+        # agent-previews ticket 02: the Windows listeners() join
+        # (GetExtendedTcpTable + sysinfo). The tests spawn real
+        # marked/unmarked loopback listeners through the crate's
+        # preview-child-server fixture, so they carry no interpreter
+        # dependency on the runner image; Linux/macOS run the same suite in
+        # preview-tests.yml as the unchanged regression gate.
+        run: cargo nextest run --release --locked -p roboco-preview --lib --test discovery -P ci
       - name: Mobile core crates
         # Mobile Rust core for the Android app (android-app 02-05). The
         # engine-client tests are timing-sensitive (reconnect backoff, loopback
