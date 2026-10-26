@@ -74,6 +74,11 @@ fn catalog() -> Vec<ToolDef> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
+            name: "previews",
+            description: "Stable preview URLs of the dev servers this chat's agents and terminals started: the engine discovers them and serves each through its local reverse proxy at http://<hostname>:7331, stable across restarts and port changes. Read-only — the engine mints hostnames on discovery; there is no create or delete. Returns {name, url, port, startedAt} rows for this chat's services only; an empty list when none are running or this server has no chat context. Tell the user the URL so they can open the server; it opens on the engine's machine.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
             name: "list_devices",
             description: "Devices in this workspace (the local engine's device is flagged). Chats and projects are hosted on a device.",
             input_schema: json!({ "type": "object", "properties": {} }),
@@ -502,6 +507,7 @@ impl Tools {
     pub async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
         let result = match name {
             "whoami" => self.whoami().await,
+            "previews" => self.previews().await,
             "list_devices" => self.list_devices().await,
             "list_projects" => self.list_projects(parse(args)?).await,
             "list_harnesses" => self.list_harnesses(parse(args)?).await,
@@ -581,6 +587,49 @@ impl Tools {
                 "Not running inside a chat: messages are sent without attribution."
             },
         }))
+    }
+
+    /// `previews` (agent-previews ticket 07): the stable preview URLs of
+    /// the services **this chat started** — the link the engine's reverse
+    /// proxy mints on discovery, so the agent can tell the user where its
+    /// dev server is running instead of leaving them to find the Ports
+    /// card. Read-only: nothing creates or deletes previews, the engine
+    /// owns the hostnames.
+    ///
+    /// Scoping comes free: this server speaks for one chat, and the
+    /// engine's catalog carries ticket 01's `chatId` attribution. The
+    /// engine's `WatchPreviews` snapshot also lists same-checkout services
+    /// this chat did not start (the Ports card's semantics); this tool
+    /// narrows to the ones strictly attributed to the calling chat, so
+    /// other chats' and unattributed services never leak. No chat context
+    /// (a human at a CLI) lists nothing — an empty result, not an error.
+    async fn previews(&self) -> anyhow::Result<Value> {
+        let Some(chat_id) = self.roboco.origin().chat_id.as_deref() else {
+            return Ok(json!({ "previews": [] }));
+        };
+        let mut snapshot = self.roboco.previews(chat_id).await?;
+        snapshot
+            .services
+            .retain(|service| service.chat_id.as_deref() == Some(chat_id));
+        let previews = snapshot
+            .services
+            .iter()
+            .map(|service| {
+                json!({
+                    "name": service.name,
+                    "url": service.url(snapshot.proxy_port),
+                    "port": service.port,
+                    "startedAt": service.started_at,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut result = json!({ "previews": previews });
+        // The proxy's own bind failure (a busy 7331): the URLs above would
+        // not load. Surfaced, not swallowed — the agent should say so.
+        if let Some(error) = snapshot.error {
+            result["error"] = json!(error);
+        }
+        Ok(result)
     }
 
     async fn list_devices(&self) -> anyhow::Result<Value> {
@@ -1652,6 +1701,17 @@ mod tests {
         /// and whether it wants completion notices.
         beta_agent_origin: Option<roboco_proto::AgentOrigin>,
         catalog_error: Option<&'static str>,
+        /// `WatchPreviews` rows the fake engine's preview catalog carries
+        /// (agent-previews ticket 07). The handler filters them like the
+        /// engine's does; the `previews` tool narrows further to the
+        /// calling chat's own attribution.
+        preview_services: Vec<Value>,
+        /// What the fake catalog reports as the proxy's bind error, if any.
+        preview_error: Option<String>,
+        /// Chat ids whose preview snapshot was requested — the read the
+        /// `previews` tool makes; empty when the tool never dialed (no
+        /// chat context).
+        preview_reads: Mutex<Vec<String>>,
         /// When set, `WatchSessions` reports this chat as Working — a wait
         /// on it can only time out.
         working_session: Option<String>,
@@ -1689,6 +1749,18 @@ mod tests {
                 }
             ])
         }
+
+        /// The workspace's project rows, as `WatchSpaces` reports them — the
+        /// `WatchPreviews` handler resolves a chat's checkout from them.
+        fn spaces(&self) -> Value {
+            json!([{
+                "id": "space-1", "deviceId": "dev-local", "path": "/repo/comet",
+                "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
+            }, {
+                "id": "space-2", "deviceId": "dev-local", "path": "/repo/other", "name": "comet",
+                "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
+            }])
+        }
     }
 
     #[async_trait]
@@ -1708,13 +1780,59 @@ mod tests {
                     "id": "dev-local", "name": "Laptop", "platform": "linux",
                     "lastSeenAt": null
                 }])),
-                methods::WATCH_SPACES => stream(json!([{
-                    "id": "space-1", "deviceId": "dev-local", "path": "/repo/comet",
-                    "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
-                }, {
-                    "id": "space-2", "deviceId": "dev-local", "path": "/repo/other", "name": "comet",
-                    "gitDetected": true, "createdAt": "2026-09-01T00:00:00Z"
-                }])),
+                methods::WATCH_SPACES => stream(self.spaces()),
+                methods::WATCH_PREVIEWS => {
+                    // The engine's `WatchPreviews` semantics as far as the
+                    // tools exercise them (agent-previews ticket 07): the
+                    // chat must exist, and the snapshot lists this device's
+                    // Roboco-started services that the chat started OR that
+                    // run in its checkout — the checkout arm is exactly what
+                    // the `previews` tool narrows away.
+                    let chat_id = params["chatId"].as_str().unwrap_or_default().to_owned();
+                    let chat = self
+                        .rows()
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|chat| chat["id"] == chat_id)
+                        .ok_or_else(|| {
+                            RpcError::Failed("Project session not found".into())
+                        })?;
+                    let spaces = self.spaces();
+                    let checkout = chat
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            spaces.as_array().and_then(|rows| {
+                                rows.iter()
+                                    .find(|space| space["id"] == chat["spaceId"])
+                                    .and_then(|space| space["path"].as_str())
+                            })
+                        })
+                        .map(str::to_owned);
+                    self.preview_reads.lock().unwrap().push(chat_id.clone());
+                    let device = chat["deviceId"].clone();
+                    let services: Vec<Value> = self
+                        .preview_services
+                        .iter()
+                        .filter(|service| {
+                            service["deviceId"] == device
+                                && service["robocoOwned"] == true
+                                && (service["chatId"] == json!(chat_id)
+                                    || checkout.as_deref().is_some_and(|cwd| {
+                                        service["projectCwd"].as_str() == Some(cwd)
+                                    }))
+                        })
+                        .cloned()
+                        .collect();
+                    stream(json!({
+                        "services": services,
+                        "proxyPort": 7331,
+                        "error": self.preview_error,
+                        "remote": false,
+                    }))
+                }
                 methods::WATCH_CHATS => stream(self.rows()),
                 methods::WATCH_SESSIONS => stream(match &self.working_session {
                     Some(chat_id) => json!([{
@@ -1850,6 +1968,34 @@ mod tests {
     fn tools(world: Arc<World>, origin: Origin) -> Tools {
         let client = memory_client(world);
         Tools::new(Arc::new(Roboco::with_client(client, origin)))
+    }
+
+    /// One `WatchPreviews` row, in the shape `PreviewService` serializes: a
+    /// Roboco-started server in the shared checkout, attributed (or not) to
+    /// a chat (agent-previews ticket 07).
+    fn preview_service(
+        id: &str,
+        chat_id: Option<&str>,
+        hostname: &str,
+        name: &str,
+        port: u16,
+    ) -> Value {
+        json!({
+            "id": id,
+            "projectId": "space-1",
+            "projectName": "comet",
+            "projectCwd": "/repo/comet",
+            "deviceId": "dev-local",
+            "deviceName": "Laptop",
+            "hostname": hostname,
+            "name": name,
+            "port": port,
+            "pid": 1234,
+            "cwd": "/repo/comet",
+            "startedAt": 1_800_000_000_000_u64,
+            "robocoOwned": true,
+            "chatId": chat_id,
+        })
     }
 
     #[tokio::test]
@@ -3357,6 +3503,195 @@ mod tests {
         );
     }
 
+    /// `previews` (agent-previews ticket 07): the engine's `WatchPreviews`
+    /// snapshot lists same-checkout services this chat did not start (the
+    /// Ports card's semantics); the tool keeps only the calling chat's own
+    /// attribution, so other chats' and unattributed services never leak.
+    #[tokio::test]
+    async fn previews_returns_only_the_calling_chats_services() {
+        let world = Arc::new(World {
+            preview_services: vec![
+                preview_service(
+                    "s-1",
+                    Some("chat-alpha-1"),
+                    "laptop.my-app.localhost",
+                    "Vite",
+                    5173,
+                ),
+                // Beta's server, same project and device: the engine's
+                // checkout arm lists it for Alpha too.
+                preview_service(
+                    "s-2",
+                    Some("chat-beta-2"),
+                    "laptop.beta-app.localhost",
+                    "API",
+                    3000,
+                ),
+                // Unattributed but in Alpha's checkout.
+                preview_service(
+                    "s-3",
+                    None,
+                    "laptop.solo.localhost",
+                    "HTTP server",
+                    8080,
+                ),
+            ],
+            ..Default::default()
+        });
+        let tools = self::tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        // The engine's snapshot really does include all three for Alpha;
+        // the narrowing below is what keeps the tool's contract.
+        let snapshot = tools.roboco.previews("chat-alpha-1").await.unwrap();
+        assert_eq!(snapshot.services.len(), 3, "{snapshot:?}");
+        let result = tools.call("previews", json!({})).await.unwrap();
+        let previews = result["previews"].as_array().unwrap();
+        assert_eq!(previews.len(), 1, "{result}");
+        assert_eq!(
+            previews[0],
+            json!({
+                "name": "Vite",
+                "url": "http://laptop.my-app.localhost:7331",
+                "port": 5173,
+                "startedAt": 1_800_000_000_000_u64,
+            })
+        );
+        let rendered = result.to_string();
+        assert!(
+            !rendered.contains("beta-app"),
+            "other chats' services must not leak: {rendered}"
+        );
+        assert!(
+            !rendered.contains("solo"),
+            "unattributed services must not leak: {rendered}"
+        );
+        // Every engine read (the raw snapshot probe above plus the tool
+        // call itself) was scoped to exactly the calling chat.
+        let reads = world.preview_reads.lock().unwrap().clone();
+        assert!(!reads.is_empty());
+        assert!(reads.iter().all(|id| id == "chat-alpha-1"), "{reads:?}");
+
+        // The same catalog from Beta's side: only Beta's own server.
+        let tools = self::tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        let result = tools.call("previews", json!({})).await.unwrap();
+        let previews = result["previews"].as_array().unwrap();
+        assert_eq!(previews.len(), 1, "{result}");
+        assert_eq!(previews[0]["url"], "http://laptop.beta-app.localhost:7331");
+    }
+
+    /// No chat context (a human at a terminal): an empty list, not an
+    /// error — and the engine is never dialed.
+    #[tokio::test]
+    async fn previews_without_chat_context_is_an_empty_list() {
+        let world = Arc::new(World {
+            preview_services: vec![preview_service(
+                "s-1",
+                Some("chat-alpha-1"),
+                "laptop.my-app.localhost",
+                "Vite",
+                5173,
+            )],
+            ..Default::default()
+        });
+        let tools = self::tools(world.clone(), Origin::default());
+        let result = tools.call("previews", json!({})).await.unwrap();
+        assert_eq!(result["previews"], json!([]));
+        assert!(result.get("error").is_none(), "{result}");
+        assert!(world.preview_reads.lock().unwrap().is_empty());
+    }
+
+    /// The tool is read-only: no create/delete surface in the catalog, no
+    /// arguments, and unknown tool names behave as before for harnesses.
+    #[tokio::test]
+    async fn previews_is_read_only_and_unknown_names_stay_unknown() {
+        let defs = catalog();
+        let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
+        assert!(names.contains(&"previews"));
+        for absent in ["create_preview", "delete_preview", "open_preview", "stop_preview"] {
+            assert!(!names.contains(&absent), "no {absent} surface");
+        }
+        let def = defs.iter().find(|d| d.name == "previews").unwrap();
+        assert!(def.description.contains("Read-only"));
+        assert_eq!(def.input_schema, json!({ "type": "object", "properties": {} }));
+
+        // Unknown names keep the exact failure they always had.
+        let world = Arc::new(World::default());
+        let tools = self::tools(world, Origin::default());
+        let error = tools.call("delete_preview", json!({})).await.unwrap_err();
+        assert!(error.contains("unknown tool"), "{error}");
+        let reply = crate::jsonrpc::handle_request(
+            &tools,
+            json!(9),
+            "tools/call",
+            json!({ "name": "stop_previews" }),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], -32602);
+
+        // A vanished origin chat surfaces as a tool error, never a
+        // fabricated list: the engine refuses the watch ("Project session
+        // not found"), and an unchecked watch stream ends without a
+        // snapshot — the read fails, the tool reports it.
+        let tools = self::tools(
+            Arc::new(World::default()),
+            Origin {
+                chat_id: Some("chat-gone".into()),
+                device_id: None,
+            },
+        );
+        let error = tools.call("previews", json!({})).await.unwrap_err();
+        assert!(error.contains("WatchPreviews"), "{error}");
+    }
+
+    /// The engine's proxy bind failure rides the result (the URLs would not
+    /// load), and the tool answers through the full JSON-RPC layer.
+    #[tokio::test]
+    async fn previews_surfaces_the_proxy_error_and_rides_jsonrpc() {
+        let world = Arc::new(World {
+            preview_services: vec![preview_service(
+                "s-1",
+                Some("chat-alpha-1"),
+                "laptop.my-app.localhost",
+                "Vite",
+                5173,
+            )],
+            preview_error: Some("preview proxy port 7331 is busy".into()),
+            ..Default::default()
+        });
+        let tools = self::tools(
+            world,
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: None,
+            },
+        );
+        let reply = crate::jsonrpc::handle_request(
+            &tools,
+            json!(5),
+            "tools/call",
+            json!({ "name": "previews" }),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let structured = &reply["result"]["structuredContent"];
+        assert_eq!(structured["error"], "preview proxy port 7331 is busy");
+        assert_eq!(
+            structured["previews"][0]["url"],
+            "http://laptop.my-app.localhost:7331"
+        );
+    }
+
     #[tokio::test]
     async fn instructions_teach_notice_driven_orchestration() {
         let world = Arc::new(World::default());
@@ -3409,6 +3744,11 @@ mod tests {
         assert!(instructions.contains("errored and interrupted replies count"));
         assert!(instructions.contains("size-limited transcript"));
         assert!(instructions.contains("side chats cannot fork chats"));
+
+        // The previews tool (agent-previews ticket 07): tell the user where
+        // the dev server is running.
+        assert!(instructions.contains("`previews`"));
+        assert!(instructions.contains("Ports card"));
     }
 
     #[tokio::test]
