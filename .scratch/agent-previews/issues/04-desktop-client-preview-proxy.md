@@ -76,4 +76,4 @@
 4. **`watch_previews` gained a manager parameter** (shell, fixture and tests updated): the pane needs the app-level manager both to ingest remote snapshots and to feed the Linux bypass list from local ones.
 5. **Label persistence** (`preview-relay-labels.json` in the app's data dir): the `set_remote` semantics allocate distinct labels on device-name collisions; persisting them keeps remote preview URLs stable across client restarts (spec story 7).
 
-**Final commit:** `27f818b20` ("feat: desktop client-side preview proxy on 7332 + remote browser open (ticket 04)") on `ap/04-client-preview-proxy`.
+**Final commit:** `d61ca9980` ("feat: desktop client-side preview proxy on 7332 + remote browser open (ticket 04)") on `ap/04-client-preview-proxy`.
