@@ -15,6 +15,12 @@ pub struct MockHarness {
     pub script: Vec<AgentEvent>,
 }
 
+/// The message a `/error <message>` prompt fails the run with.
+fn scripted_error(prompt: &str) -> Option<&str> {
+    let message = prompt.trim().strip_prefix("/error ")?.trim();
+    (!message.is_empty()).then_some(message)
+}
+
 /// The scripted question set for the `ROBOCO_MOCK_QUESTION` variant (exercises
 /// the QuestionPanel end-to-end: single-select page, multi-select page).
 fn question_script() -> Vec<UserInputQuestion> {
@@ -96,9 +102,26 @@ impl Harness for MockHarness {
 
     async fn run(
         &self,
-        _request: RunRequest,
+        request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // `/error <message>`: the run fails with that message — error cards
+        // for any provider failure, without a real provider.
+        if let Some(message) = scripted_error(&request.prompt) {
+            let events = vec![
+                Ok(AgentEvent::Error {
+                    message: message.to_string(),
+                    kind: None,
+                }),
+                Ok(AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                }),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
         // Optional pacing knob for demos/manual testing: `ROBOCO_MOCK_DELAY_MS`
         // spaces the scripted events out so live-run UI states (working
         // indicator, streaming fade, trailing tool-group auto-open) are
@@ -670,5 +693,17 @@ impl Harness for MockHarness {
                 event
             })
             .boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_prompt_names_the_failure() {
+        assert_eq!(scripted_error("/error Not logged in"), Some("Not logged in"));
+        assert_eq!(scripted_error("/error  "), None);
+        assert_eq!(scripted_error("/errors"), None);
     }
 }

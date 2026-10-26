@@ -892,6 +892,14 @@ impl AccountsPage {
 
     // ---- add-account flows ----
 
+    /// Sign in with the provider's first option (a failed run's "Log in").
+    pub(crate) fn start_first_login(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        let provider = login_options(harness)
+            .first()
+            .and_then(|option| option.provider);
+        self.start_login(harness, provider, cx);
+    }
+
     fn start_login(
         &mut self,
         harness: HarnessId,

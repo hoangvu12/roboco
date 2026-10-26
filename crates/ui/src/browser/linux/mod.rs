@@ -198,11 +198,23 @@ pub struct NativePage {
     pub pressed: std::cell::Cell<Option<gpui::MouseButton>>,
 }
 impl NativePage {
+    // A unit test has no display for WebKitGTK, and the worker's
+    // "browser-frames" reader thread would wake the test scheduler from
+    // outside it ("Your test is not deterministic"). Page creation fails
+    // at once instead — as it already does on macOS. Startup tests bring
+    // a helper of their own (the browser fixture runs as an example, not
+    // under cfg(test)).
+    #[allow(unreachable_code)] // the cfg(test) fail-fast returns before the body
     pub fn new(
         _: &gpui::Window,
         data: &BrowserData,
         tx: Sender<NativeEvent>,
     ) -> Result<Self, String> {
+        #[cfg(test)]
+        {
+            let _ = (data, tx);
+            return Err("Unit tests start no browser helper".into());
+        }
         let worker = data.worker()?;
         let id = worker.next_id.fetch_add(1, Ordering::Relaxed);
         let route = Arc::new(Route {
