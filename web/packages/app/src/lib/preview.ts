@@ -22,17 +22,14 @@ import type { PreviewService } from "@roboco/proto";
  * rows are keyed by `service.id`, never renamed or re-derived here.
  *
  * The off-machine path (a phone browser reaching the engine over the LAN)
- * is DEFERRED, as ticket 15 allows: `*.localhost` resolves to the
- * browser's own loopback there and the proxy binds loopback only, so
- * framing needs browser↔engine WebRTC peering — a new authenticated
- * signaling RPC surface (the engine's own peer signaling is not wired to
- * a coordinator yet: the `Peers` output channel is dropped in
- * crates/preview/src/service.rs), a browser reimplementation of the
- * preview mux framing (crates/preview/src/mux.rs), and a ServiceWorker
- * fetch bridge, since an iframe cannot load HTTP over a DataChannel.
- * Until then the panel lists discovered services off-machine with an
- * honest note. Workaround: SSH port-forward the engine port AND the
- * proxy port (7331) — the engine then classifies as loopback and frames.
+ * is DEFERRED, per the agent-previews spec (Phase D, ticket 06): `*.localhost`
+ * resolves to the browser's own loopback there and the proxy binds loopback
+ * only, so framing needs an origin-engine HTTP relay or a ServiceWorker
+ * fetch bridge — an iframe cannot load HTTP over anything else. Until then
+ * the panel lists discovered services off-machine with an honest note (the
+ * `previewOffMachineNote` copy). Workaround: SSH port-forward the engine
+ * port AND the proxy port (7331) — the engine then classifies as loopback
+ * and frames.
  */
 
 /** The framed URL of a service — port of Rust `PreviewService::url`. */
@@ -70,6 +67,16 @@ export function isLoopbackHost(hostname: string): boolean {
     return true;
   }
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/**
+ * The note an off-machine browser gets instead of a frame: why the rows
+ * cannot open here, and the two honest ways to make them openable. The
+ * wording is the ticket's; the panel renders it verbatim (tests/preview-
+ * panel.test.ts pins it).
+ */
+export function previewOffMachineNote(): string {
+  return "Open this engine preview from a device that shares its loopback, or SSH-forward the engine port and the proxy port (7331)";
 }
 
 /**

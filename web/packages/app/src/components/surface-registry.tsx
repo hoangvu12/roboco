@@ -42,6 +42,7 @@ import { paneTerminalStore } from "../terminal/store";
 import { SurfacePicker } from "./surface-picker";
 import { Composer } from "./composer";
 import { ChatTranscriptOutlet } from "./chat-transcript-outlet";
+import { PreviewPanel } from "./preview-panel";
 import { ContextUsageIndicator, hasWindow } from "./context-usage";
 import { JumpPill, TranscriptView, type ForkFromEntryPayload, type JumpButtonState } from "./transcript";
 import type { SubagentOpen } from "./tool-group";
@@ -616,6 +617,16 @@ function registerDefaults(): void {
     icon: () => "plus",
     isClosable: () => false,
     render: (_s, ctx) => <SurfacePicker chatId={ctx.chatId} />,
+  });
+
+  // The preview panel — the Browser surface's preview-list body (agent-
+  // previews ticket 06): the desktop's globe icon, framing only the engine's
+  // loopback proxy URLs (the full address-bar browser stays desktop-only).
+  registerRightSurface({
+    kind: "preview",
+    title: () => "Previews",
+    icon: () => "globe",
+    render: (_s, ctx) => <PreviewPanel chatId={ctx.chatId} />,
   });
 
   registerRightSurface({

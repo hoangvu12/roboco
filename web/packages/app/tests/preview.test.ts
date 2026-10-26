@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isLoopbackHost,
   previewEmptyCopy,
+  previewOffMachineNote,
   previewProxyReachable,
   previewRowLabel,
   previewSubtitle,
@@ -71,5 +72,13 @@ describe("previewProxyReachable", () => {
     expect(previewProxyReachable("http://192.168.1.20:27655")).toBe(false);
     expect(previewProxyReachable("https://engine.example.com")).toBe(false);
     expect(previewProxyReachable("not a url")).toBe(false);
+  });
+});
+
+describe("previewOffMachineNote", () => {
+  it("is the spec's honest boundary, verbatim — the panel never invents wording", () => {
+    expect(previewOffMachineNote()).toBe(
+      "Open this engine preview from a device that shares its loopback, or SSH-forward the engine port and the proxy port (7331)",
+    );
   });
 });
