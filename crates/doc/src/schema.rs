@@ -118,6 +118,11 @@ struct DocPartJson {
     /// another harness whose provider session the switch dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     harness: Option<String>,
+    /// The harness (wire name) the chat switched FROM (additive, upstream
+    /// #966): a switch back resumes that provider's recorded session, so
+    /// the seam names both sides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from_harness: Option<String>,
     /// Tool output summary (additive — absent on old rows and old writers;
     /// pre-strip writers stored up to 4KB of capped output here).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,11 +254,18 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
-        MessagePart::HarnessSwitch { id, harness } => DocPartJson {
+        MessagePart::HarnessSwitch {
+            id,
+            harness,
+            from_harness,
+        } => DocPartJson {
             id: id.clone(),
             kind: "harnessSwitch".into(),
             harness: serde_json::to_value(harness)
                 .ok()
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            from_harness: from_harness
+                .and_then(|harness| serde_json::to_value(harness).ok())
                 .and_then(|value| value.as_str().map(str::to_owned)),
             ..Default::default()
         },
@@ -325,10 +337,15 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 serde_json::from_value::<roboco_proto::HarnessId>(serde_json::Value::String(name))
                     .ok()
             });
+            let from_harness = p.from_harness.and_then(|name| {
+                serde_json::from_value::<roboco_proto::HarnessId>(serde_json::Value::String(name))
+                    .ok()
+            });
             match harness {
                 Some(harness) => MessagePart::HarnessSwitch {
                     id: p.id,
                     harness,
+                    from_harness,
                 },
                 None => MessagePart::Text {
                     id: p.id,
@@ -377,6 +394,22 @@ fn image_part(
             message: "Generated image unavailable".into(),
         },
     }
+}
+
+/// A provider's own recorded session in a chat that changed provider
+/// (upstream #966): the session id to resume on a switch back, the cwd it
+/// was created under (harness session stores are cwd-scoped), and the last
+/// transcript entry id it has seen — the watermark below which a resumed
+/// session needs no history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSessionMark {
+    pub session_id: String,
+    pub cwd: String,
+    /// The entry id the session has seen at least through; `None` when the
+    /// record was written before any entry existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<String>,
 }
 
 /// A session doc handle: typed access over a LoroDoc with the schema above.
@@ -455,6 +488,61 @@ impl SessionDoc {
                 .insert("forkHistorySession", session_id)?;
             self.doc.commit();
         }
+        Ok(())
+    }
+
+    /// Whether this chat has ever changed provider (upstream #966). Its
+    /// transcript then holds turns the current provider session never saw,
+    /// so a fresh session is owed the history. A cheap meta read: the
+    /// warm-send path checks it on every message, and must not decode the
+    /// transcript to do so.
+    pub fn provider_switched(&self) -> bool {
+        matches!(
+            self.doc.get_map("meta").get("providerSwitched"),
+            Some(loro::ValueOrContainer::Value(LoroValue::Bool(true)))
+        )
+    }
+
+    pub fn mark_provider_switched(&self) -> Result<(), DocError> {
+        if !self.provider_switched() {
+            self.doc.get_map("meta").insert("providerSwitched", true)?;
+            self.doc.commit();
+        }
+        Ok(())
+    }
+
+    /// Each provider's own session in a chat that changed provider, keyed by
+    /// harness slug (upstream #966). Switching back resumes that session and
+    /// hands it only the turns after its `seen` entry, so its native history
+    /// (and the provider's prompt cache over it) stays intact. One atomic
+    /// value so a synced reader never sees half a record.
+    pub fn provider_sessions(&self) -> std::collections::BTreeMap<String, ProviderSessionMark> {
+        let Some(loro::ValueOrContainer::Value(LoroValue::String(value))) =
+            self.doc.get_map("meta").get("providerSessions")
+        else {
+            return std::collections::BTreeMap::new();
+        };
+        serde_json::from_str(&value).unwrap_or_default()
+    }
+
+    pub fn provider_session(&self, harness: &str) -> Option<ProviderSessionMark> {
+        self.provider_sessions().remove(harness)
+    }
+
+    pub fn set_provider_session(
+        &self,
+        harness: &str,
+        mark: &ProviderSessionMark,
+    ) -> Result<(), DocError> {
+        let mut marks = self.provider_sessions();
+        if marks.get(harness) == Some(mark) {
+            return Ok(());
+        }
+        marks.insert(harness.to_owned(), mark.clone());
+        self.doc
+            .get_map("meta")
+            .insert("providerSessions", serde_json::to_string(&marks)?)?;
+        self.doc.commit();
         Ok(())
     }
 
@@ -582,6 +670,28 @@ impl SessionDoc {
     pub fn push_message(&self, entry: &SessionMessageEntry) -> Result<(), DocError> {
         let messages = self.doc.get_list("messages");
         let map = messages.push_container(LoroMap::new())?;
+        write_entry_scalar_fields(&map, entry)?;
+        let parts = map.insert_container("parts", LoroList::new())?;
+        for part in &entry.parts {
+            push_part(&parts, part)?;
+        }
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// [`push_message`](Self::push_message), but inserted before the last
+    /// `from_end` entries of the messages list (clamped to its start).
+    /// The provider-switch seam lands ABOVE the message that triggered the
+    /// switch (upstream #966): the seam is the history boundary, and the
+    /// triggering message is the new provider's prompt, not its history.
+    pub fn insert_message_before_last(
+        &self,
+        from_end: usize,
+        entry: &SessionMessageEntry,
+    ) -> Result<(), DocError> {
+        let messages = self.doc.get_list("messages");
+        let at = messages.len().saturating_sub(from_end);
+        let map = messages.insert_container(at, LoroMap::new())?;
         write_entry_scalar_fields(&map, entry)?;
         let parts = map.insert_container("parts", LoroList::new())?;
         for part in &entry.parts {
@@ -1036,6 +1146,7 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
         ("sourceChatId", &doc_part.source_chat_id),
         ("sourceTitle", &doc_part.source_title),
         ("harness", &doc_part.harness),
+        ("fromHarness", &doc_part.from_harness),
     ] {
         if let Some(value) = value {
             map.insert(key, value.as_str())?;
@@ -1600,6 +1711,7 @@ pub fn materialize_tail(
 mod tests {
     use super::*;
     use crate::parts::fold_event_into_parts;
+    use crate::parts::{NoticeOutcome, NoticeSide};
     use roboco_proto::{AgentEvent, ToolCall};
 
     #[test]
@@ -1640,6 +1752,7 @@ mod tests {
         let seam = MessagePart::HarnessSwitch {
             id: "switch:1".into(),
             harness: roboco_proto::HarnessId::Codex,
+            from_harness: Some(roboco_proto::HarnessId::ClaudeCode),
         };
         doc.push_message(&SessionMessageEntry {
             origin_chat_id: None,
@@ -1801,9 +1914,12 @@ mod tests {
         doc.set_provider_fork(roboco_proto::HarnessId::Codex, &fork)
             .unwrap();
         assert_eq!(doc.provider_fork_harness(), Some(roboco_proto::HarnessId::Codex));
-        assert_eq!(doc.provider_fork(), Some(fork));
+        assert_eq!(doc.provider_fork(), Some(fork.clone()));
         // Consumed by a run on the recorded harness.
-        assert_eq!(doc.take_provider_fork(roboco_proto::HarnessId::Codex), Some(fork));
+        assert_eq!(
+            doc.take_provider_fork(roboco_proto::HarnessId::Codex),
+            Some(fork.clone())
+        );
         // Consumed once: the next dispatch — same harness or not — has
         // nothing left, so it falls back to the budgeted paste.
         assert_eq!(doc.take_provider_fork(roboco_proto::HarnessId::Codex), None);

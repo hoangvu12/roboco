@@ -58,6 +58,12 @@ const MIN_ITEM_BYTES: usize = 64;
 /// failover's fresh-session fallback — so it names neither of them, only
 /// the chat and the transcript.
 const LEAD: &str = "Continue this chat using the following prior transcript as context.";
+
+/// The wrapper lead for callers without a special one (the sessions
+/// switch-seam paths pick theirs).
+pub(crate) fn default_lead() -> &'static str {
+    LEAD
+}
 const TRANSCRIPT_OPEN: &str = "<transcript>\n";
 const TRANSCRIPT_CLOSE: &str = "\n</transcript>\n\n";
 const TRUNCATION_MARKER: &str = " …[truncated]";
@@ -96,6 +102,17 @@ pub fn budgeted_transcript_prefix(
     entries: &[SessionMessageEntry],
     source_chat_id: Option<&str>,
 ) -> Option<String> {
+    budgeted_transcript_prefix_with_lead(entries, source_chat_id, LEAD)
+}
+
+/// [`budgeted_transcript_prefix`] with the wrapper lead the caller chose (a
+/// provider resuming its own recorded session in a switched chat, upstream
+/// #966: "while you were away…" / "you are now taking over…").
+pub fn budgeted_transcript_prefix_with_lead(
+    entries: &[SessionMessageEntry],
+    source_chat_id: Option<&str>,
+    lead: &str,
+) -> Option<String> {
     let items = transcript_items(entries);
     let lines: Vec<String> = items
         .iter()
@@ -104,11 +121,11 @@ pub fn budgeted_transcript_prefix(
     if lines.is_empty() {
         return None;
     }
-    let wrapper_fixed = LEAD.len() + 1 + TRANSCRIPT_OPEN.len() + TRANSCRIPT_CLOSE.len();
+    let wrapper_fixed = lead.len() + 1 + TRANSCRIPT_OPEN.len() + TRANSCRIPT_CLOSE.len();
     let transcript = lines.join("\n");
     if wrapper_fixed + transcript.len() <= TRANSCRIPT_BUDGET_BYTES {
         // The whole transcript fits: complete, verbatim, no coverage note.
-        return Some(wrap(None, &lines));
+        return Some(wrap_with_lead(None, &lines, lead));
     }
 
     // Selection mode. The header's length depends on the omitted count, so
@@ -162,10 +179,10 @@ pub fn budgeted_transcript_prefix(
         // Unreachable with the shipped budget (three capped priorities
         // always fit); degrade to the verbatim transcript rather than send
         // an empty block.
-        return Some(wrap(None, &lines));
+        return Some(wrap_with_lead(None, &lines, lead));
     }
     let header = coverage_header(omitted, source_chat_id);
-    Some(wrap(Some(header), &selected))
+    Some(wrap_with_lead(Some(header), &selected, lead))
 }
 
 /// Render transcript entries into handoff items. Continuation entries are
@@ -355,9 +372,16 @@ fn coverage_header_max(items: usize, source_chat_id: Option<&str>) -> usize {
 /// the transcript block — ending with the blank line that separates it
 /// from whatever follows (the new user message, whole and always last).
 fn wrap(header: Option<String>, lines: &[String]) -> String {
+    wrap_with_lead(header, lines, LEAD)
+}
+
+/// [`wrap`] with the lead the caller chose — a provider taking over a
+/// switched conversation (upstream #966) says so instead of the generic
+/// continuation lead.
+fn wrap_with_lead(header: Option<String>, lines: &[String], lead: &str) -> String {
     let mut out =
-        String::with_capacity(LEAD.len() + TRANSCRIPT_OPEN.len() + TRANSCRIPT_CLOSE.len() + 256);
-    out.push_str(LEAD);
+        String::with_capacity(lead.len() + TRANSCRIPT_OPEN.len() + TRANSCRIPT_CLOSE.len() + 256);
+    out.push_str(lead);
     out.push('\n');
     if let Some(header) = header {
         out.push_str(&header);
