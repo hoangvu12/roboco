@@ -38,3 +38,5 @@
 
 - Clickable transcript rendering of preview links (mention-link style) — deliberately deferred (follow-up, per ticket).
 - A vanished origin chat reports the transport-level error ("WatchPreviews: stream ended before its first snapshot") rather than the engine's "Project session not found": unchecked `roboco_rpc` watch streams end without surfacing the server's error string. Rare edge (chat deleted mid-agent-run); fixing it would mean an engine-side change (unary variant or checked subscribe), out of this ticket's scope.
+
+- 2026-10-26 (orchestrator): merged `ap/07-mcp-previews-tool` into `feat/agent-previews` (merge `cfc31d464`, implementation `5c663082e`; clean merge — roboco-mcp is disjoint from the in-flight 02/03 crates). Verification re-run at the merged tip: `cargo test -p roboco-mcp` 45/0; clippy `-p roboco-mcp --all-targets` — roboco-mcp's own warnings are the 6 pre-existing MutexGuard ones (worker proved byte-identical to base; remaining warnings live in untouched crates/doc + roboco-proto deps).
