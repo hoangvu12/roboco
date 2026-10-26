@@ -865,8 +865,12 @@ impl Normalizer {
                 }
                 // A failed turn (usage limit, billing, auth, overloaded, …)
                 // carries a terse `error` code here — often with empty content
-                // and no `result` error — so surface it visibly.
+                // and no `result` error — so surface it visibly. The turn has
+                // now shown its failure: the result's own wording of the same
+                // failure is not repeated (upstream #977's
+                // turn_error_shown).
                 if let Some(code) = &f.error {
+                    self.turn_error_shown = true;
                     out.push(AgentEvent::Error {
                         message: assistant_error_text(code),
                         kind: assistant_error_kind(code),

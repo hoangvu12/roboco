@@ -3011,13 +3011,13 @@ impl PromptInput {
 fn prompt_turn(
     client: RpcClient,
     session_id: String,
-    text: String,
+    prompt: PromptInput,
     prompt_id: Option<String>,
 ) -> BoxFuture<'static, Result<Value, HarnessError>> {
     Box::pin(async move {
         let mut params = json!({
             "sessionId": session_id,
-            "prompt": [{ "type": "text", "text": text }],
+            "prompt": prompt.blocks(),
         });
         if let Some(id) = prompt_id {
             params["_meta"] = json!({ "promptId": id, "requestId": id });
@@ -4230,10 +4230,16 @@ async fn run_session(session: Session) {
     };
     let mut prompt_stall_deadline: Option<tokio::time::Instant> =
         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+    let mut current_prompt = PromptInput::new(
+        prompt_transform(request.reasoning, &request.prompt),
+        &request.attachments,
+        inline_images,
+    )
+    .await;
     let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some(prompt_turn(
         client.clone(),
         session_id.clone(),
-        prompt_transform(request.reasoning, &request.prompt),
+        current_prompt.clone(),
         current_prompt_id.clone(),
     ));
     // Steers waiting for the turn boundary (agents without the extension, or
@@ -4535,7 +4541,10 @@ async fn run_session(session: Session) {
                     turn = Some(prompt_turn(
                         client.clone(),
                         session_id.clone(),
-                        text,
+                        PromptInput {
+                            text,
+                            images: Vec::new(),
+                        },
                         current_prompt_id.clone(),
                     ));
                 } else if !steering_open {
@@ -4823,7 +4832,10 @@ async fn run_session(session: Session) {
                     turn = Some(prompt_turn(
                         client.clone(),
                         session_id.clone(),
-                        text,
+                        PromptInput {
+                            text,
+                            images: Vec::new(),
+                        },
                         current_prompt_id.clone(),
                     ));
                 }
@@ -4872,7 +4884,10 @@ async fn run_session(session: Session) {
                     turn = Some(prompt_turn(
                         client.clone(),
                         session_id.clone(),
-                        text,
+                        PromptInput {
+                            text,
+                            images: Vec::new(),
+                        },
                         current_prompt_id.clone(),
                     ));
                 } else if turn.is_none() && !steering_open {
@@ -4949,7 +4964,10 @@ async fn run_session(session: Session) {
                     turn = Some(prompt_turn(
                         client.clone(),
                         session_id.clone(),
-                        text,
+                        PromptInput {
+                            text,
+                            images: Vec::new(),
+                        },
                         current_prompt_id.clone(),
                     ));
                 } else if !steering_open {
@@ -4983,48 +5001,95 @@ async fn run_session(session: Session) {
                         continue 'main;
                     }
                     if let Some(next) = msg.config.as_deref() {
-                        match select_session_config(
+                        // A stop or interrupt must get through while the
+                        // switch waits (upstream #977: an unanswered
+                        // session/set_config_option must not hold off the
+                        // run's stop). Bound it by the first stop request:
+                        // the switch is abandoned as unsure, and the turn
+                        // ends interrupted.
+                        let switch = select_session_config(
                             &client,
                             &mut incoming,
                             rules,
                             &session_id,
                             session_options.clone(),
                             next,
-                        )
-                        .await
-                        {
-                            Ok(options) => {
-                                session_options = options;
-                                request.model = next.model.clone();
-                                request.reasoning = next.reasoning;
-                                request.model_options = next.model_options.clone();
-                            }
-                            Err(e) => {
-                                // The message cannot run as it was sent.
-                                let (prev, next) = rotate(&mut assistant_message_id);
-                                let message = e.to_string();
-                                done_current = true;
-                                if !send(&event_tx, AgentEvent::Steered {
-                                    assistant_message_id: Some(prev),
-                                    next_assistant_message_id: Some(next),
-                                }).await
-                                    || !send(&event_tx, AgentEvent::Error { message: message.clone(), kind: None }).await
-                                    || !send(&event_tx, AgentEvent::Done {
-                                        status: DoneStatus::Errored,
-                                        result: None,
-                                        error: Some(message),
-                                        session_id: Some(session_id.clone()),
-                                    }).await
-                                {
-                                    break 'main;
+                        );
+                        tokio::pin!(switch);
+                        let stopped = tokio::select! {
+                            biased;
+                            _ = turn_control.stop_requested() => true,
+                            _ = interrupt.cancelled() => true,
+                            result = &mut switch => {
+                                match result {
+                                    Ok(options) => {
+                                        session_options = options;
+                                        request.model = next.model.clone();
+                                        request.reasoning = next.reasoning;
+                                        request.model_options = next.model_options.clone();
+                                    }
+                                    Err(e) => {
+                                        // The message cannot run as it was
+                                        // sent.
+                                        let (prev, next) =
+                                            rotate(&mut assistant_message_id);
+                                        let message = e.to_string();
+                                        done_current = true;
+                                        if !send(&event_tx, AgentEvent::Steered {
+                                            assistant_message_id: Some(prev),
+                                            next_assistant_message_id: Some(next),
+                                        }).await
+                                            || !send(&event_tx, AgentEvent::Error {
+                                                message: message.clone(),
+                                                kind: None,
+                                            }).await
+                                            || !send(&event_tx, AgentEvent::Done {
+                                                status: DoneStatus::Errored,
+                                                result: None,
+                                                error: Some(message),
+                                                session_id: Some(session_id.clone()),
+                                            }).await
+                                        {
+                                            break 'main;
+                                        }
+                                        continue 'main;
+                                    }
                                 }
-                                continue 'main;
+                                false
                             }
+                        };
+                        if stopped {
+                            // The switch is abandoned mid-wait: the turn
+                            // ends interrupted without running the prompt.
+                            let (prev, next) = rotate(&mut assistant_message_id);
+                            stopping = true;
+                            done_current = true;
+                            if !send(&event_tx, AgentEvent::Steered {
+                                assistant_message_id: Some(prev),
+                                next_assistant_message_id: Some(next),
+                            }).await
+                                || !send(&event_tx, AgentEvent::Done {
+                                    status: DoneStatus::Interrupted,
+                                    result: None,
+                                    error: None,
+                                    session_id: Some(session_id.clone()),
+                                }).await
+                            {
+                                break 'main;
+                            }
+                            continue 'main;
                         }
                     }
                     // Same transform as the initial prompt: Claude's
-                    // Ultrathink prefix rides every steer too.
-                    let text = prompt_transform(request.reasoning, &msg.prompt);
+                    // Ultrathink prefix rides every steer too. Images inline
+                    // when the agent advertises them (upstream #977).
+                    let next_prompt = PromptInput::new(
+                        prompt_transform(request.reasoning, &msg.prompt),
+                        &msg.attachments,
+                        inline_images,
+                    )
+                    .await;
+                    let text = next_prompt.text.clone();
                     if turn.is_none() && cancel_flush_deadline.is_some() {
                         // A busy-session cancel is already in flight: this
                         // steer lines up behind it and dispatches at flush.
@@ -5068,16 +5133,17 @@ async fn run_session(session: Session) {
                         open_tools.clear();
                         last_update_at = tokio::time::Instant::now();
                         prompt_seq += 1;
-                    current_prompt_id =
-                        prompt_complete_extension.then(|| format!("roboco-p{prompt_seq}"));
-                    prompt_stall_deadline =
-                        prompt_stall.map(|d| tokio::time::Instant::now() + d);
-                    turn = Some(prompt_turn(
-                        client.clone(),
-                        session_id.clone(),
-                        text,
-                        current_prompt_id.clone(),
-                    ));
+                        current_prompt_id =
+                            prompt_complete_extension.then(|| format!("roboco-p{prompt_seq}"));
+                        prompt_stall_deadline =
+                            prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                        current_prompt = next_prompt.clone();
+                        turn = Some(prompt_turn(
+                            client.clone(),
+                            session_id.clone(),
+                            next_prompt,
+                            current_prompt_id.clone(),
+                        ));
                     } else if steer_ext {
                         // Mid-turn injection via the `_session/steering`
                         // extension: start the call, resolved by its own

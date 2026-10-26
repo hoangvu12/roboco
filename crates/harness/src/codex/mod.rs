@@ -1673,7 +1673,7 @@ async fn run_session(session: Session) {
                         {
                             break 'main;
                         }
-                        let error = turn_error_message(&params).or_else(|| {
+                        let error = turn_error_message(&params, None).or_else(|| {
                             (params
                                 .pointer("/turn/status")
                                 .and_then(Value::as_str)
@@ -1795,7 +1795,8 @@ async fn run_session(session: Session) {
                             done_after_interrupt = true;
                         }
                         let error =
-                            turn_error_message(&params).unwrap_or_else(|| "Codex turn failed".into());
+                            turn_error_message(&params, None)
+                                .unwrap_or_else(|| "Codex turn failed".into());
                         // Same classified-failure shape as turn/completed: the
                         // kind rides an Error event ahead of the Done, which
                         // then carries no error text of its own — one rendered

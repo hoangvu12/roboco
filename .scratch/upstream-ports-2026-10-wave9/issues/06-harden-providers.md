@@ -355,3 +355,49 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
   The `an_unfinished_restore_errors_and_keeps_the_session` test
   (upstream's new acp.rs case) also needs the env/threading adaptation
   before it can land.
+
+- **2026-10-27 — 06 5/5: Codex error-text classification (run_errors now on
+  main via the merge) + the acp_hardening suite green + the config-switch
+  stop path.** Merged `main` (ac67c1bb6, the UI lane's phase 1) into
+  wave9/engine cleanly — the anticipated transcript.rs conflicts did not
+  materialize (git auto-merged; both lanes' HarnessSwitch rendering and
+  error-card surfaces coexist — verified by inspection: RowKind::
+  HarnessSwitchMarker and run_errors::provider_problem both present).
+  - **codex/normalize.rs**: the full upstream error-text rework —
+    `codex_error_text` (structured `codexErrorInfo` decides the sign-in and
+    limit cases: `unauthorized`/httpStatusCode 401 → SIGNED_OUT_MESSAGE,
+    which `run_errors::provider_problem` classifies for the Log in action;
+    usageLimitExceeded/rateLimitExceeded/429 → the limit headline with the
+    wait from the exhausted window; `additionalDetails` beats the generic
+    message), `turn_error_message(params, limits)`, `merge_rate_limits`
+    (sparse snapshots fold), `error_notice` (`willRetry` = progress),
+    `settle_turn_error` (exactly one error part: turn.error wins, a failed
+    turn without one takes the held notice, a non-failed turn releases it
+    as a standalone notice before the Done). ChildStream holds the last
+    final `error` notification and reports it by the turn's end — an error
+    Codex will retry is progress, not an outcome.
+  - **codex/mod.rs**: the two turn-error sites pass `None` limits (Roboco's
+    RateLimitReset flow already carries the reset into the classified kind;
+    the wait-text enrichment stays available for the driver loop).
+    turn_error_kind unchanged — Roboco's classification surface.
+  - **acp/mod.rs**: the config-switch stop path — a steer's
+    `select_session_config` await is now select-guarded against the stop
+    request and the interrupt token, so an agent that never answers
+    `session/set_config_option` can no longer hold off the run's stop; the
+    switch is abandoned (unsure) and the turn ends Interrupted. The initial
+    prompt and the immediate-idle steer now ride `PromptInput` blocks
+    (images inline when the agent advertises the capability — the first
+    prompt previously sent text only, which the image test caught).
+  - **tests**: codex.rs's three classification expectations updated to the
+    new wording; acp_hardening.rs's mode lock recovers from poison (a
+    timed-out test no longer cascades); the new normalize tests:
+    structured_error_info_decides_sign_in_and_limit_text (via
+    run_errors::provider_problem),
+    settle_turn_error_puts_each_message_in_exactly_one_part,
+    error_notices_know_when_codex_is_retrying,
+    sparse_rate_limit_updates_keep_their_windows,
+    subagent_errors_are_reported_by_the_turns_end.
+- **Verification:** `--test acp_hardening` **10/10**; `--lib` 419/420 (the
+  1 failure is the pre-existing container-passwd antigravity test, verified
+  failing at wave-start base d42b1819e); `--test acp` 67/67; `--test
+  claude` 32/32; `--test codex` 38/38; `--lib codex::normalize` 24/24.

@@ -38,7 +38,9 @@ static MODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 type ModeGuard = std::sync::MutexGuard<'static, ()>;
 
 fn mode(mode: &str) -> ModeGuard {
-    let guard = MODE_LOCK.lock().unwrap();
+    // A test that panics (a timeout) poisons the std Mutex; recover so the
+    // other tests still run (the env var's next set is what matters).
+    let guard = MODE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // SAFETY: the guard is held for the test's duration, so no other test
     // in this binary reads or writes FAKE_ACP_MODE meanwhile.
     unsafe { std::env::set_var("FAKE_ACP_MODE", mode) };

@@ -751,7 +751,7 @@ async fn a_usage_limited_turn_carries_the_reset_from_the_latest_notification() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "You have exceeded your usage limit".to_owned(),
+                "Codex usage limit reached. You have exceeded your usage limit".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "5-hour".into(),
                     resets_at: Some(4_102_444_800_000),
@@ -790,7 +790,7 @@ async fn a_rate_limited_turn_completing_with_the_error_also_classifies() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "rate limited, retry later".to_owned(),
+                "Codex rate limit reached. rate limited, retry later".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "weekly".into(),
                     resets_at: Some(4_102_444_801_000),
@@ -827,7 +827,7 @@ async fn an_auth_failure_is_signed_out() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "Token is expired or invalid".to_owned(),
+                "Codex's credentials were rejected. Run codex login (or check the API key for your model provider), then send again.".to_owned(),
                 Some(AgentErrorKind::SignedOut),
             )
         ],
