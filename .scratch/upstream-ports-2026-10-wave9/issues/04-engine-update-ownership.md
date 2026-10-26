@@ -19,8 +19,7 @@ engine; keep the macOS Keychain rationale out of comments, keep the logic.
 **Verification budget:** `cargo check -p roboco-engine -p roboco-update` +
 restart_resume/managed tests. Source: `.scratch/upstream-drift/2026-10-25.md` § A4.
 
-- [ ] Stop-don't-orphan + credentials fallback ported — **partial: see Comments; the
-  orphan-successor half has no Roboco surface to port**
+- [ ] Stop-don't-orphan + credentials fallback ported — **partial BY ARCHITECTURE (see Comments): the Keychain→file credentials fallback is fully ported and macOS-compile-verified; the orphan-successor half has no Roboco surface to port (no engine self-relaunch exists — a relaunch would require the app/launcher layer this engine deliberately lacks). Verified green in the lane-end sweep: engine --lib 481/481, restart_resume 13/13 (1 ignored).**
 - [x] Commit records upstream SHA `f725384bd` (#970)
 
 ## Comments
@@ -61,3 +60,9 @@ restart_resume/managed tests. Source: `.scratch/upstream-drift/2026-10-25.md` §
   restart_resume` — 13 passed, 1 ignored. The macOS-gated Keychain test
   cannot run on this Linux host (no macOS CI either) — left for human
   verification.
+
+- **2026-10-27 — LANE-END VERIFICATION:** `cargo check --workspace` clean;
+  `wiregen --check` fresh; engine `--lib` 481/481, `--test restart_resume`
+  13/13 (1 ignored), `--test e2e` 28/28 (2 ignored) — all green. Status
+  stays **ready-for-agent**: the unchecked box is partial by architecture,
+  not by verification (see the box note).

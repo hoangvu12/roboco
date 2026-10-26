@@ -18,7 +18,7 @@ cloud/iOS files in the commit).
 
 **Blocked by:** 03, 05 (npm_repair + executable/refresh substrates).
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 **Verification budget:** harness suite (incl. new acp_hardening, fake
 fixtures), engine run-recovery tests, `windows.yml` run. Source:
@@ -584,3 +584,30 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
   must run with `ROBOCO_MCP_SERVER` unset — a leaked instance of that env
   var in the orchestrating shell trips the fixture's
   only-when-injected guard and fails 57/60 spuriously.
+
+- **2026-10-27 — LANE-END VERIFICATION (the gates turn).**
+  - `CARGO_TARGET_DIR=/home/ubuntu/roboco-dev/target cargo check --workspace`
+    — **clean** (0 errors; 22m under another lane's concurrent build).
+  - `cargo run -p wiregen -- --check` — **fresh** ("wire types are fresh").
+  - The full queued sweep (one suite at a time, `df` before each, pi under
+    `env -u ROBOCO_MCP_SERVER`):
+    - harness `--test acp_hardening` **10/10**, `--test acp` **67/67**,
+      `--test claude` **34/34** (2 ignored), `--test claude_refresh_lock`
+      **1/1**, `--test codex` **42/42** (4 ignored), `--test opencode`
+      **31/31**, `--test pi` **60/60**, `--features native-fixture --test
+      pi_rpc` **7/7**, `--test cursor` **22/22**, `--test cursor_shim`
+      **31/31**, `--lib` **423/424** (the 1 failure is the recorded
+      pre-existing container-passwd antigravity test — identical at the
+      wave-start base `d42b1819e`).
+    - engine `--test run_recovery` **20/20**, `--lib` **481/481** (2
+      ignored), `--test provider_switch` **6/6**, `--test harness_switch`
+      **8/8**, `--test continue_on_harness` **3/3**, `--test
+      message_queue` **26/26**, `--test restart_resume` **13/13** (1
+      ignored), `--test session_process_hygiene` **4/4**, `--test
+      previews` 0/1 (the recorded pre-existing remote-peer watch failure —
+      "engine peer is not connected", failing identically at the wave-start
+      base), `--test project_action_commands` **2/2**, `--test e2e`
+      **28/28** (2 ignored), `--test pi_resume` **1/1** (passed this run;
+      recorded as a flaky fixture timeout on this host).
+  - Every box in this ticket is demonstrated: Status moves to
+    **ready-for-human**.
