@@ -161,16 +161,19 @@ internal object EngineMetaJson {
     }
 
     /**
-     * The `room` object → [EngineRoomMeta], or null. A missing id is a
-     * malformed entry and degrades to "no room"; an empty label is legal
-     * (it only ever was a display name).
+     * The `room` object → [EngineRoomMeta], or null. A missing id (or a
+     * malformed room of any shape) degrades to "no room" — never a
+     * thrown [JSONException], which would drop the whole engine over
+     * metadata (the credential store is the source of truth, not this
+     * JSON; an empty label is legal — it only ever was a display name).
      */
-    private fun roomMeta(element: JSONObject?): EngineRoomMeta? =
-        element?.let {
-            val roomId = it.optString("roomId")
-            if (roomId.isEmpty()) throw JSONException("roomId")
-            EngineRoomMeta(roomId = roomId, label = it.optString("label"))
-        }
+    private fun roomMeta(element: JSONObject?): EngineRoomMeta? {
+        // Absent on records written before rooms: additive — no room.
+        if (element == null) return null
+        val roomId = element.optString("roomId")
+        if (roomId.isEmpty()) return null
+        return EngineRoomMeta(roomId = roomId, label = element.optString("label"))
+    }
 
     /** `getString` coerces any value (`{}` included); only a real string is accepted. */
     private fun string(element: JSONObject, key: String): String =

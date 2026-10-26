@@ -83,7 +83,7 @@ class EngineMetaJsonTest {
             .put("pairedAtMs", metaA.pairedAtMs)
             .put("transport", "direct")
 
-        val decoded = EngineMetaJson.decode(legacy.toString())
+        val decoded = EngineMetaJson.decode(JSONArray().put(legacy).toString())
 
         assertEquals(listOf(metaA), decoded)
     }
@@ -99,7 +99,7 @@ class EngineMetaJsonTest {
             .put("transport", "direct")
             .put("room", JSONObject().put("label", "no id"))
 
-        val decoded = EngineMetaJson.decode(broken.toString())
+        val decoded = EngineMetaJson.decode(JSONArray().put(broken).toString())
 
         // The engine must survive over metadata (the credential store is
         // the source of truth, not this JSON).

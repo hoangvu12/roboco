@@ -692,8 +692,12 @@ class PairedEngineStoreTest {
         fixture.store.upsert(roomEngine(record))
         fixture.store.upsertRoom(record)
         // Swap the room blob into the cred: slot of the room engine — the
-        // distinct AAD (…v1:room:…) refuses it.
-        fixture.dataStore.edit { it[credKey("a-room-engine")] = fixture.credValue("a-room-engine")!! }
+        // distinct AAD (…v1:room:…) refuses it. (Read the blob first: a
+        // `data.first()` inside `edit`'s transaction is a second store
+        // hop the fixture does not need.)
+        val roomBlob = fixture.dataStore.data.first()[roomKey(record.roomId)]
+        assertTrue("the rig wrote no room blob to swap", roomBlob != null)
+        fixture.dataStore.edit { it[credKey("a-room-engine")] = roomBlob!! }
 
         assertEquals(listOf(record), fixture.store.loadRooms())
         assertEquals("", fixture.store.load().single().credential)
