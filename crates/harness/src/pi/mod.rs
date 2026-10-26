@@ -3202,3 +3202,9 @@ mod tests {
         ));
     }
 }
+
+/// ACP's inline-image blocks under the same cap Pi's own prompts use:
+/// upstream #977 shares the loader (it was pi-only before).
+pub(crate) async fn load_images_capped_for_acp(attachments: &[String]) -> Vec<serde_json::Value> {
+    load_image_contents(attachments).await
+}

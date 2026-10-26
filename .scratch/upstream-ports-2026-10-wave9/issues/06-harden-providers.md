@@ -206,3 +206,93 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
      `opencode/tests.rs` + `tests/opencode.rs`.
   5. **pi** rpc/sessions/ui hardening + the Rust `pi_rpc` peer
      (`tests/pi_rpc.rs` + `fixtures/pi_rpc.rs`), PROTOCOL.md.
+
+- **2026-10-26 — adapter hardenings PARTIALLY LANDED on `wave9/engine` (06 3/3):
+  ACP (the largest single driver) + Claude wire/normalize classification +
+  pi's shared image loader.** Compile-verified
+  (`cargo check -p roboco-harness` 0 errors before disk ran to 84M free —
+  the disk protocol stopped test runs; the suites below are PENDING for the
+  gates turn):
+  - **acp/mod.rs** (upstream #977's ACP slice, adapted):
+    `DEFAULT_STOP_TIMEOUT`/`SESSION_LOAD_TIMEOUT`/`CONTROL_REQUEST_TIMEOUT`
+    constants + `stop_timeout`/`session_load_timeout` fields and
+    `with_stop_timeout`/`with_session_load_timeout` test knobs; bounded turn
+    stops (the stop-deadline watchdog closes a wedged turn as stopped and
+    retires the process, open subagents settling through the exit drain);
+    `PendingQuestions` — question-shaped permission requests are answered
+    `cancelled` on stop/interrupt (ACP requires an answer to every pending
+    permission request); `cancel_params` (Grok's user-gesture cancel
+    barrier); session restore per advertised capability
+    (`restore_method`: session/load vs session/resume, Antigravity prefers
+    resume; `session_unrestorable`'s narrow not-found family; a slow
+    restore errors and keeps the session, a missing one falls back to
+    fresh with a visible notice; `session/load`'s 90s budget on top of the
+    handshake's, folded into the setup select's budget);
+    `authenticate_for_run`/`run_auth_method` (auth_required answered once
+    from the run itself via the agent's declared default method — Grok's
+    cached_token; a terminal/env-var method names its kind in the error);
+    `control_request` bounds `session/set_model`/`set_config_option`;
+    model discovery drains its incoming channel
+    (`drain_discovery_incoming`); `spawn_error` classification + lossy
+    stderr framing at both spawn sites; `exits_on_stdin_eof` →
+    `ignores_stdin_eof` for OpenCode; `client.close_stdin_for_teardown()`
+    on the setup-failure path.
+  - **claude/wire.rs**: `ResultFrame` gains `is_error`, `terminal_reason`,
+    `api_error_status`, `attempt`/`max_retries`/`retry_delay_ms`/
+    `error_status`/`error` (api_retry), `compact_metadata`
+    (compact_boundary), and the synthetic `unreadable` marker;
+    `ControlResponseBody` with `error_message()`; parse robustness —
+    lone-surrogate escape repair (Node cuts a string through a pair),
+    explicit `null` entries read as absent fields, and a `result` line
+    that still won't parse becomes an unreadable result so its turn still
+    ends (`top_level_type` guards against a nested "type":"result");
+    `control_error_line` (the CLI waits for a reply to every request it
+    sends). Upstream's `control_response_line`/`allow_response`/
+    `interrupt_request_line` already existed in Roboco.
+  - **claude/normalize.rs**: result classification —
+    `terminal_reason_text` (the failure reasons with human wording),
+    `aborted()` (abort terminal reasons end Interrupted, not Errored),
+    `api_failure()` (a `success` result that is really a failed API call:
+    is_error, 429/529, full-context wording; the CLI's own detail capped
+    at 500 chars, not repeated when the turn already showed its error part
+    — `turn_error_shown`); never-drop-a-result (an unreadable result
+    frame still ends its turn with what the line told us); liveness —
+    `api_retry` keeps the turn visibly alive and says why once the
+    retries add up (`retry_noticed`), `compacting` status emits an empty
+    reasoning delta, `compact_boundary` reports the post-compaction token
+    count; `Normalizer::started()`; `for_resume` returns the
+    `Transcript` (Conversation/Empty/Unknown — a transcript read whole
+    with no user/assistant record is Empty, a doubtful read is Unknown).
+  - **claude/mod.rs**: an Empty transcript starts the run fresh (the CLI
+    refuses to resume it and exits, every time) with the SESSION_LOST
+    notice; `Transcript` import.
+  - **pi/mod.rs**: `load_images_capped_for_acp` — ACP shares Pi's
+    inline-image loader (upstream #977 shares `crate::pi::load_images`).
+- **Disk protocol note (2026-10-26):** free space fell to 84M mid-turn
+  (the rooms chat's 23G worktree build). Tests could not be run. The
+  suites that still need to run (gates turn): `cargo test -p
+  roboco-harness --lib` (full), `--test acp` + the NEW `--test
+  acp_hardening` + `fixtures/fake-hardened-acp.py` (upstream's new test
+  binary and fixture were NOT ported this turn — see remaining), `--test
+  claude`, `--test claude_refresh_lock`, `--test codex`, `--test
+  opencode`, `--test pi`, engine `--test run_recovery` + `--lib`
+  regression pass.
+- **REMAINING (still open after 06 3/3):**
+  1. `tests/acp_hardening.rs` (new, 312) + `fixtures/fake-hardened-acp.py`
+     (new, 131) + `fixtures/fake-acp.sh` update — upstream's own test
+     binary for the ACP hardening; the `--test acp` updates.
+  2. `claude/mod.rs`'s runtime restructure: the `Runtime`/`Stdin` (replay)
+     split, the relaunch-fresh-when-unrestorable machinery
+     (`no_conversation` on stdout/stderr), `pending_controls`/
+     `config_unsure`/`refused` for set_model/apply_flag_settings bounds,
+     `read_stderr` (piped stderr + `wait_closed`), the 25s PROBE_TIMEOUT
+     with redacted stderr, `native_beside_npm_shim`, `config_root(env)`,
+     `managed_mcp_config`, `tests/claude.rs` (+366) and
+     `fixtures/fake-claude.sh`.
+  3. **codex** elicitation + stall hardening (`codex/{mod,normalize}.rs`,
+     `codex/elicitation.rs` new), `tests/codex.rs` (+227),
+     `fixtures/fake-codex.sh`.
+  4. **opencode** startup retries + readiness (+1586),
+     `opencode/tests.rs` + `tests/opencode.rs`.
+  5. **pi** rpc/sessions/ui hardening + the Rust `pi_rpc` peer
+     (`tests/pi_rpc.rs` + `fixtures/pi_rpc.rs`), PROTOCOL.md.

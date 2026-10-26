@@ -80,7 +80,7 @@ use roboco_proto::{
 use crate::process::{Child, ChildStdin, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
 use catalog::{apply_ultrathink, to_effort};
-use normalize::Normalizer;
+use normalize::{Normalizer, Transcript};
 use wire::{ControlRequestFrame, Frame, allow_response, control_response_line};
 
 /// Locate the device's installed Claude Code CLI: our own PATH, then the
@@ -166,6 +166,10 @@ fn launch_reading(head: &[u8]) -> LaunchReading {
 /// deals with whatever follows. Generous: a healthy launch speaks within
 /// milliseconds; only Stop (the other escape) is faster.
 const LAUNCH_PROBE_BOUND: Duration = Duration::from_secs(60);
+
+/// Shown when a chat's Claude session could not be restored.
+const SESSION_LOST: &str = "The previous Claude session could not be restored, so this chat \
+     continues in a new one without its earlier context.";
 
 /// Whether the CLI's own session store knows `session_id` — one
 /// `<config>/projects/*/{session_id}.jsonl` file (the same walk
@@ -887,10 +891,28 @@ impl ClaudeHarness {
                 // config with settings-sourced ones.
                 cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
             }
-            let normalizer = if let Some(session_id) = &request.resume {
-                Normalizer::for_resume(&config_root, session_id).await
-            } else {
-                Normalizer::new()
+            // A session whose transcript holds no conversation cannot be
+            // resumed: the CLI says so and exits, every time. Start fresh
+            // instead — the chat's history is gone either way, and the user
+            // is told. A transcript not found here is still resumed: the CLI
+            // may keep it elsewhere, and says so when it does not.
+            let mut resume_notice = None;
+            let normalizer = match request.resume.clone() {
+                Some(session_id) => {
+                    let (normalizer, transcript) =
+                        Normalizer::for_resume(&config_root, &session_id).await;
+                    if transcript == Transcript::Empty {
+                        tracing::info!(
+                            target: "roboco_harness::claude",
+                            %session_id,
+                            "no conversation to resume; starting a new session"
+                        );
+                        request.resume = None;
+                        resume_notice = Some(SESSION_LOST.to_owned());
+                    }
+                    normalizer
+                }
+                None => Normalizer::new(),
             };
             crate::process::dies_with_parent(&mut cmd);
             // Everything the agent starts inherits the run's origin, so
@@ -1051,6 +1073,12 @@ impl ClaudeHarness {
             // is lost); an empty head is every unprobed launch.
             let stdout_lines = BufReader::new(std::io::Cursor::new(head).chain(stdout)).lines();
             let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+            if let Some(message) = resume_notice {
+                let _ = event_tx.try_send(Ok(AgentEvent::Error {
+                    message,
+                    kind: None,
+                }));
+            }
             tokio::spawn(run_session(Session {
                 normalizer,
                 title_only,

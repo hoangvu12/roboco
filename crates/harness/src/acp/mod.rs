@@ -79,6 +79,18 @@ const DEFAULT_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 // The one-file server unpacks on launch. A local cold probe took 1.903s, but
 // slower disks need substantially more headroom than the generic 10s budget.
 const ANTIGRAVITY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(90);
+/// Bound on one session control call (model / config option switch).
+const CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// `session/load`'s own budget, on top of the handshake's: it replays the
+/// whole transcript, which on a long chat takes far longer than the rest of
+/// setup. Past it the run errors and keeps the session for the next message:
+/// a slow load is no reason to give up the conversation's context.
+const SESSION_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
+/// A stopped turn normally settles `cancelled` within moments. An agent still
+/// holding the prompt past this is wedged on the cancel (a tool that ignores
+/// it, a dead model stream): the turn is closed as stopped and the process
+/// retired, and the next message restores the session in a fresh one.
+const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(12);
 /// Per-agent configuration: which binary to spawn and what to tell the picker.
 struct AcpAgentSpec {
     id: HarnessId,
@@ -1227,6 +1239,11 @@ pub struct AcpHarness {
     /// picker. OpenCode shares this with its real startup budget because both
     /// paths wait for the same plugin-heavy boot.
     model_discovery_timeout: Duration,
+    /// How long a stopped turn may take to settle before the runtime is
+    /// retired (see [`DEFAULT_STOP_TIMEOUT`]).
+    stop_timeout: Duration,
+    /// `session/load`'s own budget (see [`SESSION_LOAD_TIMEOUT`]).
+    session_load_timeout: Duration,
     /// Discovery result cache: the advertised commands survive across calls.
     commands: tokio::sync::OnceCell<Vec<SlashCommand>>,
     /// Retain successful catalogs per credential/binary context through outages.
@@ -1248,6 +1265,8 @@ impl AcpHarness {
             // wedged agent, not a slow one.
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             model_discovery_timeout: DEFAULT_MODEL_DISCOVERY_TIMEOUT,
+            stop_timeout: DEFAULT_STOP_TIMEOUT,
+            session_load_timeout: SESSION_LOAD_TIMEOUT,
             commands: tokio::sync::OnceCell::new(),
             models_cache: crate::catalog::Catalog::default(),
             workspace_commands: crate::skills::CommandDiscovery::default(),
@@ -1385,11 +1404,11 @@ impl AcpHarness {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            let home = std::env::var_os("HOME");
+            let cwd = home.as_deref().map(std::path::Path::new);
+            crate::executable::spawn_error(e, cwd, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
         let on_progress = std::sync::Arc::new(on_progress);
         // One announcement whichever side prints the URL first: stderr prose
@@ -1399,7 +1418,7 @@ impl AcpHarness {
             let on_progress = on_progress.clone();
             let announced = announced.clone();
             tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                let mut lines = crate::lossy_lines::lossy_lines(stderr);
                 while let Ok(Some(line)) = lines.next_line().await {
                     // Sign-in output carries authorize urls and device codes.
                     tracing::debug!(
@@ -1481,6 +1500,20 @@ impl AcpHarness {
     /// Tune the handshake bound (tests shrink it; default 120s).
     pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    /// Tune the turn-stop bound (tests shrink it; default 12s).
+    #[doc(hidden)]
+    pub fn with_stop_timeout(mut self, timeout: Duration) -> Self {
+        self.stop_timeout = timeout;
+        self
+    }
+
+    /// Tune the `session/load` bound (tests shrink it; default 90s).
+    #[doc(hidden)]
+    pub fn with_session_load_timeout(mut self, timeout: Duration) -> Self {
+        self.session_load_timeout = timeout;
         self
     }
 
@@ -1715,13 +1748,21 @@ impl AcpHarness {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| {
+                let home = std::env::var_os("HOME");
+                let cwd = home.as_deref().map(std::path::Path::new);
+                crate::executable::spawn_error(e, cwd, || {
+                    crate::executable::binary_hint(&exe)
+                })
+            })?;
+        // Mark an agent that does not exit promptly on stdin EOF: Windows'
+        // teardown then terminates it rather than waiting out a grace for an
+        // exit that will not come. Unix teardown signals instead.
+        if !exits_on_stdin_eof(self.spec.id) {
+            crate::process::ignores_stdin_eof(&mut child);
+        }
         let mut child = Child::new(child);
         let stderr_tail = crate::StderrTail::default();
         let sign_in_prompted = CancellationToken::new();
@@ -1730,7 +1771,7 @@ impl AcpHarness {
             let prompted = sign_in_prompted.clone();
             let harness = self.spec.id;
             tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                let mut lines = crate::lossy_lines::lossy_lines(stderr);
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "roboco_harness::acp", "stderr: {line}");
                     tail.push(&line);
@@ -1832,7 +1873,7 @@ impl AcpHarness {
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
         let (_scratch, mut child, stderr_tail, sign_in_prompted) =
             self.spawn_agent(None, false, &[], None).await?;
-        let (client, _incoming) = match (child.stdin.take(), child.stdout.take()) {
+        let (client, incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
                 client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
             }
@@ -1841,6 +1882,11 @@ impl AcpHarness {
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
+        // Model discovery drains its incoming channel: a notification burst
+        // or a server request must not stall the probe (upstream #977) —
+        // the spawn answers every server request "unsupported" until the
+        // probe drops the receiver.
+        tokio::spawn(drain_discovery_incoming(client.clone(), incoming));
         let discovery = async {
             client
                 .request("initialize", initialize_params(self.spec.id))
@@ -2391,6 +2437,8 @@ impl Harness for AcpHarness {
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             handshake_timeout: self.handshake_timeout,
+            stop_timeout: self.stop_timeout,
+            session_load_timeout: self.session_load_timeout,
             stderr_tail,
             sign_in_prompted,
         }));
@@ -2433,6 +2481,8 @@ struct Session {
     interrupt_grace: Duration,
     kill_grace: Duration,
     handshake_timeout: Duration,
+    stop_timeout: Duration,
+    session_load_timeout: Duration,
     stderr_tail: crate::StderrTail,
     sign_in_prompted: CancellationToken,
 }
@@ -2918,6 +2968,46 @@ fn stop_outcome(
 /// `prompt_id` (agents with the prompt-complete extension) rides `_meta` so
 /// the `_x.ai/session/prompt_complete` notification can be matched exactly —
 /// grok echoes it back (verified live, 1.0.4).
+/// A message bound for the agent: its text plus the image blocks inlined
+/// with it — empty unless the agent advertises `promptCapabilities.image`;
+/// the image paths also ride the text as refs either way.
+#[derive(Clone, Default)]
+struct PromptInput {
+    text: String,
+    images: Vec<Value>,
+}
+
+impl PromptInput {
+    async fn new(text: String, attachments: &[String], inline_images: bool) -> Self {
+        let images = if inline_images && !attachments.is_empty() {
+            crate::pi::load_images_capped_for_acp(attachments).await
+        } else {
+            Vec::new()
+        };
+        Self { text, images }
+    }
+
+    fn blocks(&self) -> Vec<Value> {
+        std::iter::once(json!({ "type": "text", "text": self.text }))
+            .chain(self.images.iter().cloned())
+            .collect()
+    }
+
+    /// Several queued messages delivered as one prompt.
+    fn join(prompts: impl IntoIterator<Item = PromptInput>) -> Self {
+        let mut texts = Vec::new();
+        let mut images = Vec::new();
+        for prompt in prompts {
+            texts.push(prompt.text);
+            images.extend(prompt.images);
+        }
+        Self {
+            text: texts.join("\n\n"),
+            images,
+        }
+    }
+}
+
 fn prompt_turn(
     client: RpcClient,
     session_id: String,
@@ -2985,6 +3075,54 @@ type RequestInputFn = Box<
 /// tool permission, which auto-accepts (unattended parity); kinds may
 /// legitimately repeat — codex sends two `allow_always` options ("Allow for
 /// Session" and a prefix-rule amendment) on every exec approval.
+/// Question-shaped permission requests still waiting on the user. ACP
+/// requires the client to answer every pending permission request
+/// `cancelled` once it cancels the prompt, so a stop or interrupt answers
+/// them here instead of leaving the agent waiting on a dialog nobody sees.
+#[derive(Default)]
+struct PendingQuestions {
+    /// Ids not yet answered; whoever removes an id answers it, exactly once.
+    unanswered: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    tasks: tokio::task::JoinSet<()>,
+}
+
+impl PendingQuestions {
+    fn spawn(
+        &mut self,
+        client: RpcClient,
+        id: Value,
+        answer: impl std::future::Future<Output = Value> + Send + 'static,
+    ) {
+        while self.tasks.try_join_next().is_some() {}
+        self.lock().push(id.clone());
+        let unanswered = std::sync::Arc::clone(&self.unanswered);
+        self.tasks.spawn(async move {
+            let result = answer.await;
+            let mut unanswered = unanswered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(index) = unanswered.iter().position(|pending| *pending == id) {
+                unanswered.remove(index);
+                client.respond(&id, result);
+            }
+        });
+    }
+
+    /// Answer every waiting question `cancelled` and drop its dialog.
+    fn cancel_all(&mut self, client: &RpcClient) {
+        self.tasks.abort_all();
+        for id in std::mem::take(&mut *self.lock()) {
+            client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } }));
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Value>> {
+        self.unanswered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 fn is_user_question(options: &[Value]) -> bool {
     options.iter().any(|option| {
         !matches!(
@@ -3000,6 +3138,7 @@ fn is_user_question(options: &[Value]) -> bool {
 /// and answer with the option whose name matches the chosen label. A dropped
 /// resolver degrades to `cancelled` — never a silent allow.
 fn handle_server_request_live(
+    questions: &mut PendingQuestions,
     client: &RpcClient,
     id: Value,
     method: &str,
@@ -3047,9 +3186,8 @@ fn handle_server_request_live(
         options: names.clone(),
         multi_select: false,
     };
-    let client = client.clone();
     let request_input = std::sync::Arc::clone(request_input);
-    tokio::spawn(async move {
+    questions.spawn(client.clone(), id, async move {
         let answers = (request_input)(vec![question.clone()])
             .await
             .unwrap_or_default();
@@ -3064,11 +3202,10 @@ fn handle_server_request_live(
             })
             .and_then(|o| o.get("optionId").and_then(Value::as_str));
         match picked {
-            Some(option_id) => client.respond(
-                &id,
-                json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
-            ),
-            None => client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } })),
+            Some(option_id) => {
+                json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+            }
+            None => json!({ "outcome": { "outcome": "cancelled" } }),
         }
     });
     Vec::new()
@@ -3177,19 +3314,223 @@ fn noop_browser() -> Result<String, HarnessError> {
 
 /// `session/new`. Agents that sign in from Settings never start a browser
 /// sign-in mid-chat; an auth_required answer points the user there instead.
-async fn new_session(
+/// How a resumed run restores its session: `session/load` replays the whole
+/// transcript, `session/resume` only reattaches it. Each is used only when
+/// advertised; Antigravity prefers resume because its load replays every
+/// tool call, which on a long chat outlasts the handshake. An agent
+/// declaring neither still gets a load attempt — a method-not-found refusal
+/// falls back to a fresh session (see [`session_unrestorable`]).
+fn restore_method(init: &Value, harness: HarnessId) -> &'static str {
+    let capabilities = &init["agentCapabilities"];
+    let load = capabilities["loadSession"].as_bool() == Some(true);
+    let resume = !capabilities["sessionCapabilities"]["resume"].is_null();
+    match (load, resume) {
+        (true, true) if harness == HarnessId::Antigravity => "session/resume",
+        (false, true) => "session/resume",
+        _ => "session/load",
+    }
+}
+
+/// Whether a failed restore means the agent no longer has the session, so
+/// starting fresh loses nothing a retry would recover: ACP's
+/// resource-not-found code, no restore method at all, or a message that
+/// names the session as missing ("Session not found" from Devin). A bare
+/// "not found" is not enough: a missing MCP server command or model fails
+/// a load in the same words while the session is fine. Grok is the one
+/// exception: for an unknown session its only answer is a generic
+/// "Path not found." (FS_NOT_FOUND, verified on 1.0.46), and a missing
+/// working directory cannot be the cause there — the agent was started in
+/// it. Anything else — the load timing out, the agent exiting or its pipe
+/// closing before an answer, any other refusal — keeps the session for the
+/// next message.
+fn session_unrestorable(harness: HarnessId, error: &HarnessError) -> bool {
+    let HarnessError::Protocol(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    let says = |needles: &[&str]| needles.iter().any(|needle| message.contains(needle));
+    says(&["(code -32002)", "(code -32601)"])
+        || says(&["session not found", "unknown session", "no such session"])
+        || (harness == HarnessId::Grok
+            && message.contains("path not found")
+            && message.contains("fs_not_found"))
+}
+
+/// `session/new`, or for a resumed run the advertised restore with a visible
+/// fallback to a fresh session when the agent no longer has it (see
+/// [`session_unrestorable`]); any other restore failure errors the run and
+/// keeps the session. auth_required propagates so setup can sign in and
+/// retry.
+#[allow(clippy::too_many_arguments)]
+async fn open_session(
     client: &RpcClient,
     incoming: &mut mpsc::Receiver<Incoming>,
-    params: Value,
+    init: &Value,
+    harness: HarnessId,
+    request: &RunRequest,
     agent_name: &str,
-    signs_in_from_settings: bool,
-) -> Result<Value, HarnessError> {
-    match request_draining(client, incoming, "session/new", params).await {
-        Err(error) if signs_in_from_settings && is_auth_required(&error) => {
-            Err(HarnessError::Protocol(not_signed_in(agent_name)))
+    load_timeout: Duration,
+    event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
+) -> Result<(String, Value), HarnessError> {
+    let params = json!({
+        "cwd": request.cwd,
+        "mcpServers": acp_mcp_servers(request.mcp.as_ref()),
+    });
+    if let Some(resume) = &request.resume {
+        let method = restore_method(init, harness);
+        let mut restore = params.clone();
+        restore["sessionId"] = Value::String(resume.clone());
+        let restored = if method == "session/load" {
+            tokio::time::timeout(
+                load_timeout,
+                request_draining(client, incoming, method, restore),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(HarnessError::Protocol(format!(
+                    "session/load: the history replay did not finish within {}s",
+                    load_timeout.as_secs()
+                )))
+            })
+        } else {
+            request_draining(client, incoming, method, restore).await
+        };
+        match restored {
+            Ok(response) => return Ok((resume.clone(), response)),
+            Err(e) if is_auth_required(&e) => return Err(e),
+            // A slow or interrupted restore is retried by the next message;
+            // starting fresh would replace the stored session for good.
+            Err(e) if !session_unrestorable(harness, &e) => {
+                return Err(HarnessError::Protocol(format!(
+                    "{agent_name} could not restore session {resume}; the next message tries again: {e}"
+                )));
+            }
+            // A missing/foreign session falls back to a fresh one.
+            Err(e) => {
+                tracing::debug!(
+                    target: "roboco_harness::acp",
+                    "{method} failed (starting fresh): {e}"
+                );
+                let _ = send(event_tx, AgentEvent::Error {
+                    message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
+                    kind: None,
+                }).await;
+            }
         }
-        other => other,
     }
+    let new = request_draining(client, incoming, "session/new", params).await?;
+    let session_id = new
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Ok((session_id, new))
+}
+
+/// The sign-in a run may perform on its own after auth_required: the method
+/// the agent itself names as its default (`_meta.defaultAuthMethodId` — Grok's
+/// `cached_token`, which re-reads its stored login). Not just any advertised
+/// method: the others open a browser sign-in nobody is watching. `Err` names
+/// the kind of a method that cannot run here at all (terminal, env var).
+fn run_auth_method(init: &Value) -> Result<Option<String>, String> {
+    let Some(default) = init["_meta"]["defaultAuthMethodId"].as_str() else {
+        return Ok(None);
+    };
+    let Some(method) = init["authMethods"]
+        .as_array()
+        .and_then(|methods| methods.iter().find(|m| m["id"].as_str() == Some(default)))
+    else {
+        return Ok(None);
+    };
+    match method["type"].as_str() {
+        None | Some("agent") => Ok(Some(default.to_owned())),
+        Some(kind) => Err(kind.replace('_', " ")),
+    }
+}
+
+/// Answer auth_required once from the run itself (see [`run_auth_method`]),
+/// so a login the agent can restore by itself does not fail the chat.
+async fn authenticate_for_run(
+    client: &RpcClient,
+    incoming: &mut mpsc::Receiver<Incoming>,
+    init: &Value,
+    agent_name: &str,
+    required: &HarnessError,
+) -> Result<(), HarnessError> {
+    let method = match run_auth_method(init) {
+        Ok(Some(method)) => method,
+        Ok(None) => return Err(HarnessError::Protocol(signed_out(agent_name, required))),
+        Err(kind) => {
+            return Err(HarnessError::Protocol(format!(
+                "{agent_name} isn't signed in, and its sign-in ({kind}) can't run inside a \
+                 chat. Sign in from a terminal, then send the message again."
+            )));
+        }
+    };
+    request_draining(
+        client,
+        incoming,
+        "authenticate",
+        json!({ "methodId": method }),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| HarnessError::Protocol(signed_out(agent_name, &e)))
+}
+
+fn signed_out(agent_name: &str, error: &HarnessError) -> String {
+    format!("{agent_name} isn't signed in: {error}")
+}
+
+/// acp reserves -32000 for auth_required.
+/// Whether the agent's own docs say it exits on stdin EOF (roboco's
+/// teardown closes the writer once the CLI has flushed its work). OpenCode's
+/// server deliberately ignores EOF (upstream #977), so it is the exception.
+fn exits_on_stdin_eof(id: HarnessId) -> bool {
+    id != HarnessId::Opencode
+}
+
+/// `session/cancel` params. Grok treats a cancel carrying a user gesture as
+/// a barrier against its stale background-task wake prompts until the next
+/// real prompt; a bare cancel lets them restart the stopped work.
+fn cancel_params(harness: HarnessId, session_id: &str) -> Value {
+    let mut params = json!({ "sessionId": session_id });
+    if harness == HarnessId::Grok {
+        params["_meta"] = json!({ "cancelTrigger": "ctrl_c" });
+    }
+    params
+}
+
+/// Discard a probe's notifications and refuse its server requests, like
+/// command discovery does, until the probe drops the receiver's task.
+async fn drain_discovery_incoming(client: RpcClient, mut incoming: mpsc::Receiver<Incoming>) {
+    while let Some(inc) = incoming.recv().await {
+        if let Incoming::Request { id, .. } = inc {
+            client.respond_error(&id, -32601, "unsupported during discovery");
+        }
+    }
+}
+
+/// [`request_draining`] for a session control call (`set_model`,
+/// `set_config_option`): the session loop is blocked while one waits, so an
+/// agent that never answers must not hold off the run's stop or interrupt.
+async fn control_request(
+    client: &RpcClient,
+    incoming: &mut mpsc::Receiver<Incoming>,
+    method: &'static str,
+    params: Value,
+) -> Result<Value, HarnessError> {
+    tokio::time::timeout(
+        CONTROL_REQUEST_TIMEOUT,
+        request_draining(client, incoming, method, params),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(HarnessError::Protocol(format!(
+            "{method}: the agent did not answer within {}s",
+            CONTROL_REQUEST_TIMEOUT.as_secs()
+        )))
+    })
 }
 
 /// acp reserves -32000 for auth_required.
@@ -3529,7 +3870,7 @@ async fn select_session_config(
         )?;
     }
     if let Some(model) = first_class_model_change(&session_response, requested_model.as_deref())? {
-        request_draining(
+        control_request(
             client,
             incoming,
             "session/set_model",
@@ -3567,7 +3908,7 @@ async fn select_session_config(
                 params.insert(k.clone(), v.clone());
             }
         }
-        match request_draining(
+        match control_request(
             client,
             incoming,
             "session/set_config_option",
@@ -3635,6 +3976,8 @@ async fn run_session(session: Session) {
         interrupt_grace,
         kill_grace,
         handshake_timeout,
+        stop_timeout,
+        session_load_timeout,
         stderr_tail,
         sign_in_prompted,
     } = session;
@@ -3662,65 +4005,37 @@ async fn run_session(session: Session) {
         let steer_ext = steering_supported(&init);
         let init_commands = scan_available_commands(&init);
 
-        let session_params = json!({
-            "cwd": request.cwd,
-            "mcpServers": acp_mcp_servers(request.mcp.as_ref()),
-        });
-        let (session_id, session_response) = if let Some(resume) = &request.resume {
-            let mut load = session_params.clone();
-            load["sessionId"] = Value::String(resume.clone());
-            match request_draining(&client, &mut incoming, "session/load", load).await {
-                Ok(resp) => (resume.clone(), resp),
-                Err(e) if auth_method.is_some() && is_auth_required(&e) => {
-                    return Err(HarnessError::Protocol(not_signed_in(agent_name)));
-                }
-                // A missing/foreign session falls back to a fresh one.
-                Err(e) => {
-                    tracing::debug!(
-                        target: "roboco_harness::acp",
-                        "session/load failed (starting fresh): {e}"
-                    );
-                    let _ = send(
-                        &event_tx,
-                        AgentEvent::Error {
-                            message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
-                            kind: None,
-                        },
-                    )
-                    .await;
-                    let new = new_session(
-                        &client,
-                        &mut incoming,
-                        session_params.clone(),
-                        agent_name,
-                        auth_method.is_some(),
-                    )
-                    .await?;
-                    (
-                        new.get("sessionId")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                        new,
-                    )
-                }
-            }
-        } else {
-            let new = new_session(
+        let inline_images =
+            init["agentCapabilities"]["promptCapabilities"]["image"].as_bool() == Some(true);
+
+        // auth_required gets one sign-in and retry; agents that sign in
+        // from Settings never start a sign-in mid-chat and point there.
+        let mut authenticated = false;
+        let (session_id, session_response) = loop {
+            match open_session(
                 &client,
                 &mut incoming,
-                session_params,
+                &init,
+                harness,
+                &request,
                 agent_name,
-                auth_method.is_some(),
+                session_load_timeout,
+                &event_tx,
             )
-            .await?;
-            (
-                new.get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                new,
-            )
+            .await
+            {
+                Err(e) if is_auth_required(&e) && auth_method.is_some() => {
+                    return Err(HarnessError::Protocol(not_signed_in(agent_name)));
+                }
+                Err(e) if is_auth_required(&e) && !authenticated => {
+                    authenticated = true;
+                    authenticate_for_run(&client, &mut incoming, &init, agent_name, &e).await?;
+                }
+                Err(e) if is_auth_required(&e) => {
+                    return Err(HarnessError::Protocol(signed_out(agent_name, &e)));
+                }
+                other => break other?,
+            }
         };
         if session_id.is_empty() {
             return Err(HarnessError::Protocol(
@@ -3742,16 +4057,25 @@ async fn run_session(session: Session) {
             &request,
         )
         .await?;
-        Ok::<(String, bool, Vec<SlashCommand>, Value), HarnessError>((
+        Ok::<(String, bool, bool, Vec<SlashCommand>, Value), HarnessError>((
             session_id,
             steer_ext,
+            inline_images,
             init_commands,
             session_options,
         ))
     };
+    // Handshake budget: a resumed run's setup also pays the session/load
+    // replay, so its bound is the handshake plus the load timeout.
+    let setup_budget = if request.resume.is_some() {
+        handshake_timeout + session_load_timeout
+    } else {
+        handshake_timeout
+    };
     let setup = unless_sign_in_prompted(setup, &sign_in_prompted, agent_name);
-    let (session_id, steer_ext, init_commands, mut session_options) = tokio::select! {
-        res = tokio::time::timeout(handshake_timeout, setup) => {
+    let (session_id, steer_ext, inline_images, init_commands, mut session_options) =
+        tokio::select! {
+        res = tokio::time::timeout(setup_budget, setup) => {
             let res = res.unwrap_or_else(|_| {
                 // A hung handshake (agent waiting on a login it can never
                 // get, a wedged adapter) used to spin "Working" forever —
@@ -3761,7 +4085,7 @@ async fn run_session(session: Session) {
                     "{agent_name} did not complete the ACP handshake within {}s \
                      (the agent may be waiting for a login — try running it once \
                      in a terminal)",
-                    handshake_timeout.as_secs()
+                    setup_budget.as_secs()
                 )))
             });
             match res {
@@ -3797,6 +4121,7 @@ async fn run_session(session: Session) {
                             session_id: None,
                         }))
                         .await;
+                    client.close_stdin_for_teardown();
                     child.shutdown(kill_grace).await;
                     return;
                 }
@@ -3938,6 +4263,9 @@ async fn run_session(session: Session) {
     // A turn stop (`TurnControl::stop_turn`) in flight: `session/cancel`
     // ends the prompt and the session stays up for the next one.
     let mut stopping = false;
+    // When a stop in flight gives up on the agent (see DEFAULT_STOP_TIMEOUT).
+    let mut stop_deadline: Option<tokio::time::Instant> = None;
+    let mut questions = PendingQuestions::default();
     // The runtime's process tree when its teardown began (the acp Child's
     // shutdown already terminates the descendant tree it snapshotted; this
     // covers anything that detached between the snapshot and the kill).
@@ -3999,6 +4327,7 @@ async fn run_session(session: Session) {
 
             res = async { turn.as_mut().expect("guarded by if").await }, if turn.is_some() => {
                 turn = None;
+                stop_deadline = None;
                 if res.is_err() && client.is_closed() {
                     break 'main;
                 }
@@ -4085,6 +4414,7 @@ async fn run_session(session: Session) {
                         }
                         Incoming::Request { id, method, params } => {
                             for ev in handle_server_request_live(
+                                &mut questions,
                                 &client,
                                 id,
                                 &method,
@@ -4268,6 +4598,7 @@ async fn run_session(session: Session) {
                 Some(Incoming::Request { id, method, params }) => {
                     prompt_stall_deadline = None;
                     for ev in handle_server_request_live(
+                        &mut questions,
                         &client,
                         id,
                         &method,
@@ -4378,6 +4709,7 @@ async fn run_session(session: Session) {
                                 }
                                 Incoming::Request { id, method, params } => {
                                     for ev in handle_server_request_live(
+                                        &mut questions,
                                         &client,
                                         id,
                                         &method,
@@ -4538,6 +4870,7 @@ async fn run_session(session: Session) {
                 // Drop the dead future: a response that somehow arrives later
                 // resolves a closed channel harmlessly.
                 turn = None;
+                stop_deadline = None;
                 let (prev, _next) = rotate(&mut assistant_message_id);
                 if !send(
                     &event_tx,
@@ -4757,7 +5090,9 @@ async fn run_session(session: Session) {
                 released = None;
                 if turn.is_some() {
                     stopping = true;
-                    client.notify("session/cancel", Some(json!({ "sessionId": session_id })));
+                    stop_deadline = Some(tokio::time::Instant::now() + stop_timeout);
+                    client.notify("session/cancel", Some(cancel_params(harness, &session_id)));
+                    questions.cancel_all(&client);
                 } else {
                     // Between turns: nothing to cancel. Settle the stop so the
                     // host sees the turn over.
@@ -4784,7 +5119,10 @@ async fn run_session(session: Session) {
                     torn_down = crate::process::descendants(pid).await;
                 }
                 if turn.is_some() {
-                    client.notify("session/cancel", Some(json!({ "sessionId": session_id })));
+                    client.notify("session/cancel", Some(cancel_params(harness, &session_id)));
+                    // A question the user never answered goes with the turn:
+                    // ACP requires the client to answer it `cancelled`.
+                    questions.cancel_all(&client);
                     // Escalate if the agent doesn't wind down (stopReason
                     // "cancelled") within the grace periods.
                     if let Some(pid) = crate::process::signal_target(&child) {
@@ -4794,6 +5132,28 @@ async fn run_session(session: Session) {
                 } else {
                     // Idle between turns: nothing to cancel — the terminal
                     // bookkeeping below still guarantees Done { Interrupted }.
+                    break 'main;
+                }
+            },
+
+            // The stop's cancel went unanswered: the agent is wedged on it
+            // (the stall watchdog is off once traffic arrived; only an
+            // interrupt escalates). Close the turn as stopped and retire the
+            // process; the next message restores the session in a fresh one.
+            _ = tokio::time::sleep_until(stop_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if stop_deadline.is_some() && !interrupted =>
+            {
+                stop_deadline = None;
+                if turn.is_some() && stopping {
+                    tracing::warn!(
+                        target: "roboco_harness::acp",
+                        "{agent_name} did not settle a stopped turn within {}s; retiring the process",
+                        stop_timeout.as_secs()
+                    );
+                    // Wind down like an interrupt: the session loop's own
+                    // exit drain settles open subagents and sends the turn's
+                    // Done { Interrupted }.
+                    interrupted = true;
                     break 'main;
                 }
             },
