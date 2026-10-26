@@ -255,9 +255,20 @@ mod tests {
     }
 
     /// A mux pair standing in for the P2P link: `requester` opens streams that
-    /// the running device serves as `peer`.
+    /// the running device serves as `peer`. A loopback TCP pair rather than
+    /// `UnixStream::pair`: the mux frames the same either way (it carries TCP
+    /// in production), and Windows has no Unix socket pairs.
     fn link(routes: &CallbackRoutes, peer: &str, stop: &CancellationToken) -> Mux {
-        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let requester = std::net::TcpStream::connect(address).unwrap();
+        let peer_side = listener.accept().unwrap().0;
+        requester.set_nonblocking(true).unwrap();
+        peer_side.set_nonblocking(true).unwrap();
+        let (a, b) = (
+            tokio::net::TcpStream::from_std(requester).unwrap(),
+            tokio::net::TcpStream::from_std(peer_side).unwrap(),
+        );
         let (ar, aw) = tokio::io::split(a);
         let (br, bw) = tokio::io::split(b);
         let connector: Arc<dyn Connector> = Arc::new(Routes(routes.clone()));

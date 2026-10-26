@@ -25,7 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// holds for the socket's lifetime, because the process enumeration each
 /// cycle already proves the same process still owns the same port. Sockets
 /// that did not answer HTTP (a server bound but not yet serving) are retried
-/// with a capped exponential backoff instead of on every cycle.
+/// with a capped exponential backoff instead of on every cycle. The one
+/// exception is a start-time-less listener (see [`ProbeMemory::plan`]): its
+/// identity cannot be proven, so it is probed every cycle.
 #[derive(Default)]
 pub(crate) struct ProbeMemory {
     verdicts: HashMap<(u32, u64, SocketAddr), Verdict>,
@@ -62,6 +64,15 @@ impl ProbeMemory {
         let mut known = Vec::new();
         let mut probe = Vec::new();
         for candidate in candidates {
+            // A start-time-less listener (a Windows process whose start time
+            // could not be read; see discovery::same_process) cannot prove it
+            // is still the process a verdict was minted for: a recycled pid
+            // on the same port would inherit a stranger's verdict. Such rows
+            // skip the memoization and are probed every cycle instead.
+            if candidate.1.started_at == 0 {
+                probe.push(candidate);
+                continue;
+            }
             match self.verdicts.get(&probe_key(&candidate.1)) {
                 Some(Verdict::Http) => known.push(candidate),
                 Some(Verdict::NotHttp { retry_at, .. }) if *retry_at > now => {}
@@ -71,6 +82,9 @@ impl ProbeMemory {
         (known, probe)
     }
     pub(crate) fn record(&mut self, listener: &discovery::Listener, http: bool, now: Instant) {
+        if listener.started_at == 0 {
+            return; // never memoized; see plan
+        }
         let key = probe_key(listener);
         let verdict = if http {
             Verdict::Http
@@ -452,5 +466,24 @@ mod tests {
         }
         let (_, probe) = memory.plan(vec![((), listener(7, 8081))], now);
         assert_eq!(probe.len(), 1, "still retried once per max backoff");
+    }
+    #[test]
+    fn start_time_less_listeners_are_probed_every_cycle() {
+        // Windows degradation (see discovery::same_process): a process
+        // whose start time could not be read cannot prove identity, so no
+        // verdict is ever remembered for it — a recycled pid must not
+        // inherit one.
+        let mut memory = ProbeMemory::default();
+        let t0 = Instant::now();
+        let mut degraded = listener(7, 8081);
+        degraded.started_at = 0;
+        for cycle in 0..3u64 {
+            let now = t0 + Duration::from_secs(2 * cycle);
+            let (known, probe) = memory.plan(vec![((), degraded.clone())], now);
+            assert!(known.is_empty(), "cycle {cycle} must not trust a verdict");
+            assert_eq!(probe.len(), 1, "cycle {cycle} must re-probe");
+            // An HTTP verdict would be recorded, but must not stick.
+            memory.record(&probe[0].1, true, now);
+        }
     }
 }
