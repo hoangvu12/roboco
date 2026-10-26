@@ -73,7 +73,12 @@ sourceTitle: string, } | { "kind": "harnessSwitch", id: string,
 /**
  * The harness the chat switched TO (wire name, e.g. "codex").
  */
-harness: HarnessId, } | { "kind": "completionNotice", id: string, 
+harness: HarnessId, 
+/**
+ * The harness the chat switched FROM, when known (additive: absent
+ * on seams older builds wrote).
+ */
+fromHarness?: HarnessId | null, } | { "kind": "completionNotice", id: string, 
 /**
  * One row per side chat the notice reports (a single outcome when
  * one side chat finished; several when outcomes merged — ticket 13).

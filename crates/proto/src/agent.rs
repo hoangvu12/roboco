@@ -29,6 +29,43 @@ pub enum HarnessId {
     Mock,
 }
 
+impl HarnessId {
+    /// Every harness, in declaration order.
+    pub const ALL: [HarnessId; 10] = [
+        HarnessId::ClaudeCode,
+        HarnessId::Codex,
+        HarnessId::Cursor,
+        HarnessId::Devin,
+        HarnessId::Grok,
+        HarnessId::Hermes,
+        HarnessId::Pi,
+        HarnessId::Opencode,
+        HarnessId::Antigravity,
+        HarnessId::Mock,
+    ];
+
+    /// The wire slug (`claude-code`, `codex`, ...) — what serde writes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HarnessId::ClaudeCode => "claude-code",
+            HarnessId::Codex => "codex",
+            HarnessId::Cursor => "cursor",
+            HarnessId::Devin => "devin",
+            HarnessId::Grok => "grok",
+            HarnessId::Hermes => "hermes",
+            HarnessId::Pi => "pi",
+            HarnessId::Opencode => "opencode",
+            HarnessId::Antigravity => "antigravity",
+            HarnessId::Mock => "mock",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]; `None` for a slug this build does not know.
+    pub fn from_slug(slug: &str) -> Option<HarnessId> {
+        Self::ALL.into_iter().find(|id| id.as_str() == slug)
+    }
+}
+
 /// The continue prompt a Limited chat's **Resume** sends as a normal run
 /// (orchestration v2): one shared spelling so a resumed transcript reads
 /// the same from every surface that sends it (the desktop banner today;
@@ -105,6 +142,21 @@ pub struct HarnessUpdateFailure {
     pub message: String,
     #[serde(default)]
     pub retryable: bool,
+    /// What failed: looking for a release, or installing one. An engine that
+    /// predates the field only ever reported failed checks.
+    #[serde(default)]
+    pub kind: HarnessUpdateFailureKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessUpdateFailureKind {
+    /// The version probe or release lookup failed; checking again retries.
+    #[default]
+    Check,
+    /// The updater or its verification failed; the release is still known,
+    /// so the update itself can be retried.
+    Install,
 }
 
 /// One row in the device-local harness-update stream.
@@ -137,6 +189,38 @@ pub struct HarnessUpdateStatus {
     /// Provider command shown when mutation cannot be safely automated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_command: Option<String>,
+    /// The installed release is known not to work with (or isn't supported
+    /// by) this engine's roboco.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<HarnessCompatibility>,
+    /// A newer release exists, but roboco won't install it: it is known not
+    /// to work. Such a release is never reported as available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<HarnessCompatibility>,
+}
+
+/// How well a CLI release works with this roboco (see the engine's
+/// compatibility policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessCompatibilityStatus {
+    Supported,
+    /// Outside the releases this roboco was built and tested against.
+    Unsupported,
+    /// Known not to work with this roboco.
+    Broken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessCompatibility {
+    pub status: HarnessCompatibilityStatus,
+    /// The release this is about.
+    pub version: String,
+    /// One line for the user, naming the release to use instead when known.
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_version: Option<String>,
 }
 
 impl HarnessUpdateStatus {

@@ -91,7 +91,13 @@ impl LiveTerminal {
 
 struct TerminalsInner {
     sessions: Mutex<HashMap<String, Arc<Mutex<LiveTerminal>>>>,
+    /// Each terminal's chat, kept past the terminal's close: a server it
+    /// backgrounded outlives it and still belongs to that chat's previews.
+    chats: Mutex<VecDeque<(String, String)>>,
 }
+
+/// Terminals whose chat [`Terminals::chats`] still remembers.
+const REMEMBERED_TERMINAL_CHATS: usize = 4096;
 
 impl Drop for TerminalsInner {
     fn drop(&mut self) {
@@ -155,10 +161,32 @@ impl Terminals {
         let terminals = Self {
             inner: Arc::new(TerminalsInner {
                 sessions: Mutex::new(HashMap::new()),
+                chats: Mutex::new(VecDeque::new()),
             }),
         };
         tokio::spawn(reaper_task(Arc::downgrade(&terminals.inner)));
         terminals
+    }
+
+    /// Record that `terminal_id` was opened for `chat_id` — everything the
+    /// terminal starts carries the terminal's origin (see
+    /// [`roboco_proto::ORIGIN_ENV`]), and preview discovery maps it back to
+    /// the chat. Kept past the terminal's close: a server it backgrounded
+    /// outlives it.
+    pub fn associate_chat(&self, terminal_id: &str, chat_id: &str) {
+        let mut chats = lock(&self.inner.chats);
+        chats.retain(|(terminal, _)| terminal != terminal_id);
+        chats.push_back((terminal_id.to_owned(), chat_id.to_owned()));
+        while chats.len() > REMEMBERED_TERMINAL_CHATS {
+            chats.pop_front();
+        }
+    }
+
+    /// Terminal id → chat for every terminal opened for a chat, open or
+    /// since closed (the newest [`REMEMBERED_TERMINAL_CHATS`]). Everything a
+    /// terminal starts carries its id (see [`roboco_proto::ORIGIN_ENV`]).
+    pub fn chats(&self) -> HashMap<String, String> {
+        lock(&self.inner.chats).iter().cloned().collect()
     }
 
     /// Open a login shell in `cwd`. The PTY outlives every subscriber; it dies on
@@ -239,6 +267,14 @@ impl Terminals {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| shell.clone());
+        // Named before the shell starts, so everything it runs carries it.
+        let id = new_id();
+        let mut environment = environment.clone();
+        environment.insert(
+            roboco_proto::ORIGIN_ENV.to_owned(),
+            roboco_proto::terminal_origin(&id),
+        );
+        let environment = &environment;
 
         // ConPTY has no Unix canonical line buffer. Preserve interactive cmd
         // syntax and avoid imposing a PowerShell script execution policy.
@@ -304,7 +340,6 @@ impl Terminals {
             .take_writer()
             .map_err(|e| EngineError::Other(format!("pty writer: {e}")))?;
 
-        let id = new_id();
         let session = Arc::new(Mutex::new(LiveTerminal {
             initial_script,
             master: Some(master),

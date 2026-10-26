@@ -339,6 +339,10 @@ pub(crate) struct Dialog {
     pub wire_id: String,
     pub kind: DialogKind,
     pub question: UserInputQuestion,
+    /// pi's dialog timeout in milliseconds, when it carries one: 0 means
+    /// none, a negative one has already expired, and one too large for a
+    /// Duration is as good as none (the dialog waits for the user).
+    pub timeout_ms: Option<f64>,
 }
 
 /// Map one `extension_ui_request` to a question. Returns `None` for
@@ -399,6 +403,7 @@ pub(crate) fn dialog(event: &Value) -> Option<Dialog> {
     Some(Dialog {
         wire_id: wire_id.to_owned(),
         kind,
+        timeout_ms: event.get("timeout").and_then(Value::as_f64),
         question: UserInputQuestion {
             id: uuid::Uuid::new_v4().to_string(),
             header: if title.is_empty() {

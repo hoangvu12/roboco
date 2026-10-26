@@ -275,6 +275,7 @@ impl TurnWire {
                 steering,
                 interrupt: interrupt.clone(),
                 turn: crate::TurnControl::default(),
+                origin: None,
             },
             request: serde_json::from_value(request).unwrap(),
             interrupt_grace: Duration::from_secs(2),
@@ -2236,7 +2237,7 @@ async fn detection_routes_and_authentication() {
                 socket.write_all(format!("HTTP/1.1 {code} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).as_bytes()).await.unwrap();
             }
         });
-        let result = Protocol::detect(&server).await;
+        let result = Protocol::detect_preferring(&server, None).await;
         task.abort();
         if status == 401 || status == 403 {
             assert!(

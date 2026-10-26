@@ -2210,6 +2210,7 @@ impl RpcService for EngineRpc {
                             .map(|c| c.device_id.clone())
                             .unwrap_or_default();
                         snapshot.remote = device != catalog.device_id();
+                        snapshot.remote = device != catalog.device_id();
                         let cwd = chat.and_then(|c| c.cwd);
                         let cwd = cwd.map(|cwd| {
                             if snapshot.remote {
@@ -2224,11 +2225,16 @@ impl RpcService for EngineRpc {
                             .as_ref()
                             .and_then(|p| p.file_name())
                             .map(|s| s.to_string_lossy().into_owned());
+                        // Servers in this checkout, and any this chat's agent
+                        // or terminals started elsewhere. Only roboco-started
+                        // ones: an older peer advertises every listener.
                         snapshot.services.retain(|service| {
                             service.device_id == device
-                                && cwd.as_ref().is_some_and(|cwd| {
-                                    cwd == std::path::Path::new(&service.project_cwd)
-                                })
+                                && service.roboco_owned
+                                && (service.chat_id.as_deref() == Some(chat_id.as_str())
+                                    || cwd.as_ref().is_some_and(|cwd| {
+                                        cwd == std::path::Path::new(&service.project_cwd)
+                                    }))
                         });
                         let value = serde_json::to_value(snapshot).ok()?;
                         Some((value, (changes, chats, false, workspace, catalog, chat_id)))
@@ -2272,9 +2278,13 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(format!("{e:#}")))?;
                 RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
             }
-            methods::WATCH_HARNESS_UPDATES => Ok(RpcReply::Stream(watch_stream(
-                self.harness_updates()?.watch(),
-            ))),
+            methods::WATCH_HARNESS_UPDATES => {
+                let coordinator = self.harness_updates()?;
+                // A view of the rows just opened: re-check any CLI that
+                // changed on disk since its last check (stat-only otherwise).
+                coordinator.recheck_changed_binaries_soon();
+                Ok(RpcReply::Stream(watch_stream(coordinator.watch())))
+            }
             methods::CHECK_HARNESS_UPDATES => {
                 let p: HarnessUpdateParams = parse_params(params)?;
                 let coordinator = self.harness_updates()?.clone();
@@ -3291,6 +3301,14 @@ impl RpcService for EngineRpc {
                         .terminals
                         .open(&cwd, p.cols, p.rows)
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    // A terminal opened for a real chat (not a canvas key):
+                    // remember the chat past the terminal's close, so servers
+                    // it backgrounded still belong to that chat's previews
+                    // (upstream #1023). Everything the terminal starts
+                    // carries its origin either way.
+                    if self.workspace.chat(&p.chat_id).ok().flatten().is_some() {
+                        self.terminals.associate_chat(&session.id, &p.chat_id);
+                    }
                     RpcReply::value(&session)
                 })
                 .await

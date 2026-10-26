@@ -276,13 +276,22 @@ pub enum MessagePart {
     /// `harness` carries the budgeted history of everything above. Written
     /// once per switch by the engine; renders as a "Switched to <harness>"
     /// divider. Old desktop builds' unknown-kind fallback yields an empty
-    /// text part (invisible). There is no switch BACK: returning to the old
-    /// harness is just another one-way switch.
+    /// text part (invisible).
+    ///
+    /// A switch BACK is another one-way switch that RESUMES the recorded
+    /// provider session (upstream #966's `ProviderSessionMark`): the harness
+    /// the chat switched FROM is named here so the seam names both sides
+    /// (the UI draws the two providers' logos), and the engine hands the
+    /// resumed session only the turns it missed while it was away.
     #[serde(rename_all = "camelCase")]
     HarnessSwitch {
         id: String,
         /// The harness the chat switched TO (wire name, e.g. "codex").
         harness: HarnessId,
+        /// The harness the chat switched FROM, when known (additive: absent
+        /// on seams older builds wrote).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_harness: Option<HarnessId>,
     },
     /// The engine's completion notice (orchestration v2): an engine-authored
     /// SYSTEM entry in a parent chat reporting the recorded outcomes of its

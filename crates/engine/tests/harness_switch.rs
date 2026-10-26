@@ -497,7 +497,7 @@ async fn a_native_command_first_turn_defers_the_history_to_the_next_ordinary_sen
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn switching_back_is_another_one_way_switch_with_the_whole_conversation() {
+async fn switching_back_resumes_the_providers_own_session_with_what_it_missed() {
     let tmp = tempfile::tempdir().unwrap();
     let (mock, mock_requests) =
         Capture::build(HarnessId::Mock, "Mock", "mock-session", "I remember PINEAPPLE");
@@ -547,15 +547,21 @@ async fn switching_back_is_another_one_way_switch_with_the_whole_conversation() 
     .await;
     let request = mock_requests.lock().unwrap().last().cloned().unwrap();
     assert_eq!(request.harness, Some(HarnessId::Mock));
-    assert_eq!(request.resume, None, "neither session may resume after the switch");
-    // The budgeted history now covers BOTH sides of the earlier seam: the
-    // original mock exchange and the pi exchange above the switch back.
-    assert!(request.prompt.contains("Remember PINEAPPLE"), "{}", request.prompt);
+    // Upstream #966's switch back: the mock's own recorded session resumes,
+    // and it is handed only what it missed while pi ran (under the
+    // "while you were away" lead) — its own first exchange is never
+    // replayed, and the seams are never pasted as conversation text.
+    assert_eq!(
+        request.resume.as_deref(),
+        Some("mock-session"),
+        "the provider's own session resumes on the switch back"
+    );
     assert!(request.prompt.contains("the pi exchange"), "{}", request.prompt);
     assert!(request.prompt.contains("back on mock"), "{}", request.prompt);
+    assert!(!request.prompt.contains("Remember PINEAPPLE"), "{}", request.prompt);
     assert!(!request.prompt.contains("switch:"), "{}", request.prompt);
 
-    core.shutdown().await;
+    core.shutdown().await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

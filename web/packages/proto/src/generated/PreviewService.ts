@@ -8,4 +8,8 @@ id: string, projectId: string, projectName: string, projectCwd: string, deviceId
 /**
  * Process creation time, milliseconds since the Unix epoch.
  */
-startedAt: number, robocoOwned: boolean, };
+startedAt: number, robocoOwned: boolean, 
+/**
+ * The chat whose agent or terminal started it (see [`ORIGIN_ENV`]).
+ */
+chatId?: string | null, };

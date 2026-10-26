@@ -49,7 +49,9 @@
 //!   unresponsive; the stream always ends with `Done { status: Interrupted }`.
 
 pub(crate) mod catalog;
+mod elicitation;
 mod normalize;
+pub mod npm_repair;
 mod subagents;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -61,7 +63,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use roboco_proto::{
@@ -96,6 +97,21 @@ fn resolve_codex_executable() -> Option<PathBuf> {
     crate::executable::find_on_paths("codex", extra)
 }
 
+/// `canonicalize` yields `\\?\`-prefixed verbatim paths on Windows, which
+/// cmd.exe cannot launch batch shims through; keep the plain drive/UNC form.
+fn plain_executable(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(rest) = path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+            return match rest.strip_prefix(r"UNC\") {
+                Some(share) => PathBuf::from(format!(r"\\{share}")),
+                None => PathBuf::from(rest),
+            };
+        }
+    }
+    path
+}
+
 /// Dotted `thread/start` config overrides that add an injected MCP server
 /// to the user's `mcp_servers` table.
 fn codex_mcp_overrides(mcp: &roboco_proto::McpServer) -> Vec<(String, Value)> {
@@ -104,6 +120,9 @@ fn codex_mcp_overrides(mcp: &roboco_proto::McpServer) -> Vec<(String, Value)> {
         (key("command"), mcp.command.clone().into()),
         (key("args"), json!(mcp.args)),
         (key("env"), json!(mcp.env)),
+        // `never` forbids approval prompts; explicitly approve our injected
+        // server's tools so Codex does not reject calls that need approval.
+        (key("default_tools_approval_mode"), "approve".into()),
     ]
 }
 
@@ -202,11 +221,9 @@ impl CodexHarness {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            crate::executable::spawn_error(e, None, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             shutdown_child(&mut child, self.kill_grace).await;
@@ -237,6 +254,9 @@ impl CodexHarness {
             Ok::<Value, HarnessError>(skills)
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        // Windows teardown gives the child its grace to exit on stdin EOF;
+        // the probe's writer task would otherwise hold the pipe open.
+        client.close_stdin_for_teardown();
         shutdown_child(&mut child, self.kill_grace).await;
         match result {
             Ok(inner) => inner,
@@ -259,11 +279,9 @@ impl CodexHarness {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            crate::executable::spawn_error(e, None, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             shutdown_child(&mut child, self.kill_grace).await;
@@ -335,6 +353,7 @@ impl CodexHarness {
             Ok::<Vec<Model>, HarnessError>(models)
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        client.close_stdin_for_teardown();
         shutdown_child(&mut child, self.kill_grace).await;
         match result {
             Ok(inner) => inner,
@@ -740,6 +759,17 @@ impl CodexHarness {
             ));
         }
         let exe = self.resolve_executable()?;
+        // Cached per binary; a fixed test executable is never version-probed
+        // (upstream #977: an old CLI is refused up front, not at the wire).
+        if self.executable.is_none() {
+            let probe = exe.clone();
+            let version =
+                tokio::task::spawn_blocking(move || crate::executable::binary_version(&probe))
+                    .await
+                    .ok()
+                    .flatten();
+            check_codex_version(version.as_ref())?;
+        }
         // Yolo mode: danger-full-access + approvalPolicy "never" (set below) —
         // codex's --dangerously-bypass-approvals-and-sandbox equivalent.
         // Parity with the Claude adapter, which auto-approves every
@@ -756,6 +786,9 @@ impl CodexHarness {
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
         crate::process::dies_with_parent(&mut cmd);
+        // Everything the agent starts inherits the run's origin, so preview
+        // discovery can tell the chat's dev servers from the user's own.
+        crate::apply_origin(&mut cmd, controls.origin.as_deref());
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
@@ -764,11 +797,10 @@ impl CodexHarness {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            let cwd = (!request.cwd.is_empty()).then(|| std::path::Path::new(&request.cwd));
+            crate::executable::spawn_error(e, cwd, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
 
         let stdin = child
@@ -783,11 +815,14 @@ impl CodexHarness {
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
             tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                let mut lines = crate::lossy_lines::lossy_lines(stderr);
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "roboco_harness::codex", "stderr: {line}");
                     tail.push(&line);
                 }
+                // EOF: the crash report's wait_closed() must never wait out
+                // a live pipe (upstream #977).
+                tail.close();
             });
         }
 
@@ -1053,6 +1088,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
+        origin: _origin,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -1126,20 +1162,28 @@ async fn run_session(session: Session) {
     // engine attaches the chat's budgeted history to the continuation so a
     // fresh thread still knows the conversation.
     let mut resume_fallback: Option<String> = None;
+    // The notice a fresh-start resume fallback owes the user (upstream
+    // #977): the new reply will not know the earlier conversation.
+    let mut restore_notice: Option<String> = None;
     let setup = async {
-        client
-            .request(
-                "initialize",
-                json!({
-                    "clientInfo": {
-                        "name": "roboco-native",
-                        "title": "Roboco",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                    "capabilities": { "experimentalApi": true },
-                }),
-            )
-            .await?;
+        // An app-server that predates notification opt-outs may refuse the
+        // capability outright; the opt-out is an optimization, so ask again
+        // without it. A refusal (not an exit) keeps the client open.
+        let mut opt_out = true;
+        loop {
+            match client.request("initialize", initialize_params(opt_out)).await {
+                Ok(_) => break,
+                Err(e) if opt_out && !client.is_closed() => {
+                    tracing::debug!(
+                        target: "roboco_harness::codex",
+                        "initialize refused ({e}); retrying without notification opt-outs"
+                    );
+                    opt_out = false;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         client.notify("initialized", None);
 
         let mut start_params = start_params.clone();
@@ -1188,25 +1232,47 @@ async fn run_session(session: Session) {
         } else if let Some(resume) = &request.resume {
             let mut p = start_params.clone();
             p.insert("threadId".into(), Value::String(resume.clone()));
-            match client.request("thread/resume", Value::Object(p)).await {
+            match resume_thread(&client, Value::Object(p)).await {
                 Ok(thread) => thread,
-                // A missing/foreign rollout falls back to a fresh thread.
-                Err(e) => {
+                // A conversation that is gone (no rollout, a thread id Codex
+                // never issued) falls back to a fresh thread — visibly: the
+                // reply will not know the earlier conversation.
+                Err(e) if resume_unrecoverable(&e) => {
                     if command_request(&request.prompt, resume)?.is_some() {
                         return Err(e);
                     }
-                    tracing::debug!(
+                    tracing::warn!(
                         target: "roboco_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
+                    let reason = match &e {
+                        HarnessError::Protocol(message) => message.clone(),
+                        other => other.to_string(),
+                    };
                     // A refused resume with the engine's budgeted fallback
                     // history (ticket 09's account-failover continuation):
-                    // the fresh thread still owes the chat its context.
+                    // the fresh thread still owes the chat its context, so
+                    // the notice says a summary is carried, not that all
+                    // context is lost.
                     resume_fallback = request.resume_fallback_history.clone();
+                    restore_notice = Some(if resume_fallback.is_some() {
+                        format!(
+                            "Couldn't resume the earlier Codex conversation ({reason}), so this \
+                             reply starts a new one from the conversation summary."
+                        )
+                    } else {
+                        format!(
+                            "Couldn't restore the earlier Codex conversation ({reason}), so this \
+                             reply starts a new one without its context."
+                        )
+                    });
                     client
                         .request("thread/start", Value::Object(start_params.clone()))
                         .await?
                 }
+                // A dead process or a refusal a fresh thread would hit too:
+                // fail the run rather than silently dropping its history.
+                Err(e) => return Err(e),
             }
         } else {
             client
@@ -1216,17 +1282,20 @@ async fn run_session(session: Session) {
         let thread_id = thread["thread"]["id"].as_str().unwrap_or("").to_owned();
         let mut children = subagents::Subagents::new(thread_id.clone());
         children.restore(&thread["thread"]);
-        Ok::<_, HarnessError>((thread_id, children))
+        Ok::<_, HarnessError>((thread_id, children, restore_notice))
     };
-    let (thread_id, mut children) = tokio::select! {
+    let (thread_id, mut children, restore_notice) = tokio::select! {
         res = setup => match res {
             Ok(thread_id) => thread_id,
             Err(e) => {
+                // A crash under handshake/thread/start reports its exit and
+                // what it printed, not a bare "exited before responding".
+                let error = setup_failure(e, &client, &mut child, &stderr_tail).await;
                 let _ = event_tx
                     .send(Ok(AgentEvent::Done {
                         status: DoneStatus::Errored,
                         result: None,
-                        error: Some(e.to_string()),
+                        error: Some(error),
                         session_id: None,
                     }))
                     .await;
@@ -1304,6 +1373,14 @@ async fn run_session(session: Session) {
         shutdown_child(&mut child, kill_grace).await;
         return;
     }
+    // The lost conversation said out loud, once, before the reply runs
+    // (upstream #977): the fresh thread does not know what came before.
+    if let Some(message) = restore_notice
+        && !send(&event_tx, AgentEvent::Error { message, kind: None }).await
+    {
+        shutdown_child(&mut child, kill_grace).await;
+        return;
+    }
 
     let mut router = TurnRouter::default();
     match start_turn(&client, turn_params(&live, &delivered_prompt)).await {
@@ -1319,11 +1396,12 @@ async fn run_session(session: Session) {
             }
         }
         Err(e) => {
+            let error = setup_failure(e, &client, &mut child, &stderr_tail).await;
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some(e.to_string()),
+                    error: Some(error),
                     session_id: Some(thread_id.clone()),
                 }))
                 .await;
@@ -1384,7 +1462,7 @@ async fn run_session(session: Session) {
     // The runtime's process tree when its teardown began (see
     // [`crate::shutdown_agent`]).
     #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut torn_down: Vec<i32> = Vec::new();
+    let mut torn_down: Vec<crate::process::Tracked> = Vec::new();
 
     'main: loop {
         tokio::select! {
@@ -1640,7 +1718,7 @@ async fn run_session(session: Session) {
                         {
                             break 'main;
                         }
-                        let error = turn_error_message(&params).or_else(|| {
+                        let error = turn_error_message(&params, None).or_else(|| {
                             (params
                                 .pointer("/turn/status")
                                 .and_then(Value::as_str)
@@ -1762,7 +1840,8 @@ async fn run_session(session: Session) {
                             done_after_interrupt = true;
                         }
                         let error =
-                            turn_error_message(&params).unwrap_or_else(|| "Codex turn failed".into());
+                            turn_error_message(&params, None)
+                                .unwrap_or_else(|| "Codex turn failed".into());
                         // Same classified-failure shape as turn/completed: the
                         // kind rides an Error event ahead of the Done, which
                         // then carries no error text of its own — one rendered
@@ -2074,6 +2153,10 @@ async fn run_session(session: Session) {
         }
     }
 
+    // Windows teardown gives the child its grace to exit on stdin EOF; the
+    // writer task would otherwise hold the pipe open while any client clone
+    // lives. Unix teardown signals the child; unchanged.
+    client.close_stdin_for_teardown();
     crate::shutdown_agent(&mut child, torn_down, kill_grace).await;
     if let Some(handle) = escalation {
         handle.abort();
@@ -2083,6 +2166,110 @@ async fn run_session(session: Session) {
 /// How long an interrupted turn's commands get to exit before a process
 /// still running counts as background work.
 const COMMAND_EXIT_GRACE: Duration = Duration::from_secs(3);
+
+/// The oldest Codex CLI release this driver speaks (the notification and
+/// elicitation surface it revalidates; upstream #977 added the floor).
+const MIN_CODEX_VERSION: semver::Version = semver::Version::new(0, 146, 0);
+
+/// `Err` when `version` is known and older than [`MIN_CODEX_VERSION`]; an
+/// unknown version (a wrapper, a dev build) is given the benefit of the
+/// doubt. A pre-release counts as its release: `0.146.0-alpha.2` already
+/// speaks the wire, though semver orders it before `0.146.0`.
+fn check_codex_version(version: Option<&semver::Version>) -> Result<(), HarnessError> {
+    let release = version.map(|v| semver::Version::new(v.major, v.minor, v.patch));
+    match (version, release) {
+        (Some(version), Some(release)) if release < MIN_CODEX_VERSION => {
+            Err(HarnessError::Protocol(format!(
+                "Codex CLI {version} is too old; update it to {MIN_CODEX_VERSION} or newer \
+                 (npm install -g @openai/codex@latest)"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// High-volume notifications nothing here consumes: the turn's running diff
+/// and every command's / patch's output stream. Opting out at `initialize`
+/// spares the wire (and the reader) from parsing them only to drop them.
+const OPTED_OUT_NOTIFICATIONS: &[&str] = &[
+    "turn/diff/updated",
+    "item/commandExecution/outputDelta",
+    "item/fileChange/outputDelta",
+];
+
+fn initialize_params(opt_out: bool) -> Value {
+    let mut capabilities = json!({ "experimentalApi": true });
+    if opt_out {
+        capabilities["optOutNotificationMethods"] = json!(OPTED_OUT_NOTIFICATIONS);
+    }
+    json!({
+        "clientInfo": {
+            "name": "roboco-native",
+            "title": "Roboco",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "capabilities": capabilities,
+    })
+}
+
+/// A setup request's failure as display text. When the app-server died
+/// under it, "exited before responding" says nothing: report its exit
+/// status and last stderr lines instead.
+async fn setup_failure(
+    error: HarnessError,
+    client: &RpcClient,
+    child: &mut Child,
+    stderr_tail: &crate::StderrTail,
+) -> String {
+    // Only a lost answer: a refusal that arrived before the exit says more.
+    if !client.is_closed() || !crate::jsonrpc::transport_lost(&error) {
+        return error.to_string();
+    }
+    stderr_tail.wait_closed().await;
+    let status = match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
+        Ok(Ok(status)) => Some(status),
+        _ => child.try_wait().ok().flatten(),
+    };
+    crate::crash_message("codex app-server", status, stderr_tail)
+}
+
+/// Whether a `thread/resume` failure means the conversation is gone for
+/// good (no rollout on this machine, a thread id Codex never issued), so a
+/// fresh thread is the only way forward. Anything else — a dead process, a
+/// config error — would fail a fresh start too, or lose history needlessly.
+fn resume_unrecoverable(error: &HarnessError) -> bool {
+    let HarnessError::Protocol(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    !crate::jsonrpc::transport_lost(error)
+        && [
+            "no rollout",
+            "not found",
+            "invalid session id",
+            "invalid thread id",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+}
+
+/// `thread/resume`, unarchiving the thread first when Codex reports it
+/// archived (the CLI's own archive command, or another client's).
+async fn resume_thread(client: &RpcClient, params: Value) -> Result<Value, HarnessError> {
+    match client.request("thread/resume", params.clone()).await {
+        Err(HarnessError::Protocol(message)) if message.contains("is archived") => {
+            tracing::info!(
+                target: "roboco_harness::codex",
+                "thread/resume: thread archived; unarchiving it"
+            );
+            client
+                .request("thread/unarchive", json!({ "threadId": params["threadId"] }))
+                .await?;
+            client.request("thread/resume", params).await
+        }
+        other => other,
+    }
+}
 
 /// Whether a process the app-server reported is still running.
 fn process_alive(pid: &str) -> bool {
@@ -2213,6 +2400,30 @@ fn handle_server_request(
                 by_id.insert(wire_id.clone(), json!({ "answers": labels }));
             }
             client.respond(&id, json!({ "answers": by_id }));
+        });
+        return;
+    }
+    // MCP servers elicit regardless of the approval policy (upstream
+    // #977). A form the input bridge can ask is asked; anything else is
+    // declined — a reply the server handles, where a JSON-RPC error failed
+    // its tool call.
+    if method == "mcpServer/elicitation/request" {
+        let Some(form) = elicitation::form(params) else {
+            let mode = params["mode"].as_str().unwrap_or_default();
+            tracing::info!(
+                target: "roboco_harness::codex",
+                mode, "declining an MCP elicitation roboco can't ask"
+            );
+            client.respond(&id, elicitation::decline());
+            return;
+        };
+        let client = client.clone();
+        let request_input = Arc::clone(request_input);
+        tokio::spawn(async move {
+            let answers = (request_input)(form.questions.clone())
+                .await
+                .unwrap_or_default();
+            client.respond(&id, form.response(&answers));
         });
         return;
     }
@@ -2666,6 +2877,10 @@ mod mcp_injection_tests {
         assert_eq!(
             overrides["mcp_servers.roboco.env"],
             json!({ "ROBOCO_CHAT_ID": "chat-1" })
+        );
+        assert_eq!(
+            overrides["mcp_servers.roboco.default_tools_approval_mode"],
+            "approve"
         );
     }
 }

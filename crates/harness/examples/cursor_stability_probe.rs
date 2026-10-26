@@ -29,6 +29,7 @@ async fn turn(
             rx
         }),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt,
@@ -151,6 +152,7 @@ async fn parked(harness: &CursorHarness, count: usize) {
             rx
         }),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: format!(
@@ -250,6 +252,7 @@ async fn history(harness: &CursorHarness, count: usize) {
             rx
         }),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: format!(
@@ -370,6 +373,7 @@ async fn burst(harness: &CursorHarness, count: usize, cancel: bool) {
             rx
         }),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: if cancel {

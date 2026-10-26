@@ -77,6 +77,7 @@ fn controls(
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
+        origin: None,
     };
     (controls, steer_tx, token)
 }
@@ -127,6 +128,75 @@ async fn a_resume_without_a_session_file_starts_fresh_with_the_history() {
             error: None,
             session_id: Some("sess-resume-missing".into()),
         })
+    );
+}
+
+/// A resume the CLI turns out to have no conversation for (it answers with
+/// an ERRORED result before any init and exits): the run relaunches fresh,
+/// replaying everything written, and the loss is said out loud.
+#[tokio::test]
+async fn a_resume_without_a_conversation_relaunches_fresh() {
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-check");
+    req.resume = Some("stale-session-1".into());
+    let events = run_to_end(&harness(), req, controls).await;
+
+    // The fresh session's own end is the run's end.
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("resumed=none".into()),
+            error: None,
+            session_id: Some("sess-fresh".into()),
+        })
+    );
+    // The lost context is said out loud, exactly once.
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices,
+        ["The previous Claude session could not be restored, so this chat \
+continues in a new one without its earlier context."],
+        "{events:?}"
+    );
+}
+
+/// An older CLI reports the missing conversation on stderr alone: the run
+/// relaunches fresh there too.
+#[tokio::test]
+async fn a_resume_the_cli_reports_missing_only_on_stderr_also_relaunches() {
+    let (controls, _steer, _token) = controls("A");
+    let mut req = request("scenario:resume-check");
+    req.resume = Some("stderr-only-session-1".into());
+    let events = run_to_end(&harness(), req, controls).await;
+
+    assert_eq!(
+        events.last(),
+        Some(&AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: Some("resumed=none".into()),
+            error: None,
+            session_id: Some("sess-fresh".into()),
+        })
+    );
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{events:?}");
+    assert!(
+        notices[0].starts_with("The previous Claude session could not be restored"),
+        "{}",
+        notices[0]
     );
 }
 
@@ -688,6 +758,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
+        origin: None,
     };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 

@@ -1692,7 +1692,11 @@ pub fn rows_for_entry(
                             fork_entry: None,
                         });
                     }
-                    MessagePart::HarnessSwitch { id: part_id, harness } => {
+                    MessagePart::HarnessSwitch {
+                        id: part_id,
+                        harness,
+                        from_harness: _,
+                    } => {
                         // The divider line, resolved once at row build: the
                         // seam is fixed, so the row's version only moves
                         // when the label does.
@@ -10711,6 +10715,7 @@ mod tests {
                         parts: vec![MessagePart::HarnessSwitch {
                             id: "switch:1".into(),
                             harness: roboco_proto::HarnessId::Codex,
+                            from_harness: None,
                         }],
                         created_at: 0,
                         device_id: "dev".into(),

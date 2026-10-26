@@ -910,13 +910,21 @@ async fn supervise(
             return;
         };
         let started = std::time::Instant::now();
-        let result = match result {
-            Ok(client) => drive(&weak, &key, client, &expected).await,
-            Err(err) => Err(err),
+        let (transport, result) = match result {
+            Ok(client) => {
+                let driven = drive(&weak, &key, client.clone(), &expected).await;
+                (Some(client), driven)
+            }
+            Err(err) => (None, Err(err)),
         };
+        // A clean drop has no probe error to name — the transport's own
+        // close reason (an oversized frame, a reset socket, a lease expiry)
+        // says why the session went away, so the failure surface can tell a
+        // transport drop from an engine crash (upstream acd7c9ba7).
         let error = result
             .err()
             .map(|e| e.to_string())
+            .or_else(|| transport.and_then(|client| client.close_reason()))
             .unwrap_or_else(|| "Engine connection closed".into());
         // The drop reason was previously stored in `last_error` but never
         // logged, so an engine going silent left the log showing only

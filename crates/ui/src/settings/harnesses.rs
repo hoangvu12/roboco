@@ -31,8 +31,8 @@ use roboco_engine::registry::TitleSettings;
 use roboco_engine::registry::{HarnessDescriptor, descriptor_enabled};
 use roboco_proto::Model;
 use roboco_proto::{
-    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, HarnessUpdatePhase,
-    HarnessUpdatePolicy, HarnessUpdateStatus,
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, HarnessId, HarnessUpdateFailureKind,
+    HarnessUpdatePhase, HarnessUpdatePolicy, HarnessUpdateStatus,
 };
 use roboco_rpc::methods;
 
@@ -109,6 +109,16 @@ const UPDATE_POLICIES: [(HarnessUpdatePolicy, &str, &str); 3] = [
 /// tone. Up-to-date providers, checks in flight and providers whose updates
 /// aren't monitored show just the version, so rows don't flash through
 /// states while checks run.
+///
+/// The failure was the update itself (its release is still known, so it can
+/// be retried), not a failed check.
+fn install_failed(status: &HarnessUpdateStatus) -> bool {
+    status
+        .error
+        .as_ref()
+        .is_some_and(|error| error.kind == HarnessUpdateFailureKind::Install)
+}
+
 fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedString, gpui::Hsla) {
     let installed = status
         .installed_version
@@ -119,6 +129,29 @@ fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedS
         None => detail.to_owned(),
     };
     let version_only = || installed.clone().unwrap_or_default();
+    // An installed release this Roboco can't run explains failing runs: it
+    // outranks everything but an update in flight.
+    if let Some(compatibility) = &status.compatibility
+        && matches!(
+            status.phase,
+            HarnessUpdatePhase::Dormant
+                | HarnessUpdatePhase::Checking
+                | HarnessUpdatePhase::Current
+                | HarnessUpdatePhase::Available
+                | HarnessUpdatePhase::ManualActionRequired
+                | HarnessUpdatePhase::Failed
+        )
+    {
+        return (compatibility.message.clone().into(), theme.danger_muted);
+    }
+    if status.phase == HarnessUpdatePhase::Current
+        && let Some(held) = &status.held_back
+    {
+        return (
+            with(&format!("v{} held back: not supported yet", held.version)).into(),
+            theme.text_muted.opacity(0.75),
+        );
+    }
     let label = match status.phase {
         HarnessUpdatePhase::Dormant
         | HarnessUpdatePhase::Checking
@@ -141,6 +174,7 @@ fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedS
         HarnessUpdatePhase::Installing => with("Installing…"),
         HarnessUpdatePhase::Verifying => with("Verifying…"),
         HarnessUpdatePhase::Updated => with("Updated"),
+        HarnessUpdatePhase::Failed if install_failed(status) => with("Update failed"),
         HarnessUpdatePhase::Failed => with("Couldn't check for updates"),
     };
     let color = match status.phase {
@@ -1473,6 +1507,11 @@ impl HarnessesPage {
                             if status.can_apply =>
                         {
                             ("harness-update", "Update", true)
+                        }
+                        HarnessUpdatePhase::Failed
+                            if status.can_apply && install_failed(status) =>
+                        {
+                            ("harness-update", "Retry update", true)
                         }
                         HarnessUpdatePhase::WaitingForIdle
                         | HarnessUpdatePhase::Preparing

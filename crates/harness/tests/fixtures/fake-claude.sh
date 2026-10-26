@@ -69,6 +69,31 @@ uuid_of() { printf '%s\n' "$1" | sed 's/.*"uuid":"\([^"]*\)".*/\1/'; }
 
 case "$first" in
 
+*scenario:resume-check*)
+  # `--resume` of a session the CLI has no conversation for (live 2.1.309):
+  # it answers with an ERRORED result before any init, says so on stderr,
+  # and exits 1. The driver must relaunch fresh — no --resume flag —
+  # replaying everything it had written, and tell the user. stderr-only-*
+  # exercises the older shape that never writes the result.
+  resumed=none
+  for arg in "$@"; do
+    case "$arg" in --resume=*) resumed="${arg#--resume=}" ;; esac
+  done
+  case "$resumed" in
+  stale-*)
+    echo "No conversation found with session ID: $resumed" >&2
+    emit "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"num_turns\":0,\"session_id\":\"$resumed\",\"errors\":[\"No conversation found with session ID: $resumed\"]}"
+    exit 1
+    ;;
+  stderr-only-*)
+    echo "No conversation found with session ID: $resumed" >&2
+    exit 1
+    ;;
+  esac
+  emit "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-fable-5\",\"tools\":[],\"cwd\":\"/tmp\",\"session_id\":\"sess-fresh\"}"
+  emit "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"resumed=$resumed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"session_id\":\"sess-fresh\"}"
+  ;;
+
 *scenario:command-echo*)
   content=$(printf '%s\n' "$first" | sed 's/.*"content":"\([^"]*\)".*/\1/')
   emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"$content\"}}}"
