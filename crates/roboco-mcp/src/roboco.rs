@@ -14,7 +14,8 @@ use roboco_doc::{
     SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
 };
 use roboco_proto::{
-    Chat, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
+    Chat, Device, HarnessId, Model, PreviewSnapshot, ReasoningLevel, Session, SessionStatus,
+    Space, SteeringMode,
 };
 use roboco_rpc::{RpcClient, RpcError, RpcSubscription, connect_ws, methods};
 use serde::Deserialize;
@@ -241,6 +242,17 @@ impl Roboco {
 
     pub async fn sessions(&self) -> anyhow::Result<Vec<Session>> {
         self.snapshot_as(methods::WATCH_SESSIONS, json!({})).await
+    }
+
+    /// The preview snapshot for `chat_id` (agent-previews ticket 07): the
+    /// first `WatchPreviews` item, then cancel — the same one-shot read the
+    /// browser's start page makes. The engine lists this device's
+    /// Roboco-started services that this chat started **or that run in its
+    /// checkout** (the Ports card's semantics); narrowing to strictly the
+    /// chat-started ones is the caller's contract, not the engine's.
+    pub async fn previews(&self, chat_id: &str) -> anyhow::Result<PreviewSnapshot> {
+        self.snapshot_as(methods::WATCH_PREVIEWS, json!({ "chatId": chat_id }))
+            .await
     }
 
     pub async fn harnesses(&self) -> anyhow::Result<Vec<HarnessInfo>> {
