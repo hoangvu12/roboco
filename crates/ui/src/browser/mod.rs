@@ -74,6 +74,17 @@ pub struct BrowserContext {
     data: native::BrowserData,
 }
 
+impl BrowserContext {
+    /// Route a preview's `*.localhost` address through the preview proxy
+    /// before a page opens on it (macOS; elsewhere the name resolves as is).
+    pub(crate) fn register_preview(&self, url: &str) {
+        #[cfg(target_os = "macos")]
+        self.data.register_preview(url);
+        #[cfg(not(target_os = "macos"))]
+        let _ = url;
+    }
+}
+
 pub struct BrowserSurface {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     context: BrowserContext,

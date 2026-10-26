@@ -286,6 +286,7 @@ mod catalog_failure;
 pub(crate) mod code_signature;
 pub mod redact;
 pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
+pub mod agent_ports;
 pub mod claude;
 pub mod codex;
 pub mod cursor;
@@ -320,6 +321,16 @@ pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
         cmd.as_std_mut(),
         exe.parent().filter(|d| !d.as_os_str().is_empty()),
     );
+}
+
+/// Apply the host-resolved run environment ([`RunRequest::env`]) to an agent
+/// child: the engine's origin marker, which preview discovery attributes
+/// the servers the agent starts to their chat. Call it after the driver's
+/// own env setup so the host's values win.
+pub fn apply_run_env(cmd: &mut process::Command, env: &std::collections::BTreeMap<String, String>) {
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
 }
 
 fn compose_path<'a>(

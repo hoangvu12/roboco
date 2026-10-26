@@ -200,6 +200,7 @@ impl TitleGenerator {
         );
         for attempt in 0..=RETRY_DELAYS_MS.len() {
             let request = RunRequest {
+                env: Default::default(),
                 prompt: title_prompt.clone(),
                 harness: Some(harness_id),
                 model: model.clone(),
@@ -371,6 +372,7 @@ mod tests {
             ],
         };
         let request = RunRequest {
+            env: Default::default(),
             prompt: "Title only".into(),
             harness: None,
             model: None,

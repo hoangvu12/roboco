@@ -91,6 +91,7 @@ fn main() -> anyhow::Result<()> {
                     &port.to_string(),
                 ])
                 .current_dir(&project)
+                .env(roboco_proto::ORIGIN_ENV, roboco_proto::chat_origin("preview-fixture"))
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::inherit())
                 .spawn()?,
@@ -103,6 +104,7 @@ fn main() -> anyhow::Result<()> {
             .arg("api.js")
             .arg(port().to_string())
             .current_dir(&project)
+            .env(roboco_proto::ORIGIN_ENV, roboco_proto::chat_origin("preview-fixture"))
             .spawn()?,
     );
     let runtime = tokio::runtime::Runtime::new()?;
@@ -130,10 +132,10 @@ fn main() -> anyhow::Result<()> {
     core.workspace
         .rename_chat("preview-fixture", "Build the Fieldnotes workspace")?;
     let root = project.clone();
-    runtime.block_on(
-        core.previews
-            .start(Arc::new(move || vec![root.clone()]), None),
-    );
+    runtime.block_on(core.previews.start(Arc::new(move || roboco_engine::PreviewScope {
+        chats: vec![("preview-fixture".into(), root.clone())],
+        ..Default::default()
+    })));
     let ipc_port = port();
     let _ipc = runtime.block_on(roboco_engine::serve_ipc(ipc_port, core.rpc_service()))?;
     let data = temp.path().join("ui");
@@ -148,6 +150,13 @@ fn main() -> anyhow::Result<()> {
         default_harness: roboco_proto::HarnessId::ClaudeCode,
     };
     let handle = runtime.block_on(state::EngineHandle::bootstrap(boot.clone()))?;
+    // The fixture drives the browser's preview watch itself; build the
+    // EngineTarget the shell's own routing would hand it.
+    let preview_target = engine_registry::EngineRegistry::test_local(
+        handle.engine_info().clone(),
+        handle.client(),
+    )
+    .local();
     let chats = core.workspace.read_chats()?;
     let spaces = core.workspace.read_spaces()?;
     let device = core.device_id.clone();
@@ -175,7 +184,7 @@ fn main() -> anyhow::Result<()> {
                     {"id":"assistant","role":"assistant","parts":[{"id":"text","kind":"text","text":"The development server is running. Open **Vite** in the browser tab to see your project.\n\nYour preview keeps the same address when the server restarts, and updates appear live as we edit."}],"createdAt":1788900001000_i64,"deviceId":"local","status":"complete"}
                 ])).unwrap() },cx).unwrap(); });
                 let (_, browser) = window.update(cx,|shell,w,cx|shell.fixture_open_browser(None,w,cx))?;
-                browser.update(cx,|browser,cx|browser.watch_previews(handle.clone(),"preview-fixture".into(),cx));
+                browser.update(cx,|browser,cx|browser.watch_previews(preview_target.clone(),"preview-fixture".into(),cx));
                 for _ in 0..100 { if browser.read_with(cx,|b,_|b.fixture_previews().services.len()==2) { break; } pause(cx,100).await; }
                 let snapshot = browser.read_with(cx,|b,_|b.fixture_previews()); anyhow::ensure!(snapshot.services.len()==2,"did not discover Vite and API: {snapshot:?}");
                 let stable = snapshot.services.iter().find(|s|s.name=="Vite").unwrap().url(snapshot.proxy_port);
@@ -202,7 +211,7 @@ fn main() -> anyhow::Result<()> {
                 drop(vite_child.take()); pause(cx,2600).await;
                 anyhow::ensure!(browser.read_with(cx,|b,_|b.fixture_previews().services.len()==1),"stopped Vite remained in discovery");
                 std::fs::write(project.join("index.html"),html.replace("Fieldnotes</title>","Fieldnotes · Restarted</title>"))?;
-                vite_child = Some(Child(std::process::Command::new("node").arg(vite_restart).args(["--host","127.0.0.1","--strictPort","--port",&second_port.to_string()]).current_dir(restart_root).stdout(std::process::Stdio::null()).spawn()?));
+                vite_child = Some(Child(std::process::Command::new("node").arg(vite_restart).args(["--host","127.0.0.1","--strictPort","--port",&second_port.to_string()]).current_dir(restart_root).env(roboco_proto::ORIGIN_ENV,roboco_proto::chat_origin("preview-fixture")).stdout(std::process::Stdio::null()).spawn()?));
                 for _ in 0..150 { if browser.read_with(cx,|b,_|b.fixture_previews().services.iter().any(|s|s.port==second_port)) {break;} pause(cx,100).await; }
                 let after = browser.read_with(cx,|b,_|b.fixture_previews()); anyhow::ensure!(after.services.iter().any(|s|s.port==second_port && s.url(after.proxy_port)==stable),"port change lost stable identity");
                 window.update(cx,|_,w,cx|browser.update(cx,|b,cx|b.navigate(&stable,w,cx)))?;
@@ -211,7 +220,7 @@ fn main() -> anyhow::Result<()> {
                 capture(&output,"preview-restarted-stable-url")?;
                 drop(api.take()); pause(cx,2600).await;
                 let (_,empty) = window.update(cx,|shell,w,cx|shell.fixture_open_browser(None,w,cx))?;
-                empty.update(cx,|b,cx|b.watch_previews(handle.clone(),"preview-fixture".into(),cx)); pause(cx,800).await;
+                empty.update(cx,|b,cx|b.watch_previews(preview_target.clone(),"preview-fixture".into(),cx)); pause(cx,800).await;
                 anyhow::ensure!(empty.read_with(cx,|b,_|b.fixture_previews().services.len()==1),"stopped API remained in new tab");
                 capture(&output,"preview-restarted-server-list")?;
                 cx.update(|cx|appearance::set_mode(appearance::AppearanceMode::Light,cx)); pause(cx,700).await; capture(&output,"preview-servers-light")?;

@@ -48,6 +48,7 @@ async fn silent_agent_errors_via_the_prompt_stall_watchdog() {
         turn: TurnControl::default(),
     };
     let request = RunRequest {
+        env: Default::default(),
         prompt: "scenario:prompt-stall".into(),
         harness: None,
         model: None,

@@ -3298,6 +3298,12 @@ impl DocHost {
                 setup_error: None,
             },
         };
+        if let Some(run) = &outcome.setup_action {
+            // Everything the setup action starts carries its terminal's
+            // origin; remembering its chat keeps a server it backgrounded
+            // listed under the chat after the terminal closes.
+            let _ = terminals.associate_chat(&run.terminal.id, chat_id);
+        }
         project_actions.complete_setup_handoff(command_id, chat_id, outcome);
     }
 
@@ -3368,6 +3374,7 @@ impl DocHost {
         };
         let config = chat.config;
         Some(roboco_proto::RunRequest {
+            env: Default::default(),
             prompt: prompt.to_string(),
             harness: config.as_ref().map(|c| c.harness),
             model: config.as_ref().and_then(|c| c.model.clone()),

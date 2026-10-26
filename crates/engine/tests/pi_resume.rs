@@ -24,6 +24,7 @@ async fn pi_idle_crash_next_dispatch_resumes_the_stored_session() {
     let doc = handle.doc();
     for prompt in ["idle-crash", "require-resume"] {
         let req = RunRequest {
+            env: Default::default(),
             prompt: prompt.into(),
             harness: None,
             model: None,

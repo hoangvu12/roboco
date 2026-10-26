@@ -1,7 +1,9 @@
 # Project previews
 
 Run an HTTP development server in a project and open a Browser tab in that
-session. The empty tab lists its running services. **Open** navigates to
+session. The empty tab lists its running services, and a Ports card beside
+the chat lists them too — one row per server this chat can preview. **Open**
+navigates to
 `http://<device>.<project>.localhost:7331`; additional services receive persistent
 names such as `<device>.<project>-api.localhost:7331`.
 
@@ -14,26 +16,37 @@ starts. A busy proxy port produces an inline error instead of changing the URL.
 
 On Linux, the scanner joins the current user's `/proc` process cwd, ancestry,
 creation time and socket descriptors to listening TCP sockets. On macOS it uses
-`lsof` and `ps` for equivalent metadata. Only loopback-reachable listeners whose
-cwd belongs to a known local project are probed. The deepest matching project
-wins. Commands with explicit authentication arguments (`login`, `auth`,
+`lsof` and `ps` for equivalent metadata. Only loopback-reachable listeners started by a Roboco agent run or terminal
+are probed: the engine stamps `ROBOCO_ORIGIN` (`chat:<id>` for agent runs,
+`terminal:<id>` for its terminals, which project actions run in) into the
+environment of everything it launches, and a listener is attributed to its
+nearest marked process — through `nohup`, daemonizing, a scrubbing launcher
+(`env -i`) and an engine restart alike. A marker naming a chat this device
+does not host owns nothing. The deepest matching checkout wins; a server
+started outside it lists under the chat that started it. Commands with
+explicit authentication arguments (`login`, `auth`,
 `authenticate`, `signin`, `sign-in`, `sso`, `oauth`, or `oauth2`, before `--`)
 are excluded before any connection, even when started by a Roboco terminal or
 agent. Their listeners may be one-shot browser callbacks: for example,
 `infisical login` fails with EOF if it receives a discovery HEAD without the
 browser's JSON body. This command check does not identify custom callback
-servers without an authentication argument.
+servers without an authentication argument. Agent CLIs' own control servers
+(`opencode serve`) are excluded by a harness-side port reservation.
 
 Unrelated listeners and non-HTTP services are excluded. Discovery runs every
 two seconds; bounded HEAD probes accept valid HTTP status responses (including
 authentication and application errors). Confirmed HTTP listeners are not
 probed again during that socket's lifetime; non-HTTP results use a capped
-exponential backoff.
+exponential backoff. Each process's marker is read once per process identity
+(pid + start time), and a scan that cannot read the process table keeps the
+previous list instead of clearing it (macOS `lsof`/`ps` calls time out after
+10 seconds).
 
-Roboco terminal/task/agent descendants are marked as Roboco-owned. Framework
-commands identify Vite, Next.js, Astro, Miniflare and Node servers; otherwise the
-list uses a generic HTTP label. Before a local backend connection, the daemon
-rechecks the listener's process identity and cwd to reject stale port reuse.
+Each listed service carries the chat whose agent or terminal started it.
+Framework commands identify Vite, Next.js, Astro, Miniflare and Node servers;
+otherwise the list uses a generic HTTP label. Before a local backend
+connection, the daemon rechecks the listener's process identity to reject
+stale port reuse.
 
 The profile's `previews.json` stores project and service IDs and hostname labels
 separately from observed PIDs and ports. Command identities omit common port
@@ -44,9 +57,11 @@ slots; their individual identities cannot be inferred across simultaneous
 restarts without additional application-provided identity.
 
 `WatchPreviews` resolves the session's current cwd on each catalog or workspace
-change. On the viewing device it selects either the local services or the
-advertised services for the session's owning device. Changing the active
-checkout therefore changes the list without copying paths or entering ports.
+change, and lists the chat's own services: those started in its checkout, plus
+any this chat's agent or terminals started elsewhere. Only Roboco-started
+services list — a server the user started themselves in the same project never
+appears. Changing the active checkout therefore changes the list without
+copying paths or entering ports.
 
 ## HTTP and stream transport
 
@@ -79,6 +94,11 @@ subprotocol and close handshake, allowing Vite HMR through the same URL.
 
 ## Presence and P2P
 
+This section describes the dormant peer stack kept in tree (`peer.rs`, `mux.rs`;
+no coordinator is deployed — Roboco removed the edge and its signaling, so
+`Peers::signal()` has no production caller). It is the upgrade path if relayed
+previews ever need a direct data plane.
+
 The Worker authenticates the existing access token, verifies the organization
 claim, and derives a PreviewRoom name from the verified organization and user.
 Clients cannot select another user's room. The coordinator stamps device sender
@@ -102,14 +122,12 @@ independently of edge availability. macOS and Linux currently provide discovery.
 
 ## Validation
 
-`cargo test --locked -p roboco-preview` covers real process/cwd isolation, non-HTTP
-exclusion, live disappearance, persistent aliases, port changes, concurrent
-streams, slow readers, cancellation, large bodies, streaming HTTP headers and
-redirects, WebSocket traffic, and a real WebRTC pair in both directions.
-
-`npm --prefix edge test` includes real workerd tests for room isolation,
-organization authorization, stamped signaling, disconnect cleanup and binary
-traffic rejection. CI runs networking tests on Linux and macOS.
+`cargo test --locked -p roboco-preview` covers real process/cwd isolation,
+origin attribution (including backgrounded, env-scrubbed and out-of-tree
+servers), non-HTTP exclusion, live disappearance, persistent aliases, port
+changes, concurrent streams, slow readers, cancellation, large bodies,
+streaming HTTP headers and redirects, WebSocket traffic, and the mux frame
+path in both directions.
 
 Build `cargo build -p roboco-ui --example preview-fixture --features browser-fixture`.
 Run the fixture with an output directory, an available display and `VITE_BINARY`
@@ -118,8 +136,3 @@ an isolated project, discovers them through daemon RPC and waits for a native
 click on Vite's Open button. It then verifies HMR, disappearance and a port-change
 restart while capturing the native UI. Screenshots/videos belong in PR user
 attachments, not the repository.
-
-The opt-in `coordinator` integration test connects two authenticated clients to a
-local Worker, advertises a service, pairs over SDP/ICE, then transfers a 4 MiB
-HTTP response through the remote hostname. Run it with
-`ROBOCO_PREVIEW_TEST_EDGE=http://127.0.0.1:27641 cargo test -p roboco-preview --test coordinator -- --ignored`.

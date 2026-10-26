@@ -51,6 +51,7 @@ async fn main() {
             .into()
     });
     let request = RunRequest {
+        env: Default::default(),
         prompt,
         harness: None,
         model: None,

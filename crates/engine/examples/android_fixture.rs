@@ -556,6 +556,7 @@ async fn seed(service: &Arc<dyn RpcService>, repo: &Path, profile: &str) -> Vec<
 /// content (its script is fixed), so every turn uses the same prompt.
 fn seed_request(repo: &Path, chat: &SeedChat) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: "Seed the fixture transcript".into(),
         harness: None,
         // chat-deploy carries a model + effort (the Claude-mirroring mock

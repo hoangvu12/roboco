@@ -316,6 +316,7 @@ async fn phone_send(rig: &Rig, prompt: &str) {
 
 fn run_request(prompt: &str) -> roboco_proto::RunRequest {
     roboco_proto::RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,

@@ -151,6 +151,7 @@ fn write_claude_login(config: &AgentAccountsConfig, uuid: &str, email: &str, tok
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::ClaudeCode),
