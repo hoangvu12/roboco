@@ -73,9 +73,11 @@ retains normal routing.
 
 The loopback proxy validates the Host against its catalog, then opens an opaque
 service ID through a transport-independent multiplexer. Locally, framed streams
-travel over a socket pair. Remotely, the identical frames travel over one ordered,
-reliable WebRTC DataChannel. Remote metadata never authorizes an arbitrary TCP
-address: the hosting device resolves only its own live service IDs.
+travel over a socket pair. Remotely, the identical frames travel over the
+session relay's WebSocket (see "Session relay" below); the dormant DataChannel
+path stays in tree as the direct-data-plane upgrade. Remote metadata never
+authorizes an arbitrary TCP address: the hosting device resolves only its own
+live service IDs.
 
 Frames have a one-byte kind, a big-endian 32-bit stream ID, and a bounded payload.
 Kinds are OPEN, DATA, END, CANCEL, WS_OPEN, WS_DATA, WS_CLOSE, READY and CREDIT.
@@ -91,6 +93,38 @@ preserves Host and Origin together (including Next.js Server Actions), sets
 X-Forwarded-Host, and rewrites absolute localhost redirects. Set-Cookie and other
 end-to-end headers remain intact. WebSocket upgrades retain their byte stream,
 subprotocol and close handshake, allowing Vite HMR through the same URL.
+
+## Session relay
+
+A remote device opens a preview over the client's own engine session — no cloud,
+no signaling, no second credential. The engine serves
+`GET /preview-relay/{chatId}/{serviceId}` as a WebSocket upgrade on its existing
+listener, beside the tailcat-relay routing: an opaque binary pump in the
+`serve_relay_websocket` shape. Both ids ride the path, never a query string —
+the listener rejects query parameters on every route, so neither scope nor
+credentials can end up in a URL. There is no new RPC method, no RPC envelope
+change and no base64: each WebSocket binary message is exactly one mux frame,
+bounded by the mux's own frame-size check.
+
+Authentication is the existing session gate, exactly as for the RPC socket: a
+`Bearer` session credential on the upgrade for native clients, or a first-frame
+`Auth` envelope for browser-shaped dials. The local (native IPC) bind keeps its
+credential-free, origin-rejecting boundary unchanged; the paired bind requires
+the credential. Revocation is inherited from the same machinery: a revoked
+session cannot dial again, and listener teardown — what disabling remote
+access and engine shutdown run — cuts open relay sockets with every other
+connection.
+
+The upgrade hands the socket to `Mux::start(transport, connector, initiator:
+false)` with a small WebSocket-backed mux transport. The connector is the
+preview service's `LocalConnector` scoped to the request: an incoming OPEN
+resolves only the path's service id, only while the live catalog lists it, and
+only while that catalog entry is attributed to the path's chat — checked per
+OPEN, so a service that dies or moves to another chat stops resolving on an
+already-open relay. Process identity is re-verified before every dial. The
+invariant the whole chain keeps: **remote metadata never authorizes an
+arbitrary TCP address** — the client names a service id, and only the engine's
+own live catalog turns that into an address.
 
 ## Presence and P2P
 
@@ -128,6 +162,12 @@ servers), non-HTTP exclusion, live disappearance, persistent aliases, port
 changes, concurrent streams, slow readers, cancellation, large bodies,
 streaming HTTP headers and redirects, WebSocket traffic, and the mux frame
 path in both directions.
+
+`cargo test --locked -p roboco-engine --test preview_relay` covers the relay
+route against the real listener: the session gate (Bearer, first-frame `Auth`,
+unauthenticated refusal), real HTTP round-trips through the mux including large
+bodies, slow readers, half-close and cancellation, chat/service scoping
+refusals, and listener teardown cutting an open relay.
 
 Build `cargo build -p roboco-ui --example preview-fixture --features browser-fixture`.
 Run the fixture with an output directory, an available display and `VITE_BINARY`

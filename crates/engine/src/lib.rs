@@ -32,6 +32,7 @@ pub mod instance_lock;
 pub mod listener;
 mod model_catalogs;
 pub mod pairing;
+pub mod preview_relay;
 pub mod profile;
 pub mod project_actions;
 pub mod registry;
@@ -585,7 +586,7 @@ impl Engine {
         // never waits on — or dies inside — an npm run.
         roboco_harness::acp::prewarm_managed_adapters();
         core.remote_access
-            .initialize(core.rpc_service(), network)
+            .initialize(core.rpc_service(), Some(core.previews.clone()), network)
             .await;
 
         Ok(EngineRuntime { core })
@@ -768,6 +769,19 @@ pub async fn serve_engine_remote(
     service: Arc<dyn roboco_rpc::RpcService>,
     data_dir: &Path,
 ) -> anyhow::Result<EngineListener> {
+    serve_engine_remote_with_previews(address, service, None, data_dir).await
+}
+
+/// [`serve_engine_remote`] with the preview relay route wired: remote
+/// clients with a live session can dial `/preview-relay/{chatId}/{serviceId}`
+/// and stream a preview's bytes through the mux (Phase C). Without a preview
+/// handle the route answers `404`, exactly as before.
+pub async fn serve_engine_remote_with_previews(
+    address: std::net::SocketAddr,
+    service: Arc<dyn roboco_rpc::RpcService>,
+    previews: Option<roboco_preview::PreviewService>,
+    data_dir: &Path,
+) -> anyhow::Result<EngineListener> {
     let pairing = pairing::PairingStore::open(data_dir)?;
     let socket = tokio::net::TcpListener::bind(address).await?;
     let address = socket.local_addr()?;
@@ -783,6 +797,7 @@ pub async fn serve_engine_remote(
         pairing,
         listener::AccessPolicy::Paired,
         Some(paired.clone()),
+        previews,
     ));
     let relays = tailcat_relays.clone();
     tokio::spawn(async move {

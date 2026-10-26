@@ -23,7 +23,7 @@ async fn engine(
     .unwrap();
     let service = core.rpc_service();
     core.remote_access
-        .initialize(service.clone(), options)
+        .initialize(service.clone(), None, options)
         .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
