@@ -94,6 +94,8 @@ private val connectedGalleryUi = EngineDetailUi(
     footer = null,
     canRename = true,
     showPairAgain = false,
+    // ADR 0011 (ticket 04): a room-joined engine shows its room.
+    room = "Home fleet",
 )
 
 private val engineDetailGalleryFixtures = listOf(
@@ -121,6 +123,7 @@ private val engineDetailGalleryFixtures = listOf(
             footer = EngineFooter("invalid credential", FooterTone.Error),
             canRename = false,
             showPairAgain = true,
+        room = null,
         ),
     ),
     EngineDetailFixture(
@@ -141,6 +144,7 @@ private val engineDetailGalleryFixtures = listOf(
             ),
             canRename = false,
             showPairAgain = false,
+        room = null,
         ),
     ),
     EngineDetailFixture(

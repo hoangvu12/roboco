@@ -540,13 +540,9 @@ impl EngineHandle {
 
     #[cfg(test)]
     pub(crate) fn from_test_client(client: RpcClient) -> Self {
-        Self {
-            inner: Arc::new(RemoteEngine {
-                client: Arc::new(client),
-                url: "memory://test".into(),
-                lifecycle_task: tokio::sync::Mutex::new(None),
-            }),
-            engine_info: EngineInfo {
+        Self::from_test_client_with_info(
+            client,
+            EngineInfo {
                 device_id: "local".into(),
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
@@ -555,6 +551,20 @@ impl EngineHandle {
                 protocol_version: None,
                 min_client_protocol_version: None,
             },
+        )
+    }
+
+    /// The same fake engine with a caller-chosen identity — capability-gated
+    /// UI (rooms) needs a test engine that advertises `rooms-v1`.
+    #[cfg(test)]
+    pub(crate) fn from_test_client_with_info(client: RpcClient, engine_info: EngineInfo) -> Self {
+        Self {
+            inner: Arc::new(RemoteEngine {
+                client: Arc::new(client),
+                url: "memory://test".into(),
+                lifecycle_task: tokio::sync::Mutex::new(None),
+            }),
+            engine_info,
             deferred_state: None,
         }
     }
@@ -2377,6 +2387,14 @@ impl AppState {
 
     pub fn registry(&self) -> Option<&EngineRegistry> {
         self.registry.as_ref()
+    }
+
+    /// The local engine advertises this capability. False while no engine is
+    /// attached — room UI hides on absence rather than erroring (C5).
+    pub fn local_engine_supports(&self, capability: &str) -> bool {
+        self.engine
+            .as_ref()
+            .is_some_and(|handle| handle.engine_info().supports(capability))
     }
     pub fn target_for_id(&self, id: &str) -> Result<EngineTarget, RpcError> {
         self.registry

@@ -873,14 +873,38 @@ async fn attachments_upload_read_back_and_send() {
         .await
         .unwrap();
     assert_eq!(read, bytes);
-    // 25 MB is rejected client-side.
+    // The engine advertises `uploads-100mb-v1`, so the client cap is the
+    // raised 100 MB: a 33 MB file — past the old 32 MB ENGINE cap — now
+    // uploads end-to-end through the real chunk pipeline (ADR 0011).
+    let engine_handle = rig.client.engine_handle(&rig.engine_id).unwrap();
+    assert!(
+        engine_handle
+            .engine_info()
+            .is_some_and(|info| info.supports(roboco_proto::capabilities::UPLOADS_100MB_V1)),
+        "the engine advertises the upload capability"
+    );
+    let big: Vec<u8> = (0..33u32 * 1024 * 1024)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let big_path = rig
+        .client
+        .upload_attachment(&rig.engine_id, "video.mp4", big, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&big_path).unwrap().len(),
+        33 * 1024 * 1024,
+        "the 33 MB file committed whole"
+    );
+    // One byte past the 100 MB cap is rejected client-side, before any
+    // bytes move.
     let error = rig
         .client
-        .upload_attachment(&rig.engine_id, "big.png", vec![0; 25 * 1024 * 1024], None)
+        .upload_attachment(&rig.engine_id, "big.png", vec![0; 100 * 1024 * 1024 + 1], None)
         .await
         .unwrap_err();
     assert!(
-        matches!(error, ClientError::InvalidArgument { ref message } if message.contains("larger than 24 MB")),
+        matches!(error, ClientError::InvalidArgument { ref message } if message.contains("larger than 100 MB")),
         "got: {error:?}"
     );
 
@@ -1071,6 +1095,7 @@ impl Rig {
                 device_id: view.device_id,
                 name: None,
                 transport: Default::default(),
+                room: None,
             })
             .unwrap()
     }
@@ -1224,7 +1249,7 @@ async fn the_mock_harness_is_offered_when_configured() {
     let url = pairing_url(&listener, engine_dir.path(), None);
     let recorder = Arc::new(Recorder::default());
     let config = support::test_config(data_dir.path());
-    let client = Client::new_with_timings(config, Vec::new(), recorder, support::test_timings())
+    let client = Client::new_with_timings(config, Vec::new(), Vec::new(), recorder, support::test_timings())
         .unwrap();
     let record = client.pair_engine(&url, None).await.unwrap();
     wait_for_view(&client, &record.engine_id, "connected", |view| {
@@ -1758,6 +1783,7 @@ async fn a_thawed_app_on_dead_sockets_catches_up_within_seconds() {
     };
     let client = Client::new_with_timings(
         support::test_config(data_dir.path()),
+        Vec::new(),
         Vec::new(),
         Arc::new(Recorder::default()),
         timings,

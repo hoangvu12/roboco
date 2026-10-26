@@ -35,6 +35,15 @@ object EngineDetailCopy {
     const val Platform = "Platform"
     const val LastConnected = "Last connected"
     const val DeviceId = "Device ID"
+    /** ADR 0011 (ticket 04): the room an engine was joined through. */
+    const val Room = "Room"
+
+    /**
+     * The `rooms-v1` capability string (the engine's wire constant,
+     * `crates/proto/src/workspace.rs`): the Room row shows only for
+     * engines that advertise it — capability hiding, not an error toast.
+     */
+    const val ROOMS_V1 = "rooms-v1"
 
     /** The web's id-chip copy (`settings-devices.tsx:196`). */
     const val Copied = "Copied"
@@ -130,6 +139,12 @@ data class EngineDetailUi(
     val canRename: Boolean,
     /** "Pair again" shows only for the re-pairable park reasons. */
     val showPairAgain: Boolean,
+    /**
+     * The room's label when this engine was joined through a room AND the
+     * engine advertises `rooms-v1` — the row hides otherwise (an old
+     * engine, or a room-less engine: null means the row is absent).
+     */
+    val room: String?,
 )
 
 // ---------------------------------------------------------------------------
@@ -252,6 +267,12 @@ fun engineDetailUi(view: EngineView, nowMs: Long): EngineDetailUi {
         footer = engineFooter(view.state, view.notice, view.lastError),
         canRename = connected,
         showPairAgain = isRepairable(view.state),
+        // ADR 0011 (ticket 04): the Room row is capability-gated — hidden
+        // (never an error) when the engine lacks rooms-v1; while offline
+        // the capabilities are unknown, so the row hides until it
+        // reconnects (the degrade-gracefully rule).
+        room = view.room?.label?.takeIf { it.isNotBlank() }
+            ?.takeIf { view.capabilities.contains(EngineDetailCopy.ROOMS_V1) },
     )
 }
 
@@ -296,6 +317,11 @@ internal sealed interface EngineStatusRow {
     data class DeviceId(val id: String) : EngineStatusRow {
         override val tag: String get() = "engine-detail-device-id"
     }
+
+    /** "Room" — the room's label; only when the engine advertises `rooms-v1`. */
+    data class Room(val value: String) : EngineStatusRow {
+        override val tag: String get() = "engine-detail-room"
+    }
 }
 
 /** The status card's shown rows, in order, from the model's non-null fields. */
@@ -304,6 +330,7 @@ internal fun statusRows(ui: EngineDetailUi): List<EngineStatusRow> = buildList {
     add(EngineStatusRow.Address)
     ui.version?.let { add(EngineStatusRow.Version(it)) }
     ui.platform?.let { add(EngineStatusRow.Platform(it)) }
+    ui.room?.let { add(EngineStatusRow.Room(it)) }
     ui.lastConnected?.let { add(EngineStatusRow.LastConnected(it)) }
     ui.deviceId?.let { add(EngineStatusRow.DeviceId(it)) }
 }

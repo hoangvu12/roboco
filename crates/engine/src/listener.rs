@@ -3,6 +3,7 @@
 //! and authenticates browser WebSockets with a first-frame `Auth` envelope
 //! (ADR 0006); local IPC keeps its native-only boundary.
 use crate::pairing::PairingStore;
+use crate::rooms::{PresentationOutcome, RoomStore};
 use crate::tailcat_relay::{self, PairedListenerContext};
 use base64::Engine as _;
 use bytes::Bytes;
@@ -37,14 +38,16 @@ pub async fn serve_listener(
     listener: TcpListener,
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
+    rooms: RoomStore,
 ) {
-    serve_listener_with_policy(listener, service, pairing, AccessPolicy::Local, None).await;
+    serve_listener_with_policy(listener, service, pairing, rooms, AccessPolicy::Local, None).await;
 }
 
 pub async fn serve_listener_with_policy(
     listener: TcpListener,
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
+    rooms: RoomStore,
     policy: AccessPolicy,
     paired: Option<Arc<PairedListenerContext>>,
 ) {
@@ -59,6 +62,7 @@ pub async fn serve_listener_with_policy(
             Ok((stream, _)) => {
                 let service = service.clone();
                 let pairing = pairing.clone();
+                let rooms = rooms.clone();
                 let connection_cancel = cancel.clone();
                 let paired = paired_state.clone();
                 tokio::spawn(async move {
@@ -68,6 +72,7 @@ pub async fn serve_listener_with_policy(
                             request,
                             service.clone(),
                             pairing.clone(),
+                            rooms.clone(),
                             policy,
                             paired.clone(),
                             request_cancel.clone(),
@@ -96,6 +101,7 @@ async fn handle(
     mut request: Request<Incoming>,
     service: Arc<dyn roboco_rpc::RpcService>,
     pairing: PairingStore,
+    rooms: RoomStore,
     policy: AccessPolicy,
     paired: Option<Arc<PairedListenerContext>>,
     cancel: tokio_util::sync::CancellationToken,
@@ -117,12 +123,19 @@ async fn handle(
         ));
     }
     let path = request.uri().path().to_owned();
-    if (path == "/pairing/redeem" || path == "/pairing/tailcat-redeem")
+    if (path == "/pairing/redeem"
+        || path == "/pairing/tailcat-redeem"
+        || path == "/pairing/room-redeem"
+        || path == "/room/present")
         && request.method() == hyper::Method::OPTIONS
         && request.headers().contains_key("origin")
     {
         // A cross-origin preflight is the only OPTIONS answered; the redeem
         // route is CORS-open because the bearer pair code is the credential.
+        // A room presentation is the same shape of trust: the room secret is
+        // the credential, never the origin — and so is the room redemption,
+        // which hands the engine serving the browser an invite it relays
+        // (ADR 0011).
         return Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header("cache-control", "no-store")
@@ -139,12 +152,26 @@ async fn handle(
     if path == "/pairing/redeem" && request.method() == hyper::Method::POST {
         return Ok(cors_open(redeem(request, pairing).await));
     }
+    if path == "/room/present" && request.method() == hyper::Method::POST {
+        return Ok(cors_open(room_present(request, rooms).await));
+    }
     if path == "/pairing/tailcat-redeem" && request.method() == hyper::Method::POST {
         let Some(context) = paired.as_ref() else {
             return Ok(reply(StatusCode::NOT_FOUND, "not found"));
         };
         return Ok(cors_open(
             tailcat_relay::tailcat_redeem(request, context.as_ref()).await,
+        ));
+    }
+    // The browser join path (ADR 0011): paired bind only — it needs the
+    // relay context — and pre-session like its siblings, because the room
+    // secret inside the invite is the credential.
+    if path == "/pairing/room-redeem" && request.method() == hyper::Method::POST {
+        let Some(context) = paired.as_ref() else {
+            return Ok(reply(StatusCode::NOT_FOUND, "not found"));
+        };
+        return Ok(cors_open(
+            tailcat_relay::room_redeem(request, context.as_ref()).await,
         ));
     }
     let websocket_key = websocket_key(&request).map(str::to_owned);
@@ -304,6 +331,59 @@ async fn redeem(request: Request<Incoming>, pairing: PairingStore) -> Reply {
     }
 }
 
+/// `POST /room/present {secret, label}`: redeem-style and pre-session, next
+/// to `/pairing/redeem` (ADR 0011). The room secret is verified against the
+/// stored verifier — hashed and discarded, never persisted, never logged;
+/// refusals describe only shape — and mints an ordinary session labeled by
+/// the presenter. Repeatable: re-presenting with the same label reuses the
+/// room's session. This route never mutates remote-access settings.
+async fn room_present(request: Request<Incoming>, rooms: RoomStore) -> Reply {
+    let body = match tokio::time::timeout(
+        Duration::from_secs(5),
+        Limited::new(request.into_body(), 8192).collect(),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body.to_bytes(),
+        _ => return reply(StatusCode::BAD_REQUEST, "invalid request body"),
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Presentation {
+        secret: String,
+        label: String,
+    }
+    let Ok(input) = serde_json::from_slice::<Presentation>(&body) else {
+        return reply(StatusCode::BAD_REQUEST, "expected JSON { secret, label }");
+    };
+    if input.label.trim().is_empty() {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            "a room presentation carries a device label",
+        );
+    }
+    if crate::pairing::validate_label(&input.label).is_err() {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            "device label must contain at most 256 bytes and no control characters",
+        );
+    }
+    let secret = input.secret;
+    let label = input.label;
+    let result = tokio::task::spawn_blocking(move || rooms.present(&secret, &label)).await;
+    match result {
+        Ok(Ok(PresentationOutcome::Granted(grant))) => json(StatusCode::OK, &grant),
+        Ok(Ok(PresentationOutcome::Refused)) => {
+            reply(StatusCode::UNAUTHORIZED, "invalid credential")
+        }
+        Ok(Ok(PresentationOutcome::Throttled)) => reply(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many failed presentations; try again later",
+        ),
+        _ => reply(StatusCode::SERVICE_UNAVAILABLE, "presentation unavailable"),
+    }
+}
+
 /// Gate a browser WebSocket on its first frame: browsers cannot set
 /// `Authorization` on the handshake, so the session credential arrives as an
 /// `Auth` envelope (`{"auth":"<credential>"}`) in the first text frame.
@@ -439,6 +519,8 @@ const RESERVED_API_PATHS: &[&str] = &[
     "/health",
     "/pairing/redeem",
     "/pairing/tailcat-redeem",
+    "/pairing/room-redeem",
+    "/room/present",
 ];
 
 /// Allow any origin to read a redeem response; the bearer pair code is the

@@ -37,6 +37,16 @@ pub mod methods {
     pub const CREATE_PAIRING_LINK: &str = "CreatePairingLink";
     pub const CREATE_TAILCAT_INVITE: &str = "CreateTailcatInvite";
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
+    /// Room address books (ADR 0011 — rooms share reachability, never data).
+    /// `GetRoomBook {roomId, secret}` → `RoomBook`: session-authenticated and
+    /// additionally requires presenting the room secret, because member
+    /// addresses are transport secrets. The secret is verified against the
+    /// stored verifier and discarded — never logged.
+    pub const GET_ROOM_BOOK: &str = "GetRoomBook";
+    /// `UpdateRoomBook {roomId, members}` → `RoomBook`: union-merges the
+    /// caller's entries into the stored book (books only grow; eviction
+    /// rotates the room) and replies with the fresh snapshot.
+    pub const UPDATE_ROOM_BOOK: &str = "UpdateRoomBook";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
     /// Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES

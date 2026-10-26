@@ -14,6 +14,10 @@ _Avoid_: Login, sign-in, connecting (when it means pairing)
 The credential a paired client holds for an engine. Does not expire; lives until revoked. The only "session" in Roboco's language — a chat's state is its Chat status, its document is its Chat doc, a shell is a Terminal.
 _Avoid_: Token (when a human-facing word is wanted), login
 
+**Room**:
+A named group of engines a client joins once to be introduced to all of them; a room shares reachability, never data. Hostless — a shared secret plus an address book, with no engine in charge — and joining mints ordinary per-engine sessions; each chat still belongs to exactly one engine.
+_Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
+
 **Remote access**:
 An engine serving paired clients over the network. Remoteness is about where the client sits, not where data is replicated — data stays engine-local either way.
 _Avoid_: Cloud, sync

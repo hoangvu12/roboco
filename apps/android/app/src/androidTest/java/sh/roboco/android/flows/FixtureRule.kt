@@ -5,11 +5,13 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -23,21 +25,22 @@ import sh.roboco.android.MainActivity
  * `android_fixture --profile main|slow|question`, one process each, with
  * the control-port URL passed as the instrumentation argument
  * [arg] (`-Pandroid.testInstrumentationRunnerArguments.…`, set by
- * `apps/android/scripts/flow-tests.sh`).
+ * `apps/android/scripts/flow-tests.sh`). [portArg] is the engine's own
+ * adb-reversed port (the room rig's member addresses, ticket 04).
  */
-enum class FixtureEngine(val arg: String) {
+enum class FixtureEngine(val arg: String, val portArg: String) {
     /** The seeded workspace: links, tables, code, thinking in the replies. */
-    Main("fixtureMain"),
+    Main("fixtureMain", "fixtureMainPort"),
     /** A paced, long streaming reply (queue/stop/scroll/notification). */
-    Slow("fixtureSlow"),
+    Slow("fixtureSlow", "fixtureSlowPort"),
     /** A run that asks the user questions (the QuestionPanel). */
-    Question("fixtureQuestion"),
+    Question("fixtureQuestion", "fixtureQuestionPort"),
     /**
      * android-next#02: a `main`-profile engine published over Tailcat
      * (local DERP relay); its engine port is not reachable from the device.
      * Present only when the rig built the Go pieces.
      */
-    Tailcat("fixtureTailcat"),
+    Tailcat("fixtureTailcat", "fixtureTailcatPort"),
 }
 
 /**
@@ -202,6 +205,77 @@ class FixtureRule(
         return runCatching { JSONObject(body).getString("invite") }.getOrNull()
     }
 
+    // Rooms (ADR 0011, ticket 04) ------------------------------------------
+
+    /**
+     * The rig's fixed engine ports, as `flow-tests.sh` adb-reverses them
+     * (a room book dials members by address, so the phone needs the
+     * device-side loopback ports — the control URLs alone don't carry
+     * them). Absent when the rig is not running.
+     */
+    fun enginePort(engine: FixtureEngine): Int? =
+        InstrumentationRegistry.getArguments()
+            ?.getString(engine.portArg)?.trim()?.takeIf(String::isNotEmpty)?.toIntOrNull()
+
+    /**
+     * Mints a room on the engine behind `controlUrl`: a fresh secret, the
+     * given members (label → device-side address), the engine joins it,
+     * and the invite string comes back. The secret never logs — it lives
+     * inside the invite, which only the join consumes.
+     */
+    fun roomInvite(controlUrl: String, name: String, members: List<Pair<String, String>>): String? {
+        val base = controlUrl.trim().trimEnd('/')
+        val payload = JSONObject()
+            .put("name", name)
+            .put(
+                "members",
+                JSONArray().apply {
+                    for ((label, address) in members) {
+                        put(JSONObject().put("label", label).put("address", address))
+                    }
+                },
+            )
+            .toString()
+        val body = post("$base/room-invite", payload) ?: return null
+        return runCatching { JSONObject(body).getString("invite") }.getOrNull()
+    }
+
+    /** Joins the engine behind `controlUrl` to an existing room from its
+     * invite; returns the room id (or null when the rig refused). */
+    fun roomJoin(controlUrl: String, invite: String): String? {
+        val base = controlUrl.trim().trimEnd('/')
+        val payload = JSONObject().put("invite", invite).toString()
+        val body = post("$base/room-join", payload) ?: return null
+        return runCatching { JSONObject(body).getString("roomId") }.getOrNull()
+    }
+
+    /**
+     * `POST path` with a JSON body, returning the reply body. Runs on the
+     * IO dispatcher like [fetch]: the rule evaluates on the
+     * instrumentation main thread.
+     */
+    private fun post(url: String, body: String): String? = runBlocking {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 10_000
+                    connection.readTimeout = 30_000
+                    connection.requestMethod = "POST"
+                    connection.setRequestProperty("Content-Type", "application/json")
+                    connection.doOutput = true
+                    connection.setFixedLengthStreamingMode(body.toByteArray(Charsets.UTF_8).size)
+                    val output: OutputStream = connection.outputStream
+                    output.write(body.toByteArray(Charsets.UTF_8))
+                    output.flush()
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrNull()
+        }
+    }
+
     /**
      * Starts a run on [chatId] from the ENGINE side (`GET /run?chat=`, the
      * fixture's QueueCommand path) — a run this phone did not send, which
@@ -210,6 +284,14 @@ class FixtureRule(
      */
     fun run(controlUrl: String, chatId: String): Boolean =
         fetch("${controlUrl.trim().trimEnd('/')}/run?chat=$chatId") != null
+
+    /**
+     * One GET against a control endpoint (`/listener/stop`, …), returning
+     * the body — the room flow's listener control. IO dispatcher like
+     * [fetch].
+     */
+    fun fetchControl(controlUrl: String, path: String): String? =
+        fetch("${controlUrl.trim().trimEnd('/')}/$path")
 
     /**
      * `GET /mint`, returning the body. Runs on the IO dispatcher: the rule

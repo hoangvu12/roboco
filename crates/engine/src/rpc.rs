@@ -116,6 +116,23 @@ struct SetHarnessEnabledParams {
     enabled: bool,
 }
 
+/// `GetRoomBook {roomId, secret}` — no `Debug`: the secret must never be
+/// printable by accident.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RoomBookParams {
+    room_id: String,
+    secret: String,
+}
+
+/// `UpdateRoomBook {roomId, members}`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateRoomBookParams {
+    room_id: String,
+    members: Vec<roboco_proto::room::RoomMember>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HarnessUpdateParams {
@@ -809,6 +826,9 @@ pub struct EngineRpc {
     agent_accounts: AgentAccounts,
     updater: Option<roboco_update::Updater>,
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
+    /// Joined rooms (ADR 0011): the store behind `GetRoomBook` /
+    /// `UpdateRoomBook`. Attached by `EngineCore::rpc_service`.
+    rooms: Option<crate::rooms::RoomStore>,
     engine_info: EngineInfo,
 }
 
@@ -854,6 +874,7 @@ impl EngineRpc {
             agent_accounts,
             updater: None,
             harness_updates: None,
+            rooms: None,
             engine_info,
         }
     }
@@ -881,6 +902,18 @@ impl EngineRpc {
     ) -> Self {
         self.harness_updates = Some(coordinator);
         self
+    }
+
+    /// Attach the room store (ADR 0011): `GetRoomBook` / `UpdateRoomBook`.
+    pub fn with_rooms(mut self, rooms: crate::rooms::RoomStore) -> Self {
+        self.rooms = Some(rooms);
+        self
+    }
+
+    fn rooms(&self) -> Result<&crate::rooms::RoomStore, RpcError> {
+        self.rooms
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("rooms unavailable".into()))
     }
 
     fn updater(&self) -> Result<&roboco_update::Updater, RpcError> {
@@ -1445,6 +1478,43 @@ impl RpcService for EngineRpc {
                     _ => controller.snapshot().await,
                 };
                 RpcReply::value(&result.map_err(|error| RpcError::Failed(error.to_string()))?)
+            }
+            methods::GET_ROOM_BOOK | methods::UPDATE_ROOM_BOOK => {
+                let rooms = self.rooms()?.clone();
+                let task = match method {
+                    methods::GET_ROOM_BOOK => {
+                        let p: RoomBookParams = parse_params(params)?;
+                        // The presented secret is verified against the stored
+                        // verifier and discarded; it is never logged (ADR 0011).
+                        let (room_id, secret) = (p.room_id, p.secret);
+                        tokio::task::spawn_blocking(move || {
+                            rooms.book_verified(&room_id, &secret)
+                        })
+                    }
+                    _ => {
+                        let p: UpdateRoomBookParams = parse_params(params)?;
+                        let (room_id, members) = (p.room_id, p.members);
+                        tokio::task::spawn_blocking(move || {
+                            rooms.merge_book(&room_id, members)
+                        })
+                    }
+                };
+                let book = task
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                match book {
+                    Some(book) => RpcReply::value(&book),
+                    None => {
+                        let message = match method {
+                            methods::GET_ROOM_BOOK => {
+                                "room not found or the presented secret was refused"
+                            }
+                            _ => "room not found",
+                        };
+                        Err(RpcError::Failed(message.to_owned()))
+                    }
+                }
             }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),

@@ -41,6 +41,7 @@ async fn local_listener(
         listener,
         core.rpc_service(),
         PairingStore::open(dir).unwrap(),
+        roboco_engine::rooms::RoomStore::open(dir).unwrap(),
     ));
     (base, task)
 }

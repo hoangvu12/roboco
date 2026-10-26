@@ -100,6 +100,8 @@ export * from "./Repo";
 export * from "./RepoRef";
 export * from "./ResumeAccountCandidates";
 export * from "./ResumeOnAccountOutcome";
+export * from "./RoomBook";
+export * from "./RoomMember";
 export * from "./RunRequest";
 export * from "./SandboxLevel";
 export * from "./ScheduledResume";

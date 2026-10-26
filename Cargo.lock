@@ -8270,6 +8270,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "reqwest",
  "roboco-doc",
  "roboco-engine",
@@ -8426,6 +8427,7 @@ dependencies = [
  "rqrr",
  "serde",
  "serde_json",
+ "sha2",
  "ts-rs",
  "uuid",
 ]

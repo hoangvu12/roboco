@@ -39,7 +39,8 @@ async fn wait_for(registry: &EngineRegistry, predicate: impl Fn(&RegistrySnapsho
 
 /// Every unary call gets a bounded reply deadline — interactive calls fail
 /// fast, adapter discovery gets its cold-boot budget, network-bound git
-/// methods get the long leash, and nothing awaits forever.
+/// methods and attachment transfers get the long leash, and nothing awaits
+/// forever.
 #[test]
 fn call_deadlines_are_tiered_and_bounded() {
     assert_eq!(call_deadline(methods::LIST_MODELS), Duration::from_secs(100));
@@ -50,6 +51,15 @@ fn call_deadlines_are_tiered_and_bounded() {
     assert_eq!(call_deadline(methods::CLONE_REPO), Duration::from_secs(15 * 60));
     assert_eq!(call_deadline(methods::CREATE_WORKTREE), Duration::from_secs(30));
     assert_eq!(call_deadline(methods::QUEUE_COMMAND), Duration::from_secs(30));
+    // Attachment calls carry their own ladder; the inner cap must never
+    // bind below it (the 90 s first-chunk budget vs a 30 s default).
+    for method in [
+        methods::UPLOAD_CHUNK,
+        methods::UPLOAD_COMMIT,
+        methods::READ_ATTACHMENT_CHUNK,
+    ] {
+        assert_eq!(call_deadline(method), Duration::from_secs(15 * 60), "deadline for {method}");
+    }
 }
 
 #[test]

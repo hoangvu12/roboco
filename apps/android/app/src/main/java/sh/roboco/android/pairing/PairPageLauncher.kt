@@ -24,6 +24,9 @@ import sh.roboco.android.shell.SheetStyle
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 
 /**
  * The QR scanner seam (ticket 138's screen, `fun interface`): opens the
@@ -210,7 +213,8 @@ fun ProvidePairPage(
 
 /**
  * The production [PairingBackend] over the live [CoreClient]:
- * `pairEngine`, `forgetEngine` and the top-level `parsePairingUrl`
+ * `pairEngine`, `joinRoom` (ADR 0011, ticket 04), `forgetEngine` and the
+ * top-level `parsePairingUrl` / `parseRoomInvite`
  * (android-app#06; `runCatching` because a parse failure is a normal
  * "does not parse", never an error to surface while typing).
  * [onForgotten] runs after a successful `forgetEngine` (ticket 28: the
@@ -225,8 +229,13 @@ class CoreClientPairingBackend(
     override fun parse(input: String): PairingTarget? =
         runCatching { uniffi.roboco_core.parsePairingUrl(input) }.getOrNull()
 
+    override fun parseRoom(input: String): RoomInviteTarget? =
+        runCatching { uniffi.roboco_core.parseRoomInvite(input) }.getOrNull()
+
     override suspend fun pair(url: String, replaceEngineId: String?): PairedEngine =
         client.pairEngine(url, replaceEngineId)
+
+    override suspend fun joinRoom(invite: String): RoomJoinResult = client.joinRoom(invite)
 
     override suspend fun forget(engineId: String) {
         client.forgetEngine(engineId)
@@ -238,7 +247,8 @@ class CoreClientPairingBackend(
  * The production [PairedEngineSink] over ticket 71: `knownEngineIds`
  * reads the startup pipeline's live engine list (the store exposes no
  * in-memory list; every engine there was loaded from or written to the
- * store), `upsert`/`remove` delegate to the store.
+ * store), `upsert`/`upsertRoom`/`remove` delegate to the store (the
+ * room blob is ticket 04's `room:` class).
  */
 class StorePairedEngineSink(
     private val store: PairedEngineStore,
@@ -249,6 +259,8 @@ class StorePairedEngineSink(
         startup.engines.value.orEmpty().map { it.engineId }.toSet()
 
     override suspend fun upsert(engine: PairedEngine) = store.upsert(engine)
+
+    override suspend fun upsertRoom(room: RoomRecord) = store.upsertRoom(room)
 
     override suspend fun remove(engineId: String) = store.remove(engineId)
 }

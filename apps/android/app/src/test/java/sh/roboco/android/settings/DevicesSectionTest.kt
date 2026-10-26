@@ -60,6 +60,9 @@ import sh.roboco.android.shell.TabRootRoute
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 import uniffi.roboco_core.PairingTarget
 
 /**
@@ -765,11 +768,18 @@ class DevicesSectionTest {
             )
 
         override suspend fun forget(engineId: String) {}
+
+        override fun parseRoom(input: String): RoomInviteTarget? = null
+
+        override suspend fun joinRoom(invite: String): RoomJoinResult =
+            throw UnsupportedOperationException("this stub joins no rooms")
     }
 
     /** The in-memory engine sink: the ticket's test-side fake. */
     private object MapPairedEngineSink : PairedEngineSink {
         override fun knownEngineIds(): Set<String> = emptySet()
+
+        override suspend fun upsertRoom(room: RoomRecord) {}
 
         override suspend fun upsert(engine: PairedEngine) {}
 

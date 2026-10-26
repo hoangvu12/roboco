@@ -20,6 +20,10 @@ import sh.roboco.android.R
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomException
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 
 /**
  * The Pair page's redeem state (android-ui-parity #72), the port of the
@@ -53,7 +57,8 @@ sealed interface PairMessage {
  * The Pair page's FFI seam (android-ui-parity #72): `CoreClient` is a
  * JNA object the tests cannot build, so the page talks to this narrow
  * interface instead. Production is [CoreClientPairingBackend]
- * (`pairEngine`, `forgetEngine` and the top-level `parsePairingUrl`).
+ * (`pairEngine`, `joinRoom`, `forgetEngine` and the top-level
+ * `parsePairingUrl` / `parseRoomInvite`).
  */
 interface PairingBackend {
 
@@ -63,8 +68,20 @@ interface PairingBackend {
      */
     fun parse(input: String): PairingTarget?
 
+    /**
+     * `parseRoomInvite(input)` (ADR 0011, ticket 04); `null` when it
+     * throws — the same "does not parse" rule as [parse]. Carries only
+     * the room name and the member labels: never the secret, never an
+     * address.
+     */
+    fun parseRoom(input: String): RoomInviteTarget?
+
     /** `CoreClient.pairEngine`; throws [PairException]. */
     suspend fun pair(url: String, replaceEngineId: String?): PairedEngine
+
+    /** `CoreClient.joinRoom`; throws [RoomException]. A partial join is a
+     * success — the missing members heal on app start / network change. */
+    suspend fun joinRoom(invite: String): RoomJoinResult
 
     /** `CoreClient.forgetEngine`; called only from the store-failure rollback. */
     suspend fun forget(engineId: String)
@@ -87,6 +104,14 @@ interface PairedEngineSink {
 
     /** 71's `upsert`; throws [CredentialStoreException], the store unchanged. */
     suspend fun upsert(engine: PairedEngine)
+
+    /**
+     * The `room:` blob (ticket 04): the joined room's secret plus book,
+     * encrypted. Called BEFORE the engine upserts of the same join, so the
+     * metadata (which references the room) never exists without its blob
+     * — a crash between the two leaves a swept orphan, not a dead room.
+     */
+    suspend fun upsertRoom(room: RoomRecord)
 
     /** 71's `remove`; the rollback after `forgetEngine` (new engines only). */
     suspend fun remove(engineId: String)
@@ -114,6 +139,20 @@ fun describePairError(e: Throwable): PairMessage = when (e) {
         detail = e.reason.trim().ifEmpty { null },
     )
     is PairException.TailcatUnavailable -> PairMessage.Res(R.string.pair_error_tailcat_unavailable)
+    else -> PairMessage.Res(R.string.pair_error_failed)
+}
+
+/**
+ * A room join failure (ADR 0011, ticket 04) to the error line: the same
+ * fixed-sentence vocabulary, with the shape-only parse reason verbatim.
+ * A member engine without `rooms-v1` never gets here — the join skips it
+ * silently (hide, not toast), so there is no "unsupported" sentence.
+ */
+fun describeRoomError(e: Throwable): PairMessage = when (e) {
+    is RoomException.Refused -> PairMessage.Res(R.string.room_error_refused)
+    is RoomException.Throttled -> PairMessage.Res(R.string.room_error_throttled)
+    is RoomException.Unreachable -> PairMessage.Res(R.string.pair_error_unreachable)
+    is RoomException.InvalidInvite -> PairMessage.Verbatim(e.reason)
     else -> PairMessage.Res(R.string.pair_error_failed)
 }
 
@@ -164,6 +203,15 @@ class PairPageModel(
         internal set
 
     /**
+     * The live parse as a room invite (ticket 04): set when the trimmed
+     * field parses as `roboco-room:` — exactly one of [target] /
+     * [roomTarget] is non-null at a time, and a submit dispatches on it.
+     * Secret-free: the name and the member labels only.
+     */
+    var roomTarget: RoomInviteTarget? by mutableStateOf(null)
+        internal set
+
+    /**
      * Set by the page while it is shown; called on success (haptic +
      * close). `null` when the page is gone — a background redeem then
      * persists without either.
@@ -183,43 +231,49 @@ class PairPageModel(
     internal fun parseTarget(input: String): PairingTarget? = backend.parse(input)
 
     /**
+     * `backend.parseRoom(input)` — the same live-parse effect's room arm:
+     * `null` unless the field is a `roboco-room:` invite.
+     */
+    internal fun parseRoomTarget(input: String): RoomInviteTarget? = backend.parseRoom(input)
+
+    /**
      * The redeem (capsule tap, IME Go, or a QR scan). Ignores a double
-     * submit and a blank field; snapshots `knownEngineIds` BEFORE `pair`
-     * (the client's list already contains the new engine afterwards);
-     * persists FIRST, then clears, haptics and closes. On a store write
-     * failure for a NEW engine: `forget` then `remove` (71's caller
-     * contract) and the store-failure copy — the link is spent, the user
-     * needs a fresh one.
+     * submit and a blank field; snapshots `knownEngineIds` BEFORE the
+     * FFI call (the client's list already contains the new engines
+     * afterwards); persists FIRST, then clears, haptics and closes. A
+     * `roboco-room:` field dispatches to the join instead (ticket 04):
+     * the room blob first, then every joined member's record — a partial
+     * join is a success (the missing members heal on app start / network
+     * change). On a store write failure for a NEW engine: `forget` then
+     * `remove` (71's caller contract) and the store-failure copy — the
+     * link is spent, the user needs a fresh one.
      */
     fun submit() {
         if (phase is PairPhase.Redeeming) return
         val url = text.text.toString().trim()
         if (url.isEmpty()) return
+        // The dispatch is the prefix the Rust decoder gates on (the live
+        // parse's `roomTarget` is display-only, exactly like `target`): a
+        // `roboco-room:` invite never goes to the pairing redeem, however
+        // fast the submit lands after typing.
+        val room = url.startsWith("roboco-room:")
         phase = PairPhase.Redeeming
-        // Read before `pair`: after it returns, the client's list already
-        // contains the new engine (the re-pair/dedupe check below).
+        // Read before the call: after it returns, the client's list
+        // already contains the new engines (the re-pair/dedupe check).
         val knownBefore = store.knownEngineIds()
         val replace = replaceEngineId
         scope.launch {
             try {
-                val engine = withContext(io) { backend.pair(url, replace) }
-                val known = engine.engineId in knownBefore
-                try {
-                    store.upsert(engine)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    if (!known) {
-                        // 71's caller contract: no unpersisted engine stays
-                        // live. Known engines keep their new credential for
-                        // this run; the old record parks them after a
-                        // restart as the designed recovery path.
-                        withContext(NonCancellable + io) {
-                            runCatching { backend.forget(engine.engineId) }
-                            runCatching { store.remove(engine.engineId) }
-                        }
-                    }
-                    phase = PairPhase.Error(PairMessage.Res(R.string.pair_error_store))
+                if (room) {
+                    val result = withContext(io) { backend.joinRoom(url) }
+                    persistJoin(result, knownBefore)
+                } else {
+                    val engine = withContext(io) { backend.pair(url, replace) }
+                    persist(engine, knownBefore)
+                }
+                if (phase is PairPhase.Error) {
+                    // The store-failure copy stands (the rollback above
+                    // already ran); nothing is cleared, nothing closes.
                     return@launch
                 }
                 // Persist first, then clear, haptic and close. The page is
@@ -240,8 +294,63 @@ class PairPageModel(
                 if (onPaired == null) {
                     Log.w(TAG, "background redeem failed: ${error::class.simpleName}")
                 }
-                phase = PairPhase.Error(describePairError(error))
+                phase = PairPhase.Error(
+                    if (room) describeRoomError(error) else describePairError(error),
+                )
             }
+        }
+    }
+
+    /** The pairing persist-first path (72): a store failure for a NEW
+     * engine rolls it back (forget + remove, 71's caller contract). */
+    private suspend fun persist(engine: PairedEngine, knownBefore: Set<String>) {
+        val known = engine.engineId in knownBefore
+        try {
+            store.upsert(engine)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (!known) {
+                withContext(NonCancellable + io) {
+                    runCatching { backend.forget(engine.engineId) }
+                    runCatching { store.remove(engine.engineId) }
+                }
+            }
+            phase = PairPhase.Error(PairMessage.Res(R.string.pair_error_store))
+            return
+        }
+    }
+
+    /**
+     * The room join's persist-first path (ticket 04): the `room:` blob
+     * first (a crash between blob and engines leaves a swept orphan, not
+     * a dead room), then every joined member's record. A store failure
+     * rolls the NEW engines back and — if the blob write itself failed —
+     * the store is unchanged (the old room, if any, survives). The
+     * missing members are fine: they were never engines.
+     */
+    private suspend fun persistJoin(result: RoomJoinResult, knownBefore: Set<String>) {
+        try {
+            store.upsertRoom(result.room)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // The blob write failed atomically: roll the new engines back
+            // (71's caller contract — no unpersisted engine stays live).
+            withContext(NonCancellable + io) {
+                for (engine in result.engines) {
+                    if (engine.engineId !in knownBefore) {
+                        runCatching { backend.forget(engine.engineId) }
+                        runCatching { store.remove(engine.engineId) }
+                    }
+                }
+            }
+            phase = PairPhase.Error(PairMessage.Res(R.string.pair_error_store))
+            return
+        }
+        for (engine in result.engines) {
+            persist(engine, knownBefore)
+            if (phase is PairPhase.Error) return
         }
     }
 

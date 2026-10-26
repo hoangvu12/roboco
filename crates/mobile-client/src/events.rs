@@ -47,6 +47,15 @@ pub enum ClientEvent {
         device_id: String,
         name: String,
     },
+    /// A room heal pass (app start or network change) minted a session for
+    /// a book member that had been missing (ADR 0011, ticket 04). The
+    /// platform must persist the record exactly like a pairing result —
+    /// otherwise every restart re-presents every member the heal picked
+    /// up. Never coalesced away: each carries a live credential.
+    RoomEngineJoined {
+        room_id: String,
+        engine: crate::PairedEngine,
+    },
 }
 
 pub trait ClientListener: Send + Sync + 'static {

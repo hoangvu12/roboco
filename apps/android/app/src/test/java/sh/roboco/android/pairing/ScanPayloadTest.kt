@@ -86,6 +86,47 @@ class ScanPayloadTest {
         )
     }
 
+    // Rooms (ADR 0011, ticket 04): the desktop's room invite QR is the
+    // phone's scan-once — accepted like any pairing payload, whitespace
+    // still refused, and it never falls through to the engine parser.
+
+    @Test
+    fun aRoomInviteIsDeliveredNotRejected() {
+        assertEquals(
+            ScanVerdict.Pairing("roboco-room:eyJ2IjoxfQ"),
+            classifyScan("roboco-room:eyJ2IjoxfQ", isPairingUrl),
+        )
+        // A QR code the camera read with surrounding noise still trims.
+        assertEquals(
+            ScanVerdict.Pairing("roboco-room:eyJ2IjoxfQ"),
+            classifyScan("  roboco-room:eyJ2IjoxfQ \n", isPairingUrl),
+        )
+    }
+
+    @Test
+    fun aRoomInviteWithEmbeddedWhitespaceIsForeign() {
+        assertEquals(
+            ScanVerdict.Foreign,
+            classifyScan("roboco-room:eyJ 2IjoxfQ", isPairingUrl),
+        )
+    }
+
+    @Test
+    fun aRoomInviteIsNeverTriedAsAnEngineUrl() {
+        // The room prefix wins before the engine parser runs (it would
+        // refuse the payload as "not a URL" — the invite is not a link).
+        var engineParseCalls = 0
+        val counting: (String) -> Boolean = { s ->
+            engineParseCalls += 1
+            StandInParse(s) != null
+        }
+        assertEquals(
+            ScanVerdict.Pairing("roboco-room:eyJ2IjoxfQ"),
+            classifyScan("roboco-room:eyJ2IjoxfQ", counting),
+        )
+        assertEquals(0, engineParseCalls)
+    }
+
     // ------------------------------------------------------------ Foreign
 
     @Test

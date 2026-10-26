@@ -42,6 +42,7 @@ import { offeredHarnesses } from "../lib/model-rows";
 import {
   ATTACHMENT_ONLY_TEXT,
   AttachmentUploadError,
+  attachmentCapBytes,
   formatByName,
   formatToMime,
   stageBytes,
@@ -2646,6 +2647,22 @@ export function Composer({
           return;
         }
       }
+      // Upload cap pre-flight (ticket 06): files staged under the 100 MB
+      // ceiling must still fit the engine's cap — one without
+      // `uploads-100mb-v1` keeps the legacy 24 MB. Refuse here, verbatim,
+      // with the draft intact (the mirror of the desktop's pre-flight in
+      // `Composer::send`).
+      if (!bare) {
+        const uploadCap = attachmentCapBytes(session.client.engineInfo?.capabilities);
+        const oversize = staged.find((att) => att.bytes.byteLength > uploadCap);
+        if (oversize !== undefined) {
+          setFailure({
+            message: `${oversize.name} is too large (${Math.round(uploadCap / (1024 * 1024))} MB max).`,
+            key: chat.id,
+          });
+          return;
+        }
+      }
       // `check_reference_delivery` (composer.rs:7417, called from
       // `Composer::send` before the draft is consumed): a draft holding
       // file/command/skill references the target cannot decode fails with
@@ -3402,15 +3419,18 @@ export function Composer({
       event.preventDefault();
       void (async () => {
         const stagedNext: StagedAttachment[] = [];
+        // Pasted files stage under the engine's effective cap (ticket 06):
+        // 100 MB with `uploads-100mb-v1`, the legacy 24 MB without.
+        const maxBytes = attachmentCapBytes(session.client.engineInfo?.capabilities);
         for (const file of files) {
           if (formatByName(file.name) === null && !file.type.startsWith("image/")) {
             // Non-image files are skipped silently.
             continue;
           }
           try {
-            stagedNext.push(await stageFile(file));
+            stagedNext.push(await stageFile(file, maxBytes));
           } catch {
-            // Undecodable bytes are skipped just as silently.
+            // Undecodable or oversize bytes are skipped just as silently.
           }
         }
         if (stagedNext.length > 0) {
@@ -3421,7 +3441,7 @@ export function Composer({
         }
       })();
     },
-    [chat.id],
+    [chat.id, session.client],
   );
 
   // ── The send button (§2.11) ─────────────────────────────────────────────
@@ -3739,6 +3759,7 @@ export function Composer({
               <AttachmentStrip
                 chatId={chat.id}
                 staged={staged}
+                maxAttachmentBytes={attachmentCapBytes(session.client.engineInfo?.capabilities)}
                 onStage={onStage}
                 onRemove={onRemove}
                 onError={onStageError}
