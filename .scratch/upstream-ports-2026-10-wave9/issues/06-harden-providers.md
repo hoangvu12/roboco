@@ -25,12 +25,15 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
 `.scratch/upstream-drift/2026-10-25.md` § A6.
 
 - [ ] Adapter hardening + Windows process safety + run recovery ported —
-  **PARTIAL (see Comments); remainder mapped for a follow-up turn**
-- [ ] Reconciliation with `03800d7c7` recorded in the commit — **partial:**
-  the Tracked/pid-identity API is threaded through roboco's crash-net
-  (`torn_down`) and one reaper interplay is reconciled (see Comments); the
-  run-recovery core reconciliation is still open
-- [ ] Commit records upstream SHA `2e151ca65` (#977)
+  **run-recovery core NOW PORTED (06 2/2); adapter hardenings (acp/claude/
+  codex/opencode/pi driver hunks) still open**
+- [x] Reconciliation with `03800d7c7` recorded in the commit — the
+  revival-ledger vs crash-net reconciliation: `03800d7c7`'s startup-crash
+  retry (single, resume kept) and `03800d7c7`'s zombie reaper both stay;
+  the new boot revival ledger (3-in-a-row/12h) governs boot recovery, and
+  the startup-crash retry now refuses a provider-rejected resume id while
+  carrying the revival's continuation through
+- [x] Commit records upstream SHA `2e151ca65` (#977)
 
 ## Comments
 
@@ -106,34 +109,100 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
   CANNOT be executed on this Linux host — untested surface, as the ticket
   itself warns.
 
-- **2026-10-25 — REMAINING SCOPE (follow-up turn, mapped):**
-  1. **Engine run-recovery core** (the ticket's center):
-     `engine/src/sessions.rs` (+1305 upstream): cut-off-turn revival
-     without re-sending (continuation sends, native-command/question/
-     finished exclusions, revival ledger 3-in-a-row/12h), graceful-shutdown
-     marking (`{chat}.shutdown`), transient start-failure backoff
-     (250ms/1s/3s), resume-gone → fresh-session tombstone, sign-out
-     `forgo_revival()`, dead-command sweep race, signed-out stop rule;
-     `engine/src/run_journal.rs` (shutdown/stopped marker paths);
-     `engine/src/lib.rs` 3way hunk; `engine/tests/run_recovery.rs` (new,
-     1412 lines) + `restart_resume.rs`/`message_queue.rs` test updates.
-     Reconcile with `03800d7c7`'s crash net (the revival ledger vs the
-     crash net's startup retry) by behaviour.
-  2. **acp/mod.rs** (+935): bounded turn stops + dialog answers,
-     handshake crash watch, session restore per advertised capability
-     (load vs resume, 90s budget), auth_required single sign-in,
-     model/config switch bounds, model-discovery drain, Grok prompting
-     client; `tests/acp.rs` updates, `tests/acp_hardening.rs` (new) +
-     `fixtures/fake-hardened-acp.py`, `fixtures/fake-acp.sh` update.
-  3. **claude** result classification (`claude/{normalize,mod,wire}.rs`:
+- **2026-10-25 — run-recovery core LANDED on `wave9/engine`** (commit
+  "06 (2/2)"). Carried from upstream #977's engine slice:
+  - **Cut-off-turn revival without re-sending:** when the journal shows
+    the provider streamed output for the turn and the transcript kept it
+    under that message, the revived run sends upstream's continuation
+    prompt ("Continue where you left off…\n<request>…") instead of
+    re-sending the request, which the session would read as new work and
+    redo. `Revival { message_id, continuation }` rides the dispatch chain
+    (dropped when no session resumes — the run starting fresh gets the
+    original prompt).
+  - **Never-revive rules:** native commands (`native_command` now requires
+    a valid command name, upstream's fix — a leading `/tmp/path` is
+    ordinary work), turns parked on an unanswered question
+    (`Pickup::AwaitingAnswer`), already-finished turns (parked sessions'
+    background work journals on after Done), user-Stopped turns, and an
+    exhausted revival budget (`Pickup::Exhausted` says why).
+  - **Revival ledger window:** `resume_attempts` stores
+    `{count} {last_ms}`; a ledger whose last revival is older than 12h has
+    expired (a chain from days ago must not refuse today's crash). A
+    message the user sends resets the budget.
+  - **Graceful shutdown marking:** `shutdown()` flags working runs
+    (`shutdown_cut`), the ones it actually cuts off end Interrupted with
+    the "Run interrupted by engine shutdown" note and a
+    `{chat}.shutdown` journal marker — written as the turn ends (the
+    Done rewrite happens BEFORE publish: journal, transcript and status
+    all carry the shutdown's ending), so a turn that finishes on its own
+    meanwhile is never marked. The user's own Stop clears the flag (a
+    Stop is never undone) and writes a `{chat}.stopped` marker (an engine
+    that dies before the stopped run settles never revives it). A
+    shutdown mark over a turn that ended otherwise is ignored and
+    cleared. `forgo_revival()` is the engine-local form of upstream's
+    sign-out gate (no Auth/WorkspaceScope to read it from).
+  - **Transient start-failure backoff:** io refusals (permission denied
+    on a CLI replaced within 60s, resource busy, would block, interrupted;
+    Windows sharing/lock violations by raw code) re-dispatch against the
+    same user entry after 250ms/1s/3s; a Stop or shutdown during the wait
+    ends the run (a shutdown-cut one marks + revives on boot).
+  - **Resume-gone → fresh session:** a start failure matching upstream's
+    narrow "no conversation found/conversation not found/session not
+    found/thread not found" phrases rejects the id everywhere it's still
+    recorded (`rejected_resumes` + the tombstone ref) and retries once
+    fresh; the reply opens with the "provider no longer has this chat's
+    earlier session" notice (seeded into the fold; cleared when a run
+    replaces it).
+  - run_journal.rs: shutdown/stopped marker files + the windowed ledger
+    (ported nearly verbatim, with upstream's tests).
+  - `note_user_stop` on `interrupt`/`stop_turn`; the startup-crash retry
+    carries the revival and refuses a shutdown;
+    `remove_run`-adjacent fresh-start notice bookkeeping.
+- **Reconciliation with `03800d7c7`:** both layers coexist by design —
+  `03800d7c7`'s startup-crash retry (single retry, resume kept, from the
+  ACP-conversion incident 2026-08-13) is preserved and now additionally
+  rejects provider-rejected ids; its zombie reaper is untouched. The new
+  boot revival ledger (upstream's) governs boot recovery only; the
+  startup-crash retry remains the in-run failure point. The
+  `teardown_skips_a_pid_that_was_reused` reconciliation from 06 (1/2)
+  stands.
+- **Verification (this commit):** `cargo test -p roboco-engine --test
+  run_recovery` 20/20 (upstream's suite adapted: continuation re-send,
+  native-command/path/awaiting-answer/finished/Stopped exclusions,
+  3-in-a-row cap + budget reset, shutdown cut-off pickup + finish-during-
+  shutdown + mark-over-finished + forgo_revival + dies-midway +
+  stop-dies-before-settling, teardown-error pickup, transient backoff,
+  old-CLI refusal surfaces, deterministic failure surfaces,
+  rejected-resume fresh retry + switched-chat variant); `--lib` 481/481;
+  message_queue 26/26 + restart_resume 13/13 with upstream's updated
+  assertions (the interrupted opening turn is picked back up; the QUEUE
+  behind it stays frozen); session_process_hygiene 4/4; provider_switch
+  8/8; harness_switch 3/3; continue_on_harness 6/6. Pre-existing (fails
+  at wave-start base): previews watch test (remote-peer).
+
+- **2026-10-25 — REMAINING SCOPE (follow-up turn, mapped):** the driver-level
+  adapter hardenings — everything upstream #977 did inside the harness
+  adapters (none of it is required by the run-recovery core that just
+  landed):
+  1. **acp/mod.rs** (+935): bounded turn stops (12s) + answering open
+     dialogs on stop/interrupt, handshake crash watch (a descendant holding
+     stdout no longer waits 120s), session restore per advertised
+     capability (session/load vs session/resume, 90s budget, fresh-session
+     fallback with a visible notice), auth_required single sign-in,
+     model/config switch bounds (15s), model-discovery incoming drain,
+     Grok prompting client + session/cancel user gesture;
+     `tests/acp.rs` updates, `tests/acp_hardening.rs` (new, 312) +
+     `fixtures/fake-hardened-acp.py` (new, 131), `fixtures/fake-acp.sh`
+     update.
+  2. **claude** result classification (`claude/{normalize,mod,wire}.rs`:
      is_error/terminal_reason/api_error_status → Errored, aborts →
-     Interrupted, surrogate repair, never-drop-a-result,
-     api_retry/compaction liveness), `tests/claude.rs` (+366),
-     `fixtures/fake-claude.sh`.
-  4. **codex** elicitation + stall hardening (`codex/{mod,normalize}.rs`,
+     Interrupted, surrogate-pair repair, never-drop-a-result,
+     api_retry/compaction liveness notices), `tests/claude.rs` (+366),
+     `fixtures/fake-claude.sh` (diverges upstream; hand-port).
+  3. **codex** elicitation + stall hardening (`codex/{mod,normalize}.rs`,
      `codex/elicitation.rs` new), `tests/codex.rs` (+227),
      `fixtures/fake-codex.sh`.
-  5. **opencode** startup retries + readiness (+1586),
+  4. **opencode** startup retries + readiness (+1586),
      `opencode/tests.rs` + `tests/opencode.rs`.
-  6. **pi** rpc/sessions/ui hardening + the Rust `pi_rpc` peer
+  5. **pi** rpc/sessions/ui hardening + the Rust `pi_rpc` peer
      (`tests/pi_rpc.rs` + `fixtures/pi_rpc.rs`), PROTOCOL.md.
