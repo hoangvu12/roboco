@@ -24,9 +24,14 @@ cloud/iOS files in the commit).
 fixtures), engine run-recovery tests, `windows.yml` run. Source:
 `.scratch/upstream-drift/2026-10-25.md` § A6.
 
-- [ ] Adapter hardening + Windows process safety + run recovery ported —
-  **run-recovery core NOW PORTED (06 2/2); adapter hardenings (acp/claude/
-  codex/opencode/pi driver hunks) still open**
+- [x] Adapter hardening + Windows process safety + run recovery ported —
+  **all landed across 06 1/2 … 06 9/9**: the substrate (1/2), the
+  run-recovery core (2/2), ACP+Claude wire/normalize (3/3), the
+  acp_hardening tests + codex elicitation/version floor (4/4), the codex
+  error-text classification + ACP config-switch stop (5/5), the codex
+  notification opt-out + thread/resume rework (6/6), the claude runtime
+  restructure (7/7), opencode startup retries/readiness (8/8), and the pi
+  rpc/session hardening + Rust pi_rpc peer (9/9)
 - [x] Reconciliation with `03800d7c7` recorded in the commit — the
   revival-ledger vs crash-net reconciliation: `03800d7c7`'s startup-crash
   retry (single, resume kept) and `03800d7c7`'s zombie reaper both stay;
