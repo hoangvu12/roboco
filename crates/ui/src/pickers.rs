@@ -325,27 +325,100 @@ pub fn traits_customized(
 // Pure: folder-browser navigation (used by the shell's add-space flow)
 // ---------------------------------------------------------------------------
 
-/// Whether `path` is drive-rooted (`C:`, `C:\…`, `C:/…`). Judged by shape,
-/// not `cfg`: the device being browsed may be a Windows machine reached from
-/// any platform.
-fn is_windows_path(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2
+/// Windows browser paths are parsed by shape even on a POSIX client: the
+/// device being browsed can be remote. A UNC root includes BOTH server and
+/// share; extended paths keep their prefix and use only backslash
+/// separators (upstream's parser, carried with the typed-path port).
+struct WindowsBrowserPath<'a> {
+    root: &'a str,
+    rest: &'a str,
+    extended: bool,
+}
+
+impl WindowsBrowserPath<'_> {
+    fn is_separator(&self, ch: char) -> bool {
+        ch == '\\' || (!self.extended && ch == '/')
+    }
+
+    fn root_path(&self) -> String {
+        let root = if self.extended {
+            self.root.to_owned()
+        } else {
+            self.root.replace('/', "\\")
+        };
+        format!("{root}\\")
+    }
+
+    fn normalized_rest(&self) -> String {
+        let rest = self.rest.trim_matches(|ch| self.is_separator(ch));
+        if self.extended {
+            rest.to_owned()
+        } else {
+            rest.replace('/', "\\")
+        }
+    }
+}
+
+fn windows_browser_path(path: &str) -> Option<WindowsBrowserPath<'_>> {
+    let extended = path.starts_with(r"\\?\");
+    let start = if extended { 4 } else { 0 };
+    let tail = &path[start..];
+    let bytes = tail.as_bytes();
+    if bytes.len() >= 2
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
-        && bytes.get(2).is_none_or(|b| matches!(b, b'/' | b'\\'))
+        && bytes
+            .get(2)
+            .is_none_or(|b| *b == b'\\' || (!extended && *b == b'/'))
+    {
+        return Some(WindowsBrowserPath {
+            root: &path[..start + 2],
+            rest: &path[start + 2..],
+            extended,
+        });
+    }
+    let unc_start = if extended {
+        tail.get(..4)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("UNC\\"))?;
+        8
+    } else if path.starts_with(r"\\") && !path.starts_with(r"\\.\\") {
+        2
+    } else {
+        return None;
+    };
+    let is_separator = |ch| ch == '\\' || (!extended && ch == '/');
+    let server_end = unc_start + path[unc_start..].find(is_separator)?;
+    if server_end == unc_start {
+        return None;
+    }
+    let share_start = server_end + 1;
+    let share_end = path[share_start..]
+        .find(is_separator)
+        .map_or(path.len(), |at| share_start + at);
+    if share_end == share_start {
+        return None;
+    }
+    Some(WindowsBrowserPath {
+        root: &path[..share_end],
+        rest: &path[share_end..],
+        extended,
+    })
+}
+
+/// Drive- or UNC-rooted: separators are backslashes.
+pub fn is_windows_path(path: &str) -> bool {
+    windows_browser_path(path).is_some()
 }
 
 /// Parent of an absolute path; `None` at the filesystem root.
 pub fn parent_path(path: &str) -> Option<String> {
-    if is_windows_path(path) {
-        let (drive, rest) = path.split_at(2);
-        let rest = rest.trim_matches(['/', '\\']);
+    if let Some(windows) = windows_browser_path(path) {
+        let rest = windows.normalized_rest();
         if rest.is_empty() {
-            return None; // drive root
+            return None; // drive or share root
         }
-        let parent = rest.rfind(['/', '\\']).map_or("", |at| &rest[..at]);
-        return Some(format!("{drive}\\{parent}"));
+        let parent = rest.rfind('\\').map_or("", |at| &rest[..at]);
+        return Some(format!("{}{parent}", windows.root_path()));
     }
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
@@ -362,7 +435,7 @@ pub fn parent_path(path: &str) -> Option<String> {
 pub fn child_path(base: &str, name: &str) -> String {
     if base.ends_with(['/', '\\']) {
         format!("{base}{name}")
-    } else if is_windows_path(base) {
+    } else if windows_browser_path(base).is_some() {
         format!("{base}\\{name}")
     } else {
         format!("{base}/{name}")
@@ -421,17 +494,30 @@ pub fn is_typed_path(query: &str) -> bool {
 /// yet. A query like `~foo` is a folder name, not a path.
 pub fn typed_path_target(query: &str, home: Option<&str>) -> Option<String> {
     let query = query.trim();
-    if is_windows_path(query) {
-        let path = query.replace('/', "\\");
-        let trimmed = path.trim_end_matches('\\');
-        // `D:` and `D:\` both mean the drive root.
-        return Some(if trimmed.len() == 2 {
-            format!("{trimmed}\\")
+    if let Some(windows) = windows_browser_path(query) {
+        let rest = windows.normalized_rest();
+        return Some(if rest.is_empty() {
+            windows.root_path()
         } else {
-            trimmed.to_string()
+            format!("{}{rest}", windows.root_path())
         });
     }
     if let Some(rest) = query.strip_prefix('~') {
+        if is_windows_path(home?) {
+            // `~\code`: home is a Windows path — join with its separators.
+            let home = typed_path_target(home?, None)?;
+            if rest.is_empty() {
+                return Some(home);
+            }
+            let rest = rest
+                .strip_prefix(['/', '\\'])?
+                .trim_end_matches(['/', '\\']);
+            return Some(if rest.is_empty() {
+                home
+            } else {
+                child_path(&home, &rest.replace('/', "\\"))
+            });
+        }
         let home = home?.trim_end_matches('/');
         if rest.is_empty() {
             return Some(home.to_string());
@@ -454,19 +540,165 @@ pub fn typed_path_target(query: &str, home: Option<&str>) -> Option<String> {
     None
 }
 
+/// A path as typed or pasted into the new-project path field: surrounding
+/// whitespace and one pair of matching quotes dropped, and shell escapes
+/// (`My\ Folder`, from a folder dragged into a terminal) undone — except on
+/// a `windows` device, whose backslashes are separators.
+pub fn clean_typed_path(text: &str, windows: bool) -> String {
+    let text = text.trim();
+    let text = ['"', '\'']
+        .iter()
+        .find_map(|quote| text.strip_prefix(*quote)?.strip_suffix(*quote))
+        .unwrap_or(text);
+    unescape_typed_path(text, windows)
+}
+
+/// Shell escapes undone (`My\ Folder` → `My Folder`, `\\` → `\`), except
+/// on a `windows` device, whose backslashes are separators.
+pub fn unescape_typed_path(text: &str, windows: bool) -> String {
+    if windows || is_windows_path(text) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.push(chars.next().unwrap_or('\\')),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
+/// A path or folder name as the path field writes it: on POSIX a literal
+/// `\` is doubled, so [`unescape_typed_path`] gives it back.
+pub fn escape_typed_path(text: &str, windows: bool) -> String {
+    if windows || is_windows_path(text) {
+        text.to_owned()
+    } else {
+        text.replace('\\', r"\\")
+    }
+}
+
+/// `~` or `~/…`: the device's home, or a path under it.
+pub fn is_home_relative(text: &str) -> bool {
+    text == "~" || text.starts_with("~/") || text.starts_with(r"~\")
+}
+
+/// Lexically resolve `.`, `..` and repeated separators in an absolute
+/// browser path. The device lists whatever spelling it is sent, so a typed
+/// `~/code/../notes` would otherwise open (and add) a project with `..` in
+/// its path. `..` stops at the root; extended (`\\?\`) paths are verbatim by
+/// definition and stay as they are.
+pub fn normalize_browser_path(path: &str) -> String {
+    fn segments<'a>(rest: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+        let mut kept = Vec::new();
+        for segment in rest {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    kept.pop();
+                }
+                segment => kept.push(segment),
+            }
+        }
+        kept
+    }
+    if let Some(windows) = windows_browser_path(path) {
+        if windows.extended {
+            return path.to_owned();
+        }
+        let rest = segments(windows.rest.split(|ch| windows.is_separator(ch)));
+        return format!("{}{}", windows.root_path(), rest.join("\\"));
+    }
+    format!("/{}", segments(path.split('/')).join("/"))
+}
+
+/// Where a path typed in the new-project path field points, absolute and
+/// normalized: `~` and `~/x` under the device's `home`, absolute and
+/// drive-rooted paths as typed, anything else relative to `base` (the open
+/// folder) — `../site`, `src`. On a `windows` device (or one whose paths
+/// say so) `/` is `\`, `\code` is on the open folder's drive and `D:code`
+/// at that drive's root. `None` when that takes a `home` or `base` not
+/// known yet.
+pub fn resolve_typed_path(
+    text: &str,
+    base: Option<&str>,
+    home: Option<&str>,
+    windows: bool,
+) -> Option<String> {
+    let windows = windows || base.or(home).is_some_and(is_windows_path);
+    let mut text = clean_typed_path(text, windows);
+    if windows {
+        // `//nas/share` is a share, `/code` a drive's root.
+        text = text.replace('/', r"\");
+    }
+    if text.is_empty() {
+        return None;
+    }
+    let drive_relative = |text: &str| {
+        let bytes = text.as_bytes();
+        bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    };
+    let target = match typed_path_target(&text, home) {
+        Some(target) => target,
+        None if is_home_relative(&text) => return None,
+        None if windows && text.starts_with('\\') => {
+            let root = windows_browser_path(base?)?.root_path();
+            child_path(&root, text.trim_start_matches('\\'))
+        }
+        None if windows && drive_relative(&text) => format!(r"{}\{}", &text[..2], &text[2..]),
+        None => child_path(base?, &text),
+    };
+    Some(normalize_browser_path(&target))
+}
+
+/// A typed path split at its last separator: the folder part as typed
+/// (separator included, empty for a bare name) and the name being typed
+/// after it. `\` separates only on a `windows` device or in a
+/// Windows-shaped path.
+pub fn split_typed_leaf(text: &str, windows: bool) -> (&str, &str) {
+    let windows = windows || is_windows_path(text);
+    let at = if windows {
+        text.rfind(['/', '\\'])
+    } else {
+        text.rfind('/')
+    };
+    match at {
+        Some(at) => (&text[..=at], &text[at + 1..]),
+        None => ("", text),
+    }
+}
+
+/// Lexical same-folder check: trailing separators don't distinguish a
+/// folder, otherwise the spelling must match (upstream compares its richer
+/// path key; Roboco's browsers spell one path per listing, so equality
+/// after trimming suffices).
+pub fn same_folder_path(left: &str, right: &str) -> bool {
+    left.trim_end_matches(['/', '\\']) == right.trim_end_matches(['/', '\\'])
+}
+
 /// Breadcrumb segments for a path: `(label, full path)`, root first.
 pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
-    let (drive, sep, rest) = if is_windows_path(path) {
-        let (drive, rest) = path.split_at(2);
-        (drive, '\\', rest)
-    } else {
-        ("", '/', path)
-    };
-    let root = format!("{drive}{sep}");
+    if let Some(windows) = windows_browser_path(path) {
+        let root = windows.root_path();
+        let mut out = vec![(root.clone(), root.clone())];
+        let mut acc = root;
+        for segment in windows
+            .rest
+            .split(|ch| windows.is_separator(ch))
+            .filter(|s| !s.is_empty())
+        {
+            acc = child_path(&acc, segment);
+            out.push((segment.to_owned(), acc.clone()));
+        }
+        return out;
+    }
+    let root = "/".to_string();
     let mut out = vec![(root.clone(), root)];
-    let mut acc = drive.to_string();
-    for segment in rest.split(['/', sep]).filter(|s| !s.is_empty()) {
-        acc.push(sep);
+    let mut acc = String::new();
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        acc.push('/');
         acc.push_str(segment);
         out.push((segment.to_string(), acc.clone()));
     }
@@ -9250,6 +9482,102 @@ mod tests {
         assert!(is_typed_path(r"D:\x"));
         assert!(is_typed_path("/x") && is_typed_path("~"));
         assert!(!is_typed_path("src") && !is_typed_path("ab:/x"));
+    }
+
+    #[test]
+    fn pasted_paths_lose_quotes_and_shell_escapes() {
+        let clean = |text| clean_typed_path(text, false);
+        assert_eq!(clean("  /Users/ana/code \n"), "/Users/ana/code");
+        assert_eq!(clean("'/Users/ana/My Code'"), "/Users/ana/My Code");
+        assert_eq!(clean("\"~/My Code\""), "~/My Code");
+        // A folder dragged into a terminal.
+        assert_eq!(
+            clean(r"/Users/ana/My\ Code\ \(old\)"),
+            "/Users/ana/My Code (old)"
+        );
+        // Mismatched quotes are part of the name.
+        assert_eq!(clean("'/tmp/x\""), "'/tmp/x\"");
+        // Windows backslashes are separators, drive-rooted or relative.
+        assert_eq!(clean(r"D:\Random\roboco"), r"D:\Random\roboco");
+        assert_eq!(clean_typed_path(r"'..\site'", true), r"..\site");
+        assert_eq!(clean_typed_path(r"~\code", true), r"~\code");
+    }
+
+    #[test]
+    fn typed_paths_resolve_dots_home_and_the_open_folder() {
+        let (base, home) = (Some("/home/wing/code"), Some("/home/wing"));
+        let resolve = |text| resolve_typed_path(text, base, home, false);
+        assert_eq!(resolve("/srv//data/"), Some("/srv/data".into()));
+        assert_eq!(resolve("~/code/../notes"), Some("/home/wing/notes".into()));
+        assert_eq!(resolve("~"), Some("/home/wing".into()));
+        // Relative to the open folder, like a shell's cd.
+        assert_eq!(
+            resolve("roboco/src"),
+            Some("/home/wing/code/roboco/src".into())
+        );
+        assert_eq!(resolve("../site"), Some("/home/wing/site".into()));
+        assert_eq!(resolve("./"), Some("/home/wing/code".into()));
+        // `..` stops at the root.
+        assert_eq!(resolve("/../../etc"), Some("/etc".into()));
+        assert_eq!(resolve("/"), Some("/".into()));
+        assert_eq!(resolve("  "), None);
+        // `~` needs the device's home, a relative path an open folder.
+        assert_eq!(resolve_typed_path("~/code", base, None, false), None);
+        assert_eq!(resolve_typed_path("code", None, home, false), None);
+        assert_eq!(
+            resolve_typed_path("/srv/data", None, None, false),
+            Some("/srv/data".into())
+        );
+        // A backslash in a POSIX name, as the field writes it, survives.
+        let written = escape_typed_path(r"/home/wing/a\b/", false);
+        assert_eq!(written, r"/home/wing/a\\b/");
+        assert_eq!(resolve(written.as_str()), Some(r"/home/wing/a\b".into()));
+    }
+
+    #[test]
+    fn typed_windows_paths_resolve_on_any_client() {
+        let (base, home) = (Some(r"C:\Users\Ana\code"), Some(r"C:\Users\Ana"));
+        let resolve = |text| resolve_typed_path(text, base, home, false);
+        // Rooted on the open folder's drive, or at a named drive's root.
+        assert_eq!(resolve(r"\Projects"), Some(r"C:\Projects".into()));
+        assert_eq!(resolve("/Projects"), Some(r"C:\Projects".into()));
+        assert_eq!(resolve("D:work"), Some(r"D:\work".into()));
+        // `/` reads as `\`, so a forward-slash share stays a share.
+        assert_eq!(
+            resolve("//nas/projects/app"),
+            Some(r"\\nas\projects\app".into())
+        );
+        assert_eq!(escape_typed_path(r"C:\a", false), r"C:\a");
+        // A Windows device before anything listed: rooted paths wait for it.
+        assert_eq!(resolve_typed_path("/code", None, None, true), None);
+        assert_eq!(resolve(r"D:\Random\..\roboco\"), Some(r"D:\roboco".into()));
+        assert_eq!(
+            resolve("D:/Random/./roboco"),
+            Some(r"D:\Random\roboco".into())
+        );
+        assert_eq!(resolve(r"~\notes"), Some(r"C:\Users\Ana\notes".into()));
+        assert_eq!(resolve(r"..\site"), Some(r"C:\Users\Ana\site".into()));
+        assert_eq!(resolve(r"C:\.."), Some(r"C:\".into()));
+        assert_eq!(
+            resolve(r"\\server\share\team\..\repo"),
+            Some(r"\\server\share\repo".into())
+        );
+        // Verbatim paths are taken as they are.
+        assert_eq!(normalize_browser_path(r"\\?\D:\a\..\b"), r"\\?\D:\a\..\b");
+    }
+
+    #[test]
+    fn typed_paths_split_at_the_name_being_typed() {
+        let split = |text| split_typed_leaf(text, false);
+        assert_eq!(split("/home/wing/co"), ("/home/wing/", "co"));
+        assert_eq!(split("~/"), ("~/", ""));
+        assert_eq!(split("code"), ("", "code"));
+        assert_eq!(split(r"D:\Random\ze"), (r"D:\Random\", "ze"));
+        assert_eq!(split("D:/Random/ze"), ("D:/Random/", "ze"));
+        // A backslash is part of a POSIX name, a separator on Windows.
+        assert_eq!(split(r"/tmp/a\b"), ("/tmp/", r"a\b"));
+        assert_eq!(split_typed_leaf(r"code\ze", true), (r"code\", "ze"));
+        assert_eq!(split_typed_leaf(r"~\co", true), (r"~\", "co"));
     }
 
     #[test]
