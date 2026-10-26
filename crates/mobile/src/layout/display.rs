@@ -62,6 +62,10 @@ pub enum ColorRole {
     DiffAddBar,
     DiffDelBar,
     DiffHunk,
+    /// An error card's fill: a soft red wash.
+    DangerWash,
+    /// An error card's text and icon: a lighter red that reads on the wash.
+    DangerSoft,
 }
 
 /// Text decorations, painted relative to the run's baseline.
@@ -197,6 +201,9 @@ pub enum WidgetKind {
     /// underneath; the painter re-draws those runs brighter through a moving
     /// gradient).
     Shimmer,
+    /// A button the app acts on: `action` names what (`sign-in`), `label`
+    /// is its title (an error card's "Log in").
+    Action { action: String, label: String },
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

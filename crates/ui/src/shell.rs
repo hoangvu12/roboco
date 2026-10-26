@@ -3947,7 +3947,35 @@ impl Shell {
             TranscriptEvent::OpenSideChat { chat_id } => {
                 self.open_chat(chat_id.clone(), cx);
             }
+            TranscriptEvent::SignIn { chat_id } => self.sign_in_for_chat(chat_id, cx),
         }
+    }
+
+    /// An error card's "Log in": the engine-local agent accounts
+    /// (Settings → Accounts), with the chat's agent's sign-in started.
+    /// No device routing — a chat's runs and its logins live on this
+    /// engine's accounts page.
+    fn sign_in_for_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let harness = {
+            let state = self.state.read(cx);
+            let Some(chat) = state.chats.iter().find(|chat| chat.id == chat_id) else {
+                return;
+            };
+            chat.config.as_ref().map(|config| config.harness)
+        };
+        self.open_settings(SettingsSection::Agents, cx);
+        let Some(harness) = harness else {
+            return;
+        };
+        if !crate::settings::accounts::signs_in(harness) {
+            return;
+        }
+        let state = self.state.clone();
+        let page = self
+            .accounts_page
+            .get_or_insert_with(|| cx.new(|cx| AccountsPage::new(state, cx)))
+            .clone();
+        page.update(cx, |page, cx| page.start_first_login(harness, cx));
     }
 
     /// A spawn chip's "Open subagent": focus the existing tab for that doc,
@@ -9253,6 +9281,10 @@ impl Shell {
         if self.add_space.is_some() && self.project_crumb_menu.is_open() {
             // The folded-breadcrumbs menu floats over the palette; it closes first.
             self.close_project_crumb_menu(cx);
+            return true;
+        }
+        // A typed path gives the crumbs back before the palette closes.
+        if self.add_space_cancel_path_edit(cx) {
             return true;
         }
         if self.fork_dialog.is_some() {
