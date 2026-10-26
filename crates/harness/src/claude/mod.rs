@@ -893,6 +893,10 @@ impl ClaudeHarness {
                 Normalizer::new()
             };
             crate::process::dies_with_parent(&mut cmd);
+            // Everything the agent starts inherits the run's origin, so
+            // preview discovery can tell the chat's dev servers from the
+            // user's own (see [`roboco_proto::ORIGIN_ENV`]).
+            crate::apply_origin(&mut cmd, controls.origin.as_deref());
             let mut child = cmd.spawn().map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -1236,6 +1240,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
+        origin: _origin,
     } = controls;
     let request_input = Arc::new(request_input);
 

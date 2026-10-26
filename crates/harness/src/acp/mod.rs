@@ -1281,7 +1281,7 @@ impl AcpHarness {
     pub async fn sign_out(&self) -> Result<(), HarnessError> {
         let home = std::env::var("HOME").ok();
         let (_scratch, mut child, _stderr, sign_in_prompted) =
-            self.spawn_agent(home.as_deref(), false, &[]).await?;
+            self.spawn_agent(home.as_deref(), false, &[], None).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
                 client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
@@ -1671,6 +1671,7 @@ impl AcpHarness {
         cwd: Option<&str>,
         block_on_install: bool,
         extra_args: &[String],
+        origin: Option<&str>,
     ) -> Result<
         (
             Option<ScratchDir>,
@@ -1686,6 +1687,9 @@ impl AcpHarness {
         cmd.args(extra_args);
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
+        // Everything the agent starts inherits the run's origin, so preview
+        // discovery can tell the chat's dev servers from the user's own.
+        crate::apply_origin(&mut cmd, origin);
         self.configure_adapter_environment(&mut cmd, &exe);
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
             cmd.current_dir(cwd);
@@ -1750,7 +1754,7 @@ impl AcpHarness {
         cwd: Option<&std::path::Path>,
     ) -> Result<Vec<SlashCommand>, HarnessError> {
         let (_scratch, mut child, _stderr, sign_in_prompted) = self
-            .spawn_agent(cwd.and_then(|p| p.to_str()), false, &[])
+            .spawn_agent(cwd.and_then(|p| p.to_str()), false, &[], None)
             .await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
@@ -1827,7 +1831,7 @@ impl AcpHarness {
     /// matching entries and names the pick when the agent advertises nothing.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
         let (_scratch, mut child, stderr_tail, sign_in_prompted) =
-            self.spawn_agent(None, false, &[]).await?;
+            self.spawn_agent(None, false, &[], None).await?;
         let (client, _incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
                 client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
@@ -2353,7 +2357,8 @@ impl Harness for AcpHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let (scratch, mut child, stderr_tail, sign_in_prompted) =
-            self.spawn_agent(Some(&request.cwd), true, &[]).await?;
+            self.spawn_agent(Some(&request.cwd), true, &[], controls.origin.as_deref())
+                .await?;
         let stdin = child
             .stdin
             .take()
@@ -3639,6 +3644,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn: turn_control,
+        origin: _origin,
     } = controls;
     let request_input = std::sync::Arc::new(request_input);
     let mut request = request;

@@ -404,6 +404,9 @@ impl Harness for CursorHarness {
         }
         crate::compose_child_path(&mut cmd, &exe);
         crate::process::dies_with_parent(&mut cmd);
+        // Everything the agent starts inherits the run's origin, so preview
+        // discovery can tell the chat's dev servers from the user's own.
+        crate::apply_origin(&mut cmd, controls.origin.as_deref());
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
@@ -681,6 +684,7 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
+        origin: _origin,
     } = controls;
 
     let mut assistant_message_id = new_message_id();

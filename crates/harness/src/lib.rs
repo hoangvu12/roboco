@@ -152,6 +152,21 @@ pub struct RunControls {
     pub interrupt: CancellationToken,
     /// Turn-level stop and background-work reporting (see [`TurnControl`]).
     pub turn: TurnControl,
+    /// The origin the engine stamps into this run's process tree (see
+    /// [`roboco_proto::ORIGIN_ENV`]): `chat:<id>`, inherited by everything
+    /// the agent starts, so preview discovery can tell the chat's dev
+    /// servers from the user's own. `None` outside the engine (tests,
+    /// examples). Adapters pass it to [`apply_origin`] at spawn.
+    pub origin: Option<String>,
+}
+
+/// Stamp a run's origin (see [`roboco_proto::ORIGIN_ENV`]) onto an agent
+/// child: everything it starts inherits the marker, through `nohup`,
+/// daemonizing and an engine restart alike.
+pub fn apply_origin(cmd: &mut process::Command, origin: Option<&str>) {
+    if let Some(origin) = origin {
+        cmd.env(roboco_proto::ORIGIN_ENV, origin);
+    }
 }
 
 /// Catalog provenance stays internal; RPC clients retain the Vec<Model> shape.
@@ -279,6 +294,7 @@ pub trait Harness: Send + Sync {
 
 pub mod acp;
 pub(crate) mod adapter_install;
+pub mod agent_ports;
 pub use adapter_install::adapters_root;
 pub mod archive_install;
 pub(crate) mod catalog;

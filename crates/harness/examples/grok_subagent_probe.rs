@@ -33,6 +33,7 @@ async fn main() {
         steering,
         interrupt: CancellationToken::new(),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: "Use spawn_subagent to launch ONE subagent of type general with description \

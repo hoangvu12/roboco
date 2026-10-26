@@ -61,6 +61,7 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
+        origin: None,
     };
     (controls, steer_tx, token)
 }

@@ -41,6 +41,7 @@ async fn main() {
         steering,
         interrupt: CancellationToken::new(),
         turn: TurnControl::default(),
+        origin: None,
     };
     // Optional second arg overrides the prompt (e.g. the mock rig's
     // "TWO subagents" variant exercising concurrent binding).

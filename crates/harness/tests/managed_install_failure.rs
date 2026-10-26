@@ -46,6 +46,7 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
         steering,
         interrupt: CancellationToken::new(),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: "hi".into(),

@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         steering,
         interrupt: CancellationToken::new(),
         turn: TurnControl::default(),
+        origin: None,
     };
     let request = RunRequest {
         prompt: "Reply with exactly: Devin model discovery verified. Do not use tools.".into(),

@@ -1254,6 +1254,10 @@ impl SessionsEngine {
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
             turn: turn.clone(),
+            // Everything the agent starts inherits the run's origin, so
+            // preview discovery lists only the chat's dev servers
+            // (upstream #1023; see `roboco_proto::ORIGIN_ENV`).
+            origin: Some(roboco_proto::chat_origin(chat_id)),
         };
 
         lock(&self.inner.runs).insert(
