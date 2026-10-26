@@ -44,3 +44,5 @@
 - The framed view's in-panel state (which service is framed) resets when the surface is backgrounded (another tab picked) because the pane host mounts only the active surface — the same lifecycle every right-pane surface has; the list and subscription resume on remount.
 
 **Final commit:** `e9964c2c3` (`feat(web): preview panel — loopback framing, honest off-machine note`, ticket 06; this record rides on top).
+
+- 2026-10-26 (orchestrator): merged `ap/06-web-preview-panel` into `feat/agent-previews` (merge `da91b46ab`, implementation `e9964c2c3`). Verification re-run at the merged tip: `pnpm --filter @roboco/app test` 2542 passed / 6 failed — the 6 (account-usage ×2, composer-draft ×2, limited-banner ×2) independently reproduced as pre-existing on the pristine base `f9bdc6402` (detached-worktree run: identical 6/78 in those files); `pnpm -r build` (web/) — proto, engine-client, app all build. No dependents; ticket complete.
