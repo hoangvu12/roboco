@@ -8246,6 +8246,7 @@ dependencies = [
  "rusqlite",
  "rust-embed",
  "same-file",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

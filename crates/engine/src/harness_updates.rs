@@ -30,6 +30,9 @@ use crate::registry::HarnessRegistry;
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_JITTER: u64 = 30 * 60;
 const FIRST_RETRY: Duration = Duration::from_secs(5 * 60);
+mod compatibility;
+mod ownership;
+
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Between full checks, how often each CLI's binary is looked at (stat only)
@@ -113,6 +116,13 @@ enum UpdatePlan {
     AntigravityArchive,
     CodexStandalone(CodexStandaloneInstall),
     Homebrew(HomebrewPackage),
+    /// An npm-packaged CLI, updated by the package manager that owns it.
+    Package {
+        owner: ownership::PackageOwner,
+        launcher: PathBuf,
+        package: &'static str,
+        tag: String,
+    },
 }
 
 impl UpdatePlan {
@@ -122,6 +132,14 @@ impl UpdatePlan {
     fn owner(&self) -> Option<String> {
         match self {
             UpdatePlan::Homebrew(package) => Some(format!("homebrew:{}", package.brew.display())),
+            UpdatePlan::Package {
+                owner,
+                launcher,
+                package,
+                tag,
+            } => ownership::package_update(owner, launcher, package, tag, None)
+                .ok()
+                .map(|update| update.owner),
             UpdatePlan::Command { executable, .. } => {
                 npm_global_prefix(executable).map(|prefix| format!("npm:{}", prefix.display()))
             }
@@ -341,7 +359,44 @@ fn provider(id: HarnessId) -> ProviderSpec {
     }
 }
 
-fn update_plan(harness: HarnessId, executable: &Path) -> Result<UpdatePlan, String> {
+/// What a plan needs to know about the install beyond its path: the version
+/// installed (OpenCode's package follows its generation) and Claude's
+/// release channel (the npm dist-tag its own updater would install).
+#[derive(Debug, Clone, Copy, Default)]
+struct PlanContext<'a> {
+    installed: Option<&'a str>,
+    channel: Option<&'a str>,
+}
+
+/// How this install gets updated, decided by who owns it (see [`ownership`]):
+/// a mise pin and a project's copy are the user's; an npm-packaged CLI goes
+/// through the package manager that installed it; then Homebrew, the CLI's
+/// own updater, and roboco's own installers.
+fn update_plan(
+    harness: HarnessId,
+    executable: &Path,
+    context: PlanContext<'_>,
+) -> Result<UpdatePlan, String> {
+    if ownership::mise_managed(executable) {
+        return Err(ownership::Manual::Mise.instruction().into());
+    }
+    if let Some(package) = ownership::npm_package(harness, context.installed)
+        && let Some(owner) = ownership::package_owner(executable, package)
+    {
+        let tag = match harness {
+            HarnessId::ClaudeCode => context.channel.unwrap_or("latest"),
+            _ => "latest",
+        }
+        .to_string();
+        // Proves the owner's tool is there (and a project copy is manual).
+        ownership::package_update(&owner, executable, package, &tag, None)?;
+        return Ok(UpdatePlan::Package {
+            owner,
+            launcher: executable.to_path_buf(),
+            package,
+            tag,
+        });
+    }
     if let Some(package) = homebrew_package(executable) {
         return Ok(UpdatePlan::Homebrew(package));
     }
@@ -367,13 +422,37 @@ fn update_plan(harness: HarnessId, executable: &Path) -> Result<UpdatePlan, Stri
     Err("this provider requires a manual update".into())
 }
 
+#[cfg(test)]
 fn can_apply_update(harness: HarnessId, executable: &Path) -> bool {
-    update_plan(harness, executable).is_ok()
+    can_apply_update_for(harness, executable, None)
+}
+
+fn can_apply_update_for(harness: HarnessId, executable: &Path, installed: Option<&str>) -> bool {
+    update_plan(
+        harness,
+        executable,
+        PlanContext {
+            installed,
+            channel: None,
+        },
+    )
+    .is_ok()
 }
 
 fn manual_update_command(harness: HarnessId, executable: &Path, can_apply: bool) -> Option<String> {
     if can_apply {
         return None;
+    }
+    // An install roboco won't touch says who owns it, not a command that
+    // would update some other copy.
+    if ownership::mise_managed(executable) {
+        return Some(ownership::Manual::Mise.instruction().into());
+    }
+    if ownership::npm_package(harness, None)
+        .and_then(|package| ownership::package_owner(executable, package))
+        == Some(ownership::PackageOwner::Project)
+    {
+        return Some(ownership::Manual::Project.instruction().into());
     }
     if harness == HarnessId::Antigravity
         && roboco_harness::acp::is_managed_antigravity_server(executable)
@@ -410,6 +489,10 @@ struct Inner {
     /// [`BinaryFingerprint`]): a later difference means the CLI changed
     /// outside roboco, so its status is stale.
     checked_binaries: Mutex<HashMap<HarnessId, BinaryFingerprint>>,
+    /// The compatibility policy in force. Upstream also fetches a published
+    /// policy from its edge ahead of the built-in list; roboco has no edge
+    /// (ADR 0003/0004), so the built-in list is the only source.
+    compatibility: Mutex<compatibility::Feed>,
     check_slots: tokio::sync::Semaphore,
     shutdown: CancellationToken,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -512,6 +595,8 @@ impl HarnessUpdateCoordinator {
                         can_apply: provider(harness).update_args.is_some(),
                         manual_command: Some(provider(harness).manual_command.to_string())
                             .filter(|command| !command.is_empty()),
+                        compatibility: None,
+                        held_back: None,
                     },
                 )
             })
@@ -530,6 +615,7 @@ impl HarnessUpdateCoordinator {
                 operation_gates: Mutex::new(HashMap::new()),
                 owner_gates: Mutex::new(HashMap::new()),
                 checked_binaries: Mutex::new(HashMap::new()),
+                compatibility: Mutex::new(compatibility::Feed::built_in()),
                 check_slots: tokio::sync::Semaphore::new(2),
                 shutdown: CancellationToken::new(),
                 worker: Mutex::new(None),
@@ -680,12 +766,56 @@ impl HarnessUpdateCoordinator {
     }
 
     pub async fn check_one(&self, harness: HarnessId) -> Result<(), String> {
-        self.check_one_inner(harness).await?;
+        let checked = self.check_one_inner(harness).await;
+        // Even a failed check keeps the installed release's verdict current.
+        self.apply_compatibility(harness);
+        checked?;
         // Every successful discovery, including policy changes and single-row
         // retries, gets the same automatic-install behavior. The check's
         // operation lock has been released before scheduling the mutation.
         self.schedule_automatic_update(harness);
         Ok(())
+    }
+
+    /// Fold the policy into a checked row: the installed release's verdict,
+    /// and a newer release it holds back — which is then not available, so
+    /// neither the Update button nor an automatic install can reach it.
+    fn apply_compatibility(&self, harness: HarnessId) {
+        let status = self.status(harness);
+        let feed = lock(&self.inner.compatibility);
+        let installed = status
+            .installed_version
+            .as_deref()
+            .and_then(|version| feed.verdict(harness, version));
+        let held_back = status
+            .latest_version
+            .as_deref()
+            .and_then(|version| feed.verdict(harness, version));
+        drop(feed);
+        self.mutate(harness, |status| {
+            status.compatibility = installed;
+            if let Some(held) = held_back {
+                status.latest_version = None;
+                if matches!(
+                    status.phase,
+                    HarnessUpdatePhase::Available | HarnessUpdatePhase::ManualActionRequired
+                ) {
+                    status.phase = HarnessUpdatePhase::Current;
+                }
+                status.held_back = Some(held);
+            } else if status.latest_version.is_some()
+                || status.held_back.as_ref().is_some_and(|held| {
+                    status
+                        .installed_version
+                        .as_deref()
+                        .is_some_and(|installed| !version_is_newer(&held.version, installed))
+                })
+            {
+                // A newer, installable release; or the CLI got past the held
+                // one by itself.
+                status.held_back = None;
+            }
+        });
     }
 
     fn automatic_update_ready(&self, harness: HarnessId) -> bool {
@@ -776,11 +906,14 @@ impl HarnessUpdateCoordinator {
             lock(&self.inner.checked_binaries).insert(harness, fingerprint);
         }
         let source = classify_source(&executable);
-        let can_apply = can_apply_update(harness, &executable);
+        let can_apply = can_apply_update_for(harness, &executable, Some(&installed));
         if self.settle_if_unmonitored(harness) {
             return Ok(());
         }
-        if let Some(package) = homebrew_package(&executable) {
+        // mise installed by Homebrew is mise's keg, not the CLI's.
+        if let Some(package) =
+            homebrew_package(&executable).filter(|_| !ownership::mise_managed(&executable))
+        {
             return self
                 .finish_homebrew_check(harness, &executable, installed, source, package)
                 .await;
@@ -1116,8 +1249,36 @@ impl HarnessUpdateCoordinator {
         if !current.can_apply {
             return Err("this provider requires a manual update".into());
         }
+        if let Some(latest) = current.latest_version.as_deref()
+            && let Some(held) = lock(&self.inner.compatibility).verdict(harness, latest)
+        {
+            return Err(held.message);
+        }
         let executable = self.executable(harness)?;
-        let plan = update_plan(harness, &executable)?;
+        // The check judged one install; a different one now (reinstalled
+        // elsewhere, PATH changed) must be checked before anything runs.
+        let checked = lock(&self.inner.checked_binaries)
+            .get(&harness)
+            .map(|fingerprint| fingerprint.path.clone());
+        if let Some(checked) = checked
+            && std::fs::canonicalize(&executable).ok().as_ref() != Some(&checked)
+        {
+            let coordinator = self.clone();
+            tokio::spawn(async move {
+                let _ = coordinator.check_one(harness).await;
+            });
+            return Err(
+                "The CLI's installation changed since it was checked; checking again".into(),
+            );
+        }
+        let plan = update_plan(
+            harness,
+            &executable,
+            PlanContext {
+                installed: current.installed_version.as_deref(),
+                channel: current.channel.as_deref(),
+            },
+        )?;
         // A request queued behind a check must inherit shutdown even if it
         // reaches this point after shutdown's cancellation-map snapshot.
         let cancel = self.inner.shutdown.child_token();
@@ -1254,6 +1415,44 @@ impl HarnessUpdateCoordinator {
                 }
                 Err(error) => Err(error),
             },
+            UpdatePlan::Package {
+                owner,
+                launcher,
+                package,
+                tag,
+            } => {
+                let pnpm_version = match &owner {
+                    ownership::PackageOwner::Pnpm => {
+                        match ownership::package_update(&owner, &launcher, package, &tag, None) {
+                            Ok(update) => {
+                                run_command_output(&update.program, &["--version"], COMMAND_TIMEOUT)
+                                    .await
+                                    .ok()
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    _ => None,
+                };
+                match ownership::package_update(
+                    &owner,
+                    &launcher,
+                    package,
+                    &tag,
+                    pnpm_version.as_deref(),
+                ) {
+                    Ok(update) => match self.begin_install(harness, &cancel) {
+                        Ok(()) => {
+                            let args: Vec<&str> = update.args.iter().map(String::as_str).collect();
+                            run_command_output(&update.program, &args, UPDATE_TIMEOUT)
+                                .await
+                                .map(drop)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
         };
         if let Err(error) = applied {
             drop(lease);
@@ -1539,6 +1738,8 @@ impl HarnessUpdateCoordinator {
                 error: None,
                 can_apply: provider(harness).update_args.is_some(),
                 manual_command: None,
+                compatibility: None,
+                held_back: None,
             })
     }
 
@@ -1561,6 +1762,8 @@ impl HarnessUpdateCoordinator {
                     error: None,
                     can_apply: provider(harness).update_args.is_some(),
                     manual_command: None,
+                    compatibility: None,
+                    held_back: None,
                 });
             // Preferences are the durable authority. Refresh the copy while
             // holding the status lock so a check result and a policy change

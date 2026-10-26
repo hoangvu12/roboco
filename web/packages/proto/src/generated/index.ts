@@ -55,6 +55,8 @@ export * from "./GitHistoryComparison";
 export * from "./GitHistoryPage";
 export * from "./GitHistoryRef";
 export * from "./GitHistoryRefKind";
+export * from "./HarnessCompatibility";
+export * from "./HarnessCompatibilityStatus";
 export * from "./HarnessDescriptor";
 export * from "./HarnessId";
 export * from "./HarnessInstallSource";

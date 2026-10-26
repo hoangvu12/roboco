@@ -152,6 +152,38 @@ pub struct HarnessUpdateStatus {
     /// Provider command shown when mutation cannot be safely automated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_command: Option<String>,
+    /// The installed release is known not to work with (or isn't supported
+    /// by) this engine's roboco.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<HarnessCompatibility>,
+    /// A newer release exists, but roboco won't install it: it is known not
+    /// to work. Such a release is never reported as available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<HarnessCompatibility>,
+}
+
+/// How well a CLI release works with this roboco (see the engine's
+/// compatibility policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessCompatibilityStatus {
+    Supported,
+    /// Outside the releases this roboco was built and tested against.
+    Unsupported,
+    /// Known not to work with this roboco.
+    Broken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessCompatibility {
+    pub status: HarnessCompatibilityStatus,
+    /// The release this is about.
+    pub version: String,
+    /// One line for the user, naming the release to use instead when known.
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_version: Option<String>,
 }
 
 impl HarnessUpdateStatus {
