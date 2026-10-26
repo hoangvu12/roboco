@@ -225,6 +225,17 @@ pub fn scope_transcript_frame(key: &EngineKey, update: &mut roboco_doc::Transcri
     }
 }
 
+/// One engine's relay reach: its RPC endpoint and session credential — the
+/// same dial the client's supervised RPC connection uses, aimed at the
+/// engine's `/preview-relay` route instead.
+#[derive(Clone, Debug)]
+pub struct RelayDial {
+    /// `ws://`/`wss://` base the RPC socket dials (path-preserving).
+    pub endpoint: String,
+    /// The paired session credential, sent as a Bearer header.
+    pub credential: String,
+}
+
 // Session credentials are deliberately excluded from Debug and public snapshots.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedEngine {
@@ -645,6 +656,28 @@ impl EngineRegistry {
     }
     pub fn snapshot(&self) -> RegistrySnapshot {
         self.inner.updates.borrow().clone()
+    }
+    /// The runtime handle every registry-owned background task runs on
+    /// (the client preview proxy's listener and relays included).
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.inner.runtime.clone()
+    }
+    /// The relay dial parameters for a paired remote engine: the saved
+    /// endpoint (`ws://`/`wss://` — a LAN address, or a tunnel's loopback
+    /// base) and session credential, exactly what the supervise loop
+    /// redials the RPC socket with. The local (embedded) engine has none:
+    /// its previews are served directly through the engine's own 7331
+    /// proxy and never need the relay.
+    pub fn relay_dial(&self, key: &EngineKey) -> Option<RelayDial> {
+        lock(&self.inner.state)
+            .entries
+            .get(key)
+            .and_then(|entry| {
+                entry.saved.as_ref().map(|saved| RelayDial {
+                    endpoint: saved.endpoint.clone(),
+                    credential: saved.credential.clone(),
+                })
+            })
     }
     /// The local engine's target. Desktop registries always carry one; a
     /// registry opened without a local engine (a phone) has no local entry

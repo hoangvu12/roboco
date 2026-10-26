@@ -28,7 +28,9 @@ use wry::{WebView, WebViewBuilderExtMacos, WebViewExtMacOS};
 #[derive(Default)]
 struct BrowserStore {
     store: Option<Retained<objc2_web_kit::WKWebsiteDataStore>>,
-    preview_hosts: std::collections::BTreeSet<String>,
+    /// Preview hostnames per proxy port: the engine's 7331 (local previews)
+    /// and the client relay's 7332 (remote previews, ticket 04).
+    preview_hosts: std::collections::BTreeMap<u16, std::collections::BTreeSet<String>>,
 }
 #[derive(Clone, Default)]
 pub(super) struct BrowserData(Rc<RefCell<BrowserStore>>);
@@ -60,14 +62,20 @@ impl BrowserData {
         let Some(host) = url.host_str() else {
             return;
         };
-        if url.scheme() != "http"
-            || url.port() != Some(roboco_proto::PREVIEW_PROXY_PORT)
-            || !host.ends_with(".localhost")
-        {
+        if url.scheme() != "http" || !host.ends_with(".localhost") {
             return;
         }
+        // Both proxy ports: the engine's 7331 for local previews, the
+        // client relay's 7332 for remote ones (ticket 04).
+        let port = match url.port() {
+            Some(
+                port @ (roboco_proto::PREVIEW_PROXY_PORT
+                | roboco_proto::PREVIEW_CLIENT_PROXY_PORT),
+            ) => port,
+            _ => return,
+        };
         let mut data = self.0.borrow_mut();
-        if !data.preview_hosts.insert(host.into()) {
+        if !data.preview_hosts.entry(port).or_default().insert(host.into()) {
             return;
         }
         if let Some(store) = &data.store {
@@ -83,7 +91,7 @@ impl BrowserData {
 /// only discovered/opened preview hostnames; other websites retain normal routing.
 fn configure_preview_proxy(
     store: &objc2_web_kit::WKWebsiteDataStore,
-    hosts: &std::collections::BTreeSet<String>,
+    hosts: &std::collections::BTreeMap<u16, std::collections::BTreeSet<String>>,
 ) -> Result<(), String> {
     if hosts.is_empty() {
         return Ok(());
@@ -116,18 +124,27 @@ fn configure_preview_proxy(
             std::mem::transmute(symbol(c"nw_proxy_config_create_http_connect")?);
         let match_domain: unsafe extern "C" fn(*mut NSObject, *const c_char) =
             std::mem::transmute(symbol(c"nw_proxy_config_add_match_domain")?);
-        let endpoint = Retained::from_raw(endpoint(c"127.0.0.1".as_ptr(), c"7331".as_ptr()))
-            .ok_or("Could not create preview endpoint")?;
-        let config = Retained::from_raw(proxy(
-            Retained::as_ptr(&endpoint) as *mut _,
-            std::ptr::null_mut(),
-        ))
-        .ok_or("Could not create preview proxy")?;
-        for host in hosts {
-            let host = CString::new(host.as_str()).map_err(|_| "Invalid preview hostname")?;
-            match_domain(Retained::as_ptr(&config) as *mut _, host.as_ptr());
+        // One CONNECT configuration per preview proxy port, each matching
+        // only its own preview hostnames: 7331 (the engine's local proxy)
+        // and 7332 (the client relay for remote engines).
+        let mut configs = Vec::new();
+        for (port, hosts) in hosts {
+            let port = CString::new(port.to_string()).map_err(|_| "Invalid preview port")?;
+            let endpoint = Retained::from_raw(endpoint(c"127.0.0.1".as_ptr(), port.as_ptr()))
+                .ok_or("Could not create preview endpoint")?;
+            let config = Retained::from_raw(proxy(
+                Retained::as_ptr(&endpoint) as *mut _,
+                std::ptr::null_mut(),
+            ))
+            .ok_or("Could not create preview proxy")?;
+            for host in hosts {
+                let host =
+                    CString::new(host.as_str()).map_err(|_| "Invalid preview hostname")?;
+                match_domain(Retained::as_ptr(&config) as *mut _, host.as_ptr());
+            }
+            configs.push(config);
         }
-        let proxies = NSArray::arrayWithObject(&*config);
+        let proxies = NSArray::from_retained_slice(&configs);
         let _: () = msg_send![store, setProxyConfigurations: &*proxies];
     }
     Ok(())
