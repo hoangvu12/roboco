@@ -7,7 +7,7 @@ the composer survives project switches — `crates/ui/src/pickers.rs` +153.
 
 **Blocked by:** none.
 
-**Status:** done (ported in the wave9/ui commit "Composer: keep each project's checkout pick across project switches")
+**Status:** ready-for-human (ported in faca1d333)
 
 **Verification budget:** `cargo check -p roboco-ui` + pickers tests.
 Source: `.scratch/upstream-drift/2026-10-25.md` § B1.
@@ -17,9 +17,8 @@ Source: `.scratch/upstream-drift/2026-10-25.md` § B1.
 
 ## Comments
 
-- 2026-10-25: Ported in the wave9/ui commit "Composer: keep each project's
-  checkout pick across project switches" (upstream `f6d4b1a01`, #992; SHA
-  recorded in the phase-end reference commit). `Pickers` gained
+- 2026-10-25: Ported in faca1d333 (upstream `f6d4b1a01`, #992).
+  `Pickers` gained
   `checkout_by_space: HashMap<String, CheckoutKind>`; the state observer
   now files the checkout kind away under the space it is leaving and puts
   the arriving space's remembered kind back — gated on

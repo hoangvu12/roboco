@@ -20,7 +20,7 @@ iOS bottom-bar and iOS session-delete parts (Android parity = ticket 18).
 
 **Blocked by:** none (desktop side).
 
-**Status:** ready-for-human (ported in the wave9/ui commit "Error cards: Log in for signed-out and limit-reached runs")
+**Status:** ready-for-human (ported in 5a7f0acf4)
 
 **Verification budget:** wiregen, ui notice/transcript tests, harness mock
 tests. Source: `.scratch/upstream-drift/2026-10-25.md` § B4.
@@ -32,9 +32,8 @@ tests. Source: `.scratch/upstream-drift/2026-10-25.md` § B4.
 
 ## Comments
 
-- 2026-10-26: Ported in the wave9/ui commit "Error cards: Log in for
-  signed-out and limit-reached runs" (upstream `f30a8641b`, #967, portable
-  slice; SHA recorded in the phase-end reference commit). Carried: new
+- 2026-10-26: Ported in 5a7f0acf4 (upstream `f30a8641b`, #967, portable
+  slice). Carried: new
   `crates/proto/src/run_errors.rs` (`ProviderProblem` +
   `provider_problem` classifier, near-verbatim; the credit-exhaustion
   guard kept with a product-neutral comment, fixtures adapted to Roboco's

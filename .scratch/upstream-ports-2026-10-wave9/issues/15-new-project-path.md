@@ -15,7 +15,7 @@ desired.
 
 **Blocked by:** none.
 
-**Status:** ready-for-human (ported in the wave9/ui commit "New project: type a folder's path, with ⇥ completion")
+**Status:** ready-for-human (ported in a39f89e37)
 
 **Verification budget:** `cargo check -p roboco-ui` + spaces/navigation
 tests + the fixture example. Source: `.scratch/upstream-drift/2026-10-25.md` § B3.
@@ -26,10 +26,9 @@ tests + the fixture example. Source: `.scratch/upstream-drift/2026-10-25.md` § 
 
 ## Comments
 
-- 2026-10-26: Ported in the wave9/ui commit "New project: type a folder's
-  path, with ⇥ completion" (upstream `77a3c0ff1`, #998; SHA recorded in
-  the phase-end reference commit). Carried: the crumb trail as an
-  address bar — `PathEdit` on `AddSpaceFlow` with ⌘L / pen / click-on-
+- 2026-10-26: Ported in a39f89e37 (upstream `77a3c0ff1`, #998). Carried:
+  the crumb trail as an address bar — `PathEdit` on `AddSpaceFlow` with
+  ⌘L / pen / click-on-
   empty-end entry, the open folder's path spelled from `~` and
   selected, ⇥ completing the folder under the caret from the device's
   listing (ghost preview, exact-name-wins case rule, separator

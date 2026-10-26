@@ -12,7 +12,7 @@ ticket 22 (browser lane) + the parked PR lane; sequence there.
 
 **Blocked by:** none.
 
-**Status:** ready-for-human (ported in the wave9/ui commit "Linux browser: fail fast under cfg(test), no helper in unit tests")
+**Status:** ready-for-human (ported in 327fef69d)
 
 **Verification budget:** the linux browser ui-test suite
 (`ui-tests.yml` lane). Source: `.scratch/upstream-drift/2026-10-25.md` § B5.
@@ -22,10 +22,8 @@ ticket 22 (browser lane) + the parked PR lane; sequence there.
 
 ## Comments
 
-- 2026-10-26: Ported in the wave9/ui commit "Linux browser: fail fast
-  under cfg(test), no helper in unit tests" (upstream `ea3dcc811`,
-  #1026, test-determinism slice; SHA recorded in the phase-end
-  reference commit). Upstream guards the async `NativePage::start`
+- 2026-10-26: Ported in 327fef69d (upstream `ea3dcc811`, #1026,
+  test-determinism slice). Upstream guards the async `NativePage::start`
   entry (Roboco's linux page creation is the synchronous
   `NativePage::new`, which calls `BrowserData::worker` — the site that
   extracts the helper binary into the cache and spawns both the helper
