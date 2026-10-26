@@ -64,3 +64,5 @@
 **Final commit:** `0b61654dd` ("feat(engine): session-authenticated /preview-relay route — the remote preview data plane (ticket 03)") on `ap/03-preview-relay-route`.
 
 ## Comments
+
+- 2026-10-26 (orchestrator): merged `ap/03-preview-relay-route` into `feat/agent-previews` (merge `5da2d7394`, implementation `0b61654dd`, record `ba5a40069`). Verification re-run at the merged tip: `cargo test -p roboco-engine --test preview_relay` 5/5; `cargo test -p roboco-preview` full crate (lib 23, discovery 4, proxy 1, transport 1, leak 1); `cargo test -p roboco-engine --test previews` 1/1. mux.rs diff empty (framing untouched), no new deps, no RPC method. Clippy no-new-warnings accepted from the worker's stash-based base comparison. Unblocks Wave 3 (ticket 04).
