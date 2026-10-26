@@ -41,6 +41,13 @@ pub(crate) fn signal_target(child: &Child) -> Option<i32> {
 /// long-lived thread (an async-context `Command::spawn`, i.e. a tokio core
 /// worker): `PR_SET_PDEATHSIG` fires on the death of the parent *thread*
 /// that forked, so a child stamped from a `spawn_blocking` worker that later
+/// Windows has no death signal: the crash-net/teardown paths and the
+/// caller-side supervision cover orphaned children there, so stamping is a
+/// unix-only hardening and this is a deliberate no-op (the compile fix for
+/// the ungated `claude` callers — Windows CI broke in 03800d7c7).
+#[cfg(windows)]
+pub fn dies_with_parent(_command: &mut Command) {}
+
 /// exits would be killed while healthy.
 #[cfg(unix)]
 pub fn dies_with_parent(command: &mut Command) {

@@ -91,7 +91,7 @@ derives them from `dist/roboco-artwork.png` and the outputs are committed
   screenshot goldens in `app/src/test/screenshots/`; ubuntu is the source
   of truth for recording (font rasterisation differs across hosts —
   Windows gets `:app:compareRoborazziDebug` for local feedback). Record
-  through the workflow's `record_goldens` dispatch — see `parity/README.md`.
+  locally (the `android-screenshots` CI job is currently removed) — see `parity/README.md`.
 - `:app:parityManifest` — stub manifest entries for unlisted goldens, and
   the sign-off mode (`--sign=… --reviewer=… --date=…`); `parity/README.md`.
 - `:app:parityReport` — the iOS parity board (`build/parity/`), G5 of the
