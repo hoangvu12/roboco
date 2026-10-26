@@ -309,6 +309,7 @@ impl SessionCore {
                 }),
                 Decision::Run => Some(SessionCommandPayload::Run {
                     request: RunRequest {
+                        env: Default::default(),
                         prompt: crate::attachments::with_attachments(&text, paths),
                         harness: config.as_ref().map(|c| c.harness),
                         model: config.as_ref().and_then(|c| c.model.clone()),

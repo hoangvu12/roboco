@@ -236,6 +236,7 @@ fn queue_run(
     message_id: &str,
 ) {
     let request = RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: Some(harness),
         model: model.map(str::to_string),

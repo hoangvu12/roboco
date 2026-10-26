@@ -8,4 +8,4 @@ pub mod peer;
 pub mod proxy;
 
 pub mod service;
-pub use service::PreviewService;
+pub use service::{PreviewService, Scope};

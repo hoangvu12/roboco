@@ -48,6 +48,7 @@ async fn silent_npm_enoent_death_surfaces_decoded_error() {
         turn: TurnControl::default(),
     };
     let request = RunRequest {
+        env: Default::default(),
         prompt: "hi".into(),
         harness: None,
         model: None,

@@ -555,6 +555,7 @@ async fn create_chat(core: &EngineCore, chat: &str) {
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: Some(HarnessId::ClaudeCode),
         model: None,

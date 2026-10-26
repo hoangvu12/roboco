@@ -185,6 +185,7 @@ where
 /// prompt, spelled by the shared proto constant.
 fn run_request(prompt: &str, harness: HarnessId) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: Some(harness),
         model: None,

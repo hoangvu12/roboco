@@ -301,11 +301,23 @@ impl OpencodeHarness {
         cwd: Option<&str>,
         mcp: Option<&roboco_proto::McpServer>,
     ) -> Result<Server, HarnessError> {
+        self.server_with_env(cwd, mcp, &Default::default()).await
+    }
+
+    /// [`Self::server`] with the run's environment: the engine's origin
+    /// marker, so preview discovery attributes what the agent starts to
+    /// its chat.
+    async fn server_with_env(
+        &self,
+        cwd: Option<&str>,
+        mcp: Option<&roboco_proto::McpServer>,
+        run_env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Server, HarnessError> {
         if let Some(base) = &self.base_url {
             return Ok(Server::attached(base.clone()));
         }
         let exe = self.resolve_executable()?;
-        Server::spawn(&exe, cwd, self.startup_timeout, mcp).await
+        Server::spawn(&exe, cwd, self.startup_timeout, mcp, run_env).await
     }
 
     /// One short-lived server answers both discovery calls. Also primes the
@@ -476,7 +488,9 @@ impl Harness for OpencodeHarness {
         let initial_native_command_selected = selected_native_command(&request.prompt, self.id());
         request.prompt = roboco_proto::invocation::harness_prompt(&request.prompt, self.id());
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
-        let server = self.server(cwd.as_deref(), request.mcp.as_ref()).await?;
+        let server = self
+            .server_with_env(cwd.as_deref(), request.mcp.as_ref(), &request.env)
+            .await?;
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         tokio::spawn(run_session(Session {
             server,
@@ -509,6 +523,8 @@ struct Server {
     /// Wire generation, resolved once via the health endpoints.
     protocol: tokio::sync::OnceCell<Protocol>,
     version: tokio::sync::OnceCell<ServerVersion>,
+    /// Keeps preview discovery off our own server's port while it lives.
+    _port: Option<crate::agent_ports::Reservation>,
 }
 
 /// The attached server's wire generation: the 1.x "v1" global namespace
@@ -597,6 +613,7 @@ impl Server {
             stderr_tail: crate::StderrTail::default(),
             protocol: tokio::sync::OnceCell::new(),
             version: tokio::sync::OnceCell::new(),
+            _port: None,
         }
     }
 
@@ -623,6 +640,7 @@ impl Server {
         cwd: Option<&str>,
         startup: Duration,
         mcp: Option<&roboco_proto::McpServer>,
+        run_env: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self, HarnessError> {
         let port = free_localhost_port().ok_or_else(|| {
             HarnessError::Protocol("no free localhost port for opencode serve".into())
@@ -665,6 +683,9 @@ impl Server {
             }
         }
         crate::compose_child_path(&mut cmd, exe);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, run_env);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
@@ -705,6 +726,7 @@ impl Server {
             stderr_tail,
             protocol: tokio::sync::OnceCell::new(),
             version: tokio::sync::OnceCell::new(),
+            _port: Some(crate::agent_ports::reserve(port)),
         };
 
         // Readiness: the server binds a few seconds into the process's life
@@ -2930,6 +2952,7 @@ async fn post_prompt(
                 stderr_tail: crate::StderrTail::default(),
                 protocol,
                 version: tokio::sync::OnceCell::new(),
+                _port: None,
             };
             // The command endpoint blocks for the whole turn; the bus
             // carries the real events, so this response is ignored —
@@ -2989,6 +3012,7 @@ async fn post_prompt(
         stderr_tail: crate::StderrTail::default(),
         protocol: server.protocol.clone(),
         version: tokio::sync::OnceCell::new(),
+        _port: None,
     };
     let bus_tx = bus_tx.clone();
     let dir = dir.map(str::to_owned);
@@ -3494,6 +3518,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     stderr_tail: crate::StderrTail::default(),
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
+                    _port: None,
                 };
                 // Like Claude and Codex, normal Roboco sessions run unattended,
                 // regardless of RunRequest.auto_approve. Approve each owned
@@ -3566,6 +3591,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     stderr_tail: crate::StderrTail::default(),
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
+                    _port: None,
                 };
                 let reply = match rx.await {
                     Ok(answers) if is_form => {
@@ -4990,6 +5016,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&first),
+                &Default::default(),
             )
             .await
             .unwrap();
@@ -4998,6 +5025,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&second),
+                &Default::default(),
             )
             .await
             .unwrap();
@@ -5046,6 +5074,7 @@ http.createServer((req, res) => {
             fixture.path().to_str(),
             Duration::from_secs(5),
             Some(&mcp),
+            &Default::default(),
         )
         .await
         .expect("an unknown version must not fail the run");
@@ -5104,6 +5133,7 @@ if (process.argv.includes('--version')) {{
                 fixture.path().to_str(),
                 Duration::from_secs(10),
                 Some(&mcp),
+                &Default::default(),
             )
             .await
             .expect("a slow first --version must not fail the run");

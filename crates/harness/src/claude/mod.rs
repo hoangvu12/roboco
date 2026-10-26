@@ -453,6 +453,9 @@ impl ClaudeHarness {
     fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, &request.env);
         // Crash ownership: the kernel kills this CLI if the engine dies.
         crate::process::dies_with_parent(&mut cmd);
         cmd.args(Self::launch_args(request));

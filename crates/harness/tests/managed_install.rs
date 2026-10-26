@@ -36,6 +36,7 @@ async fn managed_install_reaches_session_started() {
         turn: TurnControl::default(),
     };
     let request = RunRequest {
+        env: Default::default(),
         prompt: "say the word ok and stop".into(),
         harness: None,
         model: None,

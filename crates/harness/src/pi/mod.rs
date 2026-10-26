@@ -648,6 +648,9 @@ impl PiHarness {
         }
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, &request.env);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
