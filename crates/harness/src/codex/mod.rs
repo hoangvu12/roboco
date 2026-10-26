@@ -97,6 +97,21 @@ fn resolve_codex_executable() -> Option<PathBuf> {
     crate::executable::find_on_paths("codex", extra)
 }
 
+/// `canonicalize` yields `\\?\`-prefixed verbatim paths on Windows, which
+/// cmd.exe cannot launch batch shims through; keep the plain drive/UNC form.
+fn plain_executable(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(rest) = path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+            return match rest.strip_prefix(r"UNC\") {
+                Some(share) => PathBuf::from(format!(r"\\{share}")),
+                None => PathBuf::from(rest),
+            };
+        }
+    }
+    path
+}
+
 /// Dotted `thread/start` config overrides that add an injected MCP server
 /// to the user's `mcp_servers` table.
 fn codex_mcp_overrides(mcp: &roboco_proto::McpServer) -> Vec<(String, Value)> {
@@ -241,6 +256,9 @@ impl CodexHarness {
             Ok::<Value, HarnessError>(skills)
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        // Windows teardown gives the child its grace to exit on stdin EOF;
+        // the probe's writer task would otherwise hold the pipe open.
+        client.close_stdin_for_teardown();
         shutdown_child(&mut child, self.kill_grace).await;
         match result {
             Ok(inner) => inner,
@@ -339,6 +357,7 @@ impl CodexHarness {
             Ok::<Vec<Model>, HarnessError>(models)
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        client.close_stdin_for_teardown();
         shutdown_child(&mut child, self.kill_grace).await;
         match result {
             Ok(inner) => inner,
@@ -1388,7 +1407,7 @@ async fn run_session(session: Session) {
     // The runtime's process tree when its teardown began (see
     // [`crate::shutdown_agent`]).
     #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut torn_down: Vec<i32> = Vec::new();
+    let mut torn_down: Vec<crate::process::Tracked> = Vec::new();
 
     'main: loop {
         tokio::select! {
@@ -2078,6 +2097,10 @@ async fn run_session(session: Session) {
         }
     }
 
+    // Windows teardown gives the child its grace to exit on stdin EOF; the
+    // writer task would otherwise hold the pipe open while any client clone
+    // lives. Unix teardown signals the child; unchanged.
+    client.close_stdin_for_teardown();
     crate::shutdown_agent(&mut child, torn_down, kill_grace).await;
     if let Some(handle) = escalation {
         handle.abort();

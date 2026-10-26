@@ -73,6 +73,12 @@ jobs:
         # Runs before the full application build: the hardened process
         # behavior must fail the PR early, not after the expensive build.
         run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --lib --test codex_availability --test windows_native -P ci
+      # The driver suites whose fixtures run without a POSIX shell: an in-test
+      # HTTP/SSE server (OpenCode) and node (the Cursor shim). The shell- and
+      # python-fixture suites are unix-only (upstream #977 names a Rust Pi
+      # peer too; roboco's Pi fixture is still shell-based, so it stays out).
+      - name: Portable harness integration tests
+        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test opencode --test cursor_shim -P ci
       - name: Build application
         run: cargo build --release --locked -p roboco
       - name: Verify portable and installer packaging

@@ -2940,8 +2940,21 @@ fn answer_dialog(
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 async fn load_image_contents(paths: &[String]) -> Vec<Value> {
+    load_image_blocks_capped(paths, MAX_INLINE_IMAGE_BYTES, u64::MAX).await
+}
+
+/// A message's attachments as inline image blocks, under a cap per file and
+/// a cap on all inlined files together, in bytes — a file over either rides
+/// as its path ref only (the text refs ride the prompt in either case).
+/// Shared with the cursor driver (upstream #977).
+pub(crate) async fn load_image_blocks_capped(
+    paths: &[String],
+    each: u64,
+    total: u64,
+) -> Vec<Value> {
     use base64::Engine as _;
     let mut blocks = Vec::new();
+    let mut inlined = 0u64;
     for path in paths {
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
@@ -2950,7 +2963,8 @@ async fn load_image_contents(paths: &[String]) -> Vec<Value> {
                 continue;
             }
         };
-        if bytes.len() as u64 > MAX_INLINE_IMAGE_BYTES {
+        // The file may have grown since its size was last seen.
+        if bytes.len() as u64 > each || bytes.len() as u64 > total - inlined {
             tracing::debug!(target: "roboco_harness::pi", %path, "attachment over inline cap; path ref only");
             continue;
         }
@@ -2958,6 +2972,7 @@ async fn load_image_contents(paths: &[String]) -> Vec<Value> {
             tracing::debug!(target: "roboco_harness::pi", %path, "attachment not an inline-supported image; path ref only");
             continue;
         };
+        inlined += bytes.len() as u64;
         blocks.push(json!({
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(&bytes),

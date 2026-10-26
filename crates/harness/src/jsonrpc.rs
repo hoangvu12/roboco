@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::HarnessError;
@@ -46,12 +46,37 @@ type StdoutObserver = Box<dyn Fn(&str) + Send>;
 
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
 
+/// How a request fails when the transport lost its answer: the app server
+/// exited first, or its stdin could not take the request (then with the
+/// write error after it). [`transport_lost`] recognizes both.
+const EXITED: &str = "app-server exited before responding";
+const STDIN_CLOSED: &str = "app-server stdin closed";
+
+/// The request never got an answer because the app server is gone, as
+/// opposed to an answer that refused it. (Roboco partial #977 port: the
+/// codex/acp error-classification callers are not yet carried; the jsonrpc
+/// tests exercise it on Unix.)
+#[allow(dead_code)]
+pub(crate) fn transport_lost(error: &HarnessError) -> bool {
+    let HarnessError::Protocol(message) = error else {
+        return false;
+    };
+    message
+        .split_once(": ")
+        .is_some_and(|(_, reason)| reason.starts_with(EXITED) || reason.starts_with(STDIN_CLOSED))
+}
+
 #[derive(Clone)]
 pub(crate) struct RpcClient {
     next_id: Arc<AtomicI64>,
     pending: Pending,
     writer: mpsc::UnboundedSender<String>,
     closed: Arc<AtomicBool>,
+    /// Ends the writer task (and with it the child's stdin) once the lines
+    /// already queued are written, whichever clones are still alive.
+    /// Only Windows' teardown needs it.
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    close_stdin: Arc<tokio::sync::Notify>,
 }
 
 impl RpcClient {
@@ -70,10 +95,17 @@ impl RpcClient {
         observer: Option<StdoutObserver>,
     ) -> (Self, mpsc::Receiver<Incoming>) {
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
-        tokio::spawn(write_loop(stdin, writer_rx));
         let pending: Pending = Arc::default();
-        let (incoming_tx, incoming_rx) = mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
+        let close_stdin = Arc::new(tokio::sync::Notify::new());
+        tokio::spawn(write_loop(
+            stdin,
+            writer_rx,
+            Arc::clone(&pending),
+            closed.clone(),
+            close_stdin.clone(),
+        ));
+        let (incoming_tx, incoming_rx) = mpsc::channel(256);
         tokio::spawn(read_loop(
             stdout,
             Arc::clone(&pending),
@@ -87,6 +119,7 @@ impl RpcClient {
                 pending,
                 writer: writer_tx,
                 closed,
+                close_stdin,
             },
             incoming_rx,
         )
@@ -94,6 +127,21 @@ impl RpcClient {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Call before [`crate::shutdown_child`] / [`crate::shutdown_agent`]:
+    /// Windows' teardown gives the child its grace to exit on stdin EOF, and
+    /// the writer task keeps stdin open while any clone of this client is
+    /// alive. Unix teardown signals the child instead; its order is unchanged.
+    pub fn close_stdin_for_teardown(&self) {
+        #[cfg(windows)]
+        self.close_stdin();
+    }
+
+    /// Close the child's stdin once the lines already queued are written.
+    #[cfg(any(windows, test))]
+    fn close_stdin(&self) {
+        self.close_stdin.notify_one();
     }
 
     /// Send a request and await its response (resolved by the reader task).
@@ -105,9 +153,7 @@ impl RpcClient {
             // Check under the same lock as EOF cleanup: a request racing the
             // reader exit must either be rejected here or cleared by it.
             if self.is_closed() {
-                return Err(HarnessError::Protocol(format!(
-                    "{method}: app-server exited before responding"
-                )));
+                return Err(HarnessError::Protocol(format!("{method}: {EXITED}")));
             }
             pending.insert(id, tx);
         }
@@ -115,7 +161,7 @@ impl RpcClient {
         if self.writer.send(line.to_string()).is_err() {
             self.pending.lock().expect("pending lock").remove(&id);
             return Err(HarnessError::Protocol(format!(
-                "{method}: app-server stdin closed"
+                "{method}: {STDIN_CLOSED}"
             )));
         }
         match rx.await {
@@ -123,7 +169,7 @@ impl RpcClient {
             Ok(Err(message)) => Err(HarnessError::Protocol(format!("{method}: {message}"))),
             // Sender dropped: the reader hit EOF and failed all pending.
             Err(_) => Err(HarnessError::Protocol(format!(
-                "{method}: app-server exited before responding"
+                "{method}: {EXITED}"
             ))),
         }
     }
@@ -155,9 +201,24 @@ impl RpcClient {
 }
 
 /// Owns the child's stdin; a write failure (EPIPE after the child died) is
-/// tolerated and logged.
-async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
-    while let Some(line) = rx.recv().await {
+/// tolerated and logged. Nothing written after it can be answered, so the
+/// client closes and every pending request fails now: a caller must not wait
+/// on stdout EOF, which a surviving descendant can hold off forever.
+async fn write_loop(
+    mut stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    pending: Pending,
+    closed: Arc<AtomicBool>,
+    close: Arc<tokio::sync::Notify>,
+) {
+    loop {
+        // Queued lines first: a close only lands once they are written.
+        let line = tokio::select! {
+            biased;
+            line = rx.recv() => line,
+            () = close.notified() => None,
+        };
+        let Some(line) = line else { return };
         let write = async {
             stdin.write_all(line.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
@@ -165,8 +226,20 @@ async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Strin
         };
         if let Err(e) = write.await {
             tracing::debug!(target: "roboco_harness::rpc", "stdin write failed (tolerated): {e}");
+            fail_pending(&pending, &closed, &format!("{STDIN_CLOSED} ({e})"));
             return;
         }
+    }
+}
+
+/// Close the client and reject every awaiting request with `reason`. Done
+/// under the pending lock so a request racing it is either rejected by
+/// [`RpcClient::request`]'s closed check or drained here.
+fn fail_pending(pending: &Pending, closed: &AtomicBool, reason: &str) {
+    let mut pending = pending.lock().expect("pending lock");
+    closed.store(true, Ordering::Release);
+    for (_, sender) in pending.drain() {
+        let _ = sender.send(Err(reason.to_owned()));
     }
 }
 
@@ -216,7 +289,7 @@ async fn read_loop(
     closed: Arc<AtomicBool>,
     observer: Option<StdoutObserver>,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = crate::lossy_lines::lossy_lines(stdout);
     // A read error ends the loop like EOF: either way the child's stdout is
     // unusable, pending requests must fail, and the session loop must know.
     while let Ok(Some(line)) = lines.next_line().await {
@@ -246,7 +319,15 @@ async fn read_loop(
         match (method, id) {
             // Response: resolve the awaiting request.
             (None, Some(id)) => {
-                if msg.get("result").is_none() && msg.get("error").is_none() {
+                // A bare `{jsonrpc, id}` is a JS server answering a void
+                // method (`JSON.stringify` drops an undefined `result`);
+                // skipping it would strand the caller, so it resolves as a
+                // null result. A frame carrying anything else but neither
+                // `result` nor `error` is diagnostic noise, not a response.
+                let bare = msg
+                    .as_object()
+                    .is_some_and(|frame| frame.keys().all(|k| k == "jsonrpc" || k == "id"));
+                if msg.get("result").is_none() && msg.get("error").is_none() && !bare {
                     continue;
                 }
                 let Some(id) = response_id(id) else { continue };
@@ -302,6 +383,72 @@ async fn read_loop(
 mod tests {
     use super::*;
 
+    /// A child speaking `script` over piped stdio, plus its client.
+    #[cfg(unix)]
+    fn scripted_child(
+        script: &str,
+    ) -> (tokio::process::Child, RpcClient, mpsc::Receiver<Incoming>) {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (client, incoming) =
+            RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        (child, client, incoming)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn void_response_resolves_its_caller_with_null() {
+        let (_child, client, _incoming) =
+            scripted_child(r#"read line; echo '{"jsonrpc":"2.0","id":1}'; sleep 5"#);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.request("session/set_mode", json!({})),
+        )
+        .await
+        .expect("a void response must not strand its caller");
+        assert_eq!(result.unwrap(), Value::Null);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_write_fails_pending_requests_while_stdout_stays_open() {
+        // The child closes stdin but keeps stdout open, like a crashed adapter
+        // whose descendant still holds the pipe.
+        let (_child, client, _incoming) = scripted_child("exec 0<&-; sleep 5");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.request("session/prompt", json!({})),
+        )
+        .await
+        .expect("a failed write must fail the request without waiting for EOF");
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("stdin closed"));
+        assert!(transport_lost(&error), "{error}");
+        assert!(client.is_closed());
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lost_answer_reads_as_transport_lost() {
+        // EOF with the request outstanding.
+        let (_child, client, _incoming) = scripted_child("read line");
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.request("session/prompt", json!({})),
+        )
+        .await
+        .expect("EOF must fail the request")
+        .unwrap_err();
+        assert!(transport_lost(&error), "{error}");
+    }
+
     #[test]
     fn cancel_notification_wire_has_no_id() {
         let (writer, mut receiver) = mpsc::unbounded_channel();
@@ -310,6 +457,7 @@ mod tests {
             pending: Arc::default(),
             writer,
             closed: Arc::new(AtomicBool::new(false)),
+            close_stdin: Arc::default(),
         };
         client.notify("session/cancel", Some(json!({"sessionId": "parent"})));
         let frame: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
@@ -329,6 +477,7 @@ mod tests {
             pending: Arc::default(),
             writer,
             closed: Arc::new(AtomicBool::new(true)),
+            close_stdin: Arc::default(),
         };
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),

@@ -3936,7 +3936,7 @@ async fn run_session(session: Session) {
     // shutdown already terminates the descendant tree it snapshotted; this
     // covers anything that detached between the snapshot and the kill).
     #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut torn_down: Vec<i32> = Vec::new();
+    let mut torn_down: Vec<crate::process::Tracked> = Vec::new();
     // When our last prompt settled. Only traffic arriving past it (and past
     // the settled turn's own trailing frames) is an unowned turn: counting
     // the tail of our own turn as "busy" cancelled an idle session for every
@@ -4900,6 +4900,10 @@ async fn run_session(session: Session) {
         }
     }
 
+    // Windows teardown gives the child its grace to exit on stdin EOF; the
+    // RPC writer task would otherwise hold the pipe open while any client
+    // clone lives. Unix teardown signals the child; unchanged.
+    client.close_stdin_for_teardown();
     child.shutdown(kill_grace).await;
     #[cfg(unix)]
     crate::process::terminate_tree(&torn_down, kill_grace).await;
