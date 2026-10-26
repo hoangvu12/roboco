@@ -28,6 +28,7 @@ import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.CoreConfig
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomRecord
 
 /** The startup pipeline's state; the splash (ticket 35) holds on `Loading`. */
 sealed interface CoreStartState {
@@ -51,7 +52,11 @@ fun interface ClientEventSink {
  * [CoreClient], publish its engine views, then flip [state] to `Ready`.
  *
  * Also owns the app's single [ClientListener]: `EngineIdentityPinned`
- * events flow to `store.pin` through a channel, `EnginesChanged`
+ * events flow to `store.pin` through a channel, `RoomEngineJoined`
+ * (ADR 0011, ticket 04: a heal pass minted a missing member's session)
+ * flow to `store.upsert` through their own channel — the heal itself runs
+ * in Rust on the existing start/network-change moments, so this is the
+ * only persistence seam it needs — and `EnginesChanged`
  * refreshes [engines] through a coalescing flow, every event fans
  * out to the [ClientEventSink]s other tickets register (40/42) —
  * register them before [start] to see every event — and every event
@@ -66,8 +71,14 @@ class CoreStartup(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val compute: CoroutineDispatcher = Dispatchers.Default,
-    private val newClient: (CoreConfig, List<PairedEngine>, ClientListener) -> CoreClient =
-        { config, engines, listener -> CoreClient(config, engines, listener) },
+    private val newClient: (
+        CoreConfig,
+        List<PairedEngine>,
+        List<RoomRecord>,
+        ClientListener,
+    ) -> CoreClient = { config, engines, rooms, listener ->
+        CoreClient(config, engines, rooms, listener)
+    },
     private val onClientReady: (CoreClient) -> Unit = {},
     /**
      * The app-scoped session event hub (ticket 51): one line of wiring
@@ -90,6 +101,7 @@ class CoreStartup(
     private val sinks = CopyOnWriteArrayList<ClientEventSink>()
 
     private val pins = Channel<ClientEvent.EngineIdentityPinned>(Channel.UNLIMITED)
+    private val roomJoins = Channel<ClientEvent.RoomEngineJoined>(Channel.UNLIMITED)
     private val enginesDirty = MutableSharedFlow<Unit>(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -107,6 +119,14 @@ class CoreStartup(
                 store.pin(pinned.engineId, pinned.deviceId, pinned.name)
             }
         }
+        scope.launch(io) {
+            for (joined in roomJoins) {
+                // The heal minted a credential in Rust; persisting it here
+                // is what keeps the engine across restarts (otherwise the
+                // next start re-presents — correct, just wasteful).
+                store.upsert(joined.engine)
+            }
+        }
         scope.launch(compute) {
             enginesDirty.collect { clientRef.get()?.let { _engines.value = it.engines() } }
         }
@@ -119,7 +139,11 @@ class CoreStartup(
             try {
                 // 1. Load the stored pairings before anything decides what
                 //    to render — the pairing root must never flash first.
+                //    The joined rooms ride along (ticket 04: their `room:`
+                //    blobs are the heal's fuel — book members without an
+                //    engine entry get one dial each on the same start).
                 val engines = store.load()
+                val rooms = store.loadRooms()
                 // 2. The redeem label is read once per process.
                 val dataDir = File(context.noBackupFilesDir, "core").apply { mkdirs() }
                 val config = CoreConfig(
@@ -132,9 +156,10 @@ class CoreStartup(
                     // the core on the first Tailcat dial.
                     nativeLibDir = context.applicationInfo.nativeLibraryDir,
                 )
-                // 3. Never log `engines`; the constructor never dials.
+                // 3. Never log `engines` or `rooms` (both carry secrets);
+                //    the constructor never dials.
                 val client = try {
-                    newClient(config, engines, listener)
+                    newClient(config, engines, rooms, listener)
                 } catch (error: Throwable) {
                     if (error is CancellationException) throw error
                     Log.e(TAG, "core start failed", error)
@@ -169,6 +194,7 @@ class CoreStartup(
         sessionEvents.onClientEvent(event)
         when (event) {
             is ClientEvent.EngineIdentityPinned -> pins.trySend(event)
+            is ClientEvent.RoomEngineJoined -> roomJoins.trySend(event)
             ClientEvent.EnginesChanged -> enginesDirty.tryEmit(Unit)
             else -> {}
         }

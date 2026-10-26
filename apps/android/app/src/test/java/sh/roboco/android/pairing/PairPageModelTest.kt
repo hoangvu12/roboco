@@ -26,9 +26,15 @@ import org.robolectric.annotation.Config
 import sh.roboco.android.R
 import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
+import uniffi.roboco_core.EngineRoomRef
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomException
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomMemberRecord
+import uniffi.roboco_core.RoomRecord
 
 /**
  * The Pair page's state machine and error mapping (android-ui-parity
@@ -525,6 +531,151 @@ class PairPageModelTest {
         assertEquals("https://b/pair#token=2", second.text.text.toString())
     }
 
+    // ------------------------------------------------------- the room join
+
+    @Test
+    fun aRoomInviteJoinsPersistsTheBlobFirstThenTheEngines() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        val paired = mutableListOf<Unit>()
+        model.onPaired = {
+            ops += "onPaired"
+            paired += Unit
+        }
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxLCJuYW1lIjoiSG9tZSBmbGVldCJ9")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // The blob before the engines (a crash between the two leaves a
+        // swept orphan, not a room whose engines exist but cannot heal),
+        // then the engine, then close.
+        assertEquals(listOf("known", "joinRoom", "upsertRoom", "upsert", "onPaired"), ops)
+        assertEquals(1, harness.sink.roomUpserts.size)
+        assertEquals("r-1", harness.sink.roomUpserts.single().roomId)
+        assertEquals(1, harness.sink.upserts.size)
+        assertEquals("room-engine-1", harness.sink.upserts.single().engineId)
+        assertEquals("", model.text.text.toString())
+        assertEquals(PairPhase.Idle, model.phase)
+        assertEquals(1, paired.size)
+    }
+
+    @Test
+    fun aPartialRoomJoinIsASuccessAndCloses() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        // One member joined, one asleep: the join result is a success —
+        // the missing member heals on app start / network change, so the
+        // page closes like any success.
+        backend.joinImpl = { _ ->
+            RoomJoinResult(
+                room = RoomRecord(
+                    roomId = "r-2",
+                    label = "Home fleet",
+                    secret = "room-secret",
+                    members = listOf(
+                        RoomMemberRecord(label = "desktop", address = "http://10.0.2.2:8123"),
+                        RoomMemberRecord(label = "server", address = "http://10.0.2.2:8124"),
+                    ),
+                ),
+                engines = listOf(
+                    newEngine().copy(engineId = "room-engine-2", room = EngineRoomRef("r-2", "Home fleet")),
+                ),
+                missing = listOf("server"),
+            )
+        }
+        val paired = mutableListOf<Unit>()
+        model.onPaired = { paired += Unit }
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
+
+        model.submit()
+        advanceUntilIdle()
+
+        assertEquals(listOf("known", "joinRoom", "upsertRoom", "upsert", "onPaired"), ops)
+        assertEquals(PairPhase.Idle, model.phase)
+        assertEquals(1, paired.size)
+    }
+
+    @Test
+    fun aRoomJoinRefusalShowsTheRoomSentence() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        backend.joinImpl = { _ -> throw RoomException.Refused() }
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
+
+        model.submit()
+        advanceUntilIdle()
+
+        assertEquals(PairPhase.Error(PairMessage.Res(R.string.room_error_refused)), model.phase)
+        assertEquals(listOf("known", "joinRoom"), ops)
+        assertTrue(harness.sink.roomUpserts.isEmpty())
+    }
+
+    @Test
+    fun aRoomJoinThrottleShowsTheThrottleSentence() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        backend.joinImpl = { _ -> throw RoomException.Throttled() }
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
+
+        model.submit()
+        advanceUntilIdle()
+
+        assertEquals(PairPhase.Error(PairMessage.Res(R.string.room_error_throttled)), model.phase)
+    }
+
+    @Test
+    fun aRoomJoinParseFailureShowsTheReasonVerbatim() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        backend.joinImpl = { _ -> throw RoomException.InvalidInvite("a room invite starts with roboco-room:") }
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:!!!")
+
+        model.submit()
+        advanceUntilIdle()
+
+        assertEquals(
+            PairPhase.Error(PairMessage.Verbatim("a room invite starts with roboco-room:")),
+            model.phase,
+        )
+    }
+
+    @Test
+    fun aRoomBlobStoreFailureRollsTheNewEnginesBack() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        harness.sink.upsertRoomError = IOException("disk full")
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // 71's caller contract for a join: the engines minted this call
+        // (none known before) are forgotten and removed; nothing persists.
+        assertEquals(listOf("known", "joinRoom", "upsertRoom", "forget", "remove"), ops)
+        assertEquals(listOf("room-engine-1"), backend.forgets)
+        assertEquals(listOf("room-engine-1"), harness.sink.removes)
+        assertTrue(harness.sink.upserts.isEmpty())
+        assertEquals(PairPhase.Error(PairMessage.Res(R.string.pair_error_store)), model.phase)
+        assertEquals("roboco-room:eyJ2IjoxfQ", model.text.text.toString())
+    }
+
+    @Test
+    fun anEngineStoreFailureMidJoinRollsBackThatEngineOnly() = runTest {
+        val harness = harness()
+        val model = model(harness)
+        harness.sink.upsertError = IOException("disk full")
+        model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // The blob write succeeded (it stays: the engines that DID persist
+        // would keep healing); the failing engine rolls back.
+        assertEquals(listOf("known", "joinRoom", "upsertRoom", "upsert", "forget", "remove"), ops)
+        assertEquals(PairPhase.Error(PairMessage.Res(R.string.pair_error_store)), model.phase)
+    }
+
     // ------------------------------------------------------------- the fakes
 
     /** Scripted results; records the op order into [ops]. */
@@ -546,6 +697,34 @@ class PairPageModelTest {
             ops += "forget"
             forgets += engineId
         }
+
+        var parseRoomImpl: (String) -> RoomInviteTarget? = { null }
+        var joinImpl: suspend (String) -> RoomJoinResult = { _ -> aJoin() }
+        val joinCalls = mutableListOf<String>()
+
+        override fun parseRoom(input: String): RoomInviteTarget? = parseRoomImpl(input)
+
+        override suspend fun joinRoom(invite: String): RoomJoinResult {
+            ops += "joinRoom"
+            joinCalls += invite
+            return joinImpl(invite)
+        }
+
+        fun aJoin(): RoomJoinResult {
+            val room = RoomRecord(
+                roomId = "r-1",
+                label = "Home fleet",
+                secret = "room-secret",
+                members = listOf(RoomMemberRecord(label = "desktop", address = "http://10.0.2.2:8123")),
+            )
+            return RoomJoinResult(
+                room = room,
+                engines = listOf(
+                    newEngine().copy(engineId = "room-engine-1", room = EngineRoomRef("r-1", "Home fleet")),
+                ),
+                missing = listOf(),
+            )
+        }
     }
 
     /** The recording sink: a known set, an optional upsert failure. */
@@ -554,8 +733,10 @@ class PairPageModelTest {
         private val known: Set<String>,
     ) : PairedEngineSink {
         val upserts = mutableListOf<PairedEngine>()
+        val roomUpserts = mutableListOf<RoomRecord>()
         val removes = mutableListOf<String>()
         var upsertError: Exception? = null
+        var upsertRoomError: Exception? = null
 
         override fun knownEngineIds(): Set<String> {
             ops += "known"
@@ -566,6 +747,12 @@ class PairPageModelTest {
             ops += "upsert"
             upserts += engine
             upsertError?.let { throw it }
+        }
+
+        override suspend fun upsertRoom(room: RoomRecord) {
+            ops += "upsertRoom"
+            roomUpserts += room
+            upsertRoomError?.let { throw it }
         }
 
         override suspend fun remove(engineId: String) {

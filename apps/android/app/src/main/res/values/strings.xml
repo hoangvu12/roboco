@@ -18,10 +18,10 @@
          U+2192, "·" U+00B7; apostrophes are ASCII. -->
     <string name="pair_title">Pair this phone</string>
     <string name="pair_section">Pairing link</string>
-    <string name="pair_placeholder" translatable="false">https://…/pair#token=… or roboco-tailcat:…</string>
+    <string name="pair_placeholder" translatable="false">https://…/pair#token=…, roboco-tailcat:… or roboco-room:…</string>
     <string name="pair_paste">Paste</string>
     <string name="pair_scan">Scan QR code</string>
-    <string name="pair_hint">Paste a pairing link or a roboco-tailcat: invite from any engine. Create one on that computer under Settings → Remote access.</string>
+    <string name="pair_hint">Paste a pairing link, a roboco-tailcat: invite, or a roboco-room: room invite from any engine. Create one on that computer under Settings → Remote access.</string>
     <string name="pair_target">Engine at %1$s</string>
     <string name="pair_target_tailcat">Engine over Tailcat · invite expires in %1$s</string>
     <string name="pair_cleartext">This link uses http://, so pairing and your session aren\'t encrypted. Use a trusted network or your own tunnel.</string>
@@ -37,6 +37,18 @@
     <string name="pair_error_store">Couldn\'t save the engine\'s credential on this phone.</string>
     <string name="pair_error_details_show">Show details</string>
     <string name="pair_error_details_hide">Hide details</string>
+
+    <!-- Rooms (ADR 0011, ticket 04): the Pair page's join-room arm —
+         the target line under a parsed roboco-room: invite (the room
+         name and the member count only; the secret and the addresses
+         never render), the capsule pair, and the two room-specific
+         error sentences. A member engine without rooms-v1 never
+         reaches here: the join skips it silently (hide, not toast). -->
+    <string name="pair_room_target">Room “%1$s” · %2$d engines</string>
+    <string name="pair_room_submit">Join room</string>
+    <string name="pair_room_submitting">Joining room…</string>
+    <string name="room_error_refused">That room invite was refused — its secret may have rotated, or a member left the room.</string>
+    <string name="room_error_throttled">That engine is throttling room joins. Try again in a minute.</string>
 
     <!-- The QR scanner (android-ui-parity #138): the hint, foreign,
          denied and unavailable captions (qr_denied/qr_foreign/qr_hint are

@@ -18,6 +18,7 @@ mod accounts;
 mod failover;
 mod new_session;
 mod notify;
+mod rooms;
 mod session;
 mod types;
 mod workspace;
@@ -26,6 +27,7 @@ pub use accounts::*;
 pub use failover::*;
 pub use new_session::*;
 pub use notify::*;
+pub use rooms::*;
 pub use session::*;
 pub use types::*;
 
@@ -92,13 +94,16 @@ impl CoreClient {
     pub fn new(
         config: CoreConfig,
         engines: Vec<PairedEngine>,
+        rooms: Vec<RoomRecord>,
         listener: Arc<dyn ClientListener>,
     ) -> CoreResult<Arc<Self>> {
         // Core init: the client's link/reconnect tracing reaches logcat
         // (idempotent; `core_version` usually installed it already).
         crate::logcat::install();
         let engines: Vec<mc::PairedEngine> = engines.into_iter().map(Into::into).collect();
-        let client = mc::Client::new(config.into(), engines, Arc::new(ListenerBridge(listener)))?;
+        let rooms: Vec<mc::rooms::RoomRecord> = rooms.into_iter().map(Into::into).collect();
+        let client =
+            mc::Client::new(config.into(), engines, rooms, Arc::new(ListenerBridge(listener)))?;
         Ok(Arc::new(Self { client }))
     }
 
@@ -268,6 +273,7 @@ mod tests {
                 show_mock_harness: true,
                 native_lib_dir: None,
             },
+            Vec::new(),
             Vec::new(),
             recorder.clone(),
         )

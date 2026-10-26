@@ -46,6 +46,7 @@ import uniffi.roboco_core.CoreException
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomRecord
 import uniffi.roboco_core.ParkReason
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
@@ -132,8 +133,8 @@ class CoreStartupTest {
      */
     private suspend fun TestScope.newFixture(
         storedEngines: List<PairedEngine> = emptyList(),
-        newClient: (CoreConfig, List<PairedEngine>, ClientListener) -> CoreClient =
-            { config, engines, listener -> CoreClient(config, engines, listener) },
+        newClient: (CoreConfig, List<PairedEngine>, List<RoomRecord>, ClientListener) -> CoreClient =
+            { config, engines, rooms, listener -> CoreClient(config, engines, rooms, listener) },
     ): Fixture {
         val io = StandardTestDispatcher(testScheduler)
         val compute = StandardTestDispatcher(testScheduler)
@@ -189,7 +190,7 @@ class CoreStartupTest {
     @Test
     fun aNewClientFailureFailsTheStartup() = runTest {
         val fixture = newFixture(
-            newClient = { _, _, _ -> throw CoreException.Network("no dial") },
+            newClient = { _, _, _, _ -> throw CoreException.Network("no dial") },
         )
 
         fixture.startAndAwait()
@@ -258,8 +259,8 @@ class CoreStartupTest {
         val engineReads = AtomicInteger()
         val fixture = newFixture(
             storedEngines = listOf(engine),
-            newClient = { config, engines, listener ->
-                object : CoreClient(config, engines, listener) {
+            newClient = { config, engines, rooms, listener ->
+                object : CoreClient(config, engines, rooms, listener) {
                     override fun engines(): List<EngineView> =
                         super.engines().also { engineReads.incrementAndGet() }
                 }

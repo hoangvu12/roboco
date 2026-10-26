@@ -4,7 +4,7 @@ import java.util.Locale
 
 /**
  * What a decoded QR payload is (android-ui-parity #138). `Pairing` holds
- * the token — never log it, never `toString()` a verdict.
+ * the token or the room secret — never log it, never `toString()` a verdict.
  */
 sealed interface ScanVerdict {
 
@@ -16,8 +16,9 @@ sealed interface ScanVerdict {
 
     /**
      * A pairing URL, a Tailcat invite (redeemed through the in-process
-     * Tailcat tunnel, android-next#02) or an unwrapped
-     * `roboco://pair#url=…` — accept, close, auto-submit.
+     * Tailcat tunnel, android-next#02), a room invite (ADR 0011, ticket 04
+     * — the Pair page joins it: scan once, reach every member) or an
+     * unwrapped `roboco://pair#url=…` — accept, close, auto-submit.
      */
     data class Pairing(val url: String) : ScanVerdict
 }
@@ -37,6 +38,9 @@ sealed interface ScanVerdict {
  *    `INVITE_PREFIX`, `crates/proto/src/tailcat.rs`) →
  *    [ScanVerdict.Pairing] — the Pair page pairs it over Tailcat
  *    (android-next#02);
+ * 3b. starts with `roboco-room:` (case-sensitive, Rust's
+ *    `INVITE_PREFIX`, `crates/proto/src/room.rs`) →
+ *    [ScanVerdict.Pairing] — the Pair page joins the room (ticket 04);
  * 4. [isPairingUrl] (ticket 72's `PairingBackend.parse` != null) →
  *    [ScanVerdict.Pairing];
  * 5. otherwise → [ScanVerdict.Foreign].
@@ -53,6 +57,7 @@ fun classifyScan(raw: String, isPairingUrl: (String) -> Boolean): ScanVerdict {
     }
     if (s.any { it.isWhitespace() || it.isISOControl() }) return ScanVerdict.Foreign
     if (s.startsWith("roboco-tailcat:")) return ScanVerdict.Pairing(s)
+    if (s.startsWith("roboco-room:")) return ScanVerdict.Pairing(s)
     if (isPairingUrl(s)) return ScanVerdict.Pairing(s)
     return ScanVerdict.Foreign
 }

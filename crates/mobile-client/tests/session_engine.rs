@@ -1095,6 +1095,7 @@ impl Rig {
                 device_id: view.device_id,
                 name: None,
                 transport: Default::default(),
+                room: None,
             })
             .unwrap()
     }
@@ -1248,7 +1249,7 @@ async fn the_mock_harness_is_offered_when_configured() {
     let url = pairing_url(&listener, engine_dir.path(), None);
     let recorder = Arc::new(Recorder::default());
     let config = support::test_config(data_dir.path());
-    let client = Client::new_with_timings(config, Vec::new(), recorder, support::test_timings())
+    let client = Client::new_with_timings(config, Vec::new(), Vec::new(), recorder, support::test_timings())
         .unwrap();
     let record = client.pair_engine(&url, None).await.unwrap();
     wait_for_view(&client, &record.engine_id, "connected", |view| {
@@ -1782,6 +1783,7 @@ async fn a_thawed_app_on_dead_sockets_catches_up_within_seconds() {
     };
     let client = Client::new_with_timings(
         support::test_config(data_dir.path()),
+        Vec::new(),
         Vec::new(),
         Arc::new(Recorder::default()),
         timings,

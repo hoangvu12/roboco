@@ -63,7 +63,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use roboco_doc::SessionCommandPayload;
+use roboco_engine::rooms::RoomStore;
 use roboco_engine::{EngineCore, EngineListener, EngineProfile, HarnessId, pairing, smoke_registry};
+use roboco_proto::room::RoomInvite;
+use roboco_proto::room::RoomMember;
 use roboco_proto::{ReasoningLevel, RunRequest, SandboxLevel};
 use roboco_rpc::{RpcReply, RpcService, methods};
 
@@ -671,14 +674,12 @@ fn spawn_control_endpoint(
                 Ok(stream) => stream,
                 Err(_) => continue,
             };
-            let request = match read_request_line(&mut stream) {
-                Some(line) => line,
+            let request = match read_request(&mut stream) {
+                Some(request) => request,
                 None => continue,
             };
-            let (method, path) = match request.split_once(' ') {
-                Some((method, rest)) => (method, rest.split_once(' ').map_or(rest, |(p, _)| p)),
-                None => continue,
-            };
+            let (method, path, request_body) = request;
+            let (method, path) = (method.as_str(), path.as_str());
             let body = match (method, path) {
                 ("GET", "/mint") => serde_json::json!({
                     "pairUrl": mint_pair_url(&data_dir, bind_addr.port()),
@@ -704,6 +705,70 @@ fn spawn_control_endpoint(
                     .encode()
                     .expect("encode the invite");
                     serde_json::json!({ "invite": invite }).to_string()
+                }
+                // ADR 0011 (ticket 04, the room flow rig): mint a room
+                // invite with a fresh secret, join THIS engine to it, and
+                // hand the invite back — then the rig (or the test) joins
+                // the other members with /room-join. Test-only control,
+                // exactly like /mint: the secret crosses the control
+                // connection and is hashed into a verifier immediately,
+                // never printed.
+                ("POST", "/room-invite") => {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct RoomInviteBody {
+                        name: String,
+                        members: Vec<RoomMember>,
+                    }
+                    let Ok(parsed) = serde_json::from_str::<RoomInviteBody>(&request_body) else {
+                        respond(&mut stream, 400, "{\"error\":\"expected {name, members}\"}");
+                        continue;
+                    };
+                    let mut secret = [0u8; 32];
+                    getrandom::fill(&mut secret).expect("fixture randomness");
+                    use base64::Engine as _;
+                    let secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+                    let invite = match RoomInvite::new(&parsed.name, &secret, parsed.members) {
+                        Ok(invite) => invite,
+                        Err(_) => {
+                            respond(&mut stream, 400, "{\"error\":\"bad room shape\"}");
+                            continue;
+                        }
+                    };
+                    let encoded = invite.encode().expect("encode the room invite");
+                    let record = RoomStore::open(&data_dir)
+                        .expect("open RoomStore")
+                        .join(invite)
+                        .expect("join the room");
+                    serde_json::json!({ "invite": encoded, "roomId": record.id }).to_string()
+                }
+                // ADR 0011 (ticket 04): join this engine to an existing
+                // room from its invite — the CLI's `roboco engine room
+                // join`, driven by the rig (WAL coordinates with the
+                // running listener, the deployed path).
+                ("POST", "/room-join") => {
+                    #[derive(serde::Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct RoomJoinBody {
+                        invite: String,
+                    }
+                    let Ok(parsed) = serde_json::from_str::<RoomJoinBody>(&request_body) else {
+                        respond(&mut stream, 400, "{\"error\":\"expected {invite}\"}");
+                        continue;
+                    };
+                    match RoomInvite::decode(&parsed.invite) {
+                        Ok(invite) => {
+                            let record = RoomStore::open(&data_dir)
+                                .expect("open RoomStore")
+                                .join(invite)
+                                .expect("join the room");
+                            serde_json::json!({ "roomId": record.id }).to_string()
+                        }
+                        Err(_) => {
+                            respond(&mut stream, 400, "{\"error\":\"bad invite shape\"}");
+                            continue;
+                        }
+                    }
                 }
                 ("GET", "/listener/stop") => {
                     // Idempotent: a second stop finds the slot empty. Only
@@ -766,18 +831,33 @@ fn spawn_control_endpoint(
     });
 }
 
-/// Reads the request line (blocks; each connection is one short request).
-fn read_request_line(stream: &mut std::net::TcpStream) -> Option<String> {
+/// Reads one request (blocks; each connection is one short request):
+/// the request line, the head (for `Content-Length`) and — for a POST
+/// carrying a body — exactly that many bytes.
+fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, String, String)> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    // The request line; the rest of the head is drained so the client's
-    // write side is never blocked.
     reader.read_line(&mut line).ok()?;
+    let request = line.trim_end().to_string();
+    let (method, rest) = request.split_once(' ')?;
+    let path = rest.split_once(' ').map_or(rest, |(p, _)| p).to_owned();
+    // The head: drained (so the client's write side is never blocked) and
+    // scanned for a body length.
+    let mut content_length = 0usize;
     let mut drain = String::new();
     while reader.read_line(&mut drain).ok()? > 2 {
+        let lower = drain.to_ascii_lowercase();
+        if let Some(value) = lower.strip_prefix("content-length:") {
+            content_length = value.trim().parse().unwrap_or(0);
+        }
         drain.clear();
     }
-    Some(line.trim_end().to_string())
+    let mut body = vec![0u8; content_length.min(64 * 1024)];
+    if !body.is_empty() {
+        use std::io::Read as _;
+        reader.read_exact(&mut body).ok()?;
+    }
+    Some((method.to_owned(), path, String::from_utf8_lossy(&body).into_owned()))
 }
 
 fn mint_pair_url(data_dir: &Path, engine_port: u16) -> String {

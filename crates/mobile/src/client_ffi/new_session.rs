@@ -252,6 +252,7 @@ mod tests {
                 native_lib_dir: None,
             },
             Vec::new(),
+            Vec::new(),
             Arc::new(Recorder::default()),
         )
         .unwrap();
