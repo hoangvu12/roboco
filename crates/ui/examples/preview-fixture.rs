@@ -184,7 +184,7 @@ fn main() -> anyhow::Result<()> {
                     {"id":"assistant","role":"assistant","parts":[{"id":"text","kind":"text","text":"The development server is running. Open **Vite** in the browser tab to see your project.\n\nYour preview keeps the same address when the server restarts, and updates appear live as we edit."}],"createdAt":1788900001000_i64,"deviceId":"local","status":"complete"}
                 ])).unwrap() },cx).unwrap(); });
                 let (_, browser) = window.update(cx,|shell,w,cx|shell.fixture_open_browser(None,w,cx))?;
-                browser.update(cx,|browser,cx|browser.watch_previews(preview_target.clone(),"preview-fixture".into(),cx));
+                browser.update(cx,|browser,cx|browser.watch_previews(preview_target.clone(),"preview-fixture".into(),None,cx));
                 for _ in 0..100 { if browser.read_with(cx,|b,_|b.fixture_previews().services.len()==2) { break; } pause(cx,100).await; }
                 let snapshot = browser.read_with(cx,|b,_|b.fixture_previews()); anyhow::ensure!(snapshot.services.len()==2,"did not discover Vite and API: {snapshot:?}");
                 let stable = snapshot.services.iter().find(|s|s.name=="Vite").unwrap().url(snapshot.proxy_port);
@@ -220,7 +220,7 @@ fn main() -> anyhow::Result<()> {
                 capture(&output,"preview-restarted-stable-url")?;
                 drop(api.take()); pause(cx,2600).await;
                 let (_,empty) = window.update(cx,|shell,w,cx|shell.fixture_open_browser(None,w,cx))?;
-                empty.update(cx,|b,cx|b.watch_previews(preview_target.clone(),"preview-fixture".into(),cx)); pause(cx,800).await;
+                empty.update(cx,|b,cx|b.watch_previews(preview_target.clone(),"preview-fixture".into(),None,cx)); pause(cx,800).await;
                 anyhow::ensure!(empty.read_with(cx,|b,_|b.fixture_previews().services.len()==1),"stopped API remained in new tab");
                 capture(&output,"preview-restarted-server-list")?;
                 cx.update(|cx|appearance::set_mode(appearance::AppearanceMode::Light,cx)); pause(cx,700).await; capture(&output,"preview-servers-light")?;

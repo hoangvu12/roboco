@@ -5,7 +5,11 @@ session. The empty tab lists its running services, and a Ports card beside
 the chat lists them too — one row per server this chat can preview. **Open**
 navigates to
 `http://<device>.<project>.localhost:7331`; additional services receive persistent
-names such as `<device>.<project>-api.localhost:7331`.
+names such as `<device>.<project>-api.localhost:7331`. A chat on *another*
+engine's session opens the same way through the client-side preview proxy
+(`127.0.0.1:7332`, below): the pane renders
+`http://<device>.<project>.localhost:7332`, and the client relays it over the
+session relay.
 
 The daemon owns this listener, discovery and peer connections. Closing a browser
 tab does not stop discovery or change an address. Account teardown cancels the
@@ -126,6 +130,60 @@ invariant the whole chain keeps: **remote metadata never authorizes an
 arbitrary TCP address** — the client names a service id, and only the engine's
 own live catalog turns that into an address.
 
+## Client-side preview proxy
+
+A client watching another engine's previews binds `127.0.0.1:7332` —
+unclaimed (the engine owns 7331, the browser helper 7333) — and serves that
+engine's preview hostnames by dialing its relay route over the session
+transport the client already holds: the registry's saved endpoint and
+credential (a LAN WebSocket, or a Tailcat tunnel's loopback base; tunneled
+engines work with no new network setup). The proxy is one GPUI-free Rust
+module in `roboco-preview-relay`, linked by `roboco-engine-client` so the
+desktop and the Android mobile core share it; it never links the engine,
+GPUI, or WebRTC.
+
+Routing is by Host header against the hostnames of the `WatchPreviews`
+snapshots the client already receives — the dormant `catalog.set_remote`
+ingestion semantics applied on the client (validation, bounded counts,
+distinct labels when two engines' device names collide, so hostnames stay
+unique and URLs stay stable). A hostname maps to exactly one (engine, chat,
+service); a stale one answers 502 with the "not running" shape. A service
+without chat attribution is skipped: the relay scopes every dial to the chat
+that started the server, so it could not be relayed at all.
+
+Each accepted HTTP connection opens a mux stream on a per-(engine, chat,
+service) relay — the client is always the initiator and never answers OPENs
+— and relays HTTP with the same header hygiene the engine's 7331 proxy
+applies (one implementation, in `roboco-preview-relay`'s `http` module):
+hop-by-hop stripping, Host/Origin preserved, `X-Forwarded-Host`, localhost
+redirect rewrites, bounded upgrade tunnels, and WebSocket passthrough for
+HMR. WebKit's per-domain CONNECT registration (macOS) tunnels into this
+listener; WebKitGTK's proxy mode sends absolute-form requests it routes by
+authority — no `*.localhost` synthesis is needed on either platform.
+
+The lifecycle is lazy: 7332 binds only while some engine's previews are
+being viewed (the browser panes hold watcher lifetimes), and it shuts down
+once the idle window passes after the last watcher leaves. A busy port
+surfaces an inline error — mirroring the 7331 failure mode — and never
+changes the URL: the pane renders 7332 either way. Revocation is inherited
+from the session the relay rides: a revoked credential cannot dial again,
+and listener teardown or an engine going offline cuts open relays, taking
+the pane to its reconnect state.
+
+Platform browsers: macOS extends the WebKit CONNECT registration to 7332
+(one proxy configuration per preview port, matching only its own preview
+hostnames). Linux configures WebKitGTK's custom proxy mode
+(`webkit_network_proxy_settings_*`, verified against the webkit2gtk-4.1
+headers) for the `http` and `ws` schemes only — the API has no per-hostname
+scoping (its ignore list is a bypass list), so https and wss stay direct and
+a bypass list keeps the local engine's preview hostnames and loopback dev
+servers on their unchanged direct path; plain-http external sites in the
+embedded pane fall back to the "open in your default browser" affordance
+while remote previews are being viewed. Windows has no embedded browser:
+previews open in the user's browser, where `*.localhost` synthesis works.
+Android's WebView resolves `*.localhost` natively (Chromium), so it loads
+`http://<hostname>:7332` against the in-app proxy directly.
+
 ## Presence and P2P
 
 This section describes the dormant peer stack kept in tree (`peer.rs`, `mux.rs`;
@@ -168,6 +226,21 @@ route against the real listener: the session gate (Bearer, first-frame `Auth`,
 unauthenticated refusal), real HTTP round-trips through the mux including large
 bodies, slow readers, half-close and cancellation, chat/service scoping
 refusals, and listener teardown cutting an open relay.
+
+`cargo test --locked -p roboco-preview-relay` covers the client proxy against
+a test relay speaking the engine's exact wire shape: hostname routing from a
+snapshot (collisions, validation, removal), the origin/absolute/CONNECT entry
+shapes, large bodies, the localhost redirect rewrite, the stale-hostname 502,
+the bind-conflict inline error, the lazy/idle listener lifecycle, and the
+refused-credential degradation.
+
+`cargo test --locked -p roboco-engine-client` covers the manager against a
+real paired engine: `WatchPreviews`-driven ingestion, a full HTTP round-trip
+through the registry's dial (`/preview-relay` over the saved endpoint and
+credential), revocation cutting the open relay, unpairing dropping routes,
+and the busy-port inline error. The desktop pane's rewrite (7332 URLs, no
+tunnel degradation, the reconnect state after revocation) is covered in
+`roboco-ui`'s browser pane tests with a real remote engine.
 
 Build `cargo build -p roboco-ui --example preview-fixture --features browser-fixture`.
 Run the fixture with an output directory, an available display and `VITE_BINARY`

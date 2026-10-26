@@ -1,0 +1,38 @@
+[package]
+name = "roboco-preview-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The session-relay data plane shared by the engine and every client: the mux
+# frame protocol, the HTTP relay hygiene the engine's 7331 proxy and the
+# client's 7332 proxy both apply, and the GPUI-free client-side preview proxy
+# (ticket 04). `roboco-preview` re-exports the mux so the engine's paths are
+# unchanged; `roboco-engine-client` links this crate directly so the desktop
+# and the Android mobile core share the client proxy without pulling the
+# engine-only preview stack (discovery, peers/WebRTC) into a client.
+#
+# Never depend on `roboco-engine`, GPUI crates, or WebRTC here: the mobile
+# core links this crate.
+
+[dependencies]
+roboco-proto.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+bytes = "1"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-tungstenite.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true
