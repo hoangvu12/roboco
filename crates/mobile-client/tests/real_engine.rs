@@ -420,6 +420,7 @@ async fn an_empty_credential_parks_without_dialing() {
         device_id: Some("some-engine".into()),
         name: None,
         transport: Default::default(),
+        room: None,
     };
     let recorder = Arc::new(Recorder::default());
     let client = test_client(data_dir.path(), vec![record], recorder);
@@ -1003,6 +1004,7 @@ async fn large_reset_streams_intact_while_calls_stay_fast() {
     timings.lag_timeout = Duration::from_secs(15);
     let client = roboco_mobile_client::Client::new_with_timings(
         support::test_config(data_dir.path()),
+        Vec::new(),
         Vec::new(),
         recorder,
         timings,

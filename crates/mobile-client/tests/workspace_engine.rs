@@ -622,6 +622,7 @@ async fn offline_cache_serves_pins_and_sections_but_pins_are_not_ready() {
     let offline = Client::new_with_timings(
         test_config(data_dir.path()),
         vec![record.clone()],
+        Vec::new(),
         recorder,
         test_timings(),
     )

@@ -61,6 +61,9 @@ import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
 import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 import uniffi.roboco_core.PairingTarget
 
 /**
@@ -551,10 +554,18 @@ class PairPageTest {
         override suspend fun forget(engineId: String) {
             ops += "forget"
         }
+
+        override fun parseRoom(input: String): RoomInviteTarget? = null
+
+        override suspend fun joinRoom(invite: String): RoomJoinResult =
+            throw UnsupportedOperationException("this fake joins no rooms")
     }
 
     private class FakeSink(private val ops: MutableList<String>) : PairedEngineSink {
         val upserts = mutableListOf<PairedEngine>()
+        override suspend fun upsertRoom(room: RoomRecord) {
+            ops += "upsertRoom"
+        }
         override fun knownEngineIds(): Set<String> {
             ops += "known"
             return emptySet()

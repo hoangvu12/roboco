@@ -63,12 +63,23 @@ pub enum TransportKind {
     Tailcat,
 }
 
+/// The room an engine was joined through (ADR 0011): the id is the public
+/// handle every holder of the secret derives, the label is the room's name.
+/// Metadata only — the secret lives with the platform (Keystore on
+/// Android), never in this record; a room never syncs or owns anything
+/// (ADR 0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineRoom {
+    pub room_id: String,
+    pub label: String,
+}
+
 /// A paired engine's durable record. `credential` is the secret: Rust keeps
 /// it in memory only — the platform owns its encrypted storage and hands it
 /// back on every `CoreClient::new`. `engine_id` is a client-minted UUID v4
 /// (the `EngineKey`): stable across re-pairs, so scoped chat ids and the
 /// cache survive. Never `Debug`-print this type.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct PairedEngine {
     pub engine_id: String,
     /// `http(s)://host[:port][/prefix]`, no trailing slash — or, for a
@@ -89,6 +100,9 @@ pub struct PairedEngine {
     /// How this engine is dialed. Records stored before Tailcat existed
     /// are `Direct`.
     pub transport: EngineTransport,
+    /// The room this engine was joined through (ADR 0011), if any. Older
+    /// records (pre-rooms) carry `None`.
+    pub room: Option<EngineRoom>,
 }
 
 impl std::fmt::Debug for PairedEngine {
@@ -104,6 +118,7 @@ impl std::fmt::Debug for PairedEngine {
             .field("device_id", &self.device_id)
             .field("name", &self.name)
             .field("transport", &self.transport)
+            .field("room", &self.room)
             .finish()
     }
 }
@@ -177,6 +192,9 @@ pub struct EngineView {
     /// offline cache.
     pub from_cache: bool,
     pub diagnostics: EngineDiagnostics,
+    /// The room this engine was joined through (ADR 0011), if any —
+    /// metadata only; the secret never crosses a view.
+    pub room: Option<EngineRoom>,
 }
 
 /// The aggregate posture across every engine.
@@ -377,10 +395,24 @@ mod tests {
                 address: "tcSECRET-ADDRESS".into(),
                 client_state: "SECRET-STATE".into(),
             },
+            room: None,
         };
         let printed = format!("{record:?}");
         assert!(!printed.contains("SECRET"), "{printed}");
         assert!(printed.contains("[redacted]"));
+        // A room reference is metadata: it prints, and never carries the
+        // room secret (which no record holds).
+        let room = record.clone();
+        let _ = room;
+        let tagged = PairedEngine {
+            room: Some(EngineRoom {
+                room_id: "r".into(),
+                label: "Home fleet".into(),
+            }),
+            ..record
+        };
+        let printed = format!("{tagged:?}");
+        assert!(printed.contains("Home fleet"), "{printed}");
     }
 
     #[test]

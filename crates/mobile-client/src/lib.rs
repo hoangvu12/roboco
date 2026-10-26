@@ -40,6 +40,7 @@ pub mod new_session;
 pub mod notify;
 pub mod pairing;
 pub mod projects;
+pub mod rooms;
 pub mod runtime;
 pub mod session;
 pub mod tailcat;
@@ -65,13 +66,14 @@ use tokio_util::sync::CancellationToken;
 
 pub use accounts::{UsageLevel, usage_level, USAGE_CRITICAL_FRACTION, USAGE_WARN_FRACTION};
 pub use engines::{
-    Connectivity, ConnectivityState, EngineDiagnostics, EngineHandle, EngineSnapshot, EngineState,
-    EngineTransport, EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine, ParkReason,
-    TranscriptConnection, TransportKind,
+    Connectivity, ConnectivityState, EngineDiagnostics, EngineHandle, EngineRoom, EngineSnapshot,
+    EngineState, EngineTransport, EngineView, FeedItem, FeedWatch, FleetSnapshot, PairedEngine,
+    ParkReason, TranscriptConnection, TransportKind,
 };
 pub use events::{ClientEvent, ClientListener};
 pub use notify::{NotifyListener, RunActivity, RunRef, SessionEvent};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
+pub use rooms::{RoomError, RoomInviteTarget, RoomJoin, RoomRecord, parse_room_invite};
 pub use files::FileMatch;
 pub use new_session::{
     NewSession, PENDING_CHAT_TTL_MS, PendingChat, ProjectGroup, SessionTarget, group_projects,
@@ -193,6 +195,16 @@ pub(crate) struct ClientInner {
     /// Opens Tailcat tunnels (android-next#02): the library opener in
     /// production, a fake in route tests.
     tailcat: Arc<dyn tailcat::TunnelOpener>,
+    /// The joined rooms (ADR 0011, ticket 04): the platform's stored
+    /// records (secret + book), in memory only — Rust never persists
+    /// them, exactly like credentials.
+    rooms: Mutex<Vec<rooms::RoomRecord>>,
+    /// One heal pass at a time, triggered from the existing start and
+    /// network-change moments (see `rooms`).
+    room_heal: rooms::HealGate,
+    /// The in-flight room-member joins (rooms): one presentation per
+    /// (room, address) at a time.
+    room_joins: rooms::JoinGuard,
 }
 
 /// The mobile client. Cheap to clone. Create once per app run with the
@@ -207,12 +219,17 @@ impl Client {
     /// synchronously (rows + sidebar publish with `from_cache = true`),
     /// then every engine dials in the background. An engine whose record
     /// carries an empty credential parks as revoked without dialing.
+    /// `rooms` are the platform's stored joined rooms (the `room:` blobs):
+    /// in-memory only, and the room heal pass rides the same start —
+    /// members without an engine entry get one dial each, then their own
+    /// supervisor (ADR 0011).
     pub fn new(
         config: ClientConfig,
         engines: Vec<PairedEngine>,
+        rooms: Vec<rooms::RoomRecord>,
         listener: Arc<dyn ClientListener>,
     ) -> Result<Arc<Self>, ClientError> {
-        Self::new_with_timings(config, engines, listener, Timings::default())
+        Self::new_with_timings(config, engines, rooms, listener, Timings::default())
     }
 
     /// Test seam: every supervisor timing in one place, so liveness
@@ -220,6 +237,7 @@ impl Client {
     pub fn new_with_timings(
         config: ClientConfig,
         engines: Vec<PairedEngine>,
+        rooms: Vec<rooms::RoomRecord>,
         listener: Arc<dyn ClientListener>,
         timings: Timings,
     ) -> Result<Arc<Self>, ClientError> {
@@ -227,7 +245,7 @@ impl Client {
             config.native_lib_dir.clone(),
             None,
         ));
-        Self::new_with_opener(config, engines, listener, timings, opener)
+        Self::new_with_opener(config, engines, rooms, listener, timings, opener)
     }
 
     /// Test seam: a custom Tailcat tunnel opener (no Go library needed).
@@ -235,6 +253,7 @@ impl Client {
     pub fn new_with_opener(
         config: ClientConfig,
         engines: Vec<PairedEngine>,
+        rooms: Vec<rooms::RoomRecord>,
         listener: Arc<dyn ClientListener>,
         timings: Timings,
         opener: Arc<dyn tailcat::TunnelOpener>,
@@ -293,6 +312,9 @@ impl Client {
                 attachments::ATTACHMENT_CACHE_BUDGET,
             )),
             notify,
+            rooms: Mutex::new(rooms),
+            room_heal: rooms::HealGate::default(),
+            room_joins: rooms::JoinGuard::default(),
             tailcat: opener,
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
@@ -306,6 +328,11 @@ impl Client {
             start_supervision(&inner, &engine_id, None);
         }
         publish(&inner);
+        // The room heal rides the same start the supervisors do (one
+        // bounded dial per missing book member — no timers of its own).
+        // The room heal rides the same start the supervisors do (one
+        // bounded dial per missing book member — no timers of its own).
+        inner.room_heal.trigger(&inner);
         Ok(Arc::new(Self { inner }))
     }
 
@@ -330,166 +357,27 @@ impl Client {
         )
         .await?;
         let label = pairing::sanitize_label(&self.inner.config.device_name);
-        // Dial and pin — through the redeemed route, so a Tailcat pairing
-        // reuses the tunnel it redeemed through. A failed dial still
-        // returns the record: the credential is already minted and
-        // single-use codes cannot be re-redeemed; the engine shows
-        // `Reconnecting` and the first successful connect pins it.
-        let first_dial = engines::route::DialTarget {
-            route: redeemed.route.clone(),
-            credential: redeemed.credential.clone(),
-        };
-        let (initial_feed, device_id) = match first_dial.connect().await {
-            Ok(client) => {
-                let client = Arc::new(client);
-                let info: Option<EngineInfo> = match tokio::time::timeout(
-                    self.inner.timings.identity_timeout,
-                    client.call_as(roboco_rpc::methods::ENGINE_INFO, serde_json::json!({})),
-                )
-                .await
-                {
-                    Ok(Ok(info)) => Some(info),
-                    _ => None,
-                };
-                (Some(client), info.map(|info| info.device_id))
-            }
-            Err(error) => {
-                tracing::warn!(%error, "pairing dial failed; engine will reconnect in the background");
-                (None, None)
-            }
-        };
-        // Duplicate engines: an explicit replacement, or the same engine
-        // re-paired under a new link — one row per engine (the web's rule:
-        // re-pairing an origin replaces its credential).
-        let existing_index = {
-            let state = lock(&self.inner.engines);
-            match replace_engine_id.as_deref() {
-                Some(id) => match state
-                    .entries
-                    .iter()
-                    .position(|entry| entry.paired.engine_id == id)
-                {
-                    Some(index) => Some(index),
-                    None => {
-                        return Err(PairError::Failed {
-                            message: format!("Unknown engine to replace: {id}"),
-                        });
-                    }
-                },
-                None => device_id.as_ref().and_then(|device_id| {
-                    state.entries.iter().position(|entry| {
-                        entry.paired.device_id.as_deref() == Some(device_id.as_str())
-                    })
-                }),
-            }
-        };
-        let record = match existing_index {
-            Some(index) => {
-                let (engine_id, wipe_cache) = {
-                    let mut state = lock(&self.inner.engines);
-                    let entry = &mut state.entries[index];
-                    // Keep the cache when the engine identity is unchanged;
-                    // wipe it when it changed.
-                    let same_device = entry
-                        .paired
-                        .device_id
-                        .as_ref()
-                        .map_or(true, |pinned| Some(pinned) == device_id.as_ref());
-                    let engine_id = entry.paired.engine_id.clone();
-                    // Replace the pairing material; the engine id (and so
-                    // every scoped chat id and the cache directory) stays.
-                    // A re-pair may switch Direct <-> Tailcat: the old
-                    // route (and any tunnel) goes.
-                    entry.paired.base_url = redeemed.base_url.clone();
-                    entry.paired.transport = redeemed.transport.clone();
-                    let old_route = std::mem::replace(&mut entry.route, redeemed.route.clone());
-                    old_route.invalidate();
-                    entry.paired.credential = redeemed.credential.clone();
-                    entry.paired.session_id = redeemed.session.id.clone();
-                    entry.paired.label = label.clone();
-                    entry.paired.device_id = device_id.clone();
-                    entry.paired.name = None;
-                    entry.state = EngineState::Connecting;
-                    entry.last_error = None;
-                    entry.retry_at_ms = None;
-                    (engine_id, !same_device)
-                };
-                if wipe_cache {
-                    update_engine(&self.inner, &engine_id, |entry| {
-                        let cache = entry.cache.clone();
-                        entry.rows = CachedRows::default();
-                        entry.sidebar = None;
-                        entry.from_cache = true;
-                        crate::runtime::shared().spawn_blocking(move || {
-                            let _ = cache.forget();
-                        });
-                    });
-                }
-                // Re-pairing drops the notification driver's state for this
-                // engine (baselines, sends, notified states): a re-paired
-                // engine re-seeds silently (ticket 28).
-                self.inner.notify.reset_engine(&engine_id);
-                // Restart supervision: the old task's channel and token die
-                // with it.
-                let (old_task, old_cancel) = {
-                    let mut state = lock(&self.inner.engines);
-                    let entry = &mut state.entries[index];
-                    (
-                        std::mem::replace(&mut entry.task, finished_task()),
-                        std::mem::replace(&mut entry.cancel, CancellationToken::new()),
-                    )
-                };
-                old_cancel.cancel();
-                old_task.abort();
-                let _ = old_task.await;
-                start_supervision(&self.inner, &engine_id, initial_feed);
-                lock(&self.inner.engines).entries[index].paired.clone()
-            }
-            None => {
-                let record = PairedEngine {
-                    engine_id: uuid::Uuid::new_v4().to_string(),
-                    base_url: redeemed.base_url.clone(),
-                    credential: redeemed.credential.clone(),
-                    session_id: redeemed.session.id.clone(),
-                    label: label.clone(),
-                    paired_at_ms: engines::now_ms(),
-                    device_id: device_id.clone(),
-                    name: None,
-                    transport: redeemed.transport.clone(),
-                };
-                let handle = EngineCacheHandle::new(
-                    record.engine_id.clone(),
-                    self.inner.cache.clone(),
-                    self.inner.cache_tx.clone(),
-                );
-                let engine_id = record.engine_id.clone();
-                let mut state = lock(&self.inner.engines);
-                state.entries.push(pending_entry(
-                    record.clone(),
-                    redeemed.route.clone(),
-                    handle,
-                    CachedRows::default(),
-                    None,
-                ));
-                drop(state);
-                start_supervision(&self.inner, &engine_id, initial_feed);
-                record
-            }
-        };
-        if let Some(device_id) = &record.device_id {
-            self.inner.pump.pinned(ClientEvent::EngineIdentityPinned {
-                engine_id: record.engine_id.clone(),
-                device_id: device_id.clone(),
-                name: engines::display_name(
-                    None,
-                    record.name.as_deref(),
-                    &host_of(&record.base_url),
-                ),
-            });
-        }
+        let record = adopt_engine(
+            &self.inner,
+            redeemed,
+            &label,
+            None,
+            replace_engine_id,
+        )
+        .await;
+        pin_event(&self.inner, &record);
         publish(&self.inner);
         self.inner.pump.engines_changed();
         Ok(record)
+    }
+
+    /// Join a room from a `roboco-room:` invite (ADR 0011, ticket 04): the
+    /// phone's "scan once" — every book member gets its own session and
+    /// engine entry, exactly like a pairing (see [`rooms::join_room`]).
+    /// Partial joins are a success: missing members heal on app start and
+    /// network change.
+    pub async fn join_room(&self, invite: &str) -> Result<rooms::RoomJoin, rooms::RoomError> {
+        rooms::join_room(&self.inner, invite).await
     }
 
     /// Every paired engine, in pairing order.
@@ -701,8 +589,10 @@ impl Client {
         let was_online = self.inner.network.send_replace(online);
         if online && !was_online {
             // Back from offline: the interface may have changed under the
-            // Tailcat tunnels (android-next#02).
+            // Tailcat tunnels (android-next#02), and the room heal rides
+            // the same transition (missing members get one dial).
             self.drop_tailcat_tunnels();
+            self.inner.room_heal.trigger(&self.inner);
         }
         if online {
             // Only a backoff wait is cut short: a dial in flight finishes on
@@ -734,16 +624,21 @@ impl Client {
     /// immediate probe on a short budget, and only a failed one rebuilds
     /// the tunnel (so the next dial binds the new interface) and redials —
     /// a network event must not kill a link that still works. A Tailcat
-    /// engine that is down rebuilds its tunnel and dials now. Android's
-    /// netmon only polls every 10 minutes, so it may not notice by itself.
-    /// Direct engines are untouched.
+    /// engine that is down rebuilds its tunnel and dials now. Direct
+    /// engines are untouched. The room heal pass rides the same moment:
+    /// book members without a session get one dial each (presentations
+    /// are repeatable, so an interrupted join heals here) — no new timer,
+    /// no probing (ADR 0011).
     pub fn set_network_changed(&self) {
-        let state = lock(&self.inner.engines);
-        for entry in state.entries.iter().filter(|entry| {
-            entry.route.is_tailcat() && !matches!(entry.state, EngineState::Parked { .. })
-        }) {
-            let _ = entry.command_tx.send(EngineCommand::verify());
+        {
+            let state = lock(&self.inner.engines);
+            for entry in state.entries.iter().filter(|entry| {
+                entry.route.is_tailcat() && !matches!(entry.state, EngineState::Parked { .. })
+            }) {
+                let _ = entry.command_tx.send(EngineCommand::verify());
+            }
         }
+        self.inner.room_heal.trigger(&self.inner);
     }
 
     fn drop_tailcat_tunnels(&self) {
@@ -977,6 +872,180 @@ pub(crate) fn engine_handle_of(
     Ok(EngineHandle::from_parts(Arc::downgrade(inner), entry))
 }
 
+/// Adopt a freshly redeemed engine (pairing **or** a room presentation,
+/// ticket 04): dial and pin through the redeemed route, dedupe (an
+/// explicit replacement, or the same engine re-redeemed under a new
+/// link/room — one row per engine), install the entry, and start its
+/// supervisor. A failed dial still returns the record: the credential is
+/// already minted and cannot be re-minted; the engine shows
+/// `Reconnecting` and the first successful connect pins it.
+///
+/// `room` tags the record with the room a presentation joined it through
+/// (ADR 0011) — `None` for a plain pairing. The caller publishes and
+/// emits the engines-changed event.
+pub(crate) async fn adopt_engine(
+    inner: &Arc<ClientInner>,
+    redeemed: pairing::Redeemed,
+    label: &str,
+    room: Option<engines::EngineRoom>,
+    replace_engine_id: Option<String>,
+) -> PairedEngine {
+    // Dial and pin — through the redeemed route, so a Tailcat redeem
+    // reuses the tunnel it redeemed through.
+    let first_dial = engines::route::DialTarget {
+        route: redeemed.route.clone(),
+        credential: redeemed.credential.clone(),
+    };
+    let (initial_feed, device_id) = match first_dial.connect().await {
+        Ok(client) => {
+            let client = Arc::new(client);
+            let info: Option<EngineInfo> = match tokio::time::timeout(
+                inner.timings.identity_timeout,
+                client.call_as(roboco_rpc::methods::ENGINE_INFO, serde_json::json!({})),
+            )
+            .await
+            {
+                Ok(Ok(info)) => Some(info),
+                _ => None,
+            };
+            (Some(client), info.map(|info| info.device_id))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the redeem dial failed; the engine will reconnect in the background");
+            (None, None)
+        }
+    };
+    // Duplicate engines: an explicit replacement, or the same engine
+    // re-redeemed — one row per engine (the web's rule: re-pairing an
+    // origin replaces its credential).
+    let existing_index = {
+        let state = lock(&inner.engines);
+        match replace_engine_id.as_deref() {
+            Some(id) => state
+                .entries
+                .iter()
+                .position(|entry| entry.paired.engine_id == id),
+            None => device_id.as_ref().and_then(|device_id| {
+                state
+                    .entries
+                    .iter()
+                    .position(|entry| entry.paired.device_id.as_deref() == Some(device_id.as_str()))
+            }),
+        }
+    };
+    match existing_index {
+        Some(index) => {
+            let (engine_id, wipe_cache) = {
+                let mut state = lock(&inner.engines);
+                let entry = &mut state.entries[index];
+                // Keep the cache when the engine identity is unchanged;
+                // wipe it when it changed.
+                let same_device = entry
+                    .paired
+                    .device_id
+                    .as_ref()
+                    .map_or(true, |pinned| Some(pinned) == device_id.as_ref());
+                let engine_id = entry.paired.engine_id.clone();
+                // Replace the pairing material; the engine id (and so
+                // every scoped chat id and the cache directory) stays.
+                // A re-pair may switch Direct <-> Tailcat: the old
+                // route (and any tunnel) goes.
+                entry.paired.base_url = redeemed.base_url.clone();
+                entry.paired.transport = redeemed.transport.clone();
+                let old_route = std::mem::replace(&mut entry.route, redeemed.route.clone());
+                old_route.invalidate();
+                entry.paired.credential = redeemed.credential.clone();
+                entry.paired.session_id = redeemed.session.id.clone();
+                entry.paired.label = label.to_owned();
+                entry.paired.device_id = device_id.clone();
+                entry.paired.name = None;
+                entry.paired.room = room;
+                entry.state = EngineState::Connecting;
+                entry.last_error = None;
+                entry.retry_at_ms = None;
+                (engine_id, !same_device)
+            };
+            if wipe_cache {
+                update_engine(inner, &engine_id, |entry| {
+                    let cache = entry.cache.clone();
+                    entry.rows = CachedRows::default();
+                    entry.sidebar = None;
+                    entry.from_cache = true;
+                    crate::runtime::shared().spawn_blocking(move || {
+                        let _ = cache.forget();
+                    });
+                });
+            }
+            // Re-pairing drops the notification driver's state for this
+            // engine (baselines, sends, notified states): a re-paired
+            // engine re-seeds silently (ticket 28).
+            inner.notify.reset_engine(&engine_id);
+            // Restart supervision: the old task's channel and token die
+            // with it.
+            let (old_task, old_cancel) = {
+                let mut state = lock(&inner.engines);
+                let entry = &mut state.entries[index];
+                (
+                    std::mem::replace(&mut entry.task, finished_task()),
+                    std::mem::replace(&mut entry.cancel, CancellationToken::new()),
+                )
+            };
+            old_cancel.cancel();
+            old_task.abort();
+            let _ = old_task.await;
+            start_supervision(inner, &engine_id, initial_feed);
+            lock(&inner.engines).entries[index].paired.clone()
+        }
+        None => {
+            let record = PairedEngine {
+                engine_id: uuid::Uuid::new_v4().to_string(),
+                base_url: redeemed.base_url.clone(),
+                credential: redeemed.credential.clone(),
+                session_id: redeemed.session.id.clone(),
+                label: label.to_owned(),
+                paired_at_ms: engines::now_ms(),
+                device_id: device_id.clone(),
+                name: None,
+                transport: redeemed.transport.clone(),
+                room,
+            };
+            let handle = EngineCacheHandle::new(
+                record.engine_id.clone(),
+                inner.cache.clone(),
+                inner.cache_tx.clone(),
+            );
+            let engine_id = record.engine_id.clone();
+            let mut state = lock(&inner.engines);
+            state.entries.push(pending_entry(
+                record.clone(),
+                redeemed.route.clone(),
+                handle,
+                CachedRows::default(),
+                None,
+            ));
+            drop(state);
+            start_supervision(inner, &engine_id, initial_feed);
+            record
+        }
+    }
+}
+
+/// The identity-pin event for an adopted record (the platform persists
+/// `device_id` and the display name).
+fn pin_event(inner: &Arc<ClientInner>, record: &PairedEngine) {
+    if let Some(device_id) = &record.device_id {
+        inner.pump.pinned(ClientEvent::EngineIdentityPinned {
+            engine_id: record.engine_id.clone(),
+            device_id: device_id.clone(),
+            name: engines::display_name(
+                None,
+                record.name.as_deref(),
+                &host_of(&record.base_url),
+            ),
+        });
+    }
+}
+
 /// A task handle that is already finished — the placeholder before
 /// `start_supervision` installs the real supervisor. Aborting it is a
 /// no-op and it leaks nothing.
@@ -1153,6 +1222,7 @@ pub(crate) fn engine_view(entry: &EngineEntry) -> EngineView {
         notice: entry.notice.clone(),
         from_cache: entry.from_cache,
         diagnostics: entry.diagnostics.clone(),
+        room: entry.paired.room.clone(),
     }
 }
 
@@ -1262,6 +1332,7 @@ mod tests {
                 native_lib_dir: None,
             },
             Vec::new(),
+            Vec::new(),
             Arc::new(Recorder(seen)),
         )
         .unwrap();
@@ -1303,6 +1374,7 @@ mod tests {
                 address: "tcSECRETaddress".into(),
                 client_state: "state".into(),
             },
+            room: None,
         }
     }
 
@@ -1321,6 +1393,7 @@ mod tests {
                 native_lib_dir: None,
             },
             vec![record],
+            Vec::new(),
             Arc::new(NullListener),
             Timings::default(),
             opener,

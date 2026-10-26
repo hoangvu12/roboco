@@ -201,7 +201,7 @@ impl From<EngineTransport> for mc::EngineTransport {
 /// stores the whole record Keystore-encrypted (ticket 18); Rust keeps it in
 /// memory only. Never log this type — the Kotlin data class's `toString`
 /// includes every field.
-#[derive(Clone, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PairedEngine {
     /// Client-minted UUID v4, stable across re-pairs (the `EngineKey`).
     pub engine_id: String,
@@ -219,6 +219,11 @@ pub struct PairedEngine {
     /// means `Direct`.
     #[uniffi(default = None)]
     pub transport: Option<EngineTransport>,
+    /// The room this engine was joined through (ADR 0011), if any —
+    /// metadata only (the secret lives in the `room:` blob, never here).
+    /// `None` on records stored before rooms, so old metadata reads fine.
+    #[uniffi(default = None)]
+    pub room: Option<EngineRoomRef>,
 }
 
 impl std::fmt::Debug for PairedEngine {
@@ -234,7 +239,36 @@ impl std::fmt::Debug for PairedEngine {
             .field("device_id", &self.device_id)
             .field("name", &self.name)
             .field("transport", &self.transport)
+            .field("room", &self.room)
             .finish()
+    }
+}
+
+/// The room an engine was joined through (ADR 0011): metadata only — the
+/// secret lives in the platform's `room:` blob, never in an engine record.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct EngineRoomRef {
+    /// The public room id every holder of the secret derives.
+    pub room_id: String,
+    /// The room's name.
+    pub label: String,
+}
+
+impl From<mc::EngineRoom> for EngineRoomRef {
+    fn from(room: mc::EngineRoom) -> Self {
+        Self {
+            room_id: room.room_id,
+            label: room.label,
+        }
+    }
+}
+
+impl From<EngineRoomRef> for mc::EngineRoom {
+    fn from(room: EngineRoomRef) -> Self {
+        Self {
+            room_id: room.room_id,
+            label: room.label,
+        }
     }
 }
 
@@ -250,6 +284,7 @@ impl From<mc::PairedEngine> for PairedEngine {
             device_id: record.device_id,
             name: record.name,
             transport: Some(record.transport.into()),
+            room: record.room.map(Into::into),
         }
     }
 }
@@ -266,6 +301,7 @@ impl From<PairedEngine> for mc::PairedEngine {
             device_id: record.device_id,
             name: record.name,
             transport: record.transport.map(Into::into).unwrap_or_default(),
+            room: record.room.map(Into::into),
         }
     }
 }
@@ -389,6 +425,10 @@ pub struct EngineView {
     /// `base_url` fingerprint, "Reconnecting over Tailcat".
     #[uniffi(default = false)]
     pub tailcat: bool,
+    /// The room this engine was joined through (ADR 0011), if any —
+    /// metadata only; the secret never crosses a view.
+    #[uniffi(default = None)]
+    pub room: Option<EngineRoomRef>,
 }
 
 impl From<mc::EngineView> for EngineView {
@@ -410,6 +450,7 @@ impl From<mc::EngineView> for EngineView {
             from_cache: view.from_cache,
             diagnostics: view.diagnostics.into(),
             tailcat: view.transport == mc::TransportKind::Tailcat,
+            room: view.room.map(Into::into),
         }
     }
 }
@@ -491,6 +532,14 @@ pub enum ClientEvent {
         device_id: String,
         name: String,
     },
+    /// A room heal pass (app start or network change) minted a session for
+    /// a book member that had been missing (ADR 0011): persist the record
+    /// exactly like a pairing result. Never coalesced away — each carries
+    /// a live credential.
+    RoomEngineJoined {
+        room_id: String,
+        engine: PairedEngine,
+    },
 }
 
 impl From<mc::ClientEvent> for ClientEvent {
@@ -521,6 +570,12 @@ impl From<mc::ClientEvent> for ClientEvent {
                 device_id,
                 name,
             },
+            mc::ClientEvent::RoomEngineJoined { room_id, engine } => {
+                ClientEvent::RoomEngineJoined {
+                    room_id,
+                    engine: engine.into(),
+                }
+            }
         }
     }
 }
