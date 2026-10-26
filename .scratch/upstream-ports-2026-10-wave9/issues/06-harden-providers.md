@@ -296,3 +296,62 @@ fixtures), engine run-recovery tests, `windows.yml` run. Source:
      `opencode/tests.rs` + `tests/opencode.rs`.
   5. **pi** rpc/sessions/ui hardening + the Rust `pi_rpc` peer
      (`tests/pi_rpc.rs` + `fixtures/pi_rpc.rs`), PROTOCOL.md.
+
+- **2026-10-26 — adapter hardenings continued (06 4/4): the ACP hardening
+  test binary + the codex elicitation/version floor.** Compile-verified
+  (`cargo check -p roboco-harness` + `--tests` both 0 errors at 1.7G free —
+  the disk protocol still blocks test runs):
+  - **tests/acp_hardening.rs** (new, upstream's 312-line suite adapted):
+    stop-wedge deadline, question-cancelled dialogs, Grok cancel `_meta`
+    (with the no-clientType initialize assertion), config-switch-hang stop,
+    handshake-crash crash watch, auth_required default-method sign-in +
+    terminal-only refusal, resume-uses-advertised-restore-method, image
+    attachments inlined/omitted by capability. Adapted to Roboco:
+    RunControls.origin (no realtime), no RunRequest.env (the fixture's
+    FAKE_ACP_MODE rides the process env behind a global test mutex —
+    upstream threads it through the env map), no prefill/multiline on
+    UserInputQuestion.
+  - **fixtures/fake-hardened-acp.py** (new, upstream's 131-line fixture
+    verbatim — reads FAKE_ACP_MODE itself).
+  - **acp/mod.rs handshake crash watch** (upstream's setup-loop rework):
+    the setup future is re-polled inside a select that also watches the
+    child (`child.wait()` + a 200ms drain deadline + group shutdown), so
+    an adapter that dies mid-handshake while a detached descendant holds
+    stdout open reports "exited during the ACP handshake" at once instead
+    of sitting out the whole bound.
+  - **tests/acp.rs**: the permission test now checks both auto_approve
+    polarities (a Grok edit never waits on the user).
+  - **fixtures/fake-acp.sh**: the three restore-failure modes
+    (load-hang/load-busy/load-exit — for the an_unfinished_restore test,
+    which was NOT ported: it uses the request env and with_session_load
+    timeouts on the upstream wiring; the fixture modes are there for the
+    gates turn).
+  - **codex**: `elicitation.rs` (new, upstream's 399-line module adapted —
+    prefill/multiline fields dropped for Roboco's UserInputQuestion)
+    wired into `handle_server_request`: MCP servers elicit regardless of
+    the approval policy; a flat form the input bridge can ask is asked,
+    anything else is declined (a reply the server handles, where a
+    JSON-RPC error failed its tool call). `MIN_CODEX_VERSION` floor
+    (0.146.0, pre-releases count as their release) gated on the resolved
+    binary's version (a fixed test executable is never probed);
+    `spawn_error` classification at all three spawn sites; lossy stderr
+    framing; the AsyncBufReadExt import dropped.
+  - **claude/normalize.rs**: one test pattern adapted (`Error { message, .. }`).
+- **Verification status:** compile-only again (1.7G free; the disk
+  protocol). The acp_hardening suite, acp.rs, codex.rs, and the 3/3
+  suites are all queued for the gates turn.
+- **REMAINING (still open after 06 4/4):** the codex wire-surface rework
+  (notification opt-out with the retry handshake, thread/resume's
+  unarchive/empty-rollout fresh-start fallback, the
+  settle_turn_error/error-notice rework — its `codex_error_text` depends
+  on `proto::run_errors` (upstream #967's error-cards slice, the UI
+  lane's ticket 14; not in Roboco's proto yet) and its fixture modes
+  resume-empty/resume-archived/crash-on-thread-start landed in
+  fake-codex.sh's upstream but Roboco's copy diverges — hand-port
+  territory), claude/mod.rs's runtime restructure (Stdin replay,
+  relaunch-fresh, control deadlines, probe stderr — Roboco's session
+  loop carries its own turn-ref/fork machinery through every site),
+  opencode (+1586), and pi's rpc hardening + the Rust pi_rpc peer.
+  The `an_unfinished_restore_errors_and_keeps_the_session` test
+  (upstream's new acp.rs case) also needs the env/threading adaptation
+  before it can land.

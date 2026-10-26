@@ -4072,52 +4072,53 @@ async fn run_session(session: Session) {
     } else {
         handshake_timeout
     };
-    let setup = unless_sign_in_prompted(setup, &sign_in_prompted, agent_name);
-    let (session_id, steer_ext, inline_images, init_commands, mut session_options) =
-        tokio::select! {
-        res = tokio::time::timeout(setup_budget, setup) => {
-            let res = res.unwrap_or_else(|_| {
+    // Scoped: the setup future is re-polled inside a loop whose other arms
+    // watch the child (upstream #977) — a crash mid-handshake must not sit
+    // out the whole bound while a detached descendant holds stdout open.
+    let mut setup_exit = None;
+    let mut setup_drain_deadline = None;
+    let res = {
+        let setup = unless_sign_in_prompted(setup, &sign_in_prompted, agent_name);
+        tokio::pin!(setup);
+        let handshake_deadline = tokio::time::sleep(setup_budget);
+        tokio::pin!(handshake_deadline);
+        loop {
+            tokio::select! {
+                res = &mut setup => break res,
                 // A hung handshake (agent waiting on a login it can never
                 // get, a wedged adapter) used to spin "Working" forever —
                 // the false "thinking for 2+ minutes then nothing" class of
                 // report. Bound it and say what was reached.
-                Err(HarnessError::Protocol(format!(
-                    "{agent_name} did not complete the ACP handshake within {}s \
-                     (the agent may be waiting for a login — try running it once \
-                     in a terminal)",
-                    setup_budget.as_secs()
-                )))
-            });
-            match res {
-                Ok(v) => v,
-                Err(e) => {
-                    // A child that dies before the handshake used to surface only
-                    // the RPC-side symptom ("transport closed") — its exit status
-                    // and stderr, both already in hand, were dropped, leaving
-                    // startup crashes undiagnosable (user report). When the child
-                    // is already gone, give the reader task a beat to drain the
-                    // pipe, then append the crash text; the Done carrying it is
-                    // journaled, so the cause survives for later inspection. A
-                    // still-live child (the timeout) contributes its stderr tail.
-                    let error = match child.try_wait() {
-                        Ok(Some(status)) => {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
-                            format!(
-                                "{e}; {}",
-                                crate::crash_message(agent_name, Some(status), &stderr_tail)
-                            )
-                        }
-                        _ => match stderr_tail.snapshot() {
-                            Some(tail) => format!("{e}; stderr: {tail}"),
-                            None => e.to_string(),
-                        },
-                    };
-                    tracing::warn!(target: "roboco_harness::acp", %error, "agent setup failed");
+                _ = &mut handshake_deadline => {
+                    break Err(HarnessError::Protocol(format!(
+                        "{agent_name} did not complete the ACP handshake within {}s \
+                         (the agent may be waiting for a login — try running it once \
+                         in a terminal)",
+                        setup_budget.as_secs()
+                    )));
+                }
+                // A crash mid-handshake must not sit out the whole bound: a
+                // descendant holding stdout open keeps the requests pending. Same
+                // short drain as the main loop for frames already written.
+                status = child.wait(), if setup_exit.is_none() => {
+                    setup_exit = Some(status.ok());
+                    child.request_group_shutdown();
+                    setup_drain_deadline =
+                        Some(tokio::time::Instant::now() + Duration::from_millis(200));
+                }
+                _ = tokio::time::sleep_until(
+                    setup_drain_deadline.unwrap_or_else(tokio::time::Instant::now)
+                ), if setup_drain_deadline.is_some() => {
+                    break Err(HarnessError::Protocol(format!(
+                        "{agent_name} exited during the ACP handshake"
+                    )));
+                }
+                _ = interrupt.cancelled() => {
                     let _ = event_tx
                         .send(Ok(AgentEvent::Done {
-                            status: DoneStatus::Errored,
+                            status: DoneStatus::Interrupted,
                             result: None,
-                            error: Some(error),
+                            error: None,
                             session_id: None,
                         }))
                         .await;
@@ -4126,16 +4127,42 @@ async fn run_session(session: Session) {
                     return;
                 }
             }
-        },
-        _ = interrupt.cancelled() => {
+        }
+    };
+    let (session_id, steer_ext, inline_images, init_commands, mut session_options) = match res {
+        Ok(v) => v,
+        Err(e) => {
+            // A child that dies before the handshake used to surface only
+            // the RPC-side symptom ("transport closed") — its exit status
+            // and stderr, both already in hand, were dropped, leaving
+            // startup crashes undiagnosable (user report). When the child
+            // is already gone, give the reader task a beat to drain the
+            // pipe, then append the crash text; the Done carrying it is
+            // journaled, so the cause survives for later inspection. A
+            // still-live child (the timeout) contributes its stderr tail.
+            let error = match child.try_wait() {
+                Ok(Some(status)) => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    format!(
+                        "{e}; {}",
+                        crate::crash_message(agent_name, Some(status), &stderr_tail)
+                    )
+                }
+                _ => match stderr_tail.snapshot() {
+                    Some(tail) => format!("{e}; stderr: {tail}"),
+                    None => e.to_string(),
+                },
+            };
+            tracing::warn!(target: "roboco_harness::acp", %error, "agent setup failed");
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
-                    status: DoneStatus::Interrupted,
+                    status: DoneStatus::Errored,
                     result: None,
-                    error: None,
+                    error: Some(error),
                     session_id: None,
                 }))
                 .await;
+            client.close_stdin_for_teardown();
             child.shutdown(kill_grace).await;
             return;
         }

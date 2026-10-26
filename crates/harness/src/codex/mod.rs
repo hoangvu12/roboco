@@ -49,6 +49,7 @@
 //!   unresponsive; the stream always ends with `Done { status: Interrupted }`.
 
 pub(crate) mod catalog;
+mod elicitation;
 mod normalize;
 pub mod npm_repair;
 mod subagents;
@@ -62,7 +63,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use roboco_proto::{
@@ -221,11 +221,9 @@ impl CodexHarness {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            crate::executable::spawn_error(e, None, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             shutdown_child(&mut child, self.kill_grace).await;
@@ -281,11 +279,9 @@ impl CodexHarness {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            crate::executable::spawn_error(e, None, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             shutdown_child(&mut child, self.kill_grace).await;
@@ -763,6 +759,17 @@ impl CodexHarness {
             ));
         }
         let exe = self.resolve_executable()?;
+        // Cached per binary; a fixed test executable is never version-probed
+        // (upstream #977: an old CLI is refused up front, not at the wire).
+        if self.executable.is_none() {
+            let probe = exe.clone();
+            let version =
+                tokio::task::spawn_blocking(move || crate::executable::binary_version(&probe))
+                    .await
+                    .ok()
+                    .flatten();
+            check_codex_version(version.as_ref())?;
+        }
         // Yolo mode: danger-full-access + approvalPolicy "never" (set below) —
         // codex's --dangerously-bypass-approvals-and-sandbox equivalent.
         // Parity with the Claude adapter, which auto-approves every
@@ -790,11 +797,10 @@ impl CodexHarness {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
-            } else {
-                HarnessError::Io(e)
-            }
+            let cwd = (!request.cwd.is_empty()).then(|| std::path::Path::new(&request.cwd));
+            crate::executable::spawn_error(e, cwd, || {
+                crate::executable::binary_hint(&exe)
+            })
         })?;
 
         let stdin = child
@@ -809,7 +815,7 @@ impl CodexHarness {
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
             tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                let mut lines = crate::lossy_lines::lossy_lines(stderr);
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "roboco_harness::codex", "stderr: {line}");
                     tail.push(&line);
@@ -2115,6 +2121,27 @@ async fn run_session(session: Session) {
 /// still running counts as background work.
 const COMMAND_EXIT_GRACE: Duration = Duration::from_secs(3);
 
+/// The oldest Codex CLI release this driver speaks (the notification and
+/// elicitation surface it revalidates; upstream #977 added the floor).
+const MIN_CODEX_VERSION: semver::Version = semver::Version::new(0, 146, 0);
+
+/// `Err` when `version` is known and older than [`MIN_CODEX_VERSION`]; an
+/// unknown version (a wrapper, a dev build) is given the benefit of the
+/// doubt. A pre-release counts as its release: `0.146.0-alpha.2` already
+/// speaks the wire, though semver orders it before `0.146.0`.
+fn check_codex_version(version: Option<&semver::Version>) -> Result<(), HarnessError> {
+    let release = version.map(|v| semver::Version::new(v.major, v.minor, v.patch));
+    match (version, release) {
+        (Some(version), Some(release)) if release < MIN_CODEX_VERSION => {
+            Err(HarnessError::Protocol(format!(
+                "Codex CLI {version} is too old; update it to {MIN_CODEX_VERSION} or newer \
+                 (npm install -g @openai/codex@latest)"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Whether a process the app-server reported is still running.
 fn process_alive(pid: &str) -> bool {
     #[cfg(unix)]
@@ -2244,6 +2271,30 @@ fn handle_server_request(
                 by_id.insert(wire_id.clone(), json!({ "answers": labels }));
             }
             client.respond(&id, json!({ "answers": by_id }));
+        });
+        return;
+    }
+    // MCP servers elicit regardless of the approval policy (upstream
+    // #977). A form the input bridge can ask is asked; anything else is
+    // declined — a reply the server handles, where a JSON-RPC error failed
+    // its tool call.
+    if method == "mcpServer/elicitation/request" {
+        let Some(form) = elicitation::form(params) else {
+            let mode = params["mode"].as_str().unwrap_or_default();
+            tracing::info!(
+                target: "roboco_harness::codex",
+                mode, "declining an MCP elicitation roboco can't ask"
+            );
+            client.respond(&id, elicitation::decline());
+            return;
+        };
+        let client = client.clone();
+        let request_input = Arc::clone(request_input);
+        tokio::spawn(async move {
+            let answers = (request_input)(form.questions.clone())
+                .await
+                .unwrap_or_default();
+            client.respond(&id, form.response(&answers));
         });
         return;
     }

@@ -1994,7 +1994,7 @@ mod tests {
         let third = retry(&mut norm, 3);
         assert!(matches!(
             &third[..],
-            [AgentEvent::ReasoningDelta { .. }, AgentEvent::Error { message }]
+            [AgentEvent::ReasoningDelta { .. }, AgentEvent::Error { message, .. }]
                 if message.contains("overloaded") && message.contains("3 of 10")
         ));
         assert_eq!(retry(&mut norm, 4), vec![heartbeat.clone()]);
