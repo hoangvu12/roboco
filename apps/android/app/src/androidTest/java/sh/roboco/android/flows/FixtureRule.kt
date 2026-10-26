@@ -294,6 +294,22 @@ class FixtureRule(
         fetch("${controlUrl.trim().trimEnd('/')}/$path")
 
     /**
+     * `GET /listener/<command>` (stop | start) with the rig contract
+     * checked: the reply must arrive and be JSON. The fixture reports
+     * what it actually did (`stopped`, `closed`, `started`), so a rig
+     * that stops nothing is a loud, named failure here instead of a
+     * mystery timeout at the join — CI 40256510722, where the room heal
+     * flow's join minted BOTH members because the stop's ignored result
+     * had no effect on the slow engine.
+     */
+    fun listenerControl(controlUrl: String, command: String): JSONObject {
+        val body = fetchControl(controlUrl, "listener/$command")
+            ?: error("the rig's /listener/$command failed (the fixture control is unreachable)")
+        return runCatching { JSONObject(body) }
+            .getOrElse { error("the rig's /listener/$command returned no JSON: $body") }
+    }
+
+    /**
      * `GET /mint`, returning the body. Runs on the IO dispatcher: the rule
      * evaluates on the instrumentation main thread, and a mint that blocks
      * there would trip the network-on-main guard before anything is up.

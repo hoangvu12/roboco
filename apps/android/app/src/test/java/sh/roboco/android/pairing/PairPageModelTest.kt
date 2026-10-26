@@ -585,7 +585,10 @@ class PairPageModelTest {
             )
         }
         val paired = mutableListOf<Unit>()
-        model.onPaired = { paired += Unit }
+        model.onPaired = {
+            paired += Unit
+            ops += "onPaired"
+        }
         model.text.setTextAndPlaceCursorAtEnd("roboco-room:eyJ2IjoxfQ")
 
         model.submit()

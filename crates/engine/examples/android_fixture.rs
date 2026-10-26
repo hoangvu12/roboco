@@ -771,19 +771,39 @@ fn spawn_control_endpoint(
                     }
                 }
                 ("GET", "/listener/stop") => {
-                    // Idempotent: a second stop finds the slot empty. Only
-                    // this thread locks the slot, so holding the guard
-                    // across block_on cannot deadlock.
-                    if let Some(mut remote) = remote_slot.lock().unwrap().take() {
+                    // Idempotent: a second stop finds the slot empty — the
+                    // reply's `stopped` says so, so a caller that needs the
+                    // engine unreachable can tell a real stop from a no-op
+                    // (CI 40256510722: the room heal flow's join minted
+                    // BOTH members because this stop's outcome was neither
+                    // reported nor checked). Only this thread locks the
+                    // slot, so holding the guard across block_on cannot
+                    // deadlock.
+                    let stopped = if let Some(mut remote) = remote_slot.lock().unwrap().take() {
                         handle.block_on(remote.stop());
-                    }
-                    serde_json::json!({ "ok": true }).to_string()
+                        true
+                    } else {
+                        false
+                    };
+                    // The stop must actually bite: "the member is offline"
+                    // means the port refuses new dials. A bounded wait
+                    // covers a slow task reap; a port that still accepts
+                    // is reported (and logged) so a broken rig fails
+                    // loudly at the stop, not as a mystery timeout 60 s
+                    // later at the join.
+                    let closed = port_refuses(bind_addr);
+                    eprintln!(
+                        "android_fixture: /listener/stop stopped={stopped} closed={closed} port={}",
+                        bind_addr.port()
+                    );
+                    serde_json::json!({ "ok": true, "stopped": stopped, "closed": closed })
+                        .to_string()
                 }
                 ("GET", "/listener/start") => {
-                    // Idempotent: a running listener is left alone. A failed
-                    // re-bind panics the control thread — the rig is broken,
-                    // which the tests report loudly.
-                    if remote_slot.lock().unwrap().is_none() {
+                    // Idempotent: a running listener is left alone (`started`
+                    // false). A failed re-bind panics the control thread —
+                    // the rig is broken, which the tests report loudly.
+                    let started = if remote_slot.lock().unwrap().is_none() {
                         let remote = handle
                             .block_on(roboco_engine::serve_engine_remote(
                                 bind_addr,
@@ -792,8 +812,15 @@ fn spawn_control_endpoint(
                             ))
                             .expect("android_fixture: restart the engine listener");
                         *remote_slot.lock().unwrap() = Some(remote);
-                    }
-                    serde_json::json!({ "ok": true }).to_string()
+                        true
+                    } else {
+                        false
+                    };
+                    eprintln!(
+                        "android_fixture: /listener/start started={started} port={}",
+                        bind_addr.port()
+                    );
+                    serde_json::json!({ "ok": true, "started": started }).to_string()
                 }
                 // A run started by the ENGINE side, not the phone: the core never
                 // posts "Run finished" for the phone's own send (notify.rs
@@ -867,6 +894,25 @@ fn mint_pair_url(data_dir: &Path, engine_port: u16) -> String {
         .expect("mint pairing code");
     pairing::pairing_url(&format!("http://127.0.0.1:{engine_port}"), &code.credential)
         .expect("pairing url")
+}
+
+/// Whether `address` refuses new TCP dials — the observable half of
+/// `/listener/stop`: a stopped listener must not accept. Bounded (a
+/// slow task reap settles), and called from the control thread only.
+fn port_refuses(address: std::net::SocketAddr) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match std::net::TcpStream::connect_timeout(
+            &address,
+            std::time::Duration::from_millis(250),
+        ) {
+            // Refused/unreachable: nothing accepts — the stop bit.
+            Err(_) => return true,
+            // Still accepting: the reap may be in flight, keep waiting.
+            Ok(_) if std::time::Instant::now() >= deadline => return false,
+            Ok(_) => {}
+        }
+    }
 }
 
 fn respond(stream: &mut std::net::TcpStream, status: u16, body: &str) {

@@ -121,8 +121,13 @@ class RoomFlowTest {
     fun aMemberOfflineAtJoinTimeHealsOnTheNextNetworkChange() {
         // The slow member is down BEFORE the join (its engine listener
         // stops; the control port and its room row persist, so it can
-        // still have joined the room).
-        launch.fetchControl(launch.controlUrl(FixtureEngine.Slow)!!, "/listener/stop")
+        // still have joined the room). The stop must actually bite: a
+        // stop that stopped no listener, or left the port accepting, is
+        // a broken rig and fails here by name — not as the join minting
+        // both members and timing out 60 s later (CI 40256510722).
+        val stop = launch.listenerControl(launch.controlUrl(FixtureEngine.Slow)!!, "stop")
+        assertTrue("the rig's /listener/stop stopped no listener", stop.getBoolean("stopped"))
+        assertTrue("the slow engine's port still accepts after /listener/stop", stop.getBoolean("closed"))
         val invite = mintRoom()
 
         // 1. A partial join: main joins, slow is missing — a success, the
@@ -146,7 +151,7 @@ class RoomFlowTest {
         // 2. The member wakes; the next network change heals the room
         //    without any user action (the heal rides the existing
         //    network-change moment — no new timers, no probing).
-        launch.fetchControl(launch.controlUrl(FixtureEngine.Slow)!!, "/listener/start")
+        launch.listenerControl(launch.controlUrl(FixtureEngine.Slow)!!, "start")
         app.clientOrNull()?.setNetworkChanged()
         compose.waitUntil(timeoutMillis = 90_000) {
             app.clientOrNull()?.engines().orEmpty().size == 2
