@@ -1,6 +1,6 @@
 //! Engine-owned discovery/proxy lifecycle, independent of headed UI lifetimes.
 use crate::{
-    catalog::Catalog,
+    catalog::{Catalog, LocalRoute},
     discovery,
     login::{self, CallbackForwarder, CallbackRoutes, CallbackTunnels},
     mux::{self, BoxIo, Connector},
@@ -195,6 +195,19 @@ impl PreviewService {
     pub fn catalog(&self) -> &Catalog {
         &self.0.catalog
     }
+    /// The connector a session-authenticated preview relay dials through
+    /// (the engine's `/preview-relay` route): every OPEN it handles resolves
+    /// only `service_id`, and only while the live catalog lists that service
+    /// attributed to `chat_id`. The dial itself re-verifies process identity
+    /// (see [`LocalConnector`]), so remote metadata never names a TCP
+    /// address — the catalog does, and only for the scoped live service.
+    pub fn relay_connector(&self, chat_id: &str, service_id: &str) -> Arc<dyn Connector> {
+        Arc::new(ChatScoped {
+            chat: chat_id.to_owned(),
+            service: service_id.to_owned(),
+            catalog: self.0.catalog.clone(),
+        })
+    }
     /// The registry the agent-login flows publish their callback ports to.
     pub fn callback_routes(&self) -> CallbackRoutes {
         self.0.callback_routes.clone()
@@ -358,6 +371,22 @@ impl PreviewService {
     }
 }
 struct LocalConnector(Catalog, CallbackRoutes);
+impl LocalConnector {
+    /// Dial one already-resolved route, re-verifying process identity first.
+    /// A stopped dev server's port may have been reused since the last scan;
+    /// checking the one pid is cheap (a full [`discovery::listeners`] pass
+    /// walks every process, and per-asset full passes showed up as memory
+    /// and CPU churn on the hosting Mac).
+    async fn connect_route(route: LocalRoute) -> anyhow::Result<BoxIo> {
+        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
+        let valid =
+            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
+        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
+        Ok(Box::new(
+            tokio::net::TcpStream::connect(route.listener.address).await?,
+        ))
+    }
+}
 #[async_trait::async_trait]
 impl Connector for LocalConnector {
     async fn connect(&self, id: &str) -> anyhow::Result<BoxIo> {
@@ -373,18 +402,39 @@ impl Connector for LocalConnector {
             .0
             .local_route(id)
             .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
-        // Recheck process identity before dialing: a stopped dev server's port
-        // may have been reused since the last scan. Checking the one pid is
-        // cheap; enumerating every listener here spawned lsof and ps for each
-        // asset a remote page requested, which showed up as memory and CPU
-        // churn on the hosting Mac.
-        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
-        let valid =
-            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
-        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
-        Ok(Box::new(
-            tokio::net::TcpStream::connect(route.listener.address).await?,
-        ))
+        Self::connect_route(route).await
+    }
+}
+
+/// One relay's authorization scope: the [`mux::PeerScoped`] pattern applied
+/// to a chat instead of a device. Every OPEN this connector handles resolves
+/// only the scoped service id, only while the live catalog attributes it to
+/// the scoped chat — the relay request's chat (ticket 01's attribution),
+/// checked per OPEN so a service that dies or moves to another chat stops
+/// resolving on an already-open relay. The dial itself is
+/// [`LocalConnector::connect_route`]: the catalog's address, never one the
+/// peer named, with process identity re-verified first.
+struct ChatScoped {
+    chat: String,
+    service: String,
+    catalog: Catalog,
+}
+#[async_trait::async_trait]
+impl Connector for ChatScoped {
+    async fn connect(&self, service: &str) -> anyhow::Result<BoxIo> {
+        anyhow::ensure!(
+            service == self.service,
+            "preview service is outside this relay's scope"
+        );
+        let route = self
+            .catalog
+            .local_route(service)
+            .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
+        anyhow::ensure!(
+            route.service.chat_id.as_deref() == Some(self.chat.as_str()),
+            "preview service is not attributed to this relay's chat"
+        );
+        LocalConnector::connect_route(route).await
     }
 }
 

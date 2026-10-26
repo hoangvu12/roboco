@@ -236,6 +236,10 @@ fn listener_bind(requested: SocketAddr, transport: NetworkTransport) -> anyhow::
 pub struct RemoteAccessController {
     directory: PathBuf,
     service: Mutex<Option<Arc<dyn roboco_rpc::RpcService>>>,
+    /// The preview service whose relay route rides this engine's remote
+    /// listener (`/preview-relay`, Phase C). `None` until initialization
+    /// hands it over; the route 404s without it.
+    previews: Mutex<Option<roboco_preview::PreviewService>>,
     state: tokio::sync::Mutex<ControlState>,
 }
 
@@ -253,6 +257,7 @@ impl RemoteAccessController {
         Arc::new(Self {
             directory: directory.into(),
             service: Mutex::new(None),
+            previews: Mutex::new(None),
             state: tokio::sync::Mutex::new(ControlState {
                 options: Default::default(),
                 status,
@@ -266,9 +271,11 @@ impl RemoteAccessController {
     pub async fn initialize(
         &self,
         service: Arc<dyn roboco_rpc::RpcService>,
+        previews: Option<roboco_preview::PreviewService>,
         options: NetworkOptions,
     ) {
         *self.service.lock().unwrap() = Some(service);
+        *self.previews.lock().unwrap() = previews;
         let mut state = self.state.lock().await;
         state.options = options;
         self.apply(&mut state).await;
@@ -304,9 +311,16 @@ impl RemoteAccessController {
                 // In Tailcat mode the listener is the adapter's serve target:
                 // loopback only, so no second unencrypted LAN surface is left
                 // beside the route (ADR 0008).
+                let previews = self.previews.lock().unwrap().clone();
                 let started = match listener_bind(requested, transport) {
                     Ok(address) => {
-                        crate::serve_engine_remote(address, service, &self.directory).await
+                        crate::serve_engine_remote_with_previews(
+                            address,
+                            service,
+                            previews,
+                            &self.directory,
+                        )
+                        .await
                     }
                     Err(error) => Err(error),
                 };
