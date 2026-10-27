@@ -22,10 +22,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomMemberRecord
+import uniffi.roboco_core.RoomRecord
 
 /**
  * Persistent storage for the phone's paired engines (ticket 71) — Roboco's
@@ -46,6 +49,17 @@ import uniffi.roboco_core.PairedEngine
  * that blob is missing or undecryptable, the engine loads with an empty
  * credential (it parks; "Pair again") — it is never dialed without its
  * address.
+ *
+ * A room an engine was joined through (ADR 0011, ticket 04) also has a
+ * `room:<roomId>` blob = Base64(AES-GCM(JSON
+ * `{"secret","members":[{"label","address"}]}`)) with its own AAD
+ * (`…v1:room:<roomId>`) — the room secret and the book's addresses are
+ * secrets, so only the non-secret room id and label live in the engine
+ * metadata. The room list is derived from the engine metadata (a room
+ * exists exactly while an engine references it — forgetting the last
+ * engine of a room drops its blob: v1's "leave" gesture); a missing or
+ * undecryptable blob degrades to "no room" (the engines stay paired, the
+ * heal stops) — never a crash, never a log of the secret.
  *
  * All suspend calls run on [io] and are serialized by one mutex, which
  * also covers `pendingPins` and the encrypt-then-edit pair. Metadata is
@@ -219,6 +233,81 @@ class PairedEngineStore(
     }
 
     /**
+     * The joined rooms the stored engines reference (ADR 0011, ticket 04):
+     * one [RoomRecord] per distinct room in the engine metadata, decrypted
+     * from its `room:` blob. A room whose blob is missing or unreadable is
+     * skipped (logged, never thrown): its engines stay paired and listed,
+     * only the heal stops. Never logs the secret or the addresses.
+     */
+    suspend fun loadRooms(): List<RoomRecord> = withContext(io) {
+        mutex.withLock {
+            val prefs = try {
+                dataStore.data.first()
+            } catch (_: IOException) {
+                return@withLock emptyList<RoomRecord>()
+            }
+            val metas = decodeMetas(prefs) ?: return@withLock emptyList()
+            metas.mapNotNull { it.room }
+                .distinctBy { it.roomId }
+                .mapNotNull { room ->
+                    val blob = prefs[roomKey(room.roomId)] ?: run {
+                        Log.w(TAG, "room blob missing room=${room.roomId}")
+                        return@mapNotNull null
+                    }
+                    // The label is metadata (it shows in Settings); the
+                    // blob carries only the secret and the book.
+                    decryptRoom(blob, room.roomId, room.label)
+                }
+        }
+    }
+
+    /**
+     * Stores a joined room's secret and book (the `room:` blob) during a
+     * join (ticket 04), BEFORE the join's engine upserts: the engine
+     * metadata that references the room lands in the same edit that
+     * sweeps orphans, so a crash between the two leaves a swept orphan
+     * blob, never a room whose engines exist but cannot heal. Encrypts
+     * before the atomic edit; a failure throws
+     * [CredentialStoreException] with the store unchanged.
+     */
+    suspend fun upsertRoom(room: RoomRecord): Unit = withContext(io) {
+        mutex.withLock {
+            val json = JSONObject()
+                .put("secret", room.secret)
+                .put(
+                    "members",
+                    JSONArray().apply {
+                        for (member in room.members) {
+                            put(
+                                JSONObject()
+                                    .put("label", member.label)
+                                    .put("address", member.address),
+                            )
+                        }
+                    },
+                )
+                .toString()
+            val base64 = try {
+                Base64.getEncoder().encodeToString(
+                    cipher.encrypt(json.toByteArray(Charsets.UTF_8), roomAad(room.roomId)),
+                )
+            } catch (error: Exception) {
+                throw CredentialStoreException(error)
+            }
+            try {
+                dataStore.edit { prefs ->
+                    prefs[roomKey(room.roomId)] = base64
+                    // The blob is only written once an engine references the
+                    // room; nothing else changes here.
+                }
+            } catch (error: IOException) {
+                throw CredentialStoreException(error)
+            }
+            Log.i(TAG, "room stored room=${room.roomId} members=${room.members.size}")
+        }
+    }
+
+    /**
      * Drops an engine after `forgetEngine` (ticket 140): the metadata
      * element, its credential and any pending pin. Unknown id = no-op.
      * IO failure throws [CredentialStoreException].
@@ -289,14 +378,52 @@ class PairedEngineStore(
             null
         }
 
-    /** Writes the metadata list and drops `cred:`/`tc:` keys with no entry left. */
+    /** The `room:` blob → the record, or `null` when it does not decrypt or
+     * parse (the engines stay; only the heal stops). `label` comes from the
+     * engine metadata — the blob itself carries only secrets. */
+    private fun decryptRoom(base64: String, roomId: String, label: String): RoomRecord? =
+        try {
+            val blob = Base64.getDecoder().decode(base64)
+            val json = JSONObject(String(cipher.decrypt(blob, roomAad(roomId)), Charsets.UTF_8))
+            val secret = json.get("secret") as? String ?: throw JSONException("secret")
+            val members = json.optJSONArray("members") ?: JSONArray()
+            val book = (0 until members.length()).mapNotNull { index ->
+                (members.opt(index) as? JSONObject)?.let { element ->
+                    val label = element.optString("label")
+                    val address = element.optString("address")
+                    if (label.isNotEmpty() && address.isNotEmpty()) {
+                        RoomMemberRecord(label = label, address = address)
+                    } else {
+                        null
+                    }
+                }
+            }
+            if (secret.isEmpty()) null else RoomRecord(roomId = roomId, label = label, secret = secret, members = book)
+        } catch (error: Exception) {
+            Log.w(TAG, "room blob unreadable room=$roomId cause=${error.javaClass.simpleName}")
+            null
+        }
+
+    /** Writes the metadata list and drops `cred:`/`tc:` keys with no
+     * engine entry left, and `room:` keys whose room no engine references
+     * (forgetting the last engine of a room is v1's "leave room": the
+     * secret goes with it — ticket 04). */
     private fun rewrite(prefs: MutablePreferences, metas: List<EngineMeta>) {
         prefs[ENGINES] = EngineMetaJson.encode(metas)
         val liveIds = metas.mapTo(HashSet()) { it.engineId }
+        val liveRooms = metas.mapNotNullTo(HashSet()) { it.room?.roomId }
         for (name in prefs.asMap().keys.map { it.name }) {
-            val prefix = SECRET_PREFIXES.firstOrNull { name.startsWith(it) } ?: continue
-            if (name.substring(prefix.length) !in liveIds) {
-                prefs.remove(stringPreferencesKey(name))
+            when {
+                name.startsWith("$ROOM_PREFIX") -> {
+                    if (name.substring(ROOM_PREFIX.length) !in liveRooms) {
+                        prefs.remove(stringPreferencesKey(name))
+                    }
+                }
+                name.startsWith("$CRED_PREFIX") || name.startsWith("$TAILCAT_PREFIX") -> {
+                    if (name.substringAfter(':') !in liveIds) {
+                        prefs.remove(stringPreferencesKey(name))
+                    }
+                }
             }
         }
     }
@@ -315,6 +442,8 @@ class PairedEngineStore(
 
     private fun tailcatKey(engineId: String) = stringPreferencesKey("$TAILCAT_PREFIX$engineId")
 
+    private fun roomKey(roomId: String) = stringPreferencesKey("$ROOM_PREFIX$roomId")
+
     /** Must stay equal to `KeystoreSecretCipher.ALIAS` (the ticket reuses the alias here). */
     private fun aad(engineId: String): ByteArray =
         "roboco.engine-credentials.v1:$engineId".toByteArray(Charsets.UTF_8)
@@ -323,6 +452,10 @@ class PairedEngineStore(
     private fun tailcatAad(engineId: String): ByteArray =
         "roboco.engine-credentials.v1:tailcat:$engineId".toByteArray(Charsets.UTF_8)
 
+    /** Distinct again: a room blob never decrypts as a credential or route. */
+    private fun roomAad(roomId: String): ByteArray =
+        "roboco.engine-credentials.v1:room:$roomId".toByteArray(Charsets.UTF_8)
+
     companion object {
         /** Required by `PreferenceDataStoreFactory`. */
         const val FILE_NAME = "paired_engines.preferences_pb"
@@ -330,7 +463,7 @@ class PairedEngineStore(
         private const val TAG = "Roboco"
         private const val CRED_PREFIX = "cred:"
         private const val TAILCAT_PREFIX = "tc:"
-        private val SECRET_PREFIXES = listOf(CRED_PREFIX, TAILCAT_PREFIX)
+        private const val ROOM_PREFIX = "room:"
         private val ENGINES = stringPreferencesKey("engines")
 
         /**

@@ -98,6 +98,7 @@ import sh.roboco.android.design.sheet.SheetLeading
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.shell.PageSheetScope
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomInviteTarget
 import kotlinx.coroutines.delay
 
 /**
@@ -193,11 +194,24 @@ internal fun PairPage(
 
     // The live parse of the trimmed field. `mapLatest` cancels the
     // previous parse on every keystroke; a blank field maps to null
-    // without a parse.
+    // without a parse. A `roboco-room:` invite parses to the room target
+    // (ticket 04) — never both: the room parser refuses anything the
+    // engine parser accepts, and vice versa.
     LaunchedEffect(model) {
         snapshotFlow { model.text.text.toString().trim() }
-            .mapLatest { s -> if (s.isEmpty()) null else withContext(Dispatchers.Default) { model.parseTarget(s) } }
-            .collect { model.target = it }
+            .mapLatest { s ->
+                if (s.isEmpty()) {
+                    null to null
+                } else {
+                    withContext(Dispatchers.Default) {
+                        model.parseRoomTarget(s) to model.parseTarget(s)
+                    }
+                }
+            }
+            .collect { (room, target) ->
+                model.roomTarget = room
+                model.target = if (room != null) null else target
+            }
     }
 
     // The success hook: haptic + close, only while the page is shown.
@@ -221,6 +235,7 @@ internal fun PairPage(
     PairPageContent(
         text = model.text,
         target = model.target,
+        room = model.roomTarget,
         phase = model.phase,
         showPaste = showPaste,
         showScan = showScan,
@@ -282,12 +297,15 @@ internal fun rememberClipboardHasText(clipboard: PairClipboard): State<Boolean> 
  * footers and the error line) and the full-width "Pair engine" capsule
  * (08) outside the scroll, 24 dp from the sides and 24 dp above
  * `max(ime, navigationBars)`. State is injected; the previews, the
- * gallery and the goldens compose it directly.
+ * gallery and the goldens compose it directly. A `roboco-room:` invite
+ * (ticket 04) swaps the target line for the room line and the capsule
+ * for "Join room" — the field is the same one paste/scan fill.
  */
 @Composable
 fun PairPageContent(
     text: TextFieldState,
     target: PairingTarget?,
+    room: RoomInviteTarget? = null,
     phase: PairPhase,
     showPaste: Boolean,
     showScan: Boolean,
@@ -333,6 +351,14 @@ fun PairPageContent(
                 stringResource(R.string.pair_hint),
                 Modifier.testTag("pair-hint"),
             )
+            room?.let {
+                // Ticket 04: the room invite's confirm line — the name and
+                // the member count, never a secret or an address.
+                GroupedFooter(
+                    stringResource(R.string.pair_room_target, it.name, it.memberLabels.size),
+                    Modifier.testTag("pair-room-target"),
+                )
+            }
             target?.let {
                 val expiresAtMs = it.expiresAtMs
                 val line = if (it.tailcat && expiresAtMs != null) {
@@ -377,10 +403,17 @@ fun PairPageContent(
                 .padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 24.dp),
         ) {
             val busy = phase is PairPhase.Redeeming
-            // A Tailcat open pings the engine first (up to ~20 s).
-            val busyLabel = if (target?.tailcat == true) R.string.pair_submitting_tailcat else R.string.pair_submitting
+            // A Tailcat open pings the engine first (up to ~20 s); a room
+            // join dials every member (ticket 04).
+            val busyLabel = when {
+                room != null -> R.string.pair_room_submitting
+                target?.tailcat == true -> R.string.pair_submitting_tailcat
+                else -> R.string.pair_submitting
+            }
             ProminentGlassButton(
-                text = stringResource(if (busy) busyLabel else R.string.pair_submit),
+                text = stringResource(
+                    if (busy) busyLabel else if (room != null) R.string.pair_room_submit else R.string.pair_submit
+                ),
                 onClick = onSubmit,
                 busy = busy,
                 // Busy is not "off": clicks are ignored via busy, the
@@ -589,12 +622,13 @@ private object StripLineBreaks : InputTransformation {
 // Previews (ticket step 9): the five states, light and dark, 393 × 852
 // ---------------------------------------------------------------------------
 
-/** One preview fixture: the field text, the parse target, the phase, Paste. */
+/** One preview fixture: the field text, the parse target(s), the phase, Paste. */
 private data class PairPagePreview(
     val text: String,
     val target: PairingTarget?,
     val phase: PairPhase,
     val showPaste: Boolean,
+    val room: RoomInviteTarget? = null,
 )
 
 private val PairPagePreviewEmpty = PairPagePreview(
@@ -632,6 +666,7 @@ private fun PairPagePreviewBody(appearance: Appearance, state: PairPagePreview) 
             PairPageContent(
                 text = field,
                 target = state.target,
+                room = state.room,
                 phase = state.phase,
                 showPaste = state.showPaste,
                 showScan = true,
@@ -678,6 +713,27 @@ private fun PairPageHttpsLightPreview() {
 @Composable
 private fun PairPageHttpsDarkPreview() {
     PairPagePreviewBody(Appearance.Dark, PairPagePreviewHttps)
+}
+
+/** Ticket 04: a `roboco-room:` invite parsed — the room line + capsule. */
+private val PairPagePreviewRoom = PairPagePreview(
+    text = "roboco-room:eyJ2IjoxLCJuYW1lIjoiSG9tZSBmbGVldCIsInNlY3JldCI6ImV4YW1wbGUiLCJtZW1iZXJzIjpbXX0",
+    target = null,
+    phase = PairPhase.Idle,
+    showPaste = false,
+    room = RoomInviteTarget(name = "Home fleet", memberLabels = listOf("desktop", "server")),
+)
+
+@Preview(name = "Pair page room light", widthDp = 393, heightDp = 852)
+@Composable
+private fun PairPageRoomLightPreview() {
+    PairPagePreviewBody(Appearance.Light, PairPagePreviewRoom)
+}
+
+@Preview(name = "Pair page room dark", widthDp = 393, heightDp = 852, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun PairPageRoomDarkPreview() {
+    PairPagePreviewBody(Appearance.Dark, PairPagePreviewRoom)
 }
 
 @Preview(name = "Pair page redeeming light", widthDp = 393, heightDp = 852)

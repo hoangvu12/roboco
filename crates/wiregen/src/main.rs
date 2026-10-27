@@ -218,6 +218,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ProjectActionRun,
         roboco_proto::SidebarSection,
         roboco_proto::SidebarStateSnapshot,
+        roboco_proto::room::RoomMember,
+        roboco_proto::room::RoomBook,
         roboco_proto::CreateWorktreeOutcome,
         roboco_proto::TerminalSession,
         roboco_proto::TerminalEvent,
@@ -371,6 +373,10 @@ fn constants_ts() -> String {
     out.push_str(&format!(
         "export const PROJECTLESS_SCRATCH_V1 = {:?};\n",
         capabilities::PROJECTLESS_SCRATCH_V1
+    ));
+    out.push_str(&format!(
+        "export const ROOMS_V1 = {:?};\n",
+        capabilities::ROOMS_V1
     ));
     out.push_str("\n/** Every capability this build of the engine advertises. */\n");
     let current: Vec<String> = capabilities::CURRENT

@@ -181,6 +181,7 @@ impl PreviewRig {
                 native_lib_dir: None,
             },
             Vec::new(),
+            Vec::new(),
             Arc::new(NullListener),
             test_timings(),
             Arc::new(crate::tailcat::LibraryOpener::new(None, None)),

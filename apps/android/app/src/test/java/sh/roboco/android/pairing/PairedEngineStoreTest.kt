@@ -26,8 +26,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
+import uniffi.roboco_core.EngineRoomRef
 import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomMemberRecord
+import uniffi.roboco_core.RoomRecord
 import java.io.File
 import java.util.Base64
 
@@ -597,6 +600,194 @@ class PairedEngineStoreTest {
 
     private suspend fun writeOrphan(fixture: Fixture) {
         fixture.writeCred("orphan-id", Base64.getEncoder().encodeToString(ByteArray(28)))
+    }
+
+    // Rooms (ADR 0011, ticket 04): the `room:` blob class ---------------
+
+    private fun roomKey(roomId: String) = stringPreferencesKey("room:$roomId")
+
+    private fun roomRecord(roomId: String = "r-1", secret: String = "room-SECRET-1"): RoomRecord =
+        RoomRecord(
+            roomId = roomId,
+            label = "Home fleet",
+            secret = secret,
+            members = listOf(
+                RoomMemberRecord(label = "desktop", address = "http://10.0.2.2:8123"),
+                RoomMemberRecord(label = "server", address = "tcSECRETADDRESS1"),
+            ),
+        )
+
+    private fun roomEngine(record: RoomRecord): PairedEngine =
+        newEngine(engineId = "a-room-engine").copy(
+            room = EngineRoomRef(roomId = record.roomId, label = record.label),
+        )
+
+    @Test
+    fun aRoomBlobRoundTripsThroughARestart(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val record = roomRecord()
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+
+        val restarted = restart(fixture, cipher)
+        val rooms = restarted.store.loadRooms()
+
+        assertEquals(listOf(record), rooms)
+    }
+
+    @Test
+    fun loadRoomsDerivesTheListFromEngineMetadataOncePerRoom(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val record = roomRecord()
+        // Two engines joined the same room: one blob, one record.
+        val second = newEngine(engineId = "a-second-room-engine").copy(
+            room = EngineRoomRef(roomId = record.roomId, label = record.label),
+        )
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsert(second)
+        fixture.store.upsertRoom(record)
+
+        assertEquals(listOf(record), fixture.store.loadRooms())
+    }
+
+    @Test
+    fun aRoomWithoutItsBlobIsSkippedNotThrown(): Unit = runTest {
+        val fixture = newStore()
+        val record = roomRecord()
+        fixture.store.upsert(roomEngine(record))
+        ShadowLog.clear()
+
+        assertEquals(emptyList<RoomRecord>(), fixture.store.loadRooms())
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue(
+            "expected the missing-blob log, got $logged",
+            logged.any { it == "room blob missing room=${record.roomId}" },
+        )
+        // The engine itself still loads.
+        assertEquals(1, fixture.store.load().size)
+    }
+
+    @Test
+    fun aCorruptedRoomBlobIsSkippedAndNeverLogsItsSecret(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val record = roomRecord(secret = "room-SECRET-LEAKY")
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+        ShadowLog.clear()
+        cipher.rotateKey()
+
+        assertEquals(emptyList<RoomRecord>(), fixture.store.loadRooms())
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue("a log leaked the room secret: $logged", logged.none { it.contains("room-SECRET-LEAKY") })
+    }
+
+    @Test
+    fun aRoomBlobNeverDecryptsAsACredential(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val record = roomRecord()
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+        // Swap the room blob into the cred: slot of the room engine — the
+        // distinct AAD (…v1:room:…) refuses it. (Read the blob first: a
+        // `data.first()` inside `edit`'s transaction is a second store
+        // hop the fixture does not need.)
+        val roomBlob = fixture.dataStore.data.first()[roomKey(record.roomId)]
+        assertTrue("the rig wrote no room blob to swap", roomBlob != null)
+        fixture.dataStore.edit { it[credKey("a-room-engine")] = roomBlob!! }
+
+        assertEquals(listOf(record), fixture.store.loadRooms())
+        assertEquals("", fixture.store.load().single().credential)
+    }
+
+    @Test
+    fun noRoomSecretOrAddressIsWrittenAtRest(): Unit = runTest {
+        val fixture = newStore()
+        val record = roomRecord(secret = "room-ATREST-SECRET")
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+
+        val needles = listOf("room-ATREST-SECRET", "tcSECRETADDRESS1").map { it.toByteArray(Charsets.UTF_8) }
+        for (file in tmpFolder.root.walkBottomUp().filter { it.isFile }) {
+            val bytes = file.readBytes()
+            for (needle in needles) {
+                assertTrue("$file holds a room secret in the clear", bytes.indexOf(needle) < 0)
+            }
+        }
+        // The metadata carries only the id and the label.
+        val engines = fixture.dataStore.data.first()[stringPreferencesKey("engines")]!!
+        assertTrue(!engines.contains("room-ATREST-SECRET"))
+        assertTrue(!engines.contains("tcSECRETADDRESS1"))
+        assertTrue(engines.contains("\"r-1\""))
+        assertTrue(engines.contains("Home fleet"))
+    }
+
+    @Test
+    fun forgettingTheLastEngineOfARoomDropsItsBlob(): Unit = runTest {
+        val fixture = newStore()
+        val record = roomRecord()
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+        assertTrue(roomKey(record.roomId).name in fixture.prefNames())
+
+        fixture.store.remove(roomEngine(record).engineId)
+
+        assertFalse(roomKey(record.roomId).name in fixture.prefNames())
+        assertEquals(emptyList<RoomRecord>(), fixture.store.loadRooms())
+    }
+
+    @Test
+    fun anOrphanRoomBlobDisappearsOnTheNextWrite(): Unit = runTest {
+        val fixture = newStore()
+        val record = roomRecord(roomId = "orphan-room")
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+        // The engine forgets its room (a re-pair that drops the tag): the
+        // blob's room now has no referencing engine.
+        fixture.store.upsert(roomEngine(record).copy(room = null))
+
+        fixture.store.upsert(engineA)
+        assertFalse(roomKey("orphan-room").name in fixture.prefNames())
+    }
+
+    @Test
+    fun aFailingRoomEncryptThrowsAndChangesNothing(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val record = roomRecord()
+        fixture.store.upsert(roomEngine(record))
+        val bytesBefore = storeFile().readBytes()
+        cipher.failEncrypt = true
+
+        val thrown: Throwable? = try {
+            fixture.store.upsertRoom(record)
+            null
+        } catch (expected: CredentialStoreException) {
+            expected
+        }
+
+        assertNotNull("upsertRoom must throw CredentialStoreException", thrown)
+        assertTrue("the atomic edit wrote nothing", storeFile().readBytes().contentEquals(bytesBefore))
+    }
+
+    @Test
+    fun noLogLineEverContainsARoomSecret(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        ShadowLog.clear()
+        val record = roomRecord(secret = "room-LOG-SECRET")
+        fixture.store.upsert(roomEngine(record))
+        fixture.store.upsertRoom(record)
+        val restarted = restart(fixture, cipher)
+        restarted.store.loadRooms()
+        cipher.rotateKey()
+        restarted.store.loadRooms()
+
+        val logged = ShadowLog.getLogs().mapNotNull { it.msg }
+        assertTrue("a log leaked a room secret: $logged", logged.none { it.contains("room-LOG-SECRET") })
     }
 
     private fun enginesJsonWithABrokenElement(): String {

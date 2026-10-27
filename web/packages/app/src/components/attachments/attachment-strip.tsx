@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@roboco/icons";
-import { formatByName, stageBytes, stageFile, type StagedAttachment } from "../../lib/attachments";
+import {
+  formatByName,
+  stageBytes,
+  stageFile,
+  type StagedAttachment,
+} from "../../lib/attachments";
 import { chatFileInserts } from "../../lib/chat-insert";
 import { workspaceDragActive, workspaceDragPayload } from "../../lib/workspace-drag";
 import { Lightbox } from "../lightbox";
@@ -39,6 +44,9 @@ interface AttachmentStripProps {
   readonly chatId: string;
   readonly staged: readonly StagedAttachment[];
   readonly disabled?: boolean;
+  /** The composer's effective per-file cap (ticket 06): 100 MB when the
+   *  engine advertises `uploads-100mb-v1`, the legacy 24 MB otherwise. */
+  readonly maxAttachmentBytes?: number;
   readonly onStage: (attachments: readonly StagedAttachment[]) => void;
   readonly onRemove: (id: string) => void;
   readonly onError: (message: string) => void;
@@ -53,6 +61,7 @@ export function AttachmentStrip({
   chatId,
   staged,
   disabled,
+  maxAttachmentBytes,
   onStage,
   onRemove,
   onError,
@@ -94,7 +103,7 @@ export function AttachmentStrip({
           continue;
         }
         try {
-          next.push(await stageFile(file));
+          next.push(await stageFile(file, maxAttachmentBytes));
         } catch (error) {
           // Genuine failures (oversize, unreadable bytes) set `failure`.
           onError(error instanceof Error ? error.message : String(error));
@@ -104,7 +113,7 @@ export function AttachmentStrip({
         onStage(next);
       }
     },
-    [onStage, onError],
+    [maxAttachmentBytes, onStage, onError],
   );
 
   const ingestRef = useRef(ingest);

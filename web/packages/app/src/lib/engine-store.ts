@@ -4,6 +4,7 @@ import {
   redeemPairingCode,
   redeemTailcatInviteViaHelper,
 } from "@roboco/engine-client";
+import type { SessionGrant } from "@roboco/proto";
 
 /**
  * The engine registry for the web client — the browser-side peer of the
@@ -173,22 +174,7 @@ export class EngineStore {
     }
     if (isTailcatInvite(pairingUrl)) {
       const grant = await redeemTailcatInviteViaHelper(pairingUrl, label);
-      const baseUrl = canonicalBaseUrl(grant.baseUrl);
-      const engine: StoredEngine = {
-        baseUrl,
-        credential: grant.credential,
-        label: grant.session.label,
-        sessionId: grant.session.id,
-        pairedAt: this.#now(),
-        deviceId: null,
-      };
-      const others = this.#state.engines.filter((entry) => entry.baseUrl !== baseUrl);
-      this.#setState({
-        active: baseUrl,
-        engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)),
-        configurationError: null,
-      });
-      return engine;
+      return this.landRelayedGrant(grant);
     }
     const parsed = parsePairingUrl(pairingUrl);
     const baseUrl = canonicalBaseUrl(parsed.baseUrl);
@@ -203,6 +189,38 @@ export class EngineStore {
     };
     const others = this.#state.engines.filter((entry) => entry.baseUrl !== baseUrl);
     this.#setState({ active: baseUrl, engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)), configurationError: null });
+    return engine;
+  }
+
+  /**
+   * Land an already-redeemed relayed grant (a `/tailcat-relay/{id}` base)
+   * as a stored engine — the shared tail of the Tailcat-invite pair path
+   * and the room join (rooms#05): every relay mint is a fresh base, so
+   * re-landing the same base replaces its credential. Refuses while the
+   * persisted configuration is damaged, exactly like `redeemPairingUrl`.
+   */
+  landRelayedGrant(
+    grant: SessionGrant & { baseUrl: string },
+    options: { active?: boolean } = {},
+  ): StoredEngine {
+    if (this.#configurationError !== null) {
+      throw new Error("Saved engine configuration needs repair before pairing");
+    }
+    const baseUrl = canonicalBaseUrl(grant.baseUrl);
+    const engine: StoredEngine = {
+      baseUrl,
+      credential: grant.credential,
+      label: grant.session.label,
+      sessionId: grant.session.id,
+      pairedAt: this.#now(),
+      deviceId: null,
+    };
+    const others = this.#state.engines.filter((entry) => entry.baseUrl !== baseUrl);
+    this.#setState({
+      active: options.active === false ? this.#state.active : baseUrl,
+      engines: [...others, engine].sort((a, b) => a.baseUrl.localeCompare(b.baseUrl)),
+      configurationError: null,
+    });
     return engine;
   }
 

@@ -48,6 +48,8 @@ tracing-subscriber.workspace = true
 roboco-engine.workspace = true
 roboco-harness.workspace = true
 roboco-preview.workspace = true
+roboco-proto.workspace = true
+async-trait.workspace = true
 tempfile.workspace = true
 # previews/tests.rs: a real loopback dev server (the engine-side relay
 # suite's shape) and the scanner's started_at clock.

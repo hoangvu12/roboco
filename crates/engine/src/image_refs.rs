@@ -30,7 +30,11 @@ use base64::engine::general_purpose::{STANDARD as BASE64, STANDARD_NO_PAD, URL_S
 use crate::EngineError;
 use crate::uploads::{AttachmentChunk, Uploads, read_file_chunk, sniff_mime};
 
-/// Same chunk size and per-image cap as `ReadAttachmentChunk`.
+/// Same chunk size as `ReadAttachmentChunk`. The per-image cap here bounds
+/// engine-SOURCED images (URL fetches, data URIs, SVGs before rasterization)
+/// and stayed at 32 MB when uploads rose to 100 MB behind
+/// `uploads-100mb-v1` (ADR 0011): local file reads route through
+/// `read_file_chunk`, which follows the uploads cap.
 const CHUNK_BYTES: usize = 45_000;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Total budget of cached remote/rendered images, and how long one lives

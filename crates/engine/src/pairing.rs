@@ -145,6 +145,59 @@ impl PairingStore {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Mint an ordinary session for a presenter without consuming a pair
+    /// code. Room presentations use this (ADR 0011): the minting machinery is
+    /// [`Self::redeem`]'s, minus the single-use consumption.
+    pub fn mint_session(&self, label: &str) -> anyhow::Result<SessionGrant> {
+        validate_label(label)?;
+        let credential = secret()?;
+        let now = crate::now_ms();
+        let session = PairedSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            label: label.trim().to_owned(),
+            created_at: now,
+            last_seen: now,
+            revoked_at: None,
+        };
+        self.connect()?.execute(
+            "INSERT INTO paired_sessions VALUES (?1, ?2, ?3, ?4, ?4, NULL)",
+            params![
+                session.id,
+                verifier("session", &credential),
+                session.label,
+                now
+            ],
+        )?;
+        Ok(SessionGrant {
+            session,
+            credential,
+        })
+    }
+
+    /// Re-key an active session with a fresh credential, keeping its row
+    /// (id, label, created_at) — the refresh half of a repeat room
+    /// presentation, which reuses the room's session instead of minting
+    /// unbounded new ones. `None` when the session is gone or revoked; the
+    /// caller then mints a replacement.
+    pub fn reissue_session(&self, session_id: &str) -> anyhow::Result<Option<SessionGrant>> {
+        let credential = secret()?;
+        let now = crate::now_ms();
+        let session = self
+            .connect()?
+            .query_row(
+                "UPDATE paired_sessions SET verifier = ?2, last_seen = ?3
+                 WHERE id = ?1 AND revoked_at IS NULL
+                 RETURNING id, label, created_at, last_seen, revoked_at",
+                params![session_id, verifier("session", &credential), now],
+                session_row,
+            )
+            .optional()?;
+        Ok(session.map(|session| SessionGrant {
+            session,
+            credential,
+        }))
+    }
+
     pub fn revoke(&self, id: &str) -> anyhow::Result<bool> {
         Ok(self.connect()?.execute(
             "UPDATE paired_sessions SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
@@ -186,7 +239,7 @@ fn verifier(kind: &str, credential: &str) -> Vec<u8> {
     hash.finalize().to_vec()
 }
 
-fn validate_label(label: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_label(label: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         label.len() <= 256 && !label.chars().any(char::is_control),
         "device label must contain at most 256 bytes and no control characters"

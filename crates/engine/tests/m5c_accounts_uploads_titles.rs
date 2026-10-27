@@ -890,6 +890,97 @@ async fn uploads_chunk_commit_readback_and_jail() {
     assert!(uploads.commit("unknown-upload", "x.png").is_err());
 }
 
+/// The rooms feature's taildrop payload: a ~100 MB file rides the exact
+/// client plan (680 000 base64 chars per `UploadChunk` ≈ 510 KB binary, 206
+/// chunks — inside the 1 MiB relay frame budget) and round-trips intact.
+/// This is the real-size upload the 32 MB cap used to refuse (ADR 0011).
+/// It is deliberately slow — memory peaks around 350 MB (payload, base64,
+/// joined staging, decoded copy) — let it run.
+#[tokio::test]
+async fn uploads_accept_and_read_back_a_100mb_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let uploads = Uploads::new(tmp.path());
+
+    let payload: Vec<u8> = (0..100 * 1024 * 1024u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
+    let expected = {
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        hasher.finalize()
+    };
+    let b64 = BASE64.encode(&payload);
+    drop(payload);
+
+    // The client's chunk plan: whole-file base64 sliced into 680 000-char
+    // multiples of 4, appended out of the client's 3-wide window order.
+    let chunks: Vec<&str> = b64
+        .as_bytes()
+        .chunks(680_000)
+        .map(|c| std::str::from_utf8(c).expect("base64 is ascii"))
+        .collect();
+    assert_eq!(chunks.len(), 206, "100 MB ≈ 206 chunks of ~510 KB");
+    for (seq, chunk) in chunks.iter().enumerate() {
+        // Positional `seq` writes stay idempotent at scale: re-send one.
+        if seq != 96 {
+            uploads
+                .append("upload-100", chunk, Some(seq as u64))
+                .unwrap_or_else(|e| panic!("chunk {seq}: {e}"));
+        }
+    }
+    uploads
+        .append("upload-100", chunks[96], Some(96))
+        .expect("re-sent chunk 96 is idempotent");
+
+    let path = uploads
+        .commit("upload-100", "video.mp4")
+        .expect("100 MB commit");
+    // The committed name is `{id8}-{name}` — the id's first 8 chars.
+    assert!(path.ends_with("upload-1-video.mp4"), "path: {path}");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        100 * 1024 * 1024,
+        "the committed file is exactly 100 MB"
+    );
+    let on_disk = {
+        use std::io::Read as _;
+        let mut hasher = Sha256::new();
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        hasher.finalize()
+    };
+    assert_eq!(on_disk, expected, "committed bytes round-trip");
+
+    // Read-back in 45 KB chunks until done — 2 333 calls — reassembling by
+    // hash keeps the test's memory flat.
+    let mut offset = 0u64;
+    let mut hasher = Sha256::new();
+    loop {
+        let chunk = uploads.read_chunk(&path, offset).expect("read chunk");
+        hasher.update(BASE64.decode(&chunk.data).expect("chunk base64"));
+        offset = chunk.next_offset;
+        assert!(
+            offset <= 100 * 1024 * 1024,
+            "read-back offset stays inside the file: {offset}"
+        );
+        if chunk.done {
+            break;
+        }
+    }
+    assert_eq!(offset, 100 * 1024 * 1024, "read-back covered the file");
+    assert_eq!(hasher.finalize(), expected, "read-back bytes round-trip");
+
+    // The staging area is reclaimed by the commit.
+    assert!(!tmp.path().join("tmp").join("upload-100").exists());
+}
+
 // ---------------------------------------------------------------------------
 // Titling
 // ---------------------------------------------------------------------------

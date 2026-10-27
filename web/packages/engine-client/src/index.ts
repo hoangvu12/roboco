@@ -47,6 +47,27 @@ export {
   type ParsedTailcatInvite,
 } from "./tailcat-invite";
 export {
+  encodeRoomInvite,
+  parseRoomInvite,
+  roomId,
+  describeRoomSecret,
+  MAX_INVITE_BYTES,
+  MAX_LABEL_BYTES,
+  MAX_MEMBERS,
+  MAX_MEMBER_ADDRESS_BYTES,
+  MAX_SECRET_BYTES,
+  ROOM_INVITE_PREFIX,
+  ROOM_INVITE_VERSION,
+  RoomInviteError,
+  type ParsedRoomInvite,
+  type RoomInviteErrorKind,
+} from "./room-invite";
+export {
+  redeemRoomMemberViaOrigin,
+  type RoomMemberGrant,
+  type RoomRedeemOptions,
+} from "./room-redeem";
+export {
   DEFAULT_TAILCAT_BROWSER_HELPER,
   redeemTailcatInviteViaHelper,
   type TailcatHelperOptions,

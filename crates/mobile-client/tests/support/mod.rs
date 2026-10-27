@@ -70,8 +70,14 @@ pub fn pairing_url(listener: &EngineListener, dir: &Path, proxy_port: Option<u16
     format!("http://{host}/pair#token={}", code.credential)
 }
 
-/// Accepts and immediately drops every connection, counting them: the
-/// honest way to count *dial attempts* against an engine that is gone.
+/// Accepts and immediately drops every connection, counting it, unless
+/// the connection speaks a bare `HEAD /` — the Roboco client only ever
+/// dials WebSocket upgrades (GET) and presents/redeems with POST, so a
+/// HEAD probe is an unrelated local process (this shared CI box runs a
+/// long-lived `roboco headless` at PID 1 that health-probes new loopback
+/// listeners; the app's own runners never see one). Counting it would
+/// make the "no dials while parked/offline" assertions flake on the box,
+/// not in CI.
 pub struct CountingListener {
     pub address: SocketAddr,
     pub accepts: Arc<AtomicUsize>,
@@ -87,7 +93,12 @@ impl CountingListener {
         let task = tokio::spawn(async move {
             loop {
                 match listener.accept().await {
-                    Ok((stream, _)) => {
+                    Ok((mut stream, _)) => {
+                        if is_head_probe(&mut stream).await {
+                            // An unrelated local prober, not a dial.
+                            drop(stream);
+                            continue;
+                        }
                         count.fetch_add(1, Ordering::SeqCst);
                         drop(stream);
                     }
@@ -114,7 +125,11 @@ impl CountingListener {
                     let task = tokio::spawn(async move {
                         loop {
                             match listener.accept().await {
-                                Ok((stream, _)) => {
+                                Ok((mut stream, _)) => {
+                                    if is_head_probe(&mut stream).await {
+                                        drop(stream);
+                                        continue;
+                                    }
                                     count.fetch_add(1, Ordering::SeqCst);
                                     drop(stream);
                                 }
@@ -140,6 +155,18 @@ impl CountingListener {
 
     pub fn accepts(&self) -> usize {
         self.accepts.load(Ordering::SeqCst)
+    }
+}
+
+/// Reads the first bytes of a just-accepted connection and reports
+/// whether it is a bare `HEAD` request (an unrelated local prober; see
+/// the struct's doc). Best effort: a short read counts as a real dial.
+async fn is_head_probe(stream: &mut tokio::net::TcpStream) -> bool {
+    use tokio::io::AsyncReadExt;
+    let mut head = [0u8; 5];
+    match tokio::time::timeout(Duration::from_millis(200), stream.read(&mut head)).await {
+        Ok(Ok(5)) => &head == b"HEAD ",
+        _ => false,
     }
 }
 
@@ -210,7 +237,7 @@ pub fn test_client(
     engines: Vec<roboco_mobile_client::PairedEngine>,
     listener: Arc<Recorder>,
 ) -> Arc<Client> {
-    Client::new_with_timings(test_config(data_dir), engines, listener, test_timings()).unwrap()
+    Client::new_with_timings(test_config(data_dir), engines, Vec::new(), listener, test_timings()).unwrap()
 }
 
 /// Milliseconds since the epoch (the test's clock).

@@ -766,6 +766,7 @@ async fn the_local_bind_serves_the_relay_with_its_native_policy() {
             listener,
             fixture.core.rpc_service(),
             PairingStore::open(dir.path()).unwrap(),
+            roboco_engine::rooms::RoomStore::open(dir.path()).unwrap(),
             fixture.core.previews.clone(),
         ));
         // No credential: the local bind's native boundary, unchanged.

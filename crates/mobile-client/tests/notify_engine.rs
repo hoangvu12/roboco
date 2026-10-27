@@ -266,6 +266,7 @@ async fn notify_rig() -> Rig {
             native_lib_dir: None,
         },
         Vec::new(),
+        Vec::new(),
         Arc::new(NullListener),
         notify_test_timings(),
     )

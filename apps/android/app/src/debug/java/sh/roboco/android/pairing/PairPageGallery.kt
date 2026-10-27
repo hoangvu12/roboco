@@ -33,9 +33,16 @@ import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.uiStyle
 import sh.roboco.android.shell.SheetHost
 import sh.roboco.android.shell.rememberSheetHostState
+import uniffi.roboco_core.EngineRoomRef
+import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomException
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomMemberRecord
+import uniffi.roboco_core.RoomRecord
 
 /**
  * The "Pair page" page of the debug design gallery (android-ui-parity
@@ -216,6 +223,11 @@ private class GalleryPairingSink : PairedEngineSink {
         val index = engines.indexOfFirst { it.engineId == engine.engineId }
         if (index >= 0) engines[index] = engine else engines += engine
     }
+    val rooms = mutableStateListOf<RoomRecord>()
+    override suspend fun upsertRoom(room: RoomRecord) {
+        val index = rooms.indexOfFirst { it.roomId == room.roomId }
+        if (index >= 0) rooms[index] = room else rooms += room
+    }
     override suspend fun remove(engineId: String) {
         engines.removeAll { it.engineId == engineId }
     }
@@ -256,6 +268,59 @@ private object GalleryPairingBackend : PairingBackend {
     }
 
     override suspend fun forget(engineId: String) {}
+
+    override fun parseRoom(input: String): RoomInviteTarget? =
+        if (input.trim().startsWith("roboco-room:")) {
+            RoomInviteTarget(name = "Gallery room", memberLabels = listOf("desktop", "server"))
+        } else {
+            null
+        }
+
+    override suspend fun joinRoom(invite: String): RoomJoinResult {
+        delay(1500)
+        if (invite.contains("refused")) throw RoomException.Refused()
+        val room = RoomRecord(
+            roomId = "gallery-room",
+            label = "Gallery room",
+            secret = "gallery-secret",
+            members = listOf(
+                RoomMemberRecord(label = "desktop", address = "http://engine.roboco.gallery"),
+                RoomMemberRecord(label = "server", address = "tcgalleryaddress"),
+            ),
+        )
+        return RoomJoinResult(
+            room = room,
+            engines = listOf(
+                PairedEngine(
+                    engineId = "gallery-room-desktop",
+                    baseUrl = "http://engine.roboco.gallery",
+                    credential = "gallery-credential",
+                    sessionId = "s1",
+                    label = "Gallery engine",
+                    pairedAtMs = System.currentTimeMillis(),
+                    deviceId = null,
+                    name = "Gallery engine",
+                    room = EngineRoomRef(roomId = "gallery-room", label = "Gallery room"),
+                ),
+                PairedEngine(
+                    engineId = "gallery-room-server",
+                    baseUrl = "tailcat:1a2b3c4d",
+                    credential = "gallery-credential",
+                    sessionId = "s2",
+                    label = "Gallery engine",
+                    pairedAtMs = System.currentTimeMillis(),
+                    deviceId = null,
+                    name = "Gallery server",
+                    transport = EngineTransport.Tailcat(
+                        address = "tcgalleryaddress",
+                        clientState = "gallery-state",
+                    ),
+                    room = EngineRoomRef(roomId = "gallery-room", label = "Gallery room"),
+                ),
+            ),
+            missing = listOf(),
+        )
+    }
 }
 
 /** The gallery's "scanner": hands back the example link at once. */

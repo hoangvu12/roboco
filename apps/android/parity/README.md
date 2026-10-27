@@ -22,6 +22,12 @@ Ubuntu is the source of truth — font rasterisation differs across hosts,
 so goldens are never recorded locally. Dispatch the Android workflow with
 `record_goldens`:
 
+> **2026-10-26:** the `android-screenshots` CI job (and its `record_goldens`
+> dispatch) was removed from `.github/workflows/android.yml` — it failed on
+> every run with no committed goldens and slowed CI. The parity flow below is
+> still valid; run the capture and verify steps locally until the job returns
+> (see `docs/agents`-style decision in the CI trim PR).
+
 ```
 gh workflow run android.yml -R hoangvu12/roboco --ref <branch> -f record_goldens=true
 ```
