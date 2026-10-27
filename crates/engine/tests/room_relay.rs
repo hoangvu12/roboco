@@ -184,12 +184,32 @@ fn assert_secret_never_at_rest(dir: &Path) {
     let mut files = Vec::new();
     walk(dir, &mut files);
     for path in files {
-        let bytes = std::fs::read(&path).unwrap();
+        let Some(bytes) = read_unless_os_locked(&path) else {
+            continue;
+        };
         assert!(
             !bytes.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
             "the room secret leaked into {}",
             path.display()
         );
+    }
+}
+
+/// Read a file for a secret walk. The engine's `*.lock` files (instance,
+/// device-id, installs) hold Windows byte-range locks while it runs and
+/// never carry room data, so exactly those may be skipped when locked;
+/// every other read error fails the walk.
+fn read_unless_os_locked(path: &Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error)
+            if cfg!(windows)
+                && error.raw_os_error() == Some(33)
+                && path.extension().is_some_and(|ext| ext == "lock") =>
+        {
+            None
+        }
+        Err(error) => panic!("cannot read {}: {error}", path.display()),
     }
 }
 
