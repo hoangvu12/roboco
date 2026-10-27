@@ -1927,6 +1927,8 @@ mod tests {
             error: None,
             can_apply: true,
             manual_command: None,
+            compatibility: None,
+            held_back: None,
         }
     }
 
@@ -1967,6 +1969,7 @@ mod tests {
         failed.error = Some(roboco_proto::HarnessUpdateFailure {
             message: "spawn timed out".into(),
             retryable: false,
+            kind: Default::default(),
         });
         let (label, color) = super::harness_update_label(&failed, &theme);
         assert_eq!(label.as_ref(), "v1.0.0 · Couldn't check for updates");
