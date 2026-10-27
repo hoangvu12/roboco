@@ -148,10 +148,17 @@ TOUR_ARGS=()
 if [[ "${FLOW_INCLUDE_TOUR:-0}" == "1" ]]; then
   TOUR_ARGS=("-Pandroid.testInstrumentationRunnerArguments.flowIncludeTour=true")
 fi
+# ADR 0011 (ticket 04): the room rig — the engines' own adb-reversed ports
+# cross too, because a room book dials members by address (the control URLs
+# alone do not carry them). The fixture's /room-invite + /room-join are the
+# rig's room mint/join control endpoints.
 ./gradlew :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureQuestion="http://127.0.0.1:$QUESTION_CONTROL" \
+  -Pandroid.testInstrumentationRunnerArguments.fixtureMainPort="$MAIN_PORT" \
+  -Pandroid.testInstrumentationRunnerArguments.fixtureSlowPort="$SLOW_PORT" \
+  -Pandroid.testInstrumentationRunnerArguments.fixtureQuestionPort="$QUESTION_PORT" \
   "${TAILCAT_ARGS[@]}" \
   "${TOUR_ARGS[@]}"
 status=$?

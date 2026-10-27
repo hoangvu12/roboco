@@ -55,6 +55,58 @@ class EngineMetaJsonTest {
         assertEquals(1_760_000_000_000, objectA.getLong("pairedAtMs"))
     }
 
+    // Rooms (ADR 0011, ticket 04): the room reference is additive ----------
+
+    @Test
+    fun aRoomReferenceRoundTrips() {
+        val meta = metaA.copy(room = EngineRoomMeta(roomId = "r-1", label = "Home fleet"))
+
+        val decoded = EngineMetaJson.decode(EngineMetaJson.encode(listOf(meta)))
+
+        assertEquals(listOf(meta), decoded)
+        // Only the id and the label cross the metadata — never the secret
+        // (the `room:` blob) and never a member address.
+        val element = JSONArray(EngineMetaJson.encode(listOf(meta))).getJSONObject(0)
+        assertEquals("r-1", element.getJSONObject("room").getString("roomId"))
+        assertEquals("Home fleet", element.getJSONObject("room").getString("label"))
+        assertTrue(!element.toString().contains("secret"))
+    }
+
+    @Test
+    fun recordsWrittenBeforeRoomsDecodeWithNoRoom() {
+        // What a pre-rooms build wrote: no `room` key at all.
+        val legacy = JSONObject()
+            .put("engineId", metaA.engineId)
+            .put("baseUrl", metaA.baseUrl)
+            .put("sessionId", metaA.sessionId)
+            .put("label", metaA.label)
+            .put("pairedAtMs", metaA.pairedAtMs)
+            .put("transport", "direct")
+
+        val decoded = EngineMetaJson.decode(JSONArray().put(legacy).toString())
+
+        assertEquals(listOf(metaA), decoded)
+    }
+
+    @Test
+    fun aMalformedRoomObjectDegradesToNoRoomNotADroppedEngine() {
+        val broken = JSONObject()
+            .put("engineId", metaA.engineId)
+            .put("baseUrl", metaA.baseUrl)
+            .put("sessionId", metaA.sessionId)
+            .put("label", metaA.label)
+            .put("pairedAtMs", metaA.pairedAtMs)
+            .put("transport", "direct")
+            .put("room", JSONObject().put("label", "no id"))
+
+        val decoded = EngineMetaJson.decode(JSONArray().put(broken).toString())
+
+        // The engine must survive over metadata (the credential store is
+        // the source of truth, not this JSON).
+        assertEquals(1, decoded?.size)
+        assertNull(decoded!![0].room)
+    }
+
     @Test
     fun anElementMissingARequiredKeyIsSkippedAndTheOthersLoad() {
         val missingBaseUrl = JSONObject()

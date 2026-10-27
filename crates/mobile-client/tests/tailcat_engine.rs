@@ -117,6 +117,7 @@ fn client_with(data_dir: &std::path::Path, lib_dir: &PathBuf, engines: Vec<roboc
             ..support::test_config(data_dir)
         },
         engines,
+        Vec::new(),
         Arc::new(Recorder::default()),
         tailcat_timings(),
     )

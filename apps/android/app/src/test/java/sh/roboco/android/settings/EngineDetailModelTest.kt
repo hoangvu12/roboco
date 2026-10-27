@@ -8,6 +8,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import uniffi.roboco_core.EngineRoomRef
 import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.ParkReason
 
@@ -355,6 +356,80 @@ class EngineDetailModelTest {
             ),
             rows.map { it.tag },
         )
+    }
+
+    // ------------------------------------------- the room row (ticket 04)
+
+    /** A view with a room tag and the `rooms-v1` capability. */
+    private fun roomEngineView(
+        roomLabel: String?,
+        capabilities: List<String>,
+    ): uniffi.roboco_core.EngineView = engineView(
+        id = "e-room",
+        name = "Studio",
+        state = EngineState.Connected,
+    ).let { view ->
+        view.copy(
+            capabilities = capabilities,
+            room = roomLabel?.let { EngineRoomRef(roomId = "r-1", label = it) },
+        )
+    }
+
+    @Test
+    fun theRoomRowShowsForARoomEngineAdvertisingRoomsV1() {
+        val ui = engineDetailUi(
+            roomEngineView("Home fleet", listOf("rooms-v1", "web-client")),
+            now,
+        )
+        assertEquals("Home fleet", ui.room)
+        assertEquals(
+            listOf(
+                "engine-detail-status",
+                "engine-detail-address",
+                "engine-detail-version",
+                "engine-detail-platform",
+                "engine-detail-room",
+                "engine-detail-device-id",
+            ),
+            statusRows(ui).map { it.tag },
+        )
+    }
+
+    @Test
+    fun theRoomRowHidesWhenTheEngineLacksRoomsV1() {
+        // The capability check is the hiding rule (ADR 0011): an old
+        // engine shows no room row — and no error, no toast.
+        val old = engineDetailUi(roomEngineView("Home fleet", listOf("web-client")), now)
+        assertNull(old.room)
+        assertFalse(statusRows(old).any { it.tag == "engine-detail-room" })
+    }
+
+    @Test
+    fun theRoomRowHidesWhileTheCapabilitiesAreUnknown() {
+        // An offline engine advertises nothing: the row hides until the
+        // engine reconnects (degrade gracefully).
+        val offline = roomEngineView("Home fleet", emptyList())
+            .let { view ->
+                view.copy(state = EngineState.Reconnecting)
+            }
+        val ui = engineDetailUi(offline, now)
+        assertNull(ui.room)
+    }
+
+    @Test
+    fun theRoomRowHidesForAnEngineWithoutARoom() {
+        val plain = engineDetailUi(
+            roomEngineView(null, listOf("rooms-v1")),
+            now,
+        )
+        assertNull(plain.room)
+        assertFalse(statusRows(plain).any { it.tag == "engine-detail-room" })
+    }
+
+    @Test
+    fun aBlankRoomLabelHidesTheRow() {
+        val blank = engineDetailUi(roomEngineView("  ", listOf("rooms-v1")), now)
+        assertNull(blank.room)
     }
 
     // --------------------------------------------------------------- copy

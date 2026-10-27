@@ -69,6 +69,9 @@ import uniffi.roboco_core.EngineState
 import uniffi.roboco_core.EngineView
 import uniffi.roboco_core.ParkReason
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 import uniffi.roboco_core.PairingTarget
 
 /**
@@ -174,11 +177,17 @@ class EngineDetailScreenTest {
         )
 
         override suspend fun forget(engineId: String) {}
+
+        override fun parseRoom(input: String): RoomInviteTarget? = null
+
+        override suspend fun joinRoom(invite: String): RoomJoinResult =
+            throw UnsupportedOperationException("this stub joins no rooms")
     }
 
     private object StubSink : PairedEngineSink {
         override fun knownEngineIds(): Set<String> = emptySet()
         override suspend fun upsert(engine: PairedEngine) {}
+        override suspend fun upsertRoom(room: RoomRecord) {}
         override suspend fun remove(engineId: String) {}
     }
 

@@ -271,6 +271,7 @@ mod tests {
                 native_lib_dir: None,
             },
             Vec::new(),
+            Vec::new(),
             Arc::new(Recorder::default()),
         )
         .unwrap();
@@ -319,6 +320,7 @@ mod tests {
                 show_mock_harness: true,
                 native_lib_dir: None,
             },
+            Vec::new(),
             Vec::new(),
             Arc::new(Recorder::default()),
         )

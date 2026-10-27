@@ -1295,6 +1295,7 @@ mod tests {
                 native_lib_dir: None,
             },
             Vec::new(),
+            Vec::new(),
             recorder.clone(),
             crate::test_support::test_timings(),
         )
