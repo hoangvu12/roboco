@@ -196,13 +196,29 @@ impl RoomStore {
         let now = crate::now_ms();
         let fleet = invite.is_fleet();
         let mut db = self.connect()?;
+        if fleet {
+            // The orphan sweep below may erase a secret: zero freed pages.
+            db.pragma_update(None, "secure_delete", true)?;
+        }
         // IMMEDIATE: the one-fleet check and the writes are one decision,
         // even against a CLI process joining concurrently.
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if fleet {
+            // A retained secret whose room row is gone (an interrupted leave
+            // by an older store) is no fleet: `fleet_room` already ignores
+            // it, so erase it here instead of refusing the join forever.
+            if tx.execute(
+                "DELETE FROM fleet_rooms WHERE room_id NOT IN (SELECT id FROM rooms)",
+                [],
+            )? > 0
+            {
+                tracing::warn!("erased a fleet secret left without its room");
+            }
             let other: Option<String> = tx
                 .query_row(
-                    "SELECT room_id FROM fleet_rooms WHERE room_id != ?1 LIMIT 1",
+                    "SELECT fleet_rooms.room_id FROM fleet_rooms
+                     JOIN rooms ON rooms.id = fleet_rooms.room_id
+                     WHERE fleet_rooms.room_id != ?1 LIMIT 1",
                     params![id],
                     |row| row.get(0),
                 )
@@ -350,16 +366,21 @@ impl RoomStore {
     /// `roboco engine pairing revoke` (eviction is rotate-then-revoke, ADR 0011).
     /// Returns whether a room with that id existed.
     pub fn leave(&self, id: &str) -> anyhow::Result<bool> {
-        let db = self.connect()?;
+        let mut db = self.connect()?;
         // A fleet secret must not survive in freed pages: zero them.
         db.pragma_update(None, "secure_delete", true)?;
-        let deleted = db.execute("DELETE FROM rooms WHERE id = ?1", params![id])? > 0;
-        let fleet = db.execute("DELETE FROM fleet_rooms WHERE room_id = ?1", params![id])? > 0;
+        // One transaction: a crash between the deletes must never leave a
+        // `fleet_rooms` row without its room (which `join` would then
+        // refuse as a conflict while `fleet_room` reports no fleet).
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let deleted = tx.execute("DELETE FROM rooms WHERE id = ?1", params![id])? > 0;
+        let fleet = tx.execute("DELETE FROM fleet_rooms WHERE room_id = ?1", params![id])? > 0;
+        tx.execute(
+            "DELETE FROM room_presentations WHERE room_id = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
         if deleted {
-            db.execute(
-                "DELETE FROM room_presentations WHERE room_id = ?1",
-                params![id],
-            )?;
             // The book is a 0600 secret; leaving removes it outright.
             if let Ok(dir) = self.room_dir(id) {
                 let _ = std::fs::remove_dir_all(dir);
@@ -1130,6 +1151,66 @@ mod tests {
         assert!(store.leave(&created.id).unwrap());
         assert!(store.fleet_room().unwrap().is_none());
         store.create("Fleet", vec![]).unwrap();
+    }
+
+    /// An older store's interrupted leave could drop the room row and keep
+    /// its `fleet_rooms` secret. `fleet_room` never saw such an orphan, so
+    /// the conflict check must not either: the next fleet join (the
+    /// desktop's lazy create) erases it and succeeds instead of failing
+    /// forever.
+    #[test]
+    fn an_orphaned_fleet_secret_never_blocks_the_next_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let orphan = store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+        store
+            .connect()
+            .unwrap()
+            .execute("DELETE FROM rooms WHERE id = ?1", params![orphan.id])
+            .unwrap();
+        assert!(store.fleet_room().unwrap().is_none());
+
+        let created = store.create("Fleet", vec![]).unwrap();
+        assert_ne!(created.id, orphan.id);
+        assert_eq!(store.fleet_room().unwrap().unwrap().id, created.id);
+        let retained: Vec<String> = store
+            .connect()
+            .unwrap()
+            .prepare("SELECT room_id FROM fleet_rooms")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(retained, vec![created.id.clone()], "the orphan was erased");
+        drop(store);
+        assert!(
+            !secret_on_disk(dir.path(), SECRET),
+            "the orphaned secret survived on disk"
+        );
+    }
+
+    /// `leave` deletes every row of the room in one transaction, so there is
+    /// nothing left for the orphan sweep to find.
+    #[test]
+    fn leaving_a_fleet_leaves_no_rows_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let record = store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+        assert!(matches!(
+            store.present(SECRET, "Pixel").unwrap(),
+            PresentationOutcome::Granted(_)
+        ));
+        assert!(store.leave(&record.id).unwrap());
+        let db = store.connect().unwrap();
+        for table in ["rooms", "fleet_rooms", "room_presentations"] {
+            let count: i64 = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
     }
 
     fn invite_plain(secret: &str) -> RoomInvite {
