@@ -92,14 +92,18 @@ a protocol and drops the room concept from the UI.
   same data domain, protected the same way. Leaving the fleet erases the row
   (secure delete). Plain rooms keep the verifier-only invariant unchanged.
 - **Introduction becomes symmetric**: after pairing to *any* member engine,
-  a client calls the session-authenticated `GetFleetInvite` and silently runs
+  the phone calls the session-authenticated `GetFleetInvite` and silently runs
   the ordinary room join, so every member appears as an ordinary paired
-  engine. There is no composite QR — the pairing link is unchanged.
+  engine. There is no composite QR — the pairing link is unchanged. Desktops
+  never fetch; a second desktop joins by pasting the fleet invite (a solo
+  fleet of its own is replaced silently, a shared one only after a confirm).
 - **Membership is hub-driven** from the desktop app: it pushes the fleet to
-  each paired engine with the session-authenticated `RoomJoin` (idempotent;
-  the book unions; the reply is the room id only) and maintains books
-  through its existing silent heal. All engines are members by default, with
-  a per-engine opt-out.
+  each paired engine serving its Tailcat route with the session-authenticated
+  `RoomJoin` (idempotent; the book unions; the reply is the room id only) and
+  maintains books through its existing silent heal. All such engines are
+  members by default, with a per-engine opt-out that is forward-only: it stops
+  future pushes, but an engine that already joined keeps the fleet until
+  `roboco engine room leave` runs on it (there is no remote leave).
 - The capability `rooms-v2` gates both RPCs; clients degrade silently on its
   absence. Neither RPC ever mutates remote-access settings.
 
@@ -108,7 +112,8 @@ a protocol and drops the room concept from the UI.
 `POST /room/present`, which mints ordinary, individually revocable sessions.
 Books merge as unions maintained by clients; there is no liveness probing.
 Eviction is still rotate-then-revoke (now: `roboco engine room leave` on each
-engine, re-create, re-pair; then revoke stale sessions per engine). Plain rooms
+engine, re-create, re-pair; then revoke stale sessions per engine — the guided
+rotate checklist is gone, and the desktop has no Leave button). Plain rooms
 keep the full hostless semantics and the CLI/manual path. Secrets and invites
 never appear in logs, `Debug` output, or error text (ADR 0008); stdout carries
 an invite only where a human asked for it (`roboco engine room invite`).

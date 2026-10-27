@@ -1,6 +1,6 @@
 # Roboco — fork workflow
 
-Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. It also ships a native Android client on a shared Rust mobile core ([ADR 0009](docs/adr/0009-android-client.md)). Pairing a client to any engine of a fleet introduces it to every member — reachability only, never data ([ADR 0011](docs/adr/0011-rooms.md) and its fleet amendment). The wasimysaid Kratos line lives separately in `../Kratos`.
+Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an independent product derived from [zeronsh/zeron](https://github.com/zeronsh/zeron), with native Windows support. [ADR 0003](docs/adr/0003-product-not-fork.md) governs selected upstream ports; [ADR 0004](docs/adr/0004-engine-local-data.md) keeps data engine-local. It also ships a native Android client on a shared Rust mobile core ([ADR 0009](docs/adr/0009-android-client.md)). Pairing a phone to any engine of a fleet introduces it to every member — reachability only, never data ([ADR 0011](docs/adr/0011-rooms.md) and its fleet amendment). The wasimysaid Kratos line lives separately in `../Kratos`.
 
 ## Remotes
 
