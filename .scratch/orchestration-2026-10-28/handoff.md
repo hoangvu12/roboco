@@ -132,14 +132,18 @@ Keep a running "PRs" list in this file.
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running |
 | `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | running |
 | `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | running |
-| `76731858` | main checkout, read-only | CI 11 triage (report only) | running |
+| `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
 ### Next
 
 - Review + merge the CI PRs as they go green; web-removal merges `origin/main` before pushing.
 - After web removal merges: CI 03→04→05, 06, 08, then 09, 10 (10 waits for web removal);
   wave 10 lanes start (fixes first: 02, 03).
-- Ask the user: CI 11 triage decisions; pushing to zui forks (wave-10 57).
+- CI 11 triage defaults recorded in ticket 11 (tablet nightly + non-blocking until 3 green nights;
+  nextest retries with flaky reporting; JUnit retry rule on named phone flakes; follow-ups in
+  `ci-speed/issues/22–24`). **Awaiting the user's OK**; ticket 11's decision box stays open until then.
+  22–24 are new CI work items (23 rides with 08; 06 must turn on flaky-pass reporting).
+- Ask the user: pushing to zui forks (wave-10 57).
 
 ## PRs
 
