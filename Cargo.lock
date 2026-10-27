@@ -8244,7 +8244,6 @@ dependencies = [
  "roboco-sync",
  "roboco-update",
  "rusqlite",
- "rust-embed",
  "same-file",
  "semver",
  "serde",

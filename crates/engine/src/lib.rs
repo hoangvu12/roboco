@@ -54,7 +54,6 @@ pub mod titles;
 pub mod transcript_budget;
 mod transcript_history;
 pub mod uploads;
-mod web;
 pub mod workspace_files;
 pub mod workspace_host;
 mod worktree_settings;

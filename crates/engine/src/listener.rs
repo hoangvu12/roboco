@@ -1,7 +1,7 @@
 //! HTTP pairing and WebSocket RPC share an engine listener.
-//! The remote (paired) bind additionally serves the embedded web client pages
-//! and authenticates browser WebSockets with a first-frame `Auth` envelope
-//! (ADR 0006); local IPC keeps its native-only boundary.
+//! The remote (paired) bind additionally authenticates browser WebSockets with
+//! a first-frame `Auth` envelope (ADR 0006); local IPC keeps its native-only
+//! boundary.
 use crate::pairing::PairingStore;
 use crate::rooms::{PresentationOutcome, RoomStore};
 use crate::tailcat_relay::{self, PairedListenerContext};
@@ -229,38 +229,16 @@ async fn handle(
     } else {
         None
     };
-    // The web client shell must load before pairing, so the asset routes sit
-    // ahead of the session gate. Only the paired bind serves them; the data
-    // behind the socket and the redeem route stays credential-gated. The
-    // bundle is the staged Vite build (build.rs → crates/engine/web-staging/),
-    // so this serves the real React app: the HTML shell at `/` and `/pair`,
-    // every JS/CSS/font chunk under `/assets/`, and the app shell for any
-    // client-side route (TanStack Router takes over after a hard refresh).
-    // A WebSocket upgrade to `/` is the RPC channel and must NOT be served
-    // HTML — it falls through to the credential gate and the upgrade block
-    // further down.
-    if policy == AccessPolicy::Paired
-        && request.method() == hyper::Method::GET
-        && upgrade_key.is_none()
-    {
-        if path == "/pair" {
-            return Ok(web_page("pair.html"));
-        }
-        if path == "/" {
-            return Ok(web_page("index.html"));
-        }
-        if let Some(reply) = web_static_asset(&path) {
-            return Ok(reply);
-        }
-        // SPA fallback: any non-extension path is a client-side route and
-        // gets the app shell. Reserved paths still fall through to the
-        // credential gate below.
-        if !RESERVED_API_PATHS.contains(&path.as_str())
-            && !path.contains('.')
-            && tailcat_relay::relay_id_from_path(&path).is_none()
-            && !crate::preview_relay::is_relay_path(&path)
-        {
-            return Ok(web_page("index.html"));
+    // The paired bind serves no pages (ADR 0012). Anything that is not an
+    // engine route — a plain GET of `/`, `/pair`, any other path — is a 404
+    // ahead of the session gate, so a browser following a pairing link gets
+    // nothing to load.
+    if policy == AccessPolicy::Paired {
+        let session_route = (path == "/health" && request.method() == hyper::Method::GET)
+            || upgrade_key.is_some()
+            || relay_upgrade;
+        if !session_route {
+            return Ok(reply(StatusCode::NOT_FOUND, "not found"));
         }
     }
     // Redemption above authenticates a single-use pair code. Every other
@@ -517,64 +495,6 @@ fn websocket_key(request: &Request<Incoming>) -> Option<&str> {
     }
     Some(key)
 }
-
-/// One embedded web client page. The bundle is compiled in, so a missing
-/// name is a build-time mistake, not a runtime case.
-fn web_page(name: &str) -> Reply {
-    let file = crate::web::WebAssets::get(name).expect("embedded web page");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("cache-control", "no-store")
-        .header("content-type", "text/html; charset=utf-8")
-        .body(Full::new(Bytes::from(file.data.into_owned())))
-        .unwrap()
-}
-
-/// A static asset from the embedded web bundle: the Vite build's hashed
-/// JS/CSS/font/image chunks. The path must not escape the bundle (no `..`
-/// segments, no leading `/`), and the answer is `None` when the bundle has
-/// no such file — the caller falls through to the SPA shell or 404.
-fn web_static_asset(path: &str) -> Option<Reply> {
-    if path == "/" {
-        return None;
-    }
-    let stripped = path.strip_prefix('/').unwrap_or(path);
-    if stripped.is_empty() || stripped.contains("..") {
-        return None;
-    }
-    let file = crate::web::WebAssets::get(stripped)?;
-    let cache_control = static_asset_cache_control(stripped);
-    Some(
-        Response::builder()
-            .status(StatusCode::OK)
-            .header("cache-control", cache_control)
-            .header("content-type", crate::web::content_type(stripped))
-            .body(Full::new(Bytes::from(file.data.into_owned())))
-            .unwrap(),
-    )
-}
-
-/// `immutable` for hashed assets (Vite emits content hashes in the
-/// filenames, so the URL changes whenever the bytes do) and `no-store`
-/// for everything else. The HTML shell is served via [`web_page`].
-fn static_asset_cache_control(name: &str) -> &'static str {
-    if name.starts_with("assets/") {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-store"
-    }
-}
-
-/// Paths that must NOT fall through to the SPA shell. They are real
-/// engine routes (credential-gated health, the redeem endpoint) and
-/// returning the app shell for them would mask a 401 / 404.
-const RESERVED_API_PATHS: &[&str] = &[
-    "/health",
-    "/pairing/redeem",
-    "/pairing/tailcat-redeem",
-    "/pairing/room-redeem",
-    "/room/present",
-];
 
 /// Allow any origin to read a redeem response; the bearer pair code is the
 /// credential, never the origin. No other route gets CORS headers.

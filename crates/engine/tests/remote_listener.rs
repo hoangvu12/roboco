@@ -261,3 +261,75 @@ async fn paired_bind_enforces_sessions_and_preserves_rpc_capabilities() {
     drop(rpc);
     core.shutdown().await;
 }
+
+/// The paired bind serves no web pages (ADR 0012): `/` and `/pair` are 404
+/// like any unknown path, with or without a session, and `/health` keeps its
+/// session gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paired_bind_serves_no_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble_with_profile(
+        EngineProfile::local(dir.path()).unwrap(),
+        Arc::new(HarnessRegistry::new()),
+        roboco_engine::HarnessId::Mock,
+    )
+    .unwrap();
+    let store = PairingStore::open(dir.path()).unwrap();
+    let remote = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        core.rpc_service(),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", remote.address);
+    let http = reqwest::Client::new();
+    for path in ["/", "/pair", "/index.html", "/assets/app.js", "/chats/abc"] {
+        assert_eq!(
+            http.get(format!("{base}{path}")).send().await.unwrap().status(),
+            404,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        http.get(format!("{base}/health")).send().await.unwrap().status(),
+        401
+    );
+    let code = store.create_code("remote", 300).unwrap();
+    let grant: Value = http
+        .post(format!("{base}/pairing/redeem"))
+        .bearer_auth(&code.credential)
+        .json(&json!({"label":"Laptop"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let credential = grant["credential"].as_str().unwrap();
+    for path in ["/", "/pair"] {
+        assert_eq!(
+            http.get(format!("{base}{path}"))
+                .bearer_auth(credential)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404,
+            "{path} with a session"
+        );
+    }
+    assert_eq!(
+        http.get(format!("{base}/health"))
+            .bearer_auth(credential)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    drop(remote);
+    core.shutdown().await;
+}

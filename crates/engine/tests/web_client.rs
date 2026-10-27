@@ -1,5 +1,4 @@
-//! The browser path against the real listener: embedded pages, the lifted
-//! origin policy on the remote bind (local IPC keeps it), CORS-open redeem,
+//! The browser path against the real listener: the lifted origin policy on the remote bind (local IPC keeps it), CORS-open redeem,
 //! and first-frame `Auth` WebSocket authentication.
 use std::{
     sync::Arc,
@@ -106,54 +105,6 @@ async fn close_frame(
         }
     }
     panic!("connection ended without a close frame");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_listener_serves_embedded_pages_without_a_session() {
-    let dir = tempfile::tempdir().unwrap();
-    let (core, remote) = remote_engine(dir.path()).await;
-    let (local_base, local_task) = local_listener(dir.path(), &core).await;
-    let http = reqwest::Client::new();
-    // The app shell must load before pairing, so no credential is required.
-    // Markers match the staged Vite build as well as the hand-written
-    // debug-only placeholders, so the test is green on a clean checkout.
-    for (path, marker) in [("/", "<title>Roboco</title>"), ("/pair", "Pair this browser")] {
-        let response = http
-            .get(format!("http://{}{path}", remote.address))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200, "{path}");
-        assert_eq!(
-            response.headers()["content-type"],
-            "text/html; charset=utf-8"
-        );
-        assert_eq!(response.headers()["cache-control"], "no-store");
-        let body = response.text().await.unwrap();
-        assert!(body.contains(marker), "{path} must serve the embedded page");
-    }
-    // Query strings stay refused — pair codes travel in the URL fragment.
-    assert_eq!(
-        http.get(format!("http://{}/?token=x", remote.address))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        400
-    );
-    // Local IPC gains no pages: the native-only boundary is unchanged.
-    assert_eq!(
-        http.get(format!("{local_base}/pair"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        404
-    );
-    assert_eq!(http.get(local_base).send().await.unwrap().status(), 400);
-    local_task.abort();
-    drop(remote);
-    core.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,14 +236,14 @@ async fn redeem_answers_cross_origin_preflights_and_requests() {
     assert_eq!(refused.status(), 401);
     assert_eq!(refused.headers()["access-control-allow-origin"], "*");
     // A bare OPTIONS (no Origin) is not a preflight and gets no special
-    // treatment: the session gate answers as it does today.
+    // treatment: it is not an engine route, so it is a 404.
     assert_eq!(
         http.request(reqwest::Method::OPTIONS, &redeem_url)
             .send()
             .await
             .unwrap()
             .status(),
-        401
+        404
     );
     // No other route carries CORS headers.
     let health = http
