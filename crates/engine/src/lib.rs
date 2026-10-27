@@ -72,6 +72,7 @@ pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry, smoke_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
+pub use rooms::RoomStore;
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
 pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
@@ -149,6 +150,9 @@ pub struct EngineCore {
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
     pub harness_updates: harness_updates::HarnessUpdateCoordinator,
+    /// Joined rooms (ADR 0011): the pairing-domain store of room verifiers
+    /// and 0600 address books; presentations mint ordinary sessions.
+    pub rooms: RoomStore,
     pub device_id: String,
     workspace_scope: WorkspaceScope,
     /// Release checker (attached by [`Engine::assemble_runtime`]) — the
@@ -301,6 +305,7 @@ impl EngineCore {
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();
+        let rooms = RoomStore::open(data_dir).map_err(|e| EngineError::Other(e.to_string()))?;
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -331,6 +336,7 @@ impl EngineCore {
             uploads,
             agent_accounts,
             harness_updates,
+            rooms,
             device_id,
             workspace_scope: profile.scope(),
             updater: std::sync::Mutex::new(None),
@@ -375,7 +381,8 @@ impl EngineCore {
         )
         .with_previews(self.previews.clone())
         .with_remote_access(Arc::downgrade(&self.remote_access))
-        .with_harness_updates(self.harness_updates.clone());
+        .with_harness_updates(self.harness_updates.clone())
+        .with_rooms(self.rooms.clone());
         if let Some(updater) = self.updater() {
             rpc = rpc.with_updater(updater);
         }
@@ -725,6 +732,7 @@ pub async fn serve_engine_ipc(
     data_dir: &Path,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let pairing = pairing::PairingStore::open(data_dir)?;
+    let rooms = rooms::RoomStore::open(data_dir)?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     // Discover the owning engine even when its IPC port was assigned dynamically.
     // Callers still validate EngineInfo against this directory's device identity;
@@ -739,7 +747,7 @@ pub async fn serve_engine_ipc(
     }
     tracing::info!(address = %listener.local_addr()?, "engine local listener ready");
     Ok(tokio::spawn(listener::serve_listener(
-        listener, service, pairing,
+        listener, service, pairing, rooms,
     )))
 }
 
@@ -769,6 +777,7 @@ pub async fn serve_engine_remote(
     data_dir: &Path,
 ) -> anyhow::Result<EngineListener> {
     let pairing = pairing::PairingStore::open(data_dir)?;
+    let rooms = rooms::RoomStore::open(data_dir)?;
     let socket = tokio::net::TcpListener::bind(address).await?;
     let address = socket.local_addr()?;
     let tailcat_relays = tailcat_relay::TailcatRelayRegistry::new();
@@ -781,6 +790,7 @@ pub async fn serve_engine_remote(
         socket,
         service,
         pairing,
+        rooms,
         listener::AccessPolicy::Paired,
         Some(paired.clone()),
     ));

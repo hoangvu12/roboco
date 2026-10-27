@@ -162,7 +162,7 @@ impl fmt::Debug for RoomBook {
 /// (verifier-only engines, manual invites); fleet rooms are the
 /// pairing-adjacent group whose secret member engines retain (ADR 0011
 /// amendment, fleet follow) so any member can introduce a new client.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RoomKind {
     #[default]
@@ -203,11 +203,29 @@ impl fmt::Debug for RoomInvite {
             .field("name", &self.name)
             .field("secret", &describe(&self.secret))
             .field("members", &self.members)
+            .field("kind", &self.kind)
             .finish()
     }
 }
 
 impl RoomInvite {
+    /// Validate and build a v1 fleet invite: [`RoomInvite::new`] with
+    /// `kind = fleet`, so joining engines retain the secret.
+    pub fn fleet(
+        name: &str,
+        secret: &str,
+        members: Vec<RoomMember>,
+    ) -> Result<Self, RoomInviteError> {
+        Ok(Self {
+            kind: RoomKind::Fleet,
+            ..Self::new(name, secret, members)?
+        })
+    }
+
+    pub fn is_fleet(&self) -> bool {
+        self.kind == RoomKind::Fleet
+    }
+
     /// Validate and build a v1 invite. The secret is moved in as-is; callers
     /// mint it from OS randomness (32 bytes, base64url, like a pairing code).
     pub fn new(
@@ -490,6 +508,63 @@ mod tests {
             RoomInvite::decode(&versioned).unwrap_err(),
             RoomInviteError::Version
         );
+    }
+
+    #[test]
+    fn the_fleet_kind_round_trips_and_plain_stays_absent() {
+        let fleet = RoomInvite::fleet("Fleet", SECRET, members()).unwrap();
+        assert!(fleet.is_fleet());
+        let encoded = fleet.encode().unwrap();
+        let decoded = RoomInvite::decode(&encoded).unwrap();
+        assert_eq!(decoded, fleet);
+        assert_eq!(decoded.kind, RoomKind::Fleet);
+        assert_eq!(decoded.room_id(), fleet.room_id());
+        let json = URL_SAFE_NO_PAD
+            .decode(encoded.strip_prefix(INVITE_PREFIX).unwrap())
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(value["kind"], "fleet");
+
+        // Plain rooms never carry the field, and an old invite (no kind)
+        // decodes as a plain room; an explicit "room" is plain too.
+        let plain = RoomInvite::new("Home fleet", SECRET, members()).unwrap();
+        assert!(!plain.is_fleet());
+        let payload = |json: &str| format!("{INVITE_PREFIX}{}", URL_SAFE_NO_PAD.encode(json));
+        let old = RoomInvite::decode(&payload(&format!(
+            r#"{{"v":1,"name":"r","secret":"{SECRET}","members":[]}}"#
+        )))
+        .unwrap();
+        assert_eq!(old.kind, RoomKind::Room);
+        let explicit = RoomInvite::decode(&payload(&format!(
+            r#"{{"v":1,"name":"r","secret":"{SECRET}","members":[],"kind":"room"}}"#
+        )))
+        .unwrap();
+        assert_eq!(explicit.kind, RoomKind::Room);
+
+        // Malformed kinds are shape errors with fixed text.
+        for bad in [r#""FLEET""#, r#""party""#, "1", "null", r#"["fleet"]"#] {
+            let error = RoomInvite::decode(&payload(&format!(
+                r#"{{"v":1,"name":"r","secret":"{SECRET}","members":[],"kind":{bad}}}"#
+            )))
+            .unwrap_err();
+            assert_eq!(error, RoomInviteError::Malformed, "{bad}");
+            assert!(!error.to_string().contains(SECRET));
+            assert!(!error.to_string().contains("party"));
+        }
+
+        // Debug names the kind and still redacts the secret.
+        let debug = format!("{fleet:?}");
+        assert!(debug.contains("Fleet"), "{debug}");
+        assert!(!debug.contains(SECRET), "{debug}");
+    }
+
+    #[test]
+    fn minted_secrets_are_fresh_and_valid() {
+        let a = mint_room_secret().unwrap();
+        let b = mint_room_secret().unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 43);
+        assert!(RoomInvite::fleet("Fleet", &a, vec![]).is_ok());
     }
 
     #[test]

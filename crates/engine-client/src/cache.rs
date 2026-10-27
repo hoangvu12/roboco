@@ -199,6 +199,7 @@ mod tests {
             listener,
             core.rpc_service(),
             roboco_engine::pairing::PairingStore::open(engine_dir.path()).unwrap(),
+            roboco_engine::rooms::RoomStore::open(engine_dir.path()).unwrap(),
         ));
         let client = roboco_rpc::connect_ws(&url).await.unwrap();
         let mut chat_stream = client
