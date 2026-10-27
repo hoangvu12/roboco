@@ -134,6 +134,13 @@ pub fn dies_with_parent(command: &mut Command) {
     }
 }
 
+/// Windows has no death signal: Job Object membership and the teardown
+/// paths cover orphaned children there, so stamping is a unix-only
+/// hardening and this is a deliberate no-op (the compile fix for the ungated
+/// callers — restored after the wave-9 merge dropped it again).
+#[cfg(windows)]
+pub fn dies_with_parent(_command: &mut Command) {}
+
 /// Pids this process spawned directly and may still wait on — the orphan
 /// reaper ([`scan_adopted_zombies`]) skips these, because reaping a child
 /// out from under its owner steals the exit status its `wait` reads.
