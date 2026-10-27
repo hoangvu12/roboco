@@ -468,5 +468,12 @@ private fun EngineStatusCardRow(
             onClick = onCopyId,
             testTag = row.tag,
         )
+        is EngineStatusRow.Room -> GroupedRow(
+            title = EngineDetailCopy.Room,
+            position = position,
+            accessories = listOf(GroupedAccessory.Value(row.value)),
+            onClick = null,
+            testTag = row.tag,
+        )
     }
 }

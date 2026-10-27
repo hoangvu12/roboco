@@ -61,6 +61,9 @@ import sh.roboco.android.shell.SheetHostState
 import sh.roboco.android.shell.SheetStyle
 import uniffi.roboco_core.PairException
 import uniffi.roboco_core.PairedEngine
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 import uniffi.roboco_core.PairingTarget
 
 /**
@@ -508,8 +511,13 @@ class PairPageTest {
         assertEquals(32f, bounds("pair-url").left.value, 0.5f)
         // The footer text: x 32 … 361 (the tag sits on 70's padded Box,
         // the text is its own node inside it, so the measured node is the
-        // text itself).
-        val hint = compose.onNodeWithText("Paste a pairing link or a roboco-tailcat: invite", substring = true)
+        // text itself). The rooms merge's hint names all three invite
+        // kinds — the substring pins it so the footer cannot silently
+        // drop one.
+        val hint = compose.onNodeWithText(
+            "Paste a pairing link, a roboco-tailcat: invite, or a roboco-room: room invite",
+            substring = true,
+        )
             .getBoundsInRoot()
         assertEquals(32f, hint.left.value, 0.5f)
         assertTrue("footer right edge: ${hint.right.value}", hint.right.value <= 361.5f)
@@ -551,10 +559,18 @@ class PairPageTest {
         override suspend fun forget(engineId: String) {
             ops += "forget"
         }
+
+        override fun parseRoom(input: String): RoomInviteTarget? = null
+
+        override suspend fun joinRoom(invite: String): RoomJoinResult =
+            throw UnsupportedOperationException("this fake joins no rooms")
     }
 
     private class FakeSink(private val ops: MutableList<String>) : PairedEngineSink {
         val upserts = mutableListOf<PairedEngine>()
+        override suspend fun upsertRoom(room: RoomRecord) {
+            ops += "upsertRoom"
+        }
         override fun knownEngineIds(): Set<String> {
             ops += "known"
             return emptySet()

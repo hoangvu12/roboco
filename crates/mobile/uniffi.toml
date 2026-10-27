@@ -31,3 +31,7 @@ android = true
 "CoreError.Storage.message" = "reason"
 "CoreError.NotImplemented.message" = "reason"
 "CoreError.Internal.message" = "reason"
+# Ticket 04 (rooms): the same `message` → `reason` rule.
+"RoomError.InvalidInvite.message" = "reason"
+"RoomError.Unreachable.message" = "reason"
+"RoomError.Failed.message" = "reason"

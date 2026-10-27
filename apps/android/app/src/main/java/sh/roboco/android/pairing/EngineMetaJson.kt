@@ -4,6 +4,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import uniffi.roboco_core.EngineRoomRef
 import uniffi.roboco_core.EngineTransport
 import uniffi.roboco_core.PairedEngine
 
@@ -40,6 +41,9 @@ internal data class EngineMeta(
     val deviceId: String?,
     val name: String?,
     val transport: TransportKind = TransportKind.DIRECT,
+    /** The room this engine was joined through (ADR 0011), if any.
+     * Absent on records written before rooms — decoding stays additive. */
+    val room: EngineRoomMeta? = null,
 ) {
     fun toPaired(credential: String, transport: EngineTransport): PairedEngine = PairedEngine(
         engineId = engineId,
@@ -51,8 +55,19 @@ internal data class EngineMeta(
         deviceId = deviceId,
         name = name,
         transport = transport,
+        room = room?.let { EngineRoomRef(roomId = it.roomId, label = it.label) },
     )
 }
+
+/**
+ * The room an engine was joined through (ADR 0011, ticket 04) as the
+ * metadata carries it: the public room id and the room's name — no
+ * secret, no addresses (those live in the `room:` blob).
+ */
+internal data class EngineRoomMeta(
+    val roomId: String,
+    val label: String,
+)
 
 internal fun PairedEngine.meta(): EngineMeta = EngineMeta(
     engineId = engineId,
@@ -63,6 +78,7 @@ internal fun PairedEngine.meta(): EngineMeta = EngineMeta(
     deviceId = deviceId,
     name = name,
     transport = if (transport is EngineTransport.Tailcat) TransportKind.TAILCAT else TransportKind.DIRECT,
+    room = room?.let { EngineRoomMeta(roomId = it.roomId, label = it.label) },
 )
 
 /**
@@ -89,6 +105,9 @@ internal object EngineMetaJson {
                 .put("transport", meta.transport.wire)
             meta.deviceId?.let { element.put("deviceId", it) }
             meta.name?.let { element.put("name", it) }
+            meta.room?.let { room ->
+                element.put("room", JSONObject().put("roomId", room.roomId).put("label", room.label))
+            }
             array.put(element)
         }
         return array.toString()
@@ -131,9 +150,29 @@ internal object EngineMetaJson {
             transport = optional(element, "transport")
                 ?.let { TransportKind.fromWire(it) ?: throw JSONException("unknown transport") }
                 ?: TransportKind.DIRECT,
+            // ADR 0011 (ticket 04): the room reference is additive — a
+            // missing `room` (every record written before rooms) reads as
+            // none, and a malformed one degrades to none rather than
+            // dropping the whole engine over metadata.
+            room = roomMeta(element.optJSONObject("room")),
         )
     } catch (_: JSONException) {
         null
+    }
+
+    /**
+     * The `room` object → [EngineRoomMeta], or null. A missing id (or a
+     * malformed room of any shape) degrades to "no room" — never a
+     * thrown [JSONException], which would drop the whole engine over
+     * metadata (the credential store is the source of truth, not this
+     * JSON; an empty label is legal — it only ever was a display name).
+     */
+    private fun roomMeta(element: JSONObject?): EngineRoomMeta? {
+        // Absent on records written before rooms: additive — no room.
+        if (element == null) return null
+        val roomId = element.optString("roomId")
+        if (roomId.isEmpty()) return null
+        return EngineRoomMeta(roomId = roomId, label = element.optString("label"))
     }
 
     /** `getString` coerces any value (`{}` included); only a real string is accepted. */

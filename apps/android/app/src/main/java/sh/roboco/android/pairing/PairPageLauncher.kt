@@ -1,5 +1,6 @@
 package sh.roboco.android.pairing
 
+import android.content.res.Resources
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -16,7 +17,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import sh.roboco.android.R
 import sh.roboco.android.core.CoreStartup
+import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.Toaster
 import sh.roboco.android.shell.LocalSheetHost
 import sh.roboco.android.shell.PageSheetScope
 import sh.roboco.android.shell.SheetHostState
@@ -24,6 +28,9 @@ import sh.roboco.android.shell.SheetStyle
 import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.PairedEngine
 import uniffi.roboco_core.PairingTarget
+import uniffi.roboco_core.RoomInviteTarget
+import uniffi.roboco_core.RoomJoinResult
+import uniffi.roboco_core.RoomRecord
 
 /**
  * The QR scanner seam (ticket 138's screen, `fun interface`): opens the
@@ -59,6 +66,7 @@ class PairPageLauncher internal constructor(
     internal val qrScan: QrScanRequest?,
     internal val clipboard: PairClipboard,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val fleet: FleetNotices = FleetNotices.None,
 ) {
 
     /**
@@ -129,6 +137,7 @@ class PairPageLauncher internal constructor(
                 store = store,
                 scope = scope,
                 io = io,
+                fleet = fleet,
             ).also { current = it }
         }
         // 31 composes sheet entries outside the root content, so
@@ -197,8 +206,14 @@ fun ProvidePairPage(
     val androidClipboard = remember(clipboard, context) {
         clipboard ?: AndroidPairClipboard(context.applicationContext)
     }
-    val launcher = remember(host, backend, store, qrScan, androidClipboard) {
-        PairPageLauncher(host, backend, store, scope, qrScan, androidClipboard)
+    // Fleet follow's two toasts land in the root ToastHost (ProvidePairPage
+    // sits inside it; outside one, LocalToaster is the logging no-op).
+    val toaster = LocalToaster.current
+    val fleet = remember(toaster, context) {
+        ToasterFleetNotices(toaster, context.applicationContext.resources)
+    }
+    val launcher = remember(host, backend, store, qrScan, androidClipboard, fleet) {
+        PairPageLauncher(host, backend, store, scope, qrScan, androidClipboard, fleet = fleet)
     }
     DisposableEffect(scope) {
         onDispose { scope.cancel() }
@@ -210,7 +225,8 @@ fun ProvidePairPage(
 
 /**
  * The production [PairingBackend] over the live [CoreClient]:
- * `pairEngine`, `forgetEngine` and the top-level `parsePairingUrl`
+ * `pairEngine`, `joinRoom` (ADR 0011, ticket 04), `forgetEngine` and the
+ * top-level `parsePairingUrl` / `parseRoomInvite`
  * (android-app#06; `runCatching` because a parse failure is a normal
  * "does not parse", never an error to surface while typing).
  * [onForgotten] runs after a successful `forgetEngine` (ticket 28: the
@@ -225,12 +241,48 @@ class CoreClientPairingBackend(
     override fun parse(input: String): PairingTarget? =
         runCatching { uniffi.roboco_core.parsePairingUrl(input) }.getOrNull()
 
+    override fun parseRoom(input: String): RoomInviteTarget? =
+        runCatching { uniffi.roboco_core.parseRoomInvite(input) }.getOrNull()
+
     override suspend fun pair(url: String, replaceEngineId: String?): PairedEngine =
         client.pairEngine(url, replaceEngineId)
+
+    override suspend fun joinRoom(invite: String): RoomJoinResult = client.joinRoom(invite)
 
     override suspend fun forget(engineId: String) {
         client.forgetEngine(engineId)
         onForgotten(engineId)
+    }
+
+    override suspend fun followFleet(engineId: String, onJoining: () -> Unit): RoomJoinResult? {
+        // `fetchFleet` never throws (no fleet / old engine / offline = null);
+        // the offer is an opaque Rust object, freed once the join returns.
+        val offer = client.fetchFleet(engineId) ?: return null
+        try {
+            onJoining()
+            return client.joinFleet(offer)
+        } finally {
+            offer.destroy()
+        }
+    }
+}
+
+/**
+ * The production [FleetNotices] (fleet-follow ticket 04): the app's
+ * [Toaster] with the two fleet strings. Copy only — never a fleet name,
+ * label or address.
+ */
+class ToasterFleetNotices(
+    private val toaster: Toaster,
+    private val resources: Resources,
+) : FleetNotices {
+
+    override fun joining() {
+        toaster.show(resources.getString(R.string.fleet_joining))
+    }
+
+    override fun joined(count: Int) {
+        toaster.show(resources.getQuantityString(R.plurals.fleet_joined, count, count))
     }
 }
 
@@ -238,7 +290,8 @@ class CoreClientPairingBackend(
  * The production [PairedEngineSink] over ticket 71: `knownEngineIds`
  * reads the startup pipeline's live engine list (the store exposes no
  * in-memory list; every engine there was loaded from or written to the
- * store), `upsert`/`remove` delegate to the store.
+ * store), `upsert`/`upsertRoom`/`remove` delegate to the store (the
+ * room blob is ticket 04's `room:` class).
  */
 class StorePairedEngineSink(
     private val store: PairedEngineStore,
@@ -249,6 +302,8 @@ class StorePairedEngineSink(
         startup.engines.value.orEmpty().map { it.engineId }.toSet()
 
     override suspend fun upsert(engine: PairedEngine) = store.upsert(engine)
+
+    override suspend fun upsertRoom(room: RoomRecord) = store.upsertRoom(room)
 
     override suspend fun remove(engineId: String) = store.remove(engineId)
 }
