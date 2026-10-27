@@ -158,8 +158,9 @@ impl Shell {
         if self.session_previews.chat.as_deref() == Some(chat_id) {
             return;
         }
-        // Engine still booting: the next render retries.
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        // The servers run on the engine that hosts the chat. Engine still
+        // booting: the next render retries.
+        let Ok(engine) = self.state.read(cx).target_for_id(chat_id) else {
             return;
         };
         self.session_previews = SessionPreviews {
@@ -170,7 +171,6 @@ impl Shell {
         self.session_previews._watch = Some(cx.spawn(async move |this, cx| {
             loop {
                 if let Ok(mut rx) = engine
-                    .client()
                     .subscribe(
                         methods::WATCH_PREVIEWS,
                         serde_json::json!({ "chatId": chat_id }),
