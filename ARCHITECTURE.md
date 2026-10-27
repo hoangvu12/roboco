@@ -30,6 +30,8 @@ The additional remote bind serves HTTP pairing and WebSocket RPC with mandatory 
 
 The client registry owns a supervised connection to every paired engine. Sidebar rows retain their device grouping, and operations route to their owning engine. Cached session lists and open transcripts support offline reading. Disconnected engines refuse writes and reconnect with capped backoff. No engine synchronizes its sessions, settings, queue, or search index to another engine.
 
+Fleets ([ADR 0011](docs/adr/0011-rooms.md), fleet amendment) extend pairing without changing that rule: after pairing to any member engine, a client fetches the fleet invite (`GetFleetInvite`) and presents the fleet secret to every member, gaining one ordinary session per engine — reachability only; no chat, document, or setting crosses engines. The desktop app pushes fleet membership to its paired engines (`RoomJoin`).
+
 ## Desktop state
 
 A space is a folder on an engine. The existing space palette, device tabs, and composer chip select the target for a new chat. The sidebar presents sessions grouped by device. Tabs and other viewport preferences remain client-local in `ui-settings.json`.

@@ -18,6 +18,14 @@ _Avoid_: Token (when a human-facing word is wanted), login
 An engine serving paired clients over the network. Remoteness is about where the client sits, not where data is replicated — data stays engine-local either way.
 _Avoid_: Cloud, sync
 
+**Fleet**:
+Every engine a person uses, introduced to each other once: pair a client to any member engine and the rest arrive as ordinary paired engines. Under the hood a fleet is a fleet room (ADR 0011 amendment) — one per data dir, its secret held by member engines; the word users see is Fleet, never room.
+_Avoid_: Cluster, network, account, room (in user-facing text)
+
+**Room**:
+The protocol behind a fleet: a shared secret plus an address book, with no engine in charge; presenting the secret to a member mints an ordinary per-engine session, and each chat still belongs to exactly one engine. Rooms share reachability, never data. Plain rooms (CLI only) keep the original hostless, verifier-only semantics.
+_Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
+
 **Web client**:
 The engine-served Roboco client that runs in a browser at the engine's own remote access URL. Pairs like any other client and holds its session credential in browser storage, scoped to the engine's origin.
 _Avoid_: Web app (when it means this), hosted app
