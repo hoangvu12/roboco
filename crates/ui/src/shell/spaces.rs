@@ -7000,9 +7000,9 @@ impl Shell {
     }
 
     /// ⇥ in the path field: the name being typed completed to the folder
-    /// of its parent it names exactly, else the first it prefixes
-    /// (case-insensitively), separator appended — `(text after ⇥, the faint
-    /// suffix previewing it)`.
+    /// of its parent it names exactly, else the first it prefixes in the
+    /// typed case, else the first it prefixes case-insensitively, separator
+    /// appended — `(text after ⇥, the faint suffix previewing it)`.
     fn add_space_path_completion(&self, cx: &App) -> Option<(String, Option<SharedString>)> {
         let windows = self.add_space_windows_paths();
         let edit = self.add_space.as_ref()?.path_edit.as_ref()?;
@@ -7015,11 +7015,20 @@ impl Shell {
         if matches!(name.as_str(), "" | "." | "..") {
             return None;
         }
-        // `code` stays `code` beside a `Code` listed first.
+        // `code` stays `code` beside a `Code` listed first, and `Da` finds
+        // `Dashboard` beside a `dashboard`: the listing sorts names
+        // case-insensitively, so case variants come in the file system's
+        // order and must not decide which one completes.
         let (entry, typed) = folders
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| (entry, entry.name.len()))
+            .or_else(|| {
+                folders
+                    .iter()
+                    .find(|entry| entry.name.starts_with(name.as_str()))
+                    .map(|entry| (entry, name.len()))
+            })
             .or_else(|| {
                 folders
                     .iter()
