@@ -74,9 +74,13 @@ on:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled; main runs never are, not even while
+# queued (a per-run group). Only main writes the Rust caches (save-if): one
+# `android` entry per OS, written by android-emulator on Linux and by the
+# android windows leg on Windows; the other jobs restore it.
 concurrency:
-  group: android-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: '0'
@@ -109,8 +113,11 @@ jobs:
         working-directory: .
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android-benchmark
-          cache-workspace-crates: 'true'
+          shared-key: android-benchmark
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
+          cache-workspace-crates: 'false'
       - name: Install cargo-ndk
         shell: pwsh
         run: |
@@ -182,8 +189,12 @@ jobs:
         working-directory: .
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android
-          cache-workspace-crates: 'true'
+          shared-key: android
+          add-job-id-key: 'false'
+          # The Linux entry is android-emulator's (see concurrency above).
+          save-if: ${{ github.ref == 'refs/heads/main' && runner.os == 'Windows' }}
+          cache-on-failure: 'true'
+          cache-workspace-crates: 'false'
       - name: Install cargo-ndk
         shell: pwsh
         run: |
@@ -345,8 +356,13 @@ jobs:
         run: rustup target add x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android
-          cache-workspace-crates: 'true'
+          shared-key: android
+          add-job-id-key: 'false'
+          # The Linux writer: the fixture engine (host, dev), the bindgen and
+          # the x86_64 core. The ubuntu android job adds only the arm64 core.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
+          cache-workspace-crates: 'false'
       - name: Install cargo-ndk
         run: |
           if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
@@ -437,8 +453,10 @@ jobs:
         run: rustup target add x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
-          key: android
-          cache-workspace-crates: 'true'
+          shared-key: android
+          add-job-id-key: 'false'
+          save-if: 'false' # android-emulator writes the same graph
+          cache-workspace-crates: 'false'
       - name: Install cargo-ndk
         run: |
           if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then

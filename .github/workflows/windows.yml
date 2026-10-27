@@ -13,6 +13,21 @@ on:
       - 'scripts/test-windows-*.ps1'
       - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
+  # Main runs seed the Rust cache every PR restores (PR-scoped entries are
+  # unreadable from other branches).
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'apps/roboco/**'
+      - 'dist/windows/**'
+      - 'crates/**'
+      - 'scripts/test-windows-*.ps1'
+      - 'scripts/package-windows.ps1'
+      - '.github/workflows/windows.yml'
   workflow_dispatch:
     inputs:
       native_gui:
@@ -37,9 +52,11 @@ env:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled; main runs never are, not even while
+# queued (a per-run group), so every merge gets a full run and seeds caches.
 concurrency:
-  group: windows-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -64,10 +81,14 @@ jobs:
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
         with:
-          # The workspace crates are most of the compile time; caching them
-          # makes same-SHA reruns and follow-up PR pushes near-instant.
-          cache-workspace-crates: 'true'
+          # Only main writes; PRs restore main's entry.
+          shared-key: windows-tests
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
+          # Cargo rebuilds workspace crates after every checkout (mtime
+          # freshness), so caching them only grows the entry.
+          cache-workspace-crates: 'false'
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:

@@ -28,6 +28,9 @@ name: release
 # docs/reference/android-development.md → Release signing). A tag push
 # without them fails before publishing; workflow_dispatch continues
 # unsigned.
+#
+# No Rust or Go caches: an entry saved by a tag run is readable only by that
+# tag, so they restored nothing for later releases and evicted main's caches.
 
 on:
   push:
@@ -46,6 +49,8 @@ jobs:
           - runner: ubuntu-24.04 # x86_64
           - runner: ubuntu-24.04-arm # aarch64
     runs-on: ${{ matrix.runner }}
+    # A cold build takes ≈ 16 min; one apt stall alone took 24.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: gpui system deps
@@ -58,7 +63,6 @@ jobs:
             libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -73,7 +77,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
-          cache-dependency-path: adapters/roboco-tailcat/go.sum
+          cache: false
       - name: package
         run: scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
@@ -90,9 +94,8 @@ jobs:
           - runner: windows-2022 # x86_64
             timeout: 90
           - runner: windows-11-arm # aarch64
-            # More headroom: slower compiles, and the aarch64 rust-cache
-            # starts cold (rust-cache keys include the runner arch, so the
-            # two entries never share cache entries).
+            # More headroom: slower compiles, always cold (no Rust cache in
+            # this workflow).
             timeout: 150
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -127,7 +130,6 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
-      - uses: Swatinem/rust-cache@v2
       - name: Ensure Inno Setup 6 (ARM64 image)
         # The x64 runner images ship Inno Setup 6; the ARM64 image may not.
         # ISCC.exe is an x86 binary and cross-builds the arm64-targeting
@@ -153,7 +155,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
-          cache-dependency-path: adapters/roboco-tailcat/go.sum
+          cache: false
       - name: package installer and portable app
         run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - uses: actions/upload-artifact@v4
@@ -192,10 +194,6 @@ jobs:
       - name: Add Android Rust targets
         run: rustup target add aarch64-linux-android x86_64-linux-android
         working-directory: .
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: android-release
-          cache-workspace-crates: 'true'
       - name: Install cargo-ndk
         run: |
           set -euo pipefail
@@ -213,7 +211,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
-          cache-dependency-path: adapters/roboco-tailcat/go.sum
+          cache: false
       - name: Install Android SDK pieces
         # sdkmanager is not on PATH on ubuntu-24.04 runners; call it by path
         # (android.yml does the same).
