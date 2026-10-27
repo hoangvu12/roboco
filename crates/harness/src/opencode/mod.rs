@@ -4983,7 +4983,7 @@ http.createServer((req, res) => {
             fixture.path().to_str(),
             Duration::from_secs(5),
             None,
-            None,
+            &Default::default(),
         )
         .await
         .unwrap();

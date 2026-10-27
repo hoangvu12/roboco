@@ -31,8 +31,8 @@ fn harness() -> AcpHarness {
 }
 
 /// Tests in this binary run in parallel; the fixture mode rides the process
-/// env (Roboco's RunRequest has no per-run env map — upstream threads it
-/// through one). A global lock keeps each test's mode set until its run has
+/// env (it predates `RunRequest.env`, which could carry it per run now).
+/// A global lock keeps each test's mode set until its run has
 /// started; hold the guard for the whole test.
 static MODE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 type ModeGuard = std::sync::MutexGuard<'static, ()>;
@@ -63,6 +63,7 @@ fn request(mode: &str) -> RunRequest {
         resume: None,
         provider_fork: None,
         resume_fallback_history: None,
+        env: Default::default(),
     }
 }
 
