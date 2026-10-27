@@ -1,8 +1,11 @@
-//! Pairing administration uses SQLite; Tailcat setup talks to the owning engine.
+//! Pairing and room administration use SQLite; Tailcat setup talks to the
+//! owning engine. Rooms (ADR 0011) share reachability, never data.
 use anyhow::Context as _;
 use clap::Subcommand;
 use roboco_engine::pairing::{DEFAULT_TTL_SECONDS, PairingStore, pairing_url};
+use roboco_engine::rooms::{FleetConflict, RoomRecord, RoomStore};
 use roboco_engine::tailcat::{INVITE_PREFIX, TailcatClient, TailcatInvite, read_recorded_address};
+use roboco_proto::room::{RoomInvite, RoomKind, RoomMember};
 
 #[derive(Subcommand)]
 pub enum EngineCommand {
@@ -15,6 +18,12 @@ pub enum EngineCommand {
     Tailcat {
         #[command(subcommand)]
         command: TailcatCommand,
+    },
+    /// Create, share, join, list, and leave rooms and this engine's fleet (ADR 0011).
+    #[command(after_help = ROOM_EXIT_CODES)]
+    Room {
+        #[command(subcommand)]
+        command: RoomCommand,
     },
 }
 
@@ -185,9 +194,283 @@ fn tailcat(command: TailcatCommand, data_dir: &std::path::Path) -> anyhow::Resul
     }
 }
 
+/// The exit-code contract shared by every `roboco engine room` command.
+const ROOM_EXIT_CODES: &str = "\
+Exit codes:
+  0  success
+  1  failure: a malformed invite, an unreadable store, an I/O error
+  2  usage error: unknown flag or missing argument
+  3  refused: this engine already belongs to a fleet, the room is not a
+     fleet room, or no such room is joined
+
+Errors go to stderr, starting with `Error:`; no JSON is printed on
+failure. Refusals are one line of fixed text. Room errors never quote
+an invite or a secret.";
+
+/// Room administration (ADR 0011). Rooms are hostless reachability groups:
+/// joining a plain room stores only a verifier of its secret plus the member
+/// address book; clients that present the secret mint ordinary sessions. A
+/// fleet room (one per data dir) also keeps its secret so any member engine
+/// can introduce a newly paired client to the whole fleet.
+#[derive(Subcommand)]
+pub enum RoomCommand {
+    /// Mint this engine's fleet room and print its id (never its secret).
+    ///
+    /// The fleet's book starts with this engine's own entry (--label plus the
+    /// Tailcat address the engine recorded) when an address is recorded, and
+    /// empty otherwise. A data dir holds one fleet: a second create is
+    /// refused (exit 3) until `room leave` drops the first.
+    ///
+    /// --json prints one room object:
+    ///   {"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}
+    #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
+    Create {
+        /// The fleet's name.
+        #[arg(long, default_value = "Fleet")]
+        name: String,
+        /// This engine's label in the fleet's book (default: its device name).
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a fleet room's invite (a secret) and optionally its QR code.
+    ///
+    /// This is the only room command whose output carries an invite: anyone
+    /// holding it can join the fleet and pair with its engines, so share it
+    /// only with your own devices. Plain rooms and unknown ids are refused
+    /// with "not a fleet room" (exit 3) — engines keep no plain-room secret.
+    ///
+    /// --json prints:
+    ///   {"roomId":"<room id>","invite":"roboco-room:…"}
+    /// and with --qr adds "qrSvg":"<svg>" (null when the invite is too long
+    /// for a QR code).
+    #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
+    Invite {
+        /// The fleet room's id (from `room create` or `room list`).
+        room_id: String,
+        /// Print the invite as a terminal QR code under the invite line (and
+        /// add `qrSvg` to `--json` output).
+        #[arg(long)]
+        qr: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Join a room from a `roboco-room:` invite. The invite is never printed
+    /// or logged.
+    ///
+    /// Re-joining the same invite is idempotent: the label is refreshed and
+    /// the book unioned, never a second row. A fleet invite while this engine
+    /// belongs to a different fleet is refused (exit 3).
+    ///
+    /// --json prints one room object:
+    ///   {"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"room"|"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}
+    #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
+    Join {
+        /// The `roboco-room:` invite (it is a secret: paste it, never commit it).
+        invite: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List joined rooms with their kind and member counts.
+    ///
+    /// --json prints an array of room objects (empty: []):
+    ///   [{"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"room"|"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}]
+    #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Leave a room: forget its verifier, address book, and (for a fleet) its
+    /// secret. Sessions it minted are ordinary sessions — revoke them with
+    /// `pairing revoke`.
+    ///
+    /// An unknown id is refused with "no such room" (exit 3).
+    ///
+    /// --json prints:
+    ///   {"roomId":"<room id>","left":true}
+    #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
+    Leave {
+        room_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// A room command refused with fixed text (exit code 3). The text never
+/// carries caller input, so a mistakenly pasted invite is never echoed.
+#[derive(Debug)]
+struct RoomRefusal(&'static str);
+
+impl std::fmt::Display for RoomRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for RoomRefusal {}
+
+/// Exit code for refusals; see [`ROOM_EXIT_CODES`].
+const REFUSED_EXIT_CODE: i32 = 3;
+
+/// The `--json` room object documented in each command's help: the store
+/// record plus its member count. The record carries no secret by construction.
+fn room_json(record: &RoomRecord) -> anyhow::Result<serde_json::Value> {
+    let mut value = serde_json::to_value(record)?;
+    value["memberCount"] = record.book.members.len().into();
+    Ok(value)
+}
+
+fn kind_name(kind: RoomKind) -> &'static str {
+    match kind {
+        RoomKind::Room => "room",
+        RoomKind::Fleet => "fleet",
+    }
+}
+
+/// Room administration works directly on the pairing-domain store, so it
+/// runs while an engine owns the data directory (WAL coordinates the two
+/// processes) — the same boundary `roboco engine pairing` uses. Nothing here
+/// reads or writes remote-access settings.
+fn room(command: RoomCommand, data_dir: &std::path::Path) -> anyhow::Result<()> {
+    let store = RoomStore::open(data_dir)?;
+    match command {
+        RoomCommand::Create { name, label, json } => {
+            // The engine records the address it publishes over Tailcat; with
+            // none recorded the fleet starts without this engine's entry.
+            let members = match read_recorded_address(data_dir)? {
+                Some(address) => vec![RoomMember {
+                    label: label
+                        .map(|label| label.trim().to_owned())
+                        .unwrap_or_else(|| roboco_engine::local_device_name_at(data_dir)),
+                    address,
+                }],
+                None => Vec::new(),
+            };
+            let seeded = !members.is_empty();
+            let record = store.create(&name, members)?;
+            if json {
+                println!("{}", room_json(&record)?);
+            } else {
+                println!(
+                    "Created fleet \"{}\" ({} members). Room id: {}",
+                    record.label,
+                    record.book.members.len(),
+                    record.id
+                );
+                println!(
+                    "Share it with `roboco engine room invite {}` — the invite is a secret.",
+                    record.id
+                );
+            }
+            if !seeded {
+                eprintln!(
+                    "No Tailcat address is recorded for this engine, so the fleet's book starts without it."
+                );
+            }
+        }
+        RoomCommand::Invite { room_id, qr, json } => {
+            let invite = store
+                .fleet_invite(&room_id)?
+                .ok_or(RoomRefusal("not a fleet room"))?;
+            let encoded = invite.encode()?;
+            drop(invite);
+            if json {
+                let mut output = serde_json::json!({"roomId": room_id, "invite": encoded});
+                if qr {
+                    output["qrSvg"] = roboco_proto::qr::try_qr_svg(&encoded).into();
+                }
+                println!("{output}");
+            } else {
+                println!("{encoded}");
+                if qr {
+                    match roboco_proto::qr::try_qr_terminal(&encoded) {
+                        Some(code) => println!("{code}"),
+                        None => {
+                            eprintln!("This invite is too long for a QR code; paste it instead.")
+                        }
+                    }
+                }
+                println!(
+                    "This invite is a secret: anyone holding it can join the fleet. Share it only with your own devices."
+                );
+            }
+        }
+        RoomCommand::Join { invite, json } => {
+            // Decode errors describe only the invite's shape (ADR 0008);
+            // nothing here prints the invite or its secret.
+            let invite = RoomInvite::decode(&invite)?;
+            let record = store.join(invite)?;
+            if json {
+                println!("{}", room_json(&record)?);
+            } else {
+                println!(
+                    "Joined \"{}\" ({} members). Room id: {}",
+                    record.label,
+                    record.book.members.len(),
+                    record.id
+                );
+                println!(
+                    "Clients that present this room's secret mint ordinary sessions; leave with `roboco engine room leave {}`.",
+                    record.id
+                );
+            }
+        }
+        RoomCommand::List { json } => {
+            let rooms = store.list()?;
+            if json {
+                let rooms = rooms
+                    .iter()
+                    .map(room_json)
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                println!("{}", serde_json::Value::Array(rooms));
+            } else if rooms.is_empty() {
+                println!("No joined rooms.");
+            } else {
+                for room in rooms {
+                    println!(
+                        "{}\t{}\t{} members\t{}",
+                        room.id,
+                        room.label,
+                        room.book.members.len(),
+                        kind_name(room.kind)
+                    );
+                }
+            }
+        }
+        RoomCommand::Leave { room_id, json } => {
+            if !store.leave(&room_id)? {
+                return Err(RoomRefusal("no such room").into());
+            }
+            if json {
+                println!("{}", serde_json::json!({"roomId": room_id, "left": true}));
+            } else {
+                println!("Left {room_id}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refusals ([`RoomRefusal`], [`FleetConflict`]) exit with
+/// [`REFUSED_EXIT_CODE`] and their fixed text; every other error keeps the
+/// default `Error:` report and exit code 1.
+fn exit_on_refusal(error: anyhow::Error) -> anyhow::Result<()> {
+    if error.downcast_ref::<RoomRefusal>().is_some()
+        || error.downcast_ref::<FleetConflict>().is_some()
+    {
+        eprintln!("Error: {error}");
+        std::process::exit(REFUSED_EXIT_CODE);
+    }
+    Err(error)
+}
+
 pub fn run(command: EngineCommand, data_dir: &std::path::Path) -> anyhow::Result<()> {
     let command = match command {
         EngineCommand::Tailcat { command } => return tailcat(command, data_dir),
+        EngineCommand::Room { command } => {
+            return room(command, data_dir).or_else(exit_on_refusal);
+        }
         EngineCommand::Pairing { command } => command,
     };
     let store = PairingStore::open(data_dir)?;
