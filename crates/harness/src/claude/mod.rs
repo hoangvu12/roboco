@@ -468,6 +468,9 @@ impl ClaudeHarness {
     fn build_command(exe: &PathBuf, request: &RunRequest) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, &request.env);
         // Crash ownership: the kernel kills this CLI if the engine dies.
         crate::process::dies_with_parent(&mut cmd);
         cmd.args(Self::launch_args(request));
@@ -978,12 +981,8 @@ impl ClaudeHarness {
                 None => Normalizer::new(),
             };
             crate::process::dies_with_parent(&mut cmd);
-            // Everything the agent starts inherits the run's origin, so
-            // preview discovery can tell the chat's dev servers from the
-            // user's own (see [`roboco_proto::ORIGIN_ENV`]).
-            crate::apply_origin(&mut cmd, controls.origin.as_deref());
-            // Roboco's RunRequest carries no per-run env map (upstream's did);
-            // the process env locates the credential dir the CLI locks.
+            // The run's env map carries only the engine's origin marker; the
+            // process env locates the credential dir the CLI locks.
             let lock_dir = refresh_lock::config_dir();
             let Runtime {
                 mut child,
@@ -1418,7 +1417,6 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn,
-        origin: _origin,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -1508,8 +1506,6 @@ async fn run_session(session: Session) {
                 cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
             }
             crate::process::dies_with_parent(&mut cmd);
-            // The relaunch is the same run: its agents inherit the origin.
-            crate::apply_origin(&mut cmd, _origin.as_deref());
             match launch_spawn(cmd, &exe, &fresh, &lock_dir) {
                 Ok(runtime) => {
                     child = runtime.child;

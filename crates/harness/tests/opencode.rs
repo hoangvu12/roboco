@@ -455,6 +455,7 @@ impl FakeOpencode {
 
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -493,7 +494,6 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         steering,
         interrupt: token.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     (controls, steer_tx, token)
 }

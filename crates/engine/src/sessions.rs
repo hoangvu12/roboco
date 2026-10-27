@@ -1350,10 +1350,6 @@ impl SessionsEngine {
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
             turn: turn.clone(),
-            // Everything the agent starts inherits the run's origin, so
-            // preview discovery lists only the chat's dev servers
-            // (upstream #1023; see `roboco_proto::ORIGIN_ENV`).
-            origin: Some(roboco_proto::chat_origin(chat_id)),
         };
 
         lock(&self.inner.runs).insert(
@@ -2241,6 +2237,7 @@ impl SessionsEngine {
                     .or_else(|| {
                         let (_, cwd, _) = sessions.inner.journal_harness_session(&chat_id)?;
                         Some(RunRequest {
+                            env: Default::default(),
                             prompt: String::new(),
                             harness: None,
                             model: None,
@@ -4615,6 +4612,7 @@ async fn drive_run(
     // in from `request` — a startup crash is transient, so the retry
     // re-attempts the fork and re-derives the fallback history.
     let mut retry_request = Some(RunRequest {
+        env: Default::default(),
         resume: None,
         ..request.clone()
     });
@@ -4751,6 +4749,12 @@ async fn drive_run(
                             );
                         }
                     }
+                    // Everything the agent starts inherits its chat, which is how
+                    // preview discovery tells its dev servers from the user's own.
+                    wire_request.env.insert(
+                        roboco_proto::ORIGIN_ENV.into(),
+                        roboco_proto::chat_origin(&chat_id),
+                    );
                     harness.run(wire_request, controls).await
                 }
                 None => Ok(futures::stream::once(async {
@@ -6747,6 +6751,7 @@ mod tests {
 
     fn request() -> RunRequest {
         RunRequest {
+            env: Default::default(),
             prompt: "first".into(),
             harness: None,
             model: Some("grok-4.6".into()),

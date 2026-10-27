@@ -158,6 +158,7 @@ name (default: the local engine's device — the engine is device-local, so a
 | Tool               | Engine calls                                              |
 | ------------------ | --------------------------------------------------------- |
 | `whoami`           | `LocalDevice`, `EngineInfo`, origin chat summary          |
+| `previews`         | `WatchPreviews {chatId}` snapshot, origin-chat services   |
 | `list_devices`     | `WatchDevices` snapshot                                   |
 | `list_projects`    | `WatchSpaces` snapshot (device filter resolves locally)   |
 | `list_harnesses`   | `ListHarnesses` (device arg validates against this engine) |
@@ -178,6 +179,17 @@ name (default: the local engine's device — the engine is device-local, so a
 Watch streams are the engine's only read surface (there is no one-shot "get
 transcript" RPC); a snapshot is "subscribe, take the first item, drop" — drop
 cancels server-side, exactly what the sidebar does on attach.
+
+`previews` (agent-previews ticket 07) is scoped to the calling chat: the
+engine's `WatchPreviews` snapshot lists this device's Roboco-started services
+for that chat, and the tool keeps only the ones attributed to it — rows are
+`{name, url, port, startedAt}` with `url` in the engine-local form
+(`http://<hostname>:7331`; the hostname is stable across restarts and port
+changes). It is read-only — the engine mints hostnames on discovery, there is
+no create/delete — and a server with no chat context (a terminal) returns an
+empty list rather than an error. The engine's own proxy bind failure rides the
+result as `error`. A clickable transcript rendering of the links is a possible
+follow-up; the Ports card and browser pane remain the canonical open paths.
 
 `wait_for_turn`, `send_message` with `wait`, `read_chat` and `get_chat` all
 report the observation to the engine for the calling chat afterwards

@@ -27,9 +27,9 @@ async fn live_run(cancel: bool) {
             rx
         }),
         turn: TurnControl::default(),
-        origin: None,
     };
     let request = RunRequest {
+        env: Default::default(),
         prompt: "Run the shell command `printf ACP-TOOL-OK` exactly once using bash. After seeing its result, reply exactly FIRST-DONE. Do not call any other tools.".into(),
         harness: None, model: None, reasoning: None,
         model_options: serde_json::Map::new(), cwd: cwd.path().display().to_string(),

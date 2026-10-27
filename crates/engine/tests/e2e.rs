@@ -27,6 +27,7 @@ const VIEWER: &str = "viewer-device";
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -2441,6 +2442,7 @@ async fn real_claude_sees_uploaded_image_inline() {
          Attached images (local files — open them to view):\n- {path}"
     );
     let request = RunRequest {
+        env: Default::default(),
         prompt,
         harness: None,
         model: Some("haiku".into()),

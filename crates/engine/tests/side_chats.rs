@@ -212,6 +212,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
             "side",
             HarnessId::Mock,
             RunRequest {
+                env: Default::default(),
                 mcp: None,
                 prompt: "What did I ask you to remember?".into(),
                 harness: Some(HarnessId::Mock),
@@ -383,6 +384,7 @@ async fn assistant_entries_record_the_provider_turn_ref() {
             "chat",
             HarnessId::Mock,
             RunRequest {
+                env: Default::default(),
                 mcp: None,
                 prompt: "turn one".into(),
                 harness: Some(HarnessId::Mock),
@@ -632,6 +634,7 @@ async fn claude_assistant_entries_record_the_provider_turn_ref() {
             "chat",
             HarnessId::ClaudeCode,
             RunRequest {
+                env: Default::default(),
                 mcp: None,
                 prompt: "turn one".into(),
                 harness: Some(HarnessId::ClaudeCode),
@@ -1795,6 +1798,7 @@ async fn side_turn_on_harness(
             chat,
             harness,
             RunRequest {
+                env: Default::default(),
                 mcp: None,
                 prompt: prompt.into(),
                 harness: Some(harness),
@@ -2007,6 +2011,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
         .await
         .unwrap();
     let request = |prompt: &str| RunRequest {
+        env: Default::default(),
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),
@@ -2194,6 +2199,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
         .await
         .unwrap();
     let request = |prompt: &str| RunRequest {
+        env: Default::default(),
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),
@@ -2963,6 +2969,7 @@ async fn a_limited_source_chat_can_be_forked_into_another_harness() {
             "main",
             HarnessId::Mock,
             RunRequest {
+                env: Default::default(),
                 mcp: None,
                 prompt: "keep going".into(),
                 harness: Some(HarnessId::Mock),

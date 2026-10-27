@@ -73,3 +73,13 @@ previews tests, wiregen. Source: `.scratch/upstream-drift/2026-10-25.md` § A8.
   needs a connected peer under roboco's engine-local RPC.
 - **Deliberately excluded:** the two edge `preview-room*` hunks (no edge,
   ADR 0003/0004).
+- **2026-10-27 — merged with main's agent-previews (PR #33).** Main ported
+  the same upstream commit independently (agent-previews ticket 01,
+  `b6b7c8aa`), restoring upstream's `RunRequest.env` (serde-skipped both
+  ways) + `apply_run_env` instead of this port's `RunControls.origin` +
+  `apply_origin`. The merge keeps main's mechanism (upstream's shape, and the
+  one the agent-previews tickets build on) and drops `RunControls.origin`, so
+  the origin is stamped once, in `drive_run`. The preview crate and
+  `proto/preview.rs` take main's files (identical port plus Windows discovery
+  and the session relay); the WATCH_PREVIEWS routing of the Ports card through
+  the chat's owning engine (`a69ec35c`) is kept.

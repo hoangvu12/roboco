@@ -370,6 +370,17 @@ pub struct RunRequest {
     /// no Roboco tools; title runs never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpServer>,
+    /// Host-resolved environment for the spawned agent process: the engine
+    /// stamps [`ORIGIN_ENV`](crate::ORIGIN_ENV) here so preview discovery can
+    /// attribute the servers the agent starts to their chat. Filled by the
+    /// HOST right before the request reaches the harness; every driver
+    /// applies it to the child it spawns.
+    /// `serde(skip)` in BOTH directions: the value never rides the command
+    /// plane, the session doc, or the run journal — and a remote sender can
+    /// never inject environment into a host's agents.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// One side of a native fork riding [`RunRequest`]: the source provider
@@ -1062,6 +1073,7 @@ mod tests {
         assert!(json.get("attachments").is_none());
         // Populated lists round-trip.
         let req = RunRequest {
+            env: Default::default(),
             attachments: vec!["/tmp/a.png".into()],
             ..req
         };
@@ -1081,6 +1093,7 @@ mod tests {
         assert!(json.get("mcp").is_none());
         // A populated server round-trips camelCased, env sorted by key.
         let req = RunRequest {
+            env: Default::default(),
             mcp: Some(McpServer {
                 name: "roboco".into(),
                 command: "/usr/bin/roboco".into(),
@@ -1111,6 +1124,7 @@ mod tests {
         // A populated spec round-trips camelCased; a spec without spaceId
         // parses (additive compat for pre-spec hosts) and serializes away.
         let req = RunRequest {
+            env: Default::default(),
             worktree: Some(WorktreeSpec {
                 repo_path: "/repos/comet".into(),
                 base: "main".into(),
@@ -1142,6 +1156,7 @@ mod tests {
         // A populated fork round-trips camelCased, boundary and fallback; a
         // fork without a fallback parses (the driver then has none to paste).
         let req = RunRequest {
+            env: Default::default(),
             provider_fork: Some(ProviderFork {
                 session_id: "th-source".into(),
                 last_turn: "turn-7".into(),
@@ -1172,6 +1187,7 @@ mod tests {
         // The engine attaches the budgeted transcript only to a failover's
         // continuation: it rides beside `resume`, camelCased.
         let req = RunRequest {
+            env: Default::default(),
             resume: Some("sess-42".into()),
             resume_fallback_history: Some("<transcript>…".into()),
             ..req

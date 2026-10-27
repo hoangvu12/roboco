@@ -1,6 +1,6 @@
 //! Observe only this user's listeners, and attribute each to the Roboco agent
-//! run or terminal that started it (see [`roboco_proto::ORIGIN_ENV`]). HTTP probes
-//! run only after that origin is established and commands performing
+//! run or terminal that started it (see [`roboco_proto::ORIGIN_ENV`]). HTTP
+//! probes run only after that origin is established and commands performing
 //! authentication have been excluded.
 use std::{
     collections::{HashMap, HashSet},
@@ -10,6 +10,11 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use roboco_proto::ORIGIN_ENV;
+
+/// The creation-time struct both Windows reductions share (see
+/// [`filetime_epoch_seconds`]).
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::FILETIME;
 
 #[derive(Debug, Clone)]
 pub struct Listener {
@@ -635,11 +640,289 @@ pub fn listeners(origins: &mut Origins) -> Option<Vec<Listener>> {
     Some(result)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// A table row's local address, or `None` when the bind is not
+/// loopback-reachable. A wildcard bind is canonicalized to the loopback
+/// literal of its family (`dwLocalAddr == 0` and an all-zero `ucLocalAddr`
+/// are loopback-reachable); IPv4-mapped binds classify by their embedded
+/// address, which std's `is_loopback` would miss.
+#[cfg(target_os = "windows")]
+fn table_address(ip: IpAddr, port: u16) -> Option<SocketAddr> {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        ip => ip,
+    };
+    if !ip.is_loopback() && !ip.is_unspecified() {
+        return None;
+    }
+    let ip = match ip {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ip => ip,
+    };
+    Some(SocketAddr::new(ip, port))
+}
+
+/// sysinfo's environment as the NUL-separated block [`origin_marker`]
+/// reads. An empty one is reported as a *failed* read, not as "no marker":
+/// sysinfo cannot tell an unreadable PEB (an elevated or other-user
+/// process) from a genuinely empty environment, and a failed read is
+/// retried next scan — never remembered — while attribution walks on to
+/// the nearest marked readable ancestor.
+#[cfg(target_os = "windows")]
+fn sysinfo_environment(environ: &[std::ffi::OsString]) -> Option<Vec<u8>> {
+    if environ.is_empty() {
+        return None;
+    }
+    let mut environment = Vec::new();
+    for entry in environ {
+        environment.extend_from_slice(entry.as_encoded_bytes());
+        environment.push(0);
+    }
+    Some(environment)
+}
+
+/// The loopback-reachable listening sockets with owning pids, from
+/// `GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL)` — one call per family.
+/// The API documents no privilege requirement; ports and addresses arrive
+/// in network byte order. `None` only when no table could be read at all.
+#[cfg(target_os = "windows")]
+fn tcp_sockets() -> Option<Vec<(u32, SocketAddr)>> {
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR},
+        NetworkManagement::IpHelper::{
+            GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+            MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_TCP_STATE_LISTEN,
+            TCP_TABLE_OWNER_PID_ALL,
+        },
+        Networking::WinSock::{AF_INET, AF_INET6},
+    };
+    let mut sockets = Vec::new();
+    let mut tables = 0;
+    for family in [AF_INET, AF_INET6] {
+        // The first call sizes the table; listeners starting between the
+        // calls can grow it, so retry while the buffer is too small.
+        let mut size = 0;
+        let mut status = unsafe {
+            GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                family as u32,
+                TCP_TABLE_OWNER_PID_ALL,
+                0,
+            )
+        };
+        let mut buffer = Vec::new();
+        while status == ERROR_INSUFFICIENT_BUFFER {
+            buffer = vec![0u8; size as usize];
+            status = unsafe {
+                GetExtendedTcpTable(
+                    buffer.as_mut_ptr().cast(),
+                    &mut size,
+                    0,
+                    family as u32,
+                    TCP_TABLE_OWNER_PID_ALL,
+                    0,
+                )
+            };
+        }
+        if status != NO_ERROR {
+            // A table that could not be read is one fewer source, as with
+            // /proc/net/tcp6 on Linux; only every table failing makes the
+            // scan read as nothing (the caller then keeps its previous
+            // list).
+            continue;
+        }
+        tables += 1;
+        if family == AF_INET6 {
+            let table = buffer.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID;
+            let entries = unsafe { (*table).dwNumEntries } as usize;
+            // The struct is a variable-length header: trust dwNumEntries
+            // only as far as the buffer actually holds rows.
+            let rows = unsafe {
+                std::slice::from_raw_parts(
+                    (*table).table.as_ptr(),
+                    entries.min(buffer.len() / std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>()),
+                )
+            };
+            for row in rows {
+                if row.dwState != MIB_TCP_STATE_LISTEN as u32 {
+                    continue;
+                }
+                let port = u16::from_be(row.dwLocalPort as u16);
+                if let Some(address) =
+                    table_address(IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)), port)
+                {
+                    sockets.push((row.dwOwningPid, address));
+                }
+            }
+        } else {
+            let table = buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
+            let entries = unsafe { (*table).dwNumEntries } as usize;
+            let rows = unsafe {
+                std::slice::from_raw_parts(
+                    (*table).table.as_ptr(),
+                    entries.min(buffer.len() / std::mem::size_of::<MIB_TCPROW_OWNER_PID>()),
+                )
+            };
+            for row in rows {
+                if row.dwState != MIB_TCP_STATE_LISTEN as u32 {
+                    continue;
+                }
+                let port = u16::from_be(row.dwLocalPort as u16);
+                if let Some(address) = table_address(
+                    IpAddr::V4(Ipv4Addr::from(u32::from_be(row.dwLocalAddr))),
+                    port,
+                ) {
+                    sockets.push((row.dwOwningPid, address));
+                }
+            }
+        }
+    }
+    (tables > 0).then_some(sockets)
+}
+
+/// See the Linux variant. `started_at` is whole seconds since the epoch —
+/// how the scanner derives it from sysinfo — so both sides reduce
+/// `GetProcessTimes`' creation FILETIME with the same arithmetic and agree
+/// exactly.
+///
+/// A start-time-less row (a process sysinfo could not even open, elevated
+/// or other-user) degrades to a pid-only check. Stale-reuse window: Windows
+/// reuses pids once the last handle to a process closes, so a recycled pid
+/// passes this check until the next scan re-attributes the port (~2s).
+/// That window is the price of not elevating, and it is why such rows are
+/// never memoized (see the scanner's `ProbeMemory`).
+#[cfg(target_os = "windows")]
+pub fn same_process(pid: u32, started_at: u64) -> bool {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED},
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // A live protected process can deny even a limited query:
+            // "access denied" means the pid is still taken; anything else
+            // (notably "invalid parameter") means it is gone.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut exit, mut kernel, mut user) = (creation, creation, creation);
+        let checked =
+            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+        let matched =
+            checked && (started_at == 0 || filetime_epoch_seconds(&creation) == started_at);
+        CloseHandle(handle);
+        matched
+    }
+}
+
+/// The creation FILETIME to seconds since the epoch — sysinfo's own
+/// reduction (`filetime / 10_000_000 - 11_644_473_600`), replicated so the
+/// scanner's start times and [`same_process`] agree exactly. Saturating
+/// differs from sysinfo's arithmetic only for creation times before 1970,
+/// which Windows does not produce.
+#[cfg(target_os = "windows")]
+fn filetime_epoch_seconds(creation: &FILETIME) -> u64 {
+    let filetime = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+    (filetime / 10_000_000).saturating_sub(11_644_473_600)
+}
+
+/// See the Linux variant. Windows joins the IP Helper TCP table to
+/// sysinfo's process data. No elevation: `GetExtendedTcpTable` documents
+/// no privilege requirement, and sysinfo opens each process with query
+/// rights — a process it cannot even open (elevated or other-user) keeps
+/// pid and parent but loses start time, cwd, arguments and environment.
+/// Such rows stay attributed through the nearest marked readable ancestor
+/// and are never memoized (see [`same_process`] and the scanner's
+/// `ProbeMemory`).
+#[cfg(target_os = "windows")]
+pub fn listeners(origins: &mut Origins) -> Option<Vec<Listener>> {
+    let sockets = tcp_sockets()?;
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        // Everything the join needs. Memory, cpu, disk usage and user are
+        // deliberately not refreshed — the user queries alone would open a
+        // token for every process on the machine.
+        sysinfo::ProcessRefreshKind::new()
+            .with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_cwd(sysinfo::UpdateKind::OnlyIfNotSet)
+            .with_environ(sysinfo::UpdateKind::OnlyIfNotSet),
+    );
+    // The ancestry walk needs parent and start time; both come from the
+    // system table and survive an unreadable PEB, so degraded processes
+    // stay walkable. sysinfo replaces an entry when a recycled pid's start
+    // time changed, keeping (pid, started_at) honest keys.
+    let mut processes = HashMap::new();
+    for (pid, process) in system.processes() {
+        processes.insert(
+            pid.as_u32(),
+            Process {
+                parent: process.parent().map(|parent| parent.as_u32()).unwrap_or(0),
+                started_at: process.start_time(),
+            },
+        );
+    }
+    let mut result = Vec::new();
+    for (pid, address) in sockets {
+        let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+            continue; // exited between the table read and the process walk
+        };
+        let Some(walk) = processes.get(&pid) else {
+            continue;
+        };
+        // Canonicalized like the macOS scanner: `candidates` matches cwds
+        // against canonicalized checkout roots, and Windows canonicalization
+        // yields the \\?\ verbatim spelling both sides must share. An
+        // unreadable cwd degrades to empty: no checkout matches it, so the
+        // listener lists under the chat that started it.
+        let cwd = match process.cwd() {
+            Some(cwd) => std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            None => PathBuf::new(),
+        };
+        let args: Vec<String> = process
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        result.push(Listener {
+            pid,
+            parent: walk.parent,
+            cwd,
+            args,
+            started_at: walk.started_at,
+            address,
+            roboco_owned: false,
+            origin: None,
+            chat_id: None,
+        });
+    }
+    origins.attribute(&mut result, &processes, |pid| {
+        system
+            .process(sysinfo::Pid::from_u32(pid))
+            .and_then(|process| sysinfo_environment(process.environ()))
+    });
+    result.sort_by_key(|l| (l.address, l.pid));
+    result.dedup_by_key(|l| (l.address, l.pid));
+    Some(result)
+}
+
+/// Platforms without a scanner: the engine does not build for these today
+/// (mobile links the client, not the engine); keep the shapes linking if
+/// that ever changes.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub fn listeners(_origins: &mut Origins) -> Option<Vec<Listener>> {
     Some(Vec::new())
 }
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub fn same_process(_pid: u32, _started_at: u64) -> bool {
     false
 }
@@ -864,6 +1147,62 @@ mod tests {
         );
         assert!(proc_address("0101A8C0:1435", false).is_none());
         assert!(proc_address("malformed:00", true).is_none());
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn accepts_only_loopback_reachable_table_addresses() {
+        let address = |ip: IpAddr| table_address(ip, 5173);
+        // Wildcards are loopback-reachable, canonicalized to their family's
+        // loopback literal; explicit loopback binds pass as themselves.
+        assert_eq!(
+            address(IpAddr::V4(Ipv4Addr::UNSPECIFIED)).unwrap(),
+            "127.0.0.1:5173".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            address(IpAddr::V6(Ipv6Addr::UNSPECIFIED)).unwrap(),
+            "[::1]:5173".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            address(IpAddr::V4(Ipv4Addr::LOCALHOST)).unwrap(),
+            "127.0.0.1:5173".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            address(IpAddr::V6(Ipv6Addr::LOCALHOST)).unwrap(),
+            "[::1]:5173".parse::<SocketAddr>().unwrap()
+        );
+        // IPv4-mapped binds classify by their embedded address.
+        assert_eq!(
+            address(IpAddr::V6(Ipv6Addr::from([
+                0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001
+            ])))
+            .unwrap(),
+            "127.0.0.1:5173".parse::<SocketAddr>().unwrap()
+        );
+        // Anything else is not reachable from loopback and never lists.
+        assert!(address(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 4))).is_none());
+        assert!(address(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))).is_none());
+        assert!(
+            address(IpAddr::V6(Ipv6Addr::from([
+                0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0104
+            ])))
+            .is_none()
+        );
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn an_unreadable_peb_degrades_to_a_failed_environment_read() {
+        // sysinfo reports an unreadable PEB (elevated/other-user process) as
+        // an empty environment, indistinguishable from a genuinely empty
+        // one: map it to a failed read, so the marker verdict is retried
+        // every scan — never remembered as "no marker" — and attribution
+        // walks on to the nearest marked readable ancestor.
+        assert!(sysinfo_environment(&[]).is_none());
+        let environment = sysinfo_environment(&[
+            "PATH=C:\\Windows".into(),
+            format!("{ORIGIN_ENV}=chat:a").into(),
+        ])
+        .unwrap();
+        assert_eq!(origin_marker(&environment).as_deref(), Some("chat:a"));
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]

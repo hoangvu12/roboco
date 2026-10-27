@@ -39,6 +39,7 @@ pub mod lenient;
 pub mod new_session;
 pub mod notify;
 pub mod pairing;
+pub mod previews;
 pub mod projects;
 pub mod rooms;
 pub mod runtime;
@@ -73,6 +74,8 @@ pub use engines::{
 pub use events::{ClientEvent, ClientListener};
 pub use notify::{NotifyListener, RunActivity, RunRef, SessionEvent};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
+pub use previews::{PanelPhase, PanelState, PreviewPanel, DEFAULT_IDLE, PANEL_PROXY_PORT};
+pub use roboco_preview_relay::client::ClientStatus;
 pub use rooms::{FleetOffer, RoomError, RoomInviteTarget, RoomJoin, RoomRecord, parse_room_invite};
 pub use files::FileMatch;
 pub use new_session::{
@@ -169,6 +172,10 @@ pub(crate) struct ClientInner {
     /// The derived workspace store (ticket 07); installed right after
     /// construction because it needs a `Weak` back-reference.
     pub(crate) workspace: OnceLock<Arc<workspace::WorkspaceStore>>,
+    /// The preview hub (agent-previews ticket 05): the shared client proxy
+    /// on 7332 plus the per-chat panel state machines. Same install shape
+    /// as the workspace store — a `Weak` back-reference is needed.
+    pub(crate) previews: OnceLock<Arc<previews::PreviewsHub>>,
     /// Cancels the event pump on `shutdown`.
     client_cancel: CancellationToken,
     /// Client-wide network flag (`true` = online). `false` only for a
@@ -258,6 +265,54 @@ impl Client {
         timings: Timings,
         opener: Arc<dyn tailcat::TunnelOpener>,
     ) -> Result<Arc<Self>, ClientError> {
+        Self::new_with_knobs(
+            config,
+            engines,
+            rooms,
+            listener,
+            timings,
+            opener,
+            previews::PANEL_PROXY_PORT,
+            previews::DEFAULT_IDLE,
+        )
+    }
+
+    /// Test seam: the client preview proxy's bind knobs — an ephemeral
+    /// port and a short idle, so the preview tests never touch the stable
+    /// 7332 another test binary may be squatting on.
+    #[doc(hidden)]
+    pub fn new_with_preview_knobs(
+        config: ClientConfig,
+        engines: Vec<PairedEngine>,
+        rooms: Vec<rooms::RoomRecord>,
+        listener: Arc<dyn ClientListener>,
+        timings: Timings,
+        opener: Arc<dyn tailcat::TunnelOpener>,
+        preview_port: u16,
+        preview_idle: Duration,
+    ) -> Result<Arc<Self>, ClientError> {
+        Self::new_with_knobs(
+            config,
+            engines,
+            rooms,
+            listener,
+            timings,
+            opener,
+            preview_port,
+            preview_idle,
+        )
+    }
+
+    fn new_with_knobs(
+        config: ClientConfig,
+        engines: Vec<PairedEngine>,
+        rooms: Vec<rooms::RoomRecord>,
+        listener: Arc<dyn ClientListener>,
+        timings: Timings,
+        opener: Arc<dyn tailcat::TunnelOpener>,
+        preview_port: u16,
+        preview_idle: Duration,
+    ) -> Result<Arc<Self>, ClientError> {
         std::fs::create_dir_all(&config.data_dir).map_err(|error| ClientError::Storage {
             message: error.to_string(),
         })?;
@@ -289,6 +344,9 @@ impl Client {
         }
         // Built before the literal: `timings` moves into its field below.
         let notify = notify::NotifyHub::new(timings.notify.clone());
+        // The preview hub's label file lives under the same cache root;
+        // read before `config` moves into the literal.
+        let preview_labels_dir = config.data_dir.clone();
         let inner = Arc::new(ClientInner {
             config,
             timings,
@@ -300,6 +358,7 @@ impl Client {
             fleet,
             pump,
             workspace: OnceLock::new(),
+            previews: OnceLock::new(),
             client_cancel,
             network,
             foreground,
@@ -319,6 +378,13 @@ impl Client {
         });
         let workspace = workspace::WorkspaceStore::start(Arc::downgrade(&inner));
         let _ = inner.workspace.set(workspace);
+        let previews = previews::PreviewsHub::start(
+            Arc::downgrade(&inner),
+            &preview_labels_dir,
+            preview_port,
+            preview_idle,
+        );
+        let _ = inner.previews.set(previews);
         let ids: Vec<String> = lock(&inner.engines)
             .entries
             .iter()
@@ -745,6 +811,63 @@ impl Client {
         self.inner
             .notify
             .set_listener(listener, Arc::downgrade(&self.inner));
+    }
+
+    // ── previews (agent-previews ticket 05) ──────────────────────────
+
+    /// Start watching one chat's previews: `WatchPreviews {chatId}` on
+    /// the chat's engine, with the panel state machine of the desktop's
+    /// per-browser-tab subscription (2 s resubscribe, the
+    /// `state/preview.ts` phases). `chat_id` is the **scoped** id the
+    /// app holds; a chat whose engine is not paired fails fast with
+    /// `NotFound` (no preview surface exists on unpaired engines beyond
+    /// the panel's honest note).
+    pub fn watch_previews(&self, chat_id: &str) -> Result<PreviewPanel, ClientError> {
+        let scoped = ScopedId::parse(chat_id).map_err(rpc_error_to_client_error)?;
+        let engine_id = scoped.engine.0;
+        // The engine key must be one of ours (a local/unscoped id cannot
+        // be: the app only ever holds scoped chat ids, but a malformed
+        // one must fail fast, not dial an empty engine).
+        if !lock(&self.inner.engines)
+            .entries
+            .iter()
+            .any(|entry| entry.paired.engine_id == engine_id)
+        {
+            return Err(ClientError::NotFound {
+                message: format!("Unknown engine for chat: {engine_id}"),
+            });
+        }
+        Ok(previews::start_panel(
+            &self.inner,
+            &engine_id,
+            chat_id,
+        ))
+    }
+
+    /// The client preview proxy's listener status (the bound 7332, or the
+    /// inline bind error). Never blocks; the listener itself starts
+    /// lazily on the first watcher.
+    pub fn preview_proxy_status(
+        &self,
+    ) -> roboco_preview_relay::client::ClientStatus {
+        self.hub().status()
+    }
+
+    /// Mark an engine's previews as viewed (or not) — the proxy
+    /// listener's lazy start / idle shutdown. The panel does this on its
+    /// own open/close; the browser entry holds its own watcher while it
+    /// is on screen, so the 7332 listener stays bound while a preview is
+    /// actually being viewed even with the panel's composition disposed
+    /// beneath it.
+    pub fn preview_proxy_set_watching(&self, engine_id: &str, watching: bool) {
+        self.hub().watch_engine(engine_id, watching);
+    }
+
+    fn hub(&self) -> &Arc<previews::PreviewsHub> {
+        self.inner
+            .previews
+            .get()
+            .expect("the preview hub starts with the client")
     }
 
     // ── workspace (ticket 07) ─────────────────────────────────────────

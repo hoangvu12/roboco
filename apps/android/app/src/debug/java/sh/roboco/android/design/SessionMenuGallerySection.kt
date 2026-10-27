@@ -161,6 +161,7 @@ fun SessionMenuGallerySection() {
                                                 copyTranscript(transcript, clipboard, toaster)
                                             }
                                         },
+                                        onShowPreviews = {},
                                         onShowAccounts = {},
                                         onArchive = {
                                             actions.archive("c1") { outcome ->

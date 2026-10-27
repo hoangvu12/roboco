@@ -1,6 +1,6 @@
 //! Engine-owned discovery/proxy lifecycle, independent of headed UI lifetimes.
 use crate::{
-    catalog::Catalog,
+    catalog::{Catalog, LocalRoute},
     discovery,
     login::{self, CallbackForwarder, CallbackRoutes, CallbackTunnels},
     mux::{self, BoxIo, Connector},
@@ -25,7 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// holds for the socket's lifetime, because the process enumeration each
 /// cycle already proves the same process still owns the same port. Sockets
 /// that did not answer HTTP (a server bound but not yet serving) are retried
-/// with a capped exponential backoff instead of on every cycle.
+/// with a capped exponential backoff instead of on every cycle. The one
+/// exception is a start-time-less listener (see [`ProbeMemory::plan`]): its
+/// identity cannot be proven, so it is probed every cycle.
 #[derive(Default)]
 pub(crate) struct ProbeMemory {
     verdicts: HashMap<(u32, u64, SocketAddr), Verdict>,
@@ -62,6 +64,15 @@ impl ProbeMemory {
         let mut known = Vec::new();
         let mut probe = Vec::new();
         for candidate in candidates {
+            // A start-time-less listener (a Windows process whose start time
+            // could not be read; see discovery::same_process) cannot prove it
+            // is still the process a verdict was minted for: a recycled pid
+            // on the same port would inherit a stranger's verdict. Such rows
+            // skip the memoization and are probed every cycle instead.
+            if candidate.1.started_at == 0 {
+                probe.push(candidate);
+                continue;
+            }
             match self.verdicts.get(&probe_key(&candidate.1)) {
                 Some(Verdict::Http) => known.push(candidate),
                 Some(Verdict::NotHttp { retry_at, .. }) if *retry_at > now => {}
@@ -71,6 +82,9 @@ impl ProbeMemory {
         (known, probe)
     }
     pub(crate) fn record(&mut self, listener: &discovery::Listener, http: bool, now: Instant) {
+        if listener.started_at == 0 {
+            return; // never memoized; see plan
+        }
         let key = probe_key(listener);
         let verdict = if http {
             Verdict::Http
@@ -100,6 +114,8 @@ struct Inner {
     callback_tunnels: CallbackTunnels,
     peers: std::sync::OnceLock<Peers>,
 }
+pub type Projects = Arc<dyn Fn() -> Scope + Send + Sync>;
+
 /// What discovery serves, re-read every scan.
 #[derive(Clone, Default)]
 pub struct Scope {
@@ -114,7 +130,6 @@ pub struct Scope {
     /// Ports agent CLIs serve their own protocol on (`opencode serve`).
     pub reserved_ports: HashSet<u16>,
 }
-pub type Projects = Arc<dyn Fn() -> Scope + Send + Sync>;
 
 /// This scan's candidates (`None` when the process table could not be read),
 /// each with the checkout it is listed under.
@@ -193,6 +208,19 @@ impl PreviewService {
     }
     pub fn catalog(&self) -> &Catalog {
         &self.0.catalog
+    }
+    /// The connector a session-authenticated preview relay dials through
+    /// (the engine's `/preview-relay` route): every OPEN it handles resolves
+    /// only `service_id`, and only while the live catalog lists that service
+    /// attributed to `chat_id`. The dial itself re-verifies process identity
+    /// (see [`LocalConnector`]), so remote metadata never names a TCP
+    /// address — the catalog does, and only for the scoped live service.
+    pub fn relay_connector(&self, chat_id: &str, service_id: &str) -> Arc<dyn Connector> {
+        Arc::new(ChatScoped {
+            chat: chat_id.to_owned(),
+            service: service_id.to_owned(),
+            catalog: self.0.catalog.clone(),
+        })
     }
     /// The registry the agent-login flows publish their callback ports to.
     pub fn callback_routes(&self) -> CallbackRoutes {
@@ -357,6 +385,22 @@ impl PreviewService {
     }
 }
 struct LocalConnector(Catalog, CallbackRoutes);
+impl LocalConnector {
+    /// Dial one already-resolved route, re-verifying process identity first.
+    /// A stopped dev server's port may have been reused since the last scan;
+    /// checking the one pid is cheap (a full [`discovery::listeners`] pass
+    /// walks every process, and per-asset full passes showed up as memory
+    /// and CPU churn on the hosting Mac).
+    async fn connect_route(route: LocalRoute) -> anyhow::Result<BoxIo> {
+        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
+        let valid =
+            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
+        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
+        Ok(Box::new(
+            tokio::net::TcpStream::connect(route.listener.address).await?,
+        ))
+    }
+}
 #[async_trait::async_trait]
 impl Connector for LocalConnector {
     async fn connect(&self, id: &str) -> anyhow::Result<BoxIo> {
@@ -372,18 +416,39 @@ impl Connector for LocalConnector {
             .0
             .local_route(id)
             .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
-        // Recheck process identity before dialing: a stopped dev server's port
-        // may have been reused since the last scan. Checking the one pid is
-        // cheap; enumerating every listener here spawned lsof and ps for each
-        // asset a remote page requested, which showed up as memory and CPU
-        // churn on the hosting Mac.
-        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
-        let valid =
-            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
-        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
-        Ok(Box::new(
-            tokio::net::TcpStream::connect(route.listener.address).await?,
-        ))
+        Self::connect_route(route).await
+    }
+}
+
+/// One relay's authorization scope: the [`mux::PeerScoped`] pattern applied
+/// to a chat instead of a device. Every OPEN this connector handles resolves
+/// only the scoped service id, only while the live catalog attributes it to
+/// the scoped chat — the relay request's chat (ticket 01's attribution),
+/// checked per OPEN so a service that dies or moves to another chat stops
+/// resolving on an already-open relay. The dial itself is
+/// [`LocalConnector::connect_route`]: the catalog's address, never one the
+/// peer named, with process identity re-verified first.
+struct ChatScoped {
+    chat: String,
+    service: String,
+    catalog: Catalog,
+}
+#[async_trait::async_trait]
+impl Connector for ChatScoped {
+    async fn connect(&self, service: &str) -> anyhow::Result<BoxIo> {
+        anyhow::ensure!(
+            service == self.service,
+            "preview service is outside this relay's scope"
+        );
+        let route = self
+            .catalog
+            .local_route(service)
+            .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
+        anyhow::ensure!(
+            route.service.chat_id.as_deref() == Some(self.chat.as_str()),
+            "preview service is not attributed to this relay's chat"
+        );
+        LocalConnector::connect_route(route).await
     }
 }
 
@@ -451,5 +516,24 @@ mod tests {
         }
         let (_, probe) = memory.plan(vec![((), listener(7, 8081))], now);
         assert_eq!(probe.len(), 1, "still retried once per max backoff");
+    }
+    #[test]
+    fn start_time_less_listeners_are_probed_every_cycle() {
+        // Windows degradation (see discovery::same_process): a process
+        // whose start time could not be read cannot prove identity, so no
+        // verdict is ever remembered for it — a recycled pid must not
+        // inherit one.
+        let mut memory = ProbeMemory::default();
+        let t0 = Instant::now();
+        let mut degraded = listener(7, 8081);
+        degraded.started_at = 0;
+        for cycle in 0..3u64 {
+            let now = t0 + Duration::from_secs(2 * cycle);
+            let (known, probe) = memory.plan(vec![((), degraded.clone())], now);
+            assert!(known.is_empty(), "cycle {cycle} must not trust a verdict");
+            assert_eq!(probe.len(), 1, "cycle {cycle} must re-probe");
+            // An HTTP verdict would be recorded, but must not stick.
+            memory.record(&probe[0].1, true, now);
+        }
     }
 }

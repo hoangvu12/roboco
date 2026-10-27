@@ -98,7 +98,7 @@ async fn actions_mark_what_they_start_with_their_terminal() {
         .unwrap();
     let action = snapshot.actions.last().unwrap();
     let run = launch_project_action(&terminals, action, root.path(), root.path(), 80, 24).unwrap();
-    terminals.associate_chat(&run.terminal.id, "chat");
+    terminals.associate_chat(&run.terminal.id, "chat").unwrap();
     let expected = roboco_proto::terminal_origin(&run.terminal.id);
     tokio::time::timeout(Duration::from_secs(10), async {
         while std::fs::read_to_string(root.path().join("origin")).ok() != Some(expected.clone()) {

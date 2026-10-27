@@ -7,6 +7,7 @@ use roboco_doc::{SessionCommandEntry, SessionCommandPayload, SessionCommandStatu
 fn run_request_attachments_survive_command_round_trip() {
     let doc = SessionDoc::init("chat-1").unwrap();
     let request = roboco_proto::RunRequest {
+        env: Default::default(),
         prompt: "p".into(),
         harness: None,
         model: None,

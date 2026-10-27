@@ -92,6 +92,7 @@ async fn origin_engine(dir: &Path, adapter: Option<PathBuf>) -> Origin {
         RoomStore::open(dir).unwrap(),
         AccessPolicy::Paired,
         Some(context.clone()),
+        None,
     ));
     Origin {
         core,

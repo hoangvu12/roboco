@@ -4,12 +4,18 @@ use ts_rs::TS;
 
 pub const PREVIEW_PROXY_PORT: u16 = 7331;
 
+/// The *client-side* preview proxy's port (Phase C): a client relaying a
+/// remote engine's previews binds `127.0.0.1:7332` — unclaimed; the engine
+/// owns 7331 and the browser helper 7333 — only while a remote preview is
+/// being viewed. The engine never listens here.
+pub const PREVIEW_CLIENT_PROXY_PORT: u16 = 7332;
+
 /// Stamped by the engine into the environment of every process it launches:
 /// [`chat_origin`] for agent runs, [`terminal_origin`] for its terminals
 /// (project actions run in one). Children inherit it, through `nohup`,
 /// daemonizing and an engine restart alike, so preview discovery lists
-/// exactly the servers roboco started and knows which chat started them. One
-/// variable, so the nearest roboco launch always overwrites an outer one.
+/// exactly the servers Roboco started and knows which chat started them. One
+/// variable, so the nearest Roboco launch always overwrites an outer one.
 pub const ORIGIN_ENV: &str = "ROBOCO_ORIGIN";
 
 pub fn chat_origin(chat_id: &str) -> String {

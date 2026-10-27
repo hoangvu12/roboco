@@ -173,6 +173,7 @@ fn in_ms(ms: i64) -> i64 {
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: Some(HarnessId::ClaudeCode),
         model: None,

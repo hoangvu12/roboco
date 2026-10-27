@@ -3512,8 +3512,13 @@ impl Shell {
         });
         if let Ok(handle) = crate::request_routing::selected_target(self.state.read(cx)) {
             let chat_id = self.active_chat.clone();
+            // Every pane carries the preview proxy: remote panes ingest and
+            // watch through it, local panes feed the browser bypass list.
+            let previews = self
+                .state
+                .update(cx, |state, _| state.ensure_preview_proxy());
             browser.update(cx, |browser, cx| {
-                browser.watch_previews(handle, chat_id, cx)
+                browser.watch_previews(handle, chat_id, previews, cx)
             });
         }
         let owner = key.clone();

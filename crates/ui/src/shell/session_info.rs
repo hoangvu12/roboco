@@ -425,15 +425,15 @@ impl Shell {
         // ── The project's run actions.
         let actions = self.render_session_info_actions(&theme, cx);
 
-        // ── What runs alongside it.
-        // It stops at half the window's height, however much runs.
-        let lanes_height = self.viewport_height / 2.0;
-        let lanes = self.render_session_lanes(&chat, !docked, lanes_height, &theme, cx);
-
         // ── The ports its agents and terminals serve, at most a third of the
         // window tall before they scroll.
         let ports_height = self.viewport_height / 3.0;
         let ports = self.render_session_ports(&chat.id, !docked, ports_height, &theme, cx);
+
+        // ── What runs alongside it.
+        // It stops at half the window's height, however much runs.
+        let lanes_height = self.viewport_height / 2.0;
+        let lanes = self.render_session_lanes(&chat, !docked, lanes_height, &theme, cx);
 
         let body = div()
             .id("session-info-body")
@@ -450,7 +450,7 @@ impl Shell {
             .children(branch_row)
             .children(actions);
 
-        // The session card keeps its height; only the lanes under it give.
+        // The session and ports cards keep their height; only the lanes give.
         let card = div()
             .w(px(SESSION_CARD_WIDTH))
             .flex_shrink_0()
@@ -504,7 +504,7 @@ impl Shell {
         )
     }
 
-    /// The ports card: a row per server this chat can preview (one a roboco
+    /// The ports card: a row per server this chat can preview (one a Roboco
     /// agent or terminal started in its checkout, or one this chat's agent or
     /// terminals started anywhere), opening it in a browser tab: the first
     /// [`PORTS_INITIAL`], then a page more per "Show more", scrolling past
@@ -627,6 +627,7 @@ impl Shell {
         Some(
             div()
                 .id("session-ports")
+                .debug_selector(|| "session-ports".into())
                 .relative()
                 .w(px(SESSION_CARD_WIDTH))
                 .max_h(px(max_height))

@@ -200,6 +200,7 @@ impl TitleGenerator {
         );
         for attempt in 0..=RETRY_DELAYS_MS.len() {
             let request = RunRequest {
+                env: Default::default(),
                 prompt: title_prompt.clone(),
                 harness: Some(harness_id),
                 model: model.clone(),
@@ -288,7 +289,6 @@ async fn collect_text(
         steering: steer_rx,
         interrupt: interrupt.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     let mut stream = harness.run_title(request, controls).await?;
     let mut text = String::new();
@@ -372,6 +372,7 @@ mod tests {
             ],
         };
         let request = RunRequest {
+            env: Default::default(),
             prompt: "Title only".into(),
             harness: None,
             model: None,

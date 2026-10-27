@@ -627,9 +627,15 @@ impl Render for BrowserSurface {
                 .and_then(|s| url::Url::parse(s).ok())
                 .is_some_and(|u| {
                     super::model::loopback(&u)
-                        && !(u.port() == Some(roboco_proto::PREVIEW_PROXY_PORT)
-                            && u.host_str()
-                                .is_some_and(|host| host.ends_with(".localhost")))
+                        // A preview page — the engine's 7331 or the client
+                        // relay's 7332 — is the remote engine's content, not
+                        // a local site: no banner over it.
+                        && !(u.host_str().is_some_and(|host| host.ends_with(".localhost"))
+                            && matches!(
+                                u.port(),
+                                Some(roboco_proto::PREVIEW_PROXY_PORT)
+                                    | Some(roboco_proto::PREVIEW_CLIENT_PROXY_PORT)
+                            ))
                 });
         div().id("browser-surface").size_full().flex().flex_col().track_focus(&self.focus)
             .key_context("Browser").on_key_down(cx.listener(Self::key_down))

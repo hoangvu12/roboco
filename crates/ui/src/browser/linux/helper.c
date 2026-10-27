@@ -470,9 +470,54 @@ static void evaluated(GObject *web, GAsyncResult *result, gpointer data) {
     g_clear_object(&v);
     g_clear_error(&error);
 }
+// WebKitGTK's custom proxy mode (WebKitNetworkProxySettings applied to the
+// context's WebsiteDataManager; API verified against webkit2gtk-4.1): routes
+// the browser's http/ws requests through the client preview proxy while
+// remote previews are viewed, because stock resolvers do not synthesize
+// *.localhost. The API has no per-hostname scoping (ignore_hosts is a bypass
+// list over a GSimpleProxyResolver), so the scope is per scheme: http/ws to
+// the proxy, https/wss direct, and the bypass list keeps the local engine's
+// preview hostnames and loopback dev servers on their unchanged direct path.
+// port 0 restores the default (system resolver) path.
+static guint proxy_port;
+static gchar **proxy_bypass;
+static void apply_proxy(void) {
+    WebKitWebsiteDataManager *manager = webkit_web_context_get_website_data_manager(context);
+    if (!proxy_port) {
+        webkit_website_data_manager_set_network_proxy_settings(
+            manager, WEBKIT_NETWORK_PROXY_MODE_DEFAULT, NULL);
+        return;
+    }
+    gchar *proxy_uri = g_strdup_printf("http://127.0.0.1:%u", proxy_port);
+    WebKitNetworkProxySettings *settings =
+        webkit_network_proxy_settings_new(NULL, (const gchar * const *)proxy_bypass);
+    webkit_network_proxy_settings_add_proxy_for_scheme(settings, "http", proxy_uri);
+    webkit_network_proxy_settings_add_proxy_for_scheme(settings, "ws", proxy_uri);
+    webkit_website_data_manager_set_network_proxy_settings(
+        manager, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
+    webkit_network_proxy_settings_free(settings);
+    g_free(proxy_uri);
+}
+static void set_proxy(JsonObject *o) {
+    proxy_port = number(o, "port");
+    g_strfreev(proxy_bypass);
+    proxy_bypass = NULL;
+    if (json_object_has_member(o, "bypass")) {
+        JsonArray *bypass = json_object_get_array_member(o, "bypass");
+        guint length = json_array_get_length(bypass);
+        proxy_bypass = g_new0(gchar *, length + 1);
+        for (guint i = 0; i < length; i++)
+            proxy_bypass[i] = g_strdup(json_array_get_string_element(bypass, i));
+    }
+    apply_proxy();
+}
 static void command(JsonObject *o) {
     guint id = number(o, "id");
     const char *cmd = string(o, "cmd");
+    if (!strcmp(cmd, "proxy")) {
+        set_proxy(o);
+        return;
+    }
     Page *p = g_hash_table_lookup(pages, GUINT_TO_POINTER(id));
     if (!strcmp(cmd, "create")) {
         if (!p)
@@ -487,8 +532,15 @@ static void command(JsonObject *o) {
     }
     if (!strcmp(cmd, "load")) {
         const char *url = string(o, "url");
-        if (allowed(url))
+        if (allowed(url)) {
+            // Re-assert the preview proxy before a preview load: WebKit
+            // applies WebsiteDataManager proxy settings to sessions created
+            // after the call, so a page that predates the configuration
+            // needs it applied again (idempotent).
+            if (proxy_port && strstr(url, ".localhost:"))
+                apply_proxy();
             webkit_web_view_load_uri(p->web, url);
+        }
     } else if (!strcmp(cmd, "dismiss-menu")) {
         if (p->options) {
             webkit_option_menu_close(p->options);
@@ -623,6 +675,7 @@ int main(int argc, char **argv) {
     gtk_main();
     g_hash_table_destroy(pages);
     g_byte_array_unref(input);
+    g_strfreev(proxy_bypass);
     g_object_unref(context);
     return 0;
 }

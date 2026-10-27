@@ -92,6 +92,7 @@ async fn execution_lease_outlives_dropped_run_and_title_streams_until_child_is_r
 
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: Some("gpt-5.6-sol".into()),
@@ -132,7 +133,6 @@ fn controls(
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     (controls, steer_tx, token)
 }
@@ -589,7 +589,6 @@ async fn approvals_round_trip_as_input_requests() {
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     let mut req = request("scenario:approve");
     req.auto_approve = false;

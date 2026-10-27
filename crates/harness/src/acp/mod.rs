@@ -1298,8 +1298,9 @@ impl AcpHarness {
     /// sign-in stored.
     pub async fn sign_out(&self) -> Result<(), HarnessError> {
         let home = std::env::var("HOME").ok();
-        let (_scratch, mut child, _stderr, sign_in_prompted) =
-            self.spawn_agent(home.as_deref(), false, &[], None).await?;
+        let (_scratch, mut child, _stderr, sign_in_prompted) = self
+            .spawn_agent(home.as_deref(), false, &[], &Default::default())
+            .await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
                 client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
@@ -1703,7 +1704,7 @@ impl AcpHarness {
         cwd: Option<&str>,
         block_on_install: bool,
         extra_args: &[String],
-        origin: Option<&str>,
+        run_env: &std::collections::BTreeMap<String, String>,
     ) -> Result<
         (
             Option<ScratchDir>,
@@ -1719,9 +1720,6 @@ impl AcpHarness {
         cmd.args(extra_args);
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
-        // Everything the agent starts inherits the run's origin, so preview
-        // discovery can tell the chat's dev servers from the user's own.
-        crate::apply_origin(&mut cmd, origin);
         self.configure_adapter_environment(&mut cmd, &exe);
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
             cmd.current_dir(cwd);
@@ -1743,6 +1741,9 @@ impl AcpHarness {
         if let Some(dir) = &scratch {
             dir.apply(&mut cmd);
         }
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, run_env);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1794,7 +1795,12 @@ impl AcpHarness {
         cwd: Option<&std::path::Path>,
     ) -> Result<Vec<SlashCommand>, HarnessError> {
         let (_scratch, mut child, _stderr, sign_in_prompted) = self
-            .spawn_agent(cwd.and_then(|p| p.to_str()), false, &[], None)
+            .spawn_agent(
+                cwd.and_then(|p| p.to_str()),
+                false,
+                &[],
+                &Default::default(),
+            )
             .await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
@@ -1870,8 +1876,9 @@ impl AcpHarness {
     /// wire is the source of truth — the spec's static catalog only enriches
     /// matching entries and names the pick when the agent advertises nothing.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
-        let (_scratch, mut child, stderr_tail, sign_in_prompted) =
-            self.spawn_agent(None, false, &[], None).await?;
+        let (_scratch, mut child, stderr_tail, sign_in_prompted) = self
+            .spawn_agent(None, false, &[], &Default::default())
+            .await?;
         let (client, incoming) = match (child.stdin.take(), child.stdout.take()) {
             (Some(stdin), Some(stdout)) => {
                 client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
@@ -2401,9 +2408,9 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let (scratch, mut child, stderr_tail, sign_in_prompted) =
-            self.spawn_agent(Some(&request.cwd), true, &[], controls.origin.as_deref())
-                .await?;
+        let (scratch, mut child, stderr_tail, sign_in_prompted) = self
+            .spawn_agent(Some(&request.cwd), true, &[], &request.env)
+            .await?;
         let stdin = child
             .stdin
             .take()
@@ -3986,7 +3993,6 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn: turn_control,
-        origin: _origin,
     } = controls;
     let request_input = std::sync::Arc::new(request_input);
     let mut request = request;

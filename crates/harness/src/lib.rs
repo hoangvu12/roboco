@@ -152,21 +152,6 @@ pub struct RunControls {
     pub interrupt: CancellationToken,
     /// Turn-level stop and background-work reporting (see [`TurnControl`]).
     pub turn: TurnControl,
-    /// The origin the engine stamps into this run's process tree (see
-    /// [`roboco_proto::ORIGIN_ENV`]): `chat:<id>`, inherited by everything
-    /// the agent starts, so preview discovery can tell the chat's dev
-    /// servers from the user's own. `None` outside the engine (tests,
-    /// examples). Adapters pass it to [`apply_origin`] at spawn.
-    pub origin: Option<String>,
-}
-
-/// Stamp a run's origin (see [`roboco_proto::ORIGIN_ENV`]) onto an agent
-/// child: everything it starts inherits the marker, through `nohup`,
-/// daemonizing and an engine restart alike.
-pub fn apply_origin(cmd: &mut process::Command, origin: Option<&str>) {
-    if let Some(origin) = origin {
-        cmd.env(roboco_proto::ORIGIN_ENV, origin);
-    }
 }
 
 /// Catalog provenance stays internal; RPC clients retain the Vec<Model> shape.
@@ -341,6 +326,16 @@ pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
         exe.parent().filter(|d| !d.as_os_str().is_empty()),
     );
     apply_login_shell_env(cmd.as_std_mut());
+}
+
+/// Apply the host-resolved run environment ([`RunRequest::env`]) to an agent
+/// child: the engine's origin marker, which preview discovery attributes
+/// the servers the agent starts to their chat. Call it after the driver's
+/// own env setup so the host's values win.
+pub fn apply_run_env(cmd: &mut process::Command, env: &std::collections::BTreeMap<String, String>) {
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
 }
 
 fn compose_path<'a>(

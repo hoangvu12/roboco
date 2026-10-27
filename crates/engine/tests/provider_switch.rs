@@ -153,6 +153,7 @@ fn rig() -> Rig {
 
 fn run_request(harness: HarnessId, prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         mcp: None,
         prompt: prompt.into(),
         harness: Some(harness),

@@ -59,7 +59,6 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
                 rx
             }),
             turn: Default::default(),
-            origin: None,
         },
         tx,
         token,

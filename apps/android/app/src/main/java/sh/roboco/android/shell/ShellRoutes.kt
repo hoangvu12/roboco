@@ -7,6 +7,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import sh.roboco.android.accounts.AgentAccountsRoute
 import sh.roboco.android.accounts.AgentAccountsScreen
+import sh.roboco.android.browser.BrowserRoute
+import sh.roboco.android.browser.BrowserScreen
+import sh.roboco.android.browser.PreviewPanelRoute
+import sh.roboco.android.browser.PreviewPanelScreen
 import sh.roboco.android.settings.EngineDetailRoute
 import sh.roboco.android.settings.EngineDetailScreen
 import sh.roboco.android.settings.LicensesRoute
@@ -96,6 +100,14 @@ fun ShellRouteContent(route: NavRoute) {
         // Agent Accounts row, the usage chip's "Accounts & Usage…" row
         // and the session ⋯ menu's "Account & Usage" push it.
         is AgentAccountsRoute -> AgentAccountsScreen(route)
+        // agent-previews ticket 05: the preview panel (the phone's half of
+        // the session relay) — the session ⋯ menu's "Previews" row pushes
+        // it; its rows' Open pushes the in-app browser entry through this
+        // same table.
+        is PreviewPanelRoute -> PreviewPanelScreen(route)
+        // agent-previews ticket 05: the in-app browser entry — the WebView
+        // loading `http://{hostname}:7332` through the in-app client proxy.
+        is BrowserRoute -> BrowserScreen(route)
         else -> Unit
     }
 }

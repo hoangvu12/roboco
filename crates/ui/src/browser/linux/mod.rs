@@ -83,6 +83,22 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 impl BrowserData {
+    /// Configure the helper's WebKitGTK proxy (see `set_proxy` in helper.c):
+    /// `Some(port)` routes http/ws through the client preview proxy with the
+    /// given bypass list; `None` restores the default resolver path. Never
+    /// spawns a worker for this — only an already-running browser helper
+    /// needs configuring.
+    pub fn set_preview_proxy(&self, port: Option<u16>, bypass: &[String]) {
+        let worker = self.0.lock().unwrap().upgrade();
+        let Some(worker) = worker else { return };
+        let mut command = json!({"cmd": "proxy", "port": port.unwrap_or(0)});
+        if port.is_some() {
+            command["bypass"] = json!(bypass);
+        }
+        if let Err(error) = worker.send(0, command) {
+            tracing::warn!(%error, "could not configure the preview proxy");
+        }
+    }
     fn worker(&self) -> Result<Arc<Worker>, String> {
         let mut current = self.0.lock().unwrap();
         if let Some(worker) = current.upgrade() {

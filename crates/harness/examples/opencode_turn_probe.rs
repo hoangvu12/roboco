@@ -23,6 +23,7 @@ async fn main() {
     let cwd = workspace.path().to_str().expect("UTF-8 workspace path");
     let (_steer_tx, steering) = mpsc::channel(8);
     let request = RunRequest {
+        env: Default::default(),
         prompt,
         harness: None,
         model,
@@ -51,7 +52,6 @@ async fn main() {
                 execution_lease: None,
                 interrupt: CancellationToken::new(),
                 turn: TurnControl::default(),
-                origin: None,
             },
         )
         .await

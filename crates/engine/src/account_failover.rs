@@ -346,6 +346,7 @@ fn dispatch_continuation(
     let resume = engine.harness_session_to_resume(chat_id, &last.cwd, harness);
     let fallback = fallback_history(engine, chat_id);
     let request = roboco_proto::RunRequest {
+        env: Default::default(),
         prompt: RESUME_CONTINUE_PROMPT.into(),
         harness: Some(harness),
         model: last.model.clone(),

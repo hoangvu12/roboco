@@ -650,9 +650,9 @@ impl PiHarness {
         }
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
-        // Everything the agent starts inherits the run's origin, so preview
-        // discovery can tell the chat's dev servers from the user's own.
-        crate::apply_origin(&mut cmd, controls.origin.as_deref());
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, &request.env);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1415,7 +1415,6 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn: _turn,
-        origin: _origin,
     } = controls;
     let request_input: Arc<RequestInputFn> = Arc::new(request_input);
 

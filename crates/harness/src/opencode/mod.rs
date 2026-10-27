@@ -333,20 +333,31 @@ impl OpencodeHarness {
         &self,
         cwd: Option<&str>,
         mcp: Option<&roboco_proto::McpServer>,
-        origin: Option<&str>,
+    ) -> Result<Server, HarnessError> {
+        self.server_with_env(cwd, mcp, &Default::default()).await
+    }
+
+    /// [`Self::server`] with the run's environment: the engine's origin
+    /// marker, so preview discovery attributes what the agent starts to
+    /// its chat.
+    async fn server_with_env(
+        &self,
+        cwd: Option<&str>,
+        mcp: Option<&roboco_proto::McpServer>,
+        run_env: &std::collections::BTreeMap<String, String>,
     ) -> Result<Server, HarnessError> {
         if let Some(base) = &self.base_url {
             return Ok(Server::attached(base.clone()));
         }
         let exe = self.resolve_executable()?;
-        Server::spawn(&exe, cwd, self.startup_timeout, mcp, origin).await
+        Server::spawn(&exe, cwd, self.startup_timeout, mcp, run_env).await
     }
 
     /// One short-lived server answers both discovery calls. Also primes the
     /// commands cache so concurrent picker/composer fetches share one boot.
     async fn probe_models(&self) -> Result<Vec<Model>, HarnessError> {
         let _guard = self.probe_lock.lock().await;
-        let mut server = self.server(None, None, None).await?;
+        let mut server = self.server(None, None).await?;
         let result = async {
             let providers = server.provider_catalog(None).await?;
             let mut models = models_from_providers(&providers);
@@ -378,7 +389,7 @@ impl OpencodeHarness {
         if let Some(commands) = self.commands_cache.get() {
             return Ok(commands.clone());
         }
-        let mut server = self.server(None, None, None).await?;
+        let mut server = self.server(None, None).await?;
         let result = server
             .commands_wire(None)
             .await
@@ -470,7 +481,7 @@ impl Harness for OpencodeHarness {
         let directory = cwd
             .to_str()
             .ok_or_else(|| HarnessError::Protocol("Project path is not UTF-8".into()))?;
-        let mut server = self.server(Some(directory), None, None).await?;
+        let mut server = self.server(Some(directory), None).await?;
         let result = server.commands_wire(Some(directory)).await;
         server.shutdown(self.kill_grace).await;
         let commands = result?;
@@ -490,7 +501,7 @@ impl Harness for OpencodeHarness {
         let directory = cwd
             .to_str()
             .ok_or_else(|| HarnessError::Protocol("Project path is not UTF-8".into()))?;
-        let mut server = self.server(Some(directory), None, None).await?;
+        let mut server = self.server(Some(directory), None).await?;
         let result = server
             .commands_wire(Some(directory))
             .await
@@ -511,7 +522,7 @@ impl Harness for OpencodeHarness {
         request.prompt = roboco_proto::invocation::harness_prompt(&request.prompt, self.id());
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
         let server = self
-            .server(cwd.as_deref(), request.mcp.as_ref(), controls.origin.as_deref())
+            .server_with_env(cwd.as_deref(), request.mcp.as_ref(), &request.env)
             .await?;
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         tokio::spawn(run_session(Session {
@@ -679,14 +690,14 @@ impl Server {
         cwd: Option<&str>,
         startup: Duration,
         mcp: Option<&roboco_proto::McpServer>,
-        origin: Option<&str>,
+        run_env: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self, HarnessError> {
         // Known up front (it picks the MCP config shape and which health
         // endpoints to probe first).
         let version = opencode_version(exe).await;
         let mut attempt = 0;
         loop {
-            match Self::spawn_once(exe, cwd, startup, mcp, origin, version.as_ref()).await {
+            match Self::spawn_once(exe, cwd, startup, mcp, run_env, version.as_ref()).await {
                 Err(SpawnFailure::Retryable(error)) if attempt < SPAWN_RETRIES => {
                     attempt += 1;
                     tracing::warn!(
@@ -710,7 +721,7 @@ impl Server {
         cwd: Option<&str>,
         startup: Duration,
         mcp: Option<&roboco_proto::McpServer>,
-        origin: Option<&str>,
+        run_env: &std::collections::BTreeMap<String, String>,
         version: Option<&semver::Version>,
     ) -> Result<Self, SpawnFailure> {
         let fatal = SpawnFailure::Fatal;
@@ -759,9 +770,9 @@ impl Server {
             }
         }
         crate::compose_child_path(&mut cmd, exe);
-        // Everything the agent starts inherits the run's origin, so preview
-        // discovery can tell the chat's dev servers from the user's own.
-        crate::apply_origin(&mut cmd, origin);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, run_env);
         // Probes have no project: run them from home, where the global
         // config lives, never the engine's own working directory (which for
         // a GUI or service launch can be System32 or the install folder).
@@ -1707,7 +1718,6 @@ async fn run_session(session: Session) {
         mut steering,
         interrupt,
         turn: turn_control,
-        origin: _origin,
     } = controls;
     let request_input = Arc::new(request_input);
     let directory = (!request.cwd.is_empty()).then(|| request.cwd.clone());
@@ -3075,7 +3085,7 @@ async fn post_prompt(
                 stderr_tail: crate::StderrTail::default(),
                 protocol,
                 version: tokio::sync::OnceCell::new(),
-            _port: None,
+                _port: None,
             };
             // The command endpoint blocks for the whole turn; the bus
             // carries the real events, so this response is ignored —
@@ -3135,7 +3145,7 @@ async fn post_prompt(
         stderr_tail: crate::StderrTail::default(),
         protocol: server.protocol.clone(),
         version: tokio::sync::OnceCell::new(),
-            _port: None,
+        _port: None,
     };
     let bus_tx = bus_tx.clone();
     let dir = dir.map(str::to_owned);
@@ -3641,7 +3651,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     stderr_tail: crate::StderrTail::default(),
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
-            _port: None,
+                    _port: None,
                 };
                 // Like Claude and Codex, normal Roboco sessions run unattended,
                 // regardless of RunRequest.auto_approve. Approve each owned
@@ -3714,7 +3724,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     stderr_tail: crate::StderrTail::default(),
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
-            _port: None,
+                    _port: None,
                 };
                 let reply = match rx.await {
                     Ok(answers) if is_form => {
@@ -5187,7 +5197,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&first),
-                None,
+                &Default::default(),
             )
             .await
             .unwrap();
@@ -5196,7 +5206,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&second),
-                None,
+                &Default::default(),
             )
             .await
             .unwrap();
@@ -5245,7 +5255,7 @@ http.createServer((req, res) => {
             fixture.path().to_str(),
             Duration::from_secs(5),
             Some(&mcp),
-            None,
+            &Default::default(),
         )
         .await
         .expect("an unknown version must not fail the run");
@@ -5304,7 +5314,7 @@ if (process.argv.includes('--version')) {{
                 fixture.path().to_str(),
                 Duration::from_secs(10),
                 Some(&mcp),
-                None,
+                &Default::default(),
             )
             .await
             .expect("a slow first --version must not fail the run");

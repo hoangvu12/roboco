@@ -140,6 +140,7 @@ class SideChatsEntryTest {
         canWrite = canWrite,
         onSetPinned = {},
         onCopyTranscript = {},
+        onShowPreviews = {},
         onShowAccounts = {},
         onArchive = {},
         sideChats = rows,
@@ -150,8 +151,9 @@ class SideChatsEntryTest {
         var news = 0
         var forks = 0
         val m = menu(canWrite = true, rows = SideChatMenuRows(forking = false, onNew = { news++ }, onFork = { forks++ }))
-        // Pin, Copy, the side-chat group, Account & Usage (#05), Archive.
-        assertEquals(5, m.children.size)
+        // Pin, Copy, the side-chat group, Previews (agent-previews
+        // ticket 05), Account & Usage (#05), Archive.
+        assertEquals(6, m.children.size)
         assertEquals("Copy Transcript", (m.children[1] as MenuItem).title)
         val group = m.children[2] as MenuSection
         assertTrue("an inline group: hairlines above and below", group.inline)
@@ -168,7 +170,8 @@ class SideChatsEntryTest {
         rows[1].action()
         assertEquals(1, news)
         assertEquals(1, forks)
-        assertEquals("Archive", (m.children[4] as MenuItem).title)
+        assertEquals("Previews", (m.children[3] as MenuItem).title)
+        assertEquals("Archive", (m.children[5] as MenuItem).title)
     }
 
     @Test
@@ -181,7 +184,7 @@ class SideChatsEntryTest {
         assertFalse("New stays live while a fork runs", forking[0].disabled)
         assertTrue("one fork at a time", forking[1].disabled)
         val old = menu(true, null)
-        assertEquals("an engine without side chats: the menu as it was", 4, old.children.size)
+        assertEquals("an engine without side chats: the menu as it was", 5, old.children.size)
         assertTrue(old.children.none { it is MenuSection })
     }
 

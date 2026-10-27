@@ -43,6 +43,7 @@ fn request(prompt: &str) -> RunRequest {
 
 fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -93,7 +94,6 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         steering: steer_rx,
         interrupt: token.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     (controls, steer_tx, token)
 }

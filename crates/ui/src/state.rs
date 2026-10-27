@@ -853,6 +853,10 @@ pub struct AppState {
     engine: Option<EngineHandle>,
     registry: Option<EngineRegistry>,
     pub registry_snapshot: RegistrySnapshot,
+    /// The client-side preview proxy (ticket 04): binds 127.0.0.1:7332 while
+    /// a remote engine's previews are viewed and relays them over the
+    /// session relay. Created lazily by the first browser pane.
+    pub(crate) preview_proxy: Option<std::sync::Arc<crate::engine_registry::PreviewProxy>>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
@@ -962,6 +966,7 @@ impl AppState {
             engine: None,
             registry: None,
             registry_snapshot: RegistrySnapshot::default(),
+            preview_proxy: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
             change_requests: ChangeRequestClientState::default(),
@@ -2399,6 +2404,24 @@ impl AppState {
 
     pub fn registry(&self) -> Option<&EngineRegistry> {
         self.registry.as_ref()
+    }
+    /// The client preview proxy manager, created on first need (the first
+    /// browser pane). Label persistence lives beside the registry's session
+    /// store so remote preview URLs survive a client restart.
+    pub(crate) fn ensure_preview_proxy(&mut self) -> Option<std::sync::Arc<crate::engine_registry::PreviewProxy>> {
+        if self.preview_proxy.is_none() {
+            let registry = self.registry.clone()?;
+            let labels = self
+                .data_dir
+                .clone()
+                .map(|dir| dir.join("preview-relay-labels.json"));
+            self.preview_proxy = Some(crate::engine_registry::PreviewProxy::start(
+                registry,
+                labels,
+                std::time::Duration::from_secs(30),
+            ));
+        }
+        self.preview_proxy.clone()
     }
 
     /// The local engine advertises this capability. False while no engine is

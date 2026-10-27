@@ -2348,7 +2348,7 @@ impl RpcService for EngineRpc {
                             .and_then(|p| p.file_name())
                             .map(|s| s.to_string_lossy().into_owned());
                         // Servers in this checkout, and any this chat's agent
-                        // or terminals started elsewhere. Only roboco-started
+                        // or terminals started elsewhere. Only Roboco-started
                         // ones: an older peer advertises every listener.
                         snapshot.services.retain(|service| {
                             service.device_id == device
@@ -3387,6 +3387,12 @@ impl RpcService for EngineRpc {
                     p.rows,
                 )
                 .map_err(|err| RpcError::Failed(err.to_string()))?;
+                // Everything the action starts carries this terminal's
+                // origin; remembering its chat keeps a server it
+                // backgrounded listed under the chat after it closes.
+                self.terminals
+                    .associate_chat(&run.terminal.id, &p.chat_id)
+                    .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&run)
             }
             methods::OPEN_TERMINAL => {
@@ -3423,13 +3429,12 @@ impl RpcService for EngineRpc {
                         .terminals
                         .open(&cwd, p.cols, p.rows)
                         .map_err(|e| RpcError::Failed(e.to_string()))?;
-                    // A terminal opened for a real chat (not a canvas key):
-                    // remember the chat past the terminal's close, so servers
-                    // it backgrounded still belong to that chat's previews
-                    // (upstream #1023). Everything the terminal starts
-                    // carries its origin either way.
+                    // A canvas key (`space-canvas:{id}`) is not a chat; only
+                    // a real chat row's terminal is attributed to it.
                     if self.workspace.chat(&p.chat_id).ok().flatten().is_some() {
-                        self.terminals.associate_chat(&session.id, &p.chat_id);
+                        self.terminals
+                            .associate_chat(&session.id, &p.chat_id)
+                            .map_err(|e| RpcError::Failed(e.to_string()))?;
                     }
                     RpcReply::value(&session)
                 })

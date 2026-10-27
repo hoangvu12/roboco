@@ -8,6 +8,8 @@ use linux as native;
 #[cfg(target_os = "macos")]
 use macos as native;
 pub mod model;
+#[cfg(test)]
+mod preview_proxy_tests;
 mod view;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -83,6 +85,20 @@ impl BrowserContext {
         #[cfg(not(target_os = "macos"))]
         let _ = url;
     }
+
+    /// Point the embedded browser's http/ws traffic for preview hostnames at
+    /// the client preview proxy while it runs (Linux's WebKitGTK proxy
+    /// configuration — stock resolvers do not synthesize `*.localhost`);
+    /// `None` restores the default path. `bypass` is the hostname list that
+    /// must stay direct: the local engine's previews keep their unchanged
+    /// 7331 path, and loopback dev servers the user typed stay untouched.
+    /// https and wss are never proxied.
+    pub(crate) fn set_preview_proxy(&self, port: Option<u16>, bypass: &[String]) {
+        #[cfg(target_os = "linux")]
+        self.data.set_preview_proxy(port, bypass);
+        #[cfg(not(target_os = "linux"))]
+        let _ = (port, bypass);
+    }
 }
 
 pub struct BrowserSurface {
@@ -98,6 +114,10 @@ pub struct BrowserSurface {
     previews: roboco_proto::PreviewSnapshot,
     previews_loading: bool,
     previews_task: Option<gpui::Task<()>>,
+    /// The client-side preview proxy manager (ticket 04). Every pane holds
+    /// it: a remote pane ingests its engine's snapshot and keeps the 7332
+    /// listener alive; a local pane only feeds the bypass list.
+    remote_previews: Option<std::sync::Arc<crate::engine_registry::PreviewProxy>>,
     #[cfg(feature = "browser-fixture")]
     fixture_preview_open: std::rc::Rc<std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>>,
     presentation: Presentation,
@@ -176,6 +196,7 @@ impl BrowserSurface {
             previews: roboco_proto::PreviewSnapshot::default(),
             previews_loading: true,
             previews_task: None,
+            remote_previews: None,
             #[cfg(feature = "browser-fixture")]
             fixture_preview_open: Default::default(),
             presentation: Presentation::Hidden,
@@ -268,62 +289,168 @@ impl BrowserSurface {
 
     /// The daemon resolves the session's current cwd for every update, so a
     /// checkout change cannot leave this tab discovering the previous project.
+    ///
+    /// A remote engine's snapshot is *rewritten* here (ticket 04): the
+    /// services are ingested into the client preview proxy (the dormant
+    /// `set_remote` semantics, driven from `WatchPreviews`), the pane keeps
+    /// the returned effective hostnames, and `service.url()` renders against
+    /// the client proxy's port instead of the engine's 7331. The old
+    /// "Open this engine preview through a tunnel URL" degradation is gone:
+    /// opening a row loads the remote dev server through the session relay.
+    /// A local pane leaves its snapshot untouched and only feeds the
+    /// browser-platform bypass list.
     pub fn watch_previews(
         &mut self,
         handle: crate::engine_registry::EngineTarget,
         chat_id: String,
+        previews: Option<std::sync::Arc<crate::engine_registry::PreviewProxy>>,
         cx: &mut Context<Self>,
     ) {
+        self.remote_previews = previews.clone();
+        let engine_key = handle.key().clone();
+        let remote = previews.clone().filter(|_| !engine_key.is_local());
+        let local = previews.filter(|_| engine_key.is_local());
         self.previews_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let subscription = handle
-                    .subscribe(
-                        roboco_rpc::methods::WATCH_PREVIEWS,
-                        serde_json::json!({"chatId": chat_id}),
-                    )
-                    .await;
-                if let Ok(mut updates) = subscription {
-                    while let Some(value) = updates.recv().await {
-                        if let Ok(mut snapshot) =
-                            serde_json::from_value::<roboco_proto::PreviewSnapshot>(value)
-                        {
-                            if !handle.key().is_local() {
-                                snapshot.remote = true;
-                                snapshot.error = Some("Open this engine preview through a tunnel URL".into());
+            'task: {
+                // The watcher lifetime is this pane's: the task ends only
+                // when the entity does, and unwatching on exit is what lets
+                // the proxy's listener idle out.
+                if let Some(proxy) = &remote {
+                    proxy.watch(&engine_key, true);
+                }
+                let mut status = remote.as_ref().map(|proxy| proxy.subscribe());
+                loop {
+                    let subscription = handle
+                        .subscribe(
+                            roboco_rpc::methods::WATCH_PREVIEWS,
+                            serde_json::json!({"chatId": chat_id}),
+                        )
+                        .await;
+                    if let Ok(mut updates) = subscription {
+                        loop {
+                            enum Frame {
+                                Update(Option<serde_json::Value>),
+                                Status,
                             }
-                            if this
-                                .update(cx, |this, cx| {
-                                    #[cfg(target_os = "macos")]
-                                    for service in &snapshot.services {
-                                        this.context
-                                            .data
-                                            .register_preview(&service.url(snapshot.proxy_port));
+                            let frame = tokio::select! {
+                                value = updates.recv() => Frame::Update(value),
+                                alive = status_changed(&mut status) => {
+                                    if !alive {
+                                        // The proxy went away; stop polling it.
+                                        status = None;
                                     }
-                                    this.previews = snapshot;
-                                    this.previews_loading = false;
-                                    cx.notify();
-                                })
-                                .is_err()
-                            {
-                                return;
+                                    Frame::Status
+                                }
+                            };
+                            match frame {
+                                Frame::Status => {
+                                    let Some(proxy) = remote.as_ref() else {
+                                        status = None;
+                                        continue;
+                                    };
+                                    let live = proxy.status();
+                                    if this
+                                        .update(cx, |this, cx| {
+                                            if this.previews.remote {
+                                                this.previews.error = live.error.clone();
+                                            }
+                                            this.context
+                                                .set_preview_proxy(live.port, &live.bypass);
+                                            cx.notify();
+                                        })
+                                        .is_err()
+                                    {
+                                        break 'task;
+                                    }
+                                }
+                                Frame::Update(value) => {
+                                    let Some(value) = value else { break };
+                                    let Ok(mut snapshot) =
+                                        serde_json::from_value::<roboco_proto::PreviewSnapshot>(value)
+                                    else {
+                                        continue;
+                                    };
+                                    if let Some(proxy) = &remote {
+                                        snapshot.remote = true;
+                                        match proxy.ingest(
+                                            &engine_key,
+                                            std::mem::take(&mut snapshot.services),
+                                        ) {
+                                            Ok(effective) => {
+                                                snapshot.services = effective;
+                                                // The desktop URL rewrite: remote
+                                                // services render against 7332.
+                                                snapshot.proxy_port =
+                                                    roboco_proto::PREVIEW_CLIENT_PROXY_PORT;
+                                                snapshot.error = None;
+                                            }
+                                            Err(error) => {
+                                                snapshot.services.clear();
+                                                snapshot.error = Some(format!(
+                                                    "Remote previews could not load this engine's services: {error}"
+                                                ));
+                                            }
+                                        }
+                                        // A busy 7332 surfaces inline, never as
+                                        // a URL change (the 7331 failure mode).
+                                        let live = proxy.status();
+                                        if let Some(error) = live.error {
+                                            snapshot.error = Some(error);
+                                        }
+                                        this.update(cx, |this, _| {
+                                            this.context.set_preview_proxy(live.port, &live.bypass);
+                                        })
+                                        .ok();
+                                    } else if let Some(proxy) = &local {
+                                        proxy.note_local(&snapshot.services);
+                                        let live = proxy.status();
+                                        this.update(cx, |this, _| {
+                                            this.context.set_preview_proxy(live.port, &live.bypass);
+                                        })
+                                        .ok();
+                                    }
+                                    if this
+                                        .update(cx, |this, cx| {
+                                            #[cfg(target_os = "macos")]
+                                            for service in &snapshot.services {
+                                                this.context.data.register_preview(
+                                                    &service.url(snapshot.proxy_port),
+                                                );
+                                            }
+                                            this.previews = snapshot;
+                                            this.previews_loading = false;
+                                            cx.notify();
+                                        })
+                                        .is_err()
+                                    {
+                                        break 'task;
+                                    }
+                                }
                             }
                         }
                     }
+                    if this
+                        .update(cx, |this, cx| {
+                            this.previews.services.clear();
+                            // The reconnect state: the engine session is
+                            // offline or revoked, and the relayed previews
+                            // went with it.
+                            this.previews.error =
+                                Some("Connecting to preview discovery…".into());
+                            this.previews_loading = false;
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break 'task;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(2))
+                        .await;
                 }
-                if this
-                    .update(cx, |this, cx| {
-                        this.previews.services.clear();
-                        this.previews.error = Some("Connecting to preview discovery…".into());
-                        this.previews_loading = false;
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(2))
-                    .await;
+            }
+            if let Some(proxy) = &remote {
+                proxy.watch(&engine_key, false);
             }
         }));
     }
@@ -653,6 +780,17 @@ impl BrowserSurface {
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let _ = script;
+    }
+}
+
+/// Await the proxy's next status change; `false` once the proxy is gone
+/// (never resolves when this pane has none to watch).
+async fn status_changed(
+    status: &mut Option<tokio::sync::watch::Receiver<crate::engine_registry::ClientStatus>>,
+) -> bool {
+    match status {
+        Some(receiver) => receiver.changed().await.is_ok(),
+        None => std::future::pending().await,
     }
 }
 

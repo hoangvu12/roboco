@@ -203,6 +203,7 @@ fn fixture(dir: &Path) -> PathBuf {
 }
 fn request(cwd: &Path, prompt: &str, resume: Option<&str>) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -237,7 +238,6 @@ async fn exercise(prompt: &str, resume: Option<&str>) {
         steering,
         interrupt: interrupt.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     let operation = async {
         let mut stream = harness
@@ -332,7 +332,6 @@ async fn exercise_tree(prompt: &str, drop_stream: bool) {
         steering,
         interrupt: interrupt.clone(),
         turn: TurnControl::default(),
-        origin: None,
     };
     let mut stream = harness
         .run(request(dir.path(), prompt, None), controls)
@@ -494,7 +493,6 @@ async fn batch_overrides_launch_through_cmd() {
             steering,
             interrupt: CancellationToken::new(),
             turn: TurnControl::default(),
-            origin: None,
         };
         // Consume the whole stream: the shim cannot speak any agent protocol,
         // so the run must fail loudly — but only AFTER a safe launch.
