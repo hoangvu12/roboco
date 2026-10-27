@@ -1,6 +1,6 @@
 # Agent previews: local parity, Windows discovery, session-relayed remote access
 
-Status: ready-for-agent
+Status: ready-for-human
 Spec date: 2026-10-26
 
 ## Problem Statement
@@ -80,3 +80,7 @@ The dormant WebRTC stack (`peer.rs`/`mux.rs` peer side, `catalog.set_remote` pee
 - Android WebView resolution and WebKitGTK proxy APIs were verified in round-2 design research (Chromium synthesizes `*.localhost` natively; WebKitGTK depends on the host resolver) — ticket 04's Linux WebKit API use remains the one in-ticket verification item.
 - Phase C deliberately mirrors upstream invariants: "Remote metadata never authorizes an arbitrary TCP address: the hosting device resolves only its own live service IDs" and "Application requests, response bodies and WebSocket messages never pass through the [coordinator]" (here the coordinator is the client's session — and it *does* carry bytes, which is the accepted deviation from upstream's P2P shape, justified by sessions being end-to-end authorized channels).
 - Phase D note (deferred WebRTC): LAN-first ICE pairs host candidates directly with **zero STUN/TURN infrastructure** (RFC 8445 host candidates; `rtc-ice` — the ICE crate behind the pinned `webrtc 0.20.5` — gathers host-only when no server URLs are configured); loopback addresses are excluded from host candidates, and a public STUN server only becomes necessary for cross-network reachability.
+
+## Final verification record (2026-10-27, orchestrator)
+
+All seven tickets implemented and merged on `feat/agent-previews` (verified merge tip `a4d65f6ce`; records follow). Locally green at the tip: the full ticket battery — `roboco-preview` (lib 24, discovery 4, leak/proxy/transport), `roboco-preview-relay` 7/7, `roboco-engine` preview_relay 5/5 + previews 1/1 + project_action_commands 2/2, `roboco-engine-client` 13 + 3/3, `roboco-mcp` 45/45, `roboco-mobile-client` + `roboco-mobile` (in the 421-test final battery), `roboco-ui` 1674/1674, `wiregen --check` fresh, `pnpm -r build` green, `@roboco/app` vitest 2542 passed / 6 pre-existing jsdom failures (verified identical at the pristine base `f9bdc6402`), Android JVM tests via the qemu-x86_64 harness (SessionMenuTest flake passes on re-run). Platform caveats carried in the ticket records: Windows discovery runtime + Android emulator flow + session-menu goldens are CI proofs (windows.yml / android-emulator / record_goldens); macOS CONNECT registration and Linux WebKitGTK page loads are code/API-verified only. Per-ticket evidence: each ticket file's `## Comments`.
