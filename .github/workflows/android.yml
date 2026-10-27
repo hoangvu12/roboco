@@ -15,6 +15,7 @@ on:
     paths:
       - 'apps/android/**'
       - 'crates/android-assets/**'
+      - 'crates/theme/**'
       - 'crates/mobile/**'
       - 'crates/mobile-client/**'
       - 'crates/text/**'
@@ -40,6 +41,7 @@ on:
     paths:
       - 'apps/android/**'
       - 'crates/android-assets/**'
+      - 'crates/theme/**'
       - 'crates/mobile/**'
       - 'crates/mobile-client/**'
       - 'crates/text/**'

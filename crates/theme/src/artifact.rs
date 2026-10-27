@@ -1,8 +1,8 @@
-//! The web theme artifact — one serializable bundle of everything the browser
-//! client needs to reproduce the desktop's visuals: the resolved builtin
-//! registry (post-hardening role set), every accent preset's derived roles per
-//! variant, the layout constants, the motion catalog, and the physical spring
-//! parameters.
+//! The theme artifact — one serializable bundle of the desktop's visuals: the
+//! resolved builtin registry (post-hardening role set), every accent preset's
+//! derived roles per variant, the layout constants, the motion catalog, and
+//! the physical spring parameters. Android's palette pin tests read it from
+//! `crates/theme/artifact/artifact.json`.
 //!
 //! The constants come from `roboco_proto::{layout, motion}` — the same source
 //! the desktop compiles — so the artifact can only drift if someone edits the
@@ -18,13 +18,14 @@ use crate::{
 };
 
 /// Version of the artifact's JSON *shape* (not the data). Bump on schema
-/// changes so the web client can pin instead of sniff.
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 2;
+/// changes so readers can pin instead of sniff. 3 dropped the web-only
+/// `fonts` manifest.
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 3;
 
 // ---------------------------------------------------------------------------
 // Derived alphas the desktop keeps inside `crates/ui` (they scale an existing
-// neutral rather than naming a color), quoted here so the web can reproduce
-// them. Each pair is `(dark, light)`, exactly as the desktop branches it.
+// neutral rather than naming a color), quoted here so other clients can
+// reproduce them. Each pair is `(dark, light)`, exactly as the desktop branches it.
 // ---------------------------------------------------------------------------
 
 /// `glass_selected_bg()`/`card_selected_bg()` — the selected row/chip/tab wash
@@ -59,14 +60,11 @@ pub struct ThemeArtifact {
     pub families: Vec<ThemeFamily>,
     pub accent_presets: Vec<AccentPresetTokens>,
     /// `variantId -> presetId -> derived roles`, precomputed for all
-    /// 30 variants × 7 presets so the web needs zero color math. The
+    /// 30 variants × 7 presets so readers need zero color math. The
     /// theme-authored accent (`themeDefault`) travels on the variant itself.
     pub accents: BTreeMap<String, BTreeMap<String, AccentRoles>>,
     pub layout: LayoutTokens,
     pub motion: MotionTokens,
-    /// Manifest of the bundled font faces (files live beside the artifact in
-    /// the web package; they are copies of `crates/ui/assets/fonts/`).
-    pub fonts: Vec<FontFace>,
 }
 
 /// A selectable accent preset and its authored dark/light base colors.
@@ -202,118 +200,6 @@ pub struct DockGlideTokens {
     pub settle_velocity: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FontFace {
-    pub family: &'static str,
-    /// File name under `web/packages/theme/fonts/`.
-    pub file: &'static str,
-    pub weight: u16,
-    pub style: &'static str,
-}
-
-/// Geist + Geist Mono, weights 400/500/600/700 × roman/italic — the same
-/// static TTFs the desktop embeds from `crates/ui/assets/fonts/`
-/// (vercel/geist-font v1.7.2, SIL OFL 1.1).
-pub const FONT_FACES: &[FontFace] = &[
-    FontFace {
-        family: "Geist",
-        file: "Geist.ttf",
-        weight: 400,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-Italic.ttf",
-        weight: 400,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-Medium.ttf",
-        weight: 500,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-MediumItalic.ttf",
-        weight: 500,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-SemiBold.ttf",
-        weight: 600,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-SemiBoldItalic.ttf",
-        weight: 600,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-Bold.ttf",
-        weight: 700,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist",
-        file: "Geist-BoldItalic.ttf",
-        weight: 700,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono.ttf",
-        weight: 400,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-Italic.ttf",
-        weight: 400,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-Medium.ttf",
-        weight: 500,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-MediumItalic.ttf",
-        weight: 500,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-SemiBold.ttf",
-        weight: 600,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-SemiBoldItalic.ttf",
-        weight: 600,
-        style: "italic",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-Bold.ttf",
-        weight: 700,
-        style: "normal",
-    },
-    FontFace {
-        family: "Geist Mono",
-        file: "GeistMono-BoldItalic.ttf",
-        weight: 700,
-        style: "italic",
-    },
-];
-
 /// The serde name of an accent preset (`"roboco"`, `"orange"`, …) — the same
 /// spelling `AccentSelection` carries in settings.
 pub fn preset_id(preset: AccentPreset) -> String {
@@ -437,31 +323,14 @@ pub fn build_artifact() -> ThemeArtifact {
                 settle_velocity: m::DOCK_GLIDE_SETTLE_VELOCITY,
             },
         },
-        fonts: FONT_FACES.to_vec(),
     }
 }
 
-/// Header stamped on every generated file.
-const GENERATED_HEADER: &str = "DO NOT EDIT — generated by roboco-theme-export";
-
-/// The TS wrapper beside `artifact.json`. Static content, but written by the
-/// exporter so everything under `src/generated/` is machine-owned.
-fn index_ts() -> String {
-    format!(
-        "// {GENERATED_HEADER} (cargo run -p roboco-theme --bin roboco-theme-export)\n\
-         import type {{ ThemeArtifact }} from \"../types\";\n\
-         import json from \"./artifact.json\";\n\
-         \n\
-         /** The whole theme artifact, typed. */\n\
-         export const themeArtifact = json as unknown as ThemeArtifact;\n"
-    )
-}
-
 /// Render the artifact as `(file name, content)` pairs — the full contents of
-/// `web/packages/theme/src/generated/`.
+/// `crates/theme/artifact/`.
 pub fn render_files() -> Vec<(&'static str, String)> {
     let artifact = build_artifact();
     let mut json = serde_json::to_string_pretty(&artifact).expect("the theme artifact serializes");
     json.push('\n');
-    vec![("artifact.json", json), ("index.ts", index_ts())]
+    vec![("artifact.json", json)]
 }

@@ -5,9 +5,9 @@ use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use roboco_theme::artifact::render_files;
 
-/// Export the web theme artifact (resolved builtin variants, accent
-/// derivations, layout constants, motion catalog) into
-/// `web/packages/theme/src/generated/`.
+/// Export the theme artifact (resolved builtin variants, accent derivations,
+/// layout constants, motion catalog) into `crates/theme/artifact/`, where
+/// Android's palette pin tests read it.
 #[derive(Debug, Parser)]
 struct Args {
     /// Directory to write the generated files into.
@@ -20,10 +20,7 @@ struct Args {
 }
 
 fn default_out_dir() -> &'static str {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../web/packages/theme/src/generated"
-    )
+    concat!(env!("CARGO_MANIFEST_DIR"), "/artifact")
 }
 
 fn main() -> Result<()> {
