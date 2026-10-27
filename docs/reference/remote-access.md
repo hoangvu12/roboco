@@ -245,9 +245,12 @@ a second `create` is refused.
 From there, a phone pairing with this server follows the fleet as usual. A
 desktop joins by pasting the invite into **Join a fleet with an invite**, then
 pushes the fleet to the engines it has paired. Another engine can join with
-`roboco engine room join 'roboco-room:…'`, but a CLI join does not put that
-engine's own address in the book. Pairing it to a desktop in the fleet does:
-the desktop adds every engine it pushes to.
+`roboco engine room join 'roboco-room:…'`. Any fleet join (the CLI, a
+desktop's push, `create`) adds the joining engine to the book under its device
+name when it has recorded a Tailcat address, and adds nothing when it has not.
+Plain room joins never add an entry. The joining engine's own book has its
+entry at once. The other engines learn it the next time a client merges the
+books, for example the desktop's next fleet pass.
 
 ### Duplicates
 
@@ -380,9 +383,15 @@ the merged book back (`GetRoomBook`, `UpdateRoomBook`); engines never talk to
 each other. Fleet engines also keep the fleet secret, in the pairing database
 (`pairing.sqlite3`, owner-only on unix), so any of them can hand the fleet to a
 newly paired phone (`GetFleetInvite`). The desktop pushes the fleet to its
-engines with `RoomJoin` (idempotent; the book unions). Both RPCs need a paired
-session and the `rooms-v2` capability, and no room code ever changes
-remote-access settings.
+engines with `RoomJoin` (idempotent; the book unions). Each engine's join adds
+its own recorded Tailcat address to its book. The desktop then reads every
+pushed engine's book, merges them, and pushes the union back. So after one
+pass with every engine online, every book holds every engine that introduced
+itself, and a phone pairing with any of them gets the whole fleet. An engine
+that was offline catches up on the pass that runs when it connects. Both RPCs
+need a paired session and the `rooms-v2` capability. No room code ever changes
+remote-access settings: the desktop's only remote-access call is the read-only
+`GetRemoteAccess` that decides which engines to push to.
 
 The web client has no fleet join in this release. Its **Join room** flow
 (beside the pair flow) takes plain room invites only and refuses fleet

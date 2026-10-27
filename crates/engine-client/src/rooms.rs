@@ -35,10 +35,41 @@ use crate::registry::{Adoption, EngineKey, EngineRegistry, EngineTarget};
 /// data dir. Additive (ADR 0005): unknown fields are ignored on read.
 pub const ROOMS_FILE: &str = "rooms-v1.json";
 
-/// The presenter label the desktop joins rooms under (the same label the
-/// pairing flow uses, so a room-minted session is indistinguishable in the
-/// engine's session table from a paired one).
+/// The prefix of every desktop's presenter label (the label the pairing flow
+/// uses, so a room-minted session reads like a paired one in the engine's
+/// session table).
 pub const DESKTOP_LABEL: &str = "Roboco desktop";
+
+/// The label one desktop presents rooms under: [`DESKTOP_LABEL`] plus this
+/// machine's engine device name and a short tag of its device id, e.g.
+/// `Roboco desktop (Studio PC · 3f9a1c)`. An engine keys a room's
+/// presentation session by (room, label) and reissues it on every repeat,
+/// so two desktops presenting under one label would revoke each other's
+/// session on every engine they share. Stable per machine, so a desktop's
+/// own re-presentations still reuse its row.
+pub fn desktop_label(device_name: &str, device_id: &str) -> String {
+    let mut name: String = device_name
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    // Room for the prefix and the tag inside the 256-byte label cap.
+    while name.len() > 200 {
+        name.pop();
+    }
+    let tag: String = device_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(6)
+        .collect();
+    let named = !name.is_empty() && name != device_id.trim();
+    match (named, tag.is_empty()) {
+        (true, false) => format!("{DESKTOP_LABEL} ({name} · {tag})"),
+        (true, true) => format!("{DESKTOP_LABEL} ({name})"),
+        (false, false) => format!("{DESKTOP_LABEL} ({tag})"),
+        (false, true) => DESKTOP_LABEL.to_owned(),
+    }
+}
 
 /// The presentation reply: an ordinary session grant (`POST /room/present`).
 /// The credential is a secret — `Debug` never prints it.
@@ -109,10 +140,14 @@ pub trait RoomDialer: Send + Sync {
 }
 
 /// One dialed member: where to reach it, plus the opaque keepalive (the
-/// forwarder handle) the registry entry must hold.
+/// forwarder handle) the registry entry must hold, and the route a pairing
+/// resolver rebuilds that forwarder from after a restart (`base` is a
+/// loopback URL that dies with this process). The route is a secret like
+/// the address it names: never logged.
 pub struct ResolvedMember {
     pub base: String,
     pub keepalive: Option<Box<dyn Any + Send>>,
+    pub route: Option<String>,
 }
 
 /// A room member this client reaches through a registry entry. When the
@@ -390,12 +425,17 @@ impl JoinOutcome {
 /// member's book (`GetRoomBook`) and the merged book is pushed back
 /// (`UpdateRoomBook`) — books merge as unions, maintained by clients
 /// (ADR 0011); engines never gossip with each other.
+///
+/// `presenter` is the label presentations carry: it must be unique to this
+/// client ([`desktop_label`]), because an engine reissues — and so revokes
+/// — the session of an earlier presentation with the same label.
 pub async fn join_room_members(
     registry: &EngineRegistry,
     dialer: Arc<dyn RoomDialer>,
     data_dir: &Path,
     room: ClientRoom,
     local_address: Option<&str>,
+    presenter: &str,
 ) -> anyhow::Result<JoinOutcome> {
     let mut room = room;
     let mut failures = Vec::new();
@@ -422,7 +462,16 @@ pub async fn join_room_members(
             .iter()
             .position(|session| session.address == member.address)
             .map(|index| room.sessions.remove(index));
-        match dial_and_present(registry, dialer.clone(), data_dir, &room, &member).await {
+        match dial_and_present(
+            registry,
+            dialer.clone(),
+            data_dir,
+            &room,
+            &member,
+            presenter,
+        )
+        .await
+        {
             Ok((mut session, adoption)) => {
                 // Ownership: a fresh entry is the room's; a reattached one is
                 // the room's only when the room created it in the first place.
@@ -469,10 +518,22 @@ pub async fn join_room_members(
 /// Entries adopted moments ago get a bounded moment to finish connecting
 /// before one is treated as unreachable.
 pub async fn heal_room_books(registry: &EngineRegistry, room: &mut ClientRoom) {
+    heal_room_books_with(registry, room, &[]).await;
+}
+
+/// [`heal_room_books`] over the room's entries plus `extra` — engines the
+/// caller just pushed the room to (`RoomJoin`) whose address it has not
+/// linked yet, so they still receive the union.
+pub async fn heal_room_books_with(
+    registry: &EngineRegistry,
+    room: &mut ClientRoom,
+    extra: &[EngineKey],
+) {
     let mut keys: Vec<String> = room
         .sessions
         .iter()
         .map(|session| session.engine_key.clone())
+        .chain(extra.iter().map(|key| key.0.clone()))
         .collect();
     keys.sort();
     keys.dedup();
@@ -505,6 +566,7 @@ async fn dial_and_present(
     data_dir: &Path,
     room: &ClientRoom,
     member: &RoomMember,
+    presenter: &str,
 ) -> Result<(RoomMemberSession, Adoption), String> {
     let address = member.address.clone();
     let data_dir = data_dir.to_path_buf();
@@ -517,8 +579,9 @@ async fn dial_and_present(
             &dialed.base,
             &member.address,
             &room.secret,
-            DESKTOP_LABEL,
+            presenter,
             dialed.keepalive,
+            dialed.route,
         )
         .await
         .map_err(|error| {

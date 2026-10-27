@@ -33,6 +33,17 @@ struct Adopted {
     adoption: Adoption,
 }
 
+/// What an adoption does with the entry's saved route (the secret a
+/// resolver rebuilds a dead transport from on the next start).
+enum RouteUpdate {
+    /// Keep the route already saved for a reattached engine (none for a new
+    /// one): the caller's endpoint says nothing about how to rebuild it.
+    Keep,
+    /// Save exactly this route: a pairing always knows its transport — a
+    /// LAN pairing has none, which clears a stale Tailcat route.
+    Set(Option<String>),
+}
+
 const PREFIX: &str = "engine:v1:";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EngineKey(pub String);
@@ -786,7 +797,7 @@ impl EngineRegistry {
             .await
             .map_err(|_| anyhow::anyhow!("Invalid pairing response"))?;
         Ok(self
-            .adopt_engine(&base, &grant.credential, keepalive, route)
+            .adopt_engine(&base, &grant.credential, keepalive, RouteUpdate::Set(route))
             .await?
             .key)
     }
@@ -799,6 +810,11 @@ impl EngineRegistry {
     /// engine this registry already holds (same device id) is reattached
     /// under its existing key, never added twice. `address` only labels the
     /// returned record (it is a transport secret and never logged).
+    ///
+    /// `route` is the dialer's rebuild route for `base` (a Tailcat
+    /// forwarder's `tailcat:<address>`), saved so a restart rebuilds the
+    /// transport instead of dialing a dead loopback port. `None` keeps
+    /// whatever route a reattached entry already had.
     pub async fn join_room_member(
         &self,
         base: &str,
@@ -806,6 +822,7 @@ impl EngineRegistry {
         secret: &str,
         label: &str,
         keepalive: Option<Box<dyn std::any::Any + Send>>,
+        route: Option<String>,
     ) -> anyhow::Result<(RoomMemberSession, Adoption)> {
         anyhow::ensure!(
             self.inner.configuration_error.is_none(),
@@ -816,8 +833,12 @@ impl EngineRegistry {
         let grant: RoomGrant = crate::rooms::present_room_member(base, secret, label)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let route = match route {
+            Some(route) => RouteUpdate::Set(Some(route)),
+            None => RouteUpdate::Keep,
+        };
         let adopted = self
-            .adopt_engine(base, &grant.credential, keepalive, None)
+            .adopt_engine(base, &grant.credential, keepalive, route)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok((
@@ -847,11 +868,10 @@ impl EngineRegistry {
         base: &str,
         credential: &str,
         keepalive: Option<Box<dyn std::any::Any + Send>>,
-        route: Option<String>,
+        route: RouteUpdate,
     ) -> anyhow::Result<Adopted> {
         let endpoint = base.replacen("http", "ws", 1);
-        let client =
-            Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
+        let client = Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
         let info: EngineInfo = tokio::time::timeout(
             Duration::from_secs(10),
             client.call_as(methods::ENGINE_INFO, json!({})),
@@ -861,38 +881,39 @@ impl EngineRegistry {
         let duplicate = lock(&self.inner.state)
             .entries
             .iter()
-            .find(|(key, entry)| {
-                !key.is_local() && entry.snapshot.info.device_id == info.device_id
-            })
+            .find(|(key, entry)| !key.is_local() && entry.snapshot.info.device_id == info.device_id)
             .map(|(key, _)| key.clone());
         if let Some(key) = duplicate {
-            let mut saved = SavedEngine {
-                key: key.clone(),
-                endpoint,
-                credential: credential.to_owned(),
-                info: info.clone(),
-                route,
-            };
-            let (previous_saved, previous_keepalive) = {
+            let (previous_saved, previous_keepalive, previous_info) = {
                 let mut state = lock(&self.inner.state);
                 let entry = state
                     .entries
                     .get_mut(&key)
                     .ok_or_else(|| anyhow::anyhow!("Engine was forgotten"))?;
-                // A room presentation carries no route: keep the one a
-                // hand pairing saved, so a restart can still rebuild it.
-                if saved.route.is_none() {
-                    saved.route = entry.saved.as_ref().and_then(|s| s.route.clone());
-                }
-                entry.snapshot.info = info;
+                let route = match route {
+                    RouteUpdate::Keep => entry.saved.as_ref().and_then(|s| s.route.clone()),
+                    RouteUpdate::Set(route) => route,
+                };
+                let saved = SavedEngine {
+                    key: key.clone(),
+                    endpoint,
+                    credential: credential.to_owned(),
+                    info: info.clone(),
+                    route,
+                };
                 (
                     entry.saved.replace(saved),
                     std::mem::replace(&mut entry.keepalive, keepalive),
+                    std::mem::replace(&mut entry.snapshot.info, info),
                 )
             };
             if let Err(err) = self.persist() {
+                // Roll the entry back whole: the live forwarder it was
+                // running on stays alive (the fresh one drops instead).
                 if let Some(entry) = lock(&self.inner.state).entries.get_mut(&key) {
                     entry.saved = previous_saved;
+                    entry.keepalive = previous_keepalive;
+                    entry.snapshot.info = previous_info;
                 }
                 return Err(err);
             }
@@ -912,7 +933,10 @@ impl EngineRegistry {
             endpoint,
             credential: credential.to_owned(),
             info: info.clone(),
-            route,
+            route: match route {
+                RouteUpdate::Keep => None,
+                RouteUpdate::Set(route) => route,
+            },
         };
         lock(&self.inner.state).entries.insert(
             key.clone(),

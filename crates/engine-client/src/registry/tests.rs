@@ -886,3 +886,258 @@ async fn in_process_engine_reconnects_after_its_transport_fails() {
     registry.shutdown().await;
     engine.shutdown().await;
 }
+
+/// A resolver whose pairings ride a fake transport with a saved route, and
+/// whose keepalives record their drops by generation: lets tests see which
+/// forwarder lives and which route a restart would rebuild.
+struct GenerationResolver {
+    base: String,
+    codes: Mutex<Vec<String>>,
+    next: std::sync::atomic::AtomicUsize,
+    dropped: Arc<Mutex<Vec<usize>>>,
+    restores: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct GenerationKeepalive(usize, Arc<Mutex<Vec<usize>>>);
+
+impl Drop for GenerationKeepalive {
+    fn drop(&mut self) {
+        self.1.lock().unwrap().push(self.0);
+    }
+}
+
+impl GenerationResolver {
+    fn keepalive(&self) -> Box<dyn std::any::Any + Send> {
+        let generation = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::new(GenerationKeepalive(generation, self.dropped.clone()))
+    }
+}
+
+impl PairingResolver for GenerationResolver {
+    fn resolve(
+        &self,
+        input: &str,
+        _data_dir: &std::path::Path,
+    ) -> Option<anyhow::Result<ResolvedPairing>> {
+        (input == "route:pair").then(|| {
+            Ok(ResolvedPairing {
+                base: self.base.clone(),
+                code: self.codes.lock().unwrap().remove(0),
+                keepalive: Some(self.keepalive()),
+                route: Some("route:secret".into()),
+            })
+        })
+    }
+
+    fn restore(
+        &self,
+        route: &str,
+        _data_dir: &std::path::Path,
+    ) -> Option<anyhow::Result<RestoredRoute>> {
+        route.starts_with("route:").then(|| {
+            self.restores
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(RestoredRoute {
+                base: self.base.clone(),
+                keepalive: Some(self.keepalive()),
+            })
+        })
+    }
+}
+
+/// A session store whose saves can be made to fail (a full disk, a locked
+/// file) while loads keep working.
+struct FlakyStore {
+    file: FileSessionStore,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl SessionStore for FlakyStore {
+    fn load(&self) -> anyhow::Result<Vec<SavedEngine>> {
+        self.file.load()
+    }
+    fn save(&self, engines: &[SavedEngine]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.fail.load(std::sync::atomic::Ordering::SeqCst),
+            "disk full"
+        );
+        self.file.save(engines)
+    }
+}
+
+/// One real remote engine and a client data dir, for route tests.
+struct RouteRig {
+    remote: EngineCore,
+    remote_dir: tempfile::TempDir,
+    listener: roboco_engine::EngineListener,
+    client_dir: tempfile::TempDir,
+    dropped: Arc<Mutex<Vec<usize>>>,
+    restores: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RouteRig {
+    async fn new() -> Self {
+        let remote_dir = tempfile::tempdir().unwrap();
+        let remote = core(remote_dir.path());
+        let listener = roboco_engine::serve_engine_remote(
+            "127.0.0.1:0".parse().unwrap(),
+            remote.rpc_service(),
+            remote_dir.path(),
+        )
+        .await
+        .unwrap();
+        Self {
+            remote,
+            remote_dir,
+            listener,
+            client_dir: tempfile::tempdir().unwrap(),
+            dropped: Arc::new(Mutex::new(Vec::new())),
+            restores: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn base(&self) -> String {
+        format!("http://{}", self.listener.address)
+    }
+
+    fn code(&self) -> String {
+        PairingStore::open(self.remote_dir.path())
+            .unwrap()
+            .create_code("route rig", 300)
+            .unwrap()
+            .credential
+    }
+
+    fn store_path(&self) -> PathBuf {
+        self.client_dir.path().join("paired-engines-v1.json")
+    }
+
+    async fn open(&self, sessions: Arc<dyn SessionStore>) -> EngineRegistry {
+        EngineRegistry::open_with(RegistryOptions {
+            data_dir: self.client_dir.path().to_path_buf(),
+            sessions,
+            local: None,
+            resolvers: vec![Arc::new(GenerationResolver {
+                base: self.base(),
+                codes: Mutex::new(vec![self.code(), self.code()]),
+                next: std::sync::atomic::AtomicUsize::new(0),
+                dropped: self.dropped.clone(),
+                restores: self.restores.clone(),
+            })],
+        })
+        .await
+        .unwrap()
+    }
+
+    fn saved_route(&self) -> Option<String> {
+        FileSessionStore::new(self.store_path()).load().unwrap()[0]
+            .route
+            .clone()
+    }
+}
+
+async fn connected(registry: &EngineRegistry, key: &EngineKey) {
+    wait_for(registry, |snapshot| {
+        snapshot
+            .engines
+            .iter()
+            .any(|e| &e.key == key && e.state == EngineConnectionState::Connected)
+    })
+    .await
+}
+
+/// F3: a reattach saves exactly the route its caller knows. A route-less
+/// room presentation keeps the saved Tailcat route; a room presentation
+/// that names its route replaces it; and a manual LAN re-pair clears it, so
+/// a restart dials the LAN URL instead of rebuilding a dead forwarder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reattaching_saves_exactly_the_route_its_caller_knows() {
+    const SECRET: &str = "qVS3lF5i5vNbcJW7DVoG_fW1NlK8kCqy39s2ZwAhHfN";
+    let rig = RouteRig::new().await;
+    roboco_engine::rooms::RoomStore::open(rig.remote_dir.path())
+        .unwrap()
+        .join(roboco_proto::room::RoomInvite::new("Room", SECRET, vec![]).unwrap())
+        .unwrap();
+    let registry = rig
+        .open(Arc::new(FileSessionStore::new(rig.store_path())))
+        .await;
+    let key = registry.pair("route:pair", "Desk").await.unwrap();
+    connected(&registry, &key).await;
+    assert_eq!(rig.saved_route().as_deref(), Some("route:secret"));
+
+    // A route-less room presentation: Keep.
+    let (_, adoption) = registry
+        .join_room_member(&rig.base(), "tcB", SECRET, "Desk", None, None)
+        .await
+        .unwrap();
+    assert_eq!(adoption, Adoption::Reattached);
+    assert_eq!(rig.saved_route().as_deref(), Some("route:secret"));
+
+    // A room presentation over a routed transport: Set.
+    registry
+        .join_room_member(
+            &rig.base(),
+            "tcB",
+            SECRET,
+            "Desk",
+            None,
+            Some("route:member".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rig.saved_route().as_deref(), Some("route:member"));
+
+    // A manual LAN re-pair: Set(None), so the stale route is gone.
+    let again = registry
+        .pair(&format!("{}/pair#token={}", rig.base(), rig.code()), "Desk")
+        .await
+        .unwrap();
+    assert_eq!(again, key, "the same entry, reattached");
+    assert_eq!(rig.saved_route(), None);
+    registry.shutdown().await;
+    drop(registry);
+
+    // The restart dials the LAN URL: no transport is rebuilt.
+    let restores = rig.restores.load(std::sync::atomic::Ordering::SeqCst);
+    let registry = rig
+        .open(Arc::new(FileSessionStore::new(rig.store_path())))
+        .await;
+    connected(&registry, &key).await;
+    assert_eq!(
+        rig.restores.load(std::sync::atomic::Ordering::SeqCst),
+        restores
+    );
+    registry.shutdown().await;
+    rig.remote.shutdown().await;
+}
+
+/// F6: a reattach whose save fails rolls the entry back whole: the saved
+/// record, the info, and the live forwarder it runs on. Only the fresh
+/// forwarder dies; the entry stays connected through the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_save_during_reattach_keeps_the_live_forwarder() {
+    let rig = RouteRig::new().await;
+    let store = Arc::new(FlakyStore {
+        file: FileSessionStore::new(rig.store_path()),
+        fail: std::sync::atomic::AtomicBool::new(false),
+    });
+    let registry = rig.open(store.clone()).await;
+    let key = registry.pair("route:pair", "Desk").await.unwrap();
+    connected(&registry, &key).await;
+    let before = std::fs::read(rig.store_path()).unwrap();
+
+    store.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(registry.pair("route:pair", "Desk").await.is_err());
+    assert_eq!(
+        *rig.dropped.lock().unwrap(),
+        vec![1],
+        "only the fresh forwarder dropped; the live one (0) survives"
+    );
+    assert_eq!(std::fs::read(rig.store_path()).unwrap(), before);
+    let target = registry.target(&key).unwrap();
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert_eq!(registry.snapshot().engines.len(), 1);
+    registry.shutdown().await;
+    drop(registry);
+    rig.remote.shutdown().await;
+}
