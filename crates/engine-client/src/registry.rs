@@ -143,13 +143,7 @@ impl RegistrySnapshot {
         for engine in &self.engines {
             let scope = |id: &str| ScopedId::encode(&engine.key, id);
             for mut chat in engine.chats.clone() {
-                chat.id = scope(&chat.id);
-                chat.device_id = scope(&chat.device_id);
-                chat.space_id = chat.space_id.map(|id| scope(&id));
-                chat.checkout_id = chat.checkout_id.map(|id| scope(&id));
-                if let Some(context) = &mut chat.source_context {
-                    context.checkout_id = scope(&context.checkout_id);
-                }
+                scope_chat(&engine.key, &mut chat);
                 out.chats.push(chat);
             }
             for mut space in engine.spaces.clone() {
@@ -193,6 +187,26 @@ impl RegistrySnapshot {
     }
 }
 
+/// Project one chat row of engine `key` into the client's id space: its own
+/// id and every id naming another row of the same engine — device, space,
+/// checkouts, the parent a side chat hangs under, and the chat whose agent
+/// created it. Rows from the same engine must keep comparing equal to each
+/// other once scoped (the Android core's projection does the same).
+pub fn scope_chat(key: &EngineKey, chat: &mut Chat) {
+    let scope = |id: &str| ScopedId::encode(key, id);
+    chat.id = scope(&chat.id);
+    chat.device_id = scope(&chat.device_id);
+    chat.space_id = chat.space_id.as_deref().map(scope);
+    chat.checkout_id = chat.checkout_id.as_deref().map(scope);
+    if let Some(context) = &mut chat.source_context {
+        context.checkout_id = scope(&context.checkout_id);
+    }
+    chat.parent_chat_id = chat.parent_chat_id.as_deref().map(scope);
+    if let Some(origin) = &mut chat.agent_origin {
+        origin.chat_id = scope(&origin.chat_id);
+    }
+}
+
 /// Project only transcript references which leave their owning chat. Message and
 /// tool IDs stay document-local; text, tool payloads and sidecar paths are untouched.
 pub fn scope_transcript_entries(key: &EngineKey, entries: &mut [roboco_doc::SessionMessageEntry]) {
@@ -205,12 +219,19 @@ pub fn scope_transcript_entries(key: &EngineKey, entries: &mut [roboco_doc::Sess
     for entry in entries {
         scope(key, &mut entry.device_id);
         for part in &mut entry.parts {
-            if let roboco_doc::MessagePart::Tool {
-                subagent_ref: Some(reference),
-                ..
-            } = part
-            {
-                scope(key, reference);
+            match part {
+                roboco_doc::MessagePart::Tool {
+                    subagent_ref: Some(reference),
+                    ..
+                } => scope(key, reference),
+                // A completion notice opens the side chats it reports; they
+                // live on the parent's engine.
+                roboco_doc::MessagePart::CompletionNotice { sides, .. } => {
+                    for side in sides {
+                        scope(key, &mut side.chat_id);
+                    }
+                }
+                _ => {}
             }
         }
     }

@@ -84,6 +84,92 @@ fn scoped_identity_codec_is_collision_safe() {
     assert!(ScopedId::parse("engine:v1:bad").is_err());
 }
 
+/// A side chat keeps pointing at its parent once projected: `parentChatId`
+/// and the agent origin are scoped with the row's own engine, so a paired
+/// engine's side chat lists under its (scoped) parent and never under a
+/// local chat that happens to share the raw id.
+#[test]
+fn projection_scopes_side_chat_parents_and_agent_origins() {
+    fn chat(id: &str, parent: Option<&str>) -> Chat {
+        serde_json::from_value(json!({
+            "id": id, "deviceId": "device", "spaceId": "space",
+            "archived": false, "createdAt": "2026-10-27T00:00:00Z",
+            "parentChatId": parent,
+            "agentOrigin": parent.map(|chat| json!({ "chatId": chat })),
+        }))
+        .unwrap()
+    }
+    let engine = |key: EngineKey| EngineSnapshot {
+        info: EngineInfo::current("device".into(), roboco_proto::WorkspaceScope::Local, None),
+        key,
+        state: EngineConnectionState::Connected,
+        last_error: None,
+        generation: 1,
+        chats: vec![chat("parent", None), chat("side", Some("parent"))],
+        spaces: vec![],
+        devices: vec![],
+        sessions: vec![],
+        chats_loaded: true,
+        spaces_loaded: true,
+    };
+    let remote = EngineKey("server".into());
+    let projected = RegistrySnapshot {
+        engines: vec![engine(EngineKey::local()), engine(remote.clone())],
+        configuration_error: None,
+    }
+    .projected();
+    let find = |id: &str| projected.chats.iter().find(|c| c.id == id).unwrap();
+    // The local engine's rows stay raw.
+    assert_eq!(find("side").parent_chat_id.as_deref(), Some("parent"));
+    assert_eq!(find("side").agent_origin.as_ref().unwrap().chat_id, "parent");
+    // The paired engine's side chat names its own scoped parent.
+    let parent = ScopedId::encode(&remote, "parent");
+    let side = find(&ScopedId::encode(&remote, "side"));
+    assert_eq!(side.parent_chat_id.as_deref(), Some(parent.as_str()));
+    assert_eq!(side.agent_origin.as_ref().unwrap().chat_id, parent);
+    assert!(projected.chats.iter().any(|c| c.id == parent));
+    assert!(find(&parent).parent_chat_id.is_none());
+    assert!(find(&parent).agent_origin.is_none());
+}
+
+/// Transcript references that open other chats of the same engine — spawn
+/// chips' subagent docs and completion notices' side chats — are scoped once
+/// and stay stable when a cached (already scoped) copy is scoped again.
+#[test]
+fn transcript_scoping_covers_subagents_and_completion_notices() {
+    use roboco_doc::{MessagePart, MessageRole, NoticeOutcome, NoticeSide, SessionMessageEntry};
+    let remote = EngineKey("server".into());
+    let notice = MessagePart::CompletionNotice {
+        id: "n0".into(),
+        sides: vec![NoticeSide {
+            chat_id: "side".into(),
+            title: "Side".into(),
+            outcome: NoticeOutcome::Completed,
+            detail: None,
+        }],
+    };
+    let mut entries = vec![SessionMessageEntry {
+        duration_ms: None,
+        id: "e1".into(),
+        role: MessageRole::Assistant,
+        parts: vec![notice],
+        created_at: 0,
+        device_id: "device".into(),
+        status: None,
+        continuation_of: None,
+        origin_chat_id: None,
+        provider_turn: None,
+    }];
+    for _ in 0..2 {
+        scope_transcript_entries(&remote, &mut entries);
+        let MessagePart::CompletionNotice { sides, .. } = &entries[0].parts[0] else {
+            panic!("notice part");
+        };
+        assert_eq!(sides[0].chat_id, ScopedId::encode(&remote, "side"));
+        assert_eq!(entries[0].device_id, ScopedId::encode(&remote, "device"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_engine_reconnect_retains_rows_persists_pairing_and_forgets() {
     let local_dir = tempfile::tempdir().unwrap();
