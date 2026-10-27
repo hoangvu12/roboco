@@ -248,6 +248,8 @@ pub enum RoomCommand {
     #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
     Invite {
         /// The fleet room's id (from `room create` or `room list`).
+        // Room ids are base64url and may begin with `-`.
+        #[arg(allow_hyphen_values = true)]
         room_id: String,
         /// Print the invite as a terminal QR code under the invite line (and
         /// add `qrSvg` to `--json` output).
@@ -291,6 +293,8 @@ pub enum RoomCommand {
     ///   {"roomId":"<room id>","left":true}
     #[command(verbatim_doc_comment, after_help = ROOM_EXIT_CODES)]
     Leave {
+        // Room ids are base64url and may begin with `-`.
+        #[arg(allow_hyphen_values = true)]
         room_id: String,
         #[arg(long)]
         json: bool,
@@ -544,4 +548,38 @@ pub fn run(command: EngineCommand, data_dir: &std::path::Path) -> anyhow::Result
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: RoomCommand,
+    }
+
+    fn parse(args: &[&str]) -> RoomCommand {
+        Cli::try_parse_from(std::iter::once("room").chain(args.iter().copied()))
+            .unwrap()
+            .command
+    }
+
+    /// Room ids are base64url, so about one in 64 starts with `-`: those must
+    /// still parse as the id, while `--json` stays a flag on either side.
+    #[test]
+    fn room_ids_may_begin_with_a_hyphen() {
+        for args in [&["leave", "-Ab_c", "--json"][..], &["leave", "--json", "-Ab_c"]] {
+            let RoomCommand::Leave { room_id, json } = parse(args) else {
+                panic!("not a leave");
+            };
+            assert_eq!((room_id.as_str(), json), ("-Ab_c", true), "{args:?}");
+        }
+        let RoomCommand::Invite { room_id, qr, json } = parse(&["invite", "-x9", "--qr"]) else {
+            panic!("not an invite");
+        };
+        assert_eq!((room_id.as_str(), qr, json), ("-x9", true, false));
+    }
 }
