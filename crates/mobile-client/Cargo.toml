@@ -35,11 +35,24 @@ tracing.workspace = true
 # the first Tailcat dial; sha2 derives the non-secret display handle.
 libloading = "0.8"
 sha2.workspace = true
+# The phone's half of the preview session relay (agent-previews ticket 05):
+# the GPUI-free client proxy from ticket 04, embedded in the core. Engine-free
+# by design, so the mobile core can link it (see the crate's own manifest).
+roboco-preview-relay.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 # tests/tailcat_engine.rs prints the route's decisions.
 tracing-subscriber.workspace = true
 roboco-engine.workspace = true
 roboco-harness.workspace = true
-async-trait.workspace = true
+roboco-preview.workspace = true
 tempfile.workspace = true
+# previews/tests.rs: a real loopback dev server (the engine-side relay
+# suite's shape) and the scanner's started_at clock.
+libc.workspace = true
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }

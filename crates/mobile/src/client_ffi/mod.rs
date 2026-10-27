@@ -18,6 +18,7 @@ mod accounts;
 mod failover;
 mod new_session;
 mod notify;
+mod previews;
 mod session;
 mod types;
 mod workspace;
@@ -26,6 +27,7 @@ pub use accounts::*;
 pub use failover::*;
 pub use new_session::*;
 pub use notify::*;
+pub use previews::*;
 pub use session::*;
 pub use types::*;
 
