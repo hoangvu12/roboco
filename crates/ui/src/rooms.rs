@@ -1,112 +1,122 @@
-//! Desktop room operations (ADR 0011): the Settings → Rooms flows — create,
-//! join, leave, rotate — over the client machinery in
+//! Desktop fleet operations (fleet follow, ADR 0011 amendment): the one
+//! fleet room this data dir keeps, pushed to every paired engine that serves
+//! its Tailcat route, over the client machinery in
 //! `roboco-engine-client::rooms` plus the pieces only the desktop has: the
-//! tailcat dialer, the local engine's room store, and the rotate checklist.
+//! tailcat dialer, the address probe, and the local engine's room store.
 //!
-//! Rooms share reachability, never data (ADR 0004): joined member engines
-//! become ordinary registry entries, so the existing Devices/sidebar flow
-//! and the composer's device picker need no changes and no new grouping
-//! layer — that is the whole point of the design.
+//! The room concept never reaches the UI: Settings → Remote access shows a
+//! Fleet card with plain per-engine state (In / Not in yet / opt-out). Joined
+//! member engines become ordinary registry entries, so the Devices flow and
+//! the composer's device picker need no changes (ADR 0004).
 //!
-//! The invite is secret-bearing (ADR 0008): it is never logged, never
-//! written anywhere but the 0600 rooms file, and the QR card's copy warns
-//! that anyone holding it can join the room.
+//! The fleet invite is secret-bearing (ADR 0008): it is never logged, never
+//! written anywhere but the 0600 rooms file and the local engine's 0600
+//! pairing database, and the invite card warns that anyone holding it can
+//! reach the fleet. Nothing here ever mutates remote-access settings on any
+//! engine (C4a): the only remote-access call is the read-only
+//! `GetRemoteAccess` shape check, and member addresses arrive in the fleet
+//! books — each engine adds its own recorded Tailcat address when it joins.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
+    fmt,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::engine_registry::{EngineKey, EngineRegistry, EngineTarget, RegistrySnapshot};
-use roboco_engine::rooms::{RoomRecord, RoomStore};
-use roboco_engine_client::rooms::{
-    ClientRoom, JoinOutcome, ResolvedMember, RoomDialer, RoomSecretFile, join_room_members,
-    mint_room_secret, revoke_room_sessions,
+use crate::engine_registry::{
+    EngineConnectionState, EngineKey, EngineRegistry, EngineTarget, RegistrySnapshot,
 };
+use roboco_engine::rooms::{FleetConflict, RoomRecord, RoomStore};
+use roboco_engine_client::rooms::{
+    ClientRoom, ResolvedMember, RoomDialer, RoomSecretFile, desktop_label, fetch_room_book,
+    heal_room_books_with, is_fleet_conflict, join_room_members, push_room_join,
+    revoke_room_sessions, union_members, write_private_file,
+};
+use roboco_proto::capabilities;
 use roboco_proto::qr;
-use roboco_proto::room::{RoomInvite, RoomMember};
-use roboco_rpc::methods;
+use roboco_proto::room::{RoomInvite, RoomKind, RoomMember};
+use roboco_rpc::{RpcError, methods};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// The desktop's dialer: one tailcat forwarder per member address, the same
-/// layout the pairing resolver uses. The forwarder (and its adapter child)
-/// lives exactly as long as the registry entry the join adopts.
+/// The fleet's default name (the label member engines show for it).
+pub const FLEET_NAME: &str = "Fleet";
+
+/// Fleet preferences beside `rooms-v1.json`: the per-engine opt-outs.
+pub const FLEET_FILE: &str = "fleet-v1.json";
+
+/// The paste field refuses plain-room invites with this fixed text.
+pub const PLAIN_ROOM_INVITE: &str =
+    "That invite is for a room, not a fleet. Join rooms from a terminal: roboco engine room join";
+
+/// The desktop's dialer: the pairing resolver's per-address forwarder (one
+/// adapter per member address in this process, shared with Tailcat
+/// pairings), kept alive by the registry entry the join adopts. The entry
+/// saves the resolver's `tailcat:` route, so a restart rebuilds the
+/// forwarder instead of dialing a loopback port that died (or that another
+/// forwarder has since taken) with the bearer credential.
 pub struct TailcatRoomDialer;
 
 impl RoomDialer for TailcatRoomDialer {
     fn dial(&self, address: &str, data_dir: &Path) -> anyhow::Result<ResolvedMember> {
-        let session = data_dir
-            .join("tailcat-forwarders")
-            .join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&session)?;
-        let client = roboco_engine::tailcat::TailcatClient::start(&session, address, None)?;
+        let client = crate::tailcat_pairing::forwarder(address, data_dir)?;
         Ok(ResolvedMember {
-            base: client.url().trim_end_matches('/').to_string(),
+            base: crate::tailcat_pairing::base(&client),
             keepalive: Some(Box::new(client)),
+            route: Some(crate::tailcat_pairing::route(address)),
         })
     }
 }
 
-/// One engine picked as a room member in the create flow.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MemberPick {
-    /// This machine's engine (the app data dir holds its publication).
-    Local,
-    Engine(EngineKey),
+/// What an engine's remote-access state says about its Tailcat route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TailcatShape {
+    /// Remote access is on and the listener is the loopback serve target:
+    /// the engine runs the Tailcat transport, and the address it publishes
+    /// is the one the fleet book wants.
+    Serves,
+    /// Remote access is off, or the listener is a LAN bind: fleet code never
+    /// enables it — the user does, on that engine.
+    Off,
+    /// The engine could not be asked.
+    Unreachable,
 }
 
-/// A display label for a registry engine: its device name when the devices
-/// stream has landed, else the engine identity — never a secret.
-pub fn engine_label(snapshot: &RegistrySnapshot, key: &EngineKey) -> String {
-    snapshot
-        .engines
-        .iter()
-        .find(|engine| &engine.key == key)
-        .map(|engine| {
-            engine
-                .devices
-                .first()
-                .map(|device| device.name.clone())
-                .unwrap_or_else(|| engine.info.device_id.clone())
-        })
-        .unwrap_or_else(|| "Engine".into())
+/// Which paired engines the fleet pushes to. Production asks the engine
+/// itself ([`TailcatProbe`]); tests map engines to shapes (test engines
+/// cannot run Tailcat). The probe never learns addresses: each engine adds
+/// its own to the fleet book when it joins, and the sync reads it there.
+#[async_trait::async_trait]
+pub trait FleetProbe: Send + Sync {
+    async fn shape(&self, target: &EngineTarget) -> TailcatShape;
 }
 
-/// The local engine's book label: its device row's name, else a stable
-/// generic label (member labels are what other clients see in the book).
-pub fn local_member_label(snapshot: &RegistrySnapshot) -> String {
-    let engine = snapshot
-        .engines
-        .iter()
-        .find(|engine| engine.key.is_local())
-        .or_else(|| snapshot.engines.first());
-    match engine {
-        Some(engine) => engine
-            .devices
-            .first()
-            .map(|device| device.name.clone())
-            .unwrap_or_else(|| "Desktop".into()),
-        None => "Desktop".into(),
+/// The production probe: one read-only `GetRemoteAccess`. Fleet code never
+/// sends `CreateTailcatInvite` (or any other settings-writing RPC): that
+/// mint force-enables and persists Tailcat, wiping a Direct engine's
+/// transport and public URL (C4a).
+pub struct TailcatProbe;
+
+#[async_trait::async_trait]
+impl FleetProbe for TailcatProbe {
+    async fn shape(&self, target: &EngineTarget) -> TailcatShape {
+        let Ok(snapshot) = target.call(methods::GET_REMOTE_ACCESS, json!({})).await else {
+            return TailcatShape::Unreachable;
+        };
+        tailcat_shape_of(&snapshot)
     }
 }
 
-/// The client-visible signature of an engine already serving its Tailcat
-/// route. The Tailcat transport's listener is by construction a loopback
-/// serve target (`listener_bind` routes Tailcat through `serve_target`,
-/// which rejects non-loopback), so an engine with remote access off, or a
-/// LAN-bound network listener, never matches.
-///
-/// This is the C4a guard: room code must never mutate remote-access
-/// settings, and `CreateTailcatInvite` force-enables and persists Tailcat —
-/// so the mint only ever runs against engines already in this shape, where
-/// its settings save is byte-idempotent (enabled, Tailcat transport,
-/// loopback bind). Engines not in the shape are skipped with an
-/// enable-first note; nothing is ever enabled for them.
-async fn tailcat_shape(target: &EngineTarget) -> TailcatShape {
-    let Ok(snapshot) = target.call(methods::GET_REMOTE_ACCESS, json!({})).await else {
-        return TailcatShape::Unreachable;
-    };
+/// The client-visible signature of an engine serving its Tailcat route. The
+/// Tailcat transport's listener is by construction a loopback serve target
+/// (`listener_bind` routes Tailcat through `serve_target`, which rejects
+/// non-loopback), so an engine with remote access off, or a LAN-bound
+/// network listener, never matches. The snapshot does not name the
+/// transport, so a Direct engine bound to loopback (behind a reverse proxy)
+/// reads as serving too; that only costs it a settings-free `RoomJoin`, and
+/// it adds a book entry only if it ever recorded a Tailcat address. Pure.
+pub fn tailcat_shape_of(snapshot: &serde_json::Value) -> TailcatShape {
     let enabled = snapshot["status"]["enabled"].as_bool().unwrap_or(false);
     let loopback = snapshot["status"]["address"]
         .as_str()
@@ -119,86 +129,231 @@ async fn tailcat_shape(target: &EngineTarget) -> TailcatShape {
     }
 }
 
-/// What an engine's remote-access state says about its Tailcat route.
+/// A display label for a registry engine: its own device row's name when
+/// the devices stream has landed, else the engine identity — never a secret.
+pub fn engine_label(snapshot: &RegistrySnapshot, key: &EngineKey) -> String {
+    snapshot
+        .engines
+        .iter()
+        .find(|engine| &engine.key == key)
+        .map(|engine| {
+            engine
+                .devices
+                .iter()
+                .find(|device| device.id == engine.info.device_id)
+                .or_else(|| engine.devices.first())
+                .map(|device| device.name.clone())
+                .unwrap_or_else(|| engine.info.device_id.clone())
+        })
+        .unwrap_or_else(|| "Engine".into())
+}
+
+/// The fleet preferences file (`fleet-v1.json`, 0600, atomic): which
+/// engines (by device id — stable across re-pairing) the user left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetPrefs {
+    #[serde(default)]
+    pub opted_out: BTreeSet<String>,
+}
+
+impl FleetPrefs {
+    pub fn is_opted_out(&self, device_id: &str) -> bool {
+        self.opted_out.contains(device_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FleetPrefsFile {
+    path: PathBuf,
+}
+
+impl FleetPrefsFile {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// Defaults when absent; an unreadable file is an error (preserved).
+    pub fn load(&self) -> anyhow::Result<FleetPrefs> {
+        match std::fs::read(&self.path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| anyhow::anyhow!("the fleet preferences could not be read")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FleetPrefs::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn save(&self, prefs: &FleetPrefs) -> anyhow::Result<()> {
+        write_private_file(&self.path, &serde_json::to_vec(prefs)?)
+    }
+}
+
+/// Why an engine is not in the fleet yet — each maps to one plain caption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TailcatShape {
-    /// Remote access is on and the listener is the loopback serve target:
-    /// the engine runs the Tailcat transport, and the address it publishes
-    /// is the one the room book wants.
-    Serves,
-    /// Remote access is off, or the listener is a LAN bind: room code never
-    /// enables it — the user does, on that engine.
-    Off,
-    /// The engine could not be asked.
-    Unreachable,
+pub enum NotInYet {
+    /// The engine is not connected right now.
+    Offline,
+    /// Its remote access is off or not on the Tailcat transport.
+    TailcatOff,
+    /// It answered, but the join did not confirm (Retry runs it again).
+    Unconfirmed,
 }
 
-/// The fixed note for a member engine the create flow must skip: label-only,
-/// telling the user what to do, never naming an address.
-const ENABLE_TAILCAT_FIRST: &str = "enable its Tailcat route first (Settings → Remote access on that engine), then re-create or rotate to add it";
-
-/// The address a room book carries for one member engine: the address the
-/// engine's one-second `CreateTailcatInvite` embeds (durable transport
-/// handle). The invite's single-use token is never redeemed — it expires
-/// unused a second after minting; rooms present a secret, not a pair code.
-/// Callers must first prove the engine already serves its Tailcat route
-/// ([`tailcat_shape`]): the mint persists Tailcat settings, so it is only
-/// safe where those settings are already the ones it would write.
-async fn member_address(target: &EngineTarget) -> anyhow::Result<String> {
-    let reply = target
-        .call(methods::CREATE_TAILCAT_INVITE, json!({"ttlSeconds": 1}))
-        .await
-        .map_err(|_| anyhow::anyhow!("the engine's Tailcat route is unavailable"))?;
-    let url = reply
-        .get("url")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow::anyhow!("the engine minted no invite"))?;
-    let invite = roboco_engine::tailcat::TailcatInvite::decode(url)?;
-    Ok(invite.address)
+/// One engine's fleet state, as the card renders it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FleetState {
+    In,
+    NotInYet(NotInYet),
+    /// The engine predates `rooms-v2`: it cannot join, never an error.
+    NeedsUpdate,
+    /// The user switched this engine off.
+    OptedOut,
+    /// The engine already belongs to a different fleet.
+    OtherFleet,
 }
 
-/// The outcome of creating a room: the invite (secret-bearing — never
-/// logged), its QR, and which selected engines could not seed the book
-/// (labels only). Presentations are NOT attempted: a member engine only
-/// welcomes the secret after its host consumed the invite, so the flow
-/// ends by handing the user the invite to share.
-#[derive(Clone, Debug)]
-pub struct CreateOutcome {
-    pub invite: RoomInvite,
+impl FleetState {
+    /// The row's caption: plain language, never a secret or an address.
+    pub fn caption(self) -> &'static str {
+        match self {
+            FleetState::In => "In",
+            FleetState::NotInYet(NotInYet::Offline) => "Not in yet · offline",
+            FleetState::NotInYet(NotInYet::TailcatOff) => {
+                "Not in yet · turn on Remote access with Tailcat on that engine"
+            }
+            FleetState::NotInYet(NotInYet::Unconfirmed) => "Not in yet",
+            FleetState::NeedsUpdate => "Update that engine to add it",
+            FleetState::OptedOut => "Left out",
+            FleetState::OtherFleet => "In a different fleet",
+        }
+    }
+
+    pub fn retryable(self) -> bool {
+        matches!(self, FleetState::NotInYet(_))
+    }
+}
+
+/// One engine row on the Fleet card. `device_id` is `None` for a book member
+/// this desktop has never reached (no switch for it — nothing to opt out).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FleetRow {
+    pub device_id: Option<String>,
+    pub key: Option<EngineKey>,
+    pub label: String,
+    pub state: FleetState,
+}
+
+/// The Fleet card's model: whether this data dir holds a fleet yet, and one
+/// row per other engine.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FleetReport {
+    pub exists: bool,
+    pub rows: Vec<FleetRow>,
+}
+
+/// A paired engine the survey wants probed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FleetCandidate {
+    pub key: EngineKey,
+    pub device_id: String,
+    pub label: String,
+}
+
+/// The survey: the rows decided from the registry snapshot alone (opt-outs,
+/// old engines, offline), and the candidates still to probe. One row per
+/// engine identity — a registry carrying the same device twice still shows
+/// (and pushes) it once. Pure.
+pub fn survey(
+    snapshot: &RegistrySnapshot,
+    prefs: &FleetPrefs,
+) -> (Vec<FleetRow>, Vec<FleetCandidate>) {
+    let local_device = snapshot
+        .engines
+        .iter()
+        .find(|engine| engine.key.is_local())
+        .map(|engine| engine.info.device_id.clone());
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+    let mut candidates = Vec::new();
+    for engine in &snapshot.engines {
+        let device_id = engine.info.device_id.clone();
+        if engine.key.is_local() || local_device.as_deref() == Some(device_id.as_str()) {
+            continue;
+        }
+        if !seen.insert(device_id.clone()) {
+            continue;
+        }
+        let label = engine_label(snapshot, &engine.key);
+        let state = if prefs.is_opted_out(&device_id) {
+            Some(FleetState::OptedOut)
+        } else if !engine.info.supports(capabilities::ROOMS_V2) {
+            Some(FleetState::NeedsUpdate)
+        } else if engine.state != EngineConnectionState::Connected {
+            Some(FleetState::NotInYet(NotInYet::Offline))
+        } else {
+            None
+        };
+        rows.push(FleetRow {
+            device_id: Some(device_id.clone()),
+            key: Some(engine.key.clone()),
+            label: label.clone(),
+            state: state.unwrap_or(FleetState::NotInYet(NotInYet::Unconfirmed)),
+        });
+        if state.is_none() {
+            candidates.push(FleetCandidate {
+                key: engine.key.clone(),
+                device_id,
+                label,
+            });
+        }
+    }
+    (rows, candidates)
+}
+
+/// The shareable fleet invite. Secret-bearing: `Debug` prints shape only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FleetInvite {
     pub encoded: String,
     pub qr_svg: Option<String>,
-    /// Selected engines that are not in the book (no Tailcat route or
-    /// offline). They were skipped, not failed: the room exists, and
-    /// re-sharing the invite with them (or rotating) adds them later.
-    pub unavailable: Vec<String>,
 }
 
-/// The outcome of leaving a room.
-#[derive(Clone, Debug)]
-pub struct LeaveOutcome {
-    /// Per member: (label, revoke confirmed).
-    pub revoked: Vec<(String, bool)>,
-    /// Whether the local engine held the room and dropped it.
-    pub engine_left: bool,
+impl fmt::Debug for FleetInvite {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FleetInvite")
+            .field("encoded", &roboco_proto::room::describe(&self.encoded))
+            .field("qr", &self.qr_svg.is_some())
+            .finish()
+    }
 }
 
-/// The outcome of rotating a room's secret.
-#[derive(Clone, Debug)]
-pub struct RotateOutcome {
-    pub invite: RoomInvite,
-    pub encoded: String,
-    pub qr_svg: Option<String>,
-    pub checklist: RotateChecklist,
+/// The paste flow met a fleet this machine already shares with other
+/// engines: joining the pasted one means leaving it, so the card asks first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FleetSwitchNeeded {
+    /// Other engines in the current fleet's book.
+    pub others: usize,
 }
 
-/// All room operations the Settings page drives. One data dir — the app and
-/// the embedded (or daemon) engine share it, which is what lets the local
-/// engine join through its own room store the way the CLI does, while the
-/// listener keeps serving (WAL coordinates the two).
+impl fmt::Display for FleetSwitchNeeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "This computer is already in a fleet with other engines. Joining this one leaves it.",
+        )
+    }
+}
+
+impl std::error::Error for FleetSwitchNeeded {}
+
+/// All fleet operations the desktop drives. One data dir — the app and the
+/// embedded (or daemon) engine share it, which is what lets the local engine
+/// hold the fleet through its own room store while the listener keeps
+/// serving (WAL coordinates the two).
 pub struct RoomOps {
     data_dir: PathBuf,
     registry: EngineRegistry,
     dialer: Arc<dyn RoomDialer>,
+    probe: Arc<dyn FleetProbe>,
 }
 
 impl RoomOps {
@@ -207,11 +362,12 @@ impl RoomOps {
             data_dir,
             registry,
             dialer: Arc::new(TailcatRoomDialer),
+            probe: Arc::new(TailcatProbe),
         }
     }
 
-    /// The test seam: a page-level flow with a fake dialer (member addresses
-    /// mapped to loopback engines) instead of spawning adapter processes.
+    /// The test seam: a flow with a fake dialer (member addresses mapped to
+    /// loopback engines) instead of spawning adapter processes.
     #[cfg(test)]
     pub fn with_dialer(
         data_dir: PathBuf,
@@ -222,27 +378,28 @@ impl RoomOps {
             data_dir,
             registry,
             dialer,
+            probe: Arc::new(TailcatProbe),
         }
+    }
+
+    /// The probe seam beside the dialer seam (test engines cannot serve
+    /// Tailcat, so tests map engines to addresses).
+    #[cfg(test)]
+    pub fn with_probe(mut self, probe: Arc<dyn FleetProbe>) -> Self {
+        self.probe = probe;
+        self
     }
 
     pub fn rooms_file(&self) -> RoomSecretFile {
         RoomSecretFile::new(self.data_dir.join(roboco_engine_client::rooms::ROOMS_FILE))
     }
 
-    /// The rooms this client joined. An unreadable file surfaces as an empty
-    /// list here; the page reads it through [`Self::load_rooms_checked`] to
-    /// tell the two apart.
-    pub fn load_rooms(&self) -> Vec<ClientRoom> {
-        self.rooms_file().load().unwrap_or_default()
-    }
-
-    pub fn load_rooms_checked(&self) -> anyhow::Result<Vec<ClientRoom>> {
-        self.rooms_file().load()
+    pub fn prefs_file(&self) -> FleetPrefsFile {
+        FleetPrefsFile::new(self.data_dir.join(FLEET_FILE))
     }
 
     /// The address this machine's engine last published, if it serves a
-    /// tailcat route (the recorded publication the pairing CLI also mints
-    /// from). `None` until Remote access runs the Tailcat transport.
+    /// tailcat route. `None` until Remote access runs the Tailcat transport.
     pub fn local_address(&self) -> Option<String> {
         roboco_engine::tailcat::read_recorded_address(&self.data_dir)
             .ok()
@@ -262,464 +419,454 @@ impl RoomOps {
             .map_err(|_| anyhow::anyhow!("the engine room store could not be reached"))?
     }
 
-    /// The desktop engine joins a room through ticket-01's surface (the
-    /// store the CLI drives): only a verifier and the book land in the
-    /// engine; the invite's secret stays with the client.
-    pub async fn local_engine_join(&self, invite: &RoomInvite) -> anyhow::Result<()> {
-        let invite = invite.clone();
-        self.with_local_store(move |store| store.join(invite).map(|_| ()))
-            .await
+    /// The fleet room the local engine holds, if any.
+    pub async fn local_fleet(&self) -> anyhow::Result<Option<RoomRecord>> {
+        self.with_local_store(|store| store.fleet_room()).await
     }
 
-    /// The local engine leaves a room (forgets its verifier and book).
-    /// Returns whether it held the room.
-    pub async fn local_engine_leave(&self, room_id: &str) -> anyhow::Result<bool> {
-        let room_id = room_id.to_owned();
-        self.with_local_store(move |store| store.leave(&room_id))
-            .await
-    }
-
-    /// The rooms the local engine holds, read synchronously (for callers on
-    /// a non-tokio executor — the settings page's background reads). Errors
-    /// degrade to an empty list: membership display, never a gate.
-    pub fn local_engine_rooms_blocking(&self) -> Vec<RoomRecord> {
-        RoomStore::open(&self.data_dir)
-            .and_then(|store| store.list())
-            .unwrap_or_default()
-    }
-
-    /// The rooms the local engine holds (membership the page shows), on a
-    /// blocking thread for tokio-context callers.
-    pub async fn local_engine_rooms(&self) -> Vec<RoomRecord> {
-        self.with_local_store(move |store| store.list())
-            .await
-            .unwrap_or_default()
-    }
-
-    /// Create a room: mint the secret, seed the book from the local engine
-    /// plus the selected paired engines, save the record, and join the
-    /// local engine through its store. No presentations run here: a member
-    /// engine only welcomes a secret once its host consumed the invite
-    /// (hostless by design), so the flow hands the user the invite to share;
-    /// the room's Reconnect pass presents once members have joined.
-    pub async fn create(
-        &self,
-        name: &str,
-        selected: &[MemberPick],
-        local_label: &str,
-    ) -> anyhow::Result<CreateOutcome> {
-        let secret = mint_room_secret()?;
-        let mut members = Vec::new();
-        let mut unavailable: Vec<String> = Vec::new();
-        let Some(local_address) = self.local_address() else {
-            return Err(anyhow::anyhow!(
-                "This engine has no Tailcat route — turn on Remote access with the Tailcat transport first"
-            ));
-        };
-        members.push(RoomMember {
-            label: trim_member_label(local_label),
-            address: local_address,
-        });
-        for pick in selected {
-            let MemberPick::Engine(key) = pick else {
-                continue; // the local engine is already in the book
-            };
-            let label = engine_label(&self.registry.snapshot(), key);
-            match self.registry.target(key) {
-                Ok(target) => {
-                    // The C4a guard: only engines already serving their
-                    // Tailcat route are asked for an address. Room code
-                    // never enables anything — engines without the route
-                    // are skipped with an enable-first note.
-                    match tailcat_shape(&target).await {
-                        TailcatShape::Serves => match member_address(&target).await {
-                            Ok(address) => members.push(RoomMember {
-                                label: trim_member_label(&label),
-                                address,
-                            }),
-                            Err(error) => unavailable.push(format!("{label}: {error}")),
-                        },
-                        TailcatShape::Off => {
-                            unavailable.push(format!("{label}: {ENABLE_TAILCAT_FIRST}"))
-                        }
-                        TailcatShape::Unreachable => {
-                            unavailable.push(format!("{label}: engine is offline"))
-                        }
-                    }
-                }
-                Err(_) => unavailable.push(format!("{label}: engine is offline")),
-            }
+    /// Mint this data dir's fleet room if it has none yet (kind = fleet, the
+    /// secret retained by the local engine so phones pairing here get it via
+    /// `GetFleetInvite`). Returns the fleet's id; idempotent.
+    pub async fn create(&self) -> anyhow::Result<String> {
+        if let Some(fleet) = self.local_fleet().await? {
+            return Ok(fleet.id);
         }
-        let invite = RoomInvite::new(name, &secret, members.clone())?;
-        let room = ClientRoom {
-            id: invite.room_id(),
-            name: invite.name.clone(),
-            secret: invite.secret.clone(),
-            joined_at: now_ms(),
-            members,
-            sessions: Vec::new(),
+        let local = self.local_member();
+        let record = self
+            .with_local_store(move |store| match store.create(FLEET_NAME, local) {
+                // A concurrent mint (CLI) won the race: use its fleet.
+                Err(error) if error.downcast_ref::<FleetConflict>().is_some() => store
+                    .fleet_room()?
+                    .ok_or_else(|| anyhow::anyhow!("the fleet could not be created")),
+                other => other,
+            })
+            .await?;
+        tracing::info!(room_id = %record.id, "fleet minted");
+        Ok(record.id)
+    }
+
+    /// The label this desktop presents the fleet under: unique to this
+    /// machine (its engine's device name and id), so two desktops in one
+    /// fleet never reissue each other's session on an engine they share.
+    pub fn presenter_label(&self) -> String {
+        let device_id = self
+            .registry
+            .target(&EngineKey::local())
+            .map(|target| target.engine_info().device_id)
+            .unwrap_or_default();
+        desktop_label(
+            &roboco_engine::local_device_name_at(&self.data_dir),
+            &device_id,
+        )
+    }
+
+    /// This machine's own book entry — the one its engine's store adds on a
+    /// fleet join, so the two never disagree on the label.
+    fn local_member(&self) -> Vec<RoomMember> {
+        roboco_engine::rooms::own_member(&self.data_dir)
+            .into_iter()
+            .collect()
+    }
+
+    /// The client record for fleet `id`: the saved one, else rebuilt from the
+    /// local engine's fleet invite (a fleet joined through the CLI). Records
+    /// of fleets the local engine no longer holds are dropped.
+    async fn client_fleet(&self, id: &str) -> anyhow::Result<ClientRoom> {
+        let rooms = self.rooms_file().load()?;
+        let stale: Vec<String> = rooms
+            .iter()
+            .filter(|room| room.is_fleet() && room.id != id)
+            .map(|room| room.id.clone())
+            .collect();
+        for stale in stale {
+            self.rooms_file().remove(&stale)?;
+        }
+        if let Some(room) = rooms.into_iter().find(|room| room.id == id) {
+            return Ok(room);
+        }
+        let fleet_id = id.to_owned();
+        let invite = self
+            .with_local_store(move |store| store.fleet_invite(&fleet_id))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the fleet could not be read"))?;
+        Ok(ClientRoom::from_invite(&invite))
+    }
+
+    /// The fleet invite to show (QR + copy): mints the fleet first when this
+    /// data dir has none, pushing it to every eligible engine.
+    pub async fn fleet_invite(&self) -> anyhow::Result<FleetInvite> {
+        let id = match self.local_fleet().await? {
+            Some(fleet) => fleet.id,
+            None => {
+                self.sync_with(true).await?;
+                self.create().await?
+            }
         };
-        // Durable before anything else: the secret survives an interrupted
-        // create, and the room card's Reconnect finishes the introductions.
-        self.rooms_file().upsert(room.clone())?;
-        // The creator's engine is a member (its host ran the join).
-        self.local_engine_join(&invite).await?;
+        let invite = self
+            .with_local_store(move |store| store.fleet_invite(&id))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the fleet could not be read"))?;
         let encoded = invite.encode()?;
-        Ok(CreateOutcome {
-            invite,
+        Ok(FleetInvite {
             qr_svg: qr::try_qr_svg(&encoded),
             encoded,
-            unavailable,
         })
     }
 
-    /// Join a room from a pasted invite: decode (fixed-text errors only),
-    /// persist the record, join the local engine through its store, then
-    /// present to every member — joined engines appear as ordinary paired
-    /// engines in the existing device lists.
-    pub async fn join(&self, invite_text: &str) -> anyhow::Result<JoinOutcome> {
-        let invite = RoomInvite::decode(invite_text.trim())?;
-        self.join_decoded(invite).await
-    }
-
-    /// Join from an already-decoded invite (the create flow's twin).
-    pub async fn join_decoded(&self, invite: RoomInvite) -> anyhow::Result<JoinOutcome> {
-        let local_address = self.local_address();
-        let room = ClientRoom::from_invite(&invite);
-        // Durable before dialing: presentations are repeatable, so an
-        // interrupted join self-heals by re-running the pass.
-        self.rooms_file().upsert(room.clone())?;
-        self.local_engine_join(&invite).await?;
-        let outcome = join_room_members(
-            &self.registry,
-            self.dialer.clone(),
-            &self.data_dir,
-            room,
-            local_address.as_deref(),
-        )
-        .await?;
-        self.rooms_file().upsert(outcome.room.clone())?;
-        Ok(outcome)
-    }
-
-    /// Re-run the member join pass for a saved room (reconnect): live
-    /// members are untouched, offline members are re-dialed and
-    /// re-presented, and the address books union again.
-    pub async fn sync(&self, room_id: &str) -> anyhow::Result<Option<JoinOutcome>> {
-        let Some(room) = self
-            .load_rooms_checked()?
-            .into_iter()
-            .find(|room| room.id == room_id)
-        else {
-            return Ok(None);
-        };
-        let local_address = self.local_address();
-        let outcome = join_room_members(
-            &self.registry,
-            self.dialer.clone(),
-            &self.data_dir,
-            room,
-            local_address.as_deref(),
-        )
-        .await?;
-        self.rooms_file().upsert(outcome.room.clone())?;
-        Ok(Some(outcome))
-    }
-
-    /// Leave a room: forget the room (client record and the local engine's
-    /// verifier), revoke this client's own sessions best-effort on every
-    /// member, and forget the registry entries the room's joins adopted.
-    /// An engine paired by hand keeps its own entry — only the keys this
-    /// room's sessions recorded are forgotten.
-    pub async fn leave(&self, room_id: &str) -> anyhow::Result<LeaveOutcome> {
-        let Some(room) = self
-            .load_rooms_checked()?
-            .into_iter()
-            .find(|room| room.id == room_id)
-        else {
-            anyhow::bail!("that room is not joined by this device");
-        };
-        let revoked = revoke_room_sessions(&self.registry, &room).await;
-        for session in &room.sessions {
-            let _ = self
-                .registry
-                .forget(&EngineKey(session.engine_key.clone()))
-                .await;
+    /// Leave an engine out of the fleet (or bring it back). Forward-only: an
+    /// engine that already joined keeps the fleet until its host leaves it.
+    pub fn set_opt_out(&self, device_id: &str, opted_out: bool) -> anyhow::Result<()> {
+        let file = self.prefs_file();
+        let mut prefs = file.load()?;
+        if opted_out {
+            prefs.opted_out.insert(device_id.to_owned());
+        } else {
+            prefs.opted_out.remove(device_id);
         }
-        self.rooms_file().remove(room_id)?;
-        let engine_left = self.local_engine_leave(room_id).await?;
-        Ok(LeaveOutcome {
-            revoked,
-            engine_left,
-        })
+        file.save(&prefs)
     }
 
-    /// Rotate a room's secret: mint a new one, keep the name and the unioned
-    /// book, join the local engine into the new room, revoke this client's
-    /// old sessions, and return the guided checklist plus the new invite to
-    /// re-share. Members re-present once their hosts consume the new invite
-    /// — the room's Reconnect pass then records who has ([
-    /// RotateChecklist::refresh_re_presented]). The old verifier keeps
-    /// accepting the old secret on every engine until its host drops the old
-    /// room — the checklist says exactly that (eviction is
-    /// rotate-then-revoke, ADR 0011).
-    pub async fn rotate(&self, room_id: &str) -> anyhow::Result<RotateOutcome> {
-        let Some(old) = self
-            .load_rooms_checked()?
-            .into_iter()
-            .find(|room| room.id == room_id)
-        else {
-            anyhow::bail!("that room is not joined by this device");
+    /// The push + heal pass (app open, new pairings, Retry, opt-out changes):
+    /// mint the fleet lazily, push it (`RoomJoin`) to every eligible engine,
+    /// present to book members this desktop does not reach yet, and union
+    /// the books. Idempotent: live members are untouched, re-pushes are no-op
+    /// joins on the engines, and no engine is ever added twice.
+    pub async fn sync(&self) -> anyhow::Result<FleetReport> {
+        self.sync_with(false).await
+    }
+
+    async fn sync_with(&self, force_mint: bool) -> anyhow::Result<FleetReport> {
+        let prefs = self.prefs_file().load()?;
+        let (mut rows, candidates) = survey(&self.registry.snapshot(), &prefs);
+        let set_state = |rows: &mut Vec<FleetRow>, device_id: &str, state: FleetState| {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| row.device_id.as_deref() == Some(device_id))
+            {
+                row.state = state;
+            }
         };
-        // Probe the old secret first, while the old sessions are still ours
-        // to talk through: a readable old book means the old verifier still
-        // welcomes presentations there.
-        let mut old_secret: HashMap<String, OldSecretStatus> = HashMap::new();
-        for session in &old.sessions {
-            let status = match self.registry.target(&EngineKey(session.engine_key.clone())) {
-                Ok(target) => {
-                    match roboco_engine_client::rooms::fetch_room_book(
-                        &target,
-                        &old.id,
-                        &old.secret,
-                    )
-                    .await
-                    {
-                        Ok(Some(_)) => OldSecretStatus::StillAccepted,
-                        Ok(None) => OldSecretStatus::Refused,
-                        Err(_) => OldSecretStatus::Unchecked,
-                    }
-                }
-                Err(_) => OldSecretStatus::Unchecked,
+        // Probe: only engines already serving their Tailcat route qualify.
+        let mut eligible = Vec::new();
+        for candidate in candidates {
+            let Ok(target) = self.registry.target(&candidate.key) else {
+                set_state(
+                    &mut rows,
+                    &candidate.device_id,
+                    FleetState::NotInYet(NotInYet::Offline),
+                );
+                continue;
             };
-            old_secret.insert(session.address.clone(), status);
+            match self.probe.shape(&target).await {
+                TailcatShape::Serves => eligible.push((candidate, target)),
+                TailcatShape::Off => set_state(
+                    &mut rows,
+                    &candidate.device_id,
+                    FleetState::NotInYet(NotInYet::TailcatOff),
+                ),
+                TailcatShape::Unreachable => set_state(
+                    &mut rows,
+                    &candidate.device_id,
+                    FleetState::NotInYet(NotInYet::Offline),
+                ),
+            }
         }
-        // The new secret and the new room record.
-        let new_secret = mint_room_secret()?;
-        let invite = RoomInvite::new(&old.name, &new_secret, old.members.clone())?;
-        let new_room = ClientRoom::from_invite(&invite);
-        // The local engine joins the new room; the old verifier stays until
-        // the user drops it (Self::local_engine_leave) — by design.
-        self.local_engine_join(&invite).await?;
-        // Retire the old client record only after the new one is saved.
-        self.rooms_file().upsert(new_room.clone())?;
-        self.rooms_file().remove(&old.id)?;
-        // Cut this client off from the old room: revoke the old sessions,
-        // forget the entries they adopted.
-        let revoked = revoke_room_sessions(&self.registry, &old).await;
-        let revoked_addresses: HashSet<String> = old
+        // Lazy mint: the first fleet event with someone to share it with.
+        let fleet_id = match self.local_fleet().await? {
+            Some(fleet) => fleet.id,
+            None if eligible.is_empty() && !force_mint => {
+                return Ok(FleetReport {
+                    exists: false,
+                    rows,
+                });
+            }
+            None => self.create().await?,
+        };
+        let mut room = self.client_fleet(&fleet_id).await?;
+        union_members(&mut room.members, self.local_member());
+        // The local engine holds the union (kind = fleet, secret retained):
+        // phones pairing here fetch exactly this invite.
+        let id = fleet_id.clone();
+        let book = room.members.clone();
+        let invite = self
+            .with_local_store(move |store| {
+                store.merge_book(&id, book)?;
+                store.fleet_invite(&id)
+            })
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the fleet could not be read"))?;
+        room.members = invite.members.clone();
+        let sent: HashSet<String> = invite
             .members
             .iter()
-            .filter(|member| {
-                revoked
-                    .iter()
-                    .any(|(label, confirmed)| *confirmed && *label == member.label)
-            })
             .map(|member| member.address.clone())
             .collect();
-        for session in &old.sessions {
-            let _ = self
-                .registry
-                .forget(&EngineKey(session.engine_key.clone()))
-                .await;
-        }
-        let checklist = RotateChecklist {
-            old_room_id: old.id.clone(),
-            new_room_id: new_room.id.clone(),
-            local_old_verifier: self.local_engine_holds(&old.id).await,
-            rows: rotate_rows(
-                &new_room.members,
-                &HashSet::new(),
-                &old_secret,
-                &revoked_addresses,
-            ),
-        };
         let encoded = invite.encode()?;
-        Ok(RotateOutcome {
-            invite,
-            qr_svg: qr::try_qr_svg(&encoded),
-            encoded,
-            checklist,
-        })
-    }
-
-    /// Whether the local engine still holds a room (its verifier accepts the
-    /// secret — the rotate checklist's "drop the old room here" fact).
-    pub async fn local_engine_holds(&self, room_id: &str) -> bool {
-        self.local_engine_rooms()
-            .await
-            .iter()
-            .any(|record| record.id == room_id)
-    }
-}
-
-fn trim_member_label(label: &str) -> String {
-    let trimmed = label.trim();
-    let mut out = String::with_capacity(trimmed.len());
-    for character in trimmed.chars() {
-        if !char::is_control(character) {
-            out.push(character);
-        }
-    }
-    if out.len() > roboco_proto::room::MAX_LABEL_BYTES {
-        out.truncate(roboco_proto::room::MAX_LABEL_BYTES);
-    }
-    out
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis() as i64)
-        .unwrap_or_default()
-}
-
-/// What a member engine answered about the old secret during rotation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OldSecretStatus {
-    /// The old verifier still accepts the old secret there.
-    StillAccepted,
-    /// The old room is gone (or was never held): the old secret no longer
-    /// introduces anyone.
-    Refused,
-    /// The member was unreachable — check again when it is online.
-    Unchecked,
-}
-
-/// One member's row in the rotate checklist.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotateRow {
-    pub label: String,
-    /// The member re-presented with the new secret.
-    pub re_presented: bool,
-    pub old_secret: OldSecretStatus,
-    /// This client's old session was revoked there.
-    pub revoked: bool,
-}
-
-impl RotateRow {
-    /// The two status fragments the row renders. Pure.
-    pub fn status_fragments(&self) -> (String, String) {
-        let first = if self.re_presented {
-            "Re-presented with the new secret".to_owned()
-        } else {
-            "Waiting to re-present".to_owned()
-        };
-        let second = match self.old_secret {
-            OldSecretStatus::StillAccepted => {
-                "Old secret still accepted — drop the old room on that host".to_owned()
-            }
-            OldSecretStatus::Refused => "Old secret no longer accepted".to_owned(),
-            OldSecretStatus::Unchecked => "Offline — could not check the old secret".to_owned(),
-        };
-        (first, second)
-    }
-}
-
-/// The rotate flow's guided checklist (user story 10): who has re-presented
-/// with the new secret, whether the old sessions are revoked, and where the
-/// old secret still works.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotateChecklist {
-    pub old_room_id: String,
-    pub new_room_id: String,
-    /// The local engine still holds the old verifier (drop it with the
-    /// page's action; other hosts use the CLI).
-    pub local_old_verifier: bool,
-    pub rows: Vec<RotateRow>,
-}
-
-impl RotateChecklist {
-    /// The caption under the checklist: the manual drop step. Pure.
-    pub fn hint(&self) -> String {
-        if self.local_old_verifier {
-            format!(
-                "The old room {} still accepts the old secret on this engine — drop it below. On other hosts: roboco engine room leave {}",
-                short_id(&self.old_room_id),
-                self.old_room_id
-            )
-        } else {
-            format!(
-                "Drop the old room on each member host: roboco engine room leave {}",
-                self.old_room_id
-            )
-        }
-    }
-
-    /// Refresh the re-presented column after a Reconnect pass: members this
-    /// client now holds a session for have re-presented with the new secret
-    /// (a presentation only succeeds against a member that joined the new
-    /// room). The old-secret and revoked facts stay as probed at rotate
-    /// time. Pure.
-    pub fn refresh_re_presented(
-        &self,
-        members: &[RoomMember],
-        sessions: &[roboco_engine_client::rooms::RoomMemberSession],
-    ) -> RotateChecklist {
-        let re_presented: HashSet<String> = sessions
-            .iter()
-            .map(|session| session.address.clone())
-            .collect();
-        let rows = members
-            .iter()
-            .map(|member| {
-                let existing = self.rows.iter().find(|row| row.label == member.label);
-                RotateRow {
-                    label: member.label.clone(),
-                    re_presented: re_presented.contains(&member.address),
-                    old_secret: existing
-                        .map(|row| row.old_secret)
-                        .unwrap_or(OldSecretStatus::Unchecked),
-                    revoked: existing.map(|row| row.revoked).unwrap_or(false),
+        drop(invite);
+        // Push: each engine's store join adds the engine's own recorded
+        // Tailcat address to its book (C4a: nobody is asked to mint one).
+        let mut pushed = Vec::new();
+        for (candidate, target) in eligible {
+            let state = match push_room_join(&target, &encoded).await {
+                Ok(_) => {
+                    pushed.push((candidate.key.clone(), target));
+                    FleetState::In
                 }
-            })
-            .collect();
-        RotateChecklist {
-            old_room_id: self.old_room_id.clone(),
-            new_room_id: self.new_room_id.clone(),
-            local_old_verifier: self.local_old_verifier,
+                Err(error) if is_fleet_conflict(&error) => FleetState::OtherFleet,
+                Err(RpcError::UnknownMethod(_)) => FleetState::NeedsUpdate,
+                Err(_) => FleetState::NotInYet(NotInYet::Unconfirmed),
+            };
+            set_state(&mut rows, &candidate.device_id, state);
+        }
+        drop(encoded);
+        // Learn each pushed engine's address from its own book.
+        let local_address = self.local_address();
+        for (key, target) in &pushed {
+            let Ok(Some(book)) = fetch_room_book(target, &room.id, &room.secret).await else {
+                continue;
+            };
+            if let Some(address) =
+                own_entry(&room, key, &sent, local_address.as_deref(), &book.members)
+            {
+                room.link(&address, key);
+            }
+            union_members(&mut room.members, book.members);
+        }
+        // Push the union back to every pushed and linked engine, so every
+        // book (and every `GetFleetInvite` answer) carries every member that
+        // introduced itself in this pass.
+        let pushed_keys: Vec<EngineKey> = pushed.into_iter().map(|(key, _)| key).collect();
+        heal_room_books_with(&self.registry, &mut room, &pushed_keys).await;
+        // Durable before dialing: presentations are repeatable.
+        self.rooms_file().upsert(room.clone())?;
+        // The client pass: book members this desktop does not reach yet are
+        // presented to (late joiners, other clients' engines, dead entries
+        // after a restart), and the books union.
+        let outcome = join_room_members(
+            &self.registry,
+            self.dialer.clone(),
+            &self.data_dir,
+            room,
+            local_address.as_deref(),
+            &self.presenter_label(),
+        )
+        .await?;
+        let id = fleet_id.clone();
+        let book = outcome.room.members.clone();
+        self.with_local_store(move |store| store.merge_book(&id, book))
+            .await?;
+        self.rooms_file().upsert(outcome.room.clone())?;
+        Ok(finish_rows(
             rows,
+            &self.registry,
+            &prefs,
+            &outcome.room,
+            &outcome
+                .failures
+                .iter()
+                .map(|failure| failure.label.clone())
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Join a fleet minted elsewhere from a pasted invite (the PC 2 case).
+    /// Decoding fails with fixed text before any work. If this machine
+    /// already shares a different fleet with other engines, the join is
+    /// refused with [`FleetSwitchNeeded`] unless `replace` confirms leaving
+    /// it; a solo fleet (nobody else in its book) is left silently.
+    pub async fn join(&self, invite_text: &str, replace: bool) -> anyhow::Result<FleetReport> {
+        let invite = RoomInvite::decode(invite_text.trim())?;
+        anyhow::ensure!(invite.is_fleet(), "{PLAIN_ROOM_INVITE}");
+        let id = invite.room_id();
+        if let Some(current) = self.local_fleet().await?
+            && current.id != id
+        {
+            let local_address = self.local_address();
+            let others = current
+                .book
+                .members
+                .iter()
+                .filter(|member| Some(&member.address) != local_address.as_ref())
+                .count();
+            if others > 0 && !replace {
+                return Err(FleetSwitchNeeded { others }.into());
+            }
+            self.leave().await?;
+        }
+        let mut room = match self
+            .rooms_file()
+            .load()?
+            .into_iter()
+            .find(|room| room.id == id)
+        {
+            Some(room) => room,
+            None => ClientRoom::from_invite(&invite),
+        };
+        union_members(&mut room.members, invite.members.clone());
+        room.kind = RoomKind::Fleet;
+        self.with_local_store(move |store| store.join(invite).map(|_| ()))
+            .await?;
+        self.rooms_file().upsert(room)?;
+        self.sync_with(false).await
+    }
+
+    /// Leave the fleet: revoke the sessions its presentations created,
+    /// forget the registry entries it adopted (engines paired by hand are
+    /// never touched), drop the client record, and drop the local engine's
+    /// fleet row (erasing the retained secret). Returns whether this data dir
+    /// held a fleet.
+    pub async fn leave(&self) -> anyhow::Result<bool> {
+        let fleet = self.local_fleet().await?;
+        let rooms = self.rooms_file().load()?;
+        for room in rooms.iter().filter(|room| room.is_fleet()) {
+            revoke_room_sessions(&self.registry, room).await;
+            for session in room.sessions.iter().filter(|session| session.adopted()) {
+                let _ = self
+                    .registry
+                    .forget(&EngineKey(session.engine_key.clone()))
+                    .await;
+            }
+            self.rooms_file().remove(&room.id)?;
+        }
+        let Some(fleet) = fleet else {
+            return Ok(false);
+        };
+        self.with_local_store(move |store| store.leave(&fleet.id))
+            .await
+    }
+}
+
+/// The final rows after a pass: engines the pass reached (presentations or
+/// reattached entries) read as In, engines it brought in get rows, and book
+/// members it could not reach yet show as offline — one row per identity.
+fn finish_rows(
+    mut rows: Vec<FleetRow>,
+    registry: &EngineRegistry,
+    prefs: &FleetPrefs,
+    room: &ClientRoom,
+    failed_labels: &[String],
+) -> FleetReport {
+    let snapshot = registry.snapshot();
+    let local_device = snapshot
+        .engines
+        .iter()
+        .find(|engine| engine.key.is_local())
+        .map(|engine| engine.info.device_id.clone());
+    for session in &room.sessions {
+        let key = EngineKey(session.engine_key.clone());
+        let Some(engine) = snapshot.engines.iter().find(|engine| engine.key == key) else {
+            continue;
+        };
+        if key.is_local() || local_device.as_deref() == Some(engine.info.device_id.as_str()) {
+            continue;
+        }
+        let live = engine.state == EngineConnectionState::Connected
+            || registry
+                .target(&key)
+                .is_ok_and(|target| target.is_connected());
+        let device_id = engine.info.device_id.clone();
+        match rows
+            .iter_mut()
+            .find(|row| row.device_id.as_deref() == Some(device_id.as_str()))
+        {
+            Some(row) => {
+                if live && matches!(row.state, FleetState::NotInYet(NotInYet::Offline)) {
+                    row.state = FleetState::In;
+                }
+            }
+            None => rows.push(FleetRow {
+                label: engine_label(&snapshot, &key),
+                key: Some(key),
+                state: if prefs.is_opted_out(&device_id) {
+                    FleetState::OptedOut
+                } else {
+                    FleetState::In
+                },
+                device_id: Some(device_id),
+            }),
         }
     }
+    for label in failed_labels {
+        if rows.iter().any(|row| &row.label == label) {
+            continue;
+        }
+        rows.push(FleetRow {
+            device_id: None,
+            key: None,
+            label: label.clone(),
+            state: FleetState::NotInYet(NotInYet::Offline),
+        });
+    }
+    FleetReport { exists: true, rows }
+}
 
-    /// Whether every member has re-presented and no old secret still works.
-    pub fn complete(&self) -> bool {
-        !self.local_old_verifier
-            && self
-                .rows
+/// The address a just-pushed engine introduced itself with: the one entry in
+/// its book that the pushed invite did not carry (its store adds exactly its
+/// own recorded address on a fleet join), not this machine's, and not one
+/// already linked to another engine. `None` when the engine is linked
+/// already, added nothing (no recorded address), or the difference is
+/// ambiguous (its book held other entries before); the client pass then
+/// reaches any such address by presenting, and the identity dedupe folds
+/// that into the existing entry. Pure.
+fn own_entry(
+    room: &ClientRoom,
+    key: &EngineKey,
+    sent: &HashSet<String>,
+    local_address: Option<&str>,
+    book: &[RoomMember],
+) -> Option<String> {
+    if room
+        .sessions
+        .iter()
+        .any(|session| session.engine_key == key.0)
+    {
+        return None;
+    }
+    let fresh: BTreeSet<&str> = book
+        .iter()
+        .map(|member| member.address.as_str())
+        .filter(|address| !sent.contains(*address) && Some(*address) != local_address)
+        .filter(|address| {
+            !room
+                .sessions
                 .iter()
-                .all(|row| row.re_presented && row.old_secret != OldSecretStatus::StillAccepted)
+                .any(|session| session.address == *address)
+        })
+        .collect();
+    let mut fresh = fresh.into_iter();
+    match (fresh.next(), fresh.next()) {
+        (Some(address), None) => Some(address.to_owned()),
+        _ => None,
     }
 }
 
-/// Build the checklist rows from the raw facts of a rotation. Pure — the
-/// addresses never leave the inputs, the rows carry labels only.
-pub fn rotate_rows(
-    members: &[RoomMember],
-    re_presented: &HashSet<String>,
-    old_secret: &HashMap<String, OldSecretStatus>,
-    revoked: &HashSet<String>,
-) -> Vec<RotateRow> {
-    members
-        .iter()
-        .map(|member| RotateRow {
-            label: member.label.clone(),
-            re_presented: re_presented.contains(&member.address),
-            old_secret: old_secret
-                .get(&member.address)
-                .copied()
-                .unwrap_or(OldSecretStatus::Unchecked),
-            revoked: revoked.contains(&member.address),
-        })
-        .collect()
+/// The desktop's fleet sync scheduling, kept on `AppState`: one pass at a
+/// time with one coalesced re-run, triggered by app open (the local engine's
+/// first connect) and by every engine that connects for the first time this
+/// process (new pairings from any flow).
+#[derive(Default)]
+pub struct FleetSync {
+    pub report: Option<FleetReport>,
+    pub error: Option<String>,
+    pub running: bool,
+    pub rerun: bool,
+    seen: HashSet<EngineKey>,
+    pub(crate) task: Option<gpui::Task<()>>,
 }
 
-/// Short room id chip (`abcd1234…wxyz`) for display.
-pub fn short_id(id: &str) -> String {
-    if id.len() > 12 {
-        format!("{}…{}", &id[..8], &id[id.len() - 4..])
-    } else {
-        id.to_string()
+impl FleetSync {
+    /// Record which engines are connected; true when one connected for the
+    /// first time this process (a fleet event). Pure over the snapshot.
+    pub fn note_connected(&mut self, snapshot: &RegistrySnapshot) -> bool {
+        let mut fresh = false;
+        for engine in &snapshot.engines {
+            if engine.state == EngineConnectionState::Connected
+                && self.seen.insert(engine.key.clone())
+            {
+                fresh = true;
+            }
+        }
+        fresh
     }
 }
 

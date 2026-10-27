@@ -276,7 +276,26 @@ fun SessionScreen(
     val openSubagent: (String, String, Boolean) -> Unit = remember {
         { docId: String, title: String, frozen: Boolean -> currentOpenSubagent?.invoke(docId, title, frozen) }
     }
-    val actions = remember(controller, attachments, viewer, router) {
+    // wave-9 #14 (upstream #967): an error card's "Log in" opens this
+    // chat's agent on the Accounts & Usage page, the usage chip's route.
+    // The desktop also starts the agent's first login option; here the
+    // page is left for the user to pick one (full parity: wave-9 #18).
+    val actionStack = LocalNavStack.current
+    val actionEntry = LocalNavEntry.current
+    val performAction: (String) -> Unit = remember(controller, actionStack, actionEntry) {
+        { action: String ->
+            if (action == "sign-in" && actionStack.top.id == actionEntry.id) {
+                actionStack.push(
+                    sh.roboco.android.accounts.AgentAccountsRoute(
+                        deviceId = controller.hostDeviceId.ifEmpty { null },
+                        focusHarness = controller.harness,
+                    ),
+                    animated = true,
+                )
+            }
+        }
+    }
+    val actions = remember(controller, attachments, viewer, router, performAction) {
         val openImage: (String, Rect, ImageBitmap?, String?) -> Unit = { reference, source, bitmap, label ->
             viewer?.show(
                 ImageViewerRequest(
@@ -303,9 +322,10 @@ fun SessionScreen(
                 cachedImage = binding::cached,
                 imageRetries = binding.retries,
                 openSubagent = openSubagent,
+                perform = performAction,
             )
         } else {
-            TranscriptActions(openLink = router::open, openSubagent = openSubagent)
+            TranscriptActions(openLink = router::open, openSubagent = openSubagent, perform = performAction)
         }
     }
 

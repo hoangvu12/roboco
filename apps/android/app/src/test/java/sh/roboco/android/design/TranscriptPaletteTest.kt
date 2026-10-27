@@ -47,18 +47,18 @@ class TranscriptPaletteTest {
         "TEXT_FAINT", "TEXT_SOFT", "TOOL_RAIL", "TOOL_BADGE", "TOOL_WELL",
         "AGENT_CARD", "AGENT_CARD_BORDER", "AGENT_TILE",
         "DIFF_ADD_WASH", "DIFF_DEL_WASH", "DIFF_ADD_BAR", "DIFF_DEL_BAR",
-        "DIFF_HUNK",
+        "DIFF_HUNK", "DANGER_WASH", "DANGER_SOFT",
     )
 
     @Test
     fun ordinalsMatchRust() {
-        assertEquals(46, rustOrder.size)
-        assertEquals(46, ColorRole.entries.size)
+        assertEquals(48, rustOrder.size)
+        assertEquals(48, ColorRole.entries.size)
         assertEquals(rustOrder, ColorRole.entries.map { it.name })
     }
 
     // ---------------------------------------------------------------------
-    // The full table. 46 Light ARGB then 46 Dark ARGB, indexed by
+    // The full table. 48 Light ARGB then 48 Dark ARGB, indexed by
     // ColorRole.ordinal (see the ticket's Spec table).
     // ---------------------------------------------------------------------
 
@@ -78,7 +78,7 @@ class TranscriptPaletteTest {
         0x0F000000.toInt(), 0x29FFFFFF.toInt(), 0x08000000.toInt(),
         0x18000000.toInt(), 0x14000000.toInt(), 0x0E15803D.toInt(),
         0x0EDC2626.toInt(), 0x8C15803D.toInt(), 0x8CDC2626.toInt(),
-        0x125B43E8.toInt(),
+        0x125B43E8.toInt(), 0x14DC2626.toInt(), 0xFFB91C1C.toInt(),
     )
 
     private val expectedDark = intArrayOf(
@@ -97,13 +97,13 @@ class TranscriptPaletteTest {
         0x0FFFFFFF.toInt(), 0x29000000.toInt(), 0x08FFFFFF.toInt(),
         0x12FFFFFF.toInt(), 0x14FFFFFF.toInt(), 0x0E34D399.toInt(),
         0x0EF87171.toInt(), 0x8C34D399.toInt(), 0x8CF87171.toInt(),
-        0x148B7CF6.toInt(),
+        0x148B7CF6.toInt(), 0x1FF87171.toInt(), 0xFFFCA5A5.toInt(),
     )
 
     @Test
     fun fullTableExact() {
-        assertEquals(46, expectedLight.size)
-        assertEquals(46, expectedDark.size)
+        assertEquals(48, expectedLight.size)
+        assertEquals(48, expectedDark.size)
         assertTable("light", TranscriptPalette(false), expectedLight)
         assertTable("dark", TranscriptPalette(true), expectedDark)
     }
@@ -149,6 +149,10 @@ class TranscriptPaletteTest {
         // DiffHunk: alpha differs between appearances (0.07 / 0.08).
         assertEquals(0x125B43E8.toInt(), light.color(ColorRole.DIFF_HUNK))
         assertEquals(0x148B7CF6.toInt(), dark.color(ColorRole.DIFF_HUNK))
+
+        // DangerWash (the error card, upstream Palette.swift:96): red @0.08 / @0.12.
+        assertEquals(0x14DC2626.toInt(), light.color(ColorRole.DANGER_WASH))
+        assertEquals(0x1FF87171.toInt(), dark.color(ColorRole.DANGER_WASH))
     }
 
     // ---------------------------------------------------------------------

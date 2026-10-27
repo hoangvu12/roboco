@@ -83,7 +83,12 @@ class PreviewFlowTest {
         FlowSemantics.saveScreenshot("preview-panel.png")
 
         // 4. Open pushes the browser entry; the WebView loads the preview
-        //    through the in-app 7332 proxy.
+        //    through the in-app 7332 proxy. The hit count is read before
+        //    the tap: the WebView often finishes its load before the
+        //    browser screen's node is seen, so a baseline taken after it
+        //    would already include the load this test is waiting for.
+        val control = launch.controlUrl(FixtureEngine.Main)!!
+        val before = previewHits(control)
         compose.onNode(previewRow()).performClick()
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithTag("browser-screen").fetchSemanticsNodes().isNotEmpty()
@@ -92,10 +97,8 @@ class PreviewFlowTest {
 
         // 5. The engine's dev server saw the request: the round trip is
         //    real (proxy → session relay → engine relay → dev server).
-        val control = launch.controlUrl(FixtureEngine.Main)!!
-        val before = previewHits(control)
         compose.waitUntil(timeoutMillis = 30_000) {
-            previewHits(control) > 0
+            previewHits(control) > before
         }
         assertTrue("the relayed preview was actually loaded", previewHits(control) > before)
     }

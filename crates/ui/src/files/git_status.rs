@@ -11,7 +11,10 @@ use super::{
     client::{FilesRequestContext, request_params},
     model::parent_path,
 };
-use crate::{state::EngineHandle, theme::Theme};
+use crate::{
+    engine_registry::{EngineKey, EngineTarget, ScopedId},
+    theme::Theme,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum DecorationKind {
@@ -112,7 +115,7 @@ struct StatusCache(Vec<WeakEntity<GitStatusSource>>);
 impl Global for StatusCache {}
 
 pub(super) struct GitStatusSource {
-    engine: EngineHandle,
+    engine: EngineTarget,
     context: FilesRequestContext,
     device_id: String,
     decorations: Decorations,
@@ -122,8 +125,8 @@ pub(super) struct GitStatusSource {
 }
 
 impl GitStatusSource {
-    fn matches(&self, engine: &EngineHandle, context: &FilesRequestContext, device: &str) -> bool {
-        self.engine.same_connection(engine)
+    fn matches(&self, engine: &EngineTarget, context: &FilesRequestContext, device: &str) -> bool {
+        self.engine.same_target(engine)
             && self.device_id == device
             && self.context.target_device_id == context.target_device_id
             && match (&self.context.checkout_id, &context.checkout_id) {
@@ -164,7 +167,7 @@ impl GitStatusSource {
     }
 
     fn acquire(
-        engine: EngineHandle,
+        engine: EngineTarget,
         context: FilesRequestContext,
         device: String,
         cx: &mut App,
@@ -192,21 +195,16 @@ impl GitStatusSource {
             let task = cx.spawn(async move |this, cx| {
                 loop {
                     match connection
-                        .client()
                         .subscribe_checked(methods::WATCH_WORKSPACE_GIT_STATUS, params.clone())
                         .await
                     {
                         Ok(mut receiver) => {
                             while let Some(value) = receiver.recv().await {
+                                let owner = connection.key().clone();
                                 let (snapshot, decorations) = cx
                                     .background_executor()
                                     .spawn(async move {
-                                        let snapshot =
-                                            serde_json::from_value::<
-                                                roboco_proto::WorkspaceGitStatusFrame,
-                                            >(value)
-                                            .ok()
-                                            .and_then(|frame| frame.status);
+                                        let snapshot = owned_status(&owner, value);
                                         let decorations = snapshot
                                             .as_ref()
                                             .map(Decorations::from_snapshot)
@@ -295,7 +293,8 @@ impl FilesSurface {
             return;
         };
         let state = self.state.read(cx);
-        let Some(engine) = state.engine().cloned() else {
+        // The chat's own engine reports its checkout's Git status.
+        let Some(engine) = state.target_for_id(&self.chat_id).ok() else {
             let had_source = self.git_status.is_some();
             self.release_git_status();
             if had_source {
@@ -350,6 +349,16 @@ impl FilesSurface {
             source.decorations.files.get(path).copied()
         }
     }
+}
+
+/// A status frame from `owner`, its device projected like the chat rows it is
+/// compared with (the owner reports its raw device id).
+fn owned_status(owner: &EngineKey, frame: serde_json::Value) -> Option<CheckoutGitStatus> {
+    let mut status = serde_json::from_value::<roboco_proto::WorkspaceGitStatusFrame>(frame)
+        .ok()?
+        .status?;
+    status.device_id = ScopedId::encode(owner, &status.device_id);
+    Some(status)
 }
 
 fn accepts(context: &FilesRequestContext, device: &str, snapshot: &CheckoutGitStatus) -> bool {
@@ -440,6 +449,34 @@ mod tests {
         status.device_id = "remote".into();
         status.checkout_id = "old-checkout".into();
         assert!(!accepts(&context, "remote", &status));
+    }
+
+    /// A paired engine reports its raw device; the frame is accepted for its
+    /// chat (whose device is scoped) and for no other engine's.
+    #[test]
+    fn a_paired_engines_status_matches_its_scoped_device() {
+        let owner = EngineKey("server".into());
+        let device = ScopedId::encode(&owner, "remote");
+        let frame = serde_json::json!({ "status": snapshot(vec![]) });
+        let context = FilesRequestContext {
+            engine: owner.clone(),
+            target: roboco_proto::WorkspaceTarget {
+                chat_id: None,
+                space_id: Some(ScopedId::encode(&owner, "space")),
+                checkout_path: Some("/same/path".into()),
+            },
+            target_device_id: None,
+            cwd: "/same/path".into(),
+            checkout_id: Some("checkout".into()),
+        };
+        let status = owned_status(&owner, frame.clone()).unwrap();
+        assert_eq!(status.device_id, device);
+        assert!(accepts(&context, &device, &status));
+        let other = owned_status(&EngineKey("elsewhere".into()), frame.clone()).unwrap();
+        assert!(!accepts(&context, &device, &other));
+        // The local engine's rows stay raw.
+        let local = owned_status(&EngineKey::local(), frame).unwrap();
+        assert_eq!(local.device_id, "remote");
     }
 
     #[test]

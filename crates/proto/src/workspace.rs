@@ -38,6 +38,9 @@ pub mod capabilities {
     /// `/room/present` listener route, and the book RPCs. Rooms share
     /// reachability, never data.
     pub const ROOMS_V1: &str = "rooms-v1";
+    /// Fleet follow: `RoomJoin` and `GetFleetInvite`, plus fleet rooms that
+    /// retain their secret on member engines (ADR 0011 amendment).
+    pub const ROOMS_V2: &str = "rooms-v2";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -52,6 +55,7 @@ pub mod capabilities {
         PROJECTLESS_SCRATCH_V1,
         UPLOADS_100MB_V1,
         ROOMS_V1,
+        ROOMS_V2,
     ];
 
     pub fn current() -> Vec<String> {

@@ -378,6 +378,10 @@ fn constants_ts() -> String {
         "export const ROOMS_V1 = {:?};\n",
         capabilities::ROOMS_V1
     ));
+    out.push_str(&format!(
+        "export const ROOMS_V2 = {:?};\n",
+        capabilities::ROOMS_V2
+    ));
     out.push_str("\n/** Every capability this build of the engine advertises. */\n");
     let current: Vec<String> = capabilities::CURRENT
         .iter()

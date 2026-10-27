@@ -1,5 +1,6 @@
 package sh.roboco.android.pairing
 
+import android.content.res.Resources
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -16,7 +17,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import sh.roboco.android.R
 import sh.roboco.android.core.CoreStartup
+import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.Toaster
 import sh.roboco.android.shell.LocalSheetHost
 import sh.roboco.android.shell.PageSheetScope
 import sh.roboco.android.shell.SheetHostState
@@ -62,6 +66,7 @@ class PairPageLauncher internal constructor(
     internal val qrScan: QrScanRequest?,
     internal val clipboard: PairClipboard,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val fleet: FleetNotices = FleetNotices.None,
 ) {
 
     /**
@@ -132,6 +137,7 @@ class PairPageLauncher internal constructor(
                 store = store,
                 scope = scope,
                 io = io,
+                fleet = fleet,
             ).also { current = it }
         }
         // 31 composes sheet entries outside the root content, so
@@ -200,8 +206,14 @@ fun ProvidePairPage(
     val androidClipboard = remember(clipboard, context) {
         clipboard ?: AndroidPairClipboard(context.applicationContext)
     }
-    val launcher = remember(host, backend, store, qrScan, androidClipboard) {
-        PairPageLauncher(host, backend, store, scope, qrScan, androidClipboard)
+    // Fleet follow's two toasts land in the root ToastHost (ProvidePairPage
+    // sits inside it; outside one, LocalToaster is the logging no-op).
+    val toaster = LocalToaster.current
+    val fleet = remember(toaster, context) {
+        ToasterFleetNotices(toaster, context.applicationContext.resources)
+    }
+    val launcher = remember(host, backend, store, qrScan, androidClipboard, fleet) {
+        PairPageLauncher(host, backend, store, scope, qrScan, androidClipboard, fleet = fleet)
     }
     DisposableEffect(scope) {
         onDispose { scope.cancel() }
@@ -240,6 +252,37 @@ class CoreClientPairingBackend(
     override suspend fun forget(engineId: String) {
         client.forgetEngine(engineId)
         onForgotten(engineId)
+    }
+
+    override suspend fun followFleet(engineId: String, onJoining: () -> Unit): RoomJoinResult? {
+        // `fetchFleet` never throws (no fleet / old engine / offline = null);
+        // the offer is an opaque Rust object, freed once the join returns.
+        val offer = client.fetchFleet(engineId) ?: return null
+        try {
+            onJoining()
+            return client.joinFleet(offer)
+        } finally {
+            offer.destroy()
+        }
+    }
+}
+
+/**
+ * The production [FleetNotices] (fleet-follow ticket 04): the app's
+ * [Toaster] with the two fleet strings. Copy only — never a fleet name,
+ * label or address.
+ */
+class ToasterFleetNotices(
+    private val toaster: Toaster,
+    private val resources: Resources,
+) : FleetNotices {
+
+    override fun joining() {
+        toaster.show(resources.getString(R.string.fleet_joining))
+    }
+
+    override fun joined(count: Int) {
+        toaster.show(resources.getQuantityString(R.plurals.fleet_joined, count, count))
     }
 }
 

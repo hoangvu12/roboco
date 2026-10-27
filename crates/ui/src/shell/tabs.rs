@@ -368,19 +368,8 @@ impl Shell {
         // chats, counted on the session card's toggle.
         let running_lanes = {
             let state = self.state.read(cx);
-            let now = Utc::now();
             state.selected_chat.as_deref().map_or(0, |chat| {
-                let side_chats = state
-                    .chats
-                    .iter()
-                    .filter(|side| {
-                        !side.archived
-                            && side.parent_chat_id.as_deref() == Some(chat)
-                            && state.display_status_for(side, now)
-                                == roboco_proto::ChatIndicator::Working
-                    })
-                    .count() as u32;
-                state.running_subagents_for(chat, now) + side_chats
+                super::session_lanes::running_lanes(state, chat, Utc::now())
             })
         };
         // The session card's toggle belongs to the transcript: it ends the

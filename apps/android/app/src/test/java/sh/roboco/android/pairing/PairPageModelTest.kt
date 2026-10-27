@@ -679,6 +679,150 @@ class PairPageModelTest {
         assertEquals(PairPhase.Error(PairMessage.Res(R.string.pair_error_store)), model.phase)
     }
 
+    // ------------------------------------------------- fleet follow (ff #04)
+
+    private class RecordingFleetNotices(private val ops: MutableList<String>) : FleetNotices {
+        override fun joining() {
+            ops += "toast:joining"
+        }
+
+        override fun joined(count: Int) {
+            ops += "toast:joined:$count"
+        }
+    }
+
+    private fun TestScope.fleetModel(harness: PairingHarness): PairPageModel = PairPageModel(
+        prefill = null,
+        initialReplaceEngineId = null,
+        backend = backend,
+        store = harness.sink,
+        scope = harness.scope,
+        io = harness.io,
+        fleet = RecordingFleetNotices(ops),
+    )
+
+    private val fleetRef = EngineRoomRef("fleet-1", "Fleet")
+
+    /** The fleet the paired engine offers: itself (adopted by tag, same
+     * id), a member paired before, and one new member. */
+    private fun fleetJoin(paired: PairedEngine, alreadyPaired: String, fresh: String) = RoomJoinResult(
+        room = RoomRecord(
+            roomId = "fleet-1",
+            label = "Fleet",
+            secret = "fleet-secret",
+            members = listOf(
+                RoomMemberRecord(label = "desktop", address = "http://10.0.2.2:8123"),
+                RoomMemberRecord(label = "server", address = "http://10.0.2.2:8124"),
+                RoomMemberRecord(label = "nas", address = "http://10.0.2.2:8125"),
+            ),
+        ),
+        engines = listOf(
+            paired.copy(room = fleetRef),
+            newEngine(engineId = alreadyPaired).copy(room = fleetRef),
+            newEngine(engineId = fresh).copy(room = fleetRef),
+        ),
+        missing = listOf(),
+    )
+
+    @Test
+    fun aPairingFollowsTheFleetAfterItPersistsAndUpsertsInPlace() = runTest {
+        val harness = harness(known = setOf("server-paired-before"))
+        val model = fleetModel(harness)
+        val paired = newEngine(engineId = "desktop-1")
+        backend.pairImpl = { _, _ -> paired }
+        backend.fleetImpl = { _, onJoining ->
+            onJoining()
+            fleetJoin(paired, alreadyPaired = "server-paired-before", fresh = "nas-new")
+        }
+        model.onPaired = { ops += "onPaired" }
+        model.text.setTextAndPlaceCursorAtEnd("http://10.0.2.2:8123/pair#token=abc")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // The pairing completes exactly as before (persist, close), then the
+        // fleet follows: progress toast, room blob first, then every record
+        // as an upsert by engine id, then the count of NEW engines only.
+        assertEquals(
+            listOf(
+                "known", "pair", "upsert", "onPaired",
+                "followFleet", "toast:joining", "upsertRoom", "upsert", "upsert", "upsert",
+                "toast:joined:1",
+            ),
+            ops,
+        )
+        assertEquals(listOf("desktop-1"), backend.fleetCalls)
+        assertEquals("fleet-1", harness.sink.roomUpserts.single().roomId)
+        // Upserts carry the existing ids for the paired engine and the
+        // already-paired member: the store replaces those rows in place.
+        assertEquals(
+            listOf("desktop-1", "desktop-1", "server-paired-before", "nas-new"),
+            harness.sink.upserts.map { it.engineId },
+        )
+        assertEquals(PairPhase.Idle, model.phase)
+        assertTrue(backend.forgets.isEmpty())
+    }
+
+    @Test
+    fun noFleetIsASilentNoOp() = runTest {
+        val harness = harness()
+        val model = fleetModel(harness)
+        backend.fleetImpl = { _, _ -> null }
+        model.onPaired = { ops += "onPaired" }
+        model.text.setTextAndPlaceCursorAtEnd("http://10.0.2.2:8123/pair#token=abc")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // Old engine / no fleet: no toast, no room, nothing else stored.
+        assertEquals(listOf("known", "pair", "upsert", "onPaired", "followFleet"), ops)
+        assertTrue(harness.sink.roomUpserts.isEmpty())
+        assertEquals(PairPhase.Idle, model.phase)
+    }
+
+    @Test
+    fun aFailedFleetJoinNeverSurfacesAnError() = runTest {
+        val harness = harness()
+        val model = fleetModel(harness)
+        backend.fleetImpl = { _, onJoining ->
+            onJoining()
+            throw RoomException.Unreachable("2 of 2 members unreachable")
+        }
+        model.onPaired = { ops += "onPaired" }
+        model.text.setTextAndPlaceCursorAtEnd("http://10.0.2.2:8123/pair#token=abc")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // The pairing stands; no error phase, no error toast, nothing rolled back.
+        assertEquals(listOf("known", "pair", "upsert", "onPaired", "followFleet", "toast:joining"), ops)
+        assertEquals(PairPhase.Idle, model.phase)
+        assertTrue(backend.forgets.isEmpty())
+        assertTrue(harness.sink.removes.isEmpty())
+    }
+
+    @Test
+    fun aFleetStoreFailureRollsBackOnlyTheNewMembersSilently() = runTest {
+        val harness = harness(known = setOf("server-paired-before"))
+        val model = fleetModel(harness)
+        val paired = newEngine(engineId = "desktop-1")
+        backend.pairImpl = { _, _ -> paired }
+        backend.fleetImpl = { _, _ -> fleetJoin(paired, "server-paired-before", "nas-new") }
+        // The pairing's own upsert succeeds; the fleet's room blob fails.
+        harness.sink.upsertRoomError = IOException("disk full")
+        model.text.setTextAndPlaceCursorAtEnd("http://10.0.2.2:8123/pair#token=abc")
+
+        model.submit()
+        advanceUntilIdle()
+
+        // Never the paired engine, never one paired before: only the new
+        // member is forgotten; the pairing itself shows no error.
+        assertEquals(listOf("nas-new"), backend.forgets)
+        assertEquals(listOf("nas-new"), harness.sink.removes)
+        assertEquals(PairPhase.Idle, model.phase)
+        assertFalse(ops.any { it.startsWith("toast:joined") })
+    }
+
     // ------------------------------------------------------------- the fakes
 
     /** Scripted results; records the op order into [ops]. */
@@ -706,6 +850,17 @@ class PairPageModelTest {
         val joinCalls = mutableListOf<String>()
 
         override fun parseRoom(input: String): RoomInviteTarget? = parseRoomImpl(input)
+
+        /** Fleet follow: `null` keeps the interface default (no fleet, no op). */
+        var fleetImpl: (suspend (String, () -> Unit) -> RoomJoinResult?)? = null
+        val fleetCalls = mutableListOf<String>()
+
+        override suspend fun followFleet(engineId: String, onJoining: () -> Unit): RoomJoinResult? {
+            val impl = fleetImpl ?: return null
+            ops += "followFleet"
+            fleetCalls += engineId
+            return impl(engineId, onJoining)
+        }
 
         override suspend fun joinRoom(invite: String): RoomJoinResult {
             ops += "joinRoom"

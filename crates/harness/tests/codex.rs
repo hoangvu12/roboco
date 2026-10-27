@@ -750,7 +750,7 @@ async fn a_usage_limited_turn_carries_the_reset_from_the_latest_notification() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "You have exceeded your usage limit".to_owned(),
+                "Codex usage limit reached. You have exceeded your usage limit".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "5-hour".into(),
                     resets_at: Some(4_102_444_800_000),
@@ -789,7 +789,7 @@ async fn a_rate_limited_turn_completing_with_the_error_also_classifies() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "rate limited, retry later".to_owned(),
+                "Codex rate limit reached. rate limited, retry later".to_owned(),
                 Some(AgentErrorKind::UsageLimit {
                     window: "weekly".into(),
                     resets_at: Some(4_102_444_801_000),
@@ -826,7 +826,7 @@ async fn an_auth_failure_is_signed_out() {
             .collect::<Vec<_>>(),
         vec![
             (
-                "Token is expired or invalid".to_owned(),
+                "Codex's credentials were rejected. Run codex login (or check the API key for your model provider), then send again.".to_owned(),
                 Some(AgentErrorKind::SignedOut),
             )
         ],
@@ -857,6 +857,21 @@ async fn resume_falls_back_to_fresh_thread() {
         )),
         "fresh thread expected: {events:?}"
     );
+    // The lost context is said out loud, once, in the new reply.
+    let notices: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notices.len(), 1, "{events:?}");
+    assert!(
+        notices[0].starts_with("Couldn't restore the earlier Codex conversation"),
+        "{}",
+        notices[0]
+    );
+    assert_eq!(roboco_proto::run_errors::provider_problem(notices[0]), None);
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
@@ -919,6 +934,112 @@ async fn resume_reuses_the_existing_thread() {
             AgentEvent::SessionStarted { session_id, .. } if session_id == "th-resumed"
         )),
         "resumed thread expected: {events:?}"
+    );
+}
+
+/// An archived thread (the CLI's own archive command, or another client's)
+/// is unarchived and resumed, not restarted.
+#[tokio::test]
+async fn an_archived_thread_is_unarchived_and_resumed() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:resumed");
+    req.resume = Some("resume-archived".into());
+    let events = run_to_end(&harness(), req, controls).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { session_id, .. } if session_id == "th-unarchived"
+        )),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "{events:?}"
+    );
+}
+
+/// A resume failure a fresh thread would share (bad configuration, a dead
+/// process) fails the run instead of silently dropping the conversation.
+#[tokio::test]
+async fn a_resume_refusal_fails_the_run_instead_of_starting_fresh() {
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:resumed");
+    req.resume = Some("resume-broken".into());
+    let events = run_to_end(&harness(), req, controls).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionStarted { .. })),
+        "{events:?}"
+    );
+    match events.last() {
+        Some(AgentEvent::Done {
+            status: DoneStatus::Errored,
+            error: Some(error),
+            ..
+        }) => assert!(error.contains("failed to load configuration"), "{error}"),
+        other => panic!("expected an errored Done, got {other:?}"),
+    }
+}
+
+/// An app-server that dies under `thread/start` reports its exit and what it
+/// printed, not a bare "exited before responding".
+#[tokio::test]
+async fn a_crash_during_thread_setup_reports_its_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("crash-on-thread-start");
+    std::fs::create_dir(&cwd).unwrap();
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:happy");
+    req.cwd = cwd.display().to_string();
+    let events = run_to_end(&harness(), req, controls).await;
+    match events.last() {
+        Some(AgentEvent::Done {
+            status: DoneStatus::Errored,
+            error: Some(error),
+            ..
+        }) => {
+            assert!(error.contains("exit code 3"), "{error}");
+            assert!(error.contains("bad toml in mcp_servers"), "{error}");
+        }
+        other => panic!("expected an errored Done, got {other:?}"),
+    }
+}
+
+/// Tests in this binary run in parallel; the reject flag rides the process
+/// env (Roboco's RunRequest has no per-run env map — upstream threads it
+/// through one). A global lock keeps the flag set for this test's duration;
+/// a concurrent fixture that inherits it takes the same reject path and the
+/// harness retries the handshake — the fixture guards its opt-out
+/// assertion on the flag's absence, so no other test can fail on it.
+static OPT_OUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// An app-server that predates notification opt-outs refuses the handshake
+/// capability; the run asks again without it instead of failing.
+#[tokio::test]
+async fn a_refused_notification_opt_out_is_retried_without_it() {
+    let guard = OPT_OUT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // SAFETY: the guard is held for the test's duration; the only other
+    // readers are child fixtures, which handle the flag's presence.
+    unsafe { std::env::set_var("FAKE_CODEX_REJECT_OPT_OUT", "1") };
+    let (controls, _steer, _token) = controls("Yes");
+    let mut req = request("scenario:resumed");
+    req.resume = Some("resume-ok".into());
+    let events = run_to_end(&harness(), req, controls).await;
+    // SAFETY: still under the lock; concurrent tests never read the flag.
+    unsafe { std::env::remove_var("FAKE_CODEX_REJECT_OPT_OUT") };
+    drop(guard);
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                ..
+            })
+        ),
+        "{events:?}"
     );
 }
 

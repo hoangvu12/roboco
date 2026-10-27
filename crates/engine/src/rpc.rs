@@ -1516,6 +1516,58 @@ impl RpcService for EngineRpc {
                     }
                 }
             }
+            methods::ROOM_JOIN => {
+                // Fleet follow: a session-authed client (the desktop's push)
+                // joins this engine into a room. Idempotent: the same secret
+                // is the same row, the book unions. The reply is the id only —
+                // members never echo back. Errors are fixed text (ADR 0008):
+                // the invite is parsed by hand so no serde message can quote it.
+                let rooms = self.rooms()?.clone();
+                let invite = params
+                    .get("invite")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        RpcError::BadParams("invite must be a roboco-room: string".into())
+                    })?;
+                let invite = roboco_proto::room::RoomInvite::decode(invite)
+                    .map_err(|error| RpcError::BadParams(error.to_string()))?;
+                let record = tokio::task::spawn_blocking(move || rooms.join(invite))
+                    .await
+                    .map_err(|_| RpcError::Failed("room join failed".into()))?
+                    .map_err(|error| match error.downcast_ref::<crate::rooms::FleetConflict>() {
+                        Some(conflict) => RpcError::Failed(conflict.to_string()),
+                        None => {
+                            tracing::warn!("room join over RPC failed in the store");
+                            RpcError::Failed("room join failed".into())
+                        }
+                    })?;
+                tracing::info!(
+                    room_id = %record.id,
+                    kind = ?record.kind,
+                    members = record.book.members.len(),
+                    "room joined over RPC"
+                );
+                RpcReply::value(&serde_json::json!({ "roomId": record.id }))
+            }
+            methods::GET_FLEET_INVITE => {
+                // Fleet follow: any member engine introduces a newly paired
+                // client — the fleet room serialized, or null. Session-authed
+                // like every RPC on the paired listener.
+                let rooms = self.rooms()?.clone();
+                let invite = tokio::task::spawn_blocking(move || {
+                    let Some(fleet) = rooms.fleet_room()? else {
+                        return anyhow::Ok(None);
+                    };
+                    match rooms.fleet_invite(&fleet.id)? {
+                        Some(invite) => Ok(Some(invite.encode()?)),
+                        None => Ok(None),
+                    }
+                })
+                .await
+                .map_err(|_| RpcError::Failed("fleet invite unavailable".into()))?
+                .map_err(|_| RpcError::Failed("fleet invite unavailable".into()))?;
+                RpcReply::value(&serde_json::json!({ "invite": invite }))
+            }
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
@@ -2347,9 +2399,13 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(format!("{e:#}")))?;
                 RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
             }
-            methods::WATCH_HARNESS_UPDATES => Ok(RpcReply::Stream(watch_stream(
-                self.harness_updates()?.watch(),
-            ))),
+            methods::WATCH_HARNESS_UPDATES => {
+                let coordinator = self.harness_updates()?;
+                // A view of the rows just opened: re-check any CLI that
+                // changed on disk since its last check (stat-only otherwise).
+                coordinator.recheck_changed_binaries_soon();
+                Ok(RpcReply::Stream(watch_stream(coordinator.watch())))
+            }
             methods::CHECK_HARNESS_UPDATES => {
                 let p: HarnessUpdateParams = parse_params(params)?;
                 let coordinator = self.harness_updates()?.clone();
@@ -4542,5 +4598,53 @@ mod context_usage_tests {
         remote.clear_context_usage().unwrap();
         tx.send_replace(crate::doc_host::TranscriptSnapshot::default());
         assert!(stream.next().await.unwrap()["contextUsage"].is_null());
+    }
+
+    /// An `EngineRpc` assembled without the room store (an embedding that
+    /// never attached it) answers every room RPC with one fixed refusal —
+    /// no panic, no partial state.
+    #[tokio::test]
+    async fn room_rpcs_answer_cleanly_without_a_room_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::EngineCore::assemble(
+            dir.path(),
+            std::sync::Arc::new(HarnessRegistry::new()),
+            HarnessId::Mock,
+        )
+        .unwrap();
+        let rpc = EngineRpc::new(
+            core.sessions.clone(),
+            core.doc_host.clone(),
+            core.workspace.clone(),
+            core.registry.clone(),
+            core.repos.clone(),
+            core.workspace_files.clone(),
+            core.terminals.clone(),
+            core.project_actions.clone(),
+            core.sidebar_state.clone(),
+            core.change_requests.clone(),
+            core.diff_sync.clone(),
+            core.uploads.clone(),
+            core.agent_accounts.clone(),
+            core.workspace_scope,
+        );
+        let invite = roboco_proto::room::RoomInvite::fleet("Fleet", "SECRETSECRET", vec![])
+            .unwrap()
+            .encode()
+            .unwrap();
+        for (method, params) in [
+            (methods::ROOM_JOIN, serde_json::json!({ "invite": invite })),
+            (methods::GET_FLEET_INVITE, serde_json::json!({})),
+            (
+                methods::GET_ROOM_BOOK,
+                serde_json::json!({ "roomId": "x", "secret": "SECRETSECRET" }),
+            ),
+        ] {
+            let Err(error) = rpc.handle(method, params).await else {
+                panic!("{method} answered without a room store");
+            };
+            assert_eq!(error.to_string(), "rooms unavailable", "{method}");
+        }
+        core.shutdown().await;
     }
 }

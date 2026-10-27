@@ -193,6 +193,73 @@ impl CoreClient {
             }),
         }
     }
+
+    /// Fleet follow, step 1 (call right after a successful pairing has
+    /// been persisted): ask the freshly paired engine for its fleet.
+    /// `None` — never an error — when the engine lacks `rooms-v2`, has no
+    /// fleet, does not connect, or answers junk: the pairing then looks
+    /// exactly like it always did. The offer is opaque (the secret and the
+    /// member addresses stay in Rust); show a progress toast, then
+    /// [`CoreClient::join_fleet`].
+    pub async fn fetch_fleet(&self, engine_id: String) -> Option<std::sync::Arc<FleetOffer>> {
+        let client = self.client.clone();
+        mc::runtime::shared()
+            .spawn(async move { client.fetch_fleet(&engine_id).await })
+            .await
+            .ok()
+            .flatten()
+            .map(|offer| std::sync::Arc::new(FleetOffer(offer)))
+    }
+
+    /// Fleet follow, step 2: the silent room join of the offered fleet,
+    /// deduped against every engine already paired on this device (the
+    /// introducing engine is adopted into the fleet by tag, already-paired
+    /// members are skipped, the rest get one session each). Persist the
+    /// result exactly like [`CoreClient::join_room`]'s: the `room:` blob,
+    /// then each record as an upsert by engine id. Idempotent: re-running
+    /// it for the same fleet mints nothing.
+    pub async fn join_fleet(
+        &self,
+        offer: std::sync::Arc<FleetOffer>,
+    ) -> Result<RoomJoinResult, RoomError> {
+        let client = self.client.clone();
+        let offer = offer.0.clone();
+        match mc::runtime::shared()
+            .spawn(async move { client.join_fleet(offer).await })
+            .await
+        {
+            Ok(result) => result
+                .map(|join| RoomJoinResult {
+                    room: join.room.into(),
+                    engines: join.engines.into_iter().map(Into::into).collect(),
+                    missing: join.missing,
+                })
+                .map_err(RoomError::from),
+            Err(err) => Err(RoomError::Failed {
+                message: format!("the join task failed: {err}"),
+            }),
+        }
+    }
+}
+
+/// A fleet invite fetched from a paired engine (fleet follow). Opaque: the
+/// platform reads the name and the member labels for its progress toast,
+/// and hands it back to [`CoreClient::join_fleet`]; the secret and the
+/// member addresses never cross.
+#[derive(Debug, uniffi::Object)]
+pub struct FleetOffer(mc::FleetOffer);
+
+#[uniffi::export]
+impl FleetOffer {
+    /// The fleet's name ("Fleet" by default).
+    pub fn name(&self) -> String {
+        self.0.name().to_owned()
+    }
+
+    /// The book's member labels (device names, never addresses).
+    pub fn member_labels(&self) -> Vec<String> {
+        self.0.member_labels()
+    }
 }
 
 /// Parse a `roboco-room:` invite for the confirm UI ("Join room 'Home

@@ -85,6 +85,41 @@ interface PairingBackend {
 
     /** `CoreClient.forgetEngine`; called only from the store-failure rollback. */
     suspend fun forget(engineId: String)
+
+    /**
+     * Fleet follow (fleet-follow ticket 04): `CoreClient.fetchFleet` on
+     * the engine a pairing just returned and, when it offers a fleet,
+     * [onJoining] (the progress toast) then `CoreClient.joinFleet`.
+     * `null` — silently — when there is no fleet: the engine lacks
+     * `rooms-v2`, has none, or never connected. Throws [RoomException]
+     * only from the join itself. The offer is opaque: the fleet secret
+     * never crosses into Kotlin before the result's `room:` record.
+     * Defaults to "no fleet" so test backends opt in.
+     */
+    suspend fun followFleet(engineId: String, onJoining: () -> Unit): RoomJoinResult? = null
+}
+
+/**
+ * The fleet follow's only UI (fleet-follow ticket 04): two toasts, the
+ * progress line while the join runs and the count of engines it added.
+ * Never an error — a failed or absent fleet shows nothing. Production
+ * is [ToasterFleetNotices].
+ */
+interface FleetNotices {
+
+    /** The fleet was offered and its silent join started. */
+    fun joining()
+
+    /** The join added [count] engines (> 0) that were not paired before. */
+    fun joined(count: Int)
+
+    companion object {
+        /** No UI (tests, galleries). */
+        val None: FleetNotices = object : FleetNotices {
+            override fun joining() {}
+            override fun joined(count: Int) {}
+        }
+    }
 }
 
 /**
@@ -179,6 +214,7 @@ class PairPageModel(
     private val store: PairedEngineSink,
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val fleet: FleetNotices = FleetNotices.None,
 ) {
 
     /** The link field, pre-filled from a deep link/share (139) or empty. */
@@ -264,12 +300,14 @@ class PairPageModel(
         val replace = replaceEngineId
         scope.launch {
             try {
+                var paired: PairedEngine? = null
                 if (room) {
                     val result = withContext(io) { backend.joinRoom(url) }
                     persistJoin(result, knownBefore)
                 } else {
                     val engine = withContext(io) { backend.pair(url, replace) }
                     persist(engine, knownBefore)
+                    paired = engine
                 }
                 if (phase is PairPhase.Error) {
                     // The store-failure copy stands (the rollback above
@@ -282,6 +320,10 @@ class PairPageModel(
                 text.clearText()
                 phase = PairPhase.Idle
                 onPaired?.invoke()
+                // The pairing is done and persisted, exactly as before
+                // fleets; the fleet follows on its own (never blocking or
+                // failing the pairing).
+                if (paired != null) followFleet(paired.engineId, knownBefore)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -304,21 +346,95 @@ class PairPageModel(
     /** The pairing persist-first path (72): a store failure for a NEW
      * engine rolls it back (forget + remove, 71's caller contract). */
     private suspend fun persist(engine: PairedEngine, knownBefore: Set<String>) {
-        val known = engine.engineId in knownBefore
+        if (!storeEngine(engine, knownBefore)) {
+            phase = PairPhase.Error(PairMessage.Res(R.string.pair_error_store))
+        }
+    }
+
+    /** [persist] without the phase: `false` after a store failure (a NEW
+     * engine is rolled back — forget + remove — a known one stays). */
+    private suspend fun storeEngine(engine: PairedEngine, knownBefore: Set<String>): Boolean {
         try {
             store.upsert(engine)
+            return true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            if (!known) {
+            if (engine.engineId !in knownBefore) {
                 withContext(NonCancellable + io) {
                     runCatching { backend.forget(engine.engineId) }
                     runCatching { store.remove(engine.engineId) }
                 }
             }
-            phase = PairPhase.Error(PairMessage.Res(R.string.pair_error_store))
-            return
+            return false
         }
+    }
+
+    /**
+     * Fleet follow (fleet-follow ticket 04), in the launcher's app-scoped
+     * [scope] after a pairing was persisted: fetch the engine's fleet and
+     * join it silently (`followFleet`), then persist like a room join —
+     * the `room:` blob first, then every record as an upsert by engine id
+     * (the introducing engine and members paired before come back with
+     * their existing ids, so they replace their rows in place: never a
+     * second row). Rust dedupes before presenting (already-paired members
+     * get no new session) and folds a member reached under another
+     * address by its pinned identity.
+     *
+     * Silent by contract: no fleet, an old engine, a failed join or a
+     * store failure never touch [phase] and never toast an error — the
+     * pairing already succeeded. Only [fleet]'s progress and count toasts
+     * show. A store failure rolls back only the engines this join minted
+     * (never the paired one, never one paired before).
+     */
+    private fun followFleet(engineId: String, knownBeforePairing: Set<String>) {
+        scope.launch {
+            try {
+                // Known = what the phone had before this pairing (read
+                // before `pair`, so no fleet member minted below is in it)
+                // plus the paired engine itself: a rollback must never
+                // forget it, and it never counts as "added".
+                val knownBefore = knownBeforePairing + engineId
+                val result = withContext(io) {
+                    backend.followFleet(engineId) { fleet.joining() }
+                } ?: return@launch
+                if (!storeFleetJoin(result, knownBefore)) {
+                    Log.w(TAG, "fleet join not saved")
+                    return@launch
+                }
+                val added = result.engines.map { it.engineId }.toSet().count { it !in knownBefore }
+                if (added > 0) fleet.joined(added)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // The class only — never the invite, an address or a record.
+                Log.w(TAG, "fleet follow skipped: ${error::class.simpleName}")
+            }
+        }
+    }
+
+    /** The fleet's persist: [persistJoin] without the phase. `false` after
+     * a store failure, the new engines rolled back. */
+    private suspend fun storeFleetJoin(result: RoomJoinResult, knownBefore: Set<String>): Boolean {
+        try {
+            store.upsertRoom(result.room)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            withContext(NonCancellable + io) {
+                for (engine in result.engines) {
+                    if (engine.engineId !in knownBefore) {
+                        runCatching { backend.forget(engine.engineId) }
+                        runCatching { store.remove(engine.engineId) }
+                    }
+                }
+            }
+            return false
+        }
+        for (engine in result.engines) {
+            if (!storeEngine(engine, knownBefore)) return false
+        }
+        return true
     }
 
     /**

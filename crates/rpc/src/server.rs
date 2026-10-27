@@ -182,7 +182,17 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
         Ok(resp)
     };
     let (io, progress) = crate::pump::ProgressIo::new(stream);
-    let ws = match tokio_tungstenite::accept_hdr_async(io, reject_cross_origin).await {
+    // Accept with the raised frame/message cap: a peer on tungstenite's
+    // defaults (an older app build) may send one unfragmented frame past
+    // 16 MiB — drop that and the failure repeats on every reconnect
+    // (upstream acd7c9ba7's "engine keeps stopping").
+    let ws = match tokio_tungstenite::accept_hdr_async_with_config(
+        io,
+        reject_cross_origin,
+        Some(crate::pump::transport_config()),
+    )
+    .await
+    {
         Ok(ws) => ws,
         Err(err) => {
             tracing::warn!(error = %err, "rpc: websocket handshake failed");
@@ -212,8 +222,13 @@ where
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
 
-    // Pump: socket <-> string channels. Ends when either side closes.
-    let pump = tokio::spawn(crate::pump::pump(ws, out_rx, in_tx));
+    // Pump: socket <-> string channels. Ends when either side closes; a
+    // transport failure is logged with its reason instead of dropped.
+    let pump = tokio::spawn(async move {
+        if let Some(reason) = crate::pump::pump(ws, out_rx, in_tx).await {
+            tracing::warn!(%reason, "rpc: lost a viewport connection");
+        }
+    });
 
     let _pump_on_drop = AbortTask(pump.abort_handle());
     serve_connection(service, out_tx, in_rx).await;

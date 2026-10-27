@@ -14,13 +14,17 @@ _Avoid_: Login, sign-in, connecting (when it means pairing)
 The credential a paired client holds for an engine. Does not expire; lives until revoked. The only "session" in Roboco's language — a chat's state is its Chat status, its document is its Chat doc, a shell is a Terminal.
 _Avoid_: Token (when a human-facing word is wanted), login
 
-**Room**:
-A named group of engines a client joins once to be introduced to all of them; a room shares reachability, never data. Hostless — a shared secret plus an address book, with no engine in charge — and joining mints ordinary per-engine sessions; each chat still belongs to exactly one engine.
-_Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
-
 **Remote access**:
 An engine serving paired clients over the network. Remoteness is about where the client sits, not where data is replicated — data stays engine-local either way.
 _Avoid_: Cloud, sync
+
+**Fleet**:
+Every engine a person uses, introduced to each other once: pair a phone to any member engine and the rest arrive as ordinary paired engines (a desktop pushes its fleet to the engines it pairs, and joins another desktop's fleet by pasting its invite). Under the hood a fleet is a fleet room (ADR 0011 amendment) — one per data dir, its secret held by member engines; the word users see is Fleet, never room.
+_Avoid_: Cluster, network, account, room (in user-facing text)
+
+**Room**:
+The protocol behind a fleet: a shared secret plus an address book, with no engine in charge; presenting the secret to a member mints an ordinary per-engine session, and each chat still belongs to exactly one engine. Rooms share reachability, never data. Plain rooms (no desktop UI; engines join through the CLI) keep the original hostless, verifier-only semantics.
+_Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
 
 **Web client**:
 The engine-served Roboco client that runs in a browser at the engine's own remote access URL. Pairs like any other client and holds its session credential in browser storage, scoped to the engine's origin.

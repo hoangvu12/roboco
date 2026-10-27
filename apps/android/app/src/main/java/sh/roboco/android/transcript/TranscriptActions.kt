@@ -85,4 +85,10 @@ class TranscriptActions(
      * [frozen] whether the subagent had already finished when tapped.
      */
     val openSubagent: (docId: String, title: String, frozen: Boolean) -> Unit = { _, _, _ -> },
+    /**
+     * A row's button was tapped (wave-9 #14, upstream #967's
+     * `rowView(_:perform:)`): [action] names what — `sign-in` on an error
+     * card. Unknown actions are the screen's to ignore.
+     */
+    val perform: (action: String) -> Unit = { _ -> },
 )

@@ -19,6 +19,15 @@ read -r line || exit 1 # initialize
 has "$line" '"method":"initialize"' || exit 1
 has "$line" '"experimentalApi":true' || exit 1
 has "$line" '"name":"roboco-native"' || exit 1
+if [ -n "$FAKE_CODEX_REJECT_OPT_OUT" ] && has "$line" 'optOutNotificationMethods'; then
+  # An app-server that predates notification opt-outs: refuse, then expect
+  # the handshake again without them.
+  emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32602,\"message\":\"unknown field optOutNotificationMethods\"}}"
+  read -r line || exit 1
+  has "$line" '"method":"initialize"' || exit 1
+  has "$line" 'optOutNotificationMethods' && exit 7
+fi
+init_line="$line"
 emit "{\"id\":$(rid "$line"),\"result\":{\"userAgent\":\"fake-codex\"}}"
 
 read -r line || exit 1 # initialized notification (no reply)
@@ -31,6 +40,11 @@ if has "$line" '"method":"config/read"'; then
   read -r line || exit 1
 fi
 thread_line="$line"
+if has "$line" 'crash-on-thread-start'; then
+  # The app-server dies under thread/start: the run must report why.
+  echo 'thread 1 panicked at config.rs: bad toml in mcp_servers' >&2
+  exit 3
+fi
 if has "$line" '"method":"skills/list"'; then
   # Skill discovery probe: answer with two cwd groups sharing one skill
   # (dedupe by identity) and settle; no thread ever starts.
@@ -70,11 +84,29 @@ elif has "$line" '"method":"thread/resume"'; then
   elif has "$line" '"threadId":"resume-with-child-v2"'; then
     emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-resumed\",\"turns\":[{\"items\":[{\"type\":\"subAgentActivity\",\"id\":\"spawn-alpha\",\"kind\":\"started\",\"agentThreadId\":\"child-alpha\",\"agentPath\":\"/root/alpha\"},{\"type\":\"subAgentActivity\",\"id\":\"subagent-completed-old\",\"kind\":\"completed\",\"agentThreadId\":\"child-alpha\",\"agentPath\":\"/root/alpha\"}]}]}}}"
   elif has "$line" '"threadId":"resume-fail"'; then
-    # Missing/foreign rollout: reject, expect the fresh-start fallback.
-    emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32600,\"message\":\"rollout not found\"}}"
+    # Missing rollout (live 0.164.0 wording): reject, expect the
+    # fresh-start fallback.
+    emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32600,\"message\":\"no rollout found for thread id resume-fail\"}}"
     read -r line || exit 1
     has "$line" '"method":"thread/start"' || exit 1
     emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-fresh\"}}}"
+  elif has "$line" '"threadId":"resume-archived"'; then
+    # Archived (live 0.164.0 wording): expect thread/unarchive, then the
+    # resume again.
+    emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32600,\"message\":\"session resume-archived is archived. Run \`codex unarchive resume-archived\` to unarchive it first.\"}}"
+    read -r line || exit 1
+    has "$line" '"method":"thread/unarchive"' && has "$line" '"threadId":"resume-archived"' || exit 1
+    emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"resume-archived\"}}}"
+    read -r line || exit 1
+    has "$line" '"method":"thread/resume"' || exit 1
+    emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-unarchived\"}}}"
+  elif has "$line" '"threadId":"resume-broken"'; then
+    # A failure a fresh thread would share: no thread/start may follow.
+    emit "{\"id\":$(rid "$line"),\"error\":{\"code\":-32603,\"message\":\"failed to load configuration\"}}"
+    while read -r line; do
+      has "$line" '"method":"thread/start"' && emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-wrongly-fresh\"}}}"
+    done
+    exit 0
   else
     emit "{\"id\":$(rid "$line"),\"result\":{\"thread\":{\"id\":\"th-resumed\"}}}"
   fi
@@ -226,6 +258,15 @@ case "$turnline" in
     '"serviceTier":"fast"'; do
     has "$thread_line" "$want" || { fail_turn "$tid" "thread param missing: $want"; exit 0; }
   done
+  # The opt-out methods ride the initialize line. A concurrent test's
+  # FAKE_CODEX_REJECT_OPT_OUT (process env — Roboco's RunRequest has no
+  # per-run env map) makes this fixture take the reject path instead, so
+  # the assertion only holds when that flag is absent.
+  if [ -z "$FAKE_CODEX_REJECT_OPT_OUT" ]; then
+    for want in '"optOutNotificationMethods":[' '"turn/diff/updated"' '"item/commandExecution/outputDelta"'; do
+      has "$init_line" "$want" || { fail_turn "$tid" "initialize opt-out missing: $want"; exit 0; }
+    done
+  fi
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
   # Deltas — both field spellings must be accepted.

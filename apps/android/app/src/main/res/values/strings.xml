@@ -50,6 +50,17 @@
     <string name="room_error_refused">That room invite was refused — its secret may have rotated, or a member left the room.</string>
     <string name="room_error_throttled">That engine is throttling room joins. Try again in a minute.</string>
 
+    <!-- Fleet follow (fleet-follow ticket 04): after a pairing, the
+         engine's fleet joins silently. Only these two toasts ever show —
+         a progress line while the join runs, and the count of engines it
+         added (none when every member was already paired). A missing
+         fleet, an old engine or a failed join shows nothing at all. -->
+    <string name="fleet_joining">Adding the rest of your fleet…</string>
+    <plurals name="fleet_joined">
+        <item quantity="one">Added %d engine from your fleet</item>
+        <item quantity="other">Added %d engines from your fleet</item>
+    </plurals>
+
     <!-- The QR scanner (android-ui-parity #138): the hint, foreign,
          denied and unavailable captions (qr_denied/qr_foreign/qr_hint are
          android-app#18's wording verbatim; qr_unavailable is new — see the

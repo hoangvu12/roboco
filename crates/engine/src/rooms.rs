@@ -30,6 +30,13 @@
 //! `CreateTailcatInvite`, which force-enables and persists Tailcat, a room only
 //! works on engines that are already reachable — there is no settings
 //! escalation anywhere in this module.
+//!
+//! **Fleet rooms** (ADR 0011 amendment, fleet follow) are the one exception
+//! to "only the verifier is at rest": a fleet secret is a group pairing
+//! token, retained in a `fleet_rooms (room_id, secret)` row of the same
+//! pairing database (owner-only on unix) so any member can serialize the
+//! fleet for a newly paired client (`GetFleetInvite`). A data dir holds at
+//! most one fleet room; plain rooms keep verifier-only semantics unchanged.
 
 use std::{
     path::{Path, PathBuf},
@@ -37,7 +44,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use roboco_proto::room::{RoomBook, RoomInvite, RoomMember};
+use roboco_proto::room::{RoomBook, RoomInvite, RoomKind, RoomMember};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -50,15 +57,30 @@ const MAX_PRESENTATION_FAILURES: usize = 5;
 const PRESENTATION_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 
 /// A joined room as the store reports it (the CLI and tests read this shape;
-/// the verifier never leaves the store).
+/// the verifier and any fleet secret never leave the store this way).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomRecord {
     pub id: String,
     pub label: String,
     pub joined_at: i64,
+    pub kind: RoomKind,
     pub book: RoomBook,
 }
+
+/// A fleet join or create refused because this data dir already holds a
+/// different fleet room (one per data dir). Fixed text: callers surface it
+/// verbatim (CLI, RPC) and tests match on the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FleetConflict;
+
+impl std::fmt::Display for FleetConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("this engine already belongs to a fleet; leave it first")
+    }
+}
+
+impl std::error::Error for FleetConflict {}
 
 /// The outcome of one presentation attempt.
 ///
@@ -117,8 +139,14 @@ impl RoomStore {
         ); CREATE TABLE IF NOT EXISTS room_presentations (
             room_id TEXT NOT NULL, label TEXT NOT NULL, session_id TEXT NOT NULL,
             PRIMARY KEY (room_id, label)
+        ); CREATE TABLE IF NOT EXISTS fleet_rooms (
+            room_id TEXT PRIMARY KEY, secret TEXT NOT NULL
         );",
         )?;
+        drop(db);
+        // The database can now hold a usable fleet secret: owner-only, like
+        // every other secret file in the data dir (no-op off unix).
+        store.restrict_database()?;
         Ok(store)
     }
 
@@ -128,42 +156,136 @@ impl RoomStore {
         Ok(db)
     }
 
+    /// `pairing.sqlite3` and its WAL/SHM sidecars at 0600. SQLite creates
+    /// later sidecars with the database's own mode, so tightening the main
+    /// file at open covers them; existing sidecars are tightened here too.
+    #[cfg(unix)]
+    fn restrict_database(&self) -> anyhow::Result<()> {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = self.path.clone().into_os_string();
+            path.push(suffix);
+            match crate::tailcat::set_mode(Path::new(&path), 0o600) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn restrict_database(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Join a room from its invite: derive the id, hash the secret into a
-    /// verifier, discard the secret, and union the invite's members into the
-    /// stored book. Re-joining (self-heal, retry) refreshes the label and
-    /// merges the book — never a second row: the same secret is always the
-    /// same room.
+    /// verifier, and union the invite's members into the stored book.
+    /// Re-joining (self-heal, retry, a repeated `RoomJoin` push) refreshes
+    /// the label and merges the book — never a second row: the same secret is
+    /// always the same room.
+    ///
+    /// A plain room discards the secret here (only the verifier and the
+    /// derived id remain). A fleet invite (`kind = fleet`) additionally
+    /// retains the secret in `fleet_rooms` so this engine can introduce new
+    /// clients; it is refused with [`FleetConflict`] when the data dir
+    /// already holds a different fleet room.
     pub fn join(&self, invite: RoomInvite) -> anyhow::Result<RoomRecord> {
         let id = invite.room_id();
         let label = invite.name.trim().to_owned();
         crate::pairing::validate_label(&label)?;
         let now = crate::now_ms();
-        self.connect()?.execute(
+        let fleet = invite.is_fleet();
+        let mut db = self.connect()?;
+        if fleet {
+            // The orphan sweep below may erase a secret: zero freed pages.
+            db.pragma_update(None, "secure_delete", true)?;
+        }
+        // IMMEDIATE: the one-fleet check and the writes are one decision,
+        // even against a CLI process joining concurrently.
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if fleet {
+            // A retained secret whose room row is gone (an interrupted leave
+            // by an older store) is no fleet: `fleet_room` already ignores
+            // it, so erase it here instead of refusing the join forever.
+            if tx.execute(
+                "DELETE FROM fleet_rooms WHERE room_id NOT IN (SELECT id FROM rooms)",
+                [],
+            )? > 0
+            {
+                tracing::warn!("erased a fleet secret left without its room");
+            }
+            let other: Option<String> = tx
+                .query_row(
+                    "SELECT fleet_rooms.room_id FROM fleet_rooms
+                     JOIN rooms ON rooms.id = fleet_rooms.room_id
+                     WHERE fleet_rooms.room_id != ?1 LIMIT 1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if other.is_some() {
+                return Err(FleetConflict.into());
+            }
+        }
+        tx.execute(
             "INSERT INTO rooms (id, label, verifier, joined_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET label = excluded.label",
             params![id, label, verifier(&invite.secret), now],
         )?;
-        // The secret stops existing here: only the verifier above and the
-        // derived id remain.
+        if fleet {
+            tx.execute(
+                "INSERT INTO fleet_rooms (room_id, secret) VALUES (?1, ?2)
+                 ON CONFLICT(room_id) DO NOTHING",
+                params![id, invite.secret],
+            )?;
+        }
+        tx.commit()?;
+        drop(db);
+        // The caller's copy of the secret stops existing here; a fleet
+        // secret lives on only in its owner-only row.
         drop(invite.secret);
         let Some(book) = self.merge_book(&id, invite.members)? else {
             anyhow::bail!("room row vanished during join");
         };
-        let joined_at = self
+        // A fleet member introduces itself: its own Tailcat address joins
+        // the book, so whoever heals or fetches this book (the desktop's
+        // sync, a phone's `GetFleetInvite`) learns how to reach it without
+        // asking it to mint anything (C4a). Plain rooms stay as they were.
+        if fleet
+            && let Some(own) = own_member(&self.data_dir)
+            && !book
+                .members
+                .iter()
+                .any(|member| member.address == own.address)
+        {
+            self.merge_book(&id, vec![own])?;
+        }
+        self.record(&id)?
+            .ok_or_else(|| anyhow::anyhow!("room row vanished during join"))
+    }
+
+    /// One room's record, or `None` when this engine has not joined it.
+    pub fn record(&self, id: &str) -> anyhow::Result<Option<RoomRecord>> {
+        let row: Option<(String, i64, bool)> = self
             .connect()?
             .query_row(
-                "SELECT joined_at FROM rooms WHERE id = ?1",
+                "SELECT label, joined_at,
+                        EXISTS(SELECT 1 FROM fleet_rooms WHERE room_id = rooms.id)
+                 FROM rooms WHERE id = ?1",
                 params![id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .optional()?
-            .unwrap_or(now);
-        Ok(RoomRecord {
-            id,
+            .optional()?;
+        let Some((label, joined_at, fleet)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(RoomRecord {
+            book: self.read_book(id)?,
+            id: id.to_owned(),
             label,
             joined_at,
-            book,
-        })
+            kind: kind_of(fleet),
+        }))
     }
 
     /// Every joined room with its book. A missing or unreadable book file
@@ -171,42 +293,117 @@ impl RoomStore {
     /// addresses are gone.
     pub fn list(&self) -> anyhow::Result<Vec<RoomRecord>> {
         let db = self.connect()?;
-        let mut query =
-            db.prepare("SELECT id, label, joined_at FROM rooms ORDER BY joined_at, id")?;
-        let rows: Vec<(String, String, i64)> = query
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        let mut query = db.prepare(
+            "SELECT id, label, joined_at,
+                    EXISTS(SELECT 1 FROM fleet_rooms WHERE room_id = rooms.id)
+             FROM rooms ORDER BY joined_at, id",
+        )?;
+        let rows: Vec<(String, String, i64, bool)> = query
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
-            .map(|(id, label, joined_at)| {
+            .map(|(id, label, joined_at, fleet)| {
                 Ok(RoomRecord {
                     book: self.read_book(&id)?,
                     id,
                     label,
                     joined_at,
+                    kind: kind_of(fleet),
                 })
             })
             .collect()
     }
 
+    /// The data dir's fleet room, if it holds one (at most one by
+    /// construction).
+    pub fn fleet_room(&self) -> anyhow::Result<Option<RoomRecord>> {
+        let id: Option<String> = self
+            .connect()?
+            .query_row(
+                "SELECT fleet_rooms.room_id FROM fleet_rooms
+                 JOIN rooms ON rooms.id = fleet_rooms.room_id
+                 ORDER BY fleet_rooms.room_id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => self.record(&id),
+            None => Ok(None),
+        }
+    }
+
+    /// A fresh fleet invite for room `id`: the retained secret, the label as
+    /// the name, the current book as the members, `kind = fleet`. `None` when
+    /// `id` is unknown or a plain room (no retained secret). The returned
+    /// invite is a secret: encode it only toward a caller who asked for it.
+    pub fn fleet_invite(&self, id: &str) -> anyhow::Result<Option<RoomInvite>> {
+        let row: Option<(String, String)> = self
+            .connect()?
+            .query_row(
+                "SELECT rooms.label, fleet_rooms.secret FROM fleet_rooms
+                 JOIN rooms ON rooms.id = fleet_rooms.room_id
+                 WHERE fleet_rooms.room_id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((label, secret)) = row else {
+            return Ok(None);
+        };
+        let book = self.read_book(id)?;
+        Ok(Some(RoomInvite::fleet(&label, &secret, book.members)?))
+    }
+
+    /// Mint this data dir's fleet room: a fresh secret from the proto mint,
+    /// joined locally as `kind = fleet` with `members` as the initial book.
+    /// Refused with [`FleetConflict`] when a fleet room already exists (one
+    /// per data dir). Returns the record (the id is the public handle; the
+    /// secret is never returned, printed, or logged).
+    pub fn create(&self, name: &str, members: Vec<RoomMember>) -> anyhow::Result<RoomRecord> {
+        if self.fleet_room()?.is_some() {
+            return Err(FleetConflict.into());
+        }
+        let secret = roboco_proto::room::mint_room_secret()?;
+        let invite = RoomInvite::fleet(name.trim(), &secret, members)?;
+        drop(secret);
+        self.join(invite)
+    }
+
     /// Leave a room: forget its verifier (future presentations of that secret
-    /// are refused), drop its 0600 book, and forget the presentation mapping.
+    /// are refused), drop its 0600 book, forget the presentation mapping, and
+    /// — for a fleet room — erase the retained secret.
     /// Sessions it minted are ordinary sessions — revoke them with
     /// `roboco engine pairing revoke` (eviction is rotate-then-revoke, ADR 0011).
     /// Returns whether a room with that id existed.
     pub fn leave(&self, id: &str) -> anyhow::Result<bool> {
-        let deleted = self
-            .connect()?
-            .execute("DELETE FROM rooms WHERE id = ?1", params![id])?
-            > 0;
+        let mut db = self.connect()?;
+        // A fleet secret must not survive in freed pages: zero them.
+        db.pragma_update(None, "secure_delete", true)?;
+        // One transaction: a crash between the deletes must never leave a
+        // `fleet_rooms` row without its room (which `join` would then
+        // refuse as a conflict while `fleet_room` reports no fleet).
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let deleted = tx.execute("DELETE FROM rooms WHERE id = ?1", params![id])? > 0;
+        let fleet = tx.execute("DELETE FROM fleet_rooms WHERE room_id = ?1", params![id])? > 0;
+        tx.execute(
+            "DELETE FROM room_presentations WHERE room_id = ?1",
+            params![id],
+        )?;
+        tx.commit()?;
         if deleted {
-            self.connect()?.execute(
-                "DELETE FROM room_presentations WHERE room_id = ?1",
-                params![id],
-            )?;
             // The book is a 0600 secret; leaving removes it outright.
             if let Ok(dir) = self.room_dir(id) {
                 let _ = std::fs::remove_dir_all(dir);
             }
+        }
+        if fleet {
+            // Best effort: fold the WAL (which still carries the pre-delete
+            // page) back into the zeroed file. A concurrent reader (a running
+            // engine) can keep frames alive until its own next checkpoint.
+            let _ = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
         }
         Ok(deleted)
     }
@@ -401,6 +598,39 @@ fn verifier(secret: &str) -> Vec<u8> {
     hash.update(b"roboco-room-v1\0verifier\0");
     hash.update(secret.as_bytes());
     hash.finalize().to_vec()
+}
+
+/// This engine's own fleet book entry: the Tailcat address it last
+/// published (`tailcat-address.json`), labelled with its device name (what
+/// `EngineInfo` clients show for it). `None` when no address is recorded —
+/// an engine that never served Tailcat has nothing to offer the book. Only
+/// reads files: nothing here enables, mints, or saves anything.
+pub fn own_member(data_dir: &Path) -> Option<RoomMember> {
+    let address = crate::tailcat::read_recorded_address(data_dir)
+        .ok()
+        .flatten()?;
+    let mut label: String = crate::local_device_name_at(data_dir)
+        .trim()
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    while label.len() > roboco_proto::room::MAX_LABEL_BYTES {
+        label.pop();
+    }
+    if label.is_empty() {
+        label = "Engine".into();
+    }
+    let member = RoomMember { label, address };
+    roboco_proto::room::validate_room_member(&member).ok()?;
+    Some(member)
+}
+
+fn kind_of(fleet: bool) -> RoomKind {
+    if fleet {
+        RoomKind::Fleet
+    } else {
+        RoomKind::Room
+    }
 }
 
 /// Room ids are 43-character base64url (the derived `room_id_bytes` digest).
@@ -805,6 +1035,324 @@ mod tests {
         assert!(store.list().unwrap().is_empty());
         // Leaving twice reports the second as a no-op.
         assert!(!store.leave(&record.id).unwrap());
+    }
+
+    fn fleet_invite_for(secret: &str, members: Vec<RoomMember>) -> RoomInvite {
+        RoomInvite::fleet("Fleet", secret, members).unwrap()
+    }
+
+    fn secret_on_disk(dir: &Path, secret: &str) -> bool {
+        walk(dir).iter().any(|path| {
+            std::fs::read(path)
+                .unwrap()
+                .windows(secret.len())
+                .any(|w| w == secret.as_bytes())
+        })
+    }
+
+    #[test]
+    fn a_fleet_join_retains_the_secret_and_a_plain_join_does_not() {
+        let plain_dir = tempfile::tempdir().unwrap();
+        let record = store(plain_dir.path())
+            .join(invite(SECRET, vec![member("desktop", "tcA1")]))
+            .unwrap();
+        assert_eq!(record.kind, RoomKind::Room);
+        assert!(
+            !secret_on_disk(plain_dir.path(), SECRET),
+            "a plain room must stay verifier-only"
+        );
+        assert!(store(plain_dir.path()).fleet_room().unwrap().is_none());
+        assert!(
+            store(plain_dir.path())
+                .fleet_invite(&record.id)
+                .unwrap()
+                .is_none(),
+            "a plain room never serializes as a fleet"
+        );
+
+        let fleet_dir = tempfile::tempdir().unwrap();
+        let fleet = store(fleet_dir.path());
+        let record = fleet
+            .join(fleet_invite_for(SECRET, vec![member("desktop", "tcA1")]))
+            .unwrap();
+        assert_eq!(record.kind, RoomKind::Fleet);
+        let retained: String = fleet
+            .connect()
+            .unwrap()
+            .query_row(
+                "SELECT secret FROM fleet_rooms WHERE room_id = ?1",
+                params![record.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, SECRET);
+        // The record (what the CLI prints) never carries it.
+        assert!(!serde_json::to_string(&record).unwrap().contains(SECRET));
+        assert!(!format!("{record:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn fleet_invites_round_trip_and_absent_fleets_answer_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        assert!(store.fleet_room().unwrap().is_none());
+        assert!(store.fleet_invite(&room_id(SECRET)).unwrap().is_none());
+
+        let record = store
+            .join(fleet_invite_for(SECRET, vec![member("desktop", "tcA1")]))
+            .unwrap();
+        store
+            .merge_book(&record.id, vec![member("server", "tcB2")])
+            .unwrap();
+        let fleet = store.fleet_room().unwrap().expect("a fleet room");
+        assert_eq!(fleet.id, record.id);
+
+        let encoded = store
+            .fleet_invite(&record.id)
+            .unwrap()
+            .expect("a fleet invite")
+            .encode()
+            .unwrap();
+        let decoded = RoomInvite::decode(&encoded).unwrap();
+        assert_eq!(decoded.room_id(), record.id);
+        assert_eq!(decoded.kind, RoomKind::Fleet);
+        assert_eq!(decoded.name, "Fleet");
+        // The book travels as it stands now, not as it was at join time.
+        assert_eq!(
+            decoded.members,
+            vec![member("desktop", "tcA1"), member("server", "tcB2")]
+        );
+        // A second engine joining that invite lands in the same room.
+        let other = tempfile::tempdir().unwrap();
+        let joined = RoomStore::open(other.path())
+            .unwrap()
+            .join(decoded)
+            .unwrap();
+        assert_eq!(joined.id, record.id);
+        assert_eq!(joined.kind, RoomKind::Fleet);
+    }
+
+    #[test]
+    fn one_fleet_per_data_dir_and_rejoining_it_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let created = store
+            .create("Fleet", vec![member("desktop", "tcA1")])
+            .unwrap();
+        assert_eq!(created.kind, RoomKind::Fleet);
+        assert_eq!(created.label, "Fleet");
+
+        // A second create is refused with fixed text.
+        let error = store.create("Fleet", vec![]).unwrap_err();
+        assert!(error.downcast_ref::<FleetConflict>().is_some());
+        assert_eq!(
+            error.to_string(),
+            "this engine already belongs to a fleet; leave it first"
+        );
+        // So is joining a different fleet.
+        let error = store
+            .join(fleet_invite_for(
+                "another-fleet-secret-0123456789abcdefghijk",
+                vec![],
+            ))
+            .unwrap_err();
+        assert!(error.downcast_ref::<FleetConflict>().is_some());
+        assert_eq!(store.list().unwrap().len(), 1);
+
+        // Re-joining the same fleet (a repeated push) unions, never a second
+        // row; a plain room alongside is still welcome.
+        let invite = store.fleet_invite(&created.id).unwrap().unwrap();
+        let mut again = invite.clone();
+        again.members = vec![member("server", "tcB2")];
+        let rejoined = store.join(again).unwrap();
+        assert_eq!(rejoined.id, created.id);
+        assert_eq!(rejoined.joined_at, created.joined_at);
+        assert_eq!(rejoined.book.members.len(), 2);
+        store.join(invite).unwrap();
+        store
+            .join(invite_plain("plain-room-secret-0123456789abcdefghijklm"))
+            .unwrap();
+        let rooms = store.list().unwrap();
+        assert_eq!(rooms.len(), 2);
+        assert_eq!(
+            rooms.iter().filter(|r| r.kind == RoomKind::Fleet).count(),
+            1
+        );
+        let retained: i64 = store
+            .connect()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM fleet_rooms", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(retained, 1);
+
+        // Leaving the fleet frees the slot.
+        assert!(store.leave(&created.id).unwrap());
+        assert!(store.fleet_room().unwrap().is_none());
+        store.create("Fleet", vec![]).unwrap();
+    }
+
+    /// A fleet join (store-level, so the `RoomJoin` RPC, CLI `room join`
+    /// and `create` all get it) adds this engine's own recorded Tailcat
+    /// address to the book, once; without a recorded address it adds
+    /// nothing, and a plain room never gains an entry.
+    #[test]
+    fn a_fleet_join_introduces_the_engine_by_its_recorded_address() {
+        const OWN: &str = "tcOWNRECORDEDADDRESS";
+        let own_label = crate::local_device_name_at;
+
+        // Nothing recorded: the book is exactly the invite's.
+        let bare = tempfile::tempdir().unwrap();
+        let record = store(bare.path())
+            .join(fleet_invite_for(SECRET, vec![member("desktop", "tcA1")]))
+            .unwrap();
+        assert_eq!(record.book.members, vec![member("desktop", "tcA1")]);
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::tailcat::record_address(dir.path(), OWN).unwrap();
+        let store = store(dir.path());
+
+        // A plain room is unchanged: no self entry.
+        let plain = store
+            .join(invite_plain("plain-room-secret-0123456789abcdefghijklm"))
+            .unwrap();
+        assert!(plain.book.members.is_empty());
+
+        // A fleet join adds `{device name, recorded address}`.
+        let record = store
+            .join(fleet_invite_for(SECRET, vec![member("desktop", "tcA1")]))
+            .unwrap();
+        let own = member(&own_label(dir.path()), OWN);
+        assert!(record.book.members.contains(&own), "{:?}", record.book);
+        assert_eq!(record.book.members.len(), 2);
+        // Re-joining (a repeated push) never adds it twice.
+        let again = store
+            .join(fleet_invite_for(SECRET, vec![member("server", "tcB2")]))
+            .unwrap();
+        assert_eq!(
+            again
+                .book
+                .members
+                .iter()
+                .filter(|member| member.address == OWN)
+                .count(),
+            1
+        );
+        // The served invite carries it: a phone pairing here learns it.
+        let invite = store.fleet_invite(&record.id).unwrap().unwrap();
+        assert!(invite.members.contains(&own));
+
+        // An entry for the address under another label (CLI `--label`, the
+        // desktop's own entry) is this engine already: no second entry.
+        let labelled = tempfile::tempdir().unwrap();
+        crate::tailcat::record_address(labelled.path(), OWN).unwrap();
+        let created = RoomStore::open(labelled.path())
+            .unwrap()
+            .create("Fleet", vec![member("my label", OWN)])
+            .unwrap();
+        assert_eq!(created.book.members, vec![member("my label", OWN)]);
+    }
+
+    /// An older store's interrupted leave could drop the room row and keep
+    /// its `fleet_rooms` secret. `fleet_room` never saw such an orphan, so
+    /// the conflict check must not either: the next fleet join (the
+    /// desktop's lazy create) erases it and succeeds instead of failing
+    /// forever.
+    #[test]
+    fn an_orphaned_fleet_secret_never_blocks_the_next_fleet() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let orphan = store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+        store
+            .connect()
+            .unwrap()
+            .execute("DELETE FROM rooms WHERE id = ?1", params![orphan.id])
+            .unwrap();
+        assert!(store.fleet_room().unwrap().is_none());
+
+        let created = store.create("Fleet", vec![]).unwrap();
+        assert_ne!(created.id, orphan.id);
+        assert_eq!(store.fleet_room().unwrap().unwrap().id, created.id);
+        let retained: Vec<String> = store
+            .connect()
+            .unwrap()
+            .prepare("SELECT room_id FROM fleet_rooms")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(retained, vec![created.id.clone()], "the orphan was erased");
+        drop(store);
+        assert!(
+            !secret_on_disk(dir.path(), SECRET),
+            "the orphaned secret survived on disk"
+        );
+    }
+
+    /// `leave` deletes every row of the room in one transaction, so there is
+    /// nothing left for the orphan sweep to find.
+    #[test]
+    fn leaving_a_fleet_leaves_no_rows_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let record = store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+        assert!(matches!(
+            store.present(SECRET, "Pixel").unwrap(),
+            PresentationOutcome::Granted(_)
+        ));
+        assert!(store.leave(&record.id).unwrap());
+        let db = store.connect().unwrap();
+        for table in ["rooms", "fleet_rooms", "room_presentations"] {
+            let count: i64 = db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+    }
+
+    fn invite_plain(secret: &str) -> RoomInvite {
+        RoomInvite::new("Side room", secret, vec![]).unwrap()
+    }
+
+    #[test]
+    fn leaving_a_fleet_erases_the_retained_secret_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = store(dir.path());
+            let record = store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+            assert!(secret_on_disk(dir.path(), SECRET));
+            assert!(store.leave(&record.id).unwrap());
+            assert!(store.fleet_invite(&record.id).unwrap().is_none());
+        }
+        assert!(
+            !secret_on_disk(dir.path(), SECRET),
+            "a left fleet's secret survived on disk"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_pairing_database_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // The pairing store may create the file first with the umask mode;
+        // opening the room store tightens it.
+        crate::pairing::PairingStore::open(dir.path()).unwrap();
+        let store = store(dir.path());
+        store.join(fleet_invite_for(SECRET, vec![])).unwrap();
+        for name in [
+            "pairing.sqlite3",
+            "pairing.sqlite3-wal",
+            "pairing.sqlite3-shm",
+        ] {
+            let path = dir.path().join(name);
+            if path.exists() {
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600, "{name} must be owner-only");
+            }
+        }
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {

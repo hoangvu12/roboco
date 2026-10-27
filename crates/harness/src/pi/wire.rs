@@ -24,6 +24,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Bound on one stdout frame. A frame over it (a huge tool result, a hostile
+/// peer) costs that frame — dropped, with the reader resynchronizing at the
+/// next newline — not the whole run.
+const MAX_FRAME: usize = 32 * 1024 * 1024;
+
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -47,6 +52,9 @@ pub(crate) struct PiClient {
     pending: Pending,
     writer: mpsc::UnboundedSender<String>,
     closed: Arc<AtomicBool>,
+    /// Ends the writer (and pi's stdin) once the lines queued are written.
+    /// Only Windows' teardown needs it.
+    close_input: Arc<tokio::sync::Notify>,
 }
 
 impl PiClient {
@@ -54,17 +62,25 @@ impl PiClient {
     /// client and the event channel.
     pub fn new(stdin: ChildStdin, stdout: ChildStdout) -> (Self, mpsc::Receiver<PiIncoming>) {
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
-        tokio::spawn(write_loop(stdin, writer_rx));
+        let close_input = Arc::new(tokio::sync::Notify::new());
+        let close = close_input.clone();
+        tokio::spawn(write_loop(stdin, writer_rx, close));
         let pending: Pending = Arc::default();
         let (incoming_tx, incoming_rx) = mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
-        tokio::spawn(read_loop(stdout, Arc::clone(&pending), incoming_tx, closed.clone()));
+        tokio::spawn(read_loop(
+            stdout,
+            Arc::clone(&pending),
+            incoming_tx,
+            closed.clone(),
+        ));
         (
             Self {
                 next_id: Arc::new(AtomicU64::new(0)),
                 pending,
                 writer: writer_tx,
                 closed,
+                close_input,
             },
             incoming_rx,
         )
@@ -72,6 +88,15 @@ impl PiClient {
 
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Before pi's teardown: Windows gives it its grace to exit on stdin
+    /// EOF, which the writer holds off while any clone of this client (an
+    /// open dialog's) is alive. Unix teardown signals instead; its order is
+    /// unchanged.
+    pub fn close_input_for_teardown(&self) {
+        #[cfg(windows)]
+        self.close_input.notify_one();
     }
 
     /// Send a command and await its id-correlated response. `params` carries
@@ -128,8 +153,18 @@ impl PiClient {
 
 /// Owns the child's stdin; a write failure (EPIPE after the child died) is
 /// tolerated and logged.
-async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
-    while let Some(line) = rx.recv().await {
+async fn write_loop(
+    mut stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<String>,
+    close: Arc<tokio::sync::Notify>,
+) {
+    loop {
+        let line = tokio::select! {
+            biased;
+            line = rx.recv() => line,
+            () = close.notified() => None,
+        };
+        let Some(line) = line else { break };
         let write = async {
             stdin.write_all(line.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
@@ -161,20 +196,75 @@ pub(crate) fn frame_lines(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
     lines
 }
 
+/// A frame, tolerating the one thing JS emits that serde_json refuses: a
+/// lone UTF-16 surrogate escape (a string sliced mid-pair), which becomes
+/// U+FFFD instead of costing the frame.
+fn parse_frame(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_slice(bytes).ok().or_else(|| {
+        let repaired = replace_lone_surrogates(bytes)?;
+        serde_json::from_slice(&repaired).ok()
+    })
+}
+
+/// `bytes` with each unpaired `\uD800`–`\uDFFF` escape replaced by `\uFFFD`;
+/// `None` when there is none to replace.
+fn replace_lone_surrogates(bytes: &[u8]) -> Option<Vec<u8>> {
+    fn unit(bytes: &[u8], at: usize) -> Option<u16> {
+        if bytes.get(at..at + 2)? != b"\\u" {
+            return None;
+        }
+        let hex = bytes.get(at + 2..at + 6)?;
+        if !hex.iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        u16::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut changed = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'\\' {
+            out.push(bytes[at]);
+            at += 1;
+            continue;
+        }
+        match unit(bytes, at) {
+            Some(0xD800..=0xDBFF) if matches!(unit(bytes, at + 6), Some(0xDC00..=0xDFFF)) => {
+                out.extend_from_slice(&bytes[at..at + 12]);
+                at += 12;
+            }
+            Some(0xD800..=0xDFFF) => {
+                out.extend_from_slice(b"\\ufffd");
+                changed = true;
+                at += 6;
+            }
+            Some(_) => {
+                out.extend_from_slice(&bytes[at..at + 6]);
+                at += 6;
+            }
+            // Any other escape: keep it whole, so `\\u` stays literal text.
+            None => {
+                let end = (at + 2).min(bytes.len());
+                out.extend_from_slice(&bytes[at..end]);
+                at = end;
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
 /// Parse one stdout line and route it: responses resolve the pending map,
 /// everything else is forwarded as an event in stdout order. Noise (non-JSON,
-/// non-object, or empty lines) is skipped. Returns false when the event
+/// non-object, or empty lines) is skipped — a dependency's stray console
+/// output is not a reason to end the run. Returns false when the event
 /// channel is gone (consumer dropped) — the reader should stop.
 async fn route_line(line: &[u8], pending: &Pending, tx: &mpsc::Sender<PiIncoming>) -> bool {
-    let Ok(text) = std::str::from_utf8(line) else {
-        tracing::debug!(target: "roboco_harness::pi", "non-UTF-8 stdout line (skipped)");
-        return true;
-    };
-    if text.trim().is_empty() {
-        return true;
-    }
-    let Ok(value) = serde_json::from_str::<Value>(text) else {
-        tracing::debug!(target: "roboco_harness::pi", "non-JSON stdout line (skipped)");
+    let value = std::str::from_utf8(line)
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+        .and_then(|text| parse_frame(text.as_bytes()));
+    let Some(value) = value else {
+        tracing::debug!(target: "roboco_harness::pi", "unparseable stdout line (skipped)");
         return true;
     };
     if !value.is_object() {
@@ -213,18 +303,70 @@ pub(crate) async fn read_loop<R: AsyncRead + Unpin>(
     tx: mpsc::Sender<PiIncoming>,
     closed: Arc<AtomicBool>,
 ) {
+    read_loop_bounded(stdout, pending, tx, closed, MAX_FRAME).await
+}
+
+/// [`read_loop`] under a test-shrunk frame bound. An oversized frame (a
+/// huge tool result, a hostile peer) costs that frame, not the run: the
+/// bytes are dropped and reading resumes at the next newline.
+async fn read_loop_bounded<R: AsyncRead + Unpin>(
+    stdout: R,
+    pending: Pending,
+    tx: mpsc::Sender<PiIncoming>,
+    closed: Arc<AtomicBool>,
+    max_frame: usize,
+) {
     let mut reader = stdout;
     let mut buffer: Vec<u8> = Vec::with_capacity(16 * 1024);
     let mut chunk = [0u8; 16 * 1024];
+    // Inside an oversized frame: discard through its newline.
+    let mut skipping = false;
+    // How far into `buffer` the search for a newline has already gone: the
+    // bytes before it hold none, and rescanning them per 16KiB read is
+    // quadratic on a huge frame.
+    let mut scanned = 0usize;
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 buffer.extend_from_slice(&chunk[..n]);
-                for line in frame_lines(&mut buffer) {
-                    if !route_line(&line, &pending, &tx).await {
-                        return;
+                if skipping {
+                    match buffer.iter().position(|&b| b == b'\n') {
+                        Some(pos) => {
+                            buffer.drain(..=pos);
+                            scanned = 0;
+                            skipping = false;
+                            // Fall through: the bytes after the discarded
+                            // frame's newline may already hold complete
+                            // lines — never wait on read() for them.
+                        }
+                        None => {
+                            buffer.clear();
+                            continue;
+                        }
                     }
+                }
+                if buffer[scanned..].iter().any(|&b| b == b'\n') {
+                    for line in frame_lines(&mut buffer) {
+                        if !route_line(&line, &pending, &tx).await {
+                            return;
+                        }
+                    }
+                    scanned = 0;
+                } else {
+                    scanned = buffer.len();
+                }
+                // frame_lines drained every complete line: what remains is
+                // an unterminated frame still arriving.
+                if buffer.len() > max_frame {
+                    tracing::warn!(
+                        target: "roboco_harness::pi",
+                        "Pi RPC frame over {} MiB dropped",
+                        max_frame / (1024 * 1024)
+                    );
+                    buffer.clear();
+                    scanned = 0;
+                    skipping = true;
                 }
             }
         }
@@ -288,6 +430,106 @@ mod tests {
         }
         buffer.push(b'\n');
         assert_eq!(frame_lines(&mut buffer), vec![big.into_bytes()]);
+    }
+
+    #[tokio::test]
+    async fn noise_lone_surrogates_and_oversized_frames_do_not_end_the_stream() {
+        use tokio::io::AsyncWriteExt;
+        let (tx, mut rx) = mpsc::channel(256);
+        let pending: Pending = Arc::default();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (client, mut server) = tokio::io::duplex(4096);
+        let reader = tokio::spawn(read_loop_bounded(
+            client,
+            pending,
+            tx,
+            closed,
+            64,
+        ));
+        // Stray output (a dependency's console.log) is skipped...
+        server.write_all(b"not json\n").await.unwrap();
+        // ...a lone surrogate escape is repaired into the frame...
+        server
+            .write_all(br#"{"type":"message_update","text":"cut \ud83d here"}"#)
+            .await
+            .unwrap();
+        server.write_all(b"\n").await.unwrap();
+        // ...and one over the 64-byte bound, arriving in pieces before its
+        // newline, costs only that frame.
+        server
+            .write_all(format!(r#"{{"type":"huge","text":"{}"#, "x".repeat(100)).as_bytes())
+            .await
+            .unwrap();
+        server.write_all(br#""}}"#).await.unwrap();
+        server.write_all(b"\n{\"type\":\"agent_settled\"}\n").await.unwrap();
+        let first = rx.recv().await.unwrap();
+        match first {
+            PiIncoming::Event(value) => assert_eq!(
+                value,
+                serde_json::json!({"type":"message_update","text":"cut \u{fffd} here"})
+            ),
+            other => panic!("expected an event, got {other:?}"),
+        }
+        let next = rx.recv().await.unwrap();
+        match next {
+            PiIncoming::Event(value) => assert_eq!(
+                value,
+                serde_json::json!({"type":"agent_settled"})
+            ),
+            other => panic!("expected an event, got {other:?}"),
+        }
+        drop(server);
+        let _ = reader.await;
+    }
+
+    #[test]
+    fn surrogate_repair_keeps_pairs_and_literal_backslashes() {
+        let pair = br#"{"t":"\ud83d\ude00"}"#;
+        assert!(replace_lone_surrogates(pair).is_none());
+        let literal = br#"{"t":"\\ud800"}"#;
+        assert!(replace_lone_surrogates(literal).is_none());
+        let trailing = br#"{"t":"a\udc00b\ud800"}"#;
+        let repaired = replace_lone_surrogates(trailing).unwrap();
+        assert_eq!(repaired, br#"{"t":"a\ufffdb\ufffd"}"#);
+        assert_eq!(parse_frame(trailing).unwrap()["t"], "a\u{fffd}b\u{fffd}");
+    }
+
+    /// The full-size bound (32 MiB) against a real 33 MiB frame: the skip
+    /// drains through the newline and the following frames still arrive —
+    /// and it completes fast (the unterminated-tail scan is incremental).
+    #[tokio::test]
+    async fn a_full_size_oversized_frame_is_skipped_not_stuck() {
+        use tokio::io::AsyncWriteExt;
+        let (tx, mut rx) = mpsc::channel(256);
+        let pending: Pending = Arc::default();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let reader = tokio::spawn(read_loop_bounded(
+            client,
+            pending,
+            tx,
+            closed,
+            MAX_FRAME,
+        ));
+        let huge = format!(
+            r#"{{"type":"message_update","delta":"{}"}}"#,
+            "x".repeat(33 * 1024 * 1024)
+        );
+        let start = std::time::Instant::now();
+        server.write_all(huge.as_bytes()).await.unwrap();
+        server.write_all(b"\n{\"type\":\"agent_settled\"}\n").await.unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("frame processed in time");
+        match next {
+            Some(PiIncoming::Event(value)) => {
+                assert_eq!(value["type"], "agent_settled")
+            }
+            other => panic!("expected the settled event, got {other:?}"),
+        }
+        eprintln!("full-size frame processed in {:?}", start.elapsed());
+        drop(server);
+        let _ = reader.await;
     }
 
     #[tokio::test]

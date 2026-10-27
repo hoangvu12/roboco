@@ -569,6 +569,14 @@ impl EngineHandle {
         }
     }
 
+    /// The same fake engine advertising `capabilities` — capability-gated UI
+    /// (the Fleet card's rooms-v2 gate) needs a test engine that has them.
+    #[cfg(test)]
+    pub(crate) fn with_capabilities(mut self, capabilities: &[&str]) -> Self {
+        self.engine_info.capabilities = capabilities.iter().map(|cap| cap.to_string()).collect();
+        self
+    }
+
     pub async fn shutdown(&self) {
         self.inner.shutdown().await;
     }
@@ -864,6 +872,9 @@ pub struct AppState {
     /// the engine LRU — closing a tab MUST go through
     /// [`Self::unwatch_subagent_doc`].
     sub_watch_tasks: HashMap<String, Task<()>>,
+    /// Fleet follow: the desktop's push + heal pass and the Fleet card's
+    /// latest report (Settings → Remote access).
+    pub(crate) fleet: crate::rooms::FleetSync,
 }
 
 /// Text/reasoning growth changes the transcript without changing session
@@ -964,6 +975,7 @@ impl AppState {
             change_requests_visible: true,
             sub_transcripts: HashMap::new(),
             sub_watch_tasks: HashMap::new(),
+            fleet: crate::rooms::FleetSync::default(),
             auto_selected: false,
             chats_synced: false,
             spaces_synced: false,
@@ -2413,11 +2425,91 @@ impl AppState {
     }
 
     /// The local engine advertises this capability. False while no engine is
-    /// attached — room UI hides on absence rather than erroring (C5).
+    /// attached — capability-gated UI hides on absence rather than erroring.
     pub fn local_engine_supports(&self, capability: &str) -> bool {
         self.engine
             .as_ref()
             .is_some_and(|handle| handle.engine_info().supports(capability))
+    }
+
+    /// Fleet operations, when this desktop can hold a fleet: a data dir, a
+    /// registry, and a local engine that speaks `rooms-v2`. `None` hides the
+    /// Fleet card entirely (capability hiding, never an error).
+    pub fn fleet_ops(&self) -> Option<crate::rooms::RoomOps> {
+        if !self.local_engine_supports(roboco_proto::capabilities::ROOMS_V2) {
+            return None;
+        }
+        Some(crate::rooms::RoomOps::new(
+            self.data_dir.clone()?,
+            self.registry.clone()?,
+        ))
+    }
+
+    /// The Fleet card's latest report (`None` before the first pass).
+    pub fn fleet_report(&self) -> Option<&crate::rooms::FleetReport> {
+        self.fleet.report.as_ref()
+    }
+
+    pub fn fleet_error(&self) -> Option<&str> {
+        self.fleet.error.as_deref()
+    }
+
+    pub fn fleet_syncing(&self) -> bool {
+        self.fleet.running
+    }
+
+    /// Run the fleet push + heal pass in the background: single-flight, with
+    /// one coalesced re-run when asked again mid-pass. Silent by design — a
+    /// failure lands on the Fleet card, never in a toast.
+    pub fn request_fleet_sync(&mut self, cx: &mut Context<Self>) {
+        if self.fleet.running {
+            self.fleet.rerun = true;
+            return;
+        }
+        let Some(ops) = self.fleet_ops() else {
+            return;
+        };
+        self.fleet.running = true;
+        let operation = Tokio::spawn(cx, async move { ops.sync().await });
+        self.fleet.task = Some(cx.spawn(async move |this, cx| {
+            let result = operation.await;
+            this.update(cx, |state, cx| {
+                state.fleet.running = false;
+                match result {
+                    Ok(Ok(report)) => {
+                        state.fleet.report = Some(report);
+                        state.fleet.error = None;
+                    }
+                    Ok(Err(error)) => {
+                        // Fleet errors are fixed text or store shape — never
+                        // an invite, a secret, or an address (ADR 0008).
+                        tracing::warn!(error = %error, "fleet sync failed");
+                        state.fleet.error = Some(error.to_string());
+                    }
+                    Err(_) => state.fleet.error = Some("The fleet sync was interrupted".into()),
+                }
+                if std::mem::take(&mut state.fleet.rerun) {
+                    state.request_fleet_sync(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Fleet events from the registry: the local engine's first connect (app
+    /// open) and every engine connecting for the first time this process (a
+    /// new pairing from any flow) schedule a pass.
+    fn note_fleet_engines(&mut self, cx: &mut Context<Self>) {
+        if self.data_dir.is_none()
+            || !self.local_engine_supports(roboco_proto::capabilities::ROOMS_V2)
+        {
+            return;
+        }
+        if self.fleet.note_connected(&self.registry_snapshot) {
+            self.request_fleet_sync(cx);
+        }
     }
     pub fn target_for_id(&self, id: &str) -> Result<EngineTarget, RpcError> {
         self.registry
@@ -3079,6 +3171,7 @@ fn spawn_registry_watch(
                     changed |= state.apply_devices(projected.devices);
                     changed |= state.apply_sessions(projected.sessions);
                     let linked = state.apply_pending_deep_link(cx);
+                    state.note_fleet_engines(cx);
                     if changed {
                         state.reconcile_change_request_watches(cx);
                     }
@@ -5374,6 +5467,8 @@ mod tests {
             error: None,
             can_apply: true,
             manual_command: None,
+            compatibility: None,
+            held_back: None,
         };
         assert!(!state.apply_harness_updates(vec![]));
         assert!(state.apply_harness_updates(vec![status(HarnessUpdatePhase::Available)]));
@@ -5967,7 +6062,7 @@ mod tests {
     }
 }
 
-#[cfg(feature = "appshots-fixture")]
+#[cfg(any(feature = "appshots-fixture", feature = "project-path-fixture"))]
 impl AppState {
     /// Keep fixture documents deterministic while using the real attachment RPC.
     pub fn fixture_attachment_engine(&mut self, engine: EngineHandle) {

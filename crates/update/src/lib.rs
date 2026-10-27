@@ -874,6 +874,30 @@ if [ -n "$3" ]; then exec "$2" "$3"; else exec "$2"; fi"#;
 }
 
 // ---------------------------------------------------------------------------
+// Superseded-restart gating
+// ---------------------------------------------------------------------------
+
+/// When the background engine may restart into a newer installed version,
+/// on top of nothing running (upstream f725384bd: only while the app that
+/// starts it runs, so the restart leaves starting the new version to the
+/// owner instead of orphaning a self-spawned successor). Checked on every
+/// pass, so a restart it holds back happens on a later one. Unset = no
+/// extra gate beyond quiescence.
+type ManagedRestartReady = Box<dyn Fn() -> bool + Send + Sync>;
+static MANAGED_RESTART_READY: std::sync::OnceLock<ManagedRestartReady> = std::sync::OnceLock::new();
+
+/// Register the readiness gate for a service engine's superseded restart
+/// (see [`MANAGED_RESTART_READY`]). The engine service registers this once
+/// at startup; the check runs on every poll.
+pub fn set_managed_restart_ready(ready: impl Fn() -> bool + Send + Sync + 'static) {
+    let _ = MANAGED_RESTART_READY.set(Box::new(ready));
+}
+
+fn managed_restart_ready() -> bool {
+    MANAGED_RESTART_READY.get().is_none_or(|ready| ready())
+}
+
+// ---------------------------------------------------------------------------
 // Background checker
 // ---------------------------------------------------------------------------
 
@@ -1264,7 +1288,12 @@ impl SupersededRestart {
         let Some(installed) = installed_version(&detect_install()) else {
             return;
         };
-        self.poll_installed(&installed, current_version(), quiescent, restart_service);
+        self.poll_installed(
+            &installed,
+            current_version(),
+            || quiescent() && managed_restart_ready(),
+            restart_service,
+        );
     }
 
     fn poll_installed(
@@ -1283,7 +1312,7 @@ impl SupersededRestart {
                 tracing::info!(
                     installed,
                     running,
-                    "newer version installed; restart deferred: sessions or terminals active"
+                    "newer version installed; restart deferred: sessions or terminals active, or the restart owner is not ready"
                 );
             }
             return;
@@ -1702,6 +1731,18 @@ mod tests {
         assert_eq!(restarts.get(), 1);
         superseded.poll_installed("0.2.2", "0.2.0", || true, restart);
         assert_eq!(restarts.get(), 2);
+    }
+
+    #[test]
+    fn managed_restart_gate_defaults_open_and_can_be_registered() {
+        // Unregistered: no gate beyond quiescence (upstream f725384bd's
+        // default — an owner that never registers holds nothing back).
+        assert!(managed_restart_ready());
+        set_managed_restart_ready(|| false);
+        assert!(!managed_restart_ready());
+        // The OnceLock is process-wide: this is the only test that reads it
+        // (the poll_installed tests take their quiescence as a parameter and
+        // never go through poll()).
     }
 
     #[test]

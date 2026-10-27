@@ -248,7 +248,7 @@ s.bind(('127.0.0.1',0))
 s.listen()
 open({ready:?},'w').write(str(s.getsockname()[1]))
 c,_=s.accept()
-open({connections:?},'a').write('connected\n')
+open({connections:?},'a',newline='').write('connected\n')
 r=c.makefile('rb')
 request=r.readline()
 headers={{}}
@@ -612,13 +612,26 @@ mod windows {
             .process(sysinfo::Pid::from_u32(pid))
             .expect("the child is in the process table")
             .start_time();
+        // sysinfo keeps a handle to every process it refreshed, and Windows
+        // keeps a pid (and its creation time) alive while any handle is
+        // open: release them, or the reaped child below still matches.
+        drop(system);
         assert!(started_at > 0);
         assert!(roboco_preview::discovery::same_process(pid, started_at));
         assert!(!roboco_preview::discovery::same_process(pid, started_at + 1));
         // Degraded to pid-only when no start time is known.
         assert!(roboco_preview::discovery::same_process(pid, 0));
-        drop(child); // kills and reaps: the pid is no longer taken
-        assert!(!roboco_preview::discovery::same_process(pid, started_at));
+        drop(child); // kills and reaps, closing this test's handles
+        // An exited process's object (and its pid) lives until the last
+        // handle anywhere closes; another process (security software) can
+        // hold one briefly, so give the release a few seconds.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while roboco_preview::discovery::same_process(pid, started_at) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a reaped pid no longer matches");
         assert!(!roboco_preview::discovery::same_process(pid, 0));
     }
 }

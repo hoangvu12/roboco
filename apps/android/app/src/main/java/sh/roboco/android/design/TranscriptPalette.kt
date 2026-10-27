@@ -76,6 +76,8 @@ internal object TranscriptPaletteTables {
                 ColorRole.DIFF_ADD_BAR -> dyn(dark, 0x15803D, 0x34D399, 0.55f)
                 ColorRole.DIFF_DEL_BAR -> dyn(dark, 0xDC2626, 0xF87171, 0.55f)
                 ColorRole.DIFF_HUNK -> dual(dark, 0x5B43E8, 0.07f, 0x8B7CF6, 0.08f)
+                ColorRole.DANGER_WASH -> dual(dark, 0xDC2626, 0.08f, 0xF87171, 0.12f) // Palette.swift:96
+                ColorRole.DANGER_SOFT -> dyn(dark, 0xB91C1C, 0xFCA5A5)                 // Palette.swift:97
             }
         }
         return out

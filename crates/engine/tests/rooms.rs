@@ -38,13 +38,10 @@ async fn engine(dir: &Path) -> Fixture {
         PairingStore::open(dir).unwrap(),
         RoomStore::open(dir).unwrap(),
     ));
-    let remote = roboco_engine::serve_engine_remote(
-        "127.0.0.1:0".parse().unwrap(),
-        core.rpc_service(),
-        dir,
-    )
-    .await
-    .unwrap();
+    let remote =
+        roboco_engine::serve_engine_remote("127.0.0.1:0".parse().unwrap(), core.rpc_service(), dir)
+            .await
+            .unwrap();
     Fixture {
         core,
         local_base,
@@ -54,12 +51,7 @@ async fn engine(dir: &Path) -> Fixture {
 }
 
 fn invite(members: Vec<RoomMember>) -> RoomInvite {
-    RoomInvite::new(
-        "Home fleet",
-        SECRET,
-        members,
-    )
-    .unwrap()
+    RoomInvite::new("Home fleet", SECRET, members).unwrap()
 }
 
 fn member(label: &str, address: &str) -> RoomMember {
@@ -69,7 +61,12 @@ fn member(label: &str, address: &str) -> RoomMember {
     }
 }
 
-async fn present(http: &reqwest::Client, base: &str, secret: &str, label: &str) -> reqwest::Response {
+async fn present(
+    http: &reqwest::Client,
+    base: &str,
+    secret: &str,
+    label: &str,
+) -> reqwest::Response {
     http.post(format!("{base}/room/present"))
         .json(&json!({ "secret": secret, "label": label }))
         .send()
@@ -93,7 +90,9 @@ fn assert_secret_never_at_rest(dir: &Path) {
     let mut files = Vec::new();
     walk(dir, &mut files);
     for path in files {
-        let bytes = std::fs::read(&path).unwrap();
+        let Some(bytes) = read_unless_os_locked(&path) else {
+            continue;
+        };
         assert!(
             !bytes.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
             "the room secret leaked into {}",
@@ -121,7 +120,10 @@ async fn presentation_mints_an_ordinary_session_and_never_touches_settings() {
     // A second process (the CLI's boundary) joins the room while the engine runs.
     let store = RoomStore::open(dir.path()).unwrap();
     let record = store
-        .join(invite(vec![member("desktop", "tcDESKTOP1"), member("server", "tcSERVER1")]))
+        .join(invite(vec![
+            member("desktop", "tcDESKTOP1"),
+            member("server", "tcSERVER1"),
+        ]))
         .unwrap();
 
     let http = reqwest::Client::new();
@@ -145,23 +147,32 @@ async fn presentation_mints_an_ordinary_session_and_never_touches_settings() {
         .await
         .unwrap();
     assert_eq!(info["deviceId"], fixture.core.device_id);
-    assert!(info["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c == "rooms-v1"));
+    assert!(
+        info["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "rooms-v1")
+    );
     let remote_access = client
         .call(roboco_rpc::methods::GET_REMOTE_ACCESS, json!({}))
         .await
         .unwrap();
-    assert!(remote_access["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| s["id"] == session_id.as_str() && s["label"] == "Pixel"));
+    assert!(
+        remote_access["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == session_id.as_str() && s["label"] == "Pixel")
+    );
 
     // Revocation refuses its next connection: eviction's second step.
-    assert!(PairingStore::open(dir.path()).unwrap().revoke(&session_id).unwrap());
+    assert!(
+        PairingStore::open(dir.path())
+            .unwrap()
+            .revoke(&session_id)
+            .unwrap()
+    );
     drop(client);
     assert!(
         roboco_rpc::connect_ws_authenticated(&remote_url, &credential)
@@ -183,7 +194,10 @@ async fn presentation_mints_an_ordinary_session_and_never_touches_settings() {
     );
     assert_eq!(
         record.book.members,
-        vec![member("desktop", "tcDESKTOP1"), member("server", "tcSERVER1")]
+        vec![
+            member("desktop", "tcDESKTOP1"),
+            member("server", "tcSERVER1")
+        ]
     );
 }
 
@@ -266,7 +280,12 @@ async fn failed_presentations_are_throttled_and_shape_only() {
 
     // The throttle: five refusals, then the next failure answers 429.
     for _ in 0..4 {
-        assert_eq!(present(&http, &fixture.local_base, "wrong", "Pixel").await.status(), 401);
+        assert_eq!(
+            present(&http, &fixture.local_base, "wrong", "Pixel")
+                .await
+                .status(),
+            401
+        );
     }
     let throttled = present(&http, &fixture.local_base, "wrong", "Pixel").await;
     assert_eq!(throttled.status(), 429);
@@ -350,7 +369,12 @@ async fn the_book_rpcs_gate_on_the_secret_and_union_merge() {
     // The merged book persisted (a fresh store reads it) and a re-read
     // through the RPC sees the same union.
     assert_eq!(
-        store.book_verified(&room_id, SECRET).unwrap().unwrap().members.len(),
+        store
+            .book_verified(&room_id, SECRET)
+            .unwrap()
+            .unwrap()
+            .members
+            .len(),
         2
     );
     let book = client
@@ -391,13 +415,25 @@ async fn leaving_refuses_further_presentations() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = engine(dir.path()).await;
     let store = RoomStore::open(dir.path()).unwrap();
-    let record = store.join(invite(vec![member("desktop", "tcDESKTOP1")])).unwrap();
+    let record = store
+        .join(invite(vec![member("desktop", "tcDESKTOP1")]))
+        .unwrap();
 
     let http = reqwest::Client::new();
-    assert_eq!(present(&http, &fixture.local_base, SECRET, "Pixel").await.status(), 200);
+    assert_eq!(
+        present(&http, &fixture.local_base, SECRET, "Pixel")
+            .await
+            .status(),
+        200
+    );
     assert!(store.leave(&record.id).unwrap());
     // The verifier is gone: the same secret is refused from now on.
-    assert_eq!(present(&http, &fixture.local_base, SECRET, "Pixel").await.status(), 401);
+    assert_eq!(
+        present(&http, &fixture.local_base, SECRET, "Pixel")
+            .await
+            .status(),
+        401
+    );
 
     fixture.local_task.abort();
     drop(fixture.remote);
@@ -434,7 +470,10 @@ async fn refused_and_throttled_presentations_distinguish_through_the_store() {
 async fn repeated_presentations_stay_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = engine(dir.path()).await;
-    RoomStore::open(dir.path()).unwrap().join(invite(vec![])).unwrap();
+    RoomStore::open(dir.path())
+        .unwrap()
+        .join(invite(vec![]))
+        .unwrap();
     let http = reqwest::Client::new();
     let mut first_id = None;
     for _ in 0..3 {
@@ -462,4 +501,284 @@ async fn repeated_presentations_stay_bounded() {
     fixture.local_task.abort();
     drop(fixture.remote);
     fixture.core.shutdown().await;
+}
+
+// ── fleet follow: RoomJoin + GetFleetInvite ─────────────────────────────────
+
+const FLEET_SECRET: &str = "FLEETfleetFLEETfleetFLEETfleetFLEETfleet123";
+
+fn fleet_invite(secret: &str, members: Vec<RoomMember>) -> String {
+    RoomInvite::fleet("Fleet", secret, members)
+        .unwrap()
+        .encode()
+        .unwrap()
+}
+
+fn files_containing(dir: &Path, needle: &str) -> Vec<std::path::PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    files
+        .into_iter()
+        .filter(|path| {
+            read_unless_os_locked(path)
+                .is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+        })
+        .collect()
+}
+
+/// Read a file for a secret walk. The engine's `*.lock` files (instance,
+/// device-id, installs) hold Windows byte-range locks while it runs and
+/// never carry room data, so exactly those may be skipped when locked;
+/// every other read error fails the walk.
+fn read_unless_os_locked(path: &Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error)
+            if cfg!(windows)
+                && error.raw_os_error() == Some(33)
+                && path.extension().is_some_and(|ext| ext == "lock") =>
+        {
+            None
+        }
+        Err(error) => panic!("cannot read {}: {error}", path.display()),
+    }
+}
+
+/// A paired-listener RPC with no session must fail: either the upgrade is
+/// refused, or (browser-style first-frame auth) the first non-Auth frame
+/// closes the socket. Bounded so a regression cannot hang the suite.
+async fn unauthenticated_call_fails(remote_url: &str, method: &str) -> bool {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        match roboco_rpc::connect_ws(remote_url).await {
+            Err(_) => true,
+            Ok(client) => client.call(method, json!({})).await.is_err(),
+        }
+    })
+    .await
+    .unwrap_or(true)
+}
+
+#[tokio::test]
+async fn room_join_and_fleet_invite_are_session_authed_idempotent_and_settings_free() {
+    let dir = tempfile::tempdir().unwrap();
+    // C4a: a saved remote-access configuration must stay byte-identical
+    // across every fleet RPC (the CreateTailcatInvite anti-pattern).
+    let settings = dir.path().join("remote-access.json");
+    std::fs::write(
+        &settings,
+        br#"{"enabled":false,"bindAddress":"0.0.0.0:27655","publicUrl":null,"transport":"network"}"#,
+    )
+    .unwrap();
+    let settings_before = std::fs::read(&settings).unwrap();
+    let fixture = engine(dir.path()).await;
+    let remote_url = format!("ws://{}", fixture.remote.address);
+
+    // No session → refused at the paired boundary, before any RPC runs.
+    assert!(unauthenticated_call_fails(&remote_url, roboco_rpc::methods::GET_FLEET_INVITE).await);
+    assert!(unauthenticated_call_fails(&remote_url, roboco_rpc::methods::ROOM_JOIN).await);
+    assert!(
+        roboco_rpc::connect_ws_authenticated(&remote_url, "not-a-credential")
+            .await
+            .is_err()
+    );
+
+    // An ordinary session (the desktop's pairing) is all it takes.
+    let grant = PairingStore::open(dir.path())
+        .unwrap()
+        .mint_session("Desktop")
+        .unwrap();
+    let client = roboco_rpc::connect_ws_authenticated(&remote_url, &grant.credential)
+        .await
+        .unwrap();
+    let info = client
+        .call(roboco_rpc::methods::ENGINE_INFO, json!({}))
+        .await
+        .unwrap();
+    let capabilities = info["capabilities"].as_array().unwrap();
+    assert!(capabilities.iter().any(|c| c == "rooms-v1"));
+    assert!(capabilities.iter().any(|c| c == "rooms-v2"));
+
+    // No fleet yet: a clean null, not an error.
+    let none = client
+        .call(roboco_rpc::methods::GET_FLEET_INVITE, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(none, json!({ "invite": null }));
+
+    // RoomJoin answers the id only — members never echo back.
+    let first = client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": fleet_invite(FLEET_SECRET, vec![member("desktop", "tcDESKTOP1")]) }),
+        )
+        .await
+        .unwrap();
+    let room_id = roboco_proto::room::room_id(FLEET_SECRET);
+    assert_eq!(first, json!({ "roomId": room_id }));
+
+    // Re-push (app open, another pairing event): same row, book unions.
+    let second = client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": fleet_invite(FLEET_SECRET, vec![member("server", "tcSERVER1")]) }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second, first);
+    let rooms = RoomStore::open(dir.path()).unwrap().list().unwrap();
+    assert_eq!(rooms.len(), 1, "a re-join must never create a second row");
+    assert_eq!(rooms[0].book.members.len(), 2);
+
+    // The fleet invite comes back for the next client to pair here.
+    let fetched = client
+        .call(roboco_rpc::methods::GET_FLEET_INVITE, json!({}))
+        .await
+        .unwrap();
+    let decoded = RoomInvite::decode(fetched["invite"].as_str().unwrap()).unwrap();
+    assert!(decoded.is_fleet());
+    assert_eq!(decoded.room_id(), room_id);
+    assert_eq!(
+        decoded.members,
+        vec![
+            member("desktop", "tcDESKTOP1"),
+            member("server", "tcSERVER1")
+        ]
+    );
+
+    // A plain room alongside never displaces the fleet answer.
+    client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": invite(vec![]).encode().unwrap() }),
+        )
+        .await
+        .unwrap();
+    let still = client
+        .call(roboco_rpc::methods::GET_FLEET_INVITE, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(still, fetched);
+
+    // A different fleet is refused with fixed text; junk invites are shape
+    // errors that never quote their input.
+    let conflict = client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": fleet_invite("another-fleet-secret-0123456789abcdefghijk", vec![]) }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        conflict.contains("already belongs to a fleet"),
+        "{conflict}"
+    );
+    assert!(!conflict.contains("another-fleet-secret"), "{conflict}");
+    for (params, needle) in [
+        (
+            json!({ "invite": "roboco-room:SECRETPAYLOAD!!" }),
+            "SECRETPAYLOAD",
+        ),
+        (json!({ "invite": "SECRETNOPREFIX" }), "SECRETNOPREFIX"),
+        (json!({ "invite": 7 }), "7"),
+        (json!({}), "invite\":"),
+    ] {
+        let error = client
+            .call(roboco_rpc::methods::ROOM_JOIN, params)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains(needle), "{error}");
+    }
+
+    // The local IPC listener (the desktop's own engine) serves the same RPC.
+    let local = roboco_rpc::connect_ws(&fixture.local_base.replace("http://", "ws://"))
+        .await
+        .unwrap();
+    let local_invite = local
+        .call(roboco_rpc::methods::GET_FLEET_INVITE, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        RoomInvite::decode(local_invite["invite"].as_str().unwrap())
+            .unwrap()
+            .room_id(),
+        room_id
+    );
+
+    // A client of the fleet presents the secret like any room member.
+    let http = reqwest::Client::new();
+    let presented = present(&http, &fixture.local_base, FLEET_SECRET, "Pixel").await;
+    assert_eq!(presented.status(), 200);
+
+    assert_eq!(std::fs::read(&settings).unwrap(), settings_before);
+    drop(client);
+    drop(local);
+    fixture.local_task.abort();
+    drop(fixture.remote);
+    fixture.core.shutdown().await;
+    assert_eq!(std::fs::read(&settings).unwrap(), settings_before);
+}
+
+#[tokio::test]
+async fn a_plain_room_join_over_rpc_leaves_no_secret_at_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = engine(dir.path()).await;
+    let grant = PairingStore::open(dir.path())
+        .unwrap()
+        .mint_session("Desktop")
+        .unwrap();
+    let client = roboco_rpc::connect_ws_authenticated(
+        &format!("ws://{}", fixture.remote.address),
+        &grant.credential,
+    )
+    .await
+    .unwrap();
+    client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": invite(vec![member("desktop", "tcDESKTOP1")]).encode().unwrap() }),
+        )
+        .await
+        .unwrap();
+    // A plain room never answers as the fleet.
+    assert_eq!(
+        client
+            .call(roboco_rpc::methods::GET_FLEET_INVITE, json!({}))
+            .await
+            .unwrap(),
+        json!({ "invite": null })
+    );
+    client
+        .call(
+            roboco_rpc::methods::ROOM_JOIN,
+            json!({ "invite": fleet_invite(FLEET_SECRET, vec![]) }),
+        )
+        .await
+        .unwrap();
+    drop(client);
+    fixture.local_task.abort();
+    drop(fixture.remote);
+    fixture.core.shutdown().await;
+    // Walk after the engine is gone (WAL sidecars included): the plain
+    // secret is nowhere, the fleet secret only in the pairing database.
+    assert_secret_never_at_rest(dir.path());
+    for path in files_containing(dir.path(), FLEET_SECRET) {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("pairing.sqlite3"),
+            "the fleet secret leaked into {}",
+            path.display()
+        );
+    }
 }

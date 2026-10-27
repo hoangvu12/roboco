@@ -482,7 +482,7 @@ describe("agent-CLI update lifecycle (upstream 35a9139a)", () => {
       "Checking for updates…",
     );
     expect(
-      updateLabel({ ...base, phase: "failed", error: { message: "probe timed out", retryable: true } }),
+      updateLabel({ ...base, phase: "failed", error: { message: "probe timed out", retryable: true, kind: "check" } }),
     ).toBe("Update check failed · probe timed out");
   });
 

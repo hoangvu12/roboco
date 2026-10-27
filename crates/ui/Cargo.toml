@@ -9,6 +9,8 @@ publish.workspace = true
 project-palette-fixture = []
 command-palette-fixture = []
 compact-picker-fixture = ["gpui_platform/test-support"]
+# New project's typed path against a real engine, filmed in process.
+project-path-fixture = ["gpui_platform/test-support"]
 
 browser-fixture = []
 windows-render-fixture = []
@@ -38,6 +40,10 @@ required-features = ["appshots-fixture"]
 [[example]]
 name = "new-project-fixture"
 required-features = ["project-palette-fixture"]
+
+[[example]]
+name = "new-project-path-fixture"
+required-features = ["project-path-fixture"]
 
 [[example]]
 name = "sidebar-fixture"

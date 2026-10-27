@@ -52,10 +52,12 @@
 //! - **Turn settlement**: `agent_settled`, then a state probe: the turn
 //!   ends only once pi reports it is not streaming, not compacting and
 //!   holds no pending messages, and the settle generation is unchanged
-//!   (`agent_start`, `compaction_start`, every prompt or steer, and every
-//!   settle bump it). Busy and stale probes re-arm; a probe that keeps
-//!   failing ends the turn errored — never a silent kill. Every turn shape
-//!   still ends with a deterministic `Done` (the engine retires its
+//!   (`agent_start`, `compaction_start`, `auto_retry_start` — a retry, like
+//!   compaction, can end with no settle event after it — every prompt or
+//!   steer, and every settle bump it). Busy and stale probes re-arm; a
+//!   probe that keeps failing ends the turn errored — never a silent kill.
+//!   Every turn shape still ends with a deterministic `Done` (the engine
+//!   retires its
 //!   quiesce watchdogs). Turn errors reject the prompt: a final assistant
 //!   error (`stopReason: "error"`), exhausted `auto_retry_*`, or a failed
 //!   `compaction_end` without `willRetry` produce `Done { Errored }` — and
@@ -1649,6 +1651,10 @@ async fn run_session(session: Session) {
     let mut awaiting_prompt_echo = true;
     let mut run_active = true;
     let mut done_current = false;
+    // The run's extension dialogs: cancelled (answered, not dropped) when a
+    // turn ends or the run interrupts — the process may live on, and an
+    // extension awaiting its dialog would wait forever.
+    let mut dialogs = Dialogs::default();
 
     'main: loop {
         tokio::select! {
@@ -1726,6 +1732,15 @@ async fn run_session(session: Session) {
                                 // extension run: awaiting_prompt_echo
                                 // already covers its echo.
                                 run_active = true;
+                                // Input pi leaves queued while idle has no
+                                // settle event coming: arm the probe (after
+                                // the re-arm grace, so an input pi starts at
+                                // once flips isStreaming first) — its
+                                // clear_queue recovery re-delivers a strand.
+                                if probe.is_none() {
+                                    probe_generation = generation;
+                                    probe = Some(rearm_probe(&client, true));
+                                }
                             }
                             Disposition::Handled => {
                                 // pi handled the prompt without a run (an
@@ -2017,6 +2032,10 @@ async fn run_session(session: Session) {
                             if interrupted {
                                 done_after_interrupt = true;
                             }
+                            // The turn is over: any dialog still open is
+                            // answered cancelled (the process may live on,
+                            // and the extension would wait forever).
+                            dialogs.cancel(&client);
                             if !send(
                                 &event_tx,
                                 AgentEvent::Done {
@@ -2405,8 +2424,14 @@ async fn run_session(session: Session) {
                             let max = event.get("maxAttempts").and_then(Value::as_u64).unwrap_or(0);
                             let message = event
                                 .get("errorMessage")
-                                .and_then(Value::as_str)
+                                .and_then(|value| value.as_str())
                                 .unwrap_or("transient provider error");
+                            // A retry is agent activity like compaction: it
+                            // bumps the settle generation — the probe must
+                            // confirm rest only after auto_retry_end, which
+                            // can arrive with no settle event after it
+                            // (upstream #977's re-check).
+                            generation += 1;
                             let _ = send(
                                 &event_tx,
                                 AgentEvent::Error {
@@ -2461,15 +2486,30 @@ async fn run_session(session: Session) {
                         }
                         "extension_ui_request" => {
                             if let Some(dialog) = dialog(&event) {
-                                answer_dialog(&client, &request_input, dialog);
+                                dialogs.request(&client, &request_input, dialog);
                             }
                         }
                         "extension_error" => {
+                            // A throwing extension handler is the
+                            // extension's failure, not the turn's: the model
+                            // run goes on, so it is shown, never fatal
+                            // (upstream #977).
                             let detail = event
                                 .get("error")
                                 .and_then(|value| value.as_str())
                                 .unwrap_or_default();
                             tracing::debug!(target: "roboco_harness::pi", "pi extension error: {detail}");
+                            if !send(
+                                &event_tx,
+                                AgentEvent::Error {
+                                    message: format!("Pi extension: {detail}"),
+                                    kind: None,
+                                },
+                            )
+                            .await
+                            {
+                                break 'main;
+                            }
                         }
                         "compaction_start" => {
                             // Compaction is agent activity too: it bumps
@@ -2687,6 +2727,8 @@ async fn run_session(session: Session) {
             _ = interrupt.cancelled(), if !interrupt_sent => {
                 interrupt_sent = true;
                 interrupted = true;
+                // Any dialog still open is cancelled with the turn.
+                dialogs.cancel(&client);
                 // An armed probe does NOT mean the turn settled (B3): the
                 // probe also runs while work is live (a handled prompt
                 // during an extension run, a rejection mid-run). Only a
@@ -2793,6 +2835,14 @@ async fn run_session(session: Session) {
         }
     }
 
+    // Any dialog still open is answered cancelled before the teardown (the
+    // extension would otherwise wait forever on a process about to die),
+    // and Windows teardown closes pi's stdin so it can exit on EOF inside
+    // its grace — the writer task would otherwise hold the pipe open while
+    // any client clone (a dialog's) is alive. Unix teardown signals
+    // instead; its order is unchanged.
+    dialogs.cancel(&client);
+    client.close_input_for_teardown();
     child.shutdown(kill_grace).await;
     if let Some(handle) = escalation {
         handle.abort();
@@ -2916,24 +2966,111 @@ async fn deliver_parked_steer(
     true
 }
 
-/// Route one blocking extension dialog through the engine's input bridge
-/// and answer it on the wire. The bridge owns the InputRequested /
-/// InputResolved lifecycle; a dropped resolver degrades to `cancelled` —
-/// never a silent default the extension might act on.
-fn answer_dialog(
-    client: &PiClient,
-    request_input: &Arc<RequestInputFn>,
-    dialog: normalize::Dialog,
-) {
-    let client = client.clone();
-    let request_input = Arc::clone(request_input);
-    tokio::spawn(async move {
-        let answers = (request_input)(vec![dialog.question.clone()])
-            .await
-            .unwrap_or_default();
-        let response = dialog_response(&dialog.wire_id, dialog.kind, &answers);
-        client.send_value(&response);
-    });
+/// The run's blocking extension dialogs: each routes through the engine's
+/// input bridge (which owns the InputRequested / InputResolved lifecycle) and
+/// is answered on the wire exactly once — by the user, by pi's own timeout,
+/// or by [`Dialogs::cancel`] (a turn's end, an interrupt: the process may
+/// live on, and an extension awaiting its dialog would wait forever).
+/// A dropped resolver degrades to `cancelled` — never a silent default the
+/// extension might act on.
+#[derive(Default)]
+struct Dialogs {
+    /// Dialog ids pi still waits on; whoever removes an id answers it, once.
+    open: Arc<std::sync::Mutex<Vec<String>>>,
+    /// The spawned dialog tasks, so cancel can abort them.
+    tasks: tokio::task::JoinSet<()>,
+}
+
+impl Dialogs {
+    /// Route one blocking dialog through the input bridge, under pi's own
+    /// timeout when it carries one.
+    fn request(
+        &mut self,
+        client: &PiClient,
+        request_input: &Arc<RequestInputFn>,
+        dialog: normalize::Dialog,
+    ) {
+        let normalize::Dialog {
+            wire_id,
+            kind,
+            question,
+            timeout_ms,
+        } = dialog;
+        // pi's `timeout` is in milliseconds; 0 means none, and a negative one
+        // has already expired, so the dialog is over before it is shown. One
+        // too large for a Duration is as good as none.
+        let timeout = match timeout_ms {
+            Some(ms) if ms < 0.0 => {
+                client.send_value(&json!({
+                    "type": "extension_ui_response", "id": wire_id, "cancelled": true
+                }));
+                return;
+            }
+            Some(ms) if ms > 0.0 => {
+                std::time::Duration::try_from_secs_f64(ms / 1000.0).ok()
+            }
+            _ => None,
+        };
+        self.lock().push(wire_id.clone());
+        let open = Arc::clone(&self.open);
+        let client = client.clone();
+        let request_input = Arc::clone(request_input);
+        self.tasks.spawn(async move {
+            let deadline = async {
+                match timeout {
+                    Some(timeout) => tokio::time::sleep(timeout).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                answers = (request_input)(vec![question]) => {
+                    let answers = answers.unwrap_or_default();
+                    let response = dialog_response(&wire_id, kind, &answers);
+                    if take_open(&open, &wire_id) {
+                        client.send_value(&response);
+                    }
+                }
+                _ = deadline => {
+                    if take_open(&open, &wire_id) {
+                        client.send_value(&json!({
+                            "type": "extension_ui_response", "id": wire_id, "cancelled": true
+                        }));
+                    }
+                }
+            }
+        });
+    }
+
+    /// Close every open dialog: answer each `cancelled` first — the process
+    /// may live on (a turn ended, an interrupt), and an extension awaiting
+    /// its dialog would wait forever.
+    fn cancel(&mut self, client: &PiClient) {
+        self.tasks.abort_all();
+        for wire_id in std::mem::take(&mut *self.lock()) {
+            client.send_value(&json!({
+                "type": "extension_ui_response", "id": wire_id, "cancelled": true
+            }));
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Remove `wire_id` from the shared open set; false when another path (a
+/// cancel) already answered it.
+fn take_open(open: &Arc<std::sync::Mutex<Vec<String>>>, wire_id: &str) -> bool {
+    let mut open = open
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    open.iter().any(|pending| pending == wire_id)
+        && {
+            open.retain(|pending| pending != wire_id);
+            true
+        }
 }
 
 /// Staged image attachments as pi's inline `ImageContent` blocks
@@ -2943,8 +3080,21 @@ fn answer_dialog(
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 async fn load_image_contents(paths: &[String]) -> Vec<Value> {
+    load_image_blocks_capped(paths, MAX_INLINE_IMAGE_BYTES, u64::MAX).await
+}
+
+/// A message's attachments as inline image blocks, under a cap per file and
+/// a cap on all inlined files together, in bytes — a file over either rides
+/// as its path ref only (the text refs ride the prompt in either case).
+/// Shared with the cursor driver (upstream #977).
+pub(crate) async fn load_image_blocks_capped(
+    paths: &[String],
+    each: u64,
+    total: u64,
+) -> Vec<Value> {
     use base64::Engine as _;
     let mut blocks = Vec::new();
+    let mut inlined = 0u64;
     for path in paths {
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
@@ -2953,7 +3103,8 @@ async fn load_image_contents(paths: &[String]) -> Vec<Value> {
                 continue;
             }
         };
-        if bytes.len() as u64 > MAX_INLINE_IMAGE_BYTES {
+        // The file may have grown since its size was last seen.
+        if bytes.len() as u64 > each || bytes.len() as u64 > total - inlined {
             tracing::debug!(target: "roboco_harness::pi", %path, "attachment over inline cap; path ref only");
             continue;
         }
@@ -2961,6 +3112,7 @@ async fn load_image_contents(paths: &[String]) -> Vec<Value> {
             tracing::debug!(target: "roboco_harness::pi", %path, "attachment not an inline-supported image; path ref only");
             continue;
         };
+        inlined += bytes.len() as u64;
         blocks.push(json!({
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
@@ -3185,4 +3337,10 @@ mod tests {
             &project.path().display().to_string(),
         ));
     }
+}
+
+/// ACP's inline-image blocks under the same cap Pi's own prompts use:
+/// upstream #977 shares the loader (it was pi-only before).
+pub(crate) async fn load_images_capped_for_acp(attachments: &[String]) -> Vec<serde_json::Value> {
+    load_image_contents(attachments).await
 }

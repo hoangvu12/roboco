@@ -66,8 +66,14 @@ impl Shell {
         if self.side_chat_creating {
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
+        // The source's own engine forks it: a paired engine's chat never
+        // reaches the local one (Roboco engines relay nothing).
+        let engine = match self.state.read(cx).target_for_id(&source.id) {
+            Ok(engine) => engine,
+            Err(error) => {
+                self.show_side_chat_error(error.to_string(), cx);
+                return;
+            }
         };
         let key = self.panel_key(cx);
         self.side_chat_creating = true;
@@ -83,13 +89,14 @@ impl Shell {
         );
         cx.spawn(async move |this, cx| {
             let result = engine
-                .client()
                 .call_as::<roboco_proto::Chat>(methods::FORK_SIDE_CHAT, params)
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.side_chat_creating = false;
                 match result {
-                    Ok(chat) => {
+                    Ok(mut chat) => {
+                        // The reply speaks the owning engine's raw ids.
+                        crate::engine_registry::scope_chat(engine.key(), &mut chat);
                         if this
                             .state
                             .read(cx)
@@ -127,7 +134,13 @@ impl Shell {
         };
         let key = self.panel_key(cx);
         let mut chat = parent.clone();
-        chat.id = uuid::Uuid::new_v4().to_string();
+        // Minted on the parent's engine, so its first send routes there
+        // (the canvas mints new chats the same way).
+        let engine = crate::engine_registry::ScopedId::parse(&parent.id)
+            .map(|id| id.engine)
+            .unwrap_or_else(|_| crate::engine_registry::EngineKey::local());
+        chat.id =
+            crate::engine_registry::ScopedId::encode(&engine, &uuid::Uuid::new_v4().to_string());
         chat.parent_chat_id = Some(parent.id.clone());
         chat.title = None;
         chat.archived = false;

@@ -147,10 +147,13 @@ pub struct RoomJoin {
     /// The room to persist: the secret plus the phone's copy of the book.
     /// The platform stores it as its `room:` blob.
     pub room: RoomRecord,
-    /// Every member that got its own session and engine entry this call
-    /// (records the platform must persist, like a pairing result). Members
-    /// already paired for this room are not listed — they were skipped,
-    /// not re-joined.
+    /// Every engine record this call changed — a member that got its own
+    /// session, or an already-paired engine without a room that was
+    /// adopted into this one by tag (no new session) — one per engine id.
+    /// The platform persists them like a pairing result, as upserts by
+    /// engine id (an adopted engine is an existing row, never a second
+    /// one). Members already paired with a room tag are not listed —
+    /// they were skipped, not re-joined.
     pub engines: Vec<crate::PairedEngine>,
     /// Labels of book members that did not join (offline, old engine, or
     /// throttled) — informational only: they heal on the next trigger.
@@ -307,39 +310,50 @@ fn union_books(base: &mut Vec<RoomMember>, extra: Vec<RoomMember>) {
     base.truncate(roboco_proto::room::MAX_MEMBERS);
 }
 
+/// What the phone already holds for one book member, decided **before**
+/// any presentation (fleet follow, ticket 04: "no engine appears twice").
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemberStanding {
+    /// No live entry dials this address: present (mint a session).
+    Absent,
+    /// A live entry dials this address and already carries a room tag
+    /// (this room, or another one): skip — never re-present, never mint a
+    /// second session, never move the tag between rooms.
+    Joined,
+    /// A live entry dials this address but carries no room tag (a plain
+    /// pairing — typically the engine that just introduced the fleet):
+    /// adopt it into this room by tagging the existing entry. No
+    /// presentation, no new session; the record is reported for
+    /// persistence (an upsert by engine id).
+    Untagged { engine_id: String },
+}
+
 /// Whether an engine entry already dials this member (Tailcat address or
-/// Direct base URL) **for this room** and holds a live credential: skip
-/// it — presenting to a member we already hold a session for would
-/// reissue that credential for nothing. Two exceptions re-present:
+/// Direct base URL) with a live credential — **whatever room it was
+/// paired or joined through**. Presenting to a member the phone already
+/// holds a session for would mint (or re-key) a second session for
+/// nothing, so it is skipped ([`MemberStanding::Joined`]) or, when the
+/// entry has no room yet, adopted by tag ([`MemberStanding::Untagged`]).
 ///
-/// - an entry `Parked { Revoked }` (the engine revoked the session, or the
-///   platform lost the credential): the room is the recovery path — a
-///   fresh presentation re-mints it (self-heal);
-/// - an entry under a *different* room id (a rotation: a new secret
-///   derives a new id) or no room: the member is adopted into this room.
+/// One exception re-presents: an entry `Parked { Revoked }` (the engine
+/// revoked the session, or the platform lost the credential) — the room
+/// is the recovery path, a fresh presentation re-mints it (self-heal).
 ///
 /// `Parked { IdentityChanged }` and `Parked { Incompatible }` stay
 /// skipped — an identity change is a security signal the user must see,
 /// and a protocol mismatch is not fixable by re-presenting.
-fn member_already_joined(inner: &Arc<ClientInner>, address: &MemberRoute, room_id: &str) -> bool {
+///
+/// The identity half of the dedupe (the same engine behind a different
+/// address than the one it was paired through) cannot be decided before
+/// a presentation — engines answer nothing unauthenticated — so it lives
+/// in [`crate::adopt_engine`]: a presentation whose engine pins the same
+/// `device_id` as an existing entry folds into that entry (one row per
+/// engine, the engine id kept).
+fn member_standing(inner: &Arc<ClientInner>, address: &MemberRoute) -> MemberStanding {
     let state = lock(&inner.engines);
-    state.entries.iter().any(|entry| {
-        let Some(entry_room) = entry.paired.room.as_ref() else {
-            return false;
-        };
-        if entry_room.room_id != room_id {
-            return false;
-        }
-        // A revoked entry is re-presented: the room is its recovery path.
-        if matches!(
-            entry.state,
-            crate::EngineState::Parked {
-                reason: crate::ParkReason::Revoked,
-            }
-        ) {
-            return false;
-        }
-        match address {
+    let mut standing = MemberStanding::Absent;
+    for entry in &state.entries {
+        let dials_it = match address {
             MemberRoute::Direct { base_url } => {
                 matches!(entry.paired.transport, EngineTransport::Direct)
                     && entry.paired.base_url == *base_url
@@ -351,8 +365,65 @@ fn member_already_joined(inner: &Arc<ClientInner>, address: &MemberRoute, room_i
                 } => entry_address == address,
                 EngineTransport::Direct => false,
             },
+        };
+        if !dials_it {
+            continue;
         }
-    })
+        // A revoked entry is re-presented: the room is its recovery path.
+        if entry.paired.credential.is_empty()
+            || matches!(
+                entry.state,
+                crate::EngineState::Parked {
+                    reason: crate::ParkReason::Revoked,
+                }
+            )
+        {
+            continue;
+        }
+        if entry.paired.room.is_some() {
+            return MemberStanding::Joined;
+        }
+        standing = MemberStanding::Untagged {
+            engine_id: entry.paired.engine_id.clone(),
+        };
+    }
+    standing
+}
+
+/// Tag an existing untagged entry with `room` (the [`MemberStanding::Untagged`]
+/// adoption): no presentation, no new session. Returns the updated record
+/// for persistence, or `None` when the entry vanished or got a tag in the
+/// meantime (a concurrent join or re-pair won — nothing to persist).
+fn adopt_untagged(
+    inner: &Arc<ClientInner>,
+    engine_id: &str,
+    room: &EngineRoom,
+) -> Option<crate::PairedEngine> {
+    let mut state = lock(&inner.engines);
+    let entry = state
+        .entries
+        .iter_mut()
+        .find(|entry| entry.paired.engine_id == engine_id)?;
+    if entry.paired.room.is_some() {
+        return None;
+    }
+    entry.paired.room = Some(room.clone());
+    Some(entry.paired.clone())
+}
+
+/// One record per engine id, the last write winning (two book addresses
+/// of the same engine fold into one entry through the identity dedupe —
+/// the platform must still see one record).
+fn dedupe_records(records: &mut Vec<crate::PairedEngine>) {
+    let mut seen = HashSet::new();
+    let mut deduped: Vec<crate::PairedEngine> = Vec::with_capacity(records.len());
+    for record in records.drain(..).rev() {
+        if seen.insert(record.engine_id.clone()) {
+            deduped.push(record);
+        }
+    }
+    deduped.reverse();
+    *records = deduped;
 }
 
 /// At most one presentation per (room, address) at a time (see
@@ -456,6 +527,24 @@ async fn join_member(
     ))
 }
 
+/// One book member, deduped first ([`member_standing`]): skip a member
+/// the phone already holds a live session for, adopt an untagged one by
+/// tag, present only to the rest. `Ok(Some)` is a record to persist
+/// (minted or adopted), `Ok(None)` a skip.
+async fn join_or_skip(
+    inner: &Arc<ClientInner>,
+    member: &RoomMember,
+    secret: &str,
+    label: &str,
+    room: &EngineRoom,
+) -> Result<Option<crate::PairedEngine>, MemberFailure> {
+    match member_standing(inner, &classify_member_address(&member.address)) {
+        MemberStanding::Joined => Ok(None),
+        MemberStanding::Untagged { engine_id } => Ok(adopt_untagged(inner, &engine_id, room)),
+        MemberStanding::Absent => join_member(inner, member, secret, label, room).await,
+    }
+}
+
 /// Join a room from its invite (the user action: scan or paste). Joins
 /// every book member that can be dialed — in parallel, like the
 /// supervisors' start — and returns what the platform must persist: the
@@ -525,19 +614,14 @@ pub(crate) async fn join_decoded(
     let joins: Vec<_> = members
         .iter()
         .map(|member| {
-            let address = classify_member_address(&member.address);
-            let already = member_already_joined(inner, &address, &room_id);
             let member = member.clone();
             let secret = invite.secret.clone();
             let engine_room = engine_room.clone();
             let room_id = room_id.clone();
             let label = label.clone();
             async move {
-                if already {
-                    return Ok(None);
-                }
                 tracing::debug!(room = %room_id, member = %member.label, "joining a room member");
-                join_member(inner, &member, &secret, &label, &engine_room).await
+                join_or_skip(inner, &member, &secret, &label, &engine_room).await
             }
         })
         .collect();
@@ -562,7 +646,12 @@ pub(crate) async fn join_decoded(
     // Success when at least one member joined **or** was already paired
     // (skipped): the phone holds sessions for this room either way.
     let skipped = members.len() - engines.len() - missing.len();
+    // Two book addresses of one engine fold into one entry (the identity
+    // dedupe in `adopt_engine`): report it once.
+    dedupe_records(&mut engines);
     if !engines.is_empty() || skipped > 0 {
+        // Adopted-by-tag entries changed their views (the room row).
+        crate::publish(inner);
         return Ok(RoomJoin {
             room: RoomRecord {
                 room_id,
@@ -604,6 +693,142 @@ pub(crate) async fn join_decoded(
         rooms.retain(|record| record.room_id != room_id);
     }
     Err(error)
+}
+
+// ── fleet follow ────────────────────────────────────────────────────────────
+//
+// "Pair my phone to any engine and the whole fleet comes along." After a
+// successful pairing the platform asks the freshly paired engine for its
+// fleet (`GetFleetInvite`, session-authed, gated on `rooms-v2`) and, with
+// one in hand, runs the ordinary silent room join above. The pairing link
+// itself is untouched (no composite QR): the fleet arrives over the
+// session the pairing just minted.
+//
+// Every failure here is silent (`None`, a shape-only debug line): an old
+// engine, an engine without a fleet, a dropped link or a junk answer all
+// make the pairing look exactly like it did before fleets existed.
+
+/// How long the fetch waits for the freshly paired engine's link to come
+/// up (the pairing's own first dial usually already did; a Tailcat route
+/// can take a few seconds more).
+const FLEET_CONNECT_WAIT: Duration = Duration::from_secs(20);
+
+/// A fleet invite fetched from a paired engine. Opaque on purpose: the
+/// secret and the member addresses stay inside (they cross only into the
+/// join and, from there, into the platform's `room:` blob); the UI gets
+/// the fleet's name and member labels.
+#[derive(Clone)]
+pub struct FleetOffer {
+    invite: RoomInvite,
+}
+
+impl std::fmt::Debug for FleetOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Manual on purpose: the invite carries the secret and addresses.
+        f.debug_struct("FleetOffer")
+            .field("room_id", &self.invite.room_id())
+            .field("name", &self.invite.name)
+            .field("members", &self.invite.members.len())
+            .finish()
+    }
+}
+
+impl FleetOffer {
+    /// The fleet's name (the room label, "Fleet" by default).
+    pub fn name(&self) -> &str {
+        &self.invite.name
+    }
+
+    /// The fleet room's derived id (not a secret).
+    pub fn room_id(&self) -> String {
+        self.invite.room_id()
+    }
+
+    /// The book's member labels (device names, never the addresses).
+    pub fn member_labels(&self) -> Vec<String> {
+        self.invite.members.iter().map(|m| m.label.clone()).collect()
+    }
+}
+
+/// The engine's info once its link is up, or `None` when it never comes
+/// up within `wait`, parks, or is forgotten meanwhile.
+async fn connected_info(
+    inner: &Arc<ClientInner>,
+    engine_id: &str,
+    wait: Duration,
+) -> Option<roboco_proto::EngineInfo> {
+    let mut fleet = inner.fleet.subscribe();
+    tokio::time::timeout(wait, async {
+        loop {
+            {
+                let snapshot = fleet.borrow_and_update();
+                let engine = snapshot.engine(engine_id)?;
+                match (&engine.state, &engine.info) {
+                    (crate::EngineState::Connected, Some(info)) => return Some(info.clone()),
+                    (crate::EngineState::Parked { .. }, _) => return None,
+                    _ => {}
+                }
+            }
+            if fleet.changed().await.is_err() {
+                return None;
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Ask a paired engine for its fleet. `None` — silently — when the engine
+/// does not advertise `rooms-v2`, has no fleet (`{"invite": null}`), does
+/// not come up, or answers anything unexpected (including a plain-room
+/// invite: only fleets follow a pairing).
+pub(crate) async fn fetch_fleet(inner: &Arc<ClientInner>, engine_id: &str) -> Option<FleetOffer> {
+    let Some(info) = connected_info(inner, engine_id, FLEET_CONNECT_WAIT).await else {
+        tracing::debug!(engine = %engine_id, "fleet fetch skipped: the engine is not connected");
+        return None;
+    };
+    if !info.supports(roboco_proto::capabilities::ROOMS_V2) {
+        // An older engine: no fleets, the pairing stays exactly as it was.
+        return None;
+    }
+    let handle = crate::engine_handle_of(inner, engine_id).ok()?;
+    let value = match handle
+        .call(roboco_rpc::methods::GET_FLEET_INVITE, serde_json::json!({}))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            // The engine's error text is fixed and shape-only.
+            tracing::debug!(engine = %engine_id, %error, "fleet fetch skipped");
+            return None;
+        }
+    };
+    // `{"invite": null}` (no fleet) and any other shape both end here.
+    let encoded = value.get("invite").and_then(serde_json::Value::as_str)?;
+    let invite = match RoomInvite::decode(encoded) {
+        Ok(invite) => invite,
+        Err(_) => {
+            // Never the invite itself, not even its length.
+            tracing::debug!(engine = %engine_id, "fleet fetch skipped: the invite did not decode");
+            return None;
+        }
+    };
+    if !invite.is_fleet() {
+        return None;
+    }
+    Some(FleetOffer { invite })
+}
+
+/// Join a fetched fleet: the ordinary room join, deduped against what the
+/// phone already holds ([`member_standing`] + the identity fold in
+/// `adopt_engine`) — the introducing engine is adopted by tag, members
+/// already paired are skipped, the rest get one session each.
+pub(crate) async fn join_fleet(
+    inner: &Arc<ClientInner>,
+    offer: FleetOffer,
+) -> Result<RoomJoin, RoomError> {
+    join_decoded(inner, offer.invite).await
 }
 
 /// The heal gate: at most one heal pass in flight; a trigger that lands
@@ -717,8 +942,10 @@ pub(crate) async fn heal_rooms(inner: &Arc<ClientInner>, rooms: &[RoomRecord]) {
         }
         // Step 4: push the merged book back to every connected member.
         push_book(inner, room, &book).await;
-        // Persist what the pass minted: one event per record, never
-        // coalesced away (the pins' rule — each carries a credential).
+        // Persist what the pass minted or adopted: one event per engine,
+        // never coalesced away (the pins' rule — each carries a
+        // credential).
+        dedupe_records(&mut joined);
         for record in joined {
             inner
                 .pump
@@ -748,18 +975,11 @@ async fn join_missing(
     let joins: Vec<_> = members
         .iter()
         .map(|member| {
-            let address = classify_member_address(&member.address);
-            let already = member_already_joined(inner, &address, &room.room_id);
             let member = member.clone();
             let secret = room.secret.clone();
             let engine_room = engine_room.clone();
             let label = label.clone();
-            async move {
-                if already {
-                    return Ok(None);
-                }
-                join_member(inner, &member, &secret, &label, &engine_room).await
-            }
+            async move { join_or_skip(inner, &member, &secret, &label, &engine_room).await }
         })
         .collect();
     for result in futures::future::join_all(joins).await {
@@ -939,6 +1159,44 @@ mod tests {
         assert!(!printed.contains("SECRET-ROOM"), "{printed}");
         assert!(!printed.contains("tcSECRETADDRESS"), "{printed}");
         assert!(printed.contains("room secret…(15 chars)"), "{printed}");
+    }
+
+    #[test]
+    fn fleet_offers_never_print_their_secrets() {
+        let offer = FleetOffer {
+            invite: RoomInvite::fleet(
+                "Fleet",
+                "SECRET-FLEET-SECRET-0123456789abcdefghij",
+                vec![member("desktop", "tcSECRETADDRESS")],
+            )
+            .unwrap(),
+        };
+        let printed = format!("{offer:?} {offer:#?}");
+        assert!(!printed.contains("SECRET-FLEET"), "{printed}");
+        assert!(!printed.contains("tcSECRETADDRESS"), "{printed}");
+        assert_eq!(offer.name(), "Fleet");
+        assert_eq!(offer.member_labels(), vec!["desktop"]);
+    }
+
+    #[test]
+    fn records_dedupe_by_engine_id_keeping_the_last_write() {
+        let record = |id: &str, credential: &str| crate::PairedEngine {
+            engine_id: id.into(),
+            base_url: "http://h".into(),
+            credential: credential.into(),
+            session_id: "s".into(),
+            label: "Pixel".into(),
+            paired_at_ms: 0,
+            device_id: None,
+            name: None,
+            transport: EngineTransport::Direct,
+            room: None,
+        };
+        let mut records = vec![record("a", "old"), record("b", "b"), record("a", "new")];
+        dedupe_records(&mut records);
+        let ids: Vec<_> = records.iter().map(|r| r.engine_id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "a"]);
+        assert_eq!(records[1].credential, "new");
     }
 
     fn member(label: &str, address: &str) -> RoomMember {

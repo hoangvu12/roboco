@@ -109,17 +109,171 @@ pub(crate) fn turn_id(params: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// `params.turn.error.message` (turn/completed carries an optional error;
-/// turn/failed always should).
-pub(crate) fn turn_error_message(params: &Value) -> Option<String> {
+/// `params.turn.error` as display text (turn/completed carries an optional
+/// error; turn/failed always should). `limits` is the account's latest
+/// `account/rateLimits/updated` snapshot, for a limit error's reset time.
+pub(crate) fn turn_error_message(params: &Value, limits: Option<&Value>) -> Option<String> {
     params
         .get("turn")
         .and_then(|t| t.get("error"))
         .filter(|e| !e.is_null())
-        .map(|e| {
-            let msg = str_field(e, &["message"]);
-            if msg.is_empty() { e.to_string() } else { msg }
+        .map(|e| codex_error_text(e, limits))
+}
+
+/// What the person reads when the provider refuses Codex's credentials (a
+/// 401): a missing or expired ChatGPT login, or an API key — OpenAI's or a
+/// custom provider's — that is wrong or revoked. The UI offers its sign-in
+/// action on this text (`roboco_proto::run_errors` matches "run codex login").
+pub(crate) const SIGNED_OUT_MESSAGE: &str = "Codex's credentials were rejected. Run codex login \
+     (or check the API key for your model provider), then send again.";
+
+/// A Codex `TurnError` (`turn.error`, or an `error` notification's `error`)
+/// as display text. The structured `codexErrorInfo` decides the sign-in and
+/// limit cases instead of the prose (a retry note mentioning "rate limit"
+/// is not a limit); `additionalDetails`, when present, says more than the
+/// generic message.
+pub(crate) fn codex_error_text(error: &Value, limits: Option<&Value>) -> String {
+    let message = str_field(error, &["message"]);
+    let details = error
+        .get("additionalDetails")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let info = error.get("codexErrorInfo").unwrap_or(&Value::Null);
+    let code = match info {
+        Value::String(code) => Some(code.as_str()),
+        Value::Object(variant) => variant.keys().next().map(String::as_str),
+        _ => None,
+    };
+    // The transport variants carry the upstream status: a missing or dead
+    // login fails as `httpConnectionFailed { httpStatusCode: 401 }` (live,
+    // 0.164.0), and retries exhausted on a 429 are a rate limit.
+    let http_status = info
+        .as_object()
+        .and_then(|variant| variant.values().next())
+        .and_then(|detail| detail.get("httpStatusCode"))
+        .and_then(Value::as_u64);
+    let limit = match (code, http_status) {
+        (Some("unauthorized"), _) | (_, Some(401)) => return SIGNED_OUT_MESSAGE.to_owned(),
+        (Some("usageLimitExceeded"), _) => Some("Codex usage limit reached"),
+        (Some("rateLimitExceeded"), _) | (_, Some(429)) => Some("Codex rate limit reached"),
+        _ => None,
+    };
+    let text = details.map(str::to_owned).unwrap_or_else(|| {
+        if message.is_empty() {
+            error.to_string()
+        } else {
+            message
+        }
+    });
+    let Some(limit) = limit else {
+        return text;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    match limits.and_then(|limits| limit_reset_in(limits, now)) {
+        Some(wait) => format!("{limit} — it resets in {}.", describe_wait(wait)),
+        None if text.is_empty() => format!("{limit}."),
+        None => format!("{limit}. {text}"),
+    }
+}
+
+/// Seconds until an exhausted rate-limit window of `limits` (a
+/// `RateLimitSnapshot`) resets: the latest one, since usage resumes only
+/// when every exhausted window has. `None` when no window is exhausted —
+/// the limit hit is one the snapshot doesn't describe.
+fn limit_reset_in(limits: &Value, now: i64) -> Option<i64> {
+    ["primary", "secondary"]
+        .iter()
+        .filter_map(|key| limits.get(*key))
+        .filter(|window| {
+            window
+                .get("usedPercent")
+                .and_then(Value::as_f64)
+                .is_some_and(|used| used >= 100.0)
         })
+        .filter_map(|window| window.get("resetsAt").and_then(Value::as_i64))
+        .max()
+        .map(|at| (at - now).max(0))
+}
+
+fn describe_wait(secs: i64) -> String {
+    let minutes = (secs + 59) / 60;
+    let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
+    match (days, hours, minutes) {
+        (0, 0, 0) => "under a minute".into(),
+        (0, 0, m) => format!("{m}m"),
+        (0, h, 0) => format!("{h}h"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, 0, _) => format!("{d}d"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
+/// Fold a sparse `account/rateLimits/updated` snapshot into the last one:
+/// a window or field the update leaves out (or null) keeps its value.
+pub(crate) fn merge_rate_limits(held: &mut Option<Value>, params: &Value) {
+    let Some(update) = params.get("rateLimits").and_then(Value::as_object) else {
+        return;
+    };
+    let held = held.get_or_insert_with(|| Value::Object(Default::default()));
+    if let Some(held) = held.as_object_mut() {
+        for (key, value) in update {
+            if !value.is_null() {
+                held.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// An `error` notification. 0.146.x nests it (`params.error`); older builds
+/// were flat (`params.message`).
+pub(crate) struct ErrorNotice {
+    pub(crate) message: String,
+    /// Codex is retrying the request itself ("Reconnecting… 2/5"): progress,
+    /// not an outcome. Missing on old builds, which only sent final errors.
+    pub(crate) will_retry: bool,
+}
+
+pub(crate) fn error_notice(params: &Value, limits: Option<&Value>) -> ErrorNotice {
+    let message = match params.get("error").filter(|e| e.is_object()) {
+        Some(error) => codex_error_text(error, limits),
+        None => str_field(params, &["message"]),
+    };
+    ErrorNotice {
+        message: if message.is_empty() {
+            "Codex error".into()
+        } else {
+            message
+        },
+        will_retry: params
+            .get("willRetry")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// How a settled turn reports its error, given the last final `error`
+/// notification it raised (`held`). The doc writes an error part for both
+/// an [`AgentEvent::Error`] and a `Done` error, so a message goes to exactly
+/// one: `turn.error` wins; a failed turn without one takes `held`; a turn
+/// that did not fail keeps `held` as a standalone notice. Returns the Done
+/// error and that notice.
+pub(crate) fn settle_turn_error(
+    params: &Value,
+    held: Option<String>,
+    limits: Option<&Value>,
+) -> (Option<String>, Option<String>) {
+    let failed = params.pointer("/turn/status").and_then(Value::as_str) == Some("failed");
+    match turn_error_message(params, limits) {
+        Some(error) => (Some(error), None),
+        None if failed => (
+            Some(held.unwrap_or_else(|| "Codex turn failed".to_owned())),
+            None,
+        ),
+        None => (None, held),
+    }
 }
 
 /// The error object a turn-level error notification carries: `turn.error`
@@ -646,6 +800,9 @@ pub(super) struct ChildStream {
     completed_items: std::collections::VecDeque<String>,
     completed_turns: std::collections::VecDeque<String>,
     settled: bool,
+    /// The last final `error` notification, reported by the turn's end
+    /// (an `error` Codex will retry is progress, not an outcome).
+    held_error: Option<String>,
 }
 
 fn remember(ids: &mut std::collections::VecDeque<String>, id: String) -> bool {
@@ -753,7 +910,15 @@ impl ChildStream {
                 }
                 self.settled = true;
                 self.streamed_text.clear();
-                let error = turn_error_message(params);
+                // A message goes to exactly one part: `turn.error` wins; a
+                // failed turn without one takes the last final `error`
+                // notification; a turn that did not fail keeps it as a
+                // standalone notice before the Done.
+                let (error, notice) =
+                    match settle_turn_error(params, self.held_error.take(), None) {
+                        (None, held) if method == "turn/failed" => (held, None),
+                        settled => settled,
+                    };
                 let status = if method == "turn/failed"
                     || error.is_some()
                     || params.pointer("/turn/status").and_then(Value::as_str) == Some("failed")
@@ -766,25 +931,31 @@ impl ChildStream {
                 } else {
                     DoneStatus::Completed
                 };
-                vec![AgentEvent::Done {
-                    status,
-                    result: None,
-                    error,
-                    session_id: Some(child.to_owned()),
-                }]
+                notice
+                    .map(|message| AgentEvent::Error { message, kind: None })
+                    .into_iter()
+                    .chain([AgentEvent::Done {
+                        status,
+                        result: None,
+                        error,
+                        session_id: Some(child.to_owned()),
+                    }])
+                    .collect()
             }
-            "error" => vec![AgentEvent::Error {
-                message: params
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .or_else(|| params.get("message").and_then(Value::as_str))
-                    .unwrap_or("Codex subagent error")
-                    .to_owned(),
-                // A subagent's failure carries the same code shape, but the
-                // account-wide rate-limit snapshot lives in the driver loop —
-                // classified here without a reset time.
-                kind: turn_error_kind(params, None),
-            }],
+            // Same rules as the parent turn: a retry is progress, and a
+            // final error is reported once, by the turn's end.
+            "error" => {
+                let notice = error_notice(params, None);
+                if notice.will_retry {
+                    tracing::debug!(
+                        target: "roboco_harness::codex",
+                        child, "subagent retrying: {}", notice.message
+                    );
+                } else {
+                    self.held_error = Some(notice.message);
+                }
+                Vec::new()
+            },
             _ => Vec::new(),
         }
     }
@@ -1216,11 +1387,139 @@ mod tests {
     #[test]
     fn turn_error_extraction() {
         assert_eq!(
-            turn_error_message(&json!({"turn": {"id": "t", "error": {"message": "boom"}}})),
+            turn_error_message(&json!({"turn": {"id": "t", "error": {"message": "boom"}}}), None),
             Some("boom".into())
         );
-        assert_eq!(turn_error_message(&json!({"turn": {"id": "t"}})), None);
-        assert_eq!(turn_error_message(&json!({"turn": {"error": null}})), None);
+        assert_eq!(
+            turn_error_message(&json!({"turn": {"id": "t"}}), None),
+            None
+        );
+        assert_eq!(
+            turn_error_message(&json!({"turn": {"error": null}}), None),
+            None
+        );
+        // The longer explanation wins over the generic message.
+        assert_eq!(
+            turn_error_message(
+                &json!({"turn": {"error": {"message": "stream error", "additionalDetails": "  upstream 502 from the model  "}}}),
+                None
+            ),
+            Some("upstream 502 from the model".into())
+        );
+    }
+
+    #[test]
+    fn structured_error_info_decides_sign_in_and_limit_text() {
+        use roboco_proto::run_errors::{ProviderProblem, provider_problem};
+        let signed_out = codex_error_text(
+            &json!({"message": "401 Unauthorized: token_expired", "codexErrorInfo": "unauthorized"}),
+            None,
+        );
+        assert_eq!(signed_out, SIGNED_OUT_MESSAGE);
+        // Live 0.164.0 with no login at all: the 401 rides a transport variant.
+        assert_eq!(
+            codex_error_text(
+                &json!({"message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}, "additionalDetails": null}),
+                None
+            ),
+            SIGNED_OUT_MESSAGE
+        );
+        assert_eq!(
+            provider_problem(&signed_out),
+            Some(ProviderProblem::SignedOut)
+        );
+        // A 401 is not always a ChatGPT login: API-key users are told too.
+        assert!(signed_out.contains("API key"), "{signed_out}");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let limits = json!({
+            "primary": {"usedPercent": 100, "resetsAt": now + 2 * 3600 + 14 * 60 - 5},
+            "secondary": {"usedPercent": 40, "resetsAt": now + 6 * 86400},
+        });
+        let limited = codex_error_text(
+            &json!({"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}),
+            Some(&limits),
+        );
+        assert_eq!(limited, "Codex usage limit reached — it resets in 2h 14m.");
+        assert_eq!(
+            provider_problem(&limited),
+            Some(ProviderProblem::LimitReached)
+        );
+        // No exhausted window known: keep Codex's own explanation.
+        assert_eq!(
+            codex_error_text(
+                &json!({"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}),
+                None
+            ),
+            "Codex usage limit reached. You've hit your usage limit."
+        );
+    }
+
+    #[test]
+    fn settle_turn_error_puts_each_message_in_exactly_one_part() {
+        let failed = json!({"turn": {"id": "t", "status": "failed"}});
+        // A turn error wins; a held error is reported by a turn that did not fail.
+        assert_eq!(
+            settle_turn_error(
+                &json!({"turn": {"id": "t", "error": {"message": "boom"}}}),
+                Some("held".into()),
+                None
+            ),
+            (Some("boom".into()), None)
+        );
+        assert_eq!(
+            settle_turn_error(&failed, Some("held".into()), None),
+            (Some("held".into()), None)
+        );
+        assert_eq!(
+            settle_turn_error(&failed, None, None),
+            (Some("Codex turn failed".into()), None)
+        );
+        assert_eq!(
+            settle_turn_error(
+                &json!({"turn": {"id": "t", "status": "completed"}}),
+                Some("held".into()),
+                None
+            ),
+            (None, Some("held".into()))
+        );
+    }
+
+    #[test]
+    fn error_notices_know_when_codex_is_retrying() {
+        let notice = error_notice(
+            &json!({"error": {"message": "stream error"}, "willRetry": true}),
+            None,
+        );
+        assert!(notice.will_retry);
+        assert_eq!(notice.message, "stream error");
+        let final_notice = error_notice(&json!({"message": "old build"}), None);
+        assert!(!final_notice.will_retry);
+        assert_eq!(final_notice.message, "old build");
+    }
+
+    #[test]
+    fn sparse_rate_limit_updates_keep_their_windows() {
+        let mut held = None;
+        merge_rate_limits(
+            &mut held,
+            &json!({"rateLimits": {"primary": {"usedPercent": 80, "resetsAt": 100}}}),
+        );
+        merge_rate_limits(
+            &mut held,
+            &json!({"rateLimits": {"secondary": serde_json::Value::Null, "primary": {"usedPercent": 100, "resetsAt": 90}}}),
+        );
+        let held = held.unwrap();
+        // The secondary null did not clear the (never-set) key; primary moved.
+        assert_eq!(
+            held["primary"]["resetsAt"].as_i64(),
+            Some(90),
+            "{held}"
+        );
+        assert!(held.get("secondary").is_none());
     }
 
     #[test]
@@ -1352,7 +1651,10 @@ mod tests {
     }
 
     #[test]
-    fn subagent_error_notifications_carry_the_classification() {
+    fn subagent_error_notifications_are_reported_by_the_turns_end() {
+        // A final error notification is held, not emitted: the turn's Done
+        // reports it once (upstream #977 — a retry is progress, a final
+        // error is an outcome).
         let mut feed = ChildStream::default();
         let events = feed.map(
             "child",
@@ -1361,14 +1663,22 @@ mod tests {
                 "message": "You've hit your usage limit", "codexErrorInfo": "usageLimitExceeded"
             }}),
         );
+        assert_eq!(events, Vec::<AgentEvent>::new());
+        // The held message settles into the failed turn's Done error.
+        let done = feed.map(
+            "child",
+            "turn/failed",
+            &json!({"threadId": "child", "turn": {"id": "t1", "status": "failed"}}),
+        );
         assert_eq!(
-            events,
-            vec![AgentEvent::Error {
-                message: "You've hit your usage limit".into(),
-                kind: Some(AgentErrorKind::UsageLimit {
-                    window: "usage".into(),
-                    resets_at: None,
-                }),
+            done,
+            vec![AgentEvent::Done {
+                status: DoneStatus::Errored,
+                result: None,
+                error: Some(
+                    "Codex usage limit reached. You've hit your usage limit".into()
+                ),
+                session_id: Some("child".into()),
             }]
         );
     }

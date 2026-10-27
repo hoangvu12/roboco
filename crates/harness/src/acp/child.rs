@@ -7,20 +7,37 @@ use crate::process::{Child as ProcessChild, Command};
 /// process group so descendants reap with it and stamps crash ownership
 /// (the kernel kills the child if we die); Windows spawns job-contained
 /// (`process::windows`), which already owns the whole tree.
+///
+/// The group also carries none of the markers a Claude Code session leaves
+/// in its children's environment: inherited, they make an agent's own Claude
+/// believe it is nested in that session — it reports to its socket, IDE port
+/// and session id, and takes its effort level. The user's own configuration
+/// (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`/`VERTEX`,
+/// `CLAUDE_CODE_GIT_BASH_PATH`, `ANTHROPIC_*`) is kept.
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(unix)]
     crate::process::dies_with_parent(command);
-    for key in [
-        "CLAUDECODE",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_SSE_PORT",
-        "CLAUDE_AGENT_SDK_VERSION",
-    ] {
+    for key in INHERITED_SESSION_MARKERS {
         command.env_remove(key);
     }
 }
+
+const INHERITED_SESSION_MARKERS: [&str; 12] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_AGENT_SDK_VERSION",
+];
 
 pub(crate) struct Child {
     inner: ProcessChild,
@@ -42,14 +59,35 @@ impl Child {
     }
 
     pub(crate) async fn shutdown(&mut self, grace: std::time::Duration) {
+        self.shutdown_with(Vec::new(), grace).await;
+    }
+
+    /// [`Self::shutdown`], also ending `earlier`: descendants snapshotted
+    /// while the agent was alive. Once it has exited and been reaped, its
+    /// orphans can no longer be traced from it.
+    pub(crate) async fn shutdown_with(
+        &mut self,
+        #[cfg_attr(not(unix), allow(unused_mut))] mut earlier: Vec<crate::process::Tracked>,
+        grace: std::time::Duration,
+    ) {
         // Everything the agent started, taken while it is still attached:
         // a command the agent ran in its own session (Devin does) is not in
-        // the agent's process group and would outlive the runtime.
+        // the agent's process group and would outlive the runtime. Merged
+        // with the earlier snapshot: a process that appeared after it is new,
+        // one it lost to reaping is still ended.
         #[cfg(unix)]
-        let tree = match (self.group, self.inner.id()) {
-            (Some(_), Some(pid)) => crate::process::descendants(pid).await,
-            _ => Vec::new(),
+        let tree = {
+            if let (Some(_), Some(pid)) = (self.group, self.inner.id()) {
+                for found in crate::process::descendants(pid).await {
+                    if !earlier.contains(&found) {
+                        earlier.push(found);
+                    }
+                }
+            }
+            earlier
         };
+        #[cfg(not(unix))]
+        let _ = earlier;
         // Children FIRST, while the adapter still lives to reap them: a
         // simultaneous group TERM lets the adapter win the exit race, and
         // every child that dies after it is reparented to init as a zombie
@@ -143,9 +181,55 @@ mod tests {
             vec![
                 "CLAUDECODE",
                 "CLAUDE_AGENT_SDK_VERSION",
+                "CLAUDE_CODE_CHILD_SESSION",
                 "CLAUDE_CODE_ENTRYPOINT",
-                "CLAUDE_CODE_SSE_PORT"
+                "CLAUDE_CODE_EXECPATH",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_MESSAGING_TOKEN",
+                "CLAUDE_CODE_SESSION_ATTENDED",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_CODE_SSE_PORT",
+                "CLAUDE_EFFORT",
+                "CLAUDE_PID"
             ]
         );
+        // The user's own configuration is never touched.
+        for kept in [
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_GIT_BASH_PATH",
+            "ANTHROPIC_API_KEY",
+        ] {
+            assert!(!removed.contains(&kept), "{kept}");
+        }
+    }
+
+    /// A child that has exited and been reaped can no longer be traced:
+    /// what was snapshotted while it ran is still ended.
+    #[tokio::test]
+    async fn shutdown_ends_an_earlier_snapshot_after_the_agent_exited() {
+        use std::os::unix::process::CommandExt as _;
+        let mut orphan = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let orphan_pid = orphan.id() as i32;
+        let mut command = Command::new("true");
+        configure(&mut command);
+        let mut child = Child::new(command.spawn().unwrap());
+        child.wait().await.unwrap();
+        child
+            .shutdown_with(
+                vec![crate::process::Tracked::now(orphan_pid)],
+                std::time::Duration::from_secs(2),
+            )
+            .await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while orphan.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "orphan survived");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }

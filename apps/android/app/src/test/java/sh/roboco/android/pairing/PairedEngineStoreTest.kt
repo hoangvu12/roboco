@@ -790,6 +790,54 @@ class PairedEngineStoreTest {
         assertTrue("a log leaked a room secret: $logged", logged.none { it.contains("room-LOG-SECRET") })
     }
 
+    // Fleet follow (fleet-follow ticket 04): the persist sequence of a
+    // pairing, its fleet join, a re-run and a re-pair never duplicates a row.
+
+    @Test
+    fun aFleetFollowAndItsReRunsNeverDuplicateEngineRows(): Unit = runTest {
+        val cipher = FakeSecretCipher()
+        val fixture = newStore(cipher)
+        val fleet = roomRecord(roomId = "fleet-1", secret = "fleet-SECRET-1")
+        val ref = EngineRoomRef(roomId = fleet.roomId, label = fleet.label)
+        // Paired before the fleet existed, then the pairing that introduces it.
+        val server = newEngine(engineId = "server-1", credential = "cred-server", deviceId = "dev-server")
+        val desktop = newEngine(engineId = "desktop-1", credential = "cred-desktop", deviceId = "dev-desktop")
+        fixture.store.upsert(server)
+        fixture.store.upsert(desktop)
+        // The join result: the desktop adopted by tag (same id, same
+        // credential), the server adopted by tag, one new member.
+        val nas = newEngine(engineId = "nas-1", credential = "cred-nas", deviceId = "dev-nas").copy(room = ref)
+        val join = listOf(desktop.copy(room = ref), server.copy(room = ref), nas)
+        fixture.store.upsertRoom(fleet)
+        join.forEach { fixture.store.upsert(it) }
+        // A re-run of the follow persists the same room and records again,
+        // and a re-pair of the desktop (fresh credential, tag kept) lands too.
+        fixture.store.upsertRoom(fleet)
+        join.forEach { fixture.store.upsert(it) }
+        val repaired = desktop.copy(credential = "cred-desktop-2", sessionId = "s-2", room = ref)
+        fixture.store.upsert(repaired)
+
+        val restarted = restart(fixture, cipher)
+        val loaded = restarted.store.load()
+
+        // One row per engine, pairing order kept, the latest record wins.
+        assertEquals(listOf("server-1", "desktop-1", "nas-1"), loaded.map { it.engineId })
+        assertEquals(loaded.size, loaded.mapNotNull { it.deviceId }.toSet().size)
+        assertEquals("cred-desktop-2", loaded.single { it.engineId == "desktop-1" }.credential)
+        assertTrue(loaded.all { it.room == ref })
+        // One room, one blob; its secret only in the encrypted blob.
+        assertEquals(listOf(fleet), restarted.store.loadRooms())
+        assertEquals(1, restarted.prefNames().count { it.startsWith("room:") })
+        val engines = restarted.dataStore.data.first()[stringPreferencesKey("engines")]!!
+        assertFalse(engines.contains("fleet-SECRET-1"))
+        for (file in tmpFolder.root.walkBottomUp().filter { it.isFile }) {
+            assertTrue(
+                "$file holds the fleet secret in the clear",
+                file.readBytes().indexOf("fleet-SECRET-1".toByteArray(Charsets.UTF_8)) < 0,
+            )
+        }
+    }
+
     private fun enginesJsonWithABrokenElement(): String {
         val good = JSONObject()
             .put("engineId", engineB.engineId)

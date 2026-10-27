@@ -209,28 +209,33 @@ impl Shell {
             return;
         };
         let state = self.state.read(cx);
-        let ids: Vec<_> = state
-            .chats
-            .iter()
-            .filter(|chat| !chat.archived && section.session_ids.contains(&chat.id))
-            .map(|chat| chat.id.clone())
-            .collect();
-        if ids.is_empty() {
-            cx.notify();
-            return;
-        }
-        let Some(engine) = state.engine().cloned() else {
+        let Ok(local) = state.local_target() else {
             self.show_notice(crate::toast::ToastKind::Error, "Engine not connected", cx);
             cx.notify();
             return;
         };
+        // Each session archives on the engine that owns it; a section can mix
+        // this machine's sessions with paired engines'.
+        let targets: Vec<_> = state
+            .chats
+            .iter()
+            .filter(|chat| !chat.archived && section.session_ids.contains(&chat.id))
+            .map(|chat| (chat.id.clone(), state.target_for_id(&chat.id)))
+            .collect();
+        if targets.is_empty() {
+            cx.notify();
+            return;
+        }
         // A separate task preserves every archive request; the single-row mutation
         // slot intentionally replaces previous work and cannot be used in a loop.
         cx.spawn(async move |this, cx| {
             let mut failed = 0;
-            for chat_id in ids {
+            for (chat_id, engine) in targets {
+                let Ok(engine) = engine else {
+                    failed += 1;
+                    continue;
+                };
                 if engine
-                    .client()
                     .call(
                         methods::MUTATE,
                         serde_json::json!({"op":"setChatArchived", "chatId":chat_id, "archived":true}),
@@ -246,8 +251,8 @@ impl Shell {
                     if this
                         .state
                         .read(cx)
-                        .engine()
-                        .is_some_and(|current| current.same_connection(&engine))
+                        .local_target()
+                        .is_ok_and(|current| current.same_target(&local))
                     {
                         this.show_notice(crate::toast::ToastKind::Error, format!("Could not archive {failed} sessions. Try again."), cx);
                         cx.notify();
@@ -1416,8 +1421,17 @@ mod tests {
                 shell.archive_sidebar_section("a", cx);
             })
             .unwrap();
+        // Requests ride EngineTarget::call's tokio spawn: let it run.
+        let pump = || {
+            runtime.block_on(async {
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
         for (index, expected) in ["regular", "other"].into_iter().enumerate() {
             cx.run_until_parked();
+            pump();
             let request: serde_json::Value = serde_json::from_str(
                 &requests
                     .try_recv()
@@ -1438,6 +1452,7 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
             });
+            pump();
         }
         cx.run_until_parked();
         window
@@ -1456,6 +1471,76 @@ mod tests {
                 assert_eq!(shell.state.read(cx).chats.len(), 3);
             })
             .unwrap();
+    }
+
+    /// "Archive all" on a section that mixes this machine's session with a
+    /// paired engine's archives each on the engine that owns it.
+    #[gpui::test]
+    fn sections_archive_all_reaches_each_sessions_own_engine(cx: &mut gpui::TestAppContext) {
+        use crate::paired_fixture::{PairedEngines, wait_until};
+        let fixture = PairedEngines::start(cx);
+        let local_device = fixture.local_device(cx);
+        fixture.runtime.block_on(async {
+            fixture
+                .registry
+                .local()
+                .call(
+                    methods::MUTATE,
+                    serde_json::json!({
+                        "op": "createChat", "chatId": "local-chat", "deviceId": local_device,
+                    }),
+                )
+                .await
+                .unwrap();
+            fixture
+                .remote
+                .workspace
+                .create_chat("remote-chat", None, Some(&fixture.remote.device_id), None, None)
+                .unwrap();
+        });
+        let remote_chat = fixture.scoped("remote-chat");
+        fixture.wait_for_state(cx, "both sessions", |s| {
+            ["local-chat", remote_chat.as_str()]
+                .iter()
+                .all(|id| s.chats.iter().any(|c| c.id == *id))
+        });
+        let window =
+            cx.add_window(|_, cx| Shell::new(fixture.state.clone(), fixture.boot.clone(), cx));
+        window
+            .update(cx, |shell, _, cx| {
+                let key = shell.active_sidebar_pin_profile_key(cx).unwrap();
+                shell.settings.sidebar_sections_by_profile.insert(
+                    key,
+                    vec![SidebarSection {
+                        id: "mixed".into(),
+                        name: "Mixed".into(),
+                        session_ids: vec!["local-chat".into(), remote_chat.clone()],
+                        collapsed: false,
+                    }],
+                );
+                shell.archive_sidebar_section("mixed", cx);
+            })
+            .unwrap();
+        wait_until(cx, "both sessions archived", |cx| {
+            let notice = window
+                .update(cx, |shell, _, _| shell.sidebar_notice.clone())
+                .unwrap();
+            assert!(notice.is_none(), "archive failed: {notice:?}");
+            fixture
+                .remote
+                .workspace
+                .chat("remote-chat")
+                .unwrap()
+                .is_some_and(|chat| chat.archived)
+                && fixture.state.read_with(cx, |s, _| {
+                    s.chats
+                        .iter()
+                        .filter(|c| c.id == "local-chat" || c.id == remote_chat)
+                        .all(|c| c.archived)
+                })
+        });
+        drop(window);
+        fixture.shutdown(cx);
     }
 
     /// Local adaptation of upstream's remote-pin-rejection test. Roboco's pin

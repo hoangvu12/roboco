@@ -47,6 +47,13 @@ pub mod methods {
     /// caller's entries into the stored book (books only grow; eviction
     /// rotates the room) and replies with the fresh snapshot.
     pub const UPDATE_ROOM_BOOK: &str = "UpdateRoomBook";
+    /// Fleet follow: remotely join this engine into a room (the invite
+    /// string is the payload; session-authed; idempotent). The push path
+    /// for the desktop app's auto fleet propagation.
+    pub const ROOM_JOIN: &str = "RoomJoin";
+    /// Fleet follow: the engine's fleet room serialized as an invite (or
+    /// null when it holds none), so any member can introduce a new client.
+    pub const GET_FLEET_INVITE: &str = "GetFleetInvite";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
     /// Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES
@@ -590,6 +597,55 @@ mod tests {
         assert_eq!(items.recv().await, Some(serde_json::json!(0)));
         assert_eq!(items.recv().await, Some(serde_json::json!(1)));
         assert_eq!(items.recv().await, None);
+    }
+
+    /// A reply past tungstenite's default 16 MiB frame cap (a long chat's
+    /// transcript watch — upstream acd7c9ba7's "engine keeps stopping"
+    /// loop) must arrive, not drop the connection.
+    #[tokio::test]
+    async fn websocket_carries_messages_past_the_default_frame_cap() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_ws_listener(listener, Arc::new(TestService)));
+        // Multi-byte chars so fragment boundaries land mid-codepoint.
+        let big = "é".repeat(9_500_000);
+
+        let client = connect_ws(&format!("ws://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let echoed = client.call("Echo", serde_json::json!(big)).await.unwrap();
+        assert_eq!(echoed.as_str().map(str::len), Some(big.len()));
+        assert_eq!(client.close_reason(), None);
+
+        // A peer still on tungstenite's default limits (an older app build)
+        // reassembles the fragmented reply too.
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+        let req = format!("ws://127.0.0.1:{port}")
+            .into_client_request()
+            .unwrap();
+        let (mut legacy, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let request = serde_json::to_string(&ClientFrame {
+            id: 1,
+            method: Some("Echo".into()),
+            params: serde_json::json!(big),
+            cancel: false,
+        })
+        .unwrap();
+        // It sends one unfragmented frame past 16 MiB: the raised cap takes it.
+        assert!(request.len() > 16 << 20);
+        legacy.send(Message::Text(request)).await.unwrap();
+        let reply = loop {
+            match legacy.next().await.unwrap().unwrap() {
+                Message::Text(text) => break text,
+                _ => continue,
+            }
+        };
+        let frame: ServerFrame = serde_json::from_str(&reply).unwrap();
+        assert_eq!(
+            frame.ok.and_then(|v| v.as_str().map(str::len)),
+            Some(big.len())
+        );
     }
 
     #[tokio::test]

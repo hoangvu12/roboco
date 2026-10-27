@@ -92,6 +92,14 @@ fn process_started_at(pid: u32) -> u64 {
     boot * 1000 + started_ticks * 1000 / ticks
 }
 
+/// Windows: `0` takes `same_process`'s pid-only path (the row shape of a
+/// process whose creation time could not be read), so the live entry
+/// re-verifies; the stale-start-time cases stay Linux/macOS-gated.
+#[cfg(windows)]
+fn process_started_at(_pid: u32) -> u64 {
+    0
+}
+
 #[cfg(target_os = "macos")]
 fn process_started_at(pid: u32) -> u64 {
     let output = std::process::Command::new("/bin/ps")

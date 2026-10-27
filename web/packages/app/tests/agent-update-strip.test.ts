@@ -58,7 +58,7 @@ describe("agentUpdateStripLabel (the compact summary)", () => {
     expect(agentUpdateStripLabel([status({ phase: "installing", latestVersion: null })]))
       .toEqual({ label: "Updating Codex…", title: "Installing update" });
     expect(
-      agentUpdateStripLabel([status({ phase: "failed", error: { message: "boom", retryable: true } })]),
+      agentUpdateStripLabel([status({ phase: "failed", error: { message: "boom", retryable: true, kind: "check" } })]),
     ).toEqual({ label: "Codex update check failed", title: "Agent update check failed" });
   });
 

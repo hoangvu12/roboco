@@ -146,6 +146,16 @@ impl Focusable for BrowserSurface {
 }
 
 impl BrowserSurface {
+    /// [`BrowserContext::set_preview_proxy`] for this pane's context; the
+    /// context lives only where an embedded browser does (Windows opens
+    /// previews externally), so elsewhere there is nothing to route.
+    fn set_preview_proxy(&self, port: Option<u16>, bypass: &[String]) {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        self.context.set_preview_proxy(port, bypass);
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let _ = (port, bypass);
+    }
+
     pub fn new(
         context: BrowserContext,
         remote: bool,
@@ -354,8 +364,7 @@ impl BrowserSurface {
                                             if this.previews.remote {
                                                 this.previews.error = live.error.clone();
                                             }
-                                            this.context
-                                                .set_preview_proxy(live.port, &live.bypass);
+                                            this.set_preview_proxy(live.port, &live.bypass);
                                             cx.notify();
                                         })
                                         .is_err()
@@ -398,14 +407,14 @@ impl BrowserSurface {
                                             snapshot.error = Some(error);
                                         }
                                         this.update(cx, |this, _| {
-                                            this.context.set_preview_proxy(live.port, &live.bypass);
+                                            this.set_preview_proxy(live.port, &live.bypass);
                                         })
                                         .ok();
                                     } else if let Some(proxy) = &local {
                                         proxy.note_local(&snapshot.services);
                                         let live = proxy.status();
                                         this.update(cx, |this, _| {
-                                            this.context.set_preview_proxy(live.port, &live.bypass);
+                                            this.set_preview_proxy(live.port, &live.bypass);
                                         })
                                         .ok();
                                     }

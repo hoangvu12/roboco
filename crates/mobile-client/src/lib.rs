@@ -76,7 +76,7 @@ pub use notify::{NotifyListener, RunActivity, RunRef, SessionEvent};
 pub use pairing::{PairError, PairingTarget, parse_pairing_url};
 pub use previews::{PanelPhase, PanelState, PreviewPanel, DEFAULT_IDLE, PANEL_PROXY_PORT};
 pub use roboco_preview_relay::client::ClientStatus;
-pub use rooms::{RoomError, RoomInviteTarget, RoomJoin, RoomRecord, parse_room_invite};
+pub use rooms::{FleetOffer, RoomError, RoomInviteTarget, RoomJoin, RoomRecord, parse_room_invite};
 pub use files::FileMatch;
 pub use new_session::{
     NewSession, PENDING_CHAT_TTL_MS, PendingChat, ProjectGroup, SessionTarget, group_projects,
@@ -444,6 +444,38 @@ impl Client {
     /// network change.
     pub async fn join_room(&self, invite: &str) -> Result<rooms::RoomJoin, rooms::RoomError> {
         rooms::join_room(&self.inner, invite).await
+    }
+
+    /// Fleet follow, step 1: ask a paired engine (normally the one
+    /// `pair_engine` just returned) for its fleet. `None`, silently, when
+    /// the engine lacks `rooms-v2`, has no fleet, never connects, or
+    /// answers junk — the pairing then looks exactly like it always did.
+    /// The offer is opaque: the secret never leaves Rust here.
+    pub async fn fetch_fleet(&self, engine_id: &str) -> Option<rooms::FleetOffer> {
+        rooms::fetch_fleet(&self.inner, engine_id).await
+    }
+
+    /// Fleet follow, step 2: join the offered fleet — the silent room
+    /// join, deduped against every engine already paired (see
+    /// [`rooms::join_fleet`]). Re-running it for the same fleet is
+    /// idempotent: no new sessions, no new engine entries.
+    pub async fn join_fleet(
+        &self,
+        offer: rooms::FleetOffer,
+    ) -> Result<rooms::RoomJoin, rooms::RoomError> {
+        rooms::join_fleet(&self.inner, offer).await
+    }
+
+    /// Both fleet steps at once (tests and headless callers):
+    /// `Ok(None)` when there is no fleet to follow.
+    pub async fn follow_fleet(
+        &self,
+        engine_id: &str,
+    ) -> Result<Option<rooms::RoomJoin>, rooms::RoomError> {
+        match self.fetch_fleet(engine_id).await {
+            Some(offer) => self.join_fleet(offer).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Every paired engine, in pairing order.
@@ -1082,7 +1114,13 @@ pub(crate) async fn adopt_engine(
                 entry.paired.label = label.to_owned();
                 entry.paired.device_id = device_id.clone();
                 entry.paired.name = None;
-                entry.paired.room = room;
+                // A plain re-pair (no room) keeps the room the engine was
+                // joined through: re-pairing is not leaving the room, and
+                // dropping the tag would make the next fleet follow re-adopt
+                // it (and the platform sweep the room blob in between).
+                if room.is_some() {
+                    entry.paired.room = room;
+                }
                 entry.state = EngineState::Connecting;
                 entry.last_error = None;
                 entry.retry_at_ms = None;

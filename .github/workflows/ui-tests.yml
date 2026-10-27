@@ -211,7 +211,10 @@ jobs:
 
   ui-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Two release builds of the GPUI app (the lib tests, then the roboco
+    # binary for the pairing CLIs) on a warm cache took 27-30 min after
+    # agent previews; 30 cancelled green runs mid cache-save.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: GPUI system dependencies

@@ -1,24 +1,35 @@
-//! Rooms: desktop flows (create/join/leave/rotate) against real engines over
-//! loopback, plus the pure helpers the Settings page renders from. The
-//! dialer is faked (member addresses map to loopback listeners); the
-//! production dialer spawns tailcat forwarders, which this box cannot run —
-//! the engine-client crate covers the same machinery with the same shape.
+//! Fleet follow on the desktop: `RoomOps` flows against real engines over
+//! loopback (lazy mint, push, opt-out, dedupe, late-join heal, paste/switch,
+//! leave), plus the pure survey/caption helpers the Fleet card renders from
+//! and the C4a guards. The dialer and the shape probe are faked (test
+//! engines cannot run Tailcat; their data dirs record a fake address their
+//! stores introduce themselves with); the engine-client crate covers the
+//! same machinery with the same shape.
 
 use super::*;
-use crate::engine_registry::{EngineConnectionState, EngineRegistry};
+use crate::engine_registry::{EngineConnectionState, EngineRegistry, EngineSnapshot};
 use roboco_engine::pairing::PairingStore;
 use roboco_engine::{
     EngineCore, EngineProfile, HarnessId, HarnessRegistry, rooms::RoomStore,
     tailcat::record_address,
 };
-use roboco_engine_client::rooms::RoomMemberSession;
+use roboco_engine_client::rooms::DESKTOP_LABEL;
 use roboco_engine_client::{FileSessionStore, LocalEngine, RegistryOptions};
 use roboco_proto::room::{RoomInvite, RoomMember};
 use roboco_rpc::{RpcReply, methods};
 use serde_json::json;
-use std::{collections::HashMap, path::Path, sync::Arc, sync::Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 const SECRET: &str = "qVS3lF5i5vNbcJW7DVoG_fW1NlK8kCqy39s2ZwAhHfN";
+const OTHER_SECRET: &str = "Zr8kQ2mW5vNbcJW7DVoG_fW1NlK8kCqy39s2ZwAhHfN";
 
 fn member(label: &str, address: &str) -> RoomMember {
     RoomMember {
@@ -37,52 +48,130 @@ fn core(dir: &Path) -> EngineCore {
 }
 
 /// The fake dialer: addresses map to loopback bases; the production one
-/// spawns a tailcat forwarder per address.
+/// spawns a tailcat forwarder per address. Dials are counted.
 struct MapDialer {
-    bases: HashMap<String, String>,
+    bases: Mutex<HashMap<String, String>>,
+    count: AtomicUsize,
 }
 
 impl MapDialer {
-    fn new(bases: HashMap<String, String>) -> Arc<Self> {
-        Arc::new(Self { bases })
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            bases: Mutex::new(HashMap::new()),
+            count: AtomicUsize::new(0),
+        })
+    }
+
+    fn map(&self, address: &str, base: String) {
+        self.bases.lock().unwrap().insert(address.into(), base);
     }
 }
 
 impl RoomDialer for MapDialer {
     fn dial(&self, address: &str, _data_dir: &Path) -> anyhow::Result<ResolvedMember> {
+        self.count.fetch_add(1, Ordering::SeqCst);
         let base = self
             .bases
+            .lock()
+            .unwrap()
             .get(address)
             .ok_or_else(|| anyhow::anyhow!("unknown member"))?
             .clone();
         Ok(ResolvedMember {
             base,
             keepalive: None,
+            route: None,
         })
+    }
+}
+
+/// The fake probe: engines (by device id) marked serving read as the
+/// Tailcat `Serves` shape; every other engine reads as Tailcat off.
+struct MapProbe {
+    serving: Mutex<HashSet<String>>,
+}
+
+impl MapProbe {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            serving: Mutex::new(HashSet::new()),
+        })
+    }
+
+    fn serve(&self, device_id: &str) {
+        self.serving.lock().unwrap().insert(device_id.into());
+    }
+}
+
+#[async_trait::async_trait]
+impl FleetProbe for MapProbe {
+    async fn shape(&self, target: &EngineTarget) -> TailcatShape {
+        if self
+            .serving
+            .lock()
+            .unwrap()
+            .contains(&target.engine_info().device_id)
+        {
+            TailcatShape::Serves
+        } else {
+            TailcatShape::Off
+        }
+    }
+}
+
+/// Every RPC method a member engine is asked, recorded on the way to the
+/// real service: proves which calls fleet code sends.
+struct SpyService {
+    inner: Arc<dyn roboco_rpc::RpcService>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl roboco_rpc::RpcService for SpyService {
+    async fn handle(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, roboco_rpc::RpcError> {
+        self.calls.lock().unwrap().push(method.to_owned());
+        self.inner.handle(method, params).await
     }
 }
 
 /// A real member engine over loopback, with the data dir its room store and
 /// pairing store live in.
 struct MemberEngine {
-    /// Keeps the assembled core (its stores and service) alive for the
-    /// engine's lifetime in the test.
-    _core: EngineCore,
+    core: EngineCore,
     listener: roboco_engine::EngineListener,
     dir: tempfile::TempDir,
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl MemberEngine {
+    fn calls(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.as_str() == method)
+            .count()
+    }
+
     fn base(&self) -> String {
         format!("http://{}", self.listener.address)
     }
 
-    /// The engine-side join a host performs (Settings or the CLI).
+    fn device_id(&self) -> String {
+        self.core.device_id.clone()
+    }
+
+    fn store(&self) -> RoomStore {
+        RoomStore::open(self.dir.path()).unwrap()
+    }
+
+    /// The engine-side join a host performs (CLI).
     fn join(&self, invite: &RoomInvite) {
-        RoomStore::open(self.dir.path())
-            .unwrap()
-            .join(invite.clone())
-            .unwrap();
+        self.store().join(invite.clone()).unwrap();
     }
 
     fn desktop_sessions(&self) -> Vec<roboco_proto::PairedSession> {
@@ -91,7 +180,7 @@ impl MemberEngine {
             .list_sessions()
             .unwrap()
             .into_iter()
-            .filter(|session| session.label == roboco_engine_client::rooms::DESKTOP_LABEL)
+            .filter(|session| session.label.starts_with(DESKTOP_LABEL))
             .collect()
     }
 }
@@ -99,31 +188,36 @@ impl MemberEngine {
 async fn member_engine() -> MemberEngine {
     let dir = tempfile::tempdir().unwrap();
     let core = core(dir.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
     let listener = roboco_engine::serve_engine_remote(
         "127.0.0.1:0".parse().unwrap(),
-        core.rpc_service(),
+        Arc::new(SpyService {
+            inner: core.rpc_service(),
+            calls: calls.clone(),
+        }),
         dir.path(),
     )
     .await
     .unwrap();
     MemberEngine {
-        _core: core,
+        core,
         listener,
         dir,
+        calls,
     }
 }
 
 /// The desktop registry: the local engine over the in-memory transport, the
-/// session store in the same data dir the app uses (the desktop invariant:
-/// one data dir for app and engine).
-async fn desktop_registry(local_dir: &Path) -> EngineRegistry {
+/// session store in the same data dir the app uses (one data dir for app
+/// and engine). The core is returned so it outlives the test body.
+async fn desktop_registry(local_dir: &Path) -> (EngineRegistry, EngineCore) {
     let local = core(local_dir);
     let client = Arc::new(roboco_rpc::memory_client(local.rpc_service()));
     let info: roboco_proto::EngineInfo = client
-        .call_as(roboco_rpc::methods::ENGINE_INFO, json!({}))
+        .call_as(methods::ENGINE_INFO, json!({}))
         .await
         .unwrap();
-    EngineRegistry::open_with(RegistryOptions {
+    let registry = EngineRegistry::open_with(RegistryOptions {
         data_dir: local_dir.to_path_buf(),
         sessions: Arc::new(FileSessionStore::new(
             local_dir.join("paired-engines-v1.json"),
@@ -136,12 +230,13 @@ async fn desktop_registry(local_dir: &Path) -> EngineRegistry {
         resolvers: Vec::new(),
     })
     .await
-    .unwrap()
+    .unwrap();
+    (registry, local)
 }
 
 async fn wait_connected(registry: &EngineRegistry, engine_count: usize) {
     let mut changes = registry.watch();
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let connected = changes
                 .borrow_and_update()
@@ -159,409 +254,670 @@ async fn wait_connected(registry: &EngineRegistry, engine_count: usize) {
     .expect("engines did not connect");
 }
 
-/// The desktop joins a room: the secret lands in the 0600 client file, the
-/// local engine joins through its own room store, every other member is
-/// presented to and adopted as an ordinary paired engine, and books union.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn joining_persists_the_secret_joins_the_local_engine_and_adopts_members() {
-    let local_dir = tempfile::tempdir().unwrap();
-    let registry = desktop_registry(local_dir.path()).await;
-    let b = member_engine().await;
-    let invite = RoomInvite::new(
-        "Home fleet",
-        SECRET,
-        vec![member("desktop", "tcLOCAL"), member("server", "tcB")],
-    )
-    .unwrap();
-    b.join(&invite);
-    // The local engine serves a tailcat route (its recorded publication).
-    record_address(local_dir.path(), "tcLOCAL").unwrap();
-
-    let mut bases = HashMap::new();
-    bases.insert("tcB".to_owned(), b.base());
-    let ops = RoomOps::with_dialer(
-        local_dir.path().to_path_buf(),
-        registry.clone(),
-        MapDialer::new(bases),
-    );
-
-    let outcome = ops.join(&invite.encode().unwrap()).await.unwrap();
-    assert!(outcome.complete(), "the only remote member joined");
-
-    // The client record: the secret (0600 at rest) plus one adopted session.
-    let rooms = ops.load_rooms();
-    assert_eq!(rooms.len(), 1);
-    assert_eq!(rooms[0].secret, SECRET);
-    assert_eq!(rooms[0].sessions.len(), 1);
-    assert_eq!(rooms[0].sessions[0].address, "tcB");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(local_dir.path().join("rooms-v1.json"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "the rooms file must be owner-only");
-    }
-
-    // The desktop engine itself joined: its room store holds the verifier
-    // and the book (ticket-01's surface, driven from Settings).
-    let records = RoomStore::open(local_dir.path()).unwrap().list().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].id, rooms[0].id);
-    assert_eq!(records[0].book.members.len(), 2);
-
-    // The member minted exactly one desktop session, and the registry
-    // adopted it as an ordinary paired engine.
-    assert_eq!(b.desktop_sessions().len(), 1);
-    wait_connected(&registry, 2).await;
-    assert_eq!(registry.snapshot().engines.len(), 2);
-}
-
-/// Leaving revokes this client's sessions on every member, forgets the
-/// registry entries the room adopted, and removes the room from the client
-/// record and the local engine's store.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn leaving_revokes_forgets_and_removes_everywhere() {
-    let local_dir = tempfile::tempdir().unwrap();
-    let registry = desktop_registry(local_dir.path()).await;
-    let b = member_engine().await;
-    let invite = RoomInvite::new(
-        "Home fleet",
-        SECRET,
-        vec![member("desktop", "tcLOCAL"), member("server", "tcB")],
-    )
-    .unwrap();
-    b.join(&invite);
-    record_address(local_dir.path(), "tcLOCAL").unwrap();
-    let mut bases = HashMap::new();
-    bases.insert("tcB".to_owned(), b.base());
-    let ops = RoomOps::with_dialer(
-        local_dir.path().to_path_buf(),
-        registry.clone(),
-        MapDialer::new(bases),
-    );
-    let outcome = ops.join(&invite.encode().unwrap()).await.unwrap();
-    let room_id = outcome.room.id.clone();
-    wait_connected(&registry, 2).await;
-
-    let left = ops.leave(&room_id).await.unwrap();
-    // The revoke reached the member.
-    assert_eq!(left.revoked, vec![("server".to_owned(), true)]);
-    assert!(
-        left.engine_left,
-        "the local engine held the room and dropped it"
-    );
-    let sessions = b.desktop_sessions();
-    assert_eq!(sessions.len(), 1);
-    assert!(sessions[0].revoked_at.is_some());
-    // The registry entries the room adopted are gone; the room record is
-    // gone; the local engine's store is empty.
-    assert_eq!(registry.snapshot().engines.len(), 1);
-    assert!(ops.load_rooms().is_empty());
-    assert!(
-        RoomStore::open(local_dir.path())
-            .unwrap()
-            .list()
-            .unwrap()
-            .is_empty()
-    );
-    // The room itself lives on the member engine: leaving is not eviction
-    // — a room gates future introductions, and this client's revokes only
-    // cut its own sessions (rotate to evict, ADR 0011).
-    assert!(matches!(
-        RoomStore::open(b.dir.path())
-            .unwrap()
-            .present(SECRET, "Pixel")
-            .unwrap(),
-        roboco_engine::rooms::PresentationOutcome::Granted(_)
-    ));
-}
-
-/// Rotation: probes who still honors the old secret, revokes this client's
-/// old sessions, joins the local engine into the new room, and keeps the
-/// local old verifier until the user drops it. The member re-presents after
-/// its host consumes the new invite — a Reconnect pass then records it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rotating_probes_revokes_and_guides_the_re_invite() {
-    let local_dir = tempfile::tempdir().unwrap();
-    let registry = desktop_registry(local_dir.path()).await;
-    let b = member_engine().await;
-    let invite = RoomInvite::new(
-        "Home fleet",
-        SECRET,
-        vec![member("desktop", "tcLOCAL"), member("server", "tcB")],
-    )
-    .unwrap();
-    b.join(&invite);
-    record_address(local_dir.path(), "tcLOCAL").unwrap();
-    let mut bases = HashMap::new();
-    bases.insert("tcB".to_owned(), b.base());
-    let ops = RoomOps::with_dialer(
-        local_dir.path().to_path_buf(),
-        registry.clone(),
-        MapDialer::new(bases),
-    );
-    let outcome = ops.join(&invite.encode().unwrap()).await.unwrap();
-    let old_room_id = outcome.room.id.clone();
-    wait_connected(&registry, 2).await;
-
-    let rotated = ops.rotate(&old_room_id).await.unwrap();
-    let new_room_id = rotated.checklist.new_room_id.clone();
-    assert_ne!(new_room_id, old_room_id, "rotation mints a new room id");
-
-    // The checklist: the member has not re-presented yet (its host has not
-    // consumed the new invite), the old secret still works there, this
-    // client's old session is revoked, and this engine still holds the old
-    // verifier — the guided drop.
-    let checklist = &rotated.checklist;
-    assert_eq!(checklist.rows.len(), 2);
-    let server = checklist
-        .rows
-        .iter()
-        .find(|row| row.label == "server")
-        .expect("the member row");
-    assert!(!server.re_presented);
-    assert_eq!(server.old_secret, OldSecretStatus::StillAccepted);
-    assert!(server.revoked, "this client's old session was revoked");
-    assert!(checklist.local_old_verifier);
-    assert!(!checklist.complete());
-    assert!(checklist.hint().contains("roboco engine room leave"));
-    // The old session died on the member.
-    assert!(b.desktop_sessions()[0].revoked_at.is_some());
-    // The old client record is retired; the new one is saved with no
-    // sessions yet (nobody can welcome a secret minted moments ago).
-    let rooms = ops.load_rooms();
-    assert_eq!(rooms.len(), 1);
-    assert_eq!(rooms[0].id, new_room_id);
-    assert!(rooms[0].sessions.is_empty());
-
-    // The member's host now consumes the new invite; a Reconnect pass
-    // re-presents and the checklist's re-presented column fills in.
-    b.join(&rotated.invite);
-    let rejoined = ops.sync(&new_room_id).await.unwrap().expect("room saved");
-    assert!(rejoined.complete());
-    assert_eq!(rejoined.room.sessions.len(), 1);
-    let refreshed = checklist.refresh_re_presented(&rejoined.room.members, &rejoined.room.sessions);
-    let server = refreshed
-        .rows
-        .iter()
-        .find(|row| row.label == "server")
-        .expect("the member row");
-    assert!(server.re_presented);
-    assert_eq!(server.old_secret, OldSecretStatus::StillAccepted);
-    assert_eq!(
-        b.desktop_sessions().len(),
-        2,
-        "one revoked old session, one live new one"
-    );
-
-    // Dropping the old room on this engine: the local old verifier goes, the
-    // new one stays.
-    assert!(ops.local_engine_leave(&old_room_id).await.unwrap());
-    let records = RoomStore::open(local_dir.path()).unwrap().list().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].id, new_room_id);
-    assert!(!ops.local_engine_holds(&old_room_id).await);
-}
-
-/// Creating a room: the book is seeded from the local engine's recorded
-/// publication (its Tailcat route), the local engine joins, and an engine
-/// without a Tailcat route is listed as unavailable rather than failing the
-/// create.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn creating_seeds_the_book_from_the_local_engine() {
-    let local_dir = tempfile::tempdir().unwrap();
-    let registry = desktop_registry(local_dir.path()).await;
-    record_address(local_dir.path(), "tcLOCAL").unwrap();
-    let ops = RoomOps::with_dialer(
-        local_dir.path().to_path_buf(),
-        registry.clone(),
-        MapDialer::new(HashMap::new()),
-    );
-
-    let created = ops.create("Home fleet", &[], "My desktop").await.unwrap();
-    // The book: exactly the local engine, labeled for other clients.
-    assert_eq!(created.invite.members.len(), 1);
-    assert_eq!(created.invite.members[0].label, "My desktop");
-    assert_eq!(created.invite.members[0].address, "tcLOCAL");
-    assert!(created.unavailable.is_empty());
-    assert!(created.qr_svg.is_some(), "a one-member invite fits a QR");
-    assert!(created.encoded.starts_with("roboco-room:"));
-    // The local engine joined through its store.
-    let records = RoomStore::open(local_dir.path()).unwrap().list().unwrap();
-    assert_eq!(records.len(), 1);
-    // The record is saved.
-    assert_eq!(ops.load_rooms().len(), 1);
-
-    // No local Tailcat route: create says so instead of minting a bookless
-    // room.
-    let bare_dir = tempfile::tempdir().unwrap();
-    let bare_registry = desktop_registry(bare_dir.path()).await;
-    let bare_ops = RoomOps::with_dialer(
-        bare_dir.path().to_path_buf(),
-        bare_registry.clone(),
-        MapDialer::new(HashMap::new()),
-    );
-    let error = bare_ops
-        .create("Home fleet", &[], "My desktop")
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("no Tailcat route"),
-        "the refusal names the missing route: {error}"
-    );
-
-    // A selected engine whose remote access is off lands in `unavailable`,
-    // never in the book — and room code never mutates its settings: the
-    // engine's remote-access file was never even created (the pre-guard
-    // flow's `CreateTailcatInvite` mint would have written it, force-enabled).
-    record_address(bare_dir.path(), "tcBARE").unwrap();
-    let remote = member_engine().await;
-    let code = PairingStore::open(remote.dir.path())
+async fn pair_by_hand(registry: &EngineRegistry, engine: &MemberEngine) -> EngineKey {
+    let code = PairingStore::open(engine.dir.path())
         .unwrap()
-        .create_code("create test", 300)
+        .create_code("hand pairing", 300)
         .unwrap();
-    let key = bare_registry
+    registry
         .pair(
-            &format!(
-                "http://{}/pair#token={}",
-                remote.listener.address, code.credential
-            ),
-            "Test desktop",
+            &format!("{}/pair#token={}", engine.base(), code.credential),
+            "Hand paired",
         )
         .await
-        .unwrap();
-    // The guard talks to the engine, so its entry must be live first.
-    wait_connected(&bare_registry, 2).await;
-    let created = bare_ops
-        .create("Fleet", &[MemberPick::Engine(key)], "My desktop")
-        .await
-        .unwrap();
-    assert_eq!(
-        created.invite.members.len(),
-        1,
-        "only the local engine is in the book"
-    );
-    assert_eq!(created.unavailable.len(), 1);
-    assert!(
-        created.unavailable[0].contains("enable its Tailcat route first"),
-        "the unavailable note tells the user what to do: {}",
-        created.unavailable[0]
-    );
-    assert!(
-        !created.unavailable[0].starts_with("tc"),
-        "no address leaks into the unavailable reason"
-    );
-    // The no-mutation proof: remote access was off, so no mint ever ran —
-    // the settings file the old mint would have force-written never exists.
-    assert!(
-        !remote.dir.path().join("remote-access.json").exists(),
-        "room code must never write remote-access settings"
-    );
+        .unwrap()
 }
 
-#[test]
-fn rotate_rows_is_a_pure_projection_of_the_probe_facts() {
-    let members = vec![member("server", "tcB"), member("laptop", "tcC")];
-    let re_presented = ["tcB".to_owned()].into_iter().collect();
-    let old_secret = HashMap::from([
-        ("tcB".to_owned(), OldSecretStatus::StillAccepted),
-        ("tcC".to_owned(), OldSecretStatus::Refused),
-    ]);
-    let revoked = ["tcB".to_owned()].into_iter().collect();
-    let rows = rotate_rows(&members, &re_presented, &old_secret, &revoked);
-    assert_eq!(rows.len(), 2);
-    assert!(rows[0].re_presented);
-    assert_eq!(rows[0].old_secret, OldSecretStatus::StillAccepted);
-    assert!(rows[0].revoked);
-    assert!(!rows[1].re_presented);
-    assert_eq!(rows[1].old_secret, OldSecretStatus::Refused);
-    assert!(!rows[1].revoked);
-    // Captions describe states, never secrets or addresses.
-    let (first, second) = rows[0].status_fragments();
-    assert_eq!(first, "Re-presented with the new secret");
-    assert_eq!(
-        second,
-        "Old secret still accepted — drop the old room on that host"
-    );
-    let (first, second) = rows[1].status_fragments();
-    assert_eq!(first, "Waiting to re-present");
-    assert_eq!(second, "Old secret no longer accepted");
+struct Desktop {
+    dir: tempfile::TempDir,
+    registry: EngineRegistry,
+    _core: EngineCore,
+    dialer: Arc<MapDialer>,
+    probe: Arc<MapProbe>,
 }
 
+impl Desktop {
+    async fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, core) = desktop_registry(dir.path()).await;
+        record_address(dir.path(), "tcLOCAL").unwrap();
+        Self {
+            dir,
+            registry,
+            _core: core,
+            dialer: MapDialer::new(),
+            probe: MapProbe::new(),
+        }
+    }
+
+    fn ops(&self) -> RoomOps {
+        RoomOps::with_dialer(
+            self.dir.path().to_path_buf(),
+            self.registry.clone(),
+            self.dialer.clone(),
+        )
+        .with_probe(self.probe.clone())
+    }
+
+    fn store(&self) -> RoomStore {
+        RoomStore::open(self.dir.path()).unwrap()
+    }
+
+    /// Pair `engine` by hand and let it serve a (fake) Tailcat route: the
+    /// probe reads it as serving, and its data dir records the address its
+    /// store introduces itself with on a fleet join.
+    async fn pair_serving(&self, engine: &MemberEngine, address: &str) -> EngineKey {
+        let key = pair_by_hand(&self.registry, engine).await;
+        record_address(engine.dir.path(), address).unwrap();
+        self.probe.serve(&engine.device_id());
+        self.dialer.map(address, engine.base());
+        key
+    }
+}
+
+fn row<'a>(report: &'a FleetReport, device_id: &str) -> &'a FleetRow {
+    report
+        .rows
+        .iter()
+        .find(|row| row.device_id.as_deref() == Some(device_id))
+        .unwrap_or_else(|| panic!("no row for {device_id}: {report:?}"))
+}
+
+/// The first fleet event mints the one fleet room (kind = fleet, secret held
+/// by the local engine), pushes it to the paired engine with `RoomJoin`, and
+/// adds nothing to the registry; a second pass is a no-op (no re-mint, no
+/// session churn, no duplicate entries) — and nothing ever touches an
+/// engine's remote-access settings (C4a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fleet_is_minted_lazily_and_pushed_idempotently() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+
+    // No other engines: nothing to share, so nothing is minted.
+    let report = ops.sync().await.unwrap();
+    assert!(!report.exists);
+    assert!(report.rows.is_empty());
+    assert!(desktop.store().fleet_room().unwrap().is_none());
+
+    // Pairing an engine that serves its Tailcat route is the fleet event.
+    let b = member_engine().await;
+    let key = desktop.pair_serving(&b, "tcB").await;
+    wait_connected(&desktop.registry, 2).await;
+    let report = ops.sync().await.unwrap();
+    assert!(report.exists);
+    assert_eq!(row(&report, &b.device_id()).state, FleetState::In);
+    assert_eq!(row(&report, &b.device_id()).key, Some(key.clone()));
+
+    // The local engine holds the fleet: kind = fleet, secret retained, the
+    // book carrying this machine and b — exactly what GetFleetInvite serves.
+    let fleet = desktop.store().fleet_room().unwrap().expect("minted");
+    assert_eq!(fleet.kind, RoomKind::Fleet);
+    assert_eq!(fleet.label, FLEET_NAME);
+    let invite = desktop
+        .store()
+        .fleet_invite(&fleet.id)
+        .unwrap()
+        .expect("the secret is retained");
+    assert!(invite.is_fleet());
+    let addresses: Vec<_> = invite.members.iter().map(|m| m.address.clone()).collect();
+    assert!(addresses.contains(&"tcLOCAL".to_owned()));
+    assert!(addresses.contains(&"tcB".to_owned()));
+    // b joined through the RoomJoin push (and retains the secret too).
+    let b_fleet = b.store().fleet_room().unwrap().expect("pushed");
+    assert_eq!(b_fleet.id, fleet.id);
+    assert!(b.store().fleet_invite(&fleet.id).unwrap().is_some());
+
+    // b's address came from b's own book (its join introduced it): the
+    // hand-paired entry was linked to it, never presented to or duplicated.
+    assert_eq!(desktop.registry.snapshot().engines.len(), 2);
+    assert!(b.desktop_sessions().is_empty(), "no room session minted");
+    assert_eq!(desktop.dialer.count.load(Ordering::SeqCst), 0);
+    let rooms = ops.rooms_file().load().unwrap();
+    let link = rooms[0]
+        .sessions
+        .iter()
+        .find(|session| session.address == "tcB")
+        .expect("b's address is linked to its entry");
+    assert_eq!(link.engine_key, key.0);
+    assert!(!link.adopted());
+
+    // Idempotent re-push (app open again).
+    let again = ops.sync().await.unwrap();
+    assert_eq!(row(&again, &b.device_id()).state, FleetState::In);
+    assert_eq!(desktop.store().fleet_room().unwrap().unwrap().id, fleet.id);
+    assert_eq!(b.store().list().unwrap().len(), 1, "one row on b");
+    assert_eq!(desktop.registry.snapshot().engines.len(), 2);
+    assert!(b.desktop_sessions().is_empty());
+    assert_eq!(desktop.dialer.count.load(Ordering::SeqCst), 0);
+    let rooms = ops.rooms_file().load().unwrap();
+    assert_eq!(rooms.len(), 1);
+    assert!(rooms[0].is_fleet());
+    assert_eq!(rooms[0].sessions.len(), 1, "one link, never a second");
+
+    // C4a: fleet code never wrote b's remote-access settings, and never
+    // asked b to mint a Tailcat invite.
+    assert!(!b.dir.path().join("remote-access.json").exists());
+    assert_eq!(b.calls(methods::CREATE_TAILCAT_INVITE), 0);
+}
+
+/// F1 regression (C4a): a fleet sync never writes any member's
+/// `remote-access.json` — not even for an engine on the Direct transport
+/// bound to loopback behind a reverse proxy (the shape check cannot tell it
+/// from a Tailcat engine) — and never sends a settings-writing RPC. Every
+/// member still ends the pass with every member's address in its book, and
+/// so does what a phone pairing to any of them would fetch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fleet_sync_never_rewrites_remote_access_settings() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+    let direct = member_engine().await;
+    let tailcat = member_engine().await;
+    let settings = |engine: &MemberEngine| engine.dir.path().join("remote-access.json");
+    // A Direct engine on loopback behind a proxy, which once ran Tailcat
+    // (so it has a recorded address), and a flag-enabled Tailcat engine.
+    let direct_bytes = br#"{
+  "enabled": true,
+  "bindAddress": "127.0.0.1:27655",
+  "publicUrl": "https://engine.example.test",
+  "transport": "network"
+}"#;
+    let tailcat_bytes = br#"{
+  "enabled": false,
+  "bindAddress": "127.0.0.1:0",
+  "publicUrl": null,
+  "transport": "tailcat"
+}"#;
+    std::fs::write(settings(&direct), direct_bytes).unwrap();
+    std::fs::write(settings(&tailcat), tailcat_bytes).unwrap();
+    desktop.pair_serving(&direct, "tcDIRECT").await;
+    desktop.pair_serving(&tailcat, "tcTAILCAT").await;
+    wait_connected(&desktop.registry, 3).await;
+
+    let report = ops.sync().await.unwrap();
+    assert_eq!(row(&report, &direct.device_id()).state, FleetState::In);
+    assert_eq!(row(&report, &tailcat.device_id()).state, FleetState::In);
+    ops.sync().await.unwrap();
+
+    for (engine, bytes) in [(&direct, &direct_bytes[..]), (&tailcat, &tailcat_bytes[..])] {
+        assert_eq!(std::fs::read(settings(engine)).unwrap(), bytes);
+        for method in [
+            methods::CREATE_TAILCAT_INVITE,
+            methods::SET_REMOTE_ACCESS,
+            methods::REVOKE_PAIRING_SESSION,
+        ] {
+            assert_eq!(engine.calls(method), 0, "{method} was sent");
+        }
+        assert!(engine.calls(methods::ROOM_JOIN) > 0);
+    }
+
+    // One pass put every member's address into every book.
+    let fleet = desktop.store().fleet_room().unwrap().unwrap();
+    for engine in [&direct, &tailcat] {
+        let served = engine
+            .store()
+            .fleet_invite(&fleet.id)
+            .unwrap()
+            .expect("pushed");
+        let addresses: HashSet<_> = served.members.iter().map(|m| m.address.as_str()).collect();
+        for address in ["tcLOCAL", "tcDIRECT", "tcTAILCAT"] {
+            assert!(addresses.contains(address), "{address} missing");
+        }
+    }
+}
+
+/// Fleet code never names a settings-writing remote-access RPC: the only
+/// remote-access call any fleet path makes is the read-only shape check.
 #[test]
-fn the_checklist_completes_only_when_everything_re_presented_and_dropped() {
-    let members = vec![member("server", "tcB")];
-    let empty: std::collections::HashSet<String> =
-        std::collections::HashSet::from_iter(std::iter::empty());
-    let unchecked: HashMap<String, OldSecretStatus> = HashMap::new();
-    let rows = rotate_rows(&members, &empty, &unchecked, &empty);
-    let checklist = RotateChecklist {
-        old_room_id: "old".into(),
-        new_room_id: "new".into(),
-        local_old_verifier: true,
-        rows: rows.clone(),
+fn no_fleet_path_names_a_settings_writing_rpc() {
+    for (file, source) in [
+        ("crates/ui/src/rooms.rs", include_str!("../rooms.rs")),
+        (
+            "crates/engine-client/src/rooms.rs",
+            include_str!("../../../engine-client/src/rooms.rs"),
+        ),
+        (
+            "crates/engine/src/rooms.rs",
+            include_str!("../../../engine/src/rooms.rs"),
+        ),
+    ] {
+        for forbidden in [
+            "CREATE_TAILCAT_INVITE",
+            "create_tailcat_invite",
+            "SET_REMOTE_ACCESS",
+            "remote_access::save",
+        ] {
+            assert!(!source.contains(forbidden), "{file} names {forbidden}");
+        }
+    }
+}
+
+/// An opted-out engine is never pushed and never contributes its address;
+/// switching it back on brings it in on the next pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opted_out_engines_are_skipped_until_switched_back_on() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+    let b = member_engine().await;
+    let c = member_engine().await;
+    desktop.pair_serving(&b, "tcB").await;
+    desktop.pair_serving(&c, "tcC").await;
+    wait_connected(&desktop.registry, 3).await;
+    ops.set_opt_out(&c.device_id(), true).unwrap();
+
+    let report = ops.sync().await.unwrap();
+    assert_eq!(row(&report, &b.device_id()).state, FleetState::In);
+    assert_eq!(row(&report, &c.device_id()).state, FleetState::OptedOut);
+    assert!(
+        c.store().fleet_room().unwrap().is_none(),
+        "c was never pushed"
+    );
+    let fleet = desktop.store().fleet_room().unwrap().unwrap();
+    assert!(
+        !fleet.book.members.iter().any(|m| m.address == "tcC"),
+        "an opted-out engine's address stays out of the book"
+    );
+    // The preference persists beside rooms-v1.json.
+    assert!(desktop.dir.path().join(FLEET_FILE).exists());
+    assert!(
+        ops.prefs_file()
+            .load()
+            .unwrap()
+            .is_opted_out(&c.device_id())
+    );
+
+    ops.set_opt_out(&c.device_id(), false).unwrap();
+    let report = ops.sync().await.unwrap();
+    assert_eq!(row(&report, &c.device_id()).state, FleetState::In);
+    assert_eq!(c.store().fleet_room().unwrap().unwrap().id, fleet.id);
+}
+
+/// A book member this desktop already paired by hand is reached through its
+/// existing entry: the presentation reattaches it (same key), so the
+/// registry never grows a second entry for it, and leave never forgets it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn joining_dedupes_a_member_already_paired_by_hand() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+    let b = member_engine().await;
+    // Paired by hand, but this desktop's probe does not see its Tailcat
+    // route, so the pasted book is the only place its address comes from.
+    let key = pair_by_hand(&desktop.registry, &b).await;
+    desktop.dialer.map("tcB", b.base());
+    wait_connected(&desktop.registry, 2).await;
+
+    // A fleet minted elsewhere, which b already joined.
+    let invite = RoomInvite::fleet("Fleet", SECRET, vec![member("server", "tcB")]).unwrap();
+    b.join(&invite);
+    ops.join(&invite.encode().unwrap(), false).await.unwrap();
+
+    assert_eq!(desktop.registry.snapshot().engines.len(), 2, "no duplicate");
+    let room = ops.rooms_file().load().unwrap().remove(0);
+    let session = room
+        .sessions
+        .iter()
+        .find(|session| session.address == "tcB")
+        .expect("b is reached");
+    assert_eq!(session.engine_key, key.0, "through the hand-paired entry");
+    assert!(!session.adopted(), "the fleet does not own it");
+    wait_connected(&desktop.registry, 2).await;
+
+    // A re-run does not dial again (the entry is live).
+    let dials = desktop.dialer.count.load(Ordering::SeqCst);
+    ops.sync().await.unwrap();
+    assert_eq!(desktop.dialer.count.load(Ordering::SeqCst), dials);
+    assert_eq!(desktop.registry.snapshot().engines.len(), 2);
+
+    // Leaving never forgets an engine paired by hand.
+    assert!(ops.leave().await.unwrap());
+    assert!(desktop.registry.target(&key).is_ok());
+    assert!(desktop.store().fleet_room().unwrap().is_none());
+}
+
+/// A member that joined the fleet after this desktop's last pass (its host
+/// ran the CLI join; another client's heal put its address in b's book) is
+/// found through the book union, presented to, and adopted — and the
+/// unioned book reaches every member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_joiner_is_healed_in_on_the_next_pass() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+    let b = member_engine().await;
+    desktop.pair_serving(&b, "tcB").await;
+    wait_connected(&desktop.registry, 2).await;
+    ops.sync().await.unwrap();
+    let fleet = desktop.store().fleet_room().unwrap().unwrap();
+    let invite = desktop.store().fleet_invite(&fleet.id).unwrap().unwrap();
+
+    // c joins late, out of band; only b's book learns about it.
+    let c = member_engine().await;
+    c.join(&invite);
+    b.store()
+        .merge_book(&fleet.id, vec![member("late", "tcC")])
+        .unwrap();
+    desktop.dialer.map("tcC", c.base());
+
+    let report = ops.sync().await.unwrap();
+    wait_connected(&desktop.registry, 3).await;
+    assert_eq!(desktop.registry.snapshot().engines.len(), 3);
+    assert_eq!(row(&report, &c.device_id()).state, FleetState::In);
+    assert_eq!(c.desktop_sessions().len(), 1, "one presentation session");
+    // Every book now carries the union.
+    let local_book = desktop.store().fleet_room().unwrap().unwrap().book;
+    assert!(local_book.members.iter().any(|m| m.address == "tcC"));
+    let c_book = c
+        .store()
+        .book_verified(&fleet.id, &invite.secret)
+        .unwrap()
+        .unwrap();
+    assert!(c_book.members.iter().any(|m| m.address == "tcB"));
+    assert!(c_book.members.iter().any(|m| m.address == "tcLOCAL"));
+
+    // Healing again changes nothing.
+    ops.sync().await.unwrap();
+    assert_eq!(desktop.registry.snapshot().engines.len(), 3);
+    assert_eq!(c.desktop_sessions().len(), 1, "no session churn");
+}
+
+/// The paste flow: a solo fleet (lazily minted by "Show fleet invite") is
+/// left silently for the pasted one; a fleet shared with other engines asks
+/// first, and the confirmed switch leaves it — revoking and forgetting only
+/// what it adopted. Plain-room invites and junk get fixed text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pasting_switches_from_a_solo_fleet_and_asks_before_leaving_a_shared_one() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+
+    // "Show fleet invite" with nobody else around mints a solo fleet.
+    let shown = ops.fleet_invite().await.unwrap();
+    assert!(shown.encoded.starts_with("roboco-room:"));
+    assert!(shown.qr_svg.is_some());
+    let solo = RoomInvite::decode(&shown.encoded).unwrap();
+    assert!(solo.is_fleet());
+    assert!(!format!("{shown:?}").contains(&solo.secret));
+    assert!(!format!("{shown:?}").contains(&shown.encoded));
+
+    // PC 2: paste a fleet minted elsewhere (b is in it).
+    let b = member_engine().await;
+    let fleet = RoomInvite::fleet("Fleet", SECRET, vec![member("server", "tcB")]).unwrap();
+    b.join(&fleet);
+    desktop.dialer.map("tcB", b.base());
+    let report = ops.join(&fleet.encode().unwrap(), false).await.unwrap();
+    assert!(report.exists);
+    assert_eq!(
+        desktop.store().fleet_room().unwrap().unwrap().id,
+        fleet.room_id(),
+        "the solo fleet was left for the pasted one"
+    );
+    assert_eq!(desktop.store().list().unwrap().len(), 1);
+    wait_connected(&desktop.registry, 2).await;
+    assert_eq!(b.desktop_sessions().len(), 1);
+    // The session carries this machine's own label (F2): another desktop
+    // presenting to b never reissues it away.
+    let presenter = ops.presenter_label();
+    assert_ne!(presenter, DESKTOP_LABEL);
+    assert_eq!(b.desktop_sessions()[0].label, presenter);
+    let local_id = desktop.registry.local().engine_info().device_id;
+    assert!(
+        presenter.contains(
+            &local_id
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(6)
+                .collect::<String>()
+        )
+    );
+    assert_eq!(row(&report, &b.device_id()).state, FleetState::In);
+
+    // Another fleet while this one is shared: asks first, changes nothing.
+    let other = RoomInvite::fleet("Fleet", OTHER_SECRET, Vec::new()).unwrap();
+    let encoded = other.encode().unwrap();
+    let error = ops.join(&encoded, false).await.unwrap_err();
+    assert!(error.downcast_ref::<FleetSwitchNeeded>().is_some());
+    let text = error.to_string();
+    assert!(!text.contains(OTHER_SECRET) && !text.contains(&encoded));
+    assert_eq!(
+        desktop.store().fleet_room().unwrap().unwrap().id,
+        fleet.room_id()
+    );
+
+    // Confirmed: the old fleet's adopted entry is revoked and forgotten.
+    ops.join(&encoded, true).await.unwrap();
+    assert_eq!(
+        desktop.store().fleet_room().unwrap().unwrap().id,
+        other.room_id()
+    );
+    assert_eq!(desktop.registry.snapshot().engines.len(), 1);
+    assert!(b.desktop_sessions()[0].revoked_at.is_some());
+    let rooms = ops.rooms_file().load().unwrap();
+    assert_eq!(rooms.len(), 1);
+    assert_eq!(rooms[0].id, other.room_id());
+
+    // Re-pasting the same fleet is idempotent.
+    ops.join(&encoded, false).await.unwrap();
+    assert_eq!(desktop.store().list().unwrap().len(), 1);
+
+    // A plain-room invite and junk: fixed text, nothing quoted.
+    let plain = RoomInvite::new("Room", SECRET, Vec::new())
+        .unwrap()
+        .encode()
+        .unwrap();
+    let error = ops.join(&plain, false).await.unwrap_err().to_string();
+    assert_eq!(error, PLAIN_ROOM_INVITE);
+    let junk = format!("roboco-room:{SECRET}");
+    let error = ops.join(&junk, false).await.unwrap_err().to_string();
+    assert!(!error.contains(SECRET), "{error}");
+}
+
+fn engine_snapshot(key: &str, device_id: &str, caps: &[&str], connected: bool) -> EngineSnapshot {
+    let mut info = roboco_proto::EngineInfo::current(
+        device_id.into(),
+        roboco_proto::WorkspaceScope::Local,
+        None,
+    );
+    info.capabilities = caps.iter().map(|cap| cap.to_string()).collect();
+    EngineSnapshot {
+        key: EngineKey(key.into()),
+        info,
+        state: if connected {
+            EngineConnectionState::Connected
+        } else {
+            EngineConnectionState::Reconnecting
+        },
+        last_error: None,
+        generation: 1,
+        chats: Vec::new(),
+        spaces: Vec::new(),
+        devices: Vec::new(),
+        sessions: Vec::new(),
+        chats_loaded: false,
+        spaces_loaded: false,
+    }
+}
+
+/// The survey decides what it can from the snapshot alone: an engine without
+/// rooms-v2 reads "update that engine" and is never probed or pushed (no
+/// error anywhere); opted-out and offline engines are skipped; the local
+/// engine and a second entry for one identity never get rows.
+#[test]
+fn the_survey_skips_old_opted_out_offline_and_duplicate_engines() {
+    let v2 = capabilities::ROOMS_V2;
+    let snapshot = RegistrySnapshot {
+        engines: vec![
+            engine_snapshot("local", "dev-local", &[v2], true),
+            engine_snapshot("k-old", "dev-old", &[capabilities::ROOMS_V1], true),
+            engine_snapshot("k-new", "dev-new", &[v2], true),
+            engine_snapshot("k-dup", "dev-new", &[v2], true),
+            engine_snapshot("k-out", "dev-out", &[v2], true),
+            engine_snapshot("k-off", "dev-off", &[v2], false),
+            engine_snapshot("k-self", "dev-local", &[v2], true),
+        ],
+        configuration_error: None,
     };
-    assert!(!checklist.complete());
-    assert!(checklist.hint().contains("drop it below"));
-
-    let mut done = checklist.clone();
-    done.local_old_verifier = false;
-    done.rows = rotate_rows(
-        &members,
-        &["tcB".to_owned()].into_iter().collect(),
-        &HashMap::from([("tcB".to_owned(), OldSecretStatus::Refused)]),
-        &empty,
+    let prefs = FleetPrefs {
+        opted_out: ["dev-out".to_owned()].into_iter().collect(),
+    };
+    let (rows, candidates) = survey(&snapshot, &prefs);
+    let state = |device: &str| {
+        rows.iter()
+            .find(|row| row.device_id.as_deref() == Some(device))
+            .map(|row| row.state)
+    };
+    assert_eq!(state("dev-old"), Some(FleetState::NeedsUpdate));
+    assert_eq!(state("dev-out"), Some(FleetState::OptedOut));
+    assert_eq!(
+        state("dev-off"),
+        Some(FleetState::NotInYet(NotInYet::Offline))
     );
-    assert!(done.complete());
-    assert!(done.hint().contains("roboco engine room leave"));
+    assert_eq!(state("dev-local"), None, "the local engine is not a row");
+    assert_eq!(rows.len(), 4, "one row per identity: {rows:?}");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.device_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dev-new"],
+        "only the rooms-v2, opted-in, connected engine is probed and pushed"
+    );
+    assert_eq!(
+        FleetState::NeedsUpdate.caption(),
+        "Update that engine to add it"
+    );
+    assert!(!FleetState::NeedsUpdate.retryable());
+}
+
+/// Every caption is plain language: no room/verifier/session jargon, never
+/// a secret; only "not in yet" rows offer Retry.
+#[test]
+fn fleet_captions_are_plain_language() {
+    let states = [
+        FleetState::In,
+        FleetState::NotInYet(NotInYet::Offline),
+        FleetState::NotInYet(NotInYet::TailcatOff),
+        FleetState::NotInYet(NotInYet::Unconfirmed),
+        FleetState::NeedsUpdate,
+        FleetState::OptedOut,
+        FleetState::OtherFleet,
+    ];
+    for state in states {
+        let caption = state.caption().to_lowercase();
+        for jargon in ["room", "verifier", "session", "secret", "present", "member"] {
+            assert!(!caption.contains(jargon), "{caption}");
+        }
+        assert_eq!(state.retryable(), matches!(state, FleetState::NotInYet(_)));
+    }
+    assert_eq!(FleetState::In.caption(), "In");
+    assert!(
+        FleetState::NotInYet(NotInYet::Offline)
+            .caption()
+            .starts_with("Not in yet")
+    );
+}
+
+/// App open and new pairings are fleet events: the first connect of each
+/// engine (local included) schedules a pass; reconnects do not.
+#[test]
+fn fleet_events_fire_once_per_engine_connect() {
+    let mut sync = FleetSync::default();
+    let v2 = capabilities::ROOMS_V2;
+    let mut snapshot = RegistrySnapshot {
+        engines: vec![engine_snapshot("local", "dev-local", &[v2], true)],
+        configuration_error: None,
+    };
+    assert!(sync.note_connected(&snapshot), "app open");
+    assert!(!sync.note_connected(&snapshot));
+    snapshot
+        .engines
+        .push(engine_snapshot("k-b", "dev-b", &[v2], false));
+    assert!(!sync.note_connected(&snapshot), "not connected yet");
+    snapshot.engines[1].state = EngineConnectionState::Connected;
+    assert!(sync.note_connected(&snapshot), "a new pairing connected");
+    snapshot.engines[1].state = EngineConnectionState::Reconnecting;
+    assert!(!sync.note_connected(&snapshot));
+    snapshot.engines[1].state = EngineConnectionState::Connected;
+    assert!(
+        !sync.note_connected(&snapshot),
+        "a reconnect is not an event"
+    );
 }
 
 #[test]
 fn engine_labels_fall_back_to_identity_not_secrets() {
-    let snapshot = RegistrySnapshot::default();
-    // An empty registry labels the local member with the generic label.
-    assert_eq!(local_member_label(&snapshot), "Desktop");
-    let info = roboco_proto::EngineInfo {
-        device_id: "device-1".into(),
-        workspace_scope: roboco_proto::WorkspaceScope::Local,
-        cursor_sdk_version: None,
-        capabilities: Vec::new(),
-        version: None,
-        protocol_version: None,
-        min_client_protocol_version: None,
+    let snapshot = RegistrySnapshot {
+        engines: vec![engine_snapshot("k-b", "dev-b", &[], true)],
+        configuration_error: None,
     };
-    let mut snapshot = RegistrySnapshot::default();
-    snapshot
-        .engines
-        .push(crate::engine_registry::EngineSnapshot {
-            key: EngineKey::local(),
-            info,
-            state: crate::engine_registry::EngineConnectionState::Connected,
-            last_error: None,
-            generation: 1,
-            chats: Vec::new(),
-            spaces: Vec::new(),
-            devices: Vec::new(),
-            sessions: Vec::new(),
-            chats_loaded: false,
-            spaces_loaded: false,
-        });
-    // No devices landed yet: the label falls back to the generic one.
-    assert_eq!(local_member_label(&snapshot), "Desktop");
-    // A key the snapshot does not know labels as an engine, never an
-    // address or credential.
+    assert_eq!(engine_label(&snapshot, &EngineKey("k-b".into())), "dev-b");
     assert_eq!(engine_label(&snapshot, &EngineKey("gone".into())), "Engine");
 }
 
+/// The link rule: a pushed engine's address is the one entry its book holds
+/// beyond what the push carried — never this machine's, never one linked to
+/// another engine, and nothing when the difference is not exactly one.
+#[test]
+fn a_pushed_engine_is_linked_only_to_the_one_entry_it_added() {
+    let invite = RoomInvite::fleet("Fleet", SECRET, vec![member("desk", "tcLOCAL")]).unwrap();
+    let mut room = ClientRoom::from_invite(&invite);
+    let b = EngineKey("k-b".into());
+    let sent: HashSet<String> = ["tcLOCAL".to_owned()].into_iter().collect();
+    let book = |addresses: &[&str]| -> Vec<RoomMember> {
+        addresses
+            .iter()
+            .map(|address| member("x", address))
+            .collect()
+    };
+    let own = |room: &ClientRoom, members: &[RoomMember]| {
+        own_entry(room, &b, &sent, Some("tcLOCAL"), members)
+    };
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB"])).as_deref(),
+        Some("tcB")
+    );
+    assert_eq!(own(&room, &book(&["tcLOCAL"])), None, "added nothing");
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB", "tcX"])),
+        None,
+        "ambiguous"
+    );
+    room.link("tcX", &EngineKey("k-x".into()));
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB", "tcX"])).as_deref(),
+        Some("tcB"),
+        "an address linked elsewhere is not b's"
+    );
+    room.link("tcB", &b);
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB2"])),
+        None,
+        "b is linked already"
+    );
+}
+
+#[test]
+fn fleet_prefs_round_trip_and_stay_owner_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = FleetPrefsFile::new(dir.path().join(FLEET_FILE));
+    assert_eq!(file.load().unwrap(), FleetPrefs::default());
+    let prefs = FleetPrefs {
+        opted_out: ["dev-1".to_owned()].into_iter().collect(),
+    };
+    file.save(&prefs).unwrap();
+    assert_eq!(file.load().unwrap(), prefs);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.path().join(FLEET_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
+
 /// A recording stand-in engine: answers `EngineInfo`, `GetRemoteAccess`
-/// with a caller-chosen snapshot, and — only when the caller armed it —
-/// mints `CreateTailcatInvite` for a caller-chosen address. Every method it
-/// is asked is recorded, so tests can prove the create flow never sends the
-/// mint (the settings-mutating RPC) against engines not already serving
-/// their Tailcat route.
+/// with a caller-chosen snapshot, and — only when armed — mints
+/// `CreateTailcatInvite` for a caller-chosen address. Every method asked is
+/// recorded, so tests prove the probe never sends the mint (the
+/// settings-mutating RPC) against engines not already serving Tailcat.
 struct RecordingEngine {
     info: roboco_proto::EngineInfo,
     snapshot: serde_json::Value,
@@ -606,8 +962,6 @@ impl roboco_rpc::RpcService for RecordingEngine {
             methods::GET_REMOTE_ACCESS => RpcReply::value(&self.snapshot),
             methods::CREATE_TAILCAT_INVITE => match &self.invite_address {
                 Some(address) => {
-                    // The real mint embeds the engine's published address
-                    // plus a single-use code; only the address matters here.
                     let invite = roboco_engine::tailcat::TailcatInvite::new(
                         address,
                         "oneSecondCodeNeverRedeemed",
@@ -627,8 +981,6 @@ impl roboco_rpc::RpcService for RecordingEngine {
     }
 }
 
-/// A registry whose only entry talks to a recording engine (the local-key
-/// entry is instantly live — no supervision, no watches).
 fn recording_registry(engine: Arc<RecordingEngine>) -> EngineRegistry {
     let client = Arc::new(roboco_rpc::memory_client(engine));
     let info = roboco_proto::EngineInfo::current(
@@ -639,137 +991,67 @@ fn recording_registry(engine: Arc<RecordingEngine>) -> EngineRegistry {
     EngineRegistry::test_local(info, client)
 }
 
-/// An engine already serving its Tailcat route (remote access on, loopback
-/// listener): the create flow asks it for its address, and the minted
-/// address lands in the book — exactly one guard call and one mint.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn create_mints_the_address_of_an_engine_already_serving_tailcat() {
-    let dir = tempfile::tempdir().unwrap();
-    record_address(dir.path(), "tcLOCAL").unwrap();
-    let engine = RecordingEngine::new(
-        json!({
-            "status": {
-                "enabled": true,
-                "configuredEnabled": true,
-                "address": "127.0.0.1:27655",
-                "source": "test",
-                "error": null,
-            },
-            "sessions": []
-        }),
-        Some("tcSHAPEDMEMBER1".into()),
-    );
-    let registry = recording_registry(engine.clone());
-    let ops = RoomOps::with_dialer(
-        dir.path().to_path_buf(),
-        registry,
-        MapDialer::new(HashMap::new()),
-    );
-    let created = ops
-        .create(
-            "Home fleet",
-            &[MemberPick::Engine(EngineKey::local())],
-            "My desktop",
-        )
-        .await
-        .unwrap();
-    // The local engine plus the minted member address.
-    assert_eq!(created.invite.members.len(), 2);
-    assert!(
-        created
-            .invite
-            .members
-            .iter()
-            .any(|member| member.address == "tcSHAPEDMEMBER1")
-    );
-    assert!(created.unavailable.is_empty());
-    // One guard, one mint — nothing else reached the engine.
-    assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1);
-    assert_eq!(engine.count(methods::CREATE_TAILCAT_INVITE), 1);
+fn remote_access(enabled: bool, address: Option<&str>) -> serde_json::Value {
+    json!({
+        "status": {
+            "enabled": enabled,
+            "configuredEnabled": enabled,
+            "address": address,
+            "source": "test",
+            "error": null,
+        },
+        "sessions": []
+    })
 }
 
-/// Engines not already serving Tailcat never see the mint: remote access on
-/// with a LAN listener (network transport) or remote access off both skip
-/// the engine with the enable-first note — room code never flips an
-/// engine's remote-access settings, and no address leaks into the note.
+/// C4a (F1 regression of `ac713514`): the production probe is one read-only
+/// `GetRemoteAccess`, whatever the shape — the settings-mutating mint is
+/// never sent, not even to an engine that serves its Tailcat route (whose
+/// mint is armed here) or to a loopback-bound Direct engine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn create_never_mints_against_engines_without_a_tailcat_route() {
-    for (name, snapshot) in [
+async fn the_probe_only_ever_reads_remote_access() {
+    for (name, snapshot, shape) in [
+        (
+            "serving (or Direct on loopback)",
+            remote_access(true, Some("127.0.0.1:27655")),
+            TailcatShape::Serves,
+        ),
         (
             "network transport",
-            json!({
-                "status": {
-                    "enabled": true,
-                    "configuredEnabled": true,
-                    "address": "0.0.0.0:27655",
-                    "source": "test",
-                    "error": null,
-                },
-                "sessions": []
-            }),
+            remote_access(true, Some("0.0.0.0:27655")),
+            TailcatShape::Off,
         ),
         (
             "remote access off",
-            json!({
-                "status": {
-                    "enabled": false,
-                    "configuredEnabled": false,
-                    "address": null,
-                    "source": "test",
-                    "error": null,
-                },
-                "sessions": []
-            }),
+            remote_access(false, None),
+            TailcatShape::Off,
         ),
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        record_address(dir.path(), "tcLOCAL").unwrap();
-        // The mint is ARMED: if the guard fails, the RPC would be sent and
-        // the address would land in the book — the count is the proof.
+        // The mint is ARMED: nothing but fleet code's restraint keeps it
+        // from being sent.
         let engine = RecordingEngine::new(snapshot, Some("tcNEVERMINTED".into()));
         let registry = recording_registry(engine.clone());
-        let ops = RoomOps::with_dialer(
-            dir.path().to_path_buf(),
-            registry,
-            MapDialer::new(HashMap::new()),
-        );
-        let created = ops
-            .create(
-                "Home fleet",
-                &[MemberPick::Engine(EngineKey::local())],
-                "My desktop",
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            created.invite.members.len(),
-            1,
-            "{name}: only the local engine is in the book"
-        );
-        assert!(
-            !created
-                .invite
-                .members
-                .iter()
-                .any(|member| member.address == "tcNEVERMINTED"),
-            "{name}: the minted address never reached the book"
-        );
-        assert_eq!(created.unavailable.len(), 1, "{name}");
-        assert!(
-            created.unavailable[0].contains("enable its Tailcat route first"),
-            "{name}: the note says what to do: {}",
-            created.unavailable[0]
-        );
-        assert!(
-            !created.unavailable[0].contains("tc"),
-            "{name}: no address in the note"
-        );
-        // The proof: the guard asked, the mint was never sent.
+        let target = registry.local();
+        assert_eq!(TailcatProbe.shape(&target).await, shape, "{name}");
         assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1, "{name}");
+        assert!(
+            engine
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|call| call == methods::GET_REMOTE_ACCESS || call == methods::ENGINE_INFO),
+            "{name}: only reads"
+        );
         assert_eq!(
             engine.count(methods::CREATE_TAILCAT_INVITE),
             0,
             "{name}: the settings-mutating RPC must never be sent"
         );
+        assert_eq!(engine.count(methods::SET_REMOTE_ACCESS), 0, "{name}");
     }
+    assert_eq!(
+        TailcatShape::Off,
+        tailcat_shape_of(&remote_access(true, Some("192.168.1.4:27655")))
+    );
 }

@@ -26,3 +26,14 @@ Source: `.scratch/upstream-drift/2026-10-25.md` § D-a.
 - [ ] Commit records upstream SHA `f30a8641b` (#967, iOS parts)
 
 ## Comments
+
+- 2026-10-28 (PR #34 CI fixes, "Android: render wave 9's error-card
+  roles…"): the error card's **rendering** landed so the app compiles
+  against ticket 14's core — DANGER_WASH/DANGER_SOFT (Palette.swift:96-97
+  values), the `row-notice` tag, and `WidgetKind.Action` as a DANGER_SOFT
+  capsule button (a control: no row menu, no composer dismiss).
+  `TranscriptActions.perform("sign-in")` pushes the Accounts & Usage page
+  focused on the chat's agent. Still open here: starting the agent's first
+  login on arrival (the desktop's `start_first_login`, iOS's
+  `signIn: true`), the Limited-banner reconciliation, the error-card
+  golden, session delete and the ⋯ menu header.

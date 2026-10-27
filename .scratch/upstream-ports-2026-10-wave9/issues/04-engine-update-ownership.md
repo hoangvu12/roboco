@@ -19,7 +19,50 @@ engine; keep the macOS Keychain rationale out of comments, keep the logic.
 **Verification budget:** `cargo check -p roboco-engine -p roboco-update` +
 restart_resume/managed tests. Source: `.scratch/upstream-drift/2026-10-25.md` § A4.
 
-- [ ] Stop-don't-orphan + credentials fallback ported
-- [ ] Commit records upstream SHA `f725384bd` (#970)
+- [ ] Stop-don't-orphan + credentials fallback ported — **partial BY ARCHITECTURE (see Comments): the Keychain→file credentials fallback is fully ported and macOS-compile-verified; the orphan-successor half has no Roboco surface to port (no engine self-relaunch exists — a relaunch would require the app/launcher layer this engine deliberately lacks). Verified green in the lane-end sweep: engine --lib 481/481, restart_resume 13/13 (1 ignored).**
+- [x] Commit records upstream SHA `f725384bd` (#970)
 
 ## Comments
+
+- **2026-10-25 — ported on `wave9/engine` (the portable parts).**
+  - **Credentials fallback (ported in full):** `write_claude_credentials` now
+    falls back to `~/.claude/.credentials.json` (owner-only) when the Keychain
+    write fails and no item is visible — Claude Code's own fallback — and
+    errors with the `claude` → /login recovery when an existing item can't be
+    updated (it would shadow the file). Keychain test seam
+    (`SECURITY_OVERRIDE` / `security_bin`) and the macOS test
+    `claude_login_falls_back_to_the_file_when_the_keychain_refuses` ported.
+    **Untested surface:** the whole Keychain path is `#[cfg(target_os =
+    "macos")]` and Roboco CI has no macOS runners — the port is
+    compile-unverified here (Linux) and must be reviewed/run on macOS by a
+    human.
+  - **Update-lib seam (ported):** `set_managed_restart_ready` + the
+    `MANAGED_RESTART_READY` gate composed into `SupersededRestart::poll`
+    (checked every pass, default open) — upstream's generic readiness gate
+    for a superseded service restart.
+  - **Stop-don't-orphan (impossible as written):** Roboco has no
+    `engine/src/managed.rs` and no engine self-relaunch — the desktop app
+    EMBEDS its engine in-process (`EngineHandle::bootstrap` →
+    connect-or-embed), and the headless daemon's restart goes through
+    `restart_service()` (systemd `--user restart` / `launchctl kickstart`),
+    so the successor is always the service manager's child, never an
+    orphan the old engine spawned. Upstream's `app_starts_engine`/
+    `app_running` proc_listallpids bundle scan and the stop-instead-of-
+    relaunch closure would be untestable dead code on all three Roboco
+    platforms. The seam above is carried so a future restart owner can hold
+    a restart back; today nothing registers it (behavior identical to
+    upstream's unset default).
+- **Verification:** `cargo test -p roboco-update` — 19 passed (incl. the new
+  `managed_restart_gate_defaults_open_and_can_be_registered` and the
+  unchanged `superseded_service_restarts_once_when_quiet`);
+  `cargo check -p roboco-engine -p roboco-update` clean (11 pre-existing
+  warnings, none in touched files); `cargo test -p roboco-engine --test
+  restart_resume` — 13 passed, 1 ignored. The macOS-gated Keychain test
+  cannot run on this Linux host (no macOS CI either) — left for human
+  verification.
+
+- **2026-10-27 — LANE-END VERIFICATION:** `cargo check --workspace` clean;
+  `wiregen --check` fresh; engine `--lib` 481/481, `--test restart_resume`
+  13/13 (1 ignored), `--test e2e` 28/28 (2 ignored) — all green. Status
+  stays **ready-for-agent**: the unchecked box is partial by architecture,
+  not by verification (see the box note).

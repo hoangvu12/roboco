@@ -824,6 +824,14 @@ pub async fn serve_engine_remote_with_previews(
     Ok(EngineListener { address, task })
 }
 
+/// The name `EngineInfo.deviceName` reports for the engine at `data_dir`,
+/// read without creating its identity: `roboco engine room create` labels
+/// this engine's own fleet book entry with it.
+pub fn local_device_name_at(data_dir: &Path) -> String {
+    let device_id = std::fs::read_to_string(data_dir.join("device-id")).unwrap_or_default();
+    local_device_name(device_id.trim())
+}
+
 /// Best-effort human name for this device's registry row.
 fn local_device_name(device_id: &str) -> String {
     select_local_device_name(

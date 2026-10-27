@@ -67,6 +67,7 @@ class RowMenuControlHitTest {
             WidgetKind.ToolToggle(1uL, open = false),
             WidgetKind.Detail("Bash"),
             WidgetKind.Image("ref"),
+            WidgetKind.Action("sign-in", "Log in"),
         )
         for (k in kinds) {
             val d = display(listOf(widget(k, 0f, 0f, 20f, 20f)))
