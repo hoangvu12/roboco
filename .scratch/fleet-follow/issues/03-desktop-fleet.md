@@ -54,3 +54,58 @@ language only.
 - [ ] UI tests (fake dialer, `RoomOps::with_dialer` pattern) cover: lazy mint, opt-out skip, dedupe on join (already-paired member), heal after late join, old-engine skip
 
 ## Comments
+
+### 2026-10-27 — design decisions and deviations (recorded before building)
+
+1. *Registry dedupe lives in the shared adopt tail* (`EngineRegistry::adopt_engine`,
+   used by `pair` and `join_room_member`): after reading `EngineInfo`, an
+   existing REMOTE entry with the same `device_id` is reused. Room joins:
+   a live duplicate is linked and the freshly presented room session is
+   revoked best-effort (no second entry, no extra live session); a dead
+   duplicate (e.g. a Tailcat-paired engine after a desktop restart — its
+   forwarder died) is *reattached* under its existing key with the fresh
+   forwarder + credential, so its chats/tabs keep their ids. `pair` re-pairing
+   an already-paired remote engine reattaches the same way (re-pair is
+   idempotent). Pairing the local engine's own identity is left as today.
+2. *`RoomMemberSession.session_id` becomes `Option`*: `None` = the room is
+   linked to an entry it did not adopt (hand-paired, or a dedupe link).
+   Leave revokes/forgets ONLY room-adopted entries; hand-paired engines are
+   never touched. Retiring a stale room-owned record no longer forgets the
+   entry first — the re-dial reattaches it under the same key.
+3. *Member addresses* come from the C4a-guarded harvest of `ac713514`:
+   `GetRemoteAccess` must show the Tailcat `Serves` shape before the
+   one-second `CreateTailcatInvite` (token never redeemed); the address is
+   cached in the client fleet record per engine key, so app-open re-syncs do
+   not re-mint. A probe seam (`FleetProbe`) sits beside the dialer seam for
+   tests (test engines cannot run Tailcat).
+4. *Lazy mint trigger*: a sync mints the fleet (store `create("Fleet", …)`,
+   kind=fleet, secret retained) only when at least one eligible member exists
+   (paired, connected, rooms-v2, Tailcat `Serves`, not opted out) — or when the
+   user asks for "Show fleet invite". Sync runs on app open (first local
+   connect), whenever a remote engine connects for the first time this
+   process (covers new pairings from any flow), on Retry, and on opt-out
+   changes; single-flight with one coalesced re-run.
+5. *Paste conflict (`FleetConflict`) decision*: if this machine's current
+   fleet is solo (no book member other than this machine), it is left
+   silently and the pasted fleet joined. Otherwise the paste is refused with
+   a confirm ("This computer is already in a fleet…" + "Leave it and join"),
+   which re-runs with an explicit replace (leave = revoke+forget only
+   room-adopted entries, drop the local store row, drop the client record).
+6. *Plain-room invites are refused* in the fleet paste field (fixed text
+   pointing at `roboco engine room join`); plain rooms stay a CLI path.
+7. *Opt-out is forward-only*: there is no remote-leave RPC in the frozen
+   contract, so an opted-out engine is never pushed and never contributes its
+   address, but one that already joined keeps the fleet until
+   `roboco engine room leave` runs on it (books only grow). Opt-outs are
+   keyed by engine device id in `fleet-v1.json` beside `rooms-v1.json`
+   (atomic, 0600 on unix).
+8. *No Leave button on the card* — the card keeps the two flows the ticket
+   lists; `RoomOps::leave` backs the switch flow, and the CLI keeps
+   `room leave`. Rotate UI is gone (CLI path).
+9. *Old-engine skip is tested on the pure survey* over a synthetic registry
+   snapshot: every real test engine advertises rooms-v2, so an old engine
+   cannot be stood up over loopback.
+10. *The local engine is driven through `RoomStore` directly* (same data dir,
+    WAL-coordinated — the tag's pattern), which keeps `FleetConflict`
+    downcastable; the card hides entirely when the local engine lacks
+    rooms-v2 (capability hiding, never an error).
