@@ -22,3 +22,5 @@
 ## Comments
 
 - 2026-10-26 (research): Chromium `*.localhost` synthesis and the cleartext findings are verified against Chromium source and the Android network-security-config docs (round-2 design research); the earlier ProxyController/shouldInterceptRequest candidates were dropped — the WebView's native resolution makes them unnecessary.
+
+- 2026-10-26 (orchestrator): first worker attempt (chat `ap-05 android preview panel`) was killed by a second host disk-full event (ENOSPC) mid-build — the Android/gradle build consumed the remaining 19G; nothing persisted (worktree clean at base `3eb693a40`). Freed ~110G (killed the dying build's orphaned gradle/cargo processes holding deleted temp files + cleaned the integration target). Relaunched as a fresh worker (`ap-05 android preview panel (retry)`) in the same worktree with disk-headroom discipline (111G free at relaunch).
