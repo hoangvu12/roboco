@@ -184,14 +184,16 @@ fun rememberRowMenuPerformer(actions: () -> TranscriptActions): RowMenuPerformer
  * The widget kinds that own their touches (`ios:Transcript/RowView.swift`
  * — `CopyCode` `:202-204`, `Disclosure` `:205-211`, `Image` `:214-234`,
  * `Detail` `:239-249`, `ToolToggle` `:268-277`, and upstream #899's
- * `SubagentLink`, a `ToolToggleControl` over a spawn card). Everything else
- * (`Icon`, `ToolStatus`, `Spinner`, `Working`, `Chevron`, `ToolRail`,
- * `Shimmer`) is display-only (`isUserInteractionEnabled = false`) and a
- * long press over it lifts the row.
+ * `SubagentLink`, a `ToolToggleControl` over a spawn card, and #967's
+ * `Action`, an error card's `UIButton`). Everything else (`Icon`,
+ * `ToolStatus`, `Spinner`, `Working`, `Chevron`, `ToolRail`, `Shimmer`) is
+ * display-only (`isUserInteractionEnabled = false`) and a long press over
+ * it lifts the row.
  */
 internal fun WidgetKind.isControl(): Boolean =
     this is WidgetKind.CopyCode || this is WidgetKind.Disclosure || this is WidgetKind.ToolToggle ||
-        this is WidgetKind.Detail || this is WidgetKind.Image || this is WidgetKind.SubagentLink
+        this is WidgetKind.Detail || this is WidgetKind.Image || this is WidgetKind.SubagentLink ||
+        this is WidgetKind.Action
 
 /**
  * True when a touch-down at row-local `(xDp, yDp)` lands on a control

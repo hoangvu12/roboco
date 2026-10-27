@@ -4,6 +4,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import sh.roboco.android.design.color
+import sh.roboco.android.transcript.widgets.ActionButton
 import sh.roboco.android.transcript.widgets.CopyCodeButton
 import sh.roboco.android.transcript.widgets.DisclosureTarget
 import sh.roboco.android.transcript.widgets.ImageTile
@@ -20,6 +23,7 @@ import sh.roboco.android.transcript.widgets.TranscriptIcon
 import sh.roboco.android.transcript.widgets.UploadRing
 import sh.roboco.android.transcript.widgets.WorkingIndicator
 import sh.roboco.android.transcript.widgets.isPendingReference
+import uniffi.roboco_core.ColorRole
 import uniffi.roboco_core.Widget
 import uniffi.roboco_core.WidgetKind
 
@@ -125,5 +129,14 @@ internal fun RowWidget(ctx: RowContext, w: Widget) {
         // re-drawn in TEXT through the moving mask; emitted before 120's
         // disclosure, so the tap target sits on top and keeps the input.
         WidgetKind.Shimmer -> ShimmerWidget(ctx, w)
+        // wave-9 #14 (the error card's button, upstream #967): `sign-in`
+        // ("Log in") is the only action Rust emits; the screen routes it,
+        // read at click time like openSubagent.
+        is WidgetKind.Action -> ActionButton(
+            action = k.action,
+            label = k.label,
+            fill = Color(ctx.palette.color(ColorRole.DANGER_SOFT)),
+            onPerform = { ctx.actions().perform(k.action) },
+        )
     }
 }

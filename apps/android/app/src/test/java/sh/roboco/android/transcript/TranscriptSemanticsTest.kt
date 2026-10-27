@@ -86,6 +86,8 @@ class TranscriptSemanticsTest {
             WidgetKind.ToolToggle(detail = 1uL, open = true),
             WidgetKind.Detail(title = "Terminal"),
             WidgetKind.Image(reference = "img-1"),
+            // wave-9 #14: the error card's button (upstream #967 `UIButton`).
+            WidgetKind.Action(action = "sign-in", label = "Log in"),
         )
         controls.forEach { assertTrue("$it must be a control", it.isControl()) }
     }
@@ -109,7 +111,8 @@ class TranscriptSemanticsTest {
             ),
             WidgetKind.Shimmer,
         )
-        assertEquals("the Rust core has 12 widget kinds", 12, hidden.size + 5)
+        // + SubagentLink (android-next #06) and Action (wave-9 #14), both controls.
+        assertEquals("the Rust core has 14 widget kinds", 14, hidden.size + 7)
         hidden.forEach { assertFalse("$it must not be a control", it.isControl()) }
     }
 

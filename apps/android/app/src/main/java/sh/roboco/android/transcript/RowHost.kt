@@ -251,6 +251,7 @@ internal fun rowTag(kind: RowKind): String = when (kind) {
     RowKind.USER -> "row-user"
     RowKind.TOOLS -> "row-tools"
     RowKind.CHIP -> "row-chip"
+    RowKind.NOTICE -> "row-notice"
     RowKind.IMAGE -> "row-image"
     RowKind.WORKING -> "row-working"
 }

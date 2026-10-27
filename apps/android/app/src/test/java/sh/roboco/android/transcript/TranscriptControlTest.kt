@@ -23,6 +23,7 @@ class TranscriptControlTest {
             WidgetKind.Disclosure(expanded = true),
             WidgetKind.ToolToggle(detail = 1uL, open = false),
             WidgetKind.Detail(title = "tool detail"),
+            WidgetKind.Action(action = "sign-in", label = "Log in"),
         )
         val plain = listOf(
             WidgetKind.Image(reference = "img-1"),
