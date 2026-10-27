@@ -56,6 +56,7 @@ pub mod project_actions;
 pub mod queue;
 pub mod rail;
 pub mod request_routing;
+pub mod rooms;
 mod running_pill;
 pub(crate) mod roll_text;
 pub mod settings;

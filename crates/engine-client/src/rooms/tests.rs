@@ -242,7 +242,11 @@ fn rooms_file_round_trips_and_stays_owner_only() {
     assert!(file.remove(&room.id).unwrap().is_none());
 
     // A corrupt file is an error, and the error never quotes the file.
-    std::fs::write(dir.path().join(ROOMS_FILE), format!("{{\"rooms\": \"{SECRET}")).unwrap();
+    std::fs::write(
+        dir.path().join(ROOMS_FILE),
+        format!("{{\"rooms\": \"{SECRET}"),
+    )
+    .unwrap();
     let error = file.load().unwrap_err().to_string();
     assert!(!error.contains(SECRET), "{error}");
 }
@@ -534,7 +538,11 @@ async fn an_already_paired_member_is_reattached_never_duplicated() {
         .unwrap();
     assert_eq!(map.dial_count(), dials);
     // Leave's revoke machinery skips what the room did not create.
-    assert!(revoke_room_sessions(&registry, &second.room).await.is_empty());
+    assert!(
+        revoke_room_sessions(&registry, &second.room)
+            .await
+            .is_empty()
+    );
     assert!(registry.target(&hand).unwrap().is_connected());
 }
 
@@ -712,7 +720,10 @@ async fn a_dead_entry_is_reattached_under_its_key_without_session_churn() {
     assert!(healed.complete());
     assert_eq!(healed.room.sessions.len(), 1);
     assert_eq!(healed.room.sessions[0].engine_key, key.0, "same entry");
-    assert!(healed.room.sessions[0].adopted(), "still the room's own entry");
+    assert!(
+        healed.room.sessions[0].adopted(),
+        "still the room's own entry"
+    );
     assert_eq!(registry.snapshot().engines.len(), 2, "never a duplicate");
     wait_connected(&registry, 2).await;
     let sessions = b.desktop_sessions();

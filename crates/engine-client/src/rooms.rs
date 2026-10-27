@@ -429,9 +429,10 @@ pub async fn join_room_members(
                 if adoption == Adoption::Reattached {
                     let owned = stale.as_ref().is_some_and(|stale| {
                         stale.adopted() && stale.engine_key == session.engine_key
-                    }) || room.sessions.iter().any(|other| {
-                        other.adopted() && other.engine_key == session.engine_key
-                    });
+                    }) || room
+                        .sessions
+                        .iter()
+                        .any(|other| other.adopted() && other.engine_key == session.engine_key);
                     if !owned {
                         session.session_id = None;
                     }
