@@ -205,6 +205,22 @@ pub(super) fn child_chat_rows(
     rows
 }
 
+/// What runs alongside `chat_id`, as the titlebar's session-card toggle
+/// counts it: its working subagents (the engine's count on its session row)
+/// and its working side chats.
+pub(super) fn running_lanes(state: &AppState, chat_id: &str, now: DateTime<Utc>) -> u32 {
+    let side_chats = state
+        .chats
+        .iter()
+        .filter(|side| {
+            !side.archived
+                && side.parent_chat_id.as_deref() == Some(chat_id)
+                && state.display_status_for(side, now) == ChatIndicator::Working
+        })
+        .count() as u32;
+    state.running_subagents_for(chat_id, now) + side_chats
+}
+
 /// A side chat titles itself on its first turn; until then the preview or a
 /// placeholder stands in.
 pub(super) fn child_chat_title(chat: &Chat) -> String {

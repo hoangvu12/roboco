@@ -35,8 +35,9 @@ pub(super) fn session_card_reserve(main: f32, transcript: f32) -> Option<f32> {
 #[derive(Default)]
 pub(super) struct SessionDiffs {
     diffs: Vec<roboco_proto::CheckoutDiff>,
-    /// Device the running watch targets: `None` the connected engine, else
-    /// a remote chat's host (diffs are produced where the checkout lives).
+    /// Device the running watch targets: `None` the local engine, else a
+    /// paired engine's device (diffs are produced where the checkout lives,
+    /// and each device id belongs to exactly one engine).
     target: Option<Option<String>>,
     _watch: Option<Task<()>>,
 }
@@ -84,7 +85,8 @@ impl Shell {
             let device = chat.device_id.clone();
             let target = (state.local_device_id.as_deref() != Some(device.as_str()))
                 .then_some(device);
-            (target, state.engine().cloned())
+            // The diffs come from the engine that hosts the chat.
+            (target, state.target_for_id(&chat.id).ok())
         };
         if self.session_diffs.target.as_ref() == Some(&target) {
             return;
@@ -97,22 +99,13 @@ impl Shell {
         self.session_diffs.target = Some(target.clone());
         self.session_diffs._watch = Some(cx.spawn(async move |this, cx| {
             loop {
-                let mut params = serde_json::Map::new();
-                if let Some(target) = &target {
-                    params.insert(
-                        "targetDeviceId".into(),
-                        serde_json::Value::String(target.clone()),
-                    );
-                }
                 if let Ok(mut rx) = engine
-                    .client()
-                    .subscribe(
-                        methods::WATCH_CHECKOUT_DIFFS,
-                        serde_json::Value::Object(params),
-                    )
+                    .subscribe(methods::WATCH_CHECKOUT_DIFFS, serde_json::json!({}))
                     .await
                 {
                     while let Some(value) = rx.recv().await {
+                        // Rows name the owning engine's raw checkouts.
+                        let value = crate::request_routing::scope_checkout_frame(engine.key(), value);
                         let alive = this.update(cx, |this, cx| {
                             // Repaint only when the open chat's totals move.
                             let chat = this.state.read(cx).selected_chat_row().cloned();
@@ -613,5 +606,67 @@ mod tests {
         // floats instead.
         assert_eq!(session_card_reserve(900.0, 736.0), None);
         assert_eq!(session_card_reserve(700.0, 736.0), None);
+    }
+
+    /// The branch row's +/− totals for a paired engine's chat come from that
+    /// engine's checkout diffs; the local engine never sees the checkout.
+    #[gpui::test]
+    fn a_paired_engines_chat_shows_its_diff_totals(cx: &mut gpui::TestAppContext) {
+        use crate::paired_fixture::{PairedEngines, wait_until};
+        let fixture = PairedEngines::start(cx);
+        let project = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(project.path().join("note.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(project.path().join("note.txt"), "one\nthree\nfour\n").unwrap();
+        fixture.runtime.block_on(async {
+            let remote = &fixture.remote;
+            remote
+                .workspace
+                .create_space(
+                    "project",
+                    &remote.device_id,
+                    &project.path().to_string_lossy(),
+                    None,
+                    true,
+                )
+                .unwrap();
+            remote
+                .workspace
+                .create_chat("diff-chat", Some("project"), None, None, None)
+                .unwrap();
+        });
+        let chat = fixture.scoped("diff-chat");
+        fixture.wait_for_state(cx, "the paired engine's chat", |s| {
+            s.chats.iter().any(|c| c.id == chat)
+        });
+        let window = cx.add_window(|_, cx| {
+            Shell::new(fixture.state.clone(), fixture.boot.clone(), cx)
+        });
+        window
+            .update(cx, |shell, _, cx| shell.open_chat(chat.clone(), cx))
+            .unwrap();
+        wait_until(cx, "the paired engine's diff totals", |cx| {
+            window
+                .update(cx, |shell, _, cx| {
+                    shell.ensure_session_diffs(cx);
+                    let row = shell.state.read(cx).selected_chat_row().cloned();
+                    row.and_then(|row| shell.session_diffs.totals(&row)) == Some((2, 1))
+                })
+                .unwrap()
+        });
+        drop(window);
+        fixture.shutdown(cx);
     }
 }

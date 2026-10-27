@@ -7473,7 +7473,9 @@ impl Composer {
         let harness = self.pickers.read(cx).resolved(cx).harness;
         let preferences =
             crate::settings::current(cx).skill_completion(harness.unwrap_or(HarnessId::Codex));
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        // The workspace's own engine resolves its files, commands and skills,
+        // as typed completions do.
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let context = format!(
@@ -7486,7 +7488,6 @@ impl Composer {
             if tokens.iter().any(|(prefix, _)| *prefix != '@') && harness.is_some() {
                 let commands = async {
                     engine
-                        .client()
                         .call(methods::LIST_COMMANDS, params.clone())
                         .await
                         .ok()
@@ -7495,7 +7496,6 @@ impl Composer {
                 };
                 let skills = async {
                     engine
-                        .client()
                         .call(methods::LIST_SKILLS, params.clone())
                         .await
                         .ok()
@@ -7525,7 +7525,6 @@ impl Composer {
                         let mut search = params.clone();
                         search["query"] = token.query.clone().into();
                         let results = engine
-                            .client()
                             .call(methods::SEARCH_FILES, search)
                             .await
                             .ok()
