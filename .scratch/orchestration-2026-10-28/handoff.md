@@ -111,6 +111,36 @@ meaning all three specs below. The user prefers **short, plain-language** status
 After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
 Keep a running "PRs" list in this file.
 
+## Implementation orchestrator log (chat `00743a45`, from 2026-10-28)
+
+### Done by the orchestrator
+
+- `6126c05d6` on `main`: planning docs committed (specs, tickets, research, scripts, audit `.md`).
+  Raw CI data (`.scratch/ci-speed/data/`) and audit `*.txt`/`*.tsv` dumps stay **untracked**
+  in the main checkout only; workers read them by absolute path.
+- Web-removal ticket 01: annotated tag **`web-final`** on `6126c05d6`, pushed; `git show` checks OK.
+- Wave-10 ticket 01: `zeron/main` recreated, tip **`636b16516`** (one commit past the audit window:
+  #1089 bubble fade + rail perf; not taken, needs its own drift review after 30/63).
+- `..\roboco-ff-08` removed.
+- sccache `basedirs` += `roboco-web-removal`, `roboco-ci-caches`, `roboco-ci-bindgen`.
+  **Server not restarted yet** (other builds were running) — restart at a quiet moment.
+
+### Workers (side chats of `00743a45`)
+
+| chat | worktree / branch | scope | state |
+|---|---|---|---|
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running |
+| `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | running |
+| `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | running |
+| `76731858` | main checkout, read-only | CI 11 triage (report only) | running |
+
+### Next
+
+- Review + merge the CI PRs as they go green; web-removal merges `origin/main` before pushing.
+- After web removal merges: CI 03→04→05, 06, 08, then 09, 10 (10 waits for web removal);
+  wave 10 lanes start (fixes first: 02, 03).
+- Ask the user: CI 11 triage decisions; pushing to zui forks (wave-10 57).
+
 ## PRs
 
 (none yet)
