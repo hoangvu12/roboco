@@ -12,7 +12,7 @@ Gradle properties and layout.
 | JDK | 17 (build) + 21 (Robolectric test JVMs) | Temurin; `./gradlew` picks 17, the `Test` tasks request a 21 toolchain launcher |
 | Android SDK | `platforms;android-37.0`, build-tools 35 | `ANDROID_HOME` points at the SDK |
 | NDK | 28.2.13676358 | r28+ aligns ELF to 16 KB by default; `ndkVersion` is pinned in `app/build.gradle.kts` |
-| Rust | stable (`rust-toolchain.toml`) | targets `aarch64`/`x86_64-linux-android` |
+| Rust | the exact version in `rust-toolchain.toml` (rustup installs it on first use) | targets `aarch64`/`x86_64-linux-android` |
 | cargo-ndk | 4.1.2 | `cargo xtask android-core` calls it |
 | Go | the `go` line of `adapters/roboco-tailcat/go.mod` (1.27.1) | builds `libroboco_tailcat.so`, the Tailcat transport, with the NDK clang as the cgo compiler; `GOTOOLCHAIN=auto` (the default) fetches the pinned version |
 | Gradle | 9.6.0 (wrapper) | AGP 9.4.1, Kotlin 2.4.21, Compose BOM 2026.09.00 |

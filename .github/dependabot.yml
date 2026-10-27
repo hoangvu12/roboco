@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # The pinned compiler in rust-toolchain.toml. A bump re-keys every Rust
+  # cache, so main re-seeds once per bump instead of on every image rollout.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: monthly
