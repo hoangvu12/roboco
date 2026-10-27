@@ -59,6 +59,10 @@ pub(super) struct SessionPreviews {
     snapshot: roboco_proto::PreviewSnapshot,
     /// The chat the running watch follows.
     chat: Option<String>,
+    /// The paired engine hosting the chat, when it is not this machine's:
+    /// its servers open through the client preview proxy (the browser
+    /// pane's 7332 rewrite), not the local engine's 7331.
+    remote: Option<crate::engine_registry::EngineKey>,
     _watch: Option<Task<()>>,
     /// Ports paged in past the first [`PORTS_INITIAL`]; per chat.
     shown: usize,
@@ -165,6 +169,7 @@ impl Shell {
         };
         self.session_previews = SessionPreviews {
             chat: Some(chat_id.to_owned()),
+            remote: (!engine.key().is_local()).then(|| engine.key().clone()),
             ..Default::default()
         };
         let chat_id = chat_id.to_owned();
@@ -504,6 +509,37 @@ impl Shell {
         )
     }
 
+    /// A paired engine's server opens through the client preview proxy: hand
+    /// the proxy this chat's services now, so the route exists before the
+    /// new browser tab's first request (the tab's own watch ingests the same
+    /// chat's services right after). Returns the URL that routes: the
+    /// service's effective hostname, which differs from the engine's only
+    /// when another paired engine already claimed the name. A local chat's
+    /// URL is returned unchanged.
+    fn route_session_preview(
+        &mut self,
+        service_id: &str,
+        url: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let Some(engine) = self.session_previews.remote.clone() else {
+            return url.to_owned();
+        };
+        let Some(proxy) = self
+            .state
+            .update(cx, |state, _| state.ensure_preview_proxy())
+        else {
+            return url.to_owned();
+        };
+        let services = self.session_previews.snapshot.services.clone();
+        proxy
+            .ingest(&engine, services)
+            .ok()
+            .and_then(|effective| effective.into_iter().find(|s| s.id == service_id))
+            .map(|service| service.url(roboco_proto::PREVIEW_CLIENT_PROXY_PORT))
+            .unwrap_or_else(|| url.to_owned())
+    }
+
     /// The ports card: a row per server this chat can preview (one a Roboco
     /// agent or terminal started in its checkout, or one this chat's agent or
     /// terminals started anywhere), opening it in a browser tab: the first
@@ -536,13 +572,22 @@ impl Shell {
         let mut rows: Vec<AnyElement> =
             vec![popover::menu_heading(theme, "Ports").into_any_element()];
         let available = snapshot.error.is_none();
+        let remote = self.session_previews.remote.is_some();
+        // A paired engine's servers render against the client proxy, like
+        // the browser pane's.
+        let proxy_port = if remote {
+            roboco_proto::PREVIEW_CLIENT_PROXY_PORT
+        } else {
+            snapshot.proxy_port
+        };
         let shown = self.session_previews.shown.max(PORTS_INITIAL);
         let hidden = snapshot.services.len().saturating_sub(shown);
         for service in snapshot.services.iter().take(shown) {
-            let url = service.url(snapshot.proxy_port);
+            let url = service.url(proxy_port);
+            let service_id = service.id.clone();
             let row_id = SharedString::from(format!("session-info-preview-{}", service.id));
             let port = SharedString::from(format!(":{}", service.port));
-            let detail = SharedString::from(if snapshot.remote {
+            let detail = SharedString::from(if remote || snapshot.remote {
                 format!("{} · {url}", service.device_name)
             } else {
                 url.clone()
@@ -555,6 +600,7 @@ impl Shell {
                     .when(available, |row| {
                         row.on_click(cx.listener(move |this, _, window, cx| {
                             this.close_session_info_overlay(cx);
+                            let url = this.route_session_preview(&service_id, &url, cx);
                             this.browser_context.register_preview(&url);
                             this.set_surfaces_open(true, cx);
                             this.add_browser_surface(Some(url.clone()), window, cx);
