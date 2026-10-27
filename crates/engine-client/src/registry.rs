@@ -332,6 +332,11 @@ impl EngineTarget {
     pub fn engine_info(&self) -> EngineInfo {
         self.info.clone()
     }
+    /// The same engine entry of the same registry: a target minted before a
+    /// runtime replacement never matches one minted after it.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.key == other.key && Weak::ptr_eq(&self.registry, &other.registry)
+    }
     pub fn connection_state(&self) -> EngineConnectionState {
         self.registry
             .upgrade()
