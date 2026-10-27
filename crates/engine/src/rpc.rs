@@ -2332,7 +2332,6 @@ impl RpcService for EngineRpc {
                             .map(|c| c.device_id.clone())
                             .unwrap_or_default();
                         snapshot.remote = device != catalog.device_id();
-                        snapshot.remote = device != catalog.device_id();
                         let cwd = chat.and_then(|c| c.cwd);
                         let cwd = cwd.map(|cwd| {
                             if snapshot.remote {
