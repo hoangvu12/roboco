@@ -29,7 +29,7 @@ use crate::engine_registry::{
 };
 use roboco_engine::rooms::{FleetConflict, RoomRecord, RoomStore};
 use roboco_engine_client::rooms::{
-    ClientRoom, ResolvedMember, RoomDialer, RoomSecretFile, fetch_room_book,
+    ClientRoom, ResolvedMember, RoomDialer, RoomSecretFile, desktop_label, fetch_room_book,
     heal_room_books_with, is_fleet_conflict, join_room_members, push_room_join,
     revoke_room_sessions, union_members, write_private_file,
 };
@@ -445,6 +445,21 @@ impl RoomOps {
         Ok(record.id)
     }
 
+    /// The label this desktop presents the fleet under: unique to this
+    /// machine (its engine's device name and id), so two desktops in one
+    /// fleet never reissue each other's session on an engine they share.
+    pub fn presenter_label(&self) -> String {
+        let device_id = self
+            .registry
+            .target(&EngineKey::local())
+            .map(|target| target.engine_info().device_id)
+            .unwrap_or_default();
+        desktop_label(
+            &roboco_engine::local_device_name_at(&self.data_dir),
+            &device_id,
+        )
+    }
+
     /// This machine's own book entry — the one its engine's store adds on a
     /// fleet join, so the two never disagree on the label.
     fn local_member(&self) -> Vec<RoomMember> {
@@ -633,6 +648,7 @@ impl RoomOps {
             &self.data_dir,
             room,
             local_address.as_deref(),
+            &self.presenter_label(),
         )
         .await?;
         let id = fleet_id.clone();

@@ -6,6 +6,7 @@
 //! only piece these tests cannot exercise on this box.
 
 use super::*;
+use crate::SessionStore;
 use crate::registry::EngineConnectionState;
 use roboco_engine::{
     EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing::PairingStore, rooms::RoomStore,
@@ -117,7 +118,7 @@ impl MemberEngine {
             .list_sessions()
             .unwrap()
             .into_iter()
-            .filter(|session| session.label == DESKTOP_LABEL)
+            .filter(|session| session.label.starts_with(DESKTOP_LABEL))
             .collect()
     }
 
@@ -397,6 +398,7 @@ async fn joining_presents_to_each_member_adopts_entries_and_unions_books() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         Some("tcLOCAL"),
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -471,6 +473,7 @@ async fn joining_presents_to_each_member_adopts_entries_and_unions_books() {
         ui_dir.path(),
         outcome.room.clone(),
         Some("tcLOCAL"),
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -514,6 +517,7 @@ async fn an_already_paired_member_is_reattached_never_duplicated() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         None,
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -533,9 +537,16 @@ async fn an_already_paired_member_is_reattached_never_duplicated() {
 
     // A linked entry is live: the next pass does not dial it again.
     let dials = map.dial_count();
-    let second = join_room_members(&registry, map.clone(), ui_dir.path(), outcome.room, None)
-        .await
-        .unwrap();
+    let second = join_room_members(
+        &registry,
+        map.clone(),
+        ui_dir.path(),
+        outcome.room,
+        None,
+        DESKTOP_LABEL,
+    )
+    .await
+    .unwrap();
     assert_eq!(map.dial_count(), dials);
     // Leave's revoke machinery skips what the room did not create.
     assert!(
@@ -544,6 +555,77 @@ async fn an_already_paired_member_is_reattached_never_duplicated() {
             .is_empty()
     );
     assert!(registry.target(&hand).unwrap().is_connected());
+}
+
+/// F2: an engine reissues a room presentation's session per (room, label),
+/// so two desktops in one fleet presenting under one label would revoke
+/// each other's credential on every engine they share. Each desktop
+/// presents under its own label, and both keep working sessions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_desktops_presenting_to_one_engine_both_keep_their_sessions() {
+    let b = member_engine().await;
+    let invite = RoomInvite::fleet("Fleet", SECRET, vec![member("server", "tcB")]).unwrap();
+    b.join(&invite);
+    let map = MapDialer::new(HashMap::from([("tcB".to_owned(), b.base())]));
+    let pairing = PairingStore::open(b.dir.path()).unwrap();
+
+    let mut desktops = Vec::new();
+    for _ in 0..2 {
+        let local_dir = tempfile::tempdir().unwrap();
+        let ui_dir = tempfile::tempdir().unwrap();
+        let local = core(local_dir.path());
+        let label = desktop_label("Same name", &local.device_id);
+        let registry = registry_with_local(local, ui_dir.path()).await;
+        let outcome = join_room_members(
+            &registry,
+            map.clone(),
+            ui_dir.path(),
+            ClientRoom::from_invite(&invite),
+            None,
+            &label,
+        )
+        .await
+        .unwrap();
+        assert!(outcome.complete());
+        wait_connected(&registry, 2).await;
+        desktops.push((registry, ui_dir, local_dir, label));
+    }
+    assert_ne!(desktops[0].3, desktops[1].3, "one label per machine");
+    // Both credentials still authenticate after the second presentation.
+    for (registry, ui_dir, _, _) in &desktops {
+        let saved = crate::FileSessionStore::new(ui_dir.path().join("paired-engines-v1.json"))
+            .load()
+            .unwrap();
+        let remote = saved.iter().find(|engine| !engine.key.is_local()).unwrap();
+        assert!(
+            pairing.authenticate(&remote.credential).unwrap().is_some(),
+            "a desktop's session was reissued away"
+        );
+        let target = registry.target(&remote.key).unwrap();
+        assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    }
+    assert_eq!(b.desktop_sessions().len(), 2);
+}
+
+/// A desktop's presenter label: the shared prefix, the machine's name and a
+/// short id tag, inside the label cap; never blank, never just the prefix
+/// when an identity exists.
+#[test]
+fn desktop_labels_are_per_machine_and_bounded() {
+    assert_eq!(
+        desktop_label("Studio PC", "3f9a1c2e-0000"),
+        "Roboco desktop (Studio PC · 3f9a1c)"
+    );
+    assert_ne!(
+        desktop_label("ubuntu", "aaaaaa11"),
+        desktop_label("ubuntu", "bbbbbb22")
+    );
+    assert_eq!(desktop_label("dev-1", "dev-1"), "Roboco desktop (dev1)");
+    assert_eq!(desktop_label("", ""), DESKTOP_LABEL);
+    let long = desktop_label(&"n".repeat(400), "abcdef12");
+    assert!(long.len() <= roboco_proto::room::MAX_LABEL_BYTES);
+    assert!(long.ends_with("· abcdef)"));
+    assert!(!desktop_label("a\nb", "x").contains('\n'));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -562,6 +644,7 @@ async fn revoked_room_sessions_die_on_each_member_engine() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         None,
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -602,6 +685,7 @@ async fn book_reads_distinguish_refused_from_unreachable() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         None,
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -654,6 +738,7 @@ async fn a_forgotten_entry_is_replaced_by_a_fresh_dial() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         None,
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -668,9 +753,16 @@ async fn a_forgotten_entry_is_replaced_by_a_fresh_dial() {
     let dials_before = map.dial_count();
     // Re-joining (self-heal): the missing entry is re-dialed and a fresh
     // entry replaces it.
-    let rejoined = join_room_members(&registry, map.clone(), ui_dir.path(), outcome.room, None)
-        .await
-        .unwrap();
+    let rejoined = join_room_members(
+        &registry,
+        map.clone(),
+        ui_dir.path(),
+        outcome.room,
+        None,
+        DESKTOP_LABEL,
+    )
+    .await
+    .unwrap();
     assert!(rejoined.complete());
     assert_eq!(map.dial_count(), dials_before + 1);
     assert_eq!(registry.snapshot().engines.len(), 2);
@@ -696,6 +788,7 @@ async fn a_dead_entry_is_reattached_under_its_key_without_session_churn() {
         ui_dir.path(),
         ClientRoom::from_invite(&invite),
         None,
+        DESKTOP_LABEL,
     )
     .await
     .unwrap();
@@ -714,9 +807,16 @@ async fn a_dead_entry_is_reattached_under_its_key_without_session_churn() {
     .await
     .expect("the dead entry dropped");
 
-    let healed = join_room_members(&registry, map.clone(), ui_dir.path(), outcome.room, None)
-        .await
-        .unwrap();
+    let healed = join_room_members(
+        &registry,
+        map.clone(),
+        ui_dir.path(),
+        outcome.room,
+        None,
+        DESKTOP_LABEL,
+    )
+    .await
+    .unwrap();
     assert!(healed.complete());
     assert_eq!(healed.room.sessions.len(), 1);
     assert_eq!(healed.room.sessions[0].engine_key, key.0, "same entry");

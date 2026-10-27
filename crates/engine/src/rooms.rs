@@ -253,7 +253,10 @@ impl RoomStore {
         // asking it to mint anything (C4a). Plain rooms stay as they were.
         if fleet
             && let Some(own) = own_member(&self.data_dir)
-            && !book.members.iter().any(|member| member.address == own.address)
+            && !book
+                .members
+                .iter()
+                .any(|member| member.address == own.address)
         {
             self.merge_book(&id, vec![own])?;
         }
@@ -603,7 +606,9 @@ fn verifier(secret: &str) -> Vec<u8> {
 /// an engine that never served Tailcat has nothing to offer the book. Only
 /// reads files: nothing here enables, mints, or saves anything.
 pub fn own_member(data_dir: &Path) -> Option<RoomMember> {
-    let address = crate::tailcat::read_recorded_address(data_dir).ok().flatten()?;
+    let address = crate::tailcat::read_recorded_address(data_dir)
+        .ok()
+        .flatten()?;
     let mut label: String = crate::local_device_name_at(data_dir)
         .trim()
         .chars()

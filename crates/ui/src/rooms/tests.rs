@@ -179,7 +179,7 @@ impl MemberEngine {
             .list_sessions()
             .unwrap()
             .into_iter()
-            .filter(|session| session.label == DESKTOP_LABEL)
+            .filter(|session| session.label.starts_with(DESKTOP_LABEL))
             .collect()
     }
 }
@@ -650,6 +650,21 @@ async fn pasting_switches_from_a_solo_fleet_and_asks_before_leaving_a_shared_one
     assert_eq!(desktop.store().list().unwrap().len(), 1);
     wait_connected(&desktop.registry, 2).await;
     assert_eq!(b.desktop_sessions().len(), 1);
+    // The session carries this machine's own label (F2): another desktop
+    // presenting to b never reissues it away.
+    let presenter = ops.presenter_label();
+    assert_ne!(presenter, DESKTOP_LABEL);
+    assert_eq!(b.desktop_sessions()[0].label, presenter);
+    let local_id = desktop.registry.local().engine_info().device_id;
+    assert!(
+        presenter.contains(
+            &local_id
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .take(6)
+                .collect::<String>()
+        )
+    );
     assert_eq!(row(&report, &b.device_id()).state, FleetState::In);
 
     // Another fleet while this one is shared: asks first, changes nothing.
@@ -844,14 +859,24 @@ fn a_pushed_engine_is_linked_only_to_the_one_entry_it_added() {
     let b = EngineKey("k-b".into());
     let sent: HashSet<String> = ["tcLOCAL".to_owned()].into_iter().collect();
     let book = |addresses: &[&str]| -> Vec<RoomMember> {
-        addresses.iter().map(|address| member("x", address)).collect()
+        addresses
+            .iter()
+            .map(|address| member("x", address))
+            .collect()
     };
     let own = |room: &ClientRoom, members: &[RoomMember]| {
         own_entry(room, &b, &sent, Some("tcLOCAL"), members)
     };
-    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB"])).as_deref(), Some("tcB"));
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB"])).as_deref(),
+        Some("tcB")
+    );
     assert_eq!(own(&room, &book(&["tcLOCAL"])), None, "added nothing");
-    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB", "tcX"])), None, "ambiguous");
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB", "tcX"])),
+        None,
+        "ambiguous"
+    );
     room.link("tcX", &EngineKey("k-x".into()));
     assert_eq!(
         own(&room, &book(&["tcLOCAL", "tcB", "tcX"])).as_deref(),
@@ -859,7 +884,11 @@ fn a_pushed_engine_is_linked_only_to_the_one_entry_it_added() {
         "an address linked elsewhere is not b's"
     );
     room.link("tcB", &b);
-    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB2"])), None, "b is linked already");
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB2"])),
+        None,
+        "b is linked already"
+    );
 }
 
 #[test]
