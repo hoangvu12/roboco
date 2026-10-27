@@ -48,7 +48,10 @@ defaults:
 jobs:
   tests:
     runs-on: windows-2022
-    timeout-minutes: 90
+    # A warm full run took 82 min after agent previews; a colder cache
+    # (the application build alone 9 -> 20 min) cancelled one at 90 with
+    # every step so far green.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
