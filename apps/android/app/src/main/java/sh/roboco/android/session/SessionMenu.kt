@@ -71,16 +71,20 @@ import uniffi.roboco_core.LayoutFrame
 /**
  * Pure: the ⋯ menu for one open. iOS `SessionViewController.sessionMenu()`
  * (PR #578 adds the fourth row) — no `Menu` title, one group, no
- * separators, four rows in order:
+ * separators, rows in order:
  *
  * - row 1: "Pin" (SF `pin`) / "Unpin" (SF `pin.slash`) by [pinned],
  *   `app.setPinned(chatId, !pinned)`;
  * - row 2: "Copy Transcript" (SF `doc.on.doc`), never disabled — it reads
  *   only the local transcript;
- * - row 3: "Account & Usage" (android-next#05, PR #578's SF
+ * - row 3: "Previews" (the app's `Safari` globe glyph — the agent-previews
+ *   ticket's panel: this chat's dev servers on the engine, relayed through
+ *   the phone's in-app 7332 proxy), never disabled — the panel owns its
+ *   own honest states (loading, reconnect, empty);
+ * - row 4: "Account & Usage" (android-next#05, PR #578's SF
  *   `gauge.with.dots.needle.33percent` — the app's `Gauge` glyph), never
  *   disabled — it only reads cached state and pushes a page;
- * - row 4: "Archive" (SF `archivebox`), destructive, disabled with Pin
+ * - row 5: "Archive" (SF `archivebox`), destructive, disabled with Pin
  *   while the engine is offline (79's `canWrite`).
  *
  * Keep it pure: no `@Composable`, no state reads. [rememberSessionMenu]
@@ -91,6 +95,7 @@ fun sessionMenu(
     canWrite: Boolean,
     onSetPinned: (Boolean) -> Unit,
     onCopyTranscript: () -> Unit,
+    onShowPreviews: () -> Unit,
     onShowAccounts: () -> Unit,
     onArchive: () -> Unit,
     sideChats: SideChatMenuRows? = null,
@@ -111,6 +116,12 @@ fun sessionMenu(
             action = onCopyTranscript,
         ),
         sideChats?.let { sideChatSection(it, canWrite) },
+        MenuItem(
+            title = sh.roboco.android.browser.PreviewsCopy.SessionMenuRow,
+            icon = MenuIcon.Symbol(RobocoIcons.Safari),
+            testTag = "session-menu-previews",
+            action = onShowPreviews,
+        ),
         MenuItem(
             title = ACCOUNT_USAGE_ROW,
             icon = MenuIcon.Symbol(RobocoIcons.Gauge),
@@ -217,6 +228,21 @@ fun rememberSessionMenu(
                     )
                 }
             }
+            // agent-previews ticket 05: the preview panel — this chat's
+            // dev servers on the engine, relayed through the phone's
+            // in-app 7332 proxy. The title is read at open time (the
+            // chrome's, like the uncached pin state above).
+            val showPreviews = {
+                if (nav.top.id == entry.id) {
+                    nav.push(
+                        sh.roboco.android.browser.PreviewPanelRoute(
+                            chatId = chatId,
+                            chatTitle = controller.chrome.value.title,
+                        ),
+                        animated = true,
+                    )
+                }
+            }
             val menu = sessionMenu(
                 pinned = controller.pinned,
                 canWrite = controller.chrome.value.canWrite,
@@ -228,6 +254,7 @@ fun rememberSessionMenu(
                         copyTranscript(transcript, clipboard, toaster)
                     }
                 },
+                onShowPreviews = showPreviews,
                 onShowAccounts = showAccounts,
                 onArchive = {
                     actions.archive(chatId) { outcome ->
@@ -353,6 +380,7 @@ private fun SessionMenuOpenPreview(pinned: Boolean, canWrite: Boolean) {
                     canWrite = canWrite,
                     onSetPinned = {},
                     onCopyTranscript = {},
+                    onShowPreviews = {},
                     onShowAccounts = {},
                     onArchive = {},
                 ).children,

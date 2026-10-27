@@ -304,6 +304,61 @@ impl EngineHandle {
         self.spawn_watch(self.feed_slot.clone(), method.to_owned(), params)
     }
 
+    /// Subscribe to a stream on a live connection **now** — the feed while
+    /// it is up, else the calls connection — for callers that own their
+    /// resubscribe loop (the preview panel's, the desktop per-browser-tab
+    /// shape): the subscription ends when the link dies and the caller
+    /// decides when to re-subscribe, instead of the generation-hopping
+    /// [`Self::watch_feed`] twin. `params` may carry scoped ids (they are
+    /// routed like every other call). Fails with `Unsupported` when the
+    /// engine does not serve the method.
+    pub(crate) async fn subscribe_now(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<RpcSubscription, ClientError> {
+        let client = self.feed_client()?;
+        let params = wire_params(&self.key, method, params).map_err(rpc_error_to_client_error)?;
+        client
+            .subscribe_checked(method, params)
+            .await
+            .map_err(rpc_error_to_client_error)
+    }
+
+    /// The connection a watch rides: the feed, else the calls. Watches
+    /// live on the feed connection by design; the calls link is the
+    /// fallback while the feed redials. The availability check and the
+    /// pick are synchronous — a disconnected engine fails within
+    /// microseconds, never queues.
+    fn feed_client(&self) -> Result<Arc<RpcClient>, ClientError> {
+        self.entry(|entry| {
+            match entry.state {
+                EngineState::Parked { .. } => Err(ClientError::Auth {
+                    message: "Engine is parked; pair again to connect.".into(),
+                }),
+                EngineState::Connected => Ok(()),
+                _ => Err(ClientError::HostUnavailable {
+                    message: "Engine is offline; reconnecting".into(),
+                }),
+            }?;
+            let feed = entry
+                .feed_slot
+                .borrow()
+                .as_ref()
+                .map(|live| live.client.clone())
+                .filter(|client| !client.is_closed());
+            let calls = entry
+                .calls_slot
+                .borrow()
+                .as_ref()
+                .map(|live| live.client.clone())
+                .filter(|client| !client.is_closed());
+            feed.or(calls).ok_or_else(|| ClientError::HostUnavailable {
+                message: "Engine is offline; reconnecting".into(),
+            })
+        })?
+    }
+
     /// Watch a stream on the calls connection (per-chat `WatchQueue`).
     pub fn watch_calls(&self, method: &str, params: Value) -> FeedWatch {
         self.spawn_watch(self.calls_slot.clone(), method.to_owned(), params)

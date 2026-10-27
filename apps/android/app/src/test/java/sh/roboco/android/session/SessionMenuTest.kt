@@ -273,15 +273,17 @@ class SessionMenuTest {
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
+            onShowPreviews = {},
             onShowAccounts = {},
             onArchive = {},
         )
         assertNull("no menu title, as UIMenu(children:)", menu.title)
-        assertEquals(4, menu.children.size)
+        assertEquals(5, menu.children.size)
         val pin = menu.children[0] as MenuItem
         val copy = menu.children[1] as MenuItem
-        val accounts = menu.children[2] as MenuItem
-        val archive = menu.children[3] as MenuItem
+        val previews = menu.children[2] as MenuItem
+        val accounts = menu.children[3] as MenuItem
+        val archive = menu.children[4] as MenuItem
 
         assertEquals("Pin", pin.title)
         assertEquals(RobocoIcons.Pin, (pin.icon as MenuIcon.Symbol).icon)
@@ -294,6 +296,11 @@ class SessionMenuTest {
         assertEquals(RobocoIcons.DocOnDoc, (copy.icon as MenuIcon.Symbol).icon)
         assertFalse(copy.destructive)
         assertFalse(copy.disabled)
+
+        assertEquals("Previews", previews.title)
+        assertEquals(RobocoIcons.Safari, (previews.icon as MenuIcon.Symbol).icon)
+        assertFalse(previews.destructive)
+        assertFalse("the panel owns its own honest states", previews.disabled)
 
         assertEquals("Account & Usage", accounts.title)
         assertEquals(RobocoIcons.Gauge, (accounts.icon as MenuIcon.Symbol).icon)
@@ -309,10 +316,11 @@ class SessionMenuTest {
             listOf(
                 "session-menu-pin",
                 "session-menu-copy",
+                "session-menu-previews",
                 "session-menu-accounts",
                 "session-menu-archive",
             ),
-            listOf(pin.testTag, copy.testTag, accounts.testTag, archive.testTag),
+            listOf(pin.testTag, copy.testTag, previews.testTag, accounts.testTag, archive.testTag),
         )
     }
 
@@ -323,6 +331,7 @@ class SessionMenuTest {
             canWrite = true,
             onSetPinned = {},
             onCopyTranscript = {},
+            onShowPreviews = {},
             onShowAccounts = {},
             onArchive = {},
         )
@@ -338,20 +347,22 @@ class SessionMenuTest {
             canWrite = false,
             onSetPinned = {},
             onCopyTranscript = {},
+            onShowPreviews = {},
             onShowAccounts = {},
             onArchive = {},
         )
         assertTrue("Pin disabled while read-only", (menu.children[0] as MenuItem).disabled)
         assertFalse("Copy Transcript reads local state only", (menu.children[1] as MenuItem).disabled)
-        assertFalse("Account & Usage is never disabled", (menu.children[2] as MenuItem).disabled)
-        assertTrue("Archive disabled while read-only", (menu.children[3] as MenuItem).disabled)
+        assertFalse("Previews is never disabled", (menu.children[2] as MenuItem).disabled)
+        assertFalse("Account & Usage is never disabled", (menu.children[3] as MenuItem).disabled)
+        assertTrue("Archive disabled while read-only", (menu.children[4] as MenuItem).disabled)
     }
 
     @Test
     fun theAccountsRowRunsItsHandler() {
         var shown = 0
-        val menu = sessionMenu(false, true, {}, {}, { shown++ }, {})
-        (menu.children[2] as MenuItem).action()
+        val menu = sessionMenu(false, true, {}, {}, {}, { shown++ }, {})
+        (menu.children[3] as MenuItem).action()
         assertEquals(1, shown)
     }
 
@@ -359,24 +370,27 @@ class SessionMenuTest {
     fun thePinActionInvertsThePinnedState() {
         val pins = mutableListOf<Boolean>()
         var copies = 0
+        var previews = 0
         var accounts = 0
         var archives = 0
-        val unpinned = sessionMenu(false, true, { pins += it }, { copies++ }, { accounts++ }, { archives++ })
+        val unpinned = sessionMenu(false, true, { pins += it }, { copies++ }, { previews++ }, { accounts++ }, { archives++ })
         (unpinned.children[0] as MenuItem).action()
         assertEquals(listOf(true), pins)
         assertEquals(0, copies)
         assertEquals(0, archives)
 
         pins.clear()
-        val pinned = sessionMenu(true, true, { pins += it }, { copies++ }, { accounts++ }, { archives++ })
+        val pinned = sessionMenu(true, true, { pins += it }, { copies++ }, { previews++ }, { accounts++ }, { archives++ })
         (pinned.children[0] as MenuItem).action()
         assertEquals(listOf(false), pins)
 
         (pinned.children[1] as MenuItem).action()
         assertEquals(1, copies)
         (pinned.children[2] as MenuItem).action()
-        assertEquals(1, accounts)
+        assertEquals(1, previews)
         (pinned.children[3] as MenuItem).action()
+        assertEquals(1, accounts)
+        (pinned.children[4] as MenuItem).action()
         assertEquals(1, archives)
     }
 
