@@ -145,6 +145,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the benchmark APK
         run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a :app:assembleBenchmark
       - name: Upload the benchmark APK
@@ -213,10 +215,13 @@ jobs:
             17
       # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
       # built by the same android-core step, one c-shared library per ABI.
+      # Every Linux job shares one setup-go entry (its key has no job id);
+      # the Windows leg would add a second, OS-specific one, so it skips it.
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
+          cache: ${{ runner.os == 'Linux' }}
       - name: Install Android SDK pieces
         shell: pwsh
         run: |
@@ -226,6 +231,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # One Gradle cache writer: the ubuntu leg, on main (setup-gradle's
+          # default). The Windows leg restores what it can and never writes.
+          cache-read-only: ${{ runner.os == 'Windows' || github.ref != 'refs/heads/main' }}
       # pwsh exists on both runners; on Windows .\gradlew.bat keeps bash
       # off the build path entirely.
       - name: Build the debug APK and run the JVM tests
@@ -383,6 +392,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
       # android-next#02: the Tailcat smoke (TailcatPairingFlowTest) — the
@@ -399,15 +410,9 @@ jobs:
             echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
             echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
           } >> "$GITHUB_ENV"
-      # AVD snapshot cache (the runner's README recipe): cold boots cost
-      # minutes on every run otherwise.
-      - uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-36-pixel-7-20261012
+      # No AVD snapshot cache: it almost never restored, re-uploaded 2.75 GB
+      # (the largest cache entry) after green runs, and a cold boot takes
+      # ≈ 53 s. -no-snapshot-save skips the snapshot write on exit.
       - name: Run the flow suite
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -416,8 +421,7 @@ jobs:
           arch: x86_64
           profile: pixel_7
           disable-animations: true
-          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
           script: bash apps/android/scripts/flow-tests.sh
       - if: always()
         uses: actions/upload-artifact@v4
@@ -475,15 +479,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
-      - uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-36-pixel-tablet-20261012
       - name: Run the tablet + tour suite
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -492,8 +491,8 @@ jobs:
           arch: x86_64
           profile: pixel_tablet
           disable-animations: true
-          force-avd-creation: ${{ steps.avd-cache.outputs.cache-hit != 'true' }}
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          # Cold boot, no AVD cache (see android-emulator).
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
           # The tour runs WITH its recordings here.
           script: FLOW_INCLUDE_TOUR=1 bash apps/android/scripts/flow-tests.sh
       - if: always()
