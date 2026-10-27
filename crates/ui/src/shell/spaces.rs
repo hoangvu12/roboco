@@ -2202,7 +2202,7 @@ mod path_field_tests {
         assert_eq!(
             path_input(&shell, cx)
                 .read_with(cx, |input, _| input.text().to_owned()),
-            format!("{root}/")
+            format!("{root}{}", std::path::MAIN_SEPARATOR)
         );
 
         type_path(&shell, cx, &format!("{root}/missing"));
@@ -2221,9 +2221,10 @@ mod path_field_tests {
         shell.read_with(cx, |shell, _| {
             let flow = shell.add_space.as_ref().unwrap();
             let edit = flow.path_edit.as_ref().expect("the field stays");
+            let missing = projects.path().join("missing");
             assert_eq!(
                 edit.error.as_deref(),
-                Some(format!("No folder at {root}/missing").as_str())
+                Some(format!("No folder at {}", missing.to_string_lossy()).as_str())
             );
             assert!(!edit.opening);
             // The folder that was open is still the one listed.
@@ -2267,16 +2268,11 @@ mod path_field_tests {
         let (shell, state) = shell_with_location(cx, &projects);
         press(&shell, cx, "l", gpui::Modifiers::secondary_key());
         // A backslash-escaped space, as a folder dragged into a terminal
-        // pastes, resolves to the folder it names.
-        type_path(
-            &shell,
-            cx,
-            &projects
-                .path()
-                .join("My App")
-                .to_string_lossy()
-                .replace(' ', r"\ "),
-        );
+        // pastes, resolves to the folder it names. Windows paths take no
+        // escapes: `\` is their separator.
+        let typed = projects.path().join("My App").to_string_lossy().into_owned();
+        let typed = if cfg!(windows) { typed } else { typed.replace(' ', r"\ ") };
+        type_path(&shell, cx, &typed);
         press(&shell, cx, "enter", gpui::Modifiers::secondary_key());
         wait_for!(cx, cx.update(|cx| shell.read(cx).add_space.is_none()));
         let added = projects.path().join("My App").to_string_lossy().into_owned();
@@ -2337,8 +2333,11 @@ mod path_field_tests {
             assert_eq!(flow.step, ProjectStep::Locations);
             assert_eq!(flow.device.as_ref().unwrap().id, *state.read(cx).local_device_id.as_ref().unwrap());
             let edit = flow.path_edit.as_ref().expect("path field open");
-            // Home isn't known yet: `~/` stands for it.
-            assert_eq!(edit.input.read(cx).text(), "~/");
+            // Home isn't known yet: `~/` (`~\` on Windows) stands for it.
+            assert_eq!(
+                edit.input.read(cx).text(),
+                format!("~{}", std::path::MAIN_SEPARATOR)
+            );
         });
         // Home is listed in the background: `~` and ⇥ under it resolve.
         wait_for!(cx, cx.update(|cx| {
@@ -2350,6 +2349,10 @@ mod path_field_tests {
     }
 
     #[gpui::test]
+    #[cfg_attr(
+        windows,
+        ignore = "case-insensitive file system: `Dashboard` and `dashboard` are one folder"
+    )]
     fn tab_completes_the_folder_from_the_open_listing_and_paste_becomes_the_path(
         cx: &mut TestAppContext,
     ) {
@@ -2371,7 +2374,7 @@ mod path_field_tests {
         assert_eq!(
             path_input(&shell, cx)
                 .read_with(cx, |input, _| input.text().to_owned()),
-            format!("{root}/code/")
+            format!("{root}/code{}", std::path::MAIN_SEPARATOR)
         );
         // A name typed exactly stays itself beside its other case.
         type_path(&shell, cx, &format!("{root}/code"));
@@ -2410,7 +2413,7 @@ mod path_field_tests {
         assert_eq!(
             path_input(&shell, cx)
                 .read_with(cx, |input, _| input.text().to_owned()),
-            format!("{root}/code/")
+            format!("{root}/code{}", std::path::MAIN_SEPARATOR)
         );
         // A relative name resolves against the open folder, not home.
         type_path(&shell, cx, "api");
@@ -2423,11 +2426,12 @@ mod path_field_tests {
                 false,
             )
         });
-        assert_eq!(resolved, Some(format!("{root}/code/api")));
+        let api = projects.path().join("code").join("api");
+        assert_eq!(resolved, Some(api.to_string_lossy().into_owned()));
         submit_path(&shell, cx);
         wait_for!(cx, cx.update(|cx| {
             shell.read(cx).add_space.as_ref().unwrap().browser.ready().is_some_and(
-                |listing| listing.path.ends_with("code/api")
+                |listing| std::path::Path::new(&listing.path).ends_with("code/api")
             )
         }));
     }
