@@ -170,12 +170,30 @@ function storeForResume(agentId) {
   return { dir, store: new JsonlLocalAgentStore(dir) };
 }
 
+// Every state write here is a temp file renamed over its target. Windows
+// refuses that replace for a moment while another handle without delete
+// sharing is still open on the target — the shim that just exited, Defender
+// or the indexer reading the fresh file — with EPERM/EACCES/EBUSY. Retry
+// those briefly there (graceful-fs's rule, bounded at ~1.3 s) rather than
+// failing the turn; anything else, or any other platform, throws at once.
+const RENAME_WAIT = new Int32Array(new SharedArrayBuffer(4));
+function replaceFile(from, to) {
+  for (let delay = 10; ; delay *= 2) {
+    try { return fs.renameSync(from, to); }
+    catch (error) {
+      if (process.platform !== "win32" || delay > 640 ||
+          !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+      Atomics.wait(RENAME_WAIT, 0, 0, delay);
+    }
+  }
+}
+
 function rememberAgentDir(agentId, dir) {
   const marker = agentDirMarker(agentId);
   fs.mkdirSync(path.dirname(marker), { recursive: true, mode: 0o700 });
   const tmp = `${marker}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, dir);
-  fs.renameSync(tmp, marker);
+  replaceFile(tmp, marker);
 }
 
 // The Rust harness holds an OS lock for this store until the child is reaped.
@@ -207,7 +225,7 @@ async function claimStore(local) {
   }
   const temporary = `${marker}.${process.pid}`;
   fs.writeFileSync(temporary, JSON.stringify({pid: process.pid, parentPid: process.ppid}), {mode: 0o600});
-  fs.renameSync(temporary, marker);
+  replaceFile(temporary, marker);
   ownerPath = marker;
   ownedStore = local.store;
 }
@@ -285,7 +303,7 @@ async function preserveInterruptedContext(prompt) {
   const temporary = `${receiptPath}.tmp-${process.pid}`;
   fs.writeFileSync(temporary, JSON.stringify({version: 1, agentId: agent.agentId,
     beforeUserCount: saved.length, wirePrompt, messages: [...missing, prompt]}), {mode: 0o600});
-  fs.renameSync(temporary, receiptPath);
+  replaceFile(temporary, receiptPath);
   return wirePrompt;
 }
 
@@ -304,7 +322,7 @@ async function recordNativeSteer(text) {
   const persist = () => {
     const temporary = `${receiptPath}.tmp-${process.pid}`;
     fs.writeFileSync(temporary, JSON.stringify(receipt), {mode: 0o600});
-    fs.renameSync(temporary, receiptPath);
+    replaceFile(temporary, receiptPath);
   };
   persist();
   return () => {

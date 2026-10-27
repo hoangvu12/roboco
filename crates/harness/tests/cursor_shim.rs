@@ -224,7 +224,8 @@ async fn stress_100_interrupted_sessions_recover_without_losing_history_or_repla
             _ => "hang",
         };
         let (mut child, mut stdin, mut lines) = fixture.start(prompt, true).await;
-        assert_eq!(frame(&mut lines).await["ev"], "ready");
+        let first = frame(&mut lines).await;
+        assert_eq!(first["ev"], "ready", "round {round} (mode {mode}): {first}");
         if mode != 3 {
             assert_eq!(
                 frame(&mut lines).await["text"],
@@ -248,7 +249,8 @@ async fn stress_100_interrupted_sessions_recover_without_losing_history_or_repla
             _ => finish(&mut child, stdin).await,
         }
         let (mut child, stdin, mut lines) = fixture.start("normal", true).await;
-        assert_eq!(frame(&mut lines).await["agentId"], "agent-fixture");
+        let first = frame(&mut lines).await;
+        assert_eq!(first["agentId"], "agent-fixture", "round {round} (mode {mode}) recovery: {first}");
         assert_eq!(
             frame(&mut lines).await["text"],
             "retained-conversation-history"
