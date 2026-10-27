@@ -1,8 +1,9 @@
 //! Fleet follow on the desktop: `RoomOps` flows against real engines over
 //! loopback (lazy mint, push, opt-out, dedupe, late-join heal, paste/switch,
 //! leave), plus the pure survey/caption helpers the Fleet card renders from
-//! and the C4a probe guard. The dialer and the address probe are faked
-//! (test engines cannot run Tailcat); the engine-client crate covers the
+//! and the C4a guards. The dialer and the shape probe are faked (test
+//! engines cannot run Tailcat; their data dirs record a fake address their
+//! stores introduce themselves with); the engine-client crate covers the
 //! same machinery with the same shape.
 
 use super::*;
@@ -18,7 +19,7 @@ use roboco_proto::room::{RoomInvite, RoomMember};
 use roboco_rpc::{RpcReply, methods};
 use serde_json::json;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -83,26 +84,21 @@ impl RoomDialer for MapDialer {
     }
 }
 
-/// The fake probe: engines (by device id) mapped to an address serve their
-/// Tailcat route; every other engine reads as Tailcat off.
+/// The fake probe: engines (by device id) marked serving read as the
+/// Tailcat `Serves` shape; every other engine reads as Tailcat off.
 struct MapProbe {
-    addresses: Mutex<HashMap<String, String>>,
-    address_calls: AtomicUsize,
+    serving: Mutex<HashSet<String>>,
 }
 
 impl MapProbe {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            addresses: Mutex::new(HashMap::new()),
-            address_calls: AtomicUsize::new(0),
+            serving: Mutex::new(HashSet::new()),
         })
     }
 
-    fn serve(&self, device_id: &str, address: &str) {
-        self.addresses
-            .lock()
-            .unwrap()
-            .insert(device_id.into(), address.into());
+    fn serve(&self, device_id: &str) {
+        self.serving.lock().unwrap().insert(device_id.into());
     }
 }
 
@@ -110,25 +106,34 @@ impl MapProbe {
 impl FleetProbe for MapProbe {
     async fn shape(&self, target: &EngineTarget) -> TailcatShape {
         if self
-            .addresses
+            .serving
             .lock()
             .unwrap()
-            .contains_key(&target.engine_info().device_id)
+            .contains(&target.engine_info().device_id)
         {
             TailcatShape::Serves
         } else {
             TailcatShape::Off
         }
     }
+}
 
-    async fn address(&self, target: &EngineTarget) -> anyhow::Result<String> {
-        self.address_calls.fetch_add(1, Ordering::SeqCst);
-        self.addresses
-            .lock()
-            .unwrap()
-            .get(&target.engine_info().device_id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no route"))
+/// Every RPC method a member engine is asked, recorded on the way to the
+/// real service: proves which calls fleet code sends.
+struct SpyService {
+    inner: Arc<dyn roboco_rpc::RpcService>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl roboco_rpc::RpcService for SpyService {
+    async fn handle(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, roboco_rpc::RpcError> {
+        self.calls.lock().unwrap().push(method.to_owned());
+        self.inner.handle(method, params).await
     }
 }
 
@@ -138,9 +143,19 @@ struct MemberEngine {
     core: EngineCore,
     listener: roboco_engine::EngineListener,
     dir: tempfile::TempDir,
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl MemberEngine {
+    fn calls(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.as_str() == method)
+            .count()
+    }
+
     fn base(&self) -> String {
         format!("http://{}", self.listener.address)
     }
@@ -172,9 +187,13 @@ impl MemberEngine {
 async fn member_engine() -> MemberEngine {
     let dir = tempfile::tempdir().unwrap();
     let core = core(dir.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
     let listener = roboco_engine::serve_engine_remote(
         "127.0.0.1:0".parse().unwrap(),
-        core.rpc_service(),
+        Arc::new(SpyService {
+            inner: core.rpc_service(),
+            calls: calls.clone(),
+        }),
         dir.path(),
     )
     .await
@@ -183,6 +202,7 @@ async fn member_engine() -> MemberEngine {
         core,
         listener,
         dir,
+        calls,
     }
 }
 
@@ -282,10 +302,13 @@ impl Desktop {
         RoomStore::open(self.dir.path()).unwrap()
     }
 
-    /// Pair `engine` by hand and let it serve a (fake) Tailcat route.
+    /// Pair `engine` by hand and let it serve a (fake) Tailcat route: the
+    /// probe reads it as serving, and its data dir records the address its
+    /// store introduces itself with on a fleet join.
     async fn pair_serving(&self, engine: &MemberEngine, address: &str) -> EngineKey {
         let key = pair_by_hand(&self.registry, engine).await;
-        self.probe.serve(&engine.device_id(), address);
+        record_address(engine.dir.path(), address).unwrap();
+        self.probe.serve(&engine.device_id());
         self.dialer.map(address, engine.base());
         key
     }
@@ -343,11 +366,19 @@ async fn the_fleet_is_minted_lazily_and_pushed_idempotently() {
     assert_eq!(b_fleet.id, fleet.id);
     assert!(b.store().fleet_invite(&fleet.id).unwrap().is_some());
 
-    // The hand-paired entry was linked, never presented to or duplicated.
+    // b's address came from b's own book (its join introduced it): the
+    // hand-paired entry was linked to it, never presented to or duplicated.
     assert_eq!(desktop.registry.snapshot().engines.len(), 2);
     assert!(b.desktop_sessions().is_empty(), "no room session minted");
     assert_eq!(desktop.dialer.count.load(Ordering::SeqCst), 0);
-    assert_eq!(desktop.probe.address_calls.load(Ordering::SeqCst), 1);
+    let rooms = ops.rooms_file().load().unwrap();
+    let link = rooms[0]
+        .sessions
+        .iter()
+        .find(|session| session.address == "tcB")
+        .expect("b's address is linked to its entry");
+    assert_eq!(link.engine_key, key.0);
+    assert!(!link.adopted());
 
     // Idempotent re-push (app open again).
     let again = ops.sync().await.unwrap();
@@ -356,17 +387,107 @@ async fn the_fleet_is_minted_lazily_and_pushed_idempotently() {
     assert_eq!(b.store().list().unwrap().len(), 1, "one row on b");
     assert_eq!(desktop.registry.snapshot().engines.len(), 2);
     assert!(b.desktop_sessions().is_empty());
-    assert_eq!(
-        desktop.probe.address_calls.load(Ordering::SeqCst),
-        1,
-        "the address is cached, never minted twice"
-    );
+    assert_eq!(desktop.dialer.count.load(Ordering::SeqCst), 0);
     let rooms = ops.rooms_file().load().unwrap();
     assert_eq!(rooms.len(), 1);
     assert!(rooms[0].is_fleet());
+    assert_eq!(rooms[0].sessions.len(), 1, "one link, never a second");
 
-    // C4a: fleet code never wrote b's remote-access settings.
+    // C4a: fleet code never wrote b's remote-access settings, and never
+    // asked b to mint a Tailcat invite.
     assert!(!b.dir.path().join("remote-access.json").exists());
+    assert_eq!(b.calls(methods::CREATE_TAILCAT_INVITE), 0);
+}
+
+/// F1 regression (C4a): a fleet sync never writes any member's
+/// `remote-access.json` — not even for an engine on the Direct transport
+/// bound to loopback behind a reverse proxy (the shape check cannot tell it
+/// from a Tailcat engine) — and never sends a settings-writing RPC. Every
+/// member still ends the pass with every member's address in its book, and
+/// so does what a phone pairing to any of them would fetch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fleet_sync_never_rewrites_remote_access_settings() {
+    let desktop = Desktop::new().await;
+    let ops = desktop.ops();
+    let direct = member_engine().await;
+    let tailcat = member_engine().await;
+    let settings = |engine: &MemberEngine| engine.dir.path().join("remote-access.json");
+    // A Direct engine on loopback behind a proxy, which once ran Tailcat
+    // (so it has a recorded address), and a flag-enabled Tailcat engine.
+    let direct_bytes = br#"{
+  "enabled": true,
+  "bindAddress": "127.0.0.1:27655",
+  "publicUrl": "https://engine.example.test",
+  "transport": "network"
+}"#;
+    let tailcat_bytes = br#"{
+  "enabled": false,
+  "bindAddress": "127.0.0.1:0",
+  "publicUrl": null,
+  "transport": "tailcat"
+}"#;
+    std::fs::write(settings(&direct), direct_bytes).unwrap();
+    std::fs::write(settings(&tailcat), tailcat_bytes).unwrap();
+    desktop.pair_serving(&direct, "tcDIRECT").await;
+    desktop.pair_serving(&tailcat, "tcTAILCAT").await;
+    wait_connected(&desktop.registry, 3).await;
+
+    let report = ops.sync().await.unwrap();
+    assert_eq!(row(&report, &direct.device_id()).state, FleetState::In);
+    assert_eq!(row(&report, &tailcat.device_id()).state, FleetState::In);
+    ops.sync().await.unwrap();
+
+    for (engine, bytes) in [(&direct, &direct_bytes[..]), (&tailcat, &tailcat_bytes[..])] {
+        assert_eq!(std::fs::read(settings(engine)).unwrap(), bytes);
+        for method in [
+            methods::CREATE_TAILCAT_INVITE,
+            methods::SET_REMOTE_ACCESS,
+            methods::REVOKE_PAIRING_SESSION,
+        ] {
+            assert_eq!(engine.calls(method), 0, "{method} was sent");
+        }
+        assert!(engine.calls(methods::ROOM_JOIN) > 0);
+    }
+
+    // One pass put every member's address into every book.
+    let fleet = desktop.store().fleet_room().unwrap().unwrap();
+    for engine in [&direct, &tailcat] {
+        let served = engine
+            .store()
+            .fleet_invite(&fleet.id)
+            .unwrap()
+            .expect("pushed");
+        let addresses: HashSet<_> = served.members.iter().map(|m| m.address.as_str()).collect();
+        for address in ["tcLOCAL", "tcDIRECT", "tcTAILCAT"] {
+            assert!(addresses.contains(address), "{address} missing");
+        }
+    }
+}
+
+/// Fleet code never names a settings-writing remote-access RPC: the only
+/// remote-access call any fleet path makes is the read-only shape check.
+#[test]
+fn no_fleet_path_names_a_settings_writing_rpc() {
+    for (file, source) in [
+        ("crates/ui/src/rooms.rs", include_str!("../rooms.rs")),
+        (
+            "crates/engine-client/src/rooms.rs",
+            include_str!("../../../engine-client/src/rooms.rs"),
+        ),
+        (
+            "crates/engine/src/rooms.rs",
+            include_str!("../../../engine/src/rooms.rs"),
+        ),
+    ] {
+        for forbidden in [
+            "CREATE_TAILCAT_INVITE",
+            "create_tailcat_invite",
+            "SET_REMOTE_ACCESS",
+            "remote_access::save",
+        ] {
+            assert!(!source.contains(forbidden), "{file} names {forbidden}");
+        }
+    }
 }
 
 /// An opted-out engine is never pushed and never contributes its address;
@@ -705,14 +826,40 @@ fn fleet_events_fire_once_per_engine_connect() {
 
 #[test]
 fn engine_labels_fall_back_to_identity_not_secrets() {
-    let snapshot = RegistrySnapshot::default();
-    assert_eq!(local_member_label(&snapshot), "Desktop");
     let snapshot = RegistrySnapshot {
-        engines: vec![engine_snapshot("local", "dev-local", &[], true)],
+        engines: vec![engine_snapshot("k-b", "dev-b", &[], true)],
         configuration_error: None,
     };
-    assert_eq!(local_member_label(&snapshot), "Desktop");
+    assert_eq!(engine_label(&snapshot, &EngineKey("k-b".into())), "dev-b");
     assert_eq!(engine_label(&snapshot, &EngineKey("gone".into())), "Engine");
+}
+
+/// The link rule: a pushed engine's address is the one entry its book holds
+/// beyond what the push carried — never this machine's, never one linked to
+/// another engine, and nothing when the difference is not exactly one.
+#[test]
+fn a_pushed_engine_is_linked_only_to_the_one_entry_it_added() {
+    let invite = RoomInvite::fleet("Fleet", SECRET, vec![member("desk", "tcLOCAL")]).unwrap();
+    let mut room = ClientRoom::from_invite(&invite);
+    let b = EngineKey("k-b".into());
+    let sent: HashSet<String> = ["tcLOCAL".to_owned()].into_iter().collect();
+    let book = |addresses: &[&str]| -> Vec<RoomMember> {
+        addresses.iter().map(|address| member("x", address)).collect()
+    };
+    let own = |room: &ClientRoom, members: &[RoomMember]| {
+        own_entry(room, &b, &sent, Some("tcLOCAL"), members)
+    };
+    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB"])).as_deref(), Some("tcB"));
+    assert_eq!(own(&room, &book(&["tcLOCAL"])), None, "added nothing");
+    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB", "tcX"])), None, "ambiguous");
+    room.link("tcX", &EngineKey("k-x".into()));
+    assert_eq!(
+        own(&room, &book(&["tcLOCAL", "tcB", "tcX"])).as_deref(),
+        Some("tcB"),
+        "an address linked elsewhere is not b's"
+    );
+    room.link("tcB", &b);
+    assert_eq!(own(&room, &book(&["tcLOCAL", "tcB2"])), None, "b is linked already");
 }
 
 #[test]
@@ -827,44 +974,45 @@ fn remote_access(enabled: bool, address: Option<&str>) -> serde_json::Value {
     })
 }
 
-/// C4a (`ac713514` regression): the production probe mints an address only
-/// for an engine already serving its Tailcat route; a LAN listener or remote
-/// access off reads as "turn it on" and the settings-mutating mint is never
-/// sent.
+/// C4a (F1 regression of `ac713514`): the production probe is one read-only
+/// `GetRemoteAccess`, whatever the shape — the settings-mutating mint is
+/// never sent, not even to an engine that serves its Tailcat route (whose
+/// mint is armed here) or to a loopback-bound Direct engine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_probe_never_mints_against_engines_without_a_tailcat_route() {
-    // Serving: one guard call, one mint, the address comes back.
-    let engine = RecordingEngine::new(
-        remote_access(true, Some("127.0.0.1:27655")),
-        Some("tcSHAPEDMEMBER1".into()),
-    );
-    let registry = recording_registry(engine.clone());
-    let target = registry.local();
-    assert_eq!(TailcatProbe.shape(&target).await, TailcatShape::Serves);
-    assert_eq!(
-        TailcatProbe.address(&target).await.unwrap(),
-        "tcSHAPEDMEMBER1"
-    );
-    assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1);
-    assert_eq!(engine.count(methods::CREATE_TAILCAT_INVITE), 1);
-
-    for (name, snapshot) in [
+async fn the_probe_only_ever_reads_remote_access() {
+    for (name, snapshot, shape) in [
+        (
+            "serving (or Direct on loopback)",
+            remote_access(true, Some("127.0.0.1:27655")),
+            TailcatShape::Serves,
+        ),
         (
             "network transport",
             remote_access(true, Some("0.0.0.0:27655")),
+            TailcatShape::Off,
         ),
-        ("remote access off", remote_access(false, None)),
+        (
+            "remote access off",
+            remote_access(false, None),
+            TailcatShape::Off,
+        ),
     ] {
-        // The mint is ARMED: only the guard keeps it from being sent.
+        // The mint is ARMED: nothing but fleet code's restraint keeps it
+        // from being sent.
         let engine = RecordingEngine::new(snapshot, Some("tcNEVERMINTED".into()));
         let registry = recording_registry(engine.clone());
         let target = registry.local();
-        assert_eq!(
-            TailcatProbe.shape(&target).await,
-            TailcatShape::Off,
-            "{name}"
-        );
+        assert_eq!(TailcatProbe.shape(&target).await, shape, "{name}");
         assert_eq!(engine.count(methods::GET_REMOTE_ACCESS), 1, "{name}");
+        assert!(
+            engine
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|call| call == methods::GET_REMOTE_ACCESS || call == methods::ENGINE_INFO),
+            "{name}: only reads"
+        );
         assert_eq!(
             engine.count(methods::CREATE_TAILCAT_INVITE),
             0,

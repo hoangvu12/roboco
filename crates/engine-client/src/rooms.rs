@@ -469,10 +469,22 @@ pub async fn join_room_members(
 /// Entries adopted moments ago get a bounded moment to finish connecting
 /// before one is treated as unreachable.
 pub async fn heal_room_books(registry: &EngineRegistry, room: &mut ClientRoom) {
+    heal_room_books_with(registry, room, &[]).await;
+}
+
+/// [`heal_room_books`] over the room's entries plus `extra` — engines the
+/// caller just pushed the room to (`RoomJoin`) whose address it has not
+/// linked yet, so they still receive the union.
+pub async fn heal_room_books_with(
+    registry: &EngineRegistry,
+    room: &mut ClientRoom,
+    extra: &[EngineKey],
+) {
     let mut keys: Vec<String> = room
         .sessions
         .iter()
         .map(|session| session.engine_key.clone())
+        .chain(extra.iter().map(|key| key.0.clone()))
         .collect();
     keys.sort();
     keys.dedup();
