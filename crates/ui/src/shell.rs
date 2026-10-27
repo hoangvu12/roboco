@@ -74,6 +74,8 @@ mod navigation_focus;
 mod navigation_tests;
 #[cfg(test)]
 mod panel_interaction_tests;
+#[cfg(test)]
+mod remote_lanes_tests;
 pub(crate) mod project_icon;
 mod session_info;
 mod session_lanes;

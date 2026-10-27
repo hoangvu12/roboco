@@ -360,12 +360,13 @@ impl Render for DevicesPage {
         crate::toast::take_error(&mut self.error, cx);
         let theme = Theme::of(cx).for_settings_surface();
         let now = Utc::now();
-        let (devices, local_id, workspace_scope) = {
+        let (devices, local_id, workspace_scope, can_pair) = {
             let state = self.state.read(cx);
             (
                 state.devices.clone(),
                 state.local_device_id.clone(),
                 state.workspace_scope,
+                state.registry().is_some(),
             )
         };
         let copied = self.copied.clone();
@@ -376,6 +377,11 @@ impl Render for DevicesPage {
             .into_iter()
             .enumerate()
             .partition(|(_, device)| local_id.as_deref() == Some(device.id.as_str()));
+        // The engine's own scope is always Local here, yet paired engines are
+        // other devices: list them whenever there are any, and keep the
+        // pairing empty state wherever this client can pair.
+        let show_others =
+            !others.is_empty() || can_pair || workspace_scope != Some(WorkspaceScope::Local);
         let device_row = |ix: usize, device: Device, first: bool, cx: &mut Context<Self>| {
             let online = self.state.read(cx).device_online(&device.id, now);
             let engine_key = ScopedId::parse(&device.id).ok().map(|id| id.engine);
@@ -394,6 +400,8 @@ impl Render for DevicesPage {
             let is_local = local_id.as_deref() == Some(device.id.as_str());
             let id_copied = copied.as_deref() == Some(device.id.as_str());
             let copy_id = device.id.clone();
+            let forget_selector = format!("engine-forget-{}", device.id);
+            let rename_selector = format!("device-rename-{}", device.id);
             let rename_id = device.id.clone();
             let rename_name = device.name.clone();
             let mut meta: Vec<AnyElement> = vec![
@@ -502,6 +510,7 @@ impl Render for DevicesPage {
                             actions.child(
                                 widgets::text_action(&theme, widgets::ActionTone::Quiet, "Forget")
                                     .id(("engine-forget", ix))
+                                    .debug_selector(move || forget_selector)
                                     .text_color(theme.danger)
                                     .tab_index(0)
                                     .role(gpui::Role::Button)
@@ -514,6 +523,7 @@ impl Render for DevicesPage {
                         .child(
                             widgets::text_action(&theme, widgets::ActionTone::Filled, "Rename")
                                 .id(("device-rename", ix))
+                                .debug_selector(move || rename_selector)
                                 .tab_index(0)
                                 .role(gpui::Role::Button)
                                 .aria_label(format!("Rename {}", device.name))
@@ -555,10 +565,13 @@ impl Render for DevicesPage {
                 el.child(widgets::section_label(&theme, "This device").mt(px(28.0)))
                     .child(block)
             })
-            // A local-only workspace never has other devices to list.
-            .when(workspace_scope != Some(WorkspaceScope::Local), |el| {
-                el.child(widgets::section_label(&theme, "Other devices").mt(px(28.0)))
-                    .child(others_block)
+            .when(show_others, |el| {
+                el.child(
+                    widgets::section_label(&theme, "Other devices")
+                        .mt(px(28.0))
+                        .debug_selector(|| "devices-others".into()),
+                )
+                .child(others_block)
             });
 
         let scrollbar = popover::rail(self, "devices-page-scrollbar", &theme, cx);
@@ -725,6 +738,63 @@ mod tests {
         // Rows with no engine entry keep the last-seen presence window.
         assert_eq!(presence_dot(None, true), PresenceDot::Connected);
         assert_eq!(presence_dot(None, false), PresenceDot::Off);
+    }
+
+    /// A paired engine lists under "Other devices" with its Forget and
+    /// Rename actions, although the local engine's scope is always Local;
+    /// Forget really unpairs it.
+    #[gpui::test]
+    fn paired_engines_list_under_other_devices_with_forget(cx: &mut gpui::TestAppContext) {
+        let fixture = crate::paired_fixture::PairedEngines::start(cx);
+        let remote = fixture.remote_device();
+        let local = fixture.local_device(cx);
+        fixture.wait_for_state(cx, "the paired engine's device row", |state| {
+            state.devices.iter().any(|device| device.id == remote)
+        });
+        assert_eq!(
+            fixture.state.read_with(cx, |s, _| s.workspace_scope),
+            Some(WorkspaceScope::Local)
+        );
+        let selector = |name: &str, id: &str| -> &'static str {
+            Box::leak(format!("{name}-{id}").into_boxed_str())
+        };
+        let state = fixture.state.clone();
+        let (_page, vcx) = cx.add_window_view(|_, cx| DevicesPage::new(state, cx));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            })
+        };
+        draw(vcx);
+        assert!(vcx.debug_bounds("devices-others").is_some());
+        let forget = vcx
+            .debug_bounds(selector("engine-forget", &remote))
+            .expect("the paired engine's Forget");
+        assert!(
+            vcx.debug_bounds(selector("device-rename", &remote))
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds(selector("engine-forget", &local)).is_none(),
+            "the local engine cannot be forgotten"
+        );
+        vcx.simulate_click(forget.center(), gpui::Modifiers::none());
+        let registry = fixture.registry.clone();
+        crate::paired_fixture::wait_until(vcx, "the engine to be forgotten", |cx| {
+            registry.snapshot().engines.len() == 1
+                && fixture
+                    .state
+                    .read_with(cx, |s, _| s.devices.iter().all(|d| d.id != remote))
+        });
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds(selector("engine-forget", &remote))
+                .is_none()
+        );
+        // The pairing empty state stays: this client can pair again.
+        assert!(vcx.debug_bounds("devices-others").is_some());
+        fixture.shutdown(vcx);
     }
 
     #[test]

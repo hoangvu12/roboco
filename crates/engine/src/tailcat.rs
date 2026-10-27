@@ -586,7 +586,9 @@ fn private_dir(data_dir: &Path) -> Result<PathBuf> {
 }
 
 /// Write a secret file atomically with owner-only access, refusing to leave a
-/// readable copy behind if the mode cannot be applied.
+/// readable copy behind if the mode cannot be applied. Shared with the room
+/// store: member addresses are persisted with this same `connect.json`
+/// discipline (ADR 0011).
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

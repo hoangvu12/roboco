@@ -382,7 +382,18 @@ each other. Fleet engines also keep the fleet secret, in the pairing database
 newly paired phone (`GetFleetInvite`). The desktop pushes the fleet to its
 engines with `RoomJoin` (idempotent; the book unions). Both RPCs need a paired
 session and the `rooms-v2` capability, and no room code ever changes
-remote-access settings. The web client has no fleet join in this release.
+remote-access settings.
+
+The web client has no fleet join in this release. Its **Join room** flow
+(beside the pair flow) takes plain room invites only and refuses fleet
+invites. The browser cannot dial members itself, so for each member it calls
+the origin engine's `POST /pairing/room-redeem {invite, target, label}`. The
+origin engine dials the target from its own book, relays the presentation over
+its tunnel, and returns the target's session grant with its base URL rewritten
+to `…/tailcat-relay/{id}`; the existing relay byte pump then carries the
+traffic. The origin engine relays the secret in transit but never stores it,
+and the browser keeps each member's credential and the room secret in browser
+storage, scoped to the origin.
 
 ## Saved settings
 
@@ -488,6 +499,7 @@ Capability strings are never reused or removed within a protocol generation.
 | `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
 | Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
 | Transcript images by any reference (`ReadImageChunk{reference, chatId?}`: relative/`~`/`file:`/`roboco-file:`/`data:` references, engine-side URL fetch, SVG → PNG) | none (`unknown method` → the core falls back to `ReadAttachmentChunk` with the reference as a path; web and `data:` images still load on the phone) |
+| Attachments up to 100 MB per file (legacy caps without it: 24 MB client-side, 32 MB engine-side) | `uploads-100mb-v1` |
 | Rooms (`/room/present`, `GetRoomBook`, `UpdateRoomBook`) | `rooms-v1` (an engine without it answers 404 or `unknown method`; the join skips that member silently) |
 | Fleet follow after pairing (`GetFleetInvite`) | `rooms-v2` (absent, or a `null` invite → no fleet, and the pairing stays exactly as it was) |
 

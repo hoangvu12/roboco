@@ -218,6 +218,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::ProjectActionRun,
         roboco_proto::SidebarSection,
         roboco_proto::SidebarStateSnapshot,
+        roboco_proto::room::RoomMember,
+        roboco_proto::room::RoomBook,
         roboco_proto::CreateWorktreeOutcome,
         roboco_proto::TerminalSession,
         roboco_proto::TerminalEvent,
@@ -225,9 +227,6 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::Connectivity,
         roboco_proto::ConnectivityState,
         roboco_proto::ChatConnectivity,
-        // room.rs
-        roboco_proto::room::RoomMember,
-        roboco_proto::room::RoomBook,
         // agent.rs
         roboco_proto::HarnessId,
         roboco_proto::HarnessUpdatePolicy,

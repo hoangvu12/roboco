@@ -961,7 +961,7 @@ fn encode_png(image: *mut c_void) -> Result<Vec<u8>, String> {
             return Err("The screenshot could not be encoded.".into());
         }
         let len: usize = msg_send![data, length];
-        if len as u64 > crate::attachments::MAX_ATTACHMENT_BYTES {
+        if len as u64 > crate::appshots::MAX_APPSHOT_BYTES {
             return Err("The captured window is larger than Roboco's 24 MB image limit.".into());
         }
         let bytes: *const u8 = msg_send![data, bytes];

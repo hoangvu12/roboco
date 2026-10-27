@@ -67,12 +67,12 @@ Still zeron-branded on purpose:
 Android builds and tests run on these runners ([ADR 0009](docs/adr/0009-android-client.md)); there are no macOS jobs.
 
 - `windows.yml` — Windows tests (PR + push)
-- `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions, linux browser)
+- `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions)
 - `preview-tests.yml` — ubuntu (preview/proto tests)
 - `web-codegen.yml` — ubuntu: `wiregen --check` wire-type freshness gate + `pnpm -r build` typecheck of `web/`
 - `theme-artifact.yml` — web theme artifact freshness gate (`roboco-theme-export --check`) + `@roboco/theme` typecheck
 - `web-engine-client.yml` — ubuntu: `@roboco/engine-client` vitest suites (codec, scripted fake server, conformance against the real `web_conformance` engine example)
-- `android.yml` — ubuntu + windows: Android debug APK (`apps/android`, cargo-ndk core) + JVM unit tests; on pushes to main, an unsigned x86_64 `assembleRelease` R8 smoke (the signed APKs come from `release.yml`). Plus three android-app#30 jobs: `android-screenshots` (ubuntu, non-blocking until goldens are committed: the capturing tests + parity tests in Roborazzi verify mode + `parityReport`, the iOS parity gate — the `android-parity` artifact uploads on every run), `android-emulator` (ubuntu + KVM, API 36 pixel_7: the instrumented flow suite against the `android_fixture` engines via `apps/android/scripts/flow-tests.sh`) and `android-emulator-tablet` (pushes to main + dispatch only: the tablet split shell and the `@Tour` motion recordings).
+- `android.yml` — ubuntu + windows: Android debug APK (`apps/android`, cargo-ndk core) + JVM unit tests; on pushes to main, an unsigned x86_64 `assembleRelease` R8 smoke (the signed APKs come from `release.yml`). Plus two android-app#30 jobs: `android-emulator` (ubuntu + KVM, API 36 pixel_7: the instrumented flow suite against the `android_fixture` engines via `apps/android/scripts/flow-tests.sh`) and `android-emulator-tablet` (pushes to main + dispatch only: the tablet split shell and the `@Tour` motion recordings).
 - `release.yml` — tag `v*`: linux x86_64+aarch64 tarballs + windows portable zip + signed Android APKs (arm64-v8a, x86_64) → GitHub Release with `manifest.json` (updater checksums, APKs included; R8 mapping attached outside the manifest). No macOS/iOS/R2/Play.
 - Keep CI focused on Roboco engine, desktop and Android builds, tests, and GitHub releases. Removed cloud and iOS deployment workflows stay outside upstream ports. Android has no Play Store, Firebase or other Google-services deployment.
 

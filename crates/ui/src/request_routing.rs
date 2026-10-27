@@ -38,6 +38,75 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Per-chat engine calls go through an [`EngineTarget`]
+    /// (`target_for_id`, [`selected_target`], [`device_target`]). The local
+    /// engine's raw client (`state.engine()` + `.client()`) answers only for
+    /// this machine — Roboco engines relay nothing, so a paired engine's chat
+    /// sent there fails (`targetDeviceId` is refused). Only the deliberate
+    /// local-engine sites below may use it; a new one fails this test.
+    #[test]
+    fn raw_local_client_calls_stay_on_the_allow_list() {
+        // (file, raw RPC chains `.client().call…/.subscribe…`, captures of
+        // the local handle `.engine().cloned()`, why it is local)
+        const ALLOWED: &[(&str, usize, usize, &str)] = &[
+            ("lib.rs", 0, 1, "quit stops the local engine"),
+            ("state.rs", 6, 0, "bootstrap watches, the local-device probe, engine boot tests"),
+            ("settings/auto_resume.rs", 2, 2, "this engine's own settings"),
+            ("settings/completion.rs", 1, 1, "this engine's own settings"),
+            ("settings/thread_naming.rs", 1, 1, "this engine's own settings"),
+            ("settings/remote_access.rs", 2, 1, "this engine's listener and paired clients"),
+            ("shell/harness_updates.rs", 1, 2, "this engine's harness updates"),
+            ("shell/spaces.rs", 0, 1, "test teardown"),
+            ("paired_fixture.rs", 0, 1, "test teardown"),
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                // This file names the patterns it looks for.
+                if path.extension().is_none_or(|ext| ext != "rs")
+                    || path == root.join("request_routing.rs")
+                {
+                    continue;
+                }
+                // Whitespace-free, so rustfmt's line breaks cannot hide a chain.
+                let code: String = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                let rpc = code.matches(".client().call").count()
+                    + code.matches(".client().subscribe").count();
+                let captures = code.matches(".engine().cloned()").count();
+                if rpc + captures > 0 {
+                    let name = path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    found.push((name, rpc, captures));
+                }
+            }
+        }
+        found.sort();
+        let mut allowed: Vec<_> = ALLOWED
+            .iter()
+            .map(|(name, rpc, captures, _)| (name.to_string(), *rpc, *captures))
+            .collect();
+        allowed.sort();
+        assert_eq!(
+            found, allowed,
+            "route per-chat calls through an EngineTarget (target_for_id / selected_target / \
+             device_target); only deliberately local sites may join the allow-list"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_real_engines_keep_colliding_ids_and_uploads_separate() {
         use crate::engine_registry::{EngineRegistry, Reconnect};

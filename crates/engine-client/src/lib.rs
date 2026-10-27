@@ -109,6 +109,19 @@ pub struct ResolvedPairing {
     pub code: String,
     /// Dropped when the entry is forgotten.
     pub keepalive: Option<Box<dyn std::any::Any + Send>>,
+    /// What this resolver needs to reach the engine again once `keepalive`
+    /// is gone (a restart): saved with the session credential, in the same
+    /// owner-only store, and handed back to [`PairingResolver::restore`]. A
+    /// secret (a Tailcat address can embed a key): never logged.
+    pub route: Option<String>,
+}
+
+/// A saved engine's transport, rebuilt by the resolver that paired it.
+pub struct RestoredRoute {
+    /// `http(s)://host[:port][/prefix]`, no trailing slash.
+    pub base: String,
+    /// Kept on the registry entry, dropped when it is forgotten.
+    pub keepalive: Option<Box<dyn std::any::Any + Send>>,
 }
 
 /// Claims non-URL pairing inputs (e.g. `roboco-tailcat:` invites) for the
@@ -119,4 +132,11 @@ pub trait PairingResolver: Send + Sync {
     /// Some(..) when this resolver owns `input`; None lets the next resolver /
     /// the URL parser try.
     fn resolve(&self, input: &str, data_dir: &Path) -> Option<anyhow::Result<ResolvedPairing>>;
+
+    /// Rebuild the transport for a saved `route` this resolver handed out
+    /// (blocking: it may start a process). None when the route is not
+    /// this resolver's. Errors must not quote the route.
+    fn restore(&self, _route: &str, _data_dir: &Path) -> Option<anyhow::Result<RestoredRoute>> {
+        None
+    }
 }

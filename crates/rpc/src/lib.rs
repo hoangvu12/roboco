@@ -37,11 +37,15 @@ pub mod methods {
     pub const CREATE_PAIRING_LINK: &str = "CreatePairingLink";
     pub const CREATE_TAILCAT_INVITE: &str = "CreateTailcatInvite";
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
-    /// Joined rooms (ADR 0011): read a room's address book.
-    /// Session-authed and additionally requires presenting the room secret
-    /// (member addresses are transport secrets).
+    /// Room address books (ADR 0011 — rooms share reachability, never data).
+    /// `GetRoomBook {roomId, secret}` → `RoomBook`: session-authenticated and
+    /// additionally requires presenting the room secret, because member
+    /// addresses are transport secrets. The secret is verified against the
+    /// stored verifier and discarded — never logged.
     pub const GET_ROOM_BOOK: &str = "GetRoomBook";
-    /// Joined rooms (ADR 0011): union-merge a room's address book.
+    /// `UpdateRoomBook {roomId, members}` → `RoomBook`: union-merges the
+    /// caller's entries into the stored book (books only grow; eviction
+    /// rotates the room) and replies with the fresh snapshot.
     pub const UPDATE_ROOM_BOOK: &str = "UpdateRoomBook";
     /// Fleet follow: remotely join this engine into a room (the invite
     /// string is the payload; session-authed; idempotent). The push path

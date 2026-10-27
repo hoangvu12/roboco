@@ -6531,7 +6531,7 @@ impl Composer {
             .unwrap_or_default();
         let staged_bytes = staged_bytes.saturating_add(saved_bytes);
         let incoming = appshot.screenshot.bytes().len() as u64;
-        if incoming > attachments::MAX_ATTACHMENT_BYTES
+        if incoming > appshots::MAX_APPSHOT_BYTES
             || staged_bytes.saturating_add(incoming) > appshots::MAX_STAGED_APPSHOT_BYTES
         {
             self.failure = Some(
@@ -7473,7 +7473,9 @@ impl Composer {
         let harness = self.pickers.read(cx).resolved(cx).harness;
         let preferences =
             crate::settings::current(cx).skill_completion(harness.unwrap_or(HarnessId::Codex));
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
+        // The workspace's own engine resolves its files, commands and skills,
+        // as typed completions do.
+        let Some(engine) = crate::request_routing::selected_target(self.state.read(cx)).ok() else {
             return;
         };
         let context = format!(
@@ -7486,7 +7488,6 @@ impl Composer {
             if tokens.iter().any(|(prefix, _)| *prefix != '@') && harness.is_some() {
                 let commands = async {
                     engine
-                        .client()
                         .call(methods::LIST_COMMANDS, params.clone())
                         .await
                         .ok()
@@ -7495,7 +7496,6 @@ impl Composer {
                 };
                 let skills = async {
                     engine
-                        .client()
                         .call(methods::LIST_SKILLS, params.clone())
                         .await
                         .ok()
@@ -7525,7 +7525,6 @@ impl Composer {
                         let mut search = params.clone();
                         search["query"] = token.query.clone().into();
                         let results = engine
-                            .client()
                             .call(methods::SEARCH_FILES, search)
                             .await
                             .ok()
@@ -8855,6 +8854,30 @@ impl Composer {
                 cx.notify();
                 return;
             }
+        }
+        // Upload cap pre-flight (ticket 06): files staged under the 100 MB
+        // ceiling must still fit the chat's engine — one without
+        // `uploads-100mb-v1` keeps the legacy 24 MB cap, and failing AFTER
+        // the draft is taken would report the size limit through the
+        // transport-failure copy ("the device may be offline"), which
+        // misleads. Refuse here, verbatim, with the draft intact.
+        let upload_cap = attachments::attachment_cap(&engine.engine_info());
+        if let Some(oversize) = self
+            .staged()
+            .iter()
+            .find(|att| att.bytes().len() as u64 > upload_cap)
+        {
+            self.failure = Some(
+                format!(
+                    "{} is too large ({} MB max).",
+                    oversize.name,
+                    upload_cap / (1024 * 1024)
+                )
+                .into(),
+            );
+            self.failure_key = Some(self.current_key.clone());
+            cx.notify();
+            return;
         }
         // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
         // strip empties the instant you hit send; a failure hands the files

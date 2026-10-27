@@ -540,13 +540,9 @@ impl EngineHandle {
 
     #[cfg(test)]
     pub(crate) fn from_test_client(client: RpcClient) -> Self {
-        Self {
-            inner: Arc::new(RemoteEngine {
-                client: Arc::new(client),
-                url: "memory://test".into(),
-                lifecycle_task: tokio::sync::Mutex::new(None),
-            }),
-            engine_info: EngineInfo {
+        Self::from_test_client_with_info(
+            client,
+            EngineInfo {
                 device_id: "local".into(),
                 workspace_scope: WorkspaceScope::Local,
                 cursor_sdk_version: None,
@@ -555,6 +551,20 @@ impl EngineHandle {
                 protocol_version: None,
                 min_client_protocol_version: None,
             },
+        )
+    }
+
+    /// The same fake engine with a caller-chosen identity — capability-gated
+    /// UI (rooms) needs a test engine that advertises `rooms-v1`.
+    #[cfg(test)]
+    pub(crate) fn from_test_client_with_info(client: RpcClient, engine_info: EngineInfo) -> Self {
+        Self {
+            inner: Arc::new(RemoteEngine {
+                client: Arc::new(client),
+                url: "memory://test".into(),
+                lifecycle_task: tokio::sync::Mutex::new(None),
+            }),
+            engine_info,
             deferred_state: None,
         }
     }

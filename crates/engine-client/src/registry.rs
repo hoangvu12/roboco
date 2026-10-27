@@ -159,13 +159,7 @@ impl RegistrySnapshot {
         for engine in &self.engines {
             let scope = |id: &str| ScopedId::encode(&engine.key, id);
             for mut chat in engine.chats.clone() {
-                chat.id = scope(&chat.id);
-                chat.device_id = scope(&chat.device_id);
-                chat.space_id = chat.space_id.map(|id| scope(&id));
-                chat.checkout_id = chat.checkout_id.map(|id| scope(&id));
-                if let Some(context) = &mut chat.source_context {
-                    context.checkout_id = scope(&context.checkout_id);
-                }
+                scope_chat(&engine.key, &mut chat);
                 out.chats.push(chat);
             }
             for mut space in engine.spaces.clone() {
@@ -209,6 +203,26 @@ impl RegistrySnapshot {
     }
 }
 
+/// Project one chat row of engine `key` into the client's id space: its own
+/// id and every id naming another row of the same engine — device, space,
+/// checkouts, the parent a side chat hangs under, and the chat whose agent
+/// created it. Rows from the same engine must keep comparing equal to each
+/// other once scoped (the Android core's projection does the same).
+pub fn scope_chat(key: &EngineKey, chat: &mut Chat) {
+    let scope = |id: &str| ScopedId::encode(key, id);
+    chat.id = scope(&chat.id);
+    chat.device_id = scope(&chat.device_id);
+    chat.space_id = chat.space_id.as_deref().map(scope);
+    chat.checkout_id = chat.checkout_id.as_deref().map(scope);
+    if let Some(context) = &mut chat.source_context {
+        context.checkout_id = scope(&context.checkout_id);
+    }
+    chat.parent_chat_id = chat.parent_chat_id.as_deref().map(scope);
+    if let Some(origin) = &mut chat.agent_origin {
+        origin.chat_id = scope(&origin.chat_id);
+    }
+}
+
 /// Project only transcript references which leave their owning chat. Message and
 /// tool IDs stay document-local; text, tool payloads and sidecar paths are untouched.
 pub fn scope_transcript_entries(key: &EngineKey, entries: &mut [roboco_doc::SessionMessageEntry]) {
@@ -221,12 +235,19 @@ pub fn scope_transcript_entries(key: &EngineKey, entries: &mut [roboco_doc::Sess
     for entry in entries {
         scope(key, &mut entry.device_id);
         for part in &mut entry.parts {
-            if let roboco_doc::MessagePart::Tool {
-                subagent_ref: Some(reference),
-                ..
-            } = part
-            {
-                scope(key, reference);
+            match part {
+                roboco_doc::MessagePart::Tool {
+                    subagent_ref: Some(reference),
+                    ..
+                } => scope(key, reference),
+                // A completion notice opens the side chats it reports; they
+                // live on the parent's engine.
+                roboco_doc::MessagePart::CompletionNotice { sides, .. } => {
+                    for side in sides {
+                        scope(key, &mut side.chat_id);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -250,6 +271,12 @@ pub struct SavedEngine {
     pub endpoint: String,
     pub credential: String,
     pub info: EngineInfo,
+    /// Set when a pairing resolver's transport carries the connection (a
+    /// Tailcat forwarder): `endpoint` is then that transport's loopback URL,
+    /// which dies with the process, and the resolver rebuilds it from this
+    /// on the next start. A secret, like `credential`. Additive (ADR 0005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct SavedRegistry {
@@ -260,7 +287,8 @@ struct Entry {
     client: Option<Arc<RpcClient>>,
     saved: Option<SavedEngine>,
     /// Keeps a pairing forwarder (a Tailcat `connect` client) alive for this
-    /// registry entry; dropped when the entry is forgotten. Never read.
+    /// registry entry; dropped when the entry is forgotten, or when it is
+    /// found dead so the route is rebuilt.
     keepalive: Option<Box<dyn std::any::Any + Send>>,
 }
 struct RegistryState {
@@ -326,6 +354,11 @@ impl EngineTarget {
     }
     pub fn engine_info(&self) -> EngineInfo {
         self.info.clone()
+    }
+    /// The same engine entry of the same registry: a target minted before a
+    /// runtime replacement never matches one minted after it.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.key == other.key && Weak::ptr_eq(&self.registry, &other.registry)
     }
     pub fn connection_state(&self) -> EngineConnectionState {
         self.registry
@@ -417,6 +450,21 @@ pub fn call_deadline(method: &str) -> Duration {
         // (the installer's own deadline is 15 minutes; matches upstream's
         // forward deadline for the relay route we do not have — here the
         // client leash is the only cut-off).
+        return Duration::from_secs(900);
+    }
+    if matches!(
+        method,
+        methods::UPLOAD_CHUNK | methods::UPLOAD_COMMIT | methods::READ_ATTACHMENT_CHUNK
+    ) {
+        // Attachment calls carry their own ladder (the 90 s/30 s per-chunk
+        // and 150 s commit timeouts race timers in `attachments.rs`); the
+        // inner default of 30 s would fire first on a slow link — exactly
+        // the bug the web client fixed for its own transport. A 100 MB
+        // upload over a slow tailcat link needs chunk calls that outlast
+        // the ladder's per-chunk budget, and the whole-file deadline
+        // (size-proportional since `uploads-100mb-v1`) is the real bound.
+        // Mirrors the mobile client's `call_deadline` and the web client's
+        // `#timeoutFor` long budget.
         return Duration::from_secs(900);
     }
     if method == methods::LIST_MODELS || method == methods::LIST_COMMANDS {
@@ -696,6 +744,7 @@ impl EngineRegistry {
             base,
             code,
             keepalive,
+            route,
         } = match self
             .inner
             .resolvers
@@ -709,6 +758,7 @@ impl EngineRegistry {
                     base,
                     code,
                     keepalive: None,
+                    route: None,
                 }
             }
         };
@@ -736,7 +786,7 @@ impl EngineRegistry {
             .await
             .map_err(|_| anyhow::anyhow!("Invalid pairing response"))?;
         Ok(self
-            .adopt_engine(&base, &grant.credential, keepalive)
+            .adopt_engine(&base, &grant.credential, keepalive, route)
             .await?
             .key)
     }
@@ -767,7 +817,7 @@ impl EngineRegistry {
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let adopted = self
-            .adopt_engine(base, &grant.credential, keepalive)
+            .adopt_engine(base, &grant.credential, keepalive, None)
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok((
@@ -797,9 +847,11 @@ impl EngineRegistry {
         base: &str,
         credential: &str,
         keepalive: Option<Box<dyn std::any::Any + Send>>,
+        route: Option<String>,
     ) -> anyhow::Result<Adopted> {
         let endpoint = base.replacen("http", "ws", 1);
-        let client = Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
+        let client =
+            Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
         let info: EngineInfo = tokio::time::timeout(
             Duration::from_secs(10),
             client.call_as(methods::ENGINE_INFO, json!({})),
@@ -814,11 +866,12 @@ impl EngineRegistry {
             })
             .map(|(key, _)| key.clone());
         if let Some(key) = duplicate {
-            let saved = SavedEngine {
+            let mut saved = SavedEngine {
                 key: key.clone(),
                 endpoint,
                 credential: credential.to_owned(),
                 info: info.clone(),
+                route,
             };
             let (previous_saved, previous_keepalive) = {
                 let mut state = lock(&self.inner.state);
@@ -826,6 +879,11 @@ impl EngineRegistry {
                     .entries
                     .get_mut(&key)
                     .ok_or_else(|| anyhow::anyhow!("Engine was forgotten"))?;
+                // A room presentation carries no route: keep the one a
+                // hand pairing saved, so a restart can still rebuild it.
+                if saved.route.is_none() {
+                    saved.route = entry.saved.as_ref().and_then(|s| s.route.clone());
+                }
                 entry.snapshot.info = info;
                 (
                     entry.saved.replace(saved),
@@ -854,6 +912,7 @@ impl EngineRegistry {
             endpoint,
             credential: credential.to_owned(),
             info: info.clone(),
+            route,
         };
         lock(&self.inner.state).entries.insert(
             key.clone(),
@@ -1021,9 +1080,25 @@ async fn supervise(
         let result = if let Some(client) = initial.take() {
             Ok(client)
         } else if let Some(saved) = &saved {
-            roboco_rpc::connect_ws_authenticated(&saved.endpoint, &saved.credential)
-                .await
-                .map(Arc::new)
+            match routed_endpoint(&weak, &key, saved).await {
+                Ok(endpoint) => {
+                    let connected =
+                        roboco_rpc::connect_ws_authenticated(&endpoint, &saved.credential)
+                            .await
+                            .map(Arc::new);
+                    // A forwarder whose loopback no longer accepts is dead:
+                    // drop it so the next pass rebuilds the route. Behind a
+                    // live loopback the forwarder recovers on its own.
+                    if connected.is_err()
+                        && saved.route.is_some()
+                        && !loopback_accepts(&endpoint).await
+                    {
+                        update(&weak, &key, |entry| entry.keepalive = None);
+                    }
+                    connected
+                }
+                Err(error) => Err(error),
+            }
         } else if let Some(reconnect) = &reconnect {
             match reconnect {
                 Reconnect::Url(url) => roboco_rpc::connect_ws(url).await.map(Arc::new),
@@ -1080,6 +1155,81 @@ async fn supervise(
         delay = (delay * 2).min(Duration::from_secs(15));
     }
 }
+/// The endpoint a saved engine dials now. An engine reached through a
+/// resolver's transport (a Tailcat forwarder) saved that transport's
+/// loopback URL, which died with the process that ran it: whenever this
+/// registry holds no live transport for the entry, the resolver that paired
+/// it rebuilds one from the saved route. A route no resolver claims keeps
+/// dialing the saved endpoint, as before routes were saved.
+async fn routed_endpoint(
+    weak: &Weak<Inner>,
+    key: &EngineKey,
+    saved: &SavedEngine,
+) -> Result<String, RpcError> {
+    let Some(route) = saved.route.clone() else {
+        return Ok(saved.endpoint.clone());
+    };
+    let (resolvers, data_dir) = {
+        let inner = weak.upgrade().ok_or(RpcError::Closed)?;
+        let state = lock(&inner.state);
+        let entry = state.entries.get(key).ok_or(RpcError::Closed)?;
+        if entry.keepalive.is_some() {
+            let current = entry.saved.as_ref().unwrap_or(saved);
+            return Ok(current.endpoint.clone());
+        }
+        (inner.resolvers.clone(), inner.data_dir.clone())
+    };
+    // Starting a forwarder blocks (a child process and its readiness line).
+    let restored = tokio::task::spawn_blocking(move || {
+        resolvers
+            .iter()
+            .find_map(|resolver| resolver.restore(&route, &data_dir))
+    })
+    .await
+    .map_err(|_| RpcError::Closed)?;
+    let restored = match restored {
+        Some(Ok(restored)) => restored,
+        // Fixed text: the route is a secret and never reaches errors.
+        Some(Err(error)) => {
+            tracing::warn!(engine = %key.0, %error, "engine transport could not be rebuilt");
+            return Err(RpcError::Transport(
+                "Could not start the engine's transport".into(),
+            ));
+        }
+        None => return Ok(saved.endpoint.clone()),
+    };
+    let endpoint = restored.base.replacen("http", "ws", 1);
+    let keepalive = restored.keepalive;
+    update(weak, key, |entry| {
+        entry.keepalive = keepalive;
+        if let Some(saved) = &mut entry.saved {
+            saved.endpoint = endpoint.clone();
+        }
+    });
+    Ok(endpoint)
+}
+
+/// Whether a forwarder's loopback listener still accepts connections.
+async fn loopback_accepts(endpoint: &str) -> bool {
+    let Some(address) = reqwest::Url::parse(endpoint).ok().and_then(|url| {
+        Some(format!(
+            "{}:{}",
+            url.host_str()?,
+            url.port_or_known_default()?
+        ))
+    }) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::TcpStream::connect(address)
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
 async fn drive(
     weak: &Weak<Inner>,
     key: &EngineKey,

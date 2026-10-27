@@ -27,8 +27,31 @@ use crate::engine_registry::EngineTarget;
 use crate::theme::ink;
 use roboco_rpc::methods;
 
-/// use-attachments.ts `MAX_ATTACHMENT_BYTES`.
-pub const MAX_ATTACHMENT_BYTES: u64 = 24 * 1024 * 1024;
+/// use-attachments.ts `MAX_ATTACHMENT_BYTES`, raised to 100 MB with
+/// `uploads-100mb-v1` (ADR 0011): the taildrop payload covers videos and
+/// archives, and 100 MB still rides the chunked `UploadChunk`/`UploadCommit`
+/// pipeline (~206 chunks of ~510 KB, inside the 1 MiB relay frame budget).
+/// This is the client's HARD ceiling — what a file may stage at pick time.
+/// The per-engine limit is [`attachment_cap`].
+pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
+/// The legacy per-file cap. Engines that don't advertise `uploads-100mb-v1`
+/// still enforce 32 MB server-side, so clients clamp to 24 MB against them
+/// — exactly today's behavior for old-engine fleets.
+pub const LEGACY_MAX_ATTACHMENT_BYTES: u64 = 24 * 1024 * 1024;
+
+/// The per-file upload cap for one engine: 100 MB when it advertises
+/// `uploads-100mb-v1`, the legacy 24 MB otherwise. A send-time clamp —
+/// a staged file larger than the target engine's cap fails fast with the
+/// size message instead of grinding a doomed upload the engine would
+/// reject mid-stream.
+pub fn attachment_cap(engine: &roboco_proto::EngineInfo) -> u64 {
+    if engine.supports(roboco_proto::capabilities::UPLOADS_100MB_V1) {
+        MAX_ATTACHMENT_BYTES
+    } else {
+        LEGACY_MAX_ATTACHMENT_BYTES
+    }
+}
+
 /// Base64 chars per `UploadChunk`, sized against the relay's hard ceiling:
 /// Cloudflare caps a WebSocket message at 1 MiB, and a chunk rides one relay
 /// frame (JSON envelope + uleb header add ~150 bytes) — 680 000 chars ≈
@@ -38,7 +61,10 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 24 * 1024 * 1024;
 /// opportunity on a flaky link.
 pub const UPLOAD_CHUNK_B64_CHARS: usize = 680_000;
 /// state.ts `MAX_ATTACHMENT_READ_CHUNKS` — bounds the read-back loop.
-const MAX_READ_CHUNKS: usize = 1_000;
+/// 45 000-byte chunks × 2 400 ≈ 108 MB: the full 100 MB cap plus headroom,
+/// so a max-size attachment reads back instead of tripping the runaway
+/// guard.
+const MAX_READ_CHUNKS: usize = 2_400;
 
 // ---------------------------------------------------------------------------
 // Text transport (message-attachments.ts)
@@ -371,7 +397,7 @@ fn read_regular_file(path: &Path, name: &str) -> Result<Vec<u8>, String> {
         return Err(format!("{name} is not a file."));
     }
     if meta.len() > MAX_ATTACHMENT_BYTES {
-        return Err(format!("{name} is too large (24 MB max)."));
+        return Err(format!("{name} is too large (100 MB max)."));
     }
     std::fs::read(path).map_err(|_| format!("{name} could not be read."))
 }
@@ -484,11 +510,14 @@ const UPLOAD_CONCURRENCY: usize = 3;
 
 /// Whole-attachment deadline. Per-chunk timeouts + retries bound each CALL,
 /// but on a flapping link chunks that succeed on attempt 2-of-3 never trip
-/// the 3-consecutive-failure abort — an upload could lawfully crawl for hours
-/// reading "Sending…" (2026-08-18 user report). Scaled with size, capped:
-/// past this, fail the send with the banner instead of spinning.
+/// the 3-consecutive-failure abort — an upload could lawfully crawl for
+/// hours reading "Sending…" (2026-08-18 user report). Scaled with size,
+/// capped: the 15 s/chunk slope tolerates a ~34 KB/s link, and since
+/// `uploads-100mb-v1` a 100 MB upload (~206 chunks) needs 3 120 s at that
+/// slope, so the cap rose 900 s → 3 600 s to stay size-proportional — a
+/// slow link still fits a max-size upload, and nothing spins for hours.
 fn attachment_deadline(n_chunks: usize) -> Duration {
-    Duration::from_secs((120 + 15 * n_chunks as u64).min(900))
+    Duration::from_secs((120 + 15 * n_chunks as u64).min(3_600))
 }
 
 /// The `(seq, b64 byte-range)` plan for a file's chunks. An empty file still
@@ -526,6 +555,18 @@ pub async fn upload_attachment(
     attachment: &StagedAttachment,
     progress: Option<Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<String, String> {
+    // Send-time clamp (ticket 06): the file passed staging's 100 MB hard
+    // ceiling, but an engine without `uploads-100mb-v1` still enforces the
+    // legacy cap server-side — fail with the size message before any bytes
+    // move, instead of grinding a transfer the engine rejects mid-stream.
+    let cap = attachment_cap(&engine.engine_info());
+    if attachment.bytes().len() as u64 > cap {
+        return Err(format!(
+            "{} is too large ({} MB max).",
+            attachment.name,
+            cap / (1024 * 1024)
+        ));
+    }
     let b64 = BASE64.encode(attachment.bytes());
     let ranges = chunk_ranges(b64.len());
     let deadline = executor.timer(attachment_deadline(ranges.len()));
@@ -1467,8 +1508,61 @@ mod tests {
     fn attachment_deadline_scales_and_caps() {
         // A one-chunk screenshot fails within ~2 minutes, not hours.
         assert_eq!(attachment_deadline(1), Duration::from_secs(135));
-        // A max-size upload is still bounded.
-        assert_eq!(attachment_deadline(1_000), Duration::from_secs(900));
+        // Size-proportional since uploads-100mb-v1: a 100 MB upload
+        // (~206 chunks of ~510 KB) gets ~53 minutes at the 15 s/chunk
+        // slope — a ~34 KB/s slow link still fits (ADR 0011's taildrop).
+        assert_eq!(attachment_deadline(206), Duration::from_secs(3_210));
+        // A max-size upload is still bounded — nothing spins for hours.
+        assert_eq!(attachment_deadline(1_000), Duration::from_secs(3_600));
+    }
+
+    #[test]
+    fn attachment_cap_follows_the_engine_capability() {
+        use roboco_proto::{EngineInfo, WorkspaceScope};
+
+        let current = EngineInfo::current("device-1".into(), WorkspaceScope::Local, None);
+        assert_eq!(attachment_cap(&current), MAX_ATTACHMENT_BYTES);
+        assert!(current.supports(roboco_proto::capabilities::UPLOADS_100MB_V1));
+
+        // An old engine (no `uploads-100mb-v1`, 32 MB server-side cap):
+        // the client clamps to the legacy 24 MB.
+        let legacy = EngineInfo {
+            device_id: "device-1".into(),
+            workspace_scope: WorkspaceScope::Local,
+            cursor_sdk_version: None,
+            capabilities: Vec::new(),
+            version: None,
+            protocol_version: None,
+            min_client_protocol_version: None,
+        };
+        assert_eq!(attachment_cap(&legacy), LEGACY_MAX_ATTACHMENT_BYTES);
+        assert_eq!(LEGACY_MAX_ATTACHMENT_BYTES, 24 * 1024 * 1024);
+        assert_eq!(MAX_ATTACHMENT_BYTES, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_max_size_file_stages_exactly_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        // Sparse: the metadata len is the size; the error path (and the
+        // oversize refusal) never reads the bytes.
+        let at_cap = dir.path().join("at-cap.bin");
+        std::fs::File::create(&at_cap)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES)
+            .unwrap();
+        let staged = stage_file(&at_cap).unwrap();
+        assert_eq!(staged.bytes().len() as u64, MAX_ATTACHMENT_BYTES);
+        let over = dir.path().join("over.bin");
+        std::fs::File::create(&over)
+            .unwrap()
+            .set_len(MAX_ATTACHMENT_BYTES + 1)
+            .unwrap();
+        assert!(
+            stage_file(&over)
+                .err()
+                .unwrap()
+                .contains("too large (100 MB max)")
+        );
     }
 }
 
@@ -1558,3 +1652,144 @@ mod chip_rpc_tests {
     }
 }
 
+
+#[cfg(test)]
+mod upload_rpc_tests {
+    use super::*;
+    use crate::engine_registry::EngineRegistry;
+    use roboco_proto::{EngineInfo, WorkspaceScope};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A memory-transport engine that records `UploadChunk` traffic: the
+    /// concurrency window actually used (max in-flight calls), the seqs
+    /// seen, and a per-chunk delay so overlap is observable.
+    struct UploadCounter {
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        seqs: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl UploadCounter {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                seqs: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl roboco_rpc::RpcService for UploadCounter {
+        async fn handle(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+        ) -> Result<roboco_rpc::RpcReply, roboco_rpc::RpcError> {
+            match method {
+                methods::UPLOAD_CHUNK => {
+                    let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+                    // Overlap only exists if the client has multiple chunks
+                    // in flight while one is still being served.
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let seq = params["seq"]
+                        .as_u64()
+                        .ok_or_else(|| roboco_rpc::RpcError::BadParams("seq".into()))?;
+                    self.seqs.lock().unwrap().push(seq);
+                    self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                    roboco_rpc::RpcReply::value(&serde_json::json!({ "ok": true }))
+                }
+                methods::UPLOAD_COMMIT => {
+                    roboco_rpc::RpcReply::value(&serde_json::json!({ "path": "/uploads/up-committed.bin" }))
+                }
+                other => Err(roboco_rpc::RpcError::UnknownMethod(other.into())),
+            }
+        }
+    }
+
+    fn target(
+        service: Arc<dyn roboco_rpc::RpcService>,
+        advertise: bool,
+    ) -> (EngineRegistry, EngineTarget) {
+        let info = if advertise {
+            EngineInfo::current("device-1".into(), WorkspaceScope::Local, None)
+        } else {
+            EngineInfo {
+                device_id: "device-1".into(),
+                workspace_scope: WorkspaceScope::Local,
+                cursor_sdk_version: None,
+                capabilities: Vec::new(),
+                version: None,
+                protocol_version: None,
+                min_client_protocol_version: None,
+            }
+        };
+        let registry = EngineRegistry::test_local(
+            info,
+            std::sync::Arc::new(roboco_rpc::memory_client(service)),
+        );
+        let target = registry.local();
+        (registry, target)
+    }
+
+    #[tokio::test]
+    async fn uploads_run_three_wide_and_send_every_seq_once() {
+        let executor = gpui_platform::background_executor();
+        let counter = UploadCounter::new();
+        let (_registry, engine) = target(counter.clone(), true);
+        // 2.6 MB → 3.47 MB base64 → 6 chunks: the first 3-wide window plus
+        // three beyond it, proving the window advances.
+        let attachment = StagedAttachment::from_file("video.mp4", vec![7u8; 2_600_000]);
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_attachment(&engine, &executor, None, &upload_id, &attachment, None)
+            .await
+            .unwrap();
+        assert_eq!(path, "/uploads/up-committed.bin");
+        let mut seqs = counter.seqs.lock().unwrap().clone();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (0..6).collect::<Vec<u64>>(), "every seq exactly once");
+        assert_eq!(
+            counter.max_in_flight.load(Ordering::SeqCst),
+            UPLOAD_CONCURRENCY,
+            "the concurrency window is 3, not 1 and not unbounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_legacy_cap_is_refused_before_any_bytes_move() {
+        let executor = gpui_platform::background_executor();
+        let counter = UploadCounter::new();
+        let (_engine_registry, engine) = target(counter.clone(), false);
+        // 25 MB: fine under the new 100 MB ceiling (staging accepted it),
+        // over the 24 MB clamp for an engine without `uploads-100mb-v1`.
+        let attachment = StagedAttachment::from_file("big.bin", vec![0u8; 25 * 1024 * 1024]);
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let error = upload_attachment(&engine, &executor, None, &upload_id, &attachment, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "big.bin is too large (24 MB max).");
+        assert!(
+            counter.seqs.lock().unwrap().is_empty(),
+            "no chunk was sent for a refused upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hundred_mb_attachment_uploads_under_the_advertised_cap() {
+        let executor = gpui_platform::background_executor();
+        let counter = UploadCounter::new();
+        let (_engine_registry, engine) = target(counter.clone(), true);
+        // The real 100 MB payload through the whole ladder: 206 chunks of
+        // 680 000 b64 chars. The counter's 20 ms/chunk delay makes this
+        // ~1.4 s at 3-wide.
+        let attachment = StagedAttachment::from_file("video.mp4", vec![7u8; 100 * 1024 * 1024]);
+        assert!(attachment.bytes().len() as u64 <= MAX_ATTACHMENT_BYTES);
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let path = upload_attachment(&engine, &executor, None, &upload_id, &attachment, None)
+            .await
+            .unwrap();
+        assert_eq!(path, "/uploads/up-committed.bin");
+        assert_eq!(counter.seqs.lock().unwrap().len(), 206, "100 MB ≈ 206 chunks");
+    }
+}

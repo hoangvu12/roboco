@@ -15,7 +15,7 @@ export const ROOMS_V1 = "rooms-v1";
 export const ROOMS_V2 = "rooms-v2";
 
 /** Every capability this build of the engine advertises. */
-export const CAPABILITIES_CURRENT: readonly string[] = ["composer-references-v1", "message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "harness-updates-v1", "web-client", "transcript-resume-v1", "projectless-scratch-v1", "rooms-v1", "rooms-v2"];
+export const CAPABILITIES_CURRENT: readonly string[] = ["composer-references-v1", "message-queue-v1", "message-queue-actions-v1", "message-queue-attachments-v1", "message-queue-clean-attachment-text-v1", "message-queue-edit-lease-v1", "harness-updates-v1", "web-client", "transcript-resume-v1", "projectless-scratch-v1", "uploads-100mb-v1", "rooms-v1", "rooms-v2"];
 
 /** Wire protocol generation this engine speaks; absent on older engines means 1. */
 export const PROTOCOL_VERSION = 1;

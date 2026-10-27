@@ -50,6 +50,8 @@ mod new_thread_background_mask;
 mod notice;
 pub mod notify;
 pub mod overscroll;
+#[cfg(test)]
+mod paired_fixture;
 pub mod pickers;
 pub mod popover;
 pub mod project_actions;
