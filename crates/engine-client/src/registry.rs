@@ -15,6 +15,24 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
+use crate::rooms::{RoomGrant, RoomMemberSession};
+
+/// How [`EngineRegistry::join_room_member`] (and pairing) placed an engine
+/// in the registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adoption {
+    /// A new entry under a fresh key.
+    New,
+    /// The registry already held this engine (same device id): its existing
+    /// entry was reattached with the fresh credential — never a duplicate.
+    Reattached,
+}
+
+struct Adopted {
+    key: EngineKey,
+    adoption: Adoption,
+}
+
 const PREFIX: &str = "engine:v1:";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EngineKey(pub String);
@@ -717,20 +735,124 @@ impl EngineRegistry {
             .json()
             .await
             .map_err(|_| anyhow::anyhow!("Invalid pairing response"))?;
+        Ok(self
+            .adopt_engine(&base, &grant.credential, keepalive)
+            .await?
+            .key)
+    }
+
+    /// Present a room secret to one member engine and adopt it as an
+    /// ordinary paired engine (ADR 0011): `POST {base}/room/present
+    /// {secret, label}` mints (or reissues) a session labeled by the
+    /// presenter, and the registry wires that session in exactly like a
+    /// pairing — saved credential, supervised reconnect, cache rows. An
+    /// engine this registry already holds (same device id) is reattached
+    /// under its existing key, never added twice. `address` only labels the
+    /// returned record (it is a transport secret and never logged).
+    pub async fn join_room_member(
+        &self,
+        base: &str,
+        address: &str,
+        secret: &str,
+        label: &str,
+        keepalive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> anyhow::Result<(RoomMemberSession, Adoption)> {
+        anyhow::ensure!(
+            self.inner.configuration_error.is_none(),
+            "Saved engine configuration needs repair before joining rooms"
+        );
+        // Fixed-text failures: the presentation's own errors never echo the
+        // secret (ADR 0008), and adopt errors quote at most a loopback URL.
+        let grant: RoomGrant = crate::rooms::present_room_member(base, secret, label)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let adopted = self
+            .adopt_engine(base, &grant.credential, keepalive)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok((
+            RoomMemberSession {
+                address: address.to_owned(),
+                engine_key: adopted.key.0,
+                session_id: Some(grant.session.id),
+            },
+            adopted.adoption,
+        ))
+    }
+
+    /// Wire one authenticated credential into the registry: connect the
+    /// WebSocket, read `EngineInfo`, persist the saved entry, publish, and
+    /// start supervision. The tail both `pair` and `join_room_member`
+    /// share — a room-minted session is an ordinary paired engine in every
+    /// respect (ADR 0011).
+    ///
+    /// Idempotent per engine identity (fleet follow): when a remote entry
+    /// with the same device id already exists, it is reattached under its
+    /// key — the fresh endpoint, credential, and keepalive replace the old
+    /// ones and supervision restarts on the new client — instead of a
+    /// second entry. That is also what heals a Tailcat-paired entry whose
+    /// forwarder died with the previous app process.
+    async fn adopt_engine(
+        &self,
+        base: &str,
+        credential: &str,
+        keepalive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> anyhow::Result<Adopted> {
         let endpoint = base.replacen("http", "ws", 1);
-        let client =
-            Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, &grant.credential).await?);
+        let client = Arc::new(roboco_rpc::connect_ws_authenticated(&endpoint, credential).await?);
         let info: EngineInfo = tokio::time::timeout(
             Duration::from_secs(10),
             client.call_as(methods::ENGINE_INFO, json!({})),
         )
         .await??;
         let _change = self.inner.changes.lock().await;
+        let duplicate = lock(&self.inner.state)
+            .entries
+            .iter()
+            .find(|(key, entry)| {
+                !key.is_local() && entry.snapshot.info.device_id == info.device_id
+            })
+            .map(|(key, _)| key.clone());
+        if let Some(key) = duplicate {
+            let saved = SavedEngine {
+                key: key.clone(),
+                endpoint,
+                credential: credential.to_owned(),
+                info: info.clone(),
+            };
+            let (previous_saved, previous_keepalive) = {
+                let mut state = lock(&self.inner.state);
+                let entry = state
+                    .entries
+                    .get_mut(&key)
+                    .ok_or_else(|| anyhow::anyhow!("Engine was forgotten"))?;
+                entry.snapshot.info = info;
+                (
+                    entry.saved.replace(saved),
+                    std::mem::replace(&mut entry.keepalive, keepalive),
+                )
+            };
+            if let Err(err) = self.persist() {
+                if let Some(entry) = lock(&self.inner.state).entries.get_mut(&key) {
+                    entry.saved = previous_saved;
+                }
+                return Err(err);
+            }
+            self.publish();
+            // `spawn` aborts the old supervision task; the old forwarder (if
+            // any) goes with it.
+            self.spawn(key.clone(), Some(client), None);
+            drop(previous_keepalive);
+            return Ok(Adopted {
+                key,
+                adoption: Adoption::Reattached,
+            });
+        }
         let key = EngineKey(uuid::Uuid::new_v4().to_string());
         let saved = SavedEngine {
             key: key.clone(),
             endpoint,
-            credential: grant.credential,
+            credential: credential.to_owned(),
             info: info.clone(),
         };
         lock(&self.inner.state).entries.insert(
@@ -743,7 +865,10 @@ impl EngineRegistry {
         }
         self.publish();
         self.spawn(key.clone(), Some(client), None);
-        Ok(key)
+        Ok(Adopted {
+            key,
+            adoption: Adoption::New,
+        })
     }
     pub async fn forget(&self, key: &EngineKey) -> anyhow::Result<()> {
         anyhow::ensure!(!key.is_local(), "The local engine cannot be forgotten");

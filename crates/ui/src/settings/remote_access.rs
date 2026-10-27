@@ -1,4 +1,5 @@
-//! Settings for this engine's listener and paired clients.
+//! Settings for this engine's listener and paired clients, plus the Fleet
+//! card (fleet follow — `fleet` module).
 use crate::{settings::widgets, state::AppState, theme::Theme};
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, Image, ImageFormat, ImageSource, Render,
@@ -8,6 +9,8 @@ use roboco_proto::{PairingLink, RemoteAccessSnapshot};
 use roboco_rpc::methods;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+mod fleet;
 
 /// The pairing QR renders 176 px square (ticket 32) on a white tile, so a
 /// version 6–8 code scans from across a desk.
@@ -45,11 +48,20 @@ pub struct RemoteAccessPage {
     expiry_task: Option<Task<()>>,
     /// The same wake-up for the shown Tailcat invite.
     invite_expiry_task: Option<Task<()>>,
+    /// The Fleet card (hidden unless the local engine speaks rooms-v2).
+    fleet: fleet::FleetCard,
+    _observe: gpui::Subscription,
 }
 
 impl RemoteAccessPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        // The Fleet card renders from AppState's fleet report.
+        let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        Self::prime_fleet(&state, cx);
+        let fleet = fleet::FleetCard::new(cx);
         let mut page = Self {
+            fleet,
+            _observe: observe,
             state,
             snapshot: None,
             link: None,
@@ -197,7 +209,7 @@ fn invite_qr_tile(svg: &str, expired: bool) -> AnyElement {
     qr_tile("tailcat-qr", svg, INVITE_QR_SIZE, expired)
 }
 
-fn qr_tile(id: &'static str, svg: &str, size: f32, expired: bool) -> AnyElement {
+pub(super) fn qr_tile(id: &'static str, svg: &str, size: f32, expired: bool) -> AnyElement {
     let image = Arc::new(Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec()));
     div()
         .id(id)
@@ -425,6 +437,9 @@ impl Render for RemoteAccessPage {
                     ),
                 );
             }
+        }
+        if let Some(fleet) = self.render_fleet(&theme, cx) {
+            page = page.children(fleet);
         }
         let rows = self
             .snapshot
@@ -831,5 +846,93 @@ mod tests {
             assert_eq!(invite.url, bare_url);
             assert!(invite.qr_svg.is_none());
         });
+    }
+
+    /// The Fleet card follows the local engine's rooms-v2 capability: absent
+    /// without it (capability hiding — the other page tests above run on an
+    /// engine without it and see no extra requests), present with it, and
+    /// its rows carry plain state with Retry only where it helps and a
+    /// switch only for engines with an identity.
+    #[gpui::test]
+    fn the_fleet_card_shows_plain_rows_only_on_rooms_v2_engines(cx: &mut gpui::TestAppContext) {
+        use crate::rooms::{FleetReport, FleetRow, FleetState, NotInYet};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let data_dir = tempfile::tempdir().unwrap();
+        let (out, _requests) = tokio::sync::mpsc::channel::<String>(16);
+        let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(16);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.set_test_engine(
+                crate::state::EngineHandle::from_test_client(roboco_rpc::RpcClient::new(
+                    out, inbound,
+                ))
+                .with_capabilities(&[roboco_proto::capabilities::ROOMS_V2]),
+            );
+            state.data_dir = Some(data_dir.path().to_path_buf());
+            // A report is already in: the card renders it, mount adds no pass.
+            state.fleet.report = Some(FleetReport {
+                exists: true,
+                rows: vec![
+                    FleetRow {
+                        device_id: Some("dev-b".into()),
+                        key: None,
+                        label: "server".into(),
+                        state: FleetState::In,
+                    },
+                    FleetRow {
+                        device_id: Some("dev-c".into()),
+                        key: None,
+                        label: "laptop".into(),
+                        state: FleetState::NotInYet(NotInYet::Offline),
+                    },
+                    FleetRow {
+                        device_id: None,
+                        key: None,
+                        label: "elsewhere".into(),
+                        state: FleetState::NotInYet(NotInYet::Offline),
+                    },
+                ],
+            });
+        });
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let (_page, cx) = cx.add_window_view(|_, cx| RemoteAccessPage::new(state.clone(), cx));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("fleet-card").is_some(),
+            "rooms-v2: card shown"
+        );
+        assert!(cx.debug_bounds("fleet-include-0").is_some());
+        assert!(cx.debug_bounds("fleet-include-1").is_some());
+        assert!(
+            cx.debug_bounds("fleet-include-2").is_none(),
+            "no switch without an engine identity"
+        );
+        assert!(cx.debug_bounds("fleet-retry-0").is_none(), "In: no Retry");
+        assert!(
+            cx.debug_bounds("fleet-retry-1").is_some(),
+            "Not in yet: Retry"
+        );
+
+        // Without rooms-v2 the card is gone — no error anywhere.
+        state.update(cx, |state, _| {
+            state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                roboco_rpc::RpcClient::new(
+                    tokio::sync::mpsc::channel::<String>(16).0,
+                    tokio::sync::mpsc::channel::<String>(16).1,
+                ),
+            ));
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("fleet-card").is_none(),
+            "old engine: hidden"
+        );
     }
 }
