@@ -1,5 +1,8 @@
 use super::*;
-use crate::{FileSessionStore, PairingResolver, RegistryOptions, ResolvedPairing, SessionStore};
+use crate::{
+    FileSessionStore, PairingResolver, RegistryOptions, ResolvedPairing, RestoredRoute,
+    SessionStore,
+};
 use roboco_engine::{EngineCore, EngineProfile, HarnessId, HarnessRegistry, pairing::PairingStore};
 
 fn core(dir: &std::path::Path) -> EngineCore {
@@ -604,6 +607,7 @@ async fn resolver_claims_input_before_url_parsing() {
                 base: self.base.clone(),
                 code: self.code.clone(),
                 keepalive: Some(Box::new(KeepaliveCounter(self.dropped.clone()))),
+                route: None,
             }))
         }
     }
@@ -655,6 +659,150 @@ async fn resolver_claims_input_before_url_parsing() {
         dropped.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "forgetting the entry drops the resolver's keepalive"
+    );
+    registry.shutdown().await;
+    drop(listener);
+    remote.shutdown().await;
+}
+
+/// An engine paired through a resolver's transport (a Tailcat forwarder)
+/// survives a client restart: the resolver's route is saved beside the
+/// session credential, and the reopened registry has the resolver rebuild
+/// the transport instead of dialing the saved loopback URL, which died with
+/// the old process. The rebuilt transport lives as long as the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resolver_routes_are_saved_and_rebuilt_after_a_restart() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    struct Keepalive(Arc<AtomicUsize>);
+    impl Drop for Keepalive {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, SeqCst);
+        }
+    }
+    struct RouteResolver {
+        base: String,
+        code: String,
+        restores: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl PairingResolver for RouteResolver {
+        fn resolve(
+            &self,
+            input: &str,
+            _data_dir: &std::path::Path,
+        ) -> Option<anyhow::Result<ResolvedPairing>> {
+            (input == "route:pair").then(|| {
+                Ok(ResolvedPairing {
+                    base: self.base.clone(),
+                    code: self.code.clone(),
+                    keepalive: Some(Box::new(Keepalive(self.dropped.clone()))),
+                    route: Some("route:secret".into()),
+                })
+            })
+        }
+        fn restore(
+            &self,
+            route: &str,
+            _data_dir: &std::path::Path,
+        ) -> Option<anyhow::Result<RestoredRoute>> {
+            (route == "route:secret").then(|| {
+                self.restores.fetch_add(1, SeqCst);
+                Ok(RestoredRoute {
+                    base: self.base.clone(),
+                    keepalive: Some(Box::new(Keepalive(self.dropped.clone()))),
+                })
+            })
+        }
+    }
+    let remote_dir = tempfile::tempdir().unwrap();
+    let client_dir = tempfile::tempdir().unwrap();
+    let remote = core(remote_dir.path());
+    let listener = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        remote.rpc_service(),
+        remote_dir.path(),
+    )
+    .await
+    .unwrap();
+    let code = PairingStore::open(remote_dir.path())
+        .unwrap()
+        .create_code("route test", 300)
+        .unwrap();
+    let path = client_dir.path().join("paired-engines-v1.json");
+    let restores = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let open = || {
+        EngineRegistry::open_with(RegistryOptions {
+            data_dir: client_dir.path().to_path_buf(),
+            sessions: Arc::new(FileSessionStore::new(path.clone())),
+            local: None,
+            resolvers: vec![Arc::new(RouteResolver {
+                base: format!("http://{}", listener.address),
+                code: code.credential.clone(),
+                restores: restores.clone(),
+                dropped: dropped.clone(),
+            })],
+        })
+    };
+    let connected = |registry: &EngineRegistry, key: &EngineKey| {
+        let registry = registry.clone();
+        let key = key.clone();
+        async move {
+            wait_for(&registry, |snapshot| {
+                snapshot
+                    .engines
+                    .iter()
+                    .any(|e| e.key == key && e.state == EngineConnectionState::Connected)
+            })
+            .await
+        }
+    };
+    let registry = open().await.unwrap();
+    let key = registry.pair("route:pair", "Test desktop").await.unwrap();
+    connected(&registry, &key).await;
+    assert_eq!(
+        restores.load(SeqCst),
+        0,
+        "a fresh pairing keeps its own transport"
+    );
+    let saved = FileSessionStore::new(path.clone()).load().unwrap();
+    assert_eq!(saved[0].route.as_deref(), Some("route:secret"));
+    registry.shutdown().await;
+    drop(registry);
+    assert_eq!(
+        dropped.load(SeqCst),
+        1,
+        "the old transport died with its registry"
+    );
+
+    // The restart: the saved loopback URL no longer answers.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_endpoint = format!("ws://{}", dead.local_addr().unwrap());
+    drop(dead);
+    let store = FileSessionStore::new(path.clone());
+    let mut engines = store.load().unwrap();
+    engines[0].endpoint = dead_endpoint;
+    store.save(&engines).unwrap();
+
+    let registry = open().await.unwrap();
+    connected(&registry, &key).await;
+    assert_eq!(
+        restores.load(SeqCst),
+        1,
+        "the resolver rebuilt the transport once"
+    );
+    let target = registry.target(&key).unwrap();
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert_eq!(
+        dropped.load(SeqCst),
+        1,
+        "the rebuilt transport lives with the entry"
+    );
+    registry.forget(&key).await.unwrap();
+    assert_eq!(
+        dropped.load(SeqCst),
+        2,
+        "forgetting drops the rebuilt transport"
     );
     registry.shutdown().await;
     drop(listener);
