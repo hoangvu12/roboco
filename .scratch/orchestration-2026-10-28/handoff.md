@@ -1,0 +1,116 @@
+# Orchestrator handoff: web removal, CI speed, upstream wave 10 (2026-10-28)
+
+Written by the release orchestrator ("Fleet Follow Release v0.14.0", chat `4e28615f`) for the new
+implementation orchestrator. Read this whole file, then `AGENTS.md`. Keep this file current as you
+go (state, decisions, PRs). If you run low on context, update it and hand off the same way.
+
+## The user's instruction (2026-10-28)
+
+"spawn a new chat as orchestrator, then spawn side chats or subagents to implement all of them",
+meaning all three specs below. The user prefers **short, plain-language** status updates, no jargon dumps.
+
+## State at handoff
+
+- **v0.14.0 is released** (`1ccaa3a8b` on `main`, tag pushed, all 13 assets verified, notes include the
+  Tailcat re-pair warning). `main` = `origin/main` = `1ccaa3a8b`. Nothing is in flight on GitHub.
+- The main checkout `C:\Users\HP MEDIA\Desktop\nguyenvu\roboco` is on `main`, clean apart from
+  **untracked** planning files: `.scratch/web-removal/`, `.scratch/ci-speed/`,
+  `.scratch/upstream-ports-2026-10-wave10/`, `.scratch/upstream-drift/2026-10-28*.md` +
+  `audit-2026-10-28/`, this folder, and the old `.scratch/fleet-follow/handoff-2026-10-28.md`.
+  **Worktrees branched off `main` will NOT contain these untracked files.** First step: commit the
+  planning docs (explicit-path `git add` only) so workers see them. Either push a docs-only commit to `main`
+  or open a quick docs PR; `.scratch/` changes don't need the full CI.
+- An empty locked folder `..\roboco-ff-08` is left over. Delete it when possible.
+
+## The three specs (all decisions recorded at the bottom of each spec.md, "User decisions (2026-10-28)")
+
+1. **`.scratch/web-removal/`**: remove the web client and the desktop in-app browser; keep previews
+   ("Ports"). 11 tickets, **one PR**. Key trap: today only the in-app browser tab keeps the
+   desktop's preview proxy (7332) alive, so ticket 07 must land before 08. Android's WebView preview
+   flow (`PreviewFlowTest`) stays and must keep passing. Ticket 01 creates and pushes the `web-final`
+   tag (approved).
+2. **`.scratch/ci-speed/`**: 21 tickets (research in `research-2026-10-28.md` +
+   `research-web-2026-10-28.md`). Target is a PR wait of about 22–25 min, down from 76. Ticket 06's
+   web lines and ticket 10 wait for the web-removal PR. The `GRADLE_ENCRYPTION_KEY` repo secret already exists.
+   **No paid anything.**
+3. **`.scratch/upstream-ports-2026-10-wave10/`**: 78 tickets in lanes:
+   - 0 setup (01 recreate the `zeron/main` mirror);
+   - 1 fixes (02–28: crashes and security first, then Windows, agents, sidebar/chat);
+   - 2 messages (29–32);
+   - 3 Android (33–43);
+   - 4 features (44–75).
+
+   **76–78 are parked (needs-triage): do NOT implement them.** Plain-language overview:
+   `.scratch/upstream-drift/2026-10-28-summary.md`; evidence: `.scratch/upstream-drift/2026-10-28.md` +
+   `audit-2026-10-28/`.
+
+## Suggested order and parallelism (your call within these constraints)
+
+- **Web removal first** (one PR): it deletes about 206k lines and touches the engine listener, `crates/ui`,
+  every workflow and the TS derives in `crates/proto`. Wave-10 work started before it merges will
+  conflict, and wave-10 tickets assume wiregen is gone ("proto change", no TS).
+- **CI tickets next**, or in parallel where they don't touch the same workflow lines as the web PR:
+  01, 02, 07, 11, 12, 13 are good early candidates. Every PR before CI lands costs about 76 min of CI,
+  so faster CI pays back immediately.
+- **Wave 10** after web removal merges. Run one implementer side chat per lane branch (the wave-4–9
+  rhythm: `wave10/<lane>` branches off `main`, one commit per ticket, ticket order, merge after
+  end-of-pass verification). Lanes can run in parallel, but watch for file overlap. Fixes go first,
+  crashes and security (02, 03) at the very top.
+- GPUI pin sync (wave-10 57) gates the terminal overhaul and some UI tickets. **Pushing to
+  `hoangvu12/zui` / `hoangvu12/gpui-component` needs the user's OK at that time**. Ask first.
+
+## Authority (what you may do without asking)
+
+- Create worktrees and branches, spawn side chats or subagents, commit (explicit-path adds only), push
+  branches, open PRs on `hoangvu12/roboco`, and **merge a PR into `main` with a merge commit** once
+  every required check is green AND you've verified the tickets' acceptance criteria.
+- Update ticket `Status:` lines and append `## Comments` evidence as work lands.
+- **Ask the user first** before:
+  - tagging or publishing any release;
+  - pushing to the zui / gpui-component forks;
+  - deleting remote branches;
+  - anything paid;
+  - anything that changes a recorded decision;
+  - acting on parked tickets.
+- Some steps can't be automated (manual checks of desktop previews in Chrome/Edge over LAN and
+  Tailcat, Android previews, pairing; tickets marked ready-for-human). Do everything automatable, then
+  give the user a short checklist.
+
+## Hard rules (AGENTS.md + lessons)
+
+- Explicit-path `git add` only. **rerere stays on.** **No force pushes.** Never merge upstream or the mirror
+  into `main`.
+- **Every push to a PR branch cancels its in-flight CI runs.** Batch fixes; don't push while a run you
+  need is still going unless a check has actually failed and the fix is ready.
+- **Worktrees:**
+  - Every side chat that edits files gets its own `git worktree add ../roboco-<slug> -b <branch> main`.
+    Pass that path as its `cwd`. Never switch branches in the main checkout.
+  - Add each worktree root to `basedirs` in `C:\Users\HP MEDIA\AppData\Roaming\Mozilla\sccache\config\config`.
+    Restart sccache (`sccache --stop-server; sccache --start-server`) only when no builds are running.
+    The user's other project (`kyoko` lanes) shares this sccache.
+  - When a worker finishes: `git worktree remove`, delete its merged branch, drop its basedir, archive its chat.
+- **Host notes:**
+  - Windows 11, 20 threads. Anything building gpui needs `cargo +1.99.0` until CI ticket 12 pins the
+    toolchain; default stable is 1.93.
+  - `roboco-ui --lib` tests need `--test-threads=1` locally.
+  - No Android SDK locally: Kotlin compiles only in CI.
+  - No nextest locally.
+  - PowerShell 5.1 mangles `gh --jq` quoting, so use the Bash tool.
+- **Host-only test failures (not real):**
+  - `source_control` git tests (global `url.https://github.com/.insteadof`);
+  - `codex_availability_finds_npm_cmd_shim` (Codex on this PC's registry PATH).
+- Known CI facts: Windows `tests` takes about 63 min warm and up to about 95 cold (timeout 120);
+  `ui-tests` timeout 45. The Android tablet suite has never been green on `main` (CI ticket 11 triages it).
+- Port commits record the upstream SHAs they carry and any excluded slices
+  (`docs/reference/upstream-ports.md`). Renames per AGENTS.md.
+- Side chats you create report back to you automatically. Use `wait: false` and end your turn; don't
+  block on `wait_for_turn` for long work.
+
+## Reporting
+
+After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
+Keep a running "PRs" list in this file.
+
+## PRs
+
+(none yet)
