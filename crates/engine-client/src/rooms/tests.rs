@@ -85,6 +85,7 @@ impl RoomDialer for MapDialer {
         Ok(ResolvedMember {
             base,
             keepalive: None,
+            route: None,
         })
     }
 }
@@ -829,6 +830,101 @@ async fn a_dead_entry_is_reattached_under_its_key_without_session_churn() {
     let sessions = b.desktop_sessions();
     assert_eq!(sessions.len(), 1, "the room's session was reissued");
     assert!(sessions[0].revoked_at.is_none());
+}
+
+/// F4: an engine adopted through a room saves the dialer's route, so after
+/// an app restart the pairing resolver rebuilds its forwarder instead of
+/// supervision dialing the saved loopback URL, which died with the old
+/// process (or now belongs to another forwarder) — with the credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_room_adopted_entry_is_rebuilt_from_its_route_after_a_restart() {
+    /// Dials through a fake forwarder with a resolver route, like the
+    /// desktop's Tailcat dialer.
+    struct RoutedDialer(String);
+    impl RoomDialer for RoutedDialer {
+        fn dial(&self, address: &str, _data_dir: &Path) -> anyhow::Result<ResolvedMember> {
+            Ok(ResolvedMember {
+                base: self.0.clone(),
+                keepalive: Some(Box::new(())),
+                route: Some(format!("route:{address}")),
+            })
+        }
+    }
+    struct RestoreResolver {
+        base: Arc<Mutex<String>>,
+        restored: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::PairingResolver for RestoreResolver {
+        fn resolve(
+            &self,
+            _input: &str,
+            _data_dir: &Path,
+        ) -> Option<anyhow::Result<crate::ResolvedPairing>> {
+            None
+        }
+        fn restore(
+            &self,
+            route: &str,
+            _data_dir: &Path,
+        ) -> Option<anyhow::Result<crate::RestoredRoute>> {
+            let address = route.strip_prefix("route:")?;
+            self.restored.lock().unwrap().push(address.to_owned());
+            Some(Ok(crate::RestoredRoute {
+                base: self.base.lock().unwrap().clone(),
+                keepalive: Some(Box::new(())),
+            }))
+        }
+    }
+
+    let mut b = member_engine().await;
+    let invite = RoomInvite::fleet("Fleet", SECRET, vec![member("server", "tcB")]).unwrap();
+    b.join(&invite);
+    let ui_dir = tempfile::tempdir().unwrap();
+    let store_path = ui_dir.path().join("paired-engines-v1.json");
+    let base = Arc::new(Mutex::new(b.base()));
+    let restored = Arc::new(Mutex::new(Vec::new()));
+    let open = || {
+        EngineRegistry::open_with(crate::RegistryOptions {
+            data_dir: ui_dir.path().to_path_buf(),
+            sessions: Arc::new(crate::FileSessionStore::new(store_path.clone())),
+            local: None,
+            resolvers: vec![Arc::new(RestoreResolver {
+                base: base.clone(),
+                restored: restored.clone(),
+            })],
+        })
+    };
+    let registry = open().await.unwrap();
+    let outcome = join_room_members(
+        &registry,
+        Arc::new(RoutedDialer(b.base())),
+        ui_dir.path(),
+        ClientRoom::from_invite(&invite),
+        None,
+        DESKTOP_LABEL,
+    )
+    .await
+    .unwrap();
+    assert!(outcome.complete());
+    wait_connected(&registry, 1).await;
+    let key = EngineKey(outcome.room.sessions[0].engine_key.clone());
+    let saved = crate::FileSessionStore::new(store_path.clone())
+        .load()
+        .unwrap();
+    assert_eq!(saved[0].route.as_deref(), Some("route:tcB"));
+    registry.shutdown().await;
+    drop(registry);
+
+    // The restart: the forwarder's old loopback port is dead.
+    b.restart_listener().await;
+    *base.lock().unwrap() = b.base();
+    let registry = open().await.unwrap();
+    wait_connected(&registry, 1).await;
+    assert_eq!(*restored.lock().unwrap(), vec!["tcB".to_owned()]);
+    let target = registry.target(&key).unwrap();
+    assert!(target.call(methods::ENGINE_INFO, json!({})).await.is_ok());
+    assert_eq!(b.desktop_sessions().len(), 1, "no re-presentation needed");
+    registry.shutdown().await;
 }
 
 /// Fleet follow's push: `RoomJoin` over the paired session joins the member

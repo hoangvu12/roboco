@@ -80,6 +80,7 @@ impl RoomDialer for MapDialer {
         Ok(ResolvedMember {
             base,
             keepalive: None,
+            route: None,
         })
     }
 }

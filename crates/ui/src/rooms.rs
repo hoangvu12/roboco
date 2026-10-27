@@ -50,21 +50,21 @@ pub const FLEET_FILE: &str = "fleet-v1.json";
 pub const PLAIN_ROOM_INVITE: &str =
     "That invite is for a room, not a fleet. Join rooms from a terminal: roboco engine room join";
 
-/// The desktop's dialer: one tailcat forwarder per member address, the same
-/// layout the pairing resolver uses. The forwarder (and its adapter child)
-/// lives exactly as long as the registry entry the join adopts.
+/// The desktop's dialer: the pairing resolver's per-address forwarder (one
+/// adapter per member address in this process, shared with Tailcat
+/// pairings), kept alive by the registry entry the join adopts. The entry
+/// saves the resolver's `tailcat:` route, so a restart rebuilds the
+/// forwarder instead of dialing a loopback port that died (or that another
+/// forwarder has since taken) with the bearer credential.
 pub struct TailcatRoomDialer;
 
 impl RoomDialer for TailcatRoomDialer {
     fn dial(&self, address: &str, data_dir: &Path) -> anyhow::Result<ResolvedMember> {
-        let session = data_dir
-            .join("tailcat-forwarders")
-            .join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&session)?;
-        let client = roboco_engine::tailcat::TailcatClient::start(&session, address, None)?;
+        let client = crate::tailcat_pairing::forwarder(address, data_dir)?;
         Ok(ResolvedMember {
-            base: client.url().trim_end_matches('/').to_string(),
+            base: crate::tailcat_pairing::base(&client),
             keepalive: Some(Box::new(client)),
+            route: Some(crate::tailcat_pairing::route(address)),
         })
     }
 }

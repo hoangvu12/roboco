@@ -140,10 +140,14 @@ pub trait RoomDialer: Send + Sync {
 }
 
 /// One dialed member: where to reach it, plus the opaque keepalive (the
-/// forwarder handle) the registry entry must hold.
+/// forwarder handle) the registry entry must hold, and the route a pairing
+/// resolver rebuilds that forwarder from after a restart (`base` is a
+/// loopback URL that dies with this process). The route is a secret like
+/// the address it names: never logged.
 pub struct ResolvedMember {
     pub base: String,
     pub keepalive: Option<Box<dyn Any + Send>>,
+    pub route: Option<String>,
 }
 
 /// A room member this client reaches through a registry entry. When the
@@ -577,7 +581,7 @@ async fn dial_and_present(
             &room.secret,
             presenter,
             dialed.keepalive,
-            None,
+            dialed.route,
         )
         .await
         .map_err(|error| {

@@ -57,19 +57,27 @@ fn tailcat_pairing(input: &str, data_dir: &Path) -> anyhow::Result<ResolvedPairi
         base: base(&client),
         code: invite.token,
         keepalive: Some(Box::new(client)),
-        route: Some(format!("{ROUTE_PREFIX}{}", invite.address)),
+        route: Some(route(&invite.address)),
     })
 }
 
-fn base(client: &TailcatClient) -> String {
+pub(crate) fn base(client: &TailcatClient) -> String {
     client.url().trim_end_matches('/').to_string()
 }
 
+/// The saved route for an engine reached through a forwarder to `address`
+/// (pairing and fleet joins alike): what [`TailcatResolver::restore`]
+/// rebuilds the forwarder from after a restart.
+pub(crate) fn route(address: &str) -> String {
+    format!("{ROUTE_PREFIX}{address}")
+}
+
 /// One live forwarder per Tailcat address in this process. Every registry
-/// shares it (each side-chat pane opens its own registry) instead of each
-/// starting an adapter process; it stops when the last one drops it. One
-/// whose loopback stopped accepting is replaced.
-fn forwarder(address: &str, data_dir: &Path) -> anyhow::Result<Arc<TailcatClient>> {
+/// shares it (each side-chat pane opens its own registry), and so do
+/// pairings and fleet joins, instead of each starting an adapter process;
+/// it stops when the last one drops it. One whose loopback stopped
+/// accepting is replaced.
+pub(crate) fn forwarder(address: &str, data_dir: &Path) -> anyhow::Result<Arc<TailcatClient>> {
     static FORWARDERS: LazyLock<Mutex<HashMap<String, Weak<TailcatClient>>>> =
         LazyLock::new(Default::default);
     // Held while a forwarder starts, so concurrent restores share it.
@@ -119,5 +127,20 @@ mod tests {
             panic!("a dead route must fail");
         };
         assert!(!format!("{error:#}").contains(secret), "{error:#}");
+    }
+
+    /// F4: the route a fleet join saves is one this resolver claims, so a
+    /// restart rebuilds a fleet member's forwarder exactly like a paired
+    /// engine's (never dialing the dead loopback URL it saved).
+    #[test]
+    fn fleet_join_routes_are_restored_by_the_tailcat_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = "tcSECRET!notbase64url";
+        assert_eq!(route(secret), format!("tailcat:{secret}"));
+        assert!(
+            TailcatResolver
+                .restore(&route(secret), dir.path())
+                .is_some()
+        );
     }
 }
