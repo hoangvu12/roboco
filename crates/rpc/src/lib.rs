@@ -37,6 +37,19 @@ pub mod methods {
     pub const CREATE_PAIRING_LINK: &str = "CreatePairingLink";
     pub const CREATE_TAILCAT_INVITE: &str = "CreateTailcatInvite";
     pub const REVOKE_PAIRING_SESSION: &str = "RevokePairingSession";
+    /// Joined rooms (ADR 0011): read a room's address book.
+    /// Session-authed and additionally requires presenting the room secret
+    /// (member addresses are transport secrets).
+    pub const GET_ROOM_BOOK: &str = "GetRoomBook";
+    /// Joined rooms (ADR 0011): union-merge a room's address book.
+    pub const UPDATE_ROOM_BOOK: &str = "UpdateRoomBook";
+    /// Fleet follow: remotely join this engine into a room (the invite
+    /// string is the payload; session-authed; idempotent). The push path
+    /// for the desktop app's auto fleet propagation.
+    pub const ROOM_JOIN: &str = "RoomJoin";
+    /// Fleet follow: the engine's fleet room serialized as an invite (or
+    /// null when it holds none), so any member can introduce a new client.
+    pub const GET_FLEET_INVITE: &str = "GetFleetInvite";
     pub const WATCH_PREVIEWS: &str = "WatchPreviews";
     pub const LIST_HARNESSES: &str = "ListHarnesses";
     /// Explicit, user-requested CLI install ON THE ENGINE THIS CALL REACHES

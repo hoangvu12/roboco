@@ -17,6 +17,7 @@ pub mod preview;
 pub mod projectless;
 pub mod qr;
 pub mod remote;
+pub mod room;
 pub mod run_errors;
 pub mod tailcat;
 pub mod view;

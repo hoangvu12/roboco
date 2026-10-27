@@ -1,11 +1,19 @@
-# 03 — Desktop fleet: Remote-access fleet card, auto push, Rooms page deleted
+# 03 — Desktop fleet: Remote-access fleet card, auto push, no Rooms page
+
+**Port reality (2026-10-27):** your layer's v0.13.0 files are absent from
+this branch (evil merge, see spec) — including the old Rooms settings page.
+DO NOT port the page back; its deletion is already done. Port only what the
+fleet card needs: `crates/engine-client/src/rooms.rs` (client join
+machinery, `mint_room_secret` now lives in proto — update imports) and the
+`RoomOps` internals from `crates/ui/src/rooms.rs` of the tag, reworked for
+fleet. Then build the Fleet card fresh.
 
 **What to build:** The desktop rework in `crates/ui` (plus the settings
 wiring in `apps/roboco`).
 
-**Delete** the Settings → Rooms page: `crates/ui/src/settings/rooms.rs`,
-its `mod` wiring, page tests, and any orphaned strings/entries. No
-"Rooms" user-facing surface survives on desktop.
+**DELETE** the old Rooms page requirement is moot (see port reality above):
+never re-land `crates/ui/src/settings/rooms.rs` from the tag. Fleet is the
+only rooms surface the desktop gets.
 
 **Add a Fleet card to Settings → Remote access**
 (`crates/ui/src/settings/remote_access.rs`): plain-language per-engine

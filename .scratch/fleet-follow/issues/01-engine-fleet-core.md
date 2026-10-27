@@ -1,4 +1,12 @@
-# 01 — Engine fleet core: kind-aware store, RoomJoin + GetFleetInvite RPCs
+# 01 — Engine fleet core: wire the re-landed surface, RoomJoin + GetFleetInvite
+
+**Port reality (2026-10-27):** the foundation shim on `feature/fleet-follow`
+already re-lands `crates/engine/src/rooms.rs` (the store: verifier, book,
+present, `PairingStore::mint_session`/`reissue_session` restored) and the
+proto/constant/capability layer. What remains for this ticket is the WIRING
+and the FLEET EXTENSIONS — treat the store file as landed, extend it, do not
+re-port it. Your worktree should merge the latest `feature/fleet-follow`
+before starting.
 
 **What to build:** The engine-side foundation of fleet follow.
 

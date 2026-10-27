@@ -587,7 +587,7 @@ fn private_dir(data_dir: &Path) -> Result<PathBuf> {
 
 /// Write a secret file atomically with owner-only access, refusing to leave a
 /// readable copy behind if the mode cannot be applied.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -815,7 +815,7 @@ mod tests {
     }
 }
 #[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }

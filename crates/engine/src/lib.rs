@@ -37,6 +37,7 @@ pub mod project_actions;
 pub mod registry;
 pub mod remote_access;
 pub mod repos;
+pub mod rooms;
 pub mod rpc;
 pub mod run_journal;
 pub mod scheduled_resumes;

@@ -1,5 +1,11 @@
 # 02 — CLI fleet: room create, room invite, --json everywhere
 
+**Port reality (2026-10-27):** your layer's v0.13.0 files are absent from
+this branch (evil merge, see spec). Port `apps/roboco/src/pairing_cli.rs`'s
+room subcommands and `apps/roboco/tests/room_cli.rs` from
+`git show v0.13.0:<path>`, adapting to the post-wave-9 CLI tree, then add
+the fleet commands below.
+
 **What to build:** The CLI surface in `apps/roboco/src/pairing_cli.rs` +
 `tests/room_cli.rs`.
 

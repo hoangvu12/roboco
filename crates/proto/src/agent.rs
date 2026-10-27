@@ -881,6 +881,8 @@ mod tests {
             error: None,
             can_apply: true,
             manual_command: Some("claude update".into()),
+            compatibility: None,
+            held_back: None,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["harness"], "claude-code");

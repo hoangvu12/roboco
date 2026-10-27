@@ -30,6 +30,13 @@ pub mod capabilities {
     /// (`crate::projectless`) when it runs; older hosts only know `~`.
     pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
 
+    /// Joined rooms (ADR 0011): `/room/present`, `GetRoomBook`,
+    /// `UpdateRoomBook` (older engines answer `unknown method`).
+    pub const ROOMS_V1: &str = "rooms-v1";
+    /// Fleet follow: `RoomJoin` and `GetFleetInvite`, plus fleet rooms that
+    /// retain their secret on member engines (ADR 0011 amendment).
+    pub const ROOMS_V2: &str = "rooms-v2";
+
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
         MESSAGE_QUEUE_V1,
@@ -41,6 +48,8 @@ pub mod capabilities {
         WEB_CLIENT,
         TRANSCRIPT_RESUME_V1,
         PROJECTLESS_SCRATCH_V1,
+        ROOMS_V1,
+        ROOMS_V2,
     ];
 
     pub fn current() -> Vec<String> {

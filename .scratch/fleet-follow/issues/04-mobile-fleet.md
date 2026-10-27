@@ -1,5 +1,11 @@
 # 04 — Mobile fleet: auto-fetch after pairing, silent join, dedupe
 
+**Port reality (2026-10-27):** your layer's v0.13.0 files are absent from
+this branch (evil merge, see spec). Port `crates/mobile-client/src/rooms.rs`
+and the `client_ffi`/Kotlin room-join surfaces from
+`git show v0.13.0:<path>`, adapting to the post-wave-9 mobile tree, then
+add the fleet behavior below.
+
 **What to build:** Android + `crates/mobile-client`.
 
 After a **successful engine pairing** (the existing Pair page flows), the

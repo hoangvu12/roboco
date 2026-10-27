@@ -107,6 +107,54 @@ concept disappears from the UI.
 - Liveness probing — unchanged by design (books heal through clients).
 - Per-pairing scoped invites — follow-up.
 
+## Frozen interface contract (2026-10-27 — all tickets build against this)
+
+- Invite JSON: optional `"kind"` field, `"fleet"` or `"room"`; absent = plain
+  room. `RoomInvite.kind: RoomKind` skips serialization when plain, so
+  plain invites stay byte-identical to v0.13.0 and old invites decode as
+  plain rooms.
+- RPC `RoomJoin` (constant `methods::ROOM_JOIN = "RoomJoin"`): request
+  `{"invite":"<roboco-room:…>"}` (encoded string), session-authed;
+  response `{"roomId":"…"}` only — never echo members back; idempotent;
+  unions the book.
+- RPC `GetFleetInvite` (constant `methods::GET_FLEET_INVITE =
+  "GetFleetInvite"`): request `{}`; response `{"invite":"<roboco-room:…>"|null}`;
+  session-authed.
+- Capability `"rooms-v2"` (proto `capabilities::ROOMS_V2`), alongside the
+  restored `rooms-v1`.
+- `mint_room_secret()` lives in `crates/proto/src/room.rs`.
+- Engine store: `fleet_rooms (room_id PK, secret)` table, written only for
+  fleet-kind joins; `fleet_room()`, `fleet_invite(id)`, `create(name,
+  members)`.
+- Deviations found during implementation go through the orchestrator
+  (or, when working solo, into a ticket comment BEFORE building on them) —
+  never silently.
+
+## Port reality (2026-10-27, discovered mid-wave)
+
+The trunk (`main` at e7af3bb6e, post-wave-9) accidentally DROPPED the
+entire rooms feature that v0.13.0 shipped — files, RPC methods,
+capability, and tests all vanished in the wave-9 merge resolution (an
+"evil merge": wave-9 branched pre-rooms and its integration took
+wave-9's side of every overlapping file). CI stayed green because the
+rooms tests disappeared with the code. Tag `v0.13.0` still has
+everything.
+
+Consequence: fleet-follow re-lands the rooms core as part of its
+foundation. The integration branch `feature/fleet-follow` carries a
+shim commit that restores the shared core from the tag: proto
+`room.rs` (+ `RoomKind`, `mint_room_secret`), the engine room store
+(`crates/engine/src/rooms.rs`, unwired), `PairingStore::mint_session` /
+`reissue_session` (removed by the same merge), the RPC constants, the
+`rooms-v1`/`rooms-v2` capabilities, and a fix for a pre-existing broken
+proto test (`agent.rs` `HarnessUpdateStatus` initializer missing
+`compatibility`/`held_back` — another merge casualty). Per-layer files
+(engine-client, ui, mobile-client, CLI, web) remain absent and are
+ported by their tickets from `git show v0.13.0:<path>`.
+
+The one silver lining: the old, user-confusing Rooms settings page was
+never re-landed — ticket 03 does not port it back.
+
 ## Verification
 
 Each ticket carries its acceptance criteria and focused tests; the finish
