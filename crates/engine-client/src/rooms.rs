@@ -577,6 +577,7 @@ async fn dial_and_present(
             &room.secret,
             presenter,
             dialed.keepalive,
+            None,
         )
         .await
         .map_err(|error| {
