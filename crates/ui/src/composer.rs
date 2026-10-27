@@ -9388,6 +9388,7 @@ impl Composer {
 
                 let command = SessionCommandPayload::Run {
                     request: RunRequest {
+                        env: Default::default(),
                         prompt: content.clone(),
                         harness: resolved.harness,
                         model: resolved.model.clone(),

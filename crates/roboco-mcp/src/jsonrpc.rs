@@ -79,6 +79,11 @@ harness (it then starts from a size-limited transcript of the source), and \
 chat you created: it notifies you by default (`notify: false` opts out), and \
 side chats cannot fork chats.\n\
 \n\
+Previews: when this chat's agents or terminals start dev servers, the engine \
+serves each at a stable preview URL. Call `previews` and tell the user the URL \
+(the Ports card beside the chat lists the same links) instead of leaving them \
+to find it; the tool is read-only, and the URL opens on the engine's machine.\n\
+\n\
 If a chat is `awaitingInput`, answer it with `respond_to_input`.";
 
 const PARSE_ERROR: i64 = -32700;

@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
         turn: TurnControl::default(),
     };
     let request = RunRequest {
+        env: Default::default(),
         prompt: "Reply with exactly: Devin model discovery verified. Do not use tools.".into(),
         harness: None,
         model: Some(model.clone()),

@@ -25,12 +25,20 @@ export interface SurfaceChoice {
 }
 
 /**
- * The picker's rows in desktop order (`shell.rs:6638-6672`) minus `Browser`
- * (desktop-only: no embedded web view on web) and `Files` (the docked
- * explorer column's own toggle owns it now). The `+` menu's rows are the
- * same list (`shell.rs:7136-7143`).
+ * The picker's rows in desktop order (`shell.rs:6638-6672`): Previews
+ * occupies the desktop `Browser` row's slot (globe, first) as the web's
+ * preview-only surface — the arbitrary-address browsing stays desktop-only;
+ * `Files` stays the docked explorer column's own toggle. The `+` menu's rows
+ * are the same list (`shell.rs:7136-7143`).
  */
 export const SURFACE_CHOICES: readonly SurfaceChoice[] = [
+  {
+    id: "surface-card-previews",
+    icon: "globe",
+    label: "Previews",
+    needsGit: false,
+    open: (chatId) => rightPaneStore.addPreviewSurface(chatId),
+  },
   {
     id: "surface-card-terminal",
     icon: "terminal",

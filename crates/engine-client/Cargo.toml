@@ -12,10 +12,13 @@ test-support = []
 
 [dependencies]
 roboco-proto.workspace = true
+roboco-preview-relay.workspace = true
 roboco-doc.workspace = true
 roboco-rpc.workspace = true
 tokio.workspace = true
 serde.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
@@ -32,4 +35,17 @@ getrandom = "0.3"
 # Tests drive real `EngineCore`s over loopback; the library itself must never
 # link it (cargo tree -e normal -i roboco-engine reports no match).
 roboco-engine.workspace = true
+# Seeding the remote engine's preview catalog (the listener shape discovery
+# would hand it).
+roboco-preview.workspace = true
 async-trait.workspace = true
+# The preview-proxy test's loopback dev server (the ticket-03 idioms).
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tempfile.workspace = true
+tokio-util.workspace = true
+libc.workspace = true
+# The macOS started_at probe (already in the graph via proto).
+chrono.workspace = true

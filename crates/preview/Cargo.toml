@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 roboco-proto.workspace = true
+roboco-preview-relay.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 futures.workspace = true
@@ -30,3 +31,25 @@ reqwest.workspace = true
 tokio-tungstenite.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
+
+# Windows discovery (agent-previews ticket 02): the TCP table join needs no
+# elevation. Both crates are already pinned in the lockfile (sysinfo 0.31.4
+# via the zui stack, windows-sys 0.61.2 via the windows tooling) — promoting
+# them here adds no package to the graph.
+[target.'cfg(windows)'.dependencies]
+sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+] }
+
+# A child the discovery tests spawn: binds the address the test gives,
+# reports the port it received, answers HTTP until killed. std-only on
+# purpose — the Windows suite must not depend on an interpreter from the
+# runner image (the Python servers the Linux/macOS suite spawns come from
+# those images).
+[[bin]]
+name = "preview-child-server"
+path = "tests/fixtures/child_server.rs"

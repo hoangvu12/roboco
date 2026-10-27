@@ -59,9 +59,17 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt;
+// The seeded preview dev server (Linux/macOS only — see seed_preview).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use http_body_util::{BodyExt as _, Full, combinators::UnsyncBoxBody};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use hyper::{Request, Response, body::Incoming, service::service_fn};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use hyper_util::rt::TokioIo;
 use roboco_doc::SessionCommandPayload;
 use roboco_engine::rooms::RoomStore;
 use roboco_engine::{EngineCore, EngineListener, EngineProfile, HarnessId, pairing, smoke_registry};
@@ -137,13 +145,33 @@ async fn run(port: u16, control_port: u16, profile: String, tailcat_derp_map: Op
     // web_smoke's seed function takes it).
     let service: Arc<dyn RpcService> = core.rpc_service();
     let bind_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let remote = roboco_engine::serve_engine_remote(bind_addr, service.clone(), dir.path())
-        .await
-        .unwrap();
+    // agent-previews ticket 05: the fixture serves the preview relay (the
+    // `/preview-relay` upgrade) and `WatchPreviews` — the phone's panel
+    // and its in-app 7332 proxy speak to this engine like any relaying
+    // client. Without the handle, `WatchPreviews` answers "Preview
+    // discovery unavailable".
+    let previews = Some(core.previews.clone());
+    let remote = roboco_engine::serve_engine_remote_with_previews(
+        bind_addr,
+        service.clone(),
+        previews.clone(),
+        dir.path(),
+    )
+    .await
+    .unwrap();
     let control = TcpListener::bind(format!("127.0.0.1:{control_port}")).unwrap();
 
     let chats = seed(&service, &repo, &profile).await;
 
+    // agent-previews ticket 05 (Linux/macOS only — the process-identity
+    // inputs the relay's `LocalConnector` re-verifies are read from
+    // /proc or ps; CI's emulator job is the ubuntu runner): one
+    // chat-attributed loopback dev server, seeded into the engine's
+    // preview catalog exactly like discovery would list it. The
+    // `chat-preview` chat's panel then has a row to render, and its Open
+    // has bytes to load through the phone's in-app proxy.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let preview_hits = seed_preview(&core, &repo);
     // android-next#02: publish the listener over Tailcat too. Blocking
     // (the adapter's readiness line); the server lives as long as the
     // process.
@@ -182,10 +210,14 @@ async fn run(port: u16, control_port: u16, profile: String, tailcat_derp_map: Op
     // pairing store and the seeded workspace persist in the data dir.
     let remote_slot = Arc::new(std::sync::Mutex::new(Some(remote)));
     let handle = tokio::runtime::Handle::current();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let preview_hits: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     spawn_control_endpoint(
         control,
         bind_addr,
         service,
+        previews,
+        preview_hits,
         dir.path().to_path_buf(),
         remote_slot,
         handle,
@@ -366,6 +398,18 @@ fn seed_chats(profile: &str, repo: &Path) -> Vec<SeedChat> {
                 last_message_offset_ms: 86_400_000,
                 created_offset_ms: 3 * 86_400_000,
             },
+            // agent-previews ticket 05: the chat the preview flow test
+            // opens — its dev server is seeded into the preview catalog
+            // with this chat's attribution (`seed_preview`).
+            SeedChat {
+                id: "chat-preview",
+                title: "Preview the dev server",
+                cwd: Some(repo.to_path_buf()),
+                turns: 1,
+                archived: false,
+                last_message_offset_ms: 600_000,
+                created_offset_ms: 86_400_000,
+            },
             SeedChat {
                 id: "chat-veil",
                 title: "Streaming veil on transcript rows",
@@ -458,6 +502,143 @@ fn clone_repo(repo: &Path) -> PathBuf {
         String::from_utf8_lossy(&ok.stderr)
     );
     dest
+}
+
+// ── the seeded preview (agent-previews ticket 05) ─────────────────────────
+
+/// The page the seeded dev server answers — a distinct string the flow
+/// test's screenshot shows, so a human can see the relayed preview in the
+/// artefacts even though the WebView's pixels are not assertable.
+const PREVIEW_PAGE: &str = "<html><head><title>fixture dev server</title></head>\
+<body><h1>fixture dev server</h1><p>agent-previews relay round-trip</p></body></html>";
+
+/// Seeds `chat-preview`'s dev server into the engine's preview catalog: a
+/// real loopback HTTP server on this process (the relay's
+/// `LocalConnector` re-verifies pid + start time before dialing, so the
+/// listener must describe *this* process), attributed to the chat through
+/// the origin marker — exactly what discovery would list for a server the
+/// chat's agent started. Returns the hit counter the control endpoint's
+/// `/preview-hits` reads (the flow test polls it: a hit proves the
+/// phone's WebView reached the engine's server through the in-app 7332
+/// proxy and the session relay).
+///
+/// Linux/macOS only: the process-identity inputs come from `/proc`/`ps`
+/// (CI's emulator job is the ubuntu runner; Windows hosts run the flow
+/// suite without a preview row — the panel shows the honest empty state).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn seed_preview(core: &EngineCore, repo: &Path) -> Arc<AtomicUsize> {
+    use std::convert::Infallible;
+    use bytes::Bytes;
+    type Body = UnsyncBoxBody<Bytes, hyper::Error>;
+
+    fn full(value: impl Into<Bytes>) -> Body {
+        Full::new(value.into())
+            .map_err(|never: Infallible| match never {})
+            .boxed_unsync()
+    }
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the preview dev server");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::Builder::new()
+        .name("fixture-preview-server".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("preview dev server runtime");
+            listener
+                .set_nonblocking(true)
+                .expect("preview dev server nonblocking");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                loop {
+                    let Ok((socket, _)) = listener.accept().await else { break };
+                    let counter = counter.clone();
+                    tokio::spawn(async move {
+                        // The hit counts at request time (a keep-alive
+                        // connection would hold the count hostage to the
+                        // WebView's connection lifetime otherwise).
+                        let service = service_fn(move |_request: Request<Incoming>| {
+                            let counter = counter.clone();
+                            async move {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                Ok::<_, Infallible>(Response::new(full(PREVIEW_PAGE)))
+                            }
+                        });
+                        // `half_close(true)`: relayed requests half-close
+                        // their write side after the request body (the mux
+                        // END idiom) — the engine-side relay suite's
+                        // dev-server shape.
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .half_close(true)
+                            .serve_connection(TokioIo::new(socket), service)
+                            .await;
+                    });
+                }
+            });
+        })
+        .expect("spawn the preview dev server thread");
+
+    let pid = std::process::id();
+    core.previews
+        .catalog()
+        .replace_local(vec![(
+            repo.to_path_buf(),
+            roboco_preview::discovery::Listener {
+                pid,
+                parent: 1,
+                cwd: repo.to_path_buf(),
+                args: vec!["node".into(), "server.js".into()],
+                started_at: process_started_at(pid),
+                address: ([127, 0, 0, 1], port).into(),
+                roboco_owned: true,
+                origin: Some(roboco_proto::chat_origin("chat-preview")),
+                chat_id: Some("chat-preview".into()),
+            },
+        )])
+        .expect("seed the preview catalog");
+    hits
+}
+
+/// The engine-side `same_process` input for our own pid: the scanner's
+/// started_at format (ms since the epoch), computed the same way the
+/// engine-side relay suite does (tests/preview_relay.rs).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn process_started_at(pid: u32) -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let (_, tail) = stat.rsplit_once(") ").unwrap();
+        let started_ticks: u64 = tail.split_whitespace().nth(19).unwrap().parse().unwrap();
+        let boot: u64 = std::fs::read_to_string("/proc/stat")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+        boot * 1000 + started_ticks * 1000 / ticks
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
+            .output()
+            .unwrap();
+        let parts: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .collect();
+        use chrono::TimeZone;
+        chrono::NaiveDateTime::parse_from_str(&parts[..5].join(" "), "%a %b %e %T %Y")
+            .ok()
+            .and_then(|d| chrono::Local.from_local_datetime(&d).earliest())
+            .map(|d| d.timestamp_millis().max(0) as u64)
+            .unwrap()
+    }
 }
 
 /// Seeds the profile and returns its chats (the control endpoint's `/run` reuses them:
@@ -559,6 +740,7 @@ async fn seed(service: &Arc<dyn RpcService>, repo: &Path, profile: &str) -> Vec<
 /// content (its script is fixed), so every turn uses the same prompt.
 fn seed_request(repo: &Path, chat: &SeedChat) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: "Seed the fixture transcript".into(),
         harness: None,
         // chat-deploy carries a model + effort (the Claude-mirroring mock
@@ -661,6 +843,8 @@ fn spawn_control_endpoint(
     listener: TcpListener,
     bind_addr: std::net::SocketAddr,
     service: Arc<dyn RpcService>,
+    previews: Option<roboco_preview::PreviewService>,
+    preview_hits: Arc<AtomicUsize>,
     data_dir: PathBuf,
     remote_slot: Arc<std::sync::Mutex<Option<EngineListener>>>,
     handle: tokio::runtime::Handle,
@@ -805,9 +989,10 @@ fn spawn_control_endpoint(
                     // the rig is broken, which the tests report loudly.
                     let started = if remote_slot.lock().unwrap().is_none() {
                         let remote = handle
-                            .block_on(roboco_engine::serve_engine_remote(
+                            .block_on(roboco_engine::serve_engine_remote_with_previews(
                                 bind_addr,
                                 service.clone(),
+                                previews.clone(),
                                 &data_dir,
                             ))
                             .expect("android_fixture: restart the engine listener");
@@ -821,6 +1006,14 @@ fn spawn_control_endpoint(
                         bind_addr.port()
                     );
                     serde_json::json!({ "ok": true, "started": started }).to_string()
+                }
+                // agent-previews ticket 05: how many requests the seeded
+                // dev server answered — the preview flow test polls it to
+                // prove the phone's WebView really reached the engine's
+                // server through the in-app 7332 proxy and the session
+                // relay (a hit count, not a UI assertion).
+                ("GET", "/preview-hits") => {
+                    serde_json::json!({ "hits": preview_hits.load(Ordering::SeqCst) }).to_string()
                 }
                 // A run started by the ENGINE side, not the phone: the core never
                 // posts "Run finished" for the phone's own send (notify.rs

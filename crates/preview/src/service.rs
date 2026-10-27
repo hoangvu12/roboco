@@ -1,6 +1,6 @@
 //! Engine-owned discovery/proxy lifecycle, independent of headed UI lifetimes.
 use crate::{
-    catalog::Catalog,
+    catalog::{Catalog, LocalRoute},
     discovery,
     login::{self, CallbackForwarder, CallbackRoutes, CallbackTunnels},
     mux::{self, BoxIo, Connector},
@@ -9,7 +9,7 @@ use crate::{
 };
 use futures::{StreamExt, stream};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -25,7 +25,9 @@ use tokio_util::sync::CancellationToken;
 /// holds for the socket's lifetime, because the process enumeration each
 /// cycle already proves the same process still owns the same port. Sockets
 /// that did not answer HTTP (a server bound but not yet serving) are retried
-/// with a capped exponential backoff instead of on every cycle.
+/// with a capped exponential backoff instead of on every cycle. The one
+/// exception is a start-time-less listener (see [`ProbeMemory::plan`]): its
+/// identity cannot be proven, so it is probed every cycle.
 #[derive(Default)]
 pub(crate) struct ProbeMemory {
     verdicts: HashMap<(u32, u64, SocketAddr), Verdict>,
@@ -62,6 +64,15 @@ impl ProbeMemory {
         let mut known = Vec::new();
         let mut probe = Vec::new();
         for candidate in candidates {
+            // A start-time-less listener (a Windows process whose start time
+            // could not be read; see discovery::same_process) cannot prove it
+            // is still the process a verdict was minted for: a recycled pid
+            // on the same port would inherit a stranger's verdict. Such rows
+            // skip the memoization and are probed every cycle instead.
+            if candidate.1.started_at == 0 {
+                probe.push(candidate);
+                continue;
+            }
             match self.verdicts.get(&probe_key(&candidate.1)) {
                 Some(Verdict::Http) => known.push(candidate),
                 Some(Verdict::NotHttp { retry_at, .. }) if *retry_at > now => {}
@@ -71,6 +82,9 @@ impl ProbeMemory {
         (known, probe)
     }
     pub(crate) fn record(&mut self, listener: &discovery::Listener, http: bool, now: Instant) {
+        if listener.started_at == 0 {
+            return; // never memoized; see plan
+        }
         let key = probe_key(listener);
         let verdict = if http {
             Verdict::Http
@@ -100,7 +114,86 @@ struct Inner {
     callback_tunnels: CallbackTunnels,
     peers: std::sync::OnceLock<Peers>,
 }
-pub type Projects = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+pub type Projects = Arc<dyn Fn() -> Scope + Send + Sync>;
+
+/// What discovery serves, re-read every scan.
+#[derive(Clone, Default)]
+pub struct Scope {
+    /// Every chat this device hosts, with its checkout. A listener counts only
+    /// when one of these chats' agents or terminals started it; it is listed
+    /// under the deepest checkout containing its working directory, else under
+    /// the checkout of the chat that started it.
+    pub chats: Vec<(String, PathBuf)>,
+    /// Terminal id → chat, for the engine's terminals (project actions run in
+    /// one), including ones since closed.
+    pub terminals: HashMap<String, String>,
+    /// Ports agent CLIs serve their own protocol on (`opencode serve`).
+    pub reserved_ports: HashSet<u16>,
+}
+
+/// This scan's candidates (`None` when the process table could not be read),
+/// each with the checkout it is listed under.
+fn candidates(
+    scope: Scope,
+    origins: &mut discovery::Origins,
+) -> Option<Vec<(PathBuf, discovery::Listener)>> {
+    let Scope {
+        chats,
+        terminals,
+        reserved_ports,
+    } = scope;
+    let mut canonical = HashMap::new();
+    let chats: HashMap<String, PathBuf> = chats
+        .into_iter()
+        .filter_map(|(chat, cwd)| {
+            let cwd = canonical
+                .entry(cwd.clone())
+                .or_insert_with(|| cwd.canonicalize().ok())
+                .clone()?;
+            Some((chat, cwd))
+        })
+        .collect();
+    let mut roots: Vec<PathBuf> = chats
+        .values()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if roots.is_empty() {
+        return Some(Vec::new());
+    }
+    roots.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    let listeners = discovery::listeners(origins)?;
+    Some(
+        listeners
+            .into_iter()
+            .filter(|l| {
+                l.roboco_owned
+                    && l.address.port() != roboco_proto::PREVIEW_PROXY_PORT
+                    && !reserved_ports.contains(&l.address.port())
+                    && l.pid != std::process::id()
+                    && !l.is_authentication_command()
+            })
+            .filter_map(|mut listener| {
+                // A chat this device no longer hosts (or another engine's,
+                // inherited by a nested one) owns nothing here.
+                let chat = match listener.origin.as_deref()?.split_once(':')? {
+                    ("chat", chat) => chat.to_owned(),
+                    ("terminal", terminal) => terminals.get(terminal)?.clone(),
+                    _ => return None,
+                };
+                let chat_root = chats.get(&chat)?;
+                listener.chat_id = Some(chat);
+                let root = roots
+                    .iter()
+                    .find(|root| listener.belongs_to(root))
+                    .unwrap_or(chat_root)
+                    .clone();
+                Some((root, listener))
+            })
+            .collect(),
+    )
+}
 impl PreviewService {
     pub fn new(file: PathBuf, device_id: String, device_name: String) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(Inner {
@@ -115,6 +208,19 @@ impl PreviewService {
     }
     pub fn catalog(&self) -> &Catalog {
         &self.0.catalog
+    }
+    /// The connector a session-authenticated preview relay dials through
+    /// (the engine's `/preview-relay` route): every OPEN it handles resolves
+    /// only `service_id`, and only while the live catalog lists that service
+    /// attributed to `chat_id`. The dial itself re-verifies process identity
+    /// (see [`LocalConnector`]), so remote metadata never names a TCP
+    /// address — the catalog does, and only for the scoped live service.
+    pub fn relay_connector(&self, chat_id: &str, service_id: &str) -> Arc<dyn Connector> {
+        Arc::new(ChatScoped {
+            chat: chat_id.to_owned(),
+            service: service_id.to_owned(),
+            catalog: self.0.catalog.clone(),
+        })
     }
     /// The registry the agent-login flows publish their callback ports to.
     pub fn callback_routes(&self) -> CallbackRoutes {
@@ -208,41 +314,37 @@ impl PreviewService {
         let stop = self.0.stop.clone();
         let scanner = tokio::spawn(async move {
             let mut memory = ProbeMemory::default();
+            let mut origins = discovery::Origins::default();
             loop {
                 let memory = &mut memory;
+                let origins = &mut origins;
                 let scan = async {
                     let projects = projects.clone();
-                    let candidates = tokio::task::spawn_blocking(move || {
-                        let mut roots: Vec<_> = projects()
-                            .into_iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .into_iter()
-                            .filter_map(|p| p.canonicalize().ok())
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .into_iter()
-                            .collect();
-                        if roots.is_empty() {
-                            return Vec::new();
-                        }
-                        roots.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-                        discovery::listeners()
-                            .into_iter()
-                            .filter(|l| {
-                                l.address.port() != roboco_proto::PREVIEW_PROXY_PORT
-                                    && l.pid != std::process::id()
-                                    && !l.is_authentication_command()
-                            })
-                            .filter_map(|listener| {
-                                roots
-                                    .iter()
-                                    .find(|root| listener.belongs_to(root))
-                                    .cloned()
-                                    .map(|root| (root, listener))
-                            })
-                            .collect::<Vec<_>>()
+                    let taken = std::mem::take(origins);
+                    let scanned = tokio::task::spawn_blocking(move || {
+                        let mut origins = taken;
+                        (candidates(projects(), &mut origins), origins)
                     })
-                    .await
-                    .unwrap_or_default();
+                    .await;
+                    let candidates = match scanned {
+                        Ok((Some(candidates), kept)) => {
+                            *origins = kept;
+                            candidates
+                        }
+                        // A failed enumeration says nothing about what runs:
+                        // keep the services already listed.
+                        Ok((None, kept)) => {
+                            *origins = kept;
+                            tracing::debug!(
+                                "preview scan could not read processes; keeping the last result"
+                            );
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "preview scan failed; keeping the last result");
+                            return;
+                        }
+                    };
                     let (mut servers, probe) = memory.plan(candidates, Instant::now());
                     let probed: Vec<_> = stream::iter(probe)
                         .map(|(root, listener)| async move {
@@ -283,6 +385,22 @@ impl PreviewService {
     }
 }
 struct LocalConnector(Catalog, CallbackRoutes);
+impl LocalConnector {
+    /// Dial one already-resolved route, re-verifying process identity first.
+    /// A stopped dev server's port may have been reused since the last scan;
+    /// checking the one pid is cheap (a full [`discovery::listeners`] pass
+    /// walks every process, and per-asset full passes showed up as memory
+    /// and CPU churn on the hosting Mac).
+    async fn connect_route(route: LocalRoute) -> anyhow::Result<BoxIo> {
+        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
+        let valid =
+            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
+        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
+        Ok(Box::new(
+            tokio::net::TcpStream::connect(route.listener.address).await?,
+        ))
+    }
+}
 #[async_trait::async_trait]
 impl Connector for LocalConnector {
     async fn connect(&self, id: &str) -> anyhow::Result<BoxIo> {
@@ -298,18 +416,39 @@ impl Connector for LocalConnector {
             .0
             .local_route(id)
             .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
-        // Recheck process identity before dialing: a stopped dev server's port
-        // may have been reused since the last scan. Checking the one pid is
-        // cheap; enumerating every listener here spawned lsof and ps for each
-        // asset a remote page requested, which showed up as memory and CPU
-        // churn on the hosting Mac.
-        let (pid, started_at) = (route.listener.pid, route.listener.started_at);
-        let valid =
-            tokio::task::spawn_blocking(move || discovery::same_process(pid, started_at)).await?;
-        anyhow::ensure!(valid, "preview process changed; waiting for rediscovery");
-        Ok(Box::new(
-            tokio::net::TcpStream::connect(route.listener.address).await?,
-        ))
+        Self::connect_route(route).await
+    }
+}
+
+/// One relay's authorization scope: the [`mux::PeerScoped`] pattern applied
+/// to a chat instead of a device. Every OPEN this connector handles resolves
+/// only the scoped service id, only while the live catalog attributes it to
+/// the scoped chat — the relay request's chat (ticket 01's attribution),
+/// checked per OPEN so a service that dies or moves to another chat stops
+/// resolving on an already-open relay. The dial itself is
+/// [`LocalConnector::connect_route`]: the catalog's address, never one the
+/// peer named, with process identity re-verified first.
+struct ChatScoped {
+    chat: String,
+    service: String,
+    catalog: Catalog,
+}
+#[async_trait::async_trait]
+impl Connector for ChatScoped {
+    async fn connect(&self, service: &str) -> anyhow::Result<BoxIo> {
+        anyhow::ensure!(
+            service == self.service,
+            "preview service is outside this relay's scope"
+        );
+        let route = self
+            .catalog
+            .local_route(service)
+            .ok_or_else(|| anyhow::anyhow!("preview service stopped"))?;
+        anyhow::ensure!(
+            route.service.chat_id.as_deref() == Some(self.chat.as_str()),
+            "preview service is not attributed to this relay's chat"
+        );
+        LocalConnector::connect_route(route).await
     }
 }
 
@@ -324,7 +463,9 @@ mod tests {
             args: vec!["node".into()],
             started_at: 1_000,
             address: ([127, 0, 0, 1], port).into(),
-            roboco_owned: false,
+            roboco_owned: true,
+            origin: Some("chat:chat".into()),
+            chat_id: Some("chat".into()),
         }
     }
     #[test]
@@ -375,5 +516,24 @@ mod tests {
         }
         let (_, probe) = memory.plan(vec![((), listener(7, 8081))], now);
         assert_eq!(probe.len(), 1, "still retried once per max backoff");
+    }
+    #[test]
+    fn start_time_less_listeners_are_probed_every_cycle() {
+        // Windows degradation (see discovery::same_process): a process
+        // whose start time could not be read cannot prove identity, so no
+        // verdict is ever remembered for it — a recycled pid must not
+        // inherit one.
+        let mut memory = ProbeMemory::default();
+        let t0 = Instant::now();
+        let mut degraded = listener(7, 8081);
+        degraded.started_at = 0;
+        for cycle in 0..3u64 {
+            let now = t0 + Duration::from_secs(2 * cycle);
+            let (known, probe) = memory.plan(vec![((), degraded.clone())], now);
+            assert!(known.is_empty(), "cycle {cycle} must not trust a verdict");
+            assert_eq!(probe.len(), 1, "cycle {cycle} must re-probe");
+            // An HTTP verdict would be recorded, but must not stick.
+            memory.record(&probe[0].1, true, now);
+        }
     }
 }

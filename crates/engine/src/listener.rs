@@ -40,7 +40,30 @@ pub async fn serve_listener(
     pairing: PairingStore,
     rooms: RoomStore,
 ) {
-    serve_listener_with_policy(listener, service, pairing, rooms, AccessPolicy::Local, None).await;
+    serve_listener_with_policy(listener, service, pairing, rooms, AccessPolicy::Local, None, None).await;
+}
+
+/// The local bind with the preview relay route: same native-only boundary
+/// (no credentials, no origins), with `/preview-relay` upgrades served for
+/// same-machine clients that want the uniform relay path instead of the
+/// engine's own 7331 proxy.
+pub async fn serve_listener_with_previews(
+    listener: TcpListener,
+    service: Arc<dyn roboco_rpc::RpcService>,
+    pairing: PairingStore,
+    rooms: RoomStore,
+    previews: roboco_preview::PreviewService,
+) {
+    serve_listener_with_policy(
+        listener,
+        service,
+        pairing,
+        rooms,
+        AccessPolicy::Local,
+        None,
+        Some(previews),
+    )
+    .await;
 }
 
 pub async fn serve_listener_with_policy(
@@ -50,6 +73,7 @@ pub async fn serve_listener_with_policy(
     rooms: RoomStore,
     policy: AccessPolicy,
     paired: Option<Arc<PairedListenerContext>>,
+    previews: Option<roboco_preview::PreviewService>,
 ) {
     let cancel = tokio_util::sync::CancellationToken::new();
     let _cancel_on_drop = cancel.clone().drop_guard();
@@ -65,6 +89,7 @@ pub async fn serve_listener_with_policy(
                 let rooms = rooms.clone();
                 let connection_cancel = cancel.clone();
                 let paired = paired_state.clone();
+                let previews = previews.clone();
                 tokio::spawn(async move {
                     let request_cancel = connection_cancel.clone();
                     let handler = service_fn(move |request| {
@@ -75,6 +100,7 @@ pub async fn serve_listener_with_policy(
                             rooms.clone(),
                             policy,
                             paired.clone(),
+                            previews.clone(),
                             request_cancel.clone(),
                         )
                     });
@@ -104,6 +130,7 @@ async fn handle(
     rooms: RoomStore,
     policy: AccessPolicy,
     paired: Option<Arc<PairedListenerContext>>,
+    previews: Option<roboco_preview::PreviewService>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<Reply, Infallible> {
     // Preserve the native-only local IPC boundary for HTTP as well as
@@ -175,6 +202,10 @@ async fn handle(
         ));
     }
     let websocket_key = websocket_key(&request).map(str::to_owned);
+    let preview_relay = crate::preview_relay::scope_from_path(&path);
+    let relay_upgrade = preview_relay.is_some()
+        && request.method() == hyper::Method::GET
+        && websocket_key.is_some();
     if policy == AccessPolicy::Paired {
         if let Some(relay_id) = tailcat_relay::relay_id_from_path(&path) {
             if request.method() == hyper::Method::GET && websocket_key.is_some() {
@@ -227,6 +258,7 @@ async fn handle(
         if !RESERVED_API_PATHS.contains(&path.as_str())
             && !path.contains('.')
             && tailcat_relay::relay_id_from_path(&path).is_none()
+            && !crate::preview_relay::is_relay_path(&path)
         {
             return Ok(web_page("index.html"));
         }
@@ -254,9 +286,29 @@ async fn handle(
                     }
                 }
             }
-            None if upgrade_key.is_some() => first_frame_auth = true,
+            None if upgrade_key.is_some() || relay_upgrade => first_frame_auth = true,
             None => return Ok(reply(StatusCode::UNAUTHORIZED, "invalid credential")),
         }
+    }
+    // The preview relay rides the same gate: on the paired bind it is
+    // reachable only through it (Bearer above or first-frame `Auth` after
+    // the upgrade), on the local bind the native-only boundary stands
+    // unchanged — no credential, as with the RPC socket.
+    if let Some(scope) = preview_relay {
+        if relay_upgrade {
+            let Some(previews) = previews else {
+                return Ok(reply(StatusCode::NOT_FOUND, "not found"));
+            };
+            return Ok(crate::preview_relay::serve_relay_websocket(
+                scope,
+                request,
+                previews,
+                first_frame_auth,
+                pairing,
+                cancel,
+            ));
+        }
+        return Ok(reply(StatusCode::NOT_FOUND, "not found"));
     }
     if path == "/health" && request.method() == hyper::Method::GET {
         return Ok(json(StatusCode::OK, &serde_json::json!({"status":"ok"})));
@@ -389,8 +441,9 @@ async fn room_present(request: Request<Incoming>, rooms: RoomStore) -> Reply {
 /// `Auth` envelope (`{"auth":"<credential>"}`) in the first text frame.
 /// A wrong, malformed, or missing credential closes the connection before any
 /// RPC is served; `roboco_rpc::serve_websocket` stays agnostic so the
-/// unauthenticated local IPC path is untouched.
-async fn authenticate_first_frame<S>(
+/// unauthenticated local IPC path is untouched. The preview relay's browser
+/// dials reuse this gate unchanged.
+pub(crate) async fn authenticate_first_frame<S>(
     ws: &mut tokio_tungstenite::WebSocketStream<S>,
     pairing: &PairingStore,
 ) -> bool

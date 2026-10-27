@@ -269,6 +269,34 @@ describe("terminal_surfaces_are_per_instance (add_terminal_surface, shell.rs:263
   });
 });
 
+describe("preview_surfaces_are_one_per_pane (agent-previews ticket 06)", () => {
+  it("re-opening re-activates the existing tab — a second one would double the subscription", () => {
+    const { store } = fresh();
+    store.addPreviewSurface("chat-1");
+    store.addPreviewSurface("chat-1");
+    const pane = store.stateFor("chat-1");
+    expect(pane.tabs).toEqual([{ kind: "preview" }]);
+    expect(pane.open).toBe(true);
+    expect(resolvedActive(pane)).toEqual({ kind: "preview" });
+
+    // The chip says what the surface shows; the tab is a plain closable one.
+    expect(store.describe({ kind: "preview" }, "chat-1")?.title).toBe("Previews");
+    store.closeSurface("chat-1", { kind: "preview" });
+    expect(store.stateFor("chat-1").tabs).toEqual([]);
+    // The last tab's close collapses the pane (collapse_surfaces_if_empty).
+    expect(store.stateFor("chat-1").open).toBe(false);
+  });
+
+  it("the surface is chat-scoped like every tab, and the key is the bare kind", () => {
+    const { store } = fresh();
+    store.addPreviewSurface("chat-1");
+    store.addPreviewSurface("chat-2");
+    expect(store.stateFor("chat-1").tabs).toEqual([{ kind: "preview" }]);
+    expect(store.stateFor("chat-2").tabs).toEqual([{ kind: "preview" }]);
+    expect(surfaceKey({ kind: "preview" })).toBe("preview");
+  });
+});
+
 describe("explorer_is_a_docked_portion_of_one_right_pane (tickets 22/23)", () => {
   it("the files toggle opens the pane alone; the pane toggle drives only the surface host", () => {
     const { store } = fresh();

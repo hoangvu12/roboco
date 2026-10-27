@@ -2034,6 +2034,8 @@ pub struct Shell {
     session_lanes: session_lanes::LaneState,
     /// The working-tree diffs behind the card's branch-row totals.
     session_diffs: session_info::SessionDiffs,
+    /// The servers behind the card's Ports section.
+    session_previews: session_info::SessionPreviews,
     sidebar_edge_bounce: Option<motion::ResizeEdgeBounce>,
     /// Boundary currently held during a sidebar drag. Cleared on re-entry or
     /// release so the next genuine edge crossing can acknowledge the limit.
@@ -2418,6 +2420,7 @@ impl Shell {
             session_info_last_reserve: 0.0,
             session_lanes: session_lanes::LaneState::default(),
             session_diffs: session_info::SessionDiffs::default(),
+            session_previews: session_info::SessionPreviews::default(),
             sidebar_edge_bounce: None,
             sidebar_resize_edge: None,
             pane_resize_active: None,
@@ -3516,8 +3519,13 @@ impl Shell {
         });
         if let Ok(handle) = crate::request_routing::selected_target(self.state.read(cx)) {
             let chat_id = self.active_chat.clone();
+            // Every pane carries the preview proxy: remote panes ingest and
+            // watch through it, local panes feed the browser bypass list.
+            let previews = self
+                .state
+                .update(cx, |state, _| state.ensure_preview_proxy());
             browser.update(cx, |browser, cx| {
-                browser.watch_previews(handle, chat_id, cx)
+                browser.watch_previews(handle, chat_id, previews, cx)
             });
         }
         let owner = key.clone();

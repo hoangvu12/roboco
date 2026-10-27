@@ -43,6 +43,7 @@ fn request(prompt: &str) -> RunRequest {
 
 fn request_cwd(prompt: &str, cwd: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         prompt: prompt.into(),
         harness: None,
         model: None,

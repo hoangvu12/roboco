@@ -34,6 +34,7 @@ publish = false
 [workspace.dependencies]
 roboco-proto = { path = "crates/proto" }
 roboco-preview = { path = "crates/preview" }
+roboco-preview-relay = { path = "crates/preview-relay" }
 roboco-doc = { path = "crates/doc" }
 roboco-sync = { path = "crates/sync" }
 roboco-harness = { path = "crates/harness" }

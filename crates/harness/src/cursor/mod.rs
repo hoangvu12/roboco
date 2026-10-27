@@ -362,6 +362,9 @@ impl Harness for CursorHarness {
             cmd.env("ROBOCO_CURSOR_STATE_DIR", state::state_root());
         }
         crate::compose_child_path(&mut cmd, &exe);
+        // Everything the agent starts inherits its chat, which is how
+        // preview discovery tells its dev servers from the user's own.
+        crate::apply_run_env(&mut cmd, &request.env);
         crate::process::dies_with_parent(&mut cmd);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);

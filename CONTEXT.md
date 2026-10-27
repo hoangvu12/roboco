@@ -161,6 +161,14 @@ _Avoid_: Session, console, PTY
 A live local dev server discovered on the engine and proxied to clients under a stable name. Not screenshots (appshots) and not file previews.
 _Avoid_: Appshot, file preview
 
+**Session relay**:
+The authenticated byte pipe (mux frames over a WebSocket on the engine's listener) that carries a preview's bytes from a remote engine to a client over the session it already holds. No RPC envelope, no cloud.
+_Avoid_: Tunnel (Tailcat is a different thing), forward, WebRTC
+
+**Client preview proxy**:
+The loopback listener (`127.0.0.1:7332`) a client binds while viewing a remote engine's previews, routing by Host header against the `WatchPreviews` hostnames and dialing the session relay. The engine's own proxy stays on 7331.
+_Avoid_: Local proxy (that is 7331), forward proxy
+
 ## Theme vocabulary
 
 - **Theme family** — A named collection of related theme variants that share an origin, such as Night Owl and Night Owl Light.

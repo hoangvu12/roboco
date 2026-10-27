@@ -134,6 +134,7 @@ impl Harness for HeldHarness {
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        env: Default::default(),
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),

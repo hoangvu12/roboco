@@ -1,9 +1,12 @@
-//! Real OS process/listener association, including unrelated project isolation.
+//! Real OS process/listener association: only servers a Roboco agent or
+//! terminal started (carrying its origin marker), each under the right checkout.
 use std::{
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
-use roboco_preview::PreviewService;
+use roboco_preview::{PreviewService, Scope};
+use roboco_proto::{ORIGIN_ENV, chat_origin, terminal_origin};
 /// Every service binds the fixed proxy port, so tests in this binary must
 /// not run concurrently: one test freeing 7331 for its own proxy to reclaim
 /// would otherwise race another test's service for it.
@@ -15,13 +18,65 @@ impl Drop for Child {
         let _ = self.0.wait();
     }
 }
-fn launch(cwd: &std::path::Path, http: bool) -> Child {
-    let mut command = std::process::Command::new("python3");
+const HTTP_SERVER: &str =
+    "import http.server,socketserver; socketserver.TCPServer(('127.0.0.1',0),http.server.SimpleHTTPRequestHandler).serve_forever()";
+fn scope(chats: &[(&str, &Path)]) -> Scope {
+    Scope {
+        chats: chats
+            .iter()
+            .map(|(chat, cwd)| ((*chat).to_owned(), cwd.to_path_buf()))
+            .collect(),
+        ..Default::default()
+    }
+}
+/// Ids no other test shares: test runners (nextest) run each test in its own
+/// process, concurrently, so a server one test starts is visible to every
+/// other test's discovery, and a shared chat id would claim it there.
+fn unique(name: &str) -> String {
+    format!("{name}-{}", uuid::Uuid::new_v4())
+}
+/// A server started by `chat`'s agent; `None` is one the user started.
+fn launch(cwd: &Path, http: bool, chat: Option<&str>) -> Child {
+    launch_from(cwd, http, chat.map(chat_origin))
+}
+/// The interpreter to spawn servers with. Linux and macOS images always
+/// have `python3`; on Windows the runner puts its real Python on PATH as
+/// `python` (a `python3` there may resolve to the Microsoft Store stub,
+/// which the probe below rejects), so the first candidate that actually
+/// runs wins.
+fn python() -> &'static str {
+    static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            ["python3", "python"]
+                .into_iter()
+                .find(|candidate| {
+                    std::process::Command::new(*candidate)
+                        .arg("-c")
+                        .arg("pass")
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .is_ok_and(|status| status.success())
+                })
+                .map(|candidate| candidate.to_owned())
+                .unwrap_or_else(|| "python3".to_owned())
+        })
+        .as_str()
+}
+/// A server carrying `origin` (see [`ORIGIN_ENV`]); `None` is the user's.
+fn launch_from(cwd: &Path, http: bool, origin: Option<String>) -> Child {
+    let mut command = std::process::Command::new(python());
+    command.env_remove(ORIGIN_ENV);
+    if let Some(origin) = origin {
+        command.env(ORIGIN_ENV, origin);
+    }
     if http {
         // HTTPServer.server_bind does a reverse DNS lookup before listen(),
         // which can stall on isolated macOS runners. TCPServer exercises the
         // same real HTTP handler without depending on external DNS readiness.
-        command.args(["-c", "import http.server,socketserver; socketserver.TCPServer(('127.0.0.1',0),http.server.SimpleHTTPRequestHandler).serve_forever()"]);
+        command.args(["-c", HTTP_SERVER]);
     } else {
         command.args(["-c", "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); time.sleep(30)"]);
     }
@@ -51,17 +106,25 @@ async fn wait(service: &PreviewService, expected_pid: Option<u32>) {
     .expect("discovery did not converge");
 }
 #[tokio::test]
-async fn only_current_project_http_processes_are_exposed_and_removals_are_live() {
+async fn only_agent_started_http_processes_are_exposed_and_removals_are_live() {
     let _serial = SERIAL.lock().await;
+    let (chat_a, chat_b) = (unique("chat-a"), unique("chat-b"));
+    let (foreign, stray) = (unique("another-engines-chat"), unique("terminal"));
     let temp = tempfile::tempdir().unwrap();
     let a = temp.path().join("app");
     let b = temp.path().join("unrelated");
     std::fs::create_dir(&a).unwrap();
     std::fs::create_dir(&b).unwrap();
-    let local = launch(&a, true);
-    let other = launch(&b, true);
-    let _non_http = launch(&a, false);
-    let roots = Arc::new(Mutex::new(vec![a.clone()]));
+    let local = launch(&a, true, Some(chat_a.as_str()));
+    let other = launch(&b, true, Some(chat_b.as_str()));
+    let _non_http = launch(&a, false, Some(chat_a.as_str()));
+    // The user's own server in the same project, and one whose marker names
+    // a chat this device does not host.
+    let _users = launch(&a, true, None);
+    let _foreign = launch(&a, true, Some(foreign.as_str()));
+    // A terminal this device opened for no chat it hosts.
+    let _stray_terminal = launch_from(&a, true, Some(terminal_origin(&stray)));
+    let roots = Arc::new(Mutex::new(scope(&[(chat_a.as_str(), &a)])));
     let projects = roots.clone();
     let service = PreviewService::new(
         temp.path().join("names.json"),
@@ -85,11 +148,15 @@ async fn only_current_project_http_processes_are_exposed_and_removals_are_live()
         .await
         .expect("proxy did not retry the freed port");
     }
+    // Several cycles pass and the user's server never joins it.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    wait(&service, Some(local.0.id())).await;
     let found = &service.catalog().snapshot().services[0];
     assert!(found.roboco_owned);
+    assert_eq!(found.chat_id.as_deref(), Some(chat_a.as_str()));
     assert_eq!(std::path::Path::new(&found.cwd), a.canonicalize().unwrap());
     assert!(found.started_at > 0);
-    *roots.lock().unwrap() = vec![b];
+    *roots.lock().unwrap() = scope(&[(chat_b.as_str(), &b)]);
     wait(&service, Some(other.0.id())).await;
     drop(other);
     wait(&service, None).await;
@@ -110,6 +177,7 @@ async fn only_current_project_http_processes_are_exposed_and_removals_are_live()
 #[tokio::test]
 async fn a_discovered_server_is_probed_once_not_every_cycle() {
     let _serial = SERIAL.lock().await;
+    let chat = unique("chat");
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("app");
     std::fs::create_dir(&app).unwrap();
@@ -125,8 +193,9 @@ async fn a_discovered_server_is_probed_once_not_every_cycle() {
         log = log.display().to_string()
     );
     let server = Child(
-        std::process::Command::new("python3")
+        std::process::Command::new(python())
             .args(["-c", &script])
+            .env(ORIGIN_ENV, chat_origin(&chat))
             .current_dir(&app)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
@@ -139,7 +208,7 @@ async fn a_discovered_server_is_probed_once_not_every_cycle() {
         "Laptop".into(),
     )
     .unwrap();
-    let roots = vec![app.clone()];
+    let roots = scope(&[(chat.as_str(), &app)]);
     service.start(Arc::new(move || roots.clone())).await;
     wait(&service, Some(server.0.id())).await;
     // Several scan cycles (2s cadence) pass while the server stays discovered.
@@ -166,6 +235,7 @@ async fn authentication_callbacks_receive_no_discovery_connections() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _serial = SERIAL.lock().await;
+    let chat = unique("chat");
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("app");
     std::fs::create_dir(&app).unwrap();
@@ -197,7 +267,7 @@ c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK'
         connections = connections.display().to_string(),
     );
     let mut callback = Child(
-        std::process::Command::new("python3")
+        std::process::Command::new(python())
             .args([
                 "-c",
                 &script,
@@ -205,6 +275,7 @@ c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK'
                 "--domain",
                 "https://app.infisical.com",
             ])
+            .env(ORIGIN_ENV, chat_origin(&chat))
             .current_dir(&app)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
@@ -224,14 +295,14 @@ c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK'
     })
     .await
     .expect("callback did not start");
-    let server = launch(&app, true);
+    let server = launch(&app, true, Some(chat.as_str()));
     let service = PreviewService::new(
         temp.path().join("names.json"),
         "local".into(),
         "Laptop".into(),
     )
     .unwrap();
-    let roots = vec![app];
+    let roots = scope(&[(chat.as_str(), &app)]);
     service.start(Arc::new(move || roots.clone())).await;
     wait(&service, Some(server.0.id())).await;
     // Discovery actually runs, including multiple cycles after the ordinary
@@ -270,4 +341,284 @@ c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK'
     assert_eq!(std::fs::read_to_string(connections).unwrap(), "connected\n");
     assert!(callback.0.wait().unwrap().success());
     service.shutdown().await;
+}
+
+/// Agents background their servers (`nohup … &`, `setsid`, double forks) and
+/// launchers scrub environments (`env -i`). Neither loses the server: the
+/// marker survives reparenting, and a scrubbed server is attributed through
+/// the marked process that launched it. A server started outside the
+/// checkout is listed under the chat that started it.
+#[cfg(unix)]
+#[tokio::test]
+async fn backgrounded_scrubbed_terminal_and_out_of_tree_servers_stay_attributed() {
+    let _serial = SERIAL.lock().await;
+    let chat = unique("chat");
+    let terminal = unique("terminal");
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("app");
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir(&app).unwrap();
+    std::fs::create_dir(&elsewhere).unwrap();
+    let python = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v python3"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let pidfile = temp.path().join("daemon.pid");
+    // A double fork: the server's parent exits at once, so it is reparented.
+    let status = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("( {python} -c \"{HTTP_SERVER}\" >/dev/null 2>&1 & echo $! > {pidfile:?} ) &"),
+        ])
+        .env(ORIGIN_ENV, chat_origin(&chat))
+        .current_dir(&app)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let daemon: u32 = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+            {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("daemon did not start");
+    struct Kill(u32);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+        }
+    }
+    let _daemon = Kill(daemon);
+    // A marked shell that stays alive around a server with no environment.
+    let _scrubbed = Child(
+        std::process::Command::new("sh")
+            .args(["-c", &format!("env -i {python} -c \"{HTTP_SERVER}\"; true")])
+            .env(ORIGIN_ENV, chat_origin(&chat))
+            .current_dir(&app)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let outside = launch(&elsewhere, true, Some(chat.as_str()));
+    // From a terminal (or the project action running in one), which may
+    // have closed since: its chat is remembered.
+    let from_terminal = launch_from(&app, true, Some(terminal_origin(&terminal)));
+    let service = PreviewService::new(
+        temp.path().join("names.json"),
+        "local".into(),
+        "Laptop".into(),
+    )
+    .unwrap();
+    let mut roots = scope(&[(chat.as_str(), &app)]);
+    roots.terminals.insert(terminal.clone(), chat.clone());
+    service.start(Arc::new(move || roots.clone())).await;
+    let app = app.canonicalize().unwrap();
+    let services = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let services = service.catalog().snapshot().services;
+            if services.len() == 4 {
+                break services;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("discovery did not find every agent server");
+    assert!(services.iter().any(|s| s.pid == daemon));
+    assert!(services.iter().any(|s| s.pid == outside.0.id()));
+    assert!(services.iter().any(|s| s.pid == from_terminal.0.id()));
+    for service in &services {
+        assert_eq!(service.chat_id.as_deref(), Some(chat.as_str()));
+        assert_eq!(PathBuf::from(&service.project_cwd), app);
+    }
+    service.shutdown().await;
+}
+
+/// Windows discovery (agent-previews ticket 02): the same join the
+/// Linux/macOS scanners perform, over `GetExtendedTcpTable` + sysinfo. The
+/// children are this crate's `preview-child-server` fixture binary, so the
+/// Windows suite needs no interpreter from the runner image.
+#[cfg(target_os = "windows")]
+mod windows {
+    use super::*;
+
+    /// A marked (or, with `None`, the user's) child server bound to `bind`,
+    /// started in `cwd`, reporting its port to a file under `reports` once
+    /// it is listening.
+    async fn child_server(
+        bind: &str,
+        origin: Option<&str>,
+        cwd: &Path,
+        reports: &Path,
+    ) -> Child {
+        let report: PathBuf = reports.join(format!("child-{}.port", uuid::Uuid::new_v4()));
+        let mut command =
+            std::process::Command::new(env!("CARGO_BIN_EXE_preview-child-server"));
+        command
+            .arg(bind)
+            .arg(&report)
+            .env_remove(ORIGIN_ENV)
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit());
+        if let Some(origin) = origin {
+            command.env(ORIGIN_ENV, origin);
+        }
+        let child = Child(command.spawn().unwrap());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !report.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("child server did not report its port");
+        child
+    }
+
+    async fn wait_for_count(service: &PreviewService, count: usize) {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                if service.catalog().snapshot().services.len() == count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("discovery did not converge");
+    }
+
+    fn service(temp: &Path) -> PreviewService {
+        PreviewService::new(
+            temp.join("names.json"),
+            "local".into(),
+            "Laptop".into(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_marked_child_lists_and_a_user_started_server_does_not() {
+        let _serial = SERIAL.lock().await;
+        let chat = unique("chat");
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let service = service(temp.path());
+        let roots = scope(&[(chat.as_str(), &app)]);
+        service.start(Arc::new(move || roots.clone())).await;
+        let marked =
+            child_server("127.0.0.1:0", Some(&chat_origin(&chat)), &app, temp.path()).await;
+        // The user's own server in the same project is never a preview.
+        let _user = child_server("127.0.0.1:0", None, &app, temp.path()).await;
+        wait_for_count(&service, 1).await;
+        let found = &service.catalog().snapshot().services[0];
+        assert_eq!(found.pid, marked.0.id());
+        assert!(found.roboco_owned);
+        assert_eq!(found.chat_id.as_deref(), Some(chat.as_str()));
+        assert_eq!(
+            std::path::Path::new(&found.cwd),
+            app.canonicalize().unwrap()
+        );
+        assert!(found.started_at > 0);
+        // Several cycles pass; the user's server never joins it.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(service.catalog().snapshot().services.len(), 1);
+        drop(marked);
+        wait_for_count(&service, 0).await;
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn wildcard_and_explicit_loopback_binds_are_loopback_reachable() {
+        let _serial = SERIAL.lock().await;
+        let chat = unique("chat");
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let service = service(temp.path());
+        let roots = scope(&[(chat.as_str(), &app)]);
+        service.start(Arc::new(move || roots.clone())).await;
+        let _wildcard_v4 =
+            child_server("0.0.0.0:0", Some(&chat_origin(&chat)), &app, temp.path()).await;
+        let _wildcard_v6 =
+            child_server("[::]:0", Some(&chat_origin(&chat)), &app, temp.path()).await;
+        let _explicit =
+            child_server("127.0.0.1:0", Some(&chat_origin(&chat)), &app, temp.path()).await;
+        wait_for_count(&service, 3).await;
+        for found in &service.catalog().snapshot().services {
+            assert_eq!(found.chat_id.as_deref(), Some(chat.as_str()));
+            assert!(found.started_at > 0);
+        }
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_non_loopback_bind_is_not_listed() {
+        let _serial = SERIAL.lock().await;
+        // The machine's primary address: a UDP connect selects it without
+        // sending anything (TEST-NET-1 needs no real route to answer).
+        let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        probe.connect("192.0.2.1:9").unwrap();
+        let local = probe.local_addr().unwrap().ip();
+        assert!(!local.is_loopback());
+        let chat = unique("chat");
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let service = service(temp.path());
+        let roots = scope(&[(chat.as_str(), &app)]);
+        service.start(Arc::new(move || roots.clone())).await;
+        let _non_loopback =
+            child_server(&format!("{local}:0"), Some(&chat_origin(&chat)), &app, temp.path())
+                .await;
+        let control =
+            child_server("127.0.0.1:0", Some(&chat_origin(&chat)), &app, temp.path()).await;
+        wait_for_count(&service, 1).await;
+        let found = &service.catalog().snapshot().services[0];
+        assert_eq!(found.pid, control.0.id(), "only the loopback bind lists");
+        // Several cycles pass; the non-loopback server never joins.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(service.catalog().snapshot().services.len(), 1);
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn same_process_matches_the_scanner_start_time_and_degrades_to_pid_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let child =
+            child_server("127.0.0.1:0", None, temp.path(), temp.path()).await;
+        let pid = child.0.id();
+        // The scanner's own derivation: sysinfo's start time for the pid,
+        // reduced from the same `GetProcessTimes` FILETIME.
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        let started_at = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .expect("the child is in the process table")
+            .start_time();
+        assert!(started_at > 0);
+        assert!(roboco_preview::discovery::same_process(pid, started_at));
+        assert!(!roboco_preview::discovery::same_process(pid, started_at + 1));
+        // Degraded to pid-only when no start time is known.
+        assert!(roboco_preview::discovery::same_process(pid, 0));
+        drop(child); // kills and reaps: the pid is no longer taken
+        assert!(!roboco_preview::discovery::same_process(pid, started_at));
+        assert!(!roboco_preview::discovery::same_process(pid, 0));
+    }
 }

@@ -46,14 +46,24 @@ export interface PaneTerminalSource {
  * the pieces that persist — globally, through ticket 03's settings store
  * (`settings.right_pane_width`, `settings.files_panel_width`), not per chat.
  *
- * `Browser(u64)` is deliberately absent: a web client cannot host arbitrary
- * cross-origin pages in a pane (research §6), and the desktop's preview list
- * is the empty-tab body of that surface — there is no Preview surface.
+ * `Browser(u64)` stays deliberately absent: a web client cannot host the
+ * desktop's arbitrary-address browser pane. The preview panel is its honest
+ * subset — the desktop browser surface's preview-list body (crates/ui/src/
+ * browser/view.rs `preview_body`) as a `preview` surface, framing only the
+ * engine's own `*.localhost:7331` proxy URLs (no address bar, no arbitrary
+ * navigation) and gated on loopback framing (components/preview-panel.tsx,
+ * agent-previews ticket 06).
  */
 
-/** `shell.rs::RightSurface` minus the desktop-only `Browser(u64)` variant. */
+/**
+ * `shell.rs::RightSurface` minus the desktop-only `Browser(u64)` variant; the
+ * web's `preview` surface is the browser surface's preview-list body, one
+ * per pane (id-less, like the picker — a second tab would duplicate the
+ * one subscription the panel owns).
+ */
 export type RightSurface =
   | { kind: "picker" }
+  | { kind: "preview" }
   | { kind: "file"; id: string }
   | { kind: "diff"; id: string }
   | { kind: "terminal"; id: string }
@@ -637,6 +647,24 @@ export class RightPaneStore {
   }
 
   /**
+   * The preview panel (`add_browser_surface`'s preview-list arm, agent-
+   * previews ticket 06): ONE per pane — an existing tab re-activates instead
+   * of duplicating (the panel owns a single `WatchPreviews` subscription, so
+   * a second tab would double it). Desktop parity minus the arbitrary-address
+   * browsing the web client cannot host.
+   */
+  addPreviewSurface(chatId: string): void {
+    const existing = this.stateFor(chatId).tabs.find((tab) => tab.kind === "preview");
+    if (existing !== undefined) {
+      this.setActive(chatId, existing);
+      return;
+    }
+    const surface: RightSurface = { kind: "preview" };
+    this.#update(chatId, (pane) => ({ ...pane, tabs: [...pane.tabs, surface] }));
+    this.setActive(chatId, surface);
+  }
+
+  /**
    * The picker's Terminal card / `+` row: every click opens a FRESH embedded
    * terminal tab (`add_terminal_surface`, shell.rs:2634-2650) — the surface
    * id IS the terminal tab's key, so the pane chip addresses its own PTY
@@ -1020,6 +1048,11 @@ export class RightPaneStore {
     switch (surface.kind) {
       case "picker":
         return { title: "Picker", detail: null, isHistory: false, isDirty: false, running: false };
+      case "preview":
+        // `RightSurface::Browser`'s empty-tab label is "Browser" on the
+        // desktop; the web surface is the preview list itself, so the chip
+        // says what it shows.
+        return { title: "Previews", detail: null, isHistory: false, isDirty: false, running: false };
       case "file": {
         const entry = this.#files.get(surface.id);
         if (entry === undefined) {
