@@ -19,11 +19,11 @@ An engine serving paired clients over the network. Remoteness is about where the
 _Avoid_: Cloud, sync
 
 **Fleet**:
-Every engine a person uses, introduced to each other once: pair a client to any member engine and the rest arrive as ordinary paired engines. Under the hood a fleet is a fleet room (ADR 0011 amendment) — one per data dir, its secret held by member engines; the word users see is Fleet, never room.
+Every engine a person uses, introduced to each other once: pair a phone to any member engine and the rest arrive as ordinary paired engines (a desktop pushes its fleet to the engines it pairs, and joins another desktop's fleet by pasting its invite). Under the hood a fleet is a fleet room (ADR 0011 amendment) — one per data dir, its secret held by member engines; the word users see is Fleet, never room.
 _Avoid_: Cluster, network, account, room (in user-facing text)
 
 **Room**:
-The protocol behind a fleet: a shared secret plus an address book, with no engine in charge; presenting the secret to a member mints an ordinary per-engine session, and each chat still belongs to exactly one engine. Rooms share reachability, never data. Plain rooms (CLI only) keep the original hostless, verifier-only semantics.
+The protocol behind a fleet: a shared secret plus an address book, with no engine in charge; presenting the secret to a member mints an ordinary per-engine session, and each chat still belongs to exactly one engine. Rooms share reachability, never data. Plain rooms (no desktop UI; engines join through the CLI) keep the original hostless, verifier-only semantics.
 _Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
 
 **Web client**:

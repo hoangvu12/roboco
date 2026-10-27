@@ -125,9 +125,264 @@ roboco engine pairing list
 roboco engine pairing revoke SESSION_ID
 ```
 
-Create and list accept `--json`. Create accepts `--ttl-seconds` from 1 to 3600.
+Create and list accept `--json`. Create accepts `--ttl-seconds` from 1 to 3600,
+and `--qr` prints the link as a terminal QR code under the URL line.
 Only create prints a secret; list shows session identifiers, labels, last-seen
 timestamps, and revocation state. Revocation rejects the session's next connection.
+
+## Fleet sharing
+
+A fleet is every engine you use, introduced to each other once: pair your phone
+with any engine in it, and the rest arrive as ordinary paired engines. A fleet
+shares reachability, never data. Each chat still belongs to exactly one engine
+(ADR 0004), and nothing syncs or relays between members. Under the hood a fleet
+is a fleet room ([ADR 0011](../adr/0011-rooms.md) and its fleet amendment). The
+app never says "room".
+
+### Quickstart
+
+1. Pair your servers to the desktop as usual (**Settings → Devices**).
+2. The desktop pushes its fleet to each of them automatically. **Settings →
+   Remote access → Fleet** shows each one as **In**.
+3. On the phone, scan the ordinary pairing QR of the desktop or of any server.
+4. The rest of the fleet comes along: "Adding the rest of your fleet…", then
+   "Added N engines from your fleet".
+5. That's it. The new engines sit in the phone's engine list like any other.
+
+**Prerequisite:** an engine joins the fleet only while it serves its Tailcat
+route (Remote access on, Tailcat transport; `roboco engine tailcat invite`
+sets that up on a server). Members reach each other over the addresses in the
+fleet's book. An engine without a Tailcat route shows "Not in yet · turn on
+Remote access with Tailcat on that engine". The desktop's own engine is in the
+book only when it serves Tailcat too. Otherwise a phone that pairs with a
+server gets the servers but not the desktop.
+
+The desktop creates the fleet the first time it has someone to share it with,
+named "Fleet". There is one fleet per data directory. Nothing happens, and no
+fleet exists, until then.
+
+### Pairing a phone through a server
+
+Introduction is symmetric: any engine in the fleet can introduce a phone. On a
+server that serves Tailcat:
+
+```sh
+roboco engine tailcat invite --qr
+```
+
+On an engine reachable over the LAN or your own tunnel, the plain pairing link
+works the same way:
+
+```sh
+roboco engine pairing create --base-url http://192.168.1.20:27655 --qr
+```
+
+Scan either QR on the phone's Pair page. After the pairing is saved, the phone
+asks that engine for its fleet (`GetFleetInvite`) and joins it silently. An
+engine with no fleet, or one too old to have fleets, answers nothing, and the
+pairing looks exactly like it always did. The pairing QR is unchanged: the
+fleet never rides in it.
+
+### The Fleet card
+
+**Settings → Remote access** shows a Fleet card when the local engine supports
+fleets. It has one row per engine:
+
+- **In**: the engine has the fleet.
+- **Not in yet**: it does not have it yet. The caption says why when it is
+  known: "offline", or "turn on Remote access with Tailcat on that engine".
+  **Retry** runs the push again.
+- **Update that engine to add it**: the engine predates fleets.
+- **In a different fleet**: the engine already belongs to another fleet (see
+  [Leaving and evicting](#leaving-and-evicting)).
+- **Left out**: you switched it off.
+
+Each engine the desktop has reached has an include switch. Turning it off
+leaves that engine out of future pushes. See
+[Leaving and evicting](#leaving-and-evicting) for what it does not do.
+
+**Show fleet invite** shows the fleet as a QR code plus a copyable
+`roboco-room:…` string (and creates the fleet first if there is none). The
+invite is a secret: anyone who has it can reach every engine in your fleet.
+Share it only with your own devices, and never commit or paste it into a chat.
+
+### Joining from another computer
+
+A second desktop joins your fleet with the invite: copy it from **Show fleet
+invite** on the first desktop, then paste it into **Join a fleet with an
+invite** on the second. Pairing the second desktop to a fleet engine is not
+enough: desktops push their own fleet and never fetch one.
+
+If the second computer already has a fleet of its own:
+
+- A fleet with no other engines in it is replaced silently.
+- A fleet shared with other engines is not replaced without asking: the card
+  says "This computer is already in a fleet with other engines. Joining this
+  one leaves it." **Leave it and join** switches. Leaving revokes the sessions
+  that fleet created and forgets only the engines it added. Engines you paired
+  by hand are never touched.
+
+The field accepts fleet invites only. A plain room invite is refused with
+"That invite is for a room, not a fleet. Join rooms from a terminal: roboco
+engine room join" (see [Plain rooms](#plain-rooms)).
+
+### Starting a fleet on a server
+
+A fleet can also start on a headless engine, with no desktop involved:
+
+```sh
+roboco engine tailcat invite             # serve Tailcat first, so the server is in its own fleet
+roboco engine room create                # prints the fleet's room id, never its secret
+roboco engine room invite ROOM_ID --qr   # the invite (a secret) plus a terminal QR
+```
+
+`create` names the fleet "Fleet" unless you pass `--name`. It adds this
+engine to the book under its device name (`--label` overrides) when the engine
+has recorded a Tailcat address. With no address it still creates the fleet,
+with an empty book, and says so on stderr. A data directory holds one fleet;
+a second `create` is refused.
+
+From there, a phone pairing with this server follows the fleet as usual. A
+desktop joins by pasting the invite into **Join a fleet with an invite**, then
+pushes the fleet to the engines it has paired. Another engine can join with
+`roboco engine room join 'roboco-room:…'`, but a CLI join does not put that
+engine's own address in the book. Pairing it to a desktop in the fleet does:
+the desktop adds every engine it pushes to.
+
+### Duplicates
+
+Re-pairing an engine, re-running a join, or receiving a fleet that contains
+engines you already paired never creates a second entry. The desktop and the
+phone match members to the engines they already know by identity (and the
+phone by address too), and an engine re-joining a fleet it holds refreshes the
+same row.
+
+One leftover is possible: when an already-paired engine is matched only after
+presenting the fleet secret (for example, it was paired over the LAN but the
+book lists its Tailcat address), the old pairing session stays valid but
+unused on that engine. Revoke it from that engine's **Settings → Remote
+access**, or with `roboco engine pairing revoke`, if you want a tidy list.
+
+### What "Not in yet" means
+
+Nothing probes engines in the background, by design. Fleet state is computed
+when the desktop runs its fleet pass. That happens when the app opens, the first
+time each engine connects after the app starts (which covers new pairings), on
+**Retry**, and when you flip an include switch. A sleeping or offline engine
+stays "Not in yet" until one of those runs while it is reachable. Phones heal
+the same way: a member that was asleep during the join is retried on the next
+app start or network change. Books merge as unions, so a stale address on one
+engine is corrected from another.
+
+### Leaving and evicting
+
+The include switch is forward-only. Turning an engine off stops future pushes
+and stops sharing its address. An engine that already joined keeps the fleet
+until you run, on that engine:
+
+```sh
+roboco engine room list                 # find the fleet's room id
+roboco engine room leave ROOM_ID        # forget the fleet and erase its secret
+```
+
+The card has no Leave button; a desktop leaves its fleet only by switching to
+another one (above).
+
+A fleet gates future introductions, not existing sessions. Every session it
+minted is an ordinary session, valid until revoked on the engine that issued
+it. To evict a device, such as a lost phone:
+
+1. **Leave.** Run `roboco engine room leave ROOM_ID` on every engine in the
+   fleet, the desktop's own engine included. The old secret then matches
+   nothing.
+2. **Re-create.** Reopen the desktop app and it creates a fresh fleet and
+   pushes it to your paired engines (or `roboco engine room create` on a
+   server).
+3. **Re-pair.** Pair your remaining phones again; they follow the new fleet.
+4. **Revoke.** On each engine, `roboco engine pairing list` shows the old
+   sessions by label, and `roboco engine pairing revoke SESSION_ID` (or that
+   engine's **Settings → Remote access**) rejects each one's next connection.
+
+### Fleet for agents
+
+An agent running on any fleet engine can introduce a device and inspect the
+fleet with the CLI. Every command works while the engine is running (the CLI
+shares the pairing database through WAL) and honours `ROBOCO_DATA_DIR`.
+
+**Introduce a phone.** Print a pairing QR. The phone pairs, then fetches and
+joins the fleet on its own. No fleet flag is needed:
+
+```sh
+roboco engine tailcat invite --qr          # Tailcat engines; --json: {id, url, expiresAt}, plus qrSvg with --qr
+roboco engine pairing create --base-url URL --qr   # LAN/tunnel engines; --json: {id, url, expiresAt}, plus qrSvg with --qr
+```
+
+**Start and share a fleet:** `roboco engine room create` and
+`roboco engine room invite ROOM_ID [--qr]`, as above. Only `invite` ever prints
+an invite. Print one only when a human asked for it.
+
+**Inspect:** `roboco engine room list --json`.
+
+Every room command accepts `--json`. The shapes are stable:
+
+```text
+room create --json   {"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}
+room invite --json   {"roomId":"<room id>","invite":"roboco-room:…"}
+                     with --qr adds "qrSvg":"<svg>" (null when the invite is too long for a QR code)
+room join --json     {"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"room"|"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}
+room list --json     [{"id":"<room id>","label":"<room name>","joinedAt":<unix ms>,"kind":"room"|"fleet","memberCount":<n>,"book":{"members":[{"label":"<engine label>","address":"<tc… address>"}]}}]
+                     (empty: [])
+room leave --json    {"roomId":"<room id>","left":true}
+```
+
+The book's addresses are transport secrets. Read them, but do not echo them
+into chats or logs. The exit codes are a contract:
+
+```text
+0  success
+1  failure: a malformed invite, an unreadable store, an I/O error
+2  usage error: unknown flag or missing argument
+3  refused: this engine already belongs to a fleet, the room is not a
+   fleet room, or no such room is joined
+```
+
+Errors go to stderr, starting with `Error:`; no JSON is printed on failure.
+Refusals are one line of fixed text (`this engine already belongs to a fleet;
+leave it first`, `not a fleet room`, `no such room`). They never echo the
+command's input, so a mistakenly pasted invite stays off stderr. No room error
+ever quotes an invite or a secret.
+
+### Plain rooms
+
+Plain rooms are the original, hostless form, kept for power users. An engine
+that joins one stores only a SHA-256 verifier of its secret plus the book, so
+no engine can re-share it. Clients hold the secret. Plain rooms have no desktop
+UI: engines join with `roboco engine room join 'roboco-room:…'`, the phone's
+Pair page accepts the invite directly, and the desktop's fleet field refuses
+it. Nothing in this release mints a plain room (`room create` makes fleets
+only), so plain rooms come from existing invites. `room list` and `room leave`
+treat both kinds alike, and `room invite` refuses plain rooms with `not a fleet
+room`.
+
+### Under the hood
+
+An invite is the room serialized: `roboco-room:` followed by base64url-no-pad
+of `{"v":1,"name":"…","secret":"…","members":[{"label":"…","address":"…"}],"kind":"fleet"}`.
+`kind` is absent for a plain room. It carries the secret and every member
+address, so it is an ADR 0008 secret: never logged, written 0600 wherever files
+are involved, and decode errors describe only its shape.
+
+A client joins a member by presenting the secret at `POST /room/present`, which
+mints an ordinary session labeled by the presenter. Re-presenting with the same
+label reissues that session, so retries never pile up sessions. Failed
+presentations are throttled. Clients union the books they can reach and push
+the merged book back (`GetRoomBook`, `UpdateRoomBook`); engines never talk to
+each other. Fleet engines also keep the fleet secret, in the pairing database
+(`pairing.sqlite3`, owner-only on unix), so any of them can hand the fleet to a
+newly paired phone (`GetFleetInvite`). The desktop pushes the fleet to its
+engines with `RoomJoin` (idempotent; the book unions). Both RPCs need a paired
+session and the `rooms-v2` capability, and no room code ever changes
+remote-access settings. The web client has no fleet join in this release.
 
 ## Saved settings
 
@@ -153,10 +408,12 @@ a request URL.
 ## Using several engines
 
 Paired engines reconnect automatically when the desktop starts. Their chats and
-spaces appear in the existing sidebar with device labels. Pick a device in the
-space palette, then choose a folder; the composer space chip identifies where the
-new chat will run. You can also enter an absolute path for that engine. An existing
-folder opens on Enter; a missing folder offers **Create and add**.
+spaces appear in the existing sidebar with device labels. Engines that arrived
+with a fleet (see Fleet sharing) appear here too, exactly like paired ones. Pick
+a device in the space palette, then choose a folder; the composer space chip
+identifies where the new chat will run. You can also enter an absolute path for
+that engine. An existing folder opens on Enter; a missing folder offers
+**Create and add**.
 
 Settings → Devices shows connection state and lets you forget a paired engine.
 Forgetting removes its saved connection and client cache. Revoke the session on
@@ -231,6 +488,8 @@ Capability strings are never reused or removed within a protocol generation.
 | `WatchDocMessages{openingTail:true}` | none (older engines ignore it and send a full reset, which is safe) |
 | Folder browser (`ListDrives`, `PrepareSpacePath`), sidebar pins/sections (`WatchSidebarState`) | none (`unknown method` → hide the feature) |
 | Transcript images by any reference (`ReadImageChunk{reference, chatId?}`: relative/`~`/`file:`/`roboco-file:`/`data:` references, engine-side URL fetch, SVG → PNG) | none (`unknown method` → the core falls back to `ReadAttachmentChunk` with the reference as a path; web and `data:` images still load on the phone) |
+| Rooms (`/room/present`, `GetRoomBook`, `UpdateRoomBook`) | `rooms-v1` (an engine without it answers 404 or `unknown method`; the join skips that member silently) |
+| Fleet follow after pairing (`GetFleetInvite`) | `rooms-v2` (absent, or a `null` invite → no fleet, and the pairing stays exactly as it was) |
 
 ## Transcript resume
 
