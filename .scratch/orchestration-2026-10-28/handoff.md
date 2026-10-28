@@ -289,6 +289,10 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
   diagnostics added (bounded cleanup adb, live logcat, mem/CPU log). Golden PNGs need a re-record (no CI runs
   Roborazzi). Cleaned up (empty locked `..
 oboco-w10-android` folder left). 16 `bisect/pr38-*` branches deleted (user OK).
+- **CI moved up (user, 2026-10-29: "do all the CI speed first"):** started without waiting for web removal.
+  `bdd1bbe1` `..\roboco-ci-windows` / `ci/windows-split` = CI 03→04→05; `a7b1639c`
+  `..\roboco-ci-linux-android` / `ci/linux-android-tiers` = CI 06, 08, 23. Web-line conflicts: whichever lands
+  second resolves. Then 09 (docs/final measurement), 10 (after web removal), 14/15 (arm64), 16–21, 22, 24.
 - **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
   timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..
 oboco-fix-notices` / `fix/completion-notices`.
