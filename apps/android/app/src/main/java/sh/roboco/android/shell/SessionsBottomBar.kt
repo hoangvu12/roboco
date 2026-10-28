@@ -94,6 +94,9 @@ fun SessionsBottomBar(
                     .weight(1f)
                     .height(circle.dp),
                 held = onFrontPage,
+                // The real text field only while it's in use (PR #38's
+                // emulator device loss; see SearchTabField's lazyText).
+                lazyText = true,
             )
             GlassCircleButton(
                 icon = RobocoIcons.Plus,

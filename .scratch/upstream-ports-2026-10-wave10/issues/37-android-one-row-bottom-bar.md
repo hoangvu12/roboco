@@ -85,3 +85,20 @@ only; goldens not re-captured (see comments).
 - `OneRowBarShellTest` / `SessionFlowTest.settingsFromBottomBar` check that
   the hidden bar isn't **displayed** (it stays composed, unplaced, #30)
   rather than gone from the tree; new `aPushLetsGoOfTheSearchFieldsFocus`.
+
+2026-10-28 (PR #38 android-emulator device loss): the CI emulator dropped
+off adb 7–10 min into the flow suite on every run of this branch, then hung
+to the job timeout. A bisect with `workflow_dispatch` runs (flow-tests
+diagnostics cherry-picked) put it here: 33 and 35 keep the device (35 twice);
+37, 39, 42, 43, 36 lose it. Two experiments on 37 isolate it: the bar switched
+off (`oneRowBar = false`) keeps the device, and so does the bar with its
+search field replaced by a spacer — the always-composed `BasicTextField`
+in the bar is the trigger (it was never composed outside the Search tab
+before). Host memory never ran low and no OOM/ANR/crash line was logged;
+the guest froze shortly after returning to the front page.
+
+Fix: `SearchTabField(lazyText = true)` for the bar — the real text field
+exists only while it is in use (front page, and tapped, focused or holding
+a query); otherwise a static placeholder with the same look and the
+`search-field` tag stands in, and a tap / focus request brings the field in,
+focused. JVM: `OneRowBarShellTest.theBarsTextFieldExistsOnlyWhileInUse`.
