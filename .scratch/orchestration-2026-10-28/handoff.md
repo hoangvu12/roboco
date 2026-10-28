@@ -151,6 +151,10 @@ Keep a running "PRs" list in this file.
   (Copy only); CLI QR dark-on-light + width hint. ADR 0011 amendment approved. One PR,
   `feature/fleet-merge`, starts after the web-removal PR merges (05 could start earlier). The user
   was given a paste-the-SG-invite workaround for today. Open: which QR they failed to scan.
+- **New effort: `.scratch/fleet-agents/`** (5 tickets). Agents' MCP tools create/drive chats on any
+  fleet member: engines hold fleet sessions on each other, tools route by device, completion notices
+  cross machines. This is rooms spec **user story 15**, never ticketed or built (I wrongly called it
+  new at first). The user expects it; it runs right after the fleet-merge PR.
 
 - 2026-10-28 ~00:00: an engine restart interrupted all three workers; each was told to resume.
 - Upstream moved: mirror now `ab189159f` (v0.2.128). #1088 access modes + plan mode is **not** in
