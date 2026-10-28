@@ -169,7 +169,7 @@ runs:
         # Only pushes to main write; PRs restore main's entry. Dispatch and
         # scheduled runs on main never save, so an A/B run on another image
         # adds no entry.
-        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && runner.arch == 'ARM64') }}
         cache-on-failure: 'true'
         # Cargo rebuilds workspace crates after every checkout (mtime
         # freshness), and they are opt-level 0 here, so caching them only
