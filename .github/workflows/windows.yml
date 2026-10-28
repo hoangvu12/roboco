@@ -119,7 +119,7 @@ jobs:
         #   roboco-proto    lib (device_paths only, see the filter)
         #   roboco-rpc, roboco-ui, gpui_windows (shader layout)  lib
         #   roboco-preview  lib + discovery (the GetExtendedTcpTable join;
-        #                   preview-tests.yml runs the rest on Linux)
+        #                   ui-tests.yml's core-tests run the rest on Linux)
         #   roboco, roboco-update, roboco-markdown, roboco-engine-client
         #                   every test target, read from cargo metadata so a
         #                   new test file is picked up

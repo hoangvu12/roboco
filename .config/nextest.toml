@@ -3,7 +3,8 @@
 # Suites that run one test at a time. The gpui UI suite always has
 # (`--test-threads=1`, then nextest `-j 1`), and the engine-client tests time
 # reconnect backoff against loopback engines. Separate groups, so the two
-# serial suites still overlap each other and everything else.
+# serial suites still overlap each other and everything else (on Linux, the
+# roboco CLI tests and the other mobile crates in the same nextest run).
 [test-groups]
 serial-ui = { max-threads = 1 }
 serial-engine-client = { max-threads = 1 }
@@ -16,9 +17,11 @@ test-group = 'serial-ui'
 filter = 'package(roboco-engine-client)'
 test-group = 'serial-engine-client'
 
-# CI runs with `-P ci` (windows.yml): transient failures (ConPTY teardown,
-# timing-sensitive engine tests) get two retries before they can fail a run —
-# a retry is minutes cheaper than rerunning a whole Windows job.
+# CI runs with `-P ci` (windows.yml, ui-tests.yml): transient failures (ConPTY
+# teardown, timing-sensitive engine tests) get two retries before they can
+# fail a run — a retry is minutes cheaper than rerunning a whole job. A pass
+# on retry is reported as FLAKY in the final summary; `--retries 0`
+# reproduces the strict run.
 [profile.ci]
 retries = 2
 failure-output = "immediate-final"

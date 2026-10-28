@@ -3,26 +3,38 @@ name: Android
 # The Android client scaffold (android-app#13): Gradle builds the debug APK
 # from the Rust mobile core (cargo xtask android-core, ticket 10) and runs
 # the JVM unit suite — Robolectric against the host core, plus the plain
-# version/asset/network tests — on both hosts the project supports. The
-# ubuntu job uploads the APK; windows proves the build needs no bash/WSL.
-# On pushes to main it also runs the unsigned x86_64 assembleRelease R8
-# smoke (android-app#31) so R8 breakage surfaces before a tag; the signed
-# release APKs are built by release.yml only. Every job that builds the core
-# also builds the Go Tailcat transport (android-next#02), so each sets up Go.
+# version/asset/network tests. Every job that builds the core also builds
+# the Go Tailcat transport (android-next#02), so each sets up Go.
+#
+# Two tiers (ci-speed 08). The `changes` job decides which a run gets:
+# - every run: `android` (ubuntu) — debug APK, JVM and buildSrc tests;
+# - PRs, when they touch what the APK or the rig is built from
+#   (scripts/ci/android-changes.sh): `android-emulator`, the flow suite;
+# - PRs, when they touch the Gradle host build: `android-windows`, the
+#   bash-free proof (the Gradle tasks need no bash/WSL on Windows);
+# - the full tier (push to main, nightly, dispatch, or a PR labelled
+#   `ci:full` — add it, then re-run): all of the above, plus the unsigned
+#   x86_64 assembleRelease R8 smoke (android-app#31; the signed release APKs
+#   are built by release.yml only);
+# - nightly and dispatch only: `android-emulator-tablet`, the tablet split
+#   shell and the @Tour recordings (non-blocking until it is green, ticket 23).
 
 on:
+  # engine/harness are left out of the PR trigger: they reach Android only
+  # through the fixture engine, which main pushes and the nightly run cover.
   pull_request:
     paths:
       - 'apps/android/**'
       - 'crates/android-assets/**'
       - 'crates/theme/**'
       - 'crates/mobile/**'
+      - 'crates/mobile-bindgen/**'
       - 'crates/mobile-client/**'
+      - 'crates/engine-client/**'
+      - 'crates/preview-relay/**'
       - 'crates/text/**'
       - 'crates/markdown/**'
       - 'crates/doc/**'
-      - 'crates/engine/**'
-      - 'crates/harness/**'
       - 'crates/rpc/**'
       - 'crates/proto/**'
       - 'crates/syntax/**'
@@ -34,7 +46,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - '.cargo/config.toml'
+      - '.cargo/**'
+      - 'scripts/ci/android-changes.sh'
       - '.github/workflows/android.yml'
   push:
     branches: [main]
@@ -43,7 +56,10 @@ on:
       - 'crates/android-assets/**'
       - 'crates/theme/**'
       - 'crates/mobile/**'
+      - 'crates/mobile-bindgen/**'
       - 'crates/mobile-client/**'
+      - 'crates/engine-client/**'
+      - 'crates/preview-relay/**'
       - 'crates/text/**'
       - 'crates/markdown/**'
       - 'crates/doc/**'
@@ -60,8 +76,12 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - '.cargo/config.toml'
+      - '.cargo/**'
+      - 'scripts/ci/android-changes.sh'
       - '.github/workflows/android.yml'
+  # The full tier plus the tablet suite, once a day on main.
+  schedule:
+    - cron: '47 2 * * *'
   workflow_dispatch:
     inputs:
       perf_apk:
@@ -77,9 +97,10 @@ permissions:
   contents: read
 
 # Superseded PR runs are cancelled; main runs never are, not even while
-# queued (a per-run group). Only main writes the Rust caches (save-if): one
-# `android` entry per OS, written by android-emulator on Linux and by the
-# android windows leg on Windows; the other jobs restore it.
+# queued (a per-run group). Only main pushes write the caches: one Rust
+# `android` entry per OS, written by android-emulator on Linux and by
+# android-windows on Windows, and one Gradle entry, written by the ubuntu
+# `android` job; the other jobs restore them.
 concurrency:
   group: android-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -91,9 +112,33 @@ env:
   # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS overrides
   # (they would replace the 16 KB PT_LOAD alignment rustflags).
   RUSTFLAGS: ''
-  CARGO_ENCODED_RUSTFLAGS: 
+  CARGO_ENCODED_RUSTFLAGS:
 
 jobs:
+  # Which tiers this run needs (scripts/ci/android-changes.sh): `full`,
+  # `android_relevant`, `gradle_host`. Off-PR, or with `ci:full`, all true.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      full: ${{ steps.tiers.outputs.full }}
+      android_relevant: ${{ steps.tiers.outputs.android_relevant }}
+      gradle_host: ${{ steps.tiers.outputs.gradle_host }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci
+      - id: tiers
+        name: Pick the tiers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: bash scripts/ci/android-changes.sh
+
   android-benchmark-apk:
     # workflow_dispatch with perf_apk only. Its first runs also prove the R8
     # keep rules for the benchmark variant (review-concerns: unverified).
@@ -159,25 +204,16 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # Every run. 90: the full tier's R8 smoke (below) adds a mobile-dist core
+  # build plus R8 on top of the debug build and the JVM tests.
   android:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # 90: the push-to-main R8 smoke (below) adds a mobile-dist core
-          # build plus R8 on top of the debug build and the JVM tests.
-          - os: ubuntu-24.04
-            abis: arm64-v8a,x86_64
-            upload: true
-            timeout: 90
-          # Windows-host proof: the Gradle tasks are bash-free, and the
-          # xtask handles .dll/.exe naming (upstream #609 was mac/Linux-only).
-          - os: windows-2022
-            abis: arm64-v8a
-            upload: false
-            timeout: 60
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout }}
+    name: android (ubuntu-24.04)
+    needs: changes
+    # Not gated on `changes` succeeding: without its outputs this is still
+    # the always-on tier (the full-tier steps skip).
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: apps/android
@@ -196,11 +232,126 @@ jobs:
           shared-key: android
           add-job-id-key: 'false'
           # The Linux entry is android-emulator's (see concurrency above).
-          save-if: ${{ github.ref == 'refs/heads/main' && runner.os == 'Windows' }}
+          save-if: 'false'
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
       - name: Install cargo-ndk
+        run: |
+          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          fi
+        working-directory: .
+      # 17 is the build JDK; 21 runs the Robolectric test JVMs.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            17
+      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
+      # built by the same android-core step, one c-shared library per ABI.
+      # Every Linux job shares one setup-go entry (its key has no job id).
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: adapters/roboco-tailcat/go.mod
+          cache-dependency-path: adapters/roboco-tailcat/go.sum
+      - name: Install Android SDK pieces
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+        working-directory: .
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # The one Gradle cache writer, on main pushes only.
+          cache-read-only: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      - name: Build the debug APK and run the JVM tests
+        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a,x86_64 :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
+      - name: "R8 smoke — unsigned release build (full tier)"
+        # Proves R8 plus the JNA/UniFFI keep rules build before a tag
+        # (release.yml runs the real signed build). PRs skip it unless
+        # labelled ci:full. Unsigned on purpose: no signing secrets here, and
+        # the unsigned path must produce the same R8 output as the signed one
+        # (android-app#31).
+        id: r8
+        if: needs.changes.outputs.full == 'true'
+        run: ./gradlew --stacktrace -ProbocoAbis=x86_64 :app:assembleRelease
+      - name: Upload the unsigned release APK (manual emulator smoke)
+        if: steps.r8.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-release-unsigned
+          path: apps/android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload the distribution core sizes
+        # The R8 smoke's mobile-dist core (x86_64): the sizes ui-tests'
+        # deleted android-core job recorded (ci-speed 06).
+        if: steps.r8.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-core-sizes
+          path: target/android-core/mobile-dist/sizes.json
+          if-no-files-found: warn
+          retention-days: 30
+      # The asset generator and xtask Rust tests run in ui-tests.yml's
+      # core-tests (scripts/ci/test-core.sh) since ci-speed 06.
+      - name: Check the native libraries in the debug APKs
         shell: pwsh
+        run: ./scripts/apk-report.ps1 -Libraries
+      - name: Append build sizes to the job summary
+        if: always()
+        shell: pwsh
+        run: ./scripts/apk-report.ps1 -Sizes
+      - name: Upload the debug APK
+        # Not gated on the JVM tests: assembleDebug runs first in the same
+        # Gradle call, so a test failure still leaves an installable APK.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-debug
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload unit-test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: roboco-android-test-reports-ubuntu-24.04
+          path: apps/android/app/build/reports/tests/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Windows-host proof: the Gradle tasks are bash-free (pwsh + gradlew.bat
+  # keep bash off the build path), and the xtask handles .dll/.exe naming
+  # (upstream #609 was mac/Linux-only). Full tier, or a PR touching the
+  # Gradle host build (`gradle_host`).
+  android-windows:
+    name: android (windows-2022)
+    needs: changes
+    if: needs.changes.outputs.gradle_host == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+        working-directory: .
+      - name: Add the Android Rust target
+        run: rustup target add aarch64-linux-android
+        working-directory: .
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android
+          add-job-id-key: 'false'
+          # The Windows entry's one writer.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
+          cache-workspace-crates: 'false'
+      - name: Install cargo-ndk
         run: |
           $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
           if (-not $installed) {
@@ -215,127 +366,36 @@ jobs:
           java-version: |
             21
             17
-      # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
-      # built by the same android-core step, one c-shared library per ABI.
-      # Every Linux job shares one setup-go entry (its key has no job id);
-      # the Windows leg would add a second, OS-specific one, so it skips it.
+      # The Linux jobs share one setup-go entry; a Windows one would add a
+      # second, OS-specific entry, so this leg skips the cache.
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
-          cache: ${{ runner.os == 'Linux' }}
+          cache: false
       - name: Install Android SDK pieces
-        shell: pwsh
         run: |
-          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
-          if ($IsWindows) { $sdkmanager = "$sdkmanager.bat" }
+          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager.bat"
           & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
         with:
-          # One Gradle cache writer: the ubuntu leg, on main (setup-gradle's
-          # default). The Windows leg restores what it can and never writes.
-          cache-read-only: ${{ runner.os == 'Windows' || github.ref != 'refs/heads/main' }}
-      # pwsh exists on both runners; on Windows .\gradlew.bat keeps bash
-      # off the build path entirely.
+          cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the debug APK and run the JVM tests
-        shell: pwsh
         run: |
-          $gradle = if ($IsWindows) { ".\gradlew.bat" } else { "./gradlew" }
-          & $gradle --stacktrace "-ProbocoAbis=$env:ABIS" :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
+          .\gradlew.bat --stacktrace -ProbocoAbis=arm64-v8a :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        env:
-          ABIS: ${{ matrix.abis }}
-      - name: "R8 smoke — unsigned release build (pushes to main only)"
-        # Proves R8 plus the JNA/UniFFI keep rules build before a tag
-        # (release.yml runs the real signed build). PRs skip it to keep their
-        # time down. Unsigned on purpose: no signing secrets here, and the
-        # unsigned path must produce the same R8 output as the signed one
-        # (android-app#31).
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
-        run: ./gradlew --stacktrace -ProbocoAbis=x86_64 :app:assembleRelease
-      - name: Upload the unsigned release APK (manual emulator smoke)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: roboco-android-release-unsigned
-          path: apps/android/app/build/outputs/apk/release/*.apk
-          retention-days: 14
-          if-no-files-found: error
-      - name: Test the asset generator and the xtask (Rust)
-        if: runner.os == 'Linux'
-        run: cargo test --locked -p roboco-android-assets -p roboco-xtask
-        working-directory: .
       - name: Check the native libraries in the debug APKs
-        # android-next#02: every split carries the core AND the Tailcat
-        # transport for its own ABI. Sizes go to the job summary (stored is
-        # the compressed size in the APK: useLegacyPackaging compresses .so).
-        shell: pwsh
-        run: |
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk"
-          if (-not $apks) { Write-Output "::error::no debug APK was built"; exit 1 }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Native libraries in the debug APKs", "", "| APK | library | stored (KB) | uncompressed (KB) |", "| --- | --- | ---: | ---: |"
-          $missing = @()
-          foreach ($apk in $apks) {
-            $abi = $apk.BaseName -replace '^app-(.+)-debug$', '$1'
-            $zip = [System.IO.Compression.ZipFile]::OpenRead($apk.FullName)
-            try {
-              foreach ($lib in "libroboco_mobile.so", "libroboco_tailcat.so") {
-                $entry = $zip.GetEntry("lib/$abi/$lib")
-                if ($entry) {
-                  $stored = [math]::Round($entry.CompressedLength / 1KB)
-                  $full = [math]::Round($entry.Length / 1KB)
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| $($apk.Name) | $lib | $stored | $full |"
-                } else {
-                  $missing += "$($apk.Name) has no lib/$abi/$lib"
-                }
-              }
-            } finally {
-              $zip.Dispose()
-            }
-          }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-          foreach ($line in $missing) { Write-Output "::error::$line" }
-          if ($missing) { exit 1 }
+        run: ./scripts/apk-report.ps1 -Libraries
       - name: Append build sizes to the job summary
         if: always()
-        shell: pwsh
-        run: |
-          # ABI splits (android-app#31) name every APK after its ABI.
-          $apks = Get-ChildItem "app/build/outputs/apk/debug/*.apk" -ErrorAction SilentlyContinue
-          foreach ($apk in $apks) {
-            $kb = [math]::Round($apk.Length / 1KB)
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "APK $($apk.Name): $kb KB", ""
-          }
-          # The push-to-main R8 smoke, when it ran this build.
-          $release = Get-ChildItem "app/build/outputs/apk/release/*.apk" -ErrorAction SilentlyContinue
-          foreach ($apk in $release) {
-            $kb = [math]::Round($apk.Length / 1KB)
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Release APK $($apk.Name): $kb KB (unsigned R8 smoke)", ""
-          }
-          # The xtask's sizes.json, when the core was built this run.
-          $sizes = Get-Content "../../target/android-core/mobile/sizes.json" -Raw -ErrorAction SilentlyContinue
-          if ($sizes) {
-            $fence = ([string][char]96) * 3
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Core sizes", "", "$($fence)json", $sizes, $fence, ""
-          }
-      - name: Upload the debug APK
-        # Not gated on the JVM tests: assembleDebug runs first in the same
-        # Gradle call, so a test failure still leaves an installable APK.
-        if: ${{ !cancelled() && matrix.upload }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: roboco-android-debug
-          path: apps/android/app/build/outputs/apk/debug/*.apk
-          retention-days: 14
-          if-no-files-found: error
+        run: ./scripts/apk-report.ps1 -Sizes
       - name: Upload unit-test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: roboco-android-test-reports-${{ matrix.os }}
+          name: roboco-android-test-reports-windows-2022
           path: apps/android/app/build/reports/tests/
           retention-days: 7
           if-no-files-found: ignore
@@ -343,8 +403,11 @@ jobs:
   # android-app#30: the instrumented flow suite against the fixture
   # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
   # logic: three android_fixture processes, adb reverse, the suite with
-  # the @Tour annotations excluded, and the artefact harvest.
+  # the @Tour annotations excluded, and the artefact harvest. Full tier, or
+  # a PR touching what the APK or the rig is built from (`android_relevant`).
   android-emulator:
+    needs: changes
+    if: needs.changes.outputs.android_relevant == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -371,7 +434,7 @@ jobs:
           add-job-id-key: 'false'
           # The Linux writer: the fixture engine (host, dev), the bindgen and
           # the x86_64 core. The ubuntu android job adds only the arm64 core.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
       - name: Install cargo-ndk
@@ -436,11 +499,12 @@ jobs:
           if-no-files-found: ignore
 
   # android-app#30: the tablet split shell (smallest width ≥ 600) plus the
-  # @Tour motion recordings — push-to-main and dispatch only, keeping PR
-  # time down. The Tour tests record `screenrecord` mp4s that the
-  # artefact step pulls.
+  # @Tour motion recordings — nightly and dispatch only (user decision
+  # 2026-10-28), non-blocking until it has been green three nights (ticket
+  # 23). The Tour tests record `screenrecord` mp4s that the artefact step
+  # pulls.
   android-emulator-tablet:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -485,6 +549,20 @@ jobs:
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
+      # The Tailcat smoke's rig, as in android-emulator: without it
+      # TailcatPairingFlowTest's assumption fails, which this runner setup
+      # reports as a failure (ci-speed 23).
+      - name: Build the Tailcat smoke pieces (adapter, local DERP relay)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out"
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
       - name: Run the tablet + tour suite
         uses: reactivecircus/android-emulator-runner@v2
         with:

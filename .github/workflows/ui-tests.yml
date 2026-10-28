@@ -1,5 +1,16 @@
 name: UI tests
 
+# The Linux Rust suites (ci-speed 06): one nextest build per dependency graph
+# on the dev profile — core-tests (harness, engine, sync, update, mcp,
+# preview, doc, Android asset/xtask tooling), ui-tests (roboco-ui + the
+# roboco CLI tests), mobile-core (the Android core's crates + engine-client)
+# — plus the Go Tailcat adapter. A nightly release-backstop runs the core
+# and UI suites in the optimized profile, the safety net for the dev-profile
+# switch (upstream 5d5d93599).
+#
+# Android-only changes (apps/android/**) do not run this workflow; android.yml
+# covers them.
+
 on:
   pull_request:
     paths:
@@ -7,9 +18,13 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - '.config/nextest.toml'
       - 'crates/**'
       - 'apps/**'
+      - '!apps/android/**'
       - 'adapters/roboco-tailcat/**'
+      - '.github/actions/linux-ci/**'
+      - 'scripts/ci/**'
       - '.github/workflows/ui-tests.yml'
   push:
     branches: [main]
@@ -18,82 +33,65 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - '.cargo/**'
+      - '.config/nextest.toml'
       - 'crates/**'
       - 'apps/**'
+      - '!apps/android/**'
       - 'adapters/roboco-tailcat/**'
+      - '.github/actions/linux-ci/**'
+      - 'scripts/ci/**'
       - '.github/workflows/ui-tests.yml'
+  # The release-profile backstop, once a day on main.
+  schedule:
+    - cron: '23 3 * * *'
   workflow_dispatch:
+    inputs:
+      release_backstop:
+        description: 'Also run the release-profile backstop (the nightly job)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 # Superseded PR runs are cancelled; main runs never are, not even while
-# queued (a per-run group). Only main writes the Rust caches (save-if) and
-# every job has its own shared-key; PRs restore main's entries.
+# queued (a per-run group). Only main pushes write the Rust caches (the
+# linux-ci action's save-rust-cache) and every key has one writer; PRs
+# restore main's entries.
 concurrency:
   group: ui-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  engine-local-regressions:
+  # Every Linux Rust test that is not UI or mobile core: one build, one
+  # nextest run (scripts/ci/test-core.sh lists the packages and binaries).
+  # Replaces engine-local-regressions, preview-tests.yml and android.yml's
+  # asset generator/xtask step.
+  core-tests:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - name: Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/linux-ci
         with:
-          shared-key: linux-engine
-          add-job-id-key: 'false'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: 'true'
-      - name: OpenCode protocol and permission regressions
-        run: |
-          cargo test --locked -p roboco-harness --lib opencode::
-          cargo test --locked -p roboco-harness --test opencode
-      - name: Codex native driver integration tests
-        # t3-orchestration-v2 ticket 17: the fake app-server suite covers
-        # the native fork (thread/fork + fallback paste) and provider turn
-        # refs; it was previously not run by any workflow.
-        run: cargo test --locked -p roboco-harness --test codex
-      - name: Claude native driver integration tests
-        # t3-orchestration-v2 ticket 18: the fake-CLI suite covers the
-        # native fork (--resume + --fork-session + --resume-session-at, the
-        # refused-flag and missing-session budgeted pastes) and provider
-        # turn refs (message uuids); it was previously not run by any
-        # workflow (unix-gated like the fake CLI itself).
-        run: cargo test --locked -p roboco-harness --test claude
-      - name: Pi native driver integration tests
-        run: |
-          cargo test --locked -p roboco-harness --test pi
-          cargo test --locked -p roboco-engine --test pi_resume --test pi_steering --test pi_forks
-      - name: Engine-local storage and recovery
-        run: |
-          cargo test --locked -p roboco-sync --lib
-          cargo test --locked -p roboco-update --lib
-          # t3-orchestration-v2 ticket 23: the Roboco MCP tool tests (the
-          # fork_chat seam). The crate's unit tests were previously not run
-          # by any workflow.
-          cargo test --locked -p roboco-mcp
-          cargo test --locked -p roboco-engine --lib --test account_failover --test account_sign_in_state --test agent_origin --test codex_subagents --test completion_notices --test continue_on_harness --test engine_local --test harness_switch --test limited_chats --test local_profiles --test project_action_commands --test project_actions_remote --test project_actions_rpc --test remote_settings --test restart_resume --test resume_at_reset --test side_chats --test rooms
-
+          rust-cache: linux-core
+          save-rust-cache: 'true'
+      - name: Harness, engine, sync, update, MCP, preview, doc and Android tooling tests
+        run: bash scripts/ci/test-core.sh
 
   # Mobile Rust core (spec D1, android-app#02): the crates the Android app's
-  # Kotlin painter leans on. Pure Rust, no GPUI system deps.
+  # Kotlin painter leans on, plus engine-client. Pure Rust, no GPUI system deps.
   mobile-core:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/linux-ci
         with:
-          shared-key: linux-mobile
-          add-job-id-key: 'false'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: 'true'
+          rust-cache: linux-mobile
+          save-rust-cache: 'true'
       # android-next#02: the Tailcat end-to-end test (mobile-client
       # tests/tailcat_engine.rs) loads the real host libroboco_tailcat, runs
       # the desktop adapter as the engine's server and a local DERP+STUN.
@@ -114,75 +112,44 @@ jobs:
             echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
             echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
           } >> "$GITHUB_ENV"
-      - name: Mobile core tests
+      - name: Mobile core and engine client tests
         # android-next#02: tailcat's own diagnostics (test-only sink) from the
         # host library and the engine's adapter go to stderr for the
-        # Tailcat end-to-end test; nothing else in this run logs with it.
+        # Tailcat end-to-end test; nextest shows them only for a failure.
+        # engine-client runs real engines over loopback with restart/reconnect
+        # waits: its own one-thread test group (.config/nextest.toml).
         env:
           ROBOCO_TAILCAT_TEST_LOG: '1'
-        run: cargo test --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-mobile-client
+        run: >-
+          cargo nextest run -P ci --locked --no-fail-fast
+          -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-mobile-client
+          -p roboco-engine-client
       - name: Tailcat end-to-end (verbose)
         # Already part of the run above; repeated alone with output so a
         # failure shows the adapter and tunnel logs.
         if: failure()
         env:
           ROBOCO_TAILCAT_TEST_LOG: '1'
-        run: cargo test --locked -p roboco-mobile-client --test tailcat_engine -- --nocapture
+        run: cargo nextest run -P ci --locked -p roboco-mobile-client --test tailcat_engine --no-capture
       - name: Mobile grammar subset tests
         # android-app#10: the Android core links the middle grammar set
-        # (Kotlin/Swift/C++ kept); the subset build must stay green.
-        run: cargo test --locked -p roboco-syntax --no-default-features --features mobile-languages --lib
-      - name: Engine client tests
-        # Real engines over loopback with restart/reconnect waits: serial, like
-        # the UI suite.
-        run: cargo test --locked -p roboco-engine-client -- --test-threads=1
+        # (Kotlin/Swift/C++ kept); the subset build must stay green. Its own
+        # invocation on purpose: different roboco-syntax features.
+        run: cargo nextest run -P ci --locked -p roboco-syntax --no-default-features --features mobile-languages --lib
       - name: Mobile core benches compile
-        # Compile only, never run: keeps the criterion bench from rotting
-        # without paying its runtime on every PR.
+        # Compile only, never run: keeps the criterion bench from rotting.
+        # Full tier only (main, dispatch, a `ci:full` PR).
+        if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
         run: cargo bench --locked -p roboco-text --no-run
       - name: Mobile layout bench (informational)
         # android-app#05: the layout bench numbers land in the logs for
-        # drift tracking; never gate the build on them.
+        # drift tracking; never gate the build on them. Full tier only.
+        if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
         continue-on-error: true
         run: cargo test --locked --release -p roboco-mobile -- --ignored bench_layout_passes --nocapture
 
-  # The real Android core build (android-app#10): cargo-ndk artifacts for
-  # both ABIs, UniFFI Kotlin bindings, and the 16 KB PT_LOAD check. Runs the
-  # distribution profile so the recorded sizes are the shipped ones. This
-  # job supersedes ticket 04's ad-hoc `cargo check --target …` step in
-  # mobile-core, which never linked.
-  android-core:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Install Android targets and NDK
-        run: |
-          rustup target add aarch64-linux-android x86_64-linux-android
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" >/dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
-      - name: Install cargo-ndk
-        # Pinned like android.yml/release.yml (CARGO_NDK_VERSION 4.1.2).
-        run: cargo install --locked cargo-ndk --version 4.1.2
-      # android-next#02: android-core also builds libroboco_tailcat.so.
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: adapters/roboco-tailcat/go.mod
-          cache-dependency-path: adapters/roboco-tailcat/go.sum
-      - name: Build the mobile core and generate bindings
-        run: cargo xtask android-core --profile mobile-dist --check
-      - name: Upload core sizes
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-core-sizes
-          path: target/android-core/sizes.json
-          if-no-files-found: warn
-          retention-days: 30
-
   tailcat-adapter:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -213,32 +180,58 @@ jobs:
               echo "::error::libroboco_tailcat.so does not export roboco_tailcat_${symbol}"; exit 1; }
           done
 
+  # One dev-profile build for the GPUI lib tests and the roboco CLI tests
+  # (it was two thin-LTO --release builds). roboco-ui runs in a one-thread
+  # test group (.config/nextest.toml) — the old --test-threads=1 — while the
+  # CLI tests run beside it.
   ui-tests:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    # Two release builds of the GPUI app (the lib tests, then the roboco
-    # binary for the pairing CLIs) on a warm cache took 27-30 min after
-    # agent previews; 30 cancelled green runs mid cache-save.
+    # Cold (no main-seeded linux-ui entry) the dev build is the long pole;
+    # lower once ten warm runs are measured.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: GPUI system dependencies
-        run: |
-          # Only Ubuntu packages are needed; unrelated runner repositories can be out of sync.
-          sudo apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/ubuntu.sources" -o Dir::Etc::sourceparts="-"
-          sudo apt-get install -y -qq \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libx11-dev libxcb1-dev libx11-xcb-dev \
-            libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake
-      - name: Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/linux-ci
         with:
-          shared-key: linux-ui
-          add-job-id-key: 'false'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: 'true'
-      - name: UI and headless layout regressions
-        run: cargo test --release --locked -p roboco-ui --lib -- --test-threads=1
-      - name: One-command engine pairing regressions
-        run: cargo test --release --locked -p roboco --test pairing_cli --test tailcat_invite_cli --test room_cli
+          rust-cache: linux-ui
+          save-rust-cache: 'true'
+          apt-packages: >-
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+            libx11-dev libxcb1-dev libx11-xcb-dev
+            libfontconfig1-dev libfreetype-dev libasound2-dev
+            libvulkan-dev pkg-config cmake
+      - name: UI, headless layout and engine pairing CLI regressions
+        run: >-
+          cargo nextest run -P ci --locked --no-fail-fast
+          -p roboco-ui --lib
+          -p roboco --test pairing_cli --test tailcat_invite_cli --test room_cli
+
+  # The safety net for the dev-profile switch: the core and UI suites in the
+  # optimized profile (thin LTO off, as windows.yml does), once a day on main
+  # and on demand. Never saves a cache, so it cannot evict the main-seeded
+  # entries PRs depend on.
+  release-backstop:
+    if: github.event_name == 'schedule' || inputs.release_backstop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-ci
+        with:
+          rust-cache: linux-release-backstop
+          apt-packages: >-
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+            libx11-dev libxcb1-dev libx11-xcb-dev
+            libfontconfig1-dev libfreetype-dev libasound2-dev
+            libvulkan-dev pkg-config cmake
+      - name: Core tests (release)
+        run: bash scripts/ci/test-core.sh --release
+      - name: UI and CLI tests (release)
+        if: ${{ !cancelled() }}
+        run: >-
+          cargo nextest run -P ci --locked --no-fail-fast --release
+          -p roboco-ui --lib
+          -p roboco --test pairing_cli --test tailcat_invite_cli --test room_cli
