@@ -1,0 +1,577 @@
+upstream_sha	date	pr	subject	status	audit	note
+fd42e2ab33c177fc9ff3bfd1668d47e569b93ea7	2026-08-14	#90	ui: add local reorderable pinned sessions	ported ef3df4523	PORTED p00	
+1db00587d2d2d7b6fc9165bc0282a3ce8f17cabe	2026-08-14	#90	ui: constrain pinned session dragging	ported df122492d	PORTED p00	
+3cad1c254aba2b72288b35e1ae5819563c95aa28	2026-08-15	#90	Preserve sidebar pins across workspace profiles	ported dca52e3bc	PORTED p00	
+802358d9110c503eefa91337a3f00e5b4b96dadb	2026-08-18	#158	feat(actions): add project action models and host-local storage	ported f2f23252c	PORTED p00	
+e314de5055013ebf77c9d6e03c79730c2e9ebceb	2026-08-18	#158	feat(actions): expose device-routed action management	ported 85fafbf77	PORTED p00	
+ad95d98b8a1aa841af90fc9e813a28a8e38617e4	2026-08-18	#158	feat(actions): launch actions in managed terminal sessions	ported 72b8eb487	PORTED p00	
+288d026f89e77a9edfdb96ecd15e6a83b5341076	2026-08-18	#158	feat(ui): add the project actions control and editor	ported 0866174bd	PORTED p00	
+c679de97f7a067073ce164e07c09ae3bdaa20c09	2026-08-18	#158	feat(actions): run setup actions for new worktrees	ported dc22718bf	PORTED p00	
+578df14ba46419fc8a293167117baf9ebe1b8f71	2026-08-18	#158	test(actions): harden remote execution and version skew	ported 5201e6d0b	PORTED p00	
+2d283080184eb6e97a7b0cf3868b5871b54d9ba2	2026-08-18	#158	fix(actions): open action terminals in bottom drawer	ported ce33b4bd8	PORTED p00	
+b148401586935d1e31b61408d2d15915afcaae7f	2026-08-18	#158	fix(actions): compact control based on titlebar space	ported 914765cae	PORTED p00	
+052b4b9afa05e51b30fc2d70b08dc28a153cd90e	2026-08-18	#158	fix(actions): align control to titlebar right	ported 83c341b6e	PORTED p00	
+669d45bdeefedb324fa7348157d5e59a1680df6f	2026-08-18	#158	style(actions): reduce titlebar control size	ported 69831efd0	PORTED p00	
+f4365134d3aebc16e675e26dd53a11ed755311eb	2026-08-18	#158	fix(actions): keep unavailable controls retryable	ported 2ae2a0d88	PORTED p00	
+a8aa4967e14262721a8ae4071baae1ab4e09b2b3	2026-08-18	#158	fix(actions): ignore stale mutation responses	ported 396d5ef39	PORTED p00	
+751a210b6c7c3ef9b8ade98ed2f5f04ada0da4d1	2026-09-07	#90	Add synchronized sidebar preferences to registry	superseded	SUPERSEDED p00	Roboco c548e7bf0: engine-local SidebarStateSnapshot + SetSidebarPins/WatchSidebarState (crates/proto/src/enti…
+ed04b43a9d4ed6ed7862df7cc44cd212523abed5	2026-09-07	#90	Sync pinned sidebar sessions across desktops	superseded	SUPERSEDED p00	as 751a210b (Roboco c548e7bf0)
+dfb72cb29681df821c564aba5570b3239c1d108d	2026-09-07	#90	Add synchronized pinned sessions on iOS	superseded	SUPERSEDED p00	Android has a Pinned section on engine-local pins: WATCH_SIDEBAR_STATE crates/mobile-client/src/engines/mod.r…
+d432925751670a109a68575bb2bd8546e7a54423	2026-09-07	#90	Add cross-device pin synchronization coverage	superseded	SUPERSEDED p00	Roboco's own sidebar_state.rs tests (crates/engine/src/sidebar_state.rs:490)
+a2e1cb806963f7bca23131a5c2a8077be936bd26	2026-09-12		refactor(files): separate explorer rendering from editor layout	ported 3fe0ee66e	PORTED p00	
+07aaa4185e4aaf7b2104750f7628310685ff125c	2026-09-12		feat(shell): add an independent right files panel	ported 9f68aba86	PORTED p00	
+5fed757ca7bb2ceabcf6a135c047e379ee725540	2026-09-12		fix(layout): coordinate files panel resizing and expanded mode	ported ee3a71523	PORTED p00	
+e39a75c202024fcafa23290f2f4165f846f38673	2026-09-12		feat(files): synchronize explorer selection with file tabs	ported 25c078d45	PORTED p00	
+be87e9c2eb062d8722540325b67c6b92ac3d163c	2026-09-12		fix(files): match sidebar frost and blur floating explorer	superseded	SUPERSEDED p00	upstream 9033ff4eb dropped the floating explorer; Roboco 8f4b173a7 then 5605606d2 the same way
+a4f6dca5a5699a985fbd22ebae72600c8f5612ad	2026-09-12		fix(layout): align surface tabs with the panel beside Files	ported 20719bf30	PORTED p00	
+dad1c86d95715da08d4059fab8e4235d8c250395	2026-09-12		fix(shell): keep the surface picker clear of the Files overlay	superseded	SUPERSEDED p00	Roboco 0c10e48d0 ported it; upstream 9033ff4eb then removed the overlay (files_overlay_width gone in both ups…
+9033ff4eb3b6f70228e28ff1b07e6d29e580f91b	2026-09-12		fix(layout): keep the explorer and editor in separate columns	ported 5605606d2	PORTED p00	
+86c27d7942c53f80807285e3cc4553dd464cbb37	2026-09-12		fix(ui): draw the Files sidebar divider only once	ported d9f7183a3	PORTED p00	
+2012bf29d481853d56d4786323332706582483e6	2026-09-12		fix(ui): remove Files from the central surface menus	ported 1f2467795	PORTED p00	
+5166d41992773e856d6e93a1cd6e9dbd3d959ba9	2026-09-12		test(browser): keep blur sampling inside compact menu	ported 994a2825d	PORTED p00	
+e41f3acdebb1218e86f30824d0bb41ed639394be	2026-09-13	#158	Fix project action command delivery and menu scrolling	ported 2e6e06318	PORTED p00	
+f53a33be9188bcf32019ac95116d419f8ab2ec97	2026-09-13		fix(files): reveal directories activated from search	ported 071133092	PORTED p00	
+3ebe2d8a8b0af5e9e1ca22e7965ccc6fd5953a6a	2026-09-13		fix(ui): match Files background and scroll Markdown padding	ported 7466d986f	PORTED p00	
+af279d54191424996b3b336744b0b1974dcd80b4	2026-09-14	#366	Add Zeroning easter egg to the working indicator (#366)	ported	PORTED p00	in code (audit); no port commit cites it
+6d39f8c6a8f3c62a332f2abbafe989177da289e9	2026-09-14	#368	Fix appshot thumbnails bypassing transcript edge fades (#368)	ported	PORTED p00	in code (audit); no port commit cites it
+9601a244078e85b139f21cd1228f867beaaf29ca	2026-09-15	#367	feat: render generated images in conversation threads (#367)	ticketed wave10-27	PARTIAL p00	Roboco db407106e: "decode_generated_image … NOT ported — out of scope". No user decision recorded. iOS/edge s…
+d353ebbfa2728bbdde16bde54e50b962c525a3d0	2026-09-15	#362	Fix text selection in code blocks (#362)	ported e8a008296	PORTED p00	
+e74f275e69b8a274d76d7a4db8086f3916845160	2026-09-15	#364	feat(ui): floating menu scrollbars, Linux CSD window chrome, and stacked error notices (#364)	ported 3edfe53b2	PORTED p00	
+e4702fa68cacdc378c31a1b61bb9ff79403d66bc	2026-09-15	#350	Support projectless sessions on iOS (#350)	ported	PORTED p00	in code (audit); no port commit cites it
+79b27ed68aee4c6ccd65e3c38c7db395311c97c1	2026-09-16	#374	Choose the terminal and code/diff fonts independently (#374)	ported dd823f11c	PORTED p00	
+d8ce7b6ebbf727f066af4e5c0801e79142488acb	2026-09-15	#378	Fix Codex account login binary resolution (#378)	ported bd3e65bdd	PORTED p00	
+67c960f4ddf3858c4a33f13701f91ff0e4050f9a	2026-09-16	#376	fix(opencode): harden 1.18 session create + speak the 2.x wire (#376)	ported c132bc596	PORTED p00	
+bc7aa5494983120b5d7d92a1bd9a847ae5a69687	2026-09-15	#313	Harden Windows batch arguments and keep unsupported in-app blur opaque	ported 00aeaa8d2	PORTED p00	
+2966c16e65f4012b63ec8af8f2ff6f2f3bd4b626	2026-09-15	#313	Require secure update feeds and patch Rustls handshake validation	ported 0d68e39de	PORTED p00	
+68ed902ed5d8db29cfd0aba87caeacbc1cece199	2026-09-15	#313	Fail closed on unresolved Windows shells and exercise login and startup in CI	ticketed ci-speed-03	PARTIAL p00	code ported (5a1897b20); the Windows CI hunks are ci-speed 03
+f247ed91d9529d161b711ff4f720c35f6d03d43f	2026-09-15	#313	Cover Unicode batch paths and reject path expansion syntax	ported bdd22dbb3	PORTED p00	
+a65ae8cb9b2fffb32e68d3fae61749372384c5dc	2026-09-15	#313	Run native process security tests before the full Windows build	ported 065da1c35	PORTED p00	
+25f5616034875608b0c05a8b8dc85d784f3dac8e	2026-09-15	#313	Exercise the Windows portable packaging script in PR validation	ported a06315e60	PORTED p00	
+94cc675362b1ee8948d51e3afda731235d47fc12	2026-09-15	#444	test(sync): reproduce stalled socket recovery failures	ported dae6cccff	PORTED p00	
+0c8663739309b05c1c2a998437feab85d5310db2	2026-09-15	#313	Capture and validate the Windows GUI executable version explicitly	ported 9d6669f68	PORTED p00	
+01bcb8ee4cbe5323d3dc1329f49830754a2aa6a9	2026-09-15	#313	Wait for browser menu dismissal in native tests and cover packaging changes	ported 037d6cc39	PORTED p00	
+a3c370b58915a2aa5000497e24a1b9a59428676f	2026-09-15	#444	fix(transport): recover from stalled sockets with bounded session pumps	ported dae6cccff	PORTED p00	
+62a429ecf506a7add3f5542ac3a6b8bf68e63c2b	2026-09-15	#313	Pin Windows generated-image paths and deny mutations during import	ported 14da55c80	PORTED p00	
+67f08ace2530e1c39be69a7b678bffe9a576d79b	2026-09-15	#313	Use shared read access for Windows directory pinning	ported 22c31247a	PORTED p00	
+efa1a0752bffdd751d0b2e8ff8838e3544db3509	2026-09-15	#444	Reduce redundant sync traffic and keep slow transfers progressing	ported dae6cccff	PORTED p00	
+3f19c19eb72c2bfa86596db74fed097007d926e1	2026-09-15	#313	Run Windows font geometry against DirectWrite and isolate native test setup	ported 3afadcce9	PORTED p00	
+0cc2f0778d136d8477c6ef265baba928eb4cd896	2026-09-15	#313	Keep animation wakeups on the deterministic scheduler in UI tests	ported e44a296be	PORTED p00	
+6eae0242d048b379014c435df10d17945c65eb3d	2026-09-15	#390	Update ZUI to audited Windows backdrop renderer	ported 73dd97951	PORTED p00	
+7f0cd133682dbaf5b524002e89360a974f260f4f	2026-09-16	#390	Align gpui-base pin to keep one GPUI dependency identity	superseded	SUPERSEDED p00	Roboco's [patch."https://github.com/zeronsh/zui"] redirect keeps one GPUI identity (Roboco 73dd97951 explains…
+6a51747e7799ad3b5e3aa00b8bd71d739c263606	2026-09-16	#391	Enable Windows in-app frost with the audited Direct3D renderer	ported bf4364bc9	PORTED p00	
+25eae40acd67a635ffa8d2a029ae1306d4afff5b	2026-09-16	#391	Document Windows floating-surface frost support	ported bf4364bc9	PORTED p00	
+0d19bedcb797e34b360227cdd6ebe8109ea2a5c6	2026-09-16	#392	Offer OS-aware desktop downloads with explicit platform choices	skipped:landing	SKIP:landing p00	
+3173649e2c953ecaa7b53fa36f1bad45de183e0a	2026-09-16	#394	Release v0.2.66	skipped:version-bump	SKIP:version-bump p00	
+4d741cfc17c51672f9ab35c78d528934d89131ec	2026-09-16	#396	Restyle the landing download section to match the page	skipped:landing	SKIP:landing p00	
+7f04c898f350132dcb3a7fe5023427890e5f148a	2026-09-16	#397	Lay the landing downloads out as desktop and mobile rows	skipped:landing	SKIP:landing p00	
+f541ff0e8fe7f81605a1af17cd8e8b685ca636de	2026-09-16		Refine Files panel toggle with a custom tree icon	ported 2cc983139	PORTED p00	
+97b31a8f65990d18d6ffceed4c90cbbeb0f9ecfd	2026-09-16		Move Files search into the panel titlebar	ported 0afbd424c	PORTED p00	
+7904e8a7a82460c57f0642e4f8f5815f4cc426b2	2026-09-15	#400	Restore device names in the sidebar project selector (#400)	superseded	SUPERSEDED p00	upstream 672cc1444 (2026-10-10, "the tag is gone from the dropdown and the sidebar filter") removed the tag a…
+1400f7ab998ccac24d7a338ebe9a7e42c7a0295d	2026-09-15	#399	Add Cmd+K palette for actions and chat history (#399)	ported d9dfb0bc8	PORTED p00	
+b73c12f9af43efad9f2f6332f6acfdfeb6ed2ff2	2026-09-16	#401	Release v0.2.67	skipped:version-bump	SKIP:version-bump p00	
+74558a2ca724304e942357f3228aefb0f173a44d	2026-09-16	#402	Add command palette scroll padding and action shortcuts (#402)	ported 62d4dff9c	PORTED p00	
+48950003ba403820e0d9f34c933bcb96ab20ae2f	2026-09-16	#403	Unify popup glass surfaces and redesign New project navigation (#403)	ported cc7fb1ba0	PORTED p01	
+dd0d7c3a7c8be839c95dd16214c43664d7d4b9f1	2026-09-16	#404	Release v0.2.68	skipped:version-bump	SKIP:version-bump p01	
+bb4c13c259e6d3d7482eb128c81928f83867781e	2026-09-16		Refine Files tree icon geometry	ported 31cafb675	PORTED p01	
+9a4757be041468fba325836e188733c1ac84bdcc	2026-09-16	#405	Improve glass popup text and nest model picker options (#405)	ported 3d977bb82	PORTED p01	
+601ceb058e9517c6f16909479f71361e895fad21	2026-09-16	#409	Release v0.2.69	skipped:version-bump	SKIP:version-bump p01	
+76dc6a4657ceb79941721e2d057cc3de2534c5c8	2026-09-16	#410	Fix nested model menu toggle and parent clicks (#410)	ported 357d43ce0	PORTED p01	
+ff6beb367a41659e85abd9269c486f304b308759	2026-09-16	#411	Release v0.2.70	skipped:version-bump	SKIP:version-bump p01	
+e0c1e93617a362c5ef30957ae57e408b4907c8ce	2026-09-16	#413	Refine composer layout, transitions, and glass popup text (#413)	ported 9b5a70b62	PORTED p01	
+801b1ef1800ff0fae92f287bf13eb39c8efa574e	2026-09-16	#416	Release v0.2.71	skipped:version-bump	SKIP:version-bump p01	
+12b0328753c83a338f728001b2511dd7a48d3316	2026-09-16	#419	Refine glass dialogs, scroll buttons, and submenu hover dismissal (#419)	ported 694143b45	PORTED p01	
+55b95b1ca88ddcf220bb39f64c18d3d54d3e7b52	2026-09-16	#420	Release v0.2.72	skipped:version-bump	SKIP:version-bump p01	
+62c52329199227a75ea8e5e19bb5704cb67cafaf	2026-09-16	#90	Fix command palette session row arguments	ported d9dfb0bc8	PORTED p01	
+e42a7b61b6e11d8a56901515e264524b1bf4cd1e	2026-09-16		Add Devin and OpenCode to landing page agent lineup	skipped:landing	SKIP:landing p01	
+92e80c855beb698a879aaa6ae39621b8a8ce2b41	2026-09-16		Restore uncluttered six-agent landing diagram	skipped:landing	SKIP:landing p01	
+8ee7a6222827f9becac84a7e8900c39c56237d2b	2026-09-17	#412	Stop Enter from interrupting a live run (#412)	ported b1a2819a1	PORTED p01	
+c4d63fa8cdc9784bd92a906cd2d4a2409cf0cd24	2026-09-17		Add theme-aware indentation guides to file trees	ported 92cfa7cf8	PORTED p01	
+cc754b46acd1f7f70efee9ecda3a87333deb8e34	2026-09-17		Make file tree titlebar search adapt to narrow panels	superseded	SUPERSEDED p01	Ported as Roboco 1ac88d013, then replaced by upstream 7083e180 ("explorer secondary header"), ported as Roboc…
+6a476117c03659111ebd47e28f9c2f686f063819	2026-09-17	#434	test(ui): reproduce activity replay after batched transcript catch-up	ported d63ee9789	PORTED p01	
+b25dd404c2176092b330770985837cb98e828b89	2026-09-17		Color file tree entries with shared remote-safe Git status	ported c4113076d	PORTED p01	
+787f583117ea772e7484ade808e36a2c4d8e6ba0	2026-09-17	#349	feat: add Antigravity ACP, improve context UI, and persist window geometry (#349)	ported cf2ad5f8e	PORTED p01	
+be01ed7a605237427a8a08b93f20a86984b8ac85	2026-09-17	#434	fix(transcript): skip replay animations for historical activity	ported 8a4f5bfd9	PORTED p01	
+faac7432fa54927df974ecf6b159667a9a053d73	2026-09-17	#433	Add configurable shortcut to open model picker (#433)	ported fb905b234	PORTED p01	
+853872d3660047b28e81f80df7744a7f6f3b4beb	2026-09-17	#352	Fix token refresh storms and preserve sessions during transient DNS failures (#352)	ported 76d2fe2a3	PORTED p01	
+55c8d9dfc78867b0449d197e9227441fdd63c536	2026-09-17	#434	fix(transcript): track replay incrementally and preserve live animations	ported f5fcb1438	PORTED p01	
+b4dd24d7346a50fe73658d06e4d75ddb9a61c50e	2026-09-17	#407	Polish command palette and add quick theme action (#407)	ported 50052a47d	PORTED p01	
+cbf2ad844ffafad5a0f96fd2730778033f4299bb	2026-09-17	#434	feat(ui): add configurable conversation width in appearance settings	ported 2e7ea2e56	PORTED p01	
+75ba2764f7b4875f02b726919a6b2e60ab934993	2026-09-17	#434	fix(transcript): retain opening history across replay updates	ported 354b59eb6	PORTED p01	
+01b705fe1be5226ead54de7ff98918c8c7c3c409	2026-09-18	#415	Fade overflowing sidebar labels (#415)	ported 02c240172	PORTED p01	
+14c397494f4fc0dd405d7e46130097b2667e74bf	2026-09-17	#435	Release v0.2.73	skipped:version-bump	SKIP:version-bump p01	
+d840f2803675ffab6cd785d0c15a329d562f7f59	2026-09-17	#436	Fix truncated Cursor catalogs and refresh harness models (#436)	ported ccbf46107	PORTED p01	
+38a8f013cd739c06c4d9883804b8d57fde56a960	2026-09-17	#90	Add collapsible pinned sidebar section with animated divider	ported 2e98ba836	PORTED p01	
+b84c6d0666f1c6ae428a59990e7d75de907d1007	2026-09-17	#437	chore: release v0.2.74	skipped:version-bump	SKIP:version-bump p01	
+9abe0167e33f04a2ce7666678bdf356726faf4d3	2026-09-17	#438	Fix keyboard focus when opening the model selector (#438)	ported 22608d36d	PORTED p01	
+fb3da2333254492b1e8c1ac8aa00620c5460e9b5	2026-09-18	#439	chore: release v0.2.75	skipped:version-bump	SKIP:version-bump p01	
+6851fc34bca2bd9c9271eaa508e525c21d5db662	2026-09-17	#90	Add animated drag transfers between pinned and regular sessions	ported 1af2ea135	PORTED p01	
+0f1526478b92ef4c3ef8adf1490d8a4468fff181	2026-09-17	#90	Remove sidebar section drag highlights	ported 7c5ee070a	PORTED p01	
+adc290e363e4d1c806fbe316815e1075a9d123c0	2026-09-17	#90	Simplify pinned and archived section headers	ported 42aff0be6	PORTED p01	
+7c7b574bb667078c8366f8529e79017a28e86b5a	2026-09-17	#90	Right-align pinned and archived disclosure chevrons	ported 55bb4a4cf	PORTED p01	
+da041aab2b3f2df55b056afb7a578d527d73b916	2026-09-17	#90	Reduce spacing above archived sessions	ported e9a433d88	PORTED p01	
+c87daf2448a70ff97080ddff5fba5fcf4a13526e	2026-09-18	#440	fix(cursor): recover abandoned runs and stabilize model discovery	ticketed wave10-75	PORTED p01	audit PORTED (1f10d3841); residual slice named in the ticket
+7f73ad790f1e0dc4b5ee9a4966658fc082b2a1cf	2026-09-17	#441	fix(ui): align elapsed timer with working indicator text	ported e652112cc	PORTED p01	
+998b51446d3869c9bfbe2007898ed6b0e8dd9643	2026-09-17	#441	fix(ui): format elapsed time in hours and days	ported e652112cc	PORTED p01	
+15a31cf7a82eb29c92fc68d734617b2c3a908708	2026-09-18	#440	test(cursor): stress steering bursts and prioritize cancellation	ported 45c665cd8	PORTED p01	
+53da54171d58297e28392723a72a6fbb7189737e	2026-09-18	#442	chore: release v0.2.76	skipped:version-bump	SKIP:version-bump p01	
+75850fad114dbef4063258dccd52f8dccddeef06	2026-09-18	#443	Fix blank session revisits and transcript attachment race	ported e1b321b4d	PORTED p01	
+776adb6feeb8875b86dd9ad857ad630ba2c309ae	2026-09-18	#443	Show a bounded local transcript tail before rebuilding whale history	ported 657ab6718	PORTED p01	
+57a3a7c1cb7c378bf0eb8f0b9abb303c3bcebd6e	2026-09-18	#443	Verify opening previews and cached revisits never replay tool animations	ported f1d6f293e	PORTED p01	
+a67871f8295f870dc46efe23dcc7163837151f14	2026-09-18	#444	Prevent whale replay from starving desktop networking	ported 6bde29f3d	PORTED p01	
+ded8dbd6f1845a1d91b19cc8eec23094940da9cd	2026-09-18	#445	Prepare whale transcript presentation off the UI thread	ported 503b6bc6f	PORTED p01	
+10c9d3e284c23f5ae4a8e01e4a8e7f4b4b488e52	2026-09-18		chore: release v0.2.77	skipped:version-bump	SKIP:version-bump p01	
+acfd17186fbebe5bc2038911aab092d0a3b4ad50	2026-09-17	#90	Prevent replaying sidebar movement after successful drops	ported	PORTED p01	in code (audit); no port commit cites it
+bf14eca44213274c1f35e446ac26c1a6c30225cc	2026-09-18	#90	Reconcile sidebar pins against authoritative registry snapshots	skipped:cloud	SKIP:cloud p01	Roboco keeps pins in UI-local UiSettings per profile (dca52e3bc, d6785eec8). It…
+647cfbf2c7ce9d9bcc71d16a090a8bad48bbc827	2026-09-18	#90	Validate sidebar pin changes consistently before accepting drops	ported d6785eec8	PORTED p01	
+4f8df8480943defcc8e127dd1b2f846b4c182a03	2026-09-18	#90	Serialize optimistic pin writes and reconcile acknowledged state	ported d6785eec8	PORTED p01	
+8f2488cc7cf1a26cac50eb9c3ad7d6835f9f1e88	2026-09-18	#90	Exercise pin write transport and migration persistence failures	skipped:cloud	SKIP:cloud p01	
+dfd02cd7accab100aa86038cf038970496953a43	2026-09-18	#90	Clear pin write notices after successful recovery	ported	PORTED p01	in code (audit); no port commit cites it
+68306a172f74c87eef1772a756df1ef33ff45e74	2026-09-18	#90	Sync sidebar pins with per-item ordering keys	ported d6785eec8	PORTED p01	
+23bc81834d4762dcf40600cabe9682f92ecc7124	2026-09-18	#454	fix(cursor): preserve SDK failure diagnostics and update to 1.0.31	ported 66670c1cb	PORTED p01	
+0682bd632483b98be40039296f8dc8be8f68d090	2026-09-18	#454	test(cursor): verify token refresh against aged live SDK sessions	ported 0b5fe8c86	PORTED p01	
+1d00f2960615205a05c10d2e8f44dcfe4064a3dc	2026-09-18	#454	ci(cursor): automate SDK updates and gate releases on auth compatibility	ticketed wave10-76	PARTIAL p01	Left out by the wave-3 spec policy (.scratch/upstream-ports-2026-10-wave3/spec.md:113, "Upstream CI workflows…
+65b5c586e6877603c8b0e1ee1170f1abc0f123f9	2026-09-18	#454	Preserve Cursor user context through steering and startup interruption	ported 3dbcb011f	PORTED p01	
+1e0c783e5d705095db27acd136dfa7c06ab75249	2026-09-18		chore: release v0.2.78	skipped:version-bump	SKIP:version-bump p01	
+78e9e6ae104308354dcfe83d4c641f0e9958acc6	2026-09-18	#455	feat(ui): add configurable compact sidebar and project icons	ported db407106e	PORTED p01	
+deaf2c4ef07012fc179bbc4e3c9dd9af26648472	2026-09-18	#455	Refine sidebar accordions and compact row layout	ported 8347f9592	PORTED p01	
+e6e69fbbbb72dd2718af99386df1a26abc1511a3	2026-09-18	#455	Reorder sidebar icons and use terminal remote icon	ported 52f020b04	PORTED p01	
+dfd2fc0cc09b0c6048ada694eb8afdd74cfd0d68	2026-09-18	#455	Render archived sessions with shared sidebar data and layout	ported 100084232	PORTED p01	
+6772044a00d47811065d0dcfa6e01c017ddccd78	2026-09-18	#455	Let sidebar titles use empty action space	ported 6407e4eca	PORTED p01	
+1ec74e405e076e9421ba75ab5d8502bdac316a9e	2026-09-18	#455	Use frosted project monograms and refine sidebar action icons	ported 6407e4eca	PORTED p01	
+82cdfe9044ada871183a1699072cac3055a647f2	2026-09-18	#455	Refine project badge colors and open sidebar options to the right	ported d3928d016	PORTED p01	
+94dbfc6dac19d42f536e818606e14778bd06e669	2026-09-14	#456	Add compact transcript mode: one collapsed work accordion per turn	ported af57d9850	PORTED p01	
+2f40dfad410592789feb61da93e35c476a62fb69	2026-09-18	#455	Select project monograms from a fixed curated palette	ported 35b1eb08f	PORTED p01	
+4f9a5fd52d1006b455e434a2c0ae54a7de969e15	2026-09-18	#455	Use Earth icon for remote sessions	ported 96beaa935	PORTED p01	
+831edf8a6a0ff63982f762e7c2a54cb75aa583f5	2026-09-18	#158	fix(actions): bound project file reads and reject special files	ported 505ce8b91	PORTED p01	
+ffaa3102b225d44348ddffbd85f950b860e06f54	2026-09-18	#455	Discover monorepo project icons and default to compact sidebar	ported 96beaa935	PORTED p01	
+b0f25de539e362e7f8d51a7793464a1dfcd6aed2	2026-09-18	#455	Rename sidebar location option and update globe artwork	ported a046d8306	PORTED p02	
+f562f5d2bd2c535577c1aefe27b3042e4841e4a1	2026-09-18	#158	fix(actions): preserve project identity for queued worktree setup	ported c22db05e5	PORTED p02	
+b58af6279a4951748120735db21f2e45d92c25fc	2026-09-18	#455	Improve monogram hover contrast and show project tooltips	ported 0d45ad20f	PORTED p02	
+ec2b3230251d3dcd80bc06b088b81559183dc2a6	2026-09-18	#456	Show compact-mode "Worked for Xm Ys" after the turn settles	ported 5d387db50	PORTED p02	
+378a1945fe53465a4ad0228eb55ad88787847ef8	2026-09-18	#455	Simplify project icons, add device tooltip, and split compact mode	ported ea6fbf926	PORTED p02	
+4dba1c8b71c885e291ab60ebd238c7bd1c925776	2026-09-18	#455	Match archived "Show more" height to compact rows	ported 673d20f05	PORTED p02	
+6518adf6a07fb5efdc8212f1d90921a1c464655a	2026-09-18	#456	Persist compact-mode turn duration and replace the work summary	ported 3fc7f892b	PORTED p02	
+d9d7deea038bad04278dd86539f48a1216b44836	2026-09-18	#456	Drop guessed compact durations and the turn-duration sidecar	ported 3fc7f892b	PORTED p02	
+63f3945e1f30c2c776a4e020db12963585bbeb08	2026-09-19		chore: release v0.2.79	skipped:version-bump	SKIP:version-bump p02	
+e56680ca7f8ecebeb1dc4efb416c871bd5b8ea7d	2026-09-19	#464	Remove Cursor SDK diagnostics from device settings	ported 1b14b3227	PORTED p02	
+e7ab4b9b57207b47b7512c4ccdb294ab0686a38c	2026-09-19	#456	Expand compact "Worked for" into the normal transcript layout	ported 02f31505a	PORTED p02	
+1de3b4bae2e74b32c78e28fda3497cd194e85855	2026-09-19		Make the explorer a docked portion of one right pane	ticketed wave10-75	PARTIAL p02	Linux floating CSD windows only; see candidates
+fe45a1cd6e6c9ed395b32b688c42eff4503e59ab	2026-09-19		Let the pane toggle drive only the surface host	ported 41854e2e1	PORTED p02	
+c4d5f98eac652ceacaf85823083c762914c6bff2	2026-09-19	#472	chore: ignore agents.md	ported 606c935cc	PORTED p02	
+c86d9345f0754decce3aa5caa95fc6d5ef4a51ba	2026-09-19	#472	chore: ignore .agents directory	ported 606c935cc	PORTED p02	
+6ecea055877e1f560adbc4545b8d8fd7dffa6d75	2026-09-19	#468	ios: fix transcript follow, normalize model catalogs, desktop networking parity (#468)	superseded	SUPERSEDED p02	apps/ios only; every touched Swift file (ChatRoomClient, DocDisk, SessionStore, NativeTranscriptTable, Harnes…
+7083e1800484badacc7fdd217e51a42c787d438e	2026-09-20		Give the explorer a secondary header for search and visibility	ported c03d9d1cb	PORTED p02	
+f9563394f2211efdc4dcccba5163db296eafc481	2026-09-20	#465	Compact sidebar account control and nest view options (#465)	ported 1be111de2	PORTED p02	
+86249cf044fb7d459e930c7ac70793d79b170311	2026-09-20	#486	Add custom sidebar sections with session drag and drop (#486)	ported 75ae96cd6	PORTED p02	
+850238fe94dfe67e7985cb965220c103cb82698a	2026-09-21		chore: release v0.2.80	skipped:version-bump	SKIP:version-bump p02	
+94268229fa721cf875d73dc2705a378468b2ada3	2026-09-20	#487	Sync sidebar sections across devices (#487)	superseded	SUPERSEDED p02	Roboco re-homed sections+pins engine-side: c548e7bf0 crates/engine/src/sidebar_state.rs (SetSidebarSections/W…
+7f1db6b148827b1f0c7e06796e8350079dea3639	2026-09-21		chore: release v0.2.81	skipped:version-bump	SKIP:version-bump p02	
+92153025b5e90372dfea9296fc4fab850fd83286	2026-09-21	#488	Add zeron mcp server with parent-linked chats	ported 20fbbab5c	PORTED p02	
+b9b3566500ebfa36d37ca3bc4a036c707101814c	2026-09-21	#488	Add Mod+E files-panel shortcut and space the pane toggles	ported 803fbc440	PORTED p02	
+0609238136c0ae5ff948aa8cf7a176a44229c632	2026-09-21	#488	Drop the doubled hairline over the explorer seam	ported c0a5cfbb5	PORTED p02	
+a1f3fd1a2f83a3a593cb645bee88b9608d978836	2026-09-20	#479	ios: durable outbox + send watchdog, fix transcript scroll jumps, session UX polish (#479)	superseded	SUPERSEDED p02	apps/ios only; Swift Sync/Transcript layer deleted by fe46a971a (#570)
+52af27280323091c1baae23478ed717b1086cdd9	2026-09-21	#492	Separate Antigravity detection and authentication from server availability	ported 2207836f8	PORTED p02	
+3f8f159b6942e5a29c3829e1e49a448fbecf799e	2026-09-21	#492	Make Antigravity enablement follow detection and expose explicit sign-in	ported 44fbb90b4	PORTED p02	
+95a9e4d9792ad60d9328972432ecafcca9aea29c	2026-09-21	#492	Record Antigravity validation status and disk-limited follow-ups	skipped:docs-only	SKIP:docs-only p02	
+1251321cd07d355124eba14086141015883444a8	2026-09-21	#492	fix(acp): own process groups and preserve Pi crash context	ported 63159d1aa	PORTED p02	
+29018a3e846ad54daf36735c67fa773177f624b6	2026-09-21	#492	fix(pi): preserve descendant cleanup grace and verify durable resume	ported a73fafae8	PORTED p02	
+855f8b4be4928d49d8bf6ee9a4cead67bb7333d5	2026-09-21	#492	Remove repository-local validation status report	skipped:docs-only	SKIP:docs-only p02	
+549cb3ba7fd7b7d6357392857f2dcfdc524fa2c4	2026-09-21	#492	fix(acp): reject requests after EOF and retain the latest stderr tail	ported 8c7cfab32	PORTED p02	
+0e3239d9739a1f230879b15514fe51ea3936aa4d	2026-09-21	#490	ios: bound snapshot write cadence and store residency by bytes (#490)	superseded	SUPERSEDED p02	apps/ios DocDisk/SessionStore only; deleted by fe46a971a (#570)
+fd188cfdbe85493ccbb8c12d299385e4bcb54061	2026-09-21	#492	Consume complete HTTP request headers in catalog test fixtures	ported f782db82d	PORTED p02	
+dcb62f083df72f100ff734fe4356196c2a947fca	2026-09-21	#492	Let the engine surface Antigravity launch errors uniformly	ported ef95d47eb	PORTED p02	
+c84f9b6bb3c57d979576f0f1fb6a58f7027c234f	2026-09-21	#492	Allow Antigravity cold discovery up to ninety seconds	ported 7308519c3	PORTED p02	
+7bf44ece797f76f0d92e06a8527a4b102ef3494a	2026-09-21	#492	fix(harness): detect current OpenCode server versions and auth failures	ported 137421f01	PORTED p02	
+fb01b95122410ef2d2df33e57df4cdd2fc80f387	2026-09-21	#492	fix(harness): version OpenCode commands and surface HTTP rejection	ported 8360f24d7	PORTED p02	
+50701536517252132923a3982dabd8860e2cce41	2026-09-21	#492	feat(harness): select OpenCode agents through cached model options	ported 044760e37	PORTED p02	
+11e2574a5af56824bdbf0fd9d0bd254ca196c494	2026-09-21	#492	fix(harness): normalize OpenCode status retry and tool progress events	ported d585a30a8	PORTED p02	
+03552181383d5a7ac9a27bba2e5571569e5156ed	2026-09-21	#492	docs(harness): record OpenCode compatibility and extend isolated probes	partial	PARTIAL p02	dev tooling only, low value
+f671cb59f2458b6fc8312ac7c016740a0a243f3e	2026-09-21	#492	Drop reference-integration name from ACP comments	ported e4f214ab9	PORTED p02	
+6611d3c06d3da055ababd0770ab30b51584a75f7	2026-09-21	#492	fix(harness): select newest CLI and honor configured model metadata	ported 4f14e71f4	PORTED p02	
+a7b86272b240e6b1de9ba416715ff38d1f07d931	2026-09-21	#492	fix(harness): finish portable version probes and diagnostics	ported 73f530043	PORTED p02	
+a2995663367850a4d5be4f3ecca72b7a8ff84488	2026-09-21	#492	fix(harness): retain catalogs by credential and binary context	ported b012fd082	PORTED p02	
+d8ea030f1ff69b4c0426a7d220b73ed85e30a978	2026-09-21	#492	fix(engine): persist contextual model catalogs and refresh in background	ported 0c5308294	PORTED p02	
+212a6ce8658054059d431f7f35ccf65ca405aafa	2026-09-21	#492	fix(ui): retain model rows after refresh errors and send force	ported cc81a0cc6	PORTED p02	
+9048b64491fb2ba9a020fbe6458b1ec3e3b57243	2026-09-21	#492	feat(claude): share initialize discovery for live models and commands	ported dcc9836d5	PORTED p02	
+b3ec6b7e53d50515a812f15efb8dd96247f19818	2026-09-21	#492	fix(models): classify discovery failures and reject unauthorized stale catalogs	ported d75157981	PORTED p02	
+e0b62774c5de58eaa0acd74127570d1dd36e7091	2026-09-21	#492	fix(codex): reject empty catalogs and retire discovery children	ported b91df89a9	PORTED p02	
+ad95708f0c152d76ba5dafe0ebe56352c8ebe7f7	2026-09-21	#492	fix(ui): preserve saved models absent from refreshed catalogs	ported 0ccacbb6e	PORTED p02	
+568d78935a12381a833f54ce52a9c3de3f0b8740	2026-09-21	#492	test(harness): align refresh regression with last-good catalogs	ported 312edbbb0	PORTED p02	
+4c52a970cea513493f9f5132fafc45d01ec13358	2026-09-21	#492	test(opencode): retain same-context catalogs on empty refresh	ported 8cf8bc79f	PORTED p02	
+0c834f65b41bd7ae77a8172debd48b59b396a46d	2026-09-21	#492	docs(models): record full validation and live discovery results	skipped:docs-only	SKIP:docs-only p02	
+248fe26f01a76c3f99a0e7d14c4db07c21db051b	2026-09-21	#492	fix(harness): own archive adapter temporary roots through shutdown	ported 38ac6d7ca	PORTED p02	
+8e3ab3d0d9388ef51e64217029a0f88fb3e18090	2026-09-21	#492	fix(engine): allow remote adapter catalog discovery to finish	ported 606d02307	PORTED p02	
+1e035a86eab712cdbd36959c674b869caa898002	2026-09-21	#492	fix(harness): strip echoed wakeup blocks from Antigravity streams	ported dea92cf41	PORTED p02	
+1d015586342d031dbb6172b3aad7cc88e262b29d	2026-09-21	#492	test(harness): prove cancel notifications omit request ids	ported 965339e8d	PORTED p02	
+371d79b1f6b44e0e1b28740b0bf6629a09385a67	2026-09-21	#492	test(harness): preserve large frames amid stdout noise and CRLF	ported d8fb81fb9	PORTED p02	
+2cc8ded31fe15ec3b46cdea95c1723e2833deb0a	2026-09-21	#492	test(harness): drain a full update queue before turn completion	ported 55f3f27bf	PORTED p02	
+f9233a5301b5b2940a2ea2e47475426583bf4e6a	2026-09-21	#492	test(harness): empty assistant chunks produce no segment events	ported f6a87f0de	PORTED p02	
+d1ccdb276e1e466ef5860844f71b0b9d249a4632	2026-09-21	#492	fix(harness): retain bounded startup command and mode metadata	ported d7c481aeb	PORTED p02	
+f7ef2821401ec1c819273bcb93608b82be53dfb3	2026-09-21	#492	fix(harness): reject foreign session permissions and ignore their traffic	ported cb1ace105	PORTED p02	
+62334b7250d4f26ae9da34d39c99a471d4a3b30f	2026-09-21	#492	fix(harness): redact credentials in crash diagnostics	ported c6e67bf63	PORTED p02	
+55b09da63f855bc459ef5afd9b6787ae53127114	2026-09-21	#492	fix(harness): discard prompt settlement after cancel escalation	ported 2ea912d78	PORTED p02	
+a3f367278c1dd896088f524070797f283927cc4f	2026-09-21	#492	test(harness): dropping an idle stream reaps its warm adapter	ported 5a524be21	PORTED p02	
+01bce7181c6f22f06e6431c81952797e56b2d1ee	2026-09-21	#492	fix(harness): configure Antigravity siblings and capture stdout sign-in URLs	ported 1ff59896c	PORTED p02	
+c054705e8750dc677988ba317f5e5db0429d734c	2026-09-21	#492	test(harness): exercise Pi steering without the extension	ported b363c8776	PORTED p02	
+8f98653b62959c1e303d1a643a7aea77437bad88	2026-09-21	#492	fix(harness): redact quoted and whitespace-padded credentials	ported 4753ca31e	PORTED p03	
+08376d23acc80448b6161e5dbf9ad7b076fd60ae	2026-09-21	#492	fix(harness): bound OpenCode submission and confirm ambiguous idle turns	ported 25757587c	PORTED p03	
+ceb8d8925af5f5f0966144b9941cad304c3ae34e	2026-09-21	#492	fix(harness): make scratch roots private and retain guards during cancellation	ported f40b5dda0	PORTED p03	
+76e076997312687774b700e0771185254135504a	2026-09-21	#492	style(harness): format adapter regression tests	ported cdf010d21	PORTED p03	
+6f2e04dfa3cd06545b1ac8771277cccd036034bc	2026-09-21	#492	fix(harness): ignore JSON objects that are not RPC responses	ported 141318660	PORTED p03	
+0e7070ee7ab829ef40d61f051d07a1c81c9d2130	2026-09-21	#492	test(harness): expose event status in the OpenCode HTTP fixture	ported 957f9a212	PORTED p03	
+14da3597444c1146247a24a332138ca5a49b56f1	2026-09-21	#492	refactor(harness): name the stdout observer callback type	ported 92922e493	PORTED p03	
+17d7cfb95a1011dfbbd9d6eb1678e09bd9f66f7c	2026-09-21	#492	fix(harness): require explicit Antigravity installation	ported 770944cd7	PORTED p03	
+8cecb37b777d782e79a5e1a01de6f3cee7afa089	2026-09-21	#492	feat(settings): install Antigravity explicitly on the selected device	ported 50540d353	PORTED p03	
+ba210ae521d91ff9f52b730eebb79cca63fd1da5	2026-09-21	#492	test(harness): expose Antigravity detection in the live probe	ported d1d211725	PORTED p03	
+db50cd37de6fdc8eaf2fdeffb1780cd96a4badd7	2026-09-21	#492	fix(opencode): version permission reply bodies at 2.0.4	ported e72711b48	PORTED p03	
+48c8aeeb1355b21ea444c17369c232073a3ff586	2026-09-21	#492	fix(opencode): bind both task and subagent spawn tools	ported b1d34f222	PORTED p03	
+53c7fe3e26a34ecef274cc7f98eb93f0c1461f02	2026-09-21	#492	test(opencode): allow explicit permission answers in the live probe	missing	MISSING p03	Dev-only live probe. Mostly moot since adb63378 (permissions no longer prompt), but upstream/main still carri…
+3cb03faab8c3c48aced7f96b7aaa854ba2d61767	2026-09-21	#492	test(engine): handle partial archive request headers	missing	MISSING p03	test flake fix; wave-10 routes it to the CI spec, no ci-speed ticket yet
+dc4d758667095422ea0c6d9aa1902846ad61e783	2026-09-21	#492	test(engine): require the Antigravity server for enablement	ported 5237a472f	PORTED p03	
+394f925f8a74917ec2130edbd20525cc4cc978b5	2026-09-21		Bump version to v0.2.82	skipped:version-bump	SKIP:version-bump p03	
+3c7185b4401e6b280a3d567dcc9942a4e2dbeb65	2026-09-19	#469	Add rich composer references and completion	ported 944065d93	PORTED p03	
+da2adfe842b9278aa5602c699224d3f8e215720a	2026-09-19	#469	Fix rich-reference recovery for Cursor	ported aade2ce02	PORTED p03	
+8f34f3c90a5e1992a0145b0e24a962ccd965444d	2026-09-19	#469	Validate portable rich invocation delivery	ported aade2ce02	PORTED p03	
+ea253ebbd2a560dc9ceda50b3ac25b43197a14d4	2026-09-19	#469	Preserve OpenCode command intent through delivery	ported 8c8357905	PORTED p03	
+7a009a8f36d745d39e97092f01523bc78c2ccf1f	2026-09-19	#469	Stabilize adaptive composer menus	ported 77a11cc0d	PORTED p03	
+216558ed03634a24ccccb19e9908008308189066	2026-09-19	#469	Verify Cursor rich-reference recovery envelopes	ported aade2ce02	PORTED p03	
+5a213ee25d4ade3839fe0f826dc947c0c7c29c74	2026-09-19	#469	Document rich composer visual evidence	superseded	SUPERSEDED p03	b8c0ccea5 deletes docs/screenshots/rich-composer/
+1c2cebfc9c3952778c690eccb967bebf651741b0	2026-09-20	#469	Preserve commands and skip unreadable skills	ported d5c90f987	PORTED p03	
+ec4ba8148e679c77a21bbeb20de6f3ff37872781	2026-09-20	#469	Gate composer references and harden discovery	ported 7ac874196	PORTED p03	
+f530da6fe5e4783ff1fe42567250a4eacd2425a7	2026-09-20	#469	Improve command discovery and mention chips	ported 4dbb8b742	PORTED p03	
+d1ae659a01ec05a7ed5da0fe7771ca28e60c4adc	2026-09-20	#469	Refine Composer Mention Chips	ported 42cc2e4ca	PORTED p03	
+b3ac8b63172b1fb515db40d8260f6d1f7427f3fc	2026-09-20	#469	Refresh rich composer screenshots and review notes	superseded	SUPERSEDED p03	b8c0ccea5 deletes the screenshots and the fixture
+13cb6d7c58ace58a210ddd5a2ea3b03fbb1fd9c9	2026-09-20	#469	Move composer completion preferences to Shortcuts for active agents	ported 407c952e0	PORTED p03	
+361bc4a3b8431b32da8157583db0c410c89f21c7	2026-09-21	#456	Animate the compact work fold's body under TOOL_FOLD	ported 524faa5e1	PORTED p03	
+f6ba2a57d1873e9b104b494e2b2dfd1783c6c614	2026-09-21	#469	Fix rich composer review regressions	ported 4d3275e24	PORTED p03	
+cce9f252dfac2b54eb132df1a39206077e41c400	2026-09-21	#469	Correct composer completion settings documentation	skipped:docs-only	SKIP:docs-only p03	The doc is stale: the controls live under Shortcuts → Composer completion (13cb…
+4be4e0fdadcc53b1dc4436bffe4bb1a140c0968d	2026-09-21	#469	Clarify Harness Completion Settings Documentation	superseded	SUPERSEDED p03	b8c0ccea5 deletes docs/harness-command-audit.md
+e9d5004c13b2e7b270d694d5e23205eedf4685ba	2026-09-21	#497	Add explicit platform-aware agent CLI installers	ported 21ab109d9	PORTED p03	
+45beb3da8887c1ef0c9de02840e227de9c2871bb	2026-09-21	#497	Route and cancel explicit installs on the selected device	ported b284610d0	PORTED p03	
+ae5f62ed49c1325a310108a3ecc2bb8c397c3a08	2026-09-21	#497	Offer Install and Cancel for every eligible agent	ported df715f906	PORTED p03	
+52cf341ab786c1608ec709215f640948fcb078f2	2026-09-21	#497	Document audited agent installation commands	ported f6ed7610a	PORTED p03	
+0b48258bee611b3332432081496b6f98f81ab7df	2026-09-21	#497	Preserve device switching and manual installation hints	ported ef9e9357b	PORTED p03	
+075c445fd29647a237a42ca0d99f23c1a362d268	2026-09-21	#497	Install OpenCode 2.x from @opencode/cli when npm is the fallback	ported 000be6af3	PORTED p03	
+b8c0ccea5c35ab9e755337e6d092b04329014ff3	2026-09-22	#469	Restore simple reference chips and trim composer review artifacts	ported 746172255	PORTED p03	
+23a41f99d649e38952e46998063f867593af580c	2026-09-22	#469	Consolidate composer and reference test fixtures	ported 685c85faa	PORTED p03	
+730c609e3fc9d91bfa204b5975a45256759013d4	2026-09-22	#469	Bound skill discovery and reject special files	ported 27c496654	PORTED p03	
+a75cf1a6159884530fb42524b0be1b520f53e183	2026-09-22	#469	Refresh completion catalogs and harden pasted references	ticketed wave10-25	PARTIAL p03	Port commit deferred the hardening to "ticket 10", which never landed it. See candidates
+3e621c4920ed22bb2e53f8366494385babfc9cc2	2026-09-21	#499	Fix Add action button hover corners	superseded	SUPERSEDED p03	Ported as f5ae478e3. The segment was later rebuilt by upstream ac4acbc21 (Session card), ported as Roboco 189…
+9ba378b49c3ff9abea971edbac45f32c965a799b	2026-09-22		Bump version to v0.2.83	skipped:version-bump	SKIP:version-bump p03	
+2529cfd3160fa6807ac6f8a6ae63581ff0afe194	2026-09-21	#500	fix(files): keep explorer available for archived chats (#500)	ported c7b59913c	PORTED p03	
+d721f301ae33dbe4936f2bef7028a9d59a050cfc	2026-09-22	#453	Apply the conversation width setting to the composer (#453)	ported b0f6de488	PORTED p03	
+44dde6a2ef7f3602cdc4cb86c3e6441c67f9ead8	2026-09-22	#505	Replace Opus 5 with Opus 5.5 in the Claude catalog	ported 8200e29f4	PORTED p03	
+4ef4251dbc4d584b3c4b127aebe3b8c0bf486727	2026-09-22	#505	Fix reduced-motion dock test after the snap_reflow merge	ported b0f6de488	PORTED p03	
+a54c19fa6bd176da1ea685b1ec7935fbd4ed7ba2	2026-09-22		Bump version to v0.2.84	skipped:version-bump	SKIP:version-bump p03	
+258c80a953e0aad48433128aa1017dc34bb63a0f	2026-09-22	#506	Point the claude_models live-union fixture at Opus 5.5	ported dcc9836d5	PORTED p03	
+9b7983762598b2bdd467ac72d408e66fb8622022	2026-09-22		docs: acknowledge The Context Company and invite sponsorships	skipped:docs-only	SKIP:docs-only p03	
+a9a78d768e3486aa144c8fda2262f90306a68a6a	2026-09-22		docs: remove redundant top-level sponsor links	skipped:docs-only	SKIP:docs-only p03	
+6c40f728b1709a33a3850b9f788170338668c370	2026-09-23		landing: swap troll tweets for real testimonials	skipped:landing	SKIP:landing p03	
+64f3e5df3cd01aeb81a6999b333eb1deb2b78ec2	2026-09-23		landing: show GitHub star count on Star buttons	skipped:landing	SKIP:landing p03	
+68ca9a855c4cbf8638d80a365208e59129ad7b39	2026-09-23		landing: star count next to the nav GitHub icon	skipped:landing	SKIP:landing p03	
+3366a3800210303dfc98d6fbd1e63dd03518fc26	2026-09-23		landing: agent icons above the headline, add Used by developers from logos	skipped:landing	SKIP:landing p03	
+6c552f6520189db3c160cfba45e4a1106bb44c2e	2026-09-23		landing: Supported by section with sponsor button under the main shot	skipped:landing	SKIP:landing p03	
+0bbc1c5c8d8245b48fba08509f58403371a5f4ec	2026-09-23		landing: restyle Supported by as a quiet sponsor row	skipped:landing	SKIP:landing p03	
+cbec8cd07cad421172ed614ed004ae7070d4a192	2026-09-23		landing: remove Supported by section	skipped:landing	SKIP:landing p03	
+c914b319edae22f6990f16a004818f5492891521	2026-09-23		landing: Used by logos rest in the harness-icon faint color	skipped:landing	SKIP:landing p03	
+adb63378a61aeff799f175512456c02490714773	2026-09-24	#533	fix(opencode): auto-approve tool permissions as a temporary workaround (#533)	ported e920e9336	PORTED p03	
+5731a0dcc8979e7ccfa5f7628c9dd2553f9ed740	2026-09-24		Bump version to v0.2.85	skipped:version-bump	SKIP:version-bump p03	
+b782d0437b3aef1faed42a61ee4684ee244c4182	2026-09-24	#449	Polish settings, providers and sign-in (#449)	ticketed wave10-03,21	PARTIAL p03	Roboco deliberately keeps its own grouped Accounts page, so the compact-list/⋯-menu redesign is not a gap. Th…
+db2b06919b0ba610765f156ddf48489cd272c32f	2026-09-24		Bump version to v0.2.86	skipped:version-bump	SKIP:version-bump p03	
+d0b0e89d97e650a06d7e0ff6893e9307a39e7f0f	2026-09-25	#504	Honor system proxy settings in packaged desktop apps (#504)	ported 7326f517d	PORTED p03	
+d268830bd5a4b0af4af9119af27028d78fb0a2c3	2026-09-24	#541	Reopen Settings on the section last viewed (#541)	ported 7d8964d93	PORTED p03	
+e3f6f594afde6353f630ab23432233bb78c8d03b	2026-09-25	#527	Retry the Windows identity lock through sharing violations (#527)	ported bd20d842b	PORTED p03	
+096f361f95a0e81d2b68742ea0e0bb8d01786786	2026-09-24	#511	Stabilize iOS CI animation and persistence tests (#511)	skipped:ios	SKIP:ios p03	No Android-parity behaviour: SessionStore.stop() only returns its persistence T…
+5f60293c0fe258d2960a4646d69ac7fda2aaa692	2026-09-25	#529	Show the text cursor over selectable chat text (#529)	ticketed wave10-24	PARTIAL p03	Hovering a code block's scrollbar shows an I-beam instead of an arrow
+88a07863f2095b81ca6db62f6150d0aae7b044c3	2026-09-25	#528	Fix Windows terminals starting in C:\Windows instead of the project checkout (#528)	ticketed wave10-05	PARTIAL p03	Windows hardening. Today an odd verbatim path is passed through and cmd.exe silently falls back to C:\Windows
+87ef6c8ff05629d2629133fa417e9f04c9348827	2026-09-25	#536	Restore tab drag-reorder on Windows (#536)	ported 2bf73c60e	PORTED p03	
+23e258ffc72a9714a1ffb8bfee8c753ca3de958f	2026-09-24	#474	Open terminals from the new-chat canvas (#474)	ported 524cd3cd9	PORTED p03	
+94304283aa6bae8f36532992b12cadf29e242644	2026-09-25	#535	fix(update): check for app updates without workspace sync (#535)	ticketed wave10-75	PARTIAL p03	Both pieces still exist in upstream/main (update/src/lib.rs:78,1273,1331)
+18cca528e9f97c738a68b372833d3151bb5419dd	2026-09-24	#539	chore(cursor): update pinned SDK (#539)	ported e7539755e	PORTED p03	
+c2230f073b2f256b7d1e2c1395370ef0d17f8c17	2026-09-24	#311	Add file browser button to diff file headers (#311)	ported 3dc42d22d	PORTED p03	
+ed3df8fb1e47d56d08610775428d46b59ae47a48	2026-09-24	#544	Prevent chat history from exhausting engine resources (#544)	ticketed wave10-16	MISSING p04	Portable slice only: inspect the snapshot plus pending updates without registering a handle, and retry failed…
+16338ee6c4f77c01a6f1f3871584b5ee06340363	2026-09-24		Bump version to v0.2.87	skipped:version-bump	SKIP:version-bump p04	
+b362693bcbf3e521c36970c29300194f7bce40c4	2026-09-24		fix(ci): tolerate Cursor SDK minifier renames	skipped:upstream-ci	SKIP:upstream-ci p04	tests/cursor_shim.rs owns this surface in Roboco
+99a86523bbe7b58f3bfc9eff7f8b1ad3d1050132	2026-09-24		Bump version to v0.2.88	skipped:version-bump	SKIP:version-bump p04	
+6eb5917df023b4ccc3982cb9758f28fd541c4d27	2026-09-24	#546	Let a re-login revive the live account, and let the live account be removed (#546)	ported ad5cd41b5	PORTED p04	
+79b8d84c8efefe16d4730928b6898eda23b083c2	2026-09-24	#547	Show the active account's plan usage beside the context ring (#547)	ported ea6b1821e	PORTED p04	
+ae22a598cd6708b73e44d6244d2ff73bb20850ac	2026-09-24	#549	Match the New project palette to Cmd+K and fold deep breadcrumbs (#549)	ported a3657d9ce	PORTED p04	
+65974b46b6377bfe0e08922b95438ff199e7d87c	2026-09-25		Bump version to v0.2.89	skipped:version-bump	SKIP:version-bump p04	
+e7ddbbe721e9d69f946ed27eb0af1c858a9ab322	2026-09-24	#550	Keep active chat sync connections stable under load (#550)	ticketed wave10-75	PORTED p04	audit PORTED (20fbbab5c); residual slice named in the ticket
+0f29246e22c6f2c1fcd4a0f6d43e0905a344d9e3	2026-09-25		Bump version to v0.2.90	skipped:version-bump	SKIP:version-bump p04	
+45d34678170079320c4179437f17c858d6f313ea	2026-09-25	#552	Avoid transient connection notices when reopening dormant chats (#552)	skipped:cloud	SKIP:cloud p04	Wave-7 ticket 13 is stale. It would be a no-op; close it as cloud/N/A
+1fdcfe19ac9c758f9df994d288fb362b16fb39b8	2026-09-25	#553	fix(ui): skip boot splash when reopening a ready window (#553)	ported f7daf3407	PORTED p04	
+aff9a4983cce0e631ceb6b886468fdfd2fe6cf18	2026-09-25	#545	Allow Windows builds for ARM64 (#545)	ported 6fb0eaddb	PORTED p04	
+fb7adf742799a5356bdfec2264add9cee975e06e	2026-09-25	#457	test: cover projectless terminals locally and over relay (#457)	ported de3f01182	PORTED p04	
+cfe91887f49990fd8963c2d01394b1266d3dcbc1	2026-09-25	#245	Add Copy Path to the session context menu (#245)	ported 6dd49956e	PORTED p04	
+a456eb09ef528a8138518de4e6edf5cc75e56a89	2026-09-25	#81	Add safe working tree discard action (#81)	ported 273ac2787	PORTED p04	
+bbf590c85f72e8e895d016d3e9eb06f175d5b27c	2026-09-25	#542	Agent accounts for Grok, Devin, OpenCode, Pi and Hermes (#542)	ported 9b72d332d	PORTED p04	
+7b0f42b846fb0fde260245ddf1f16fbac3405de8	2026-09-25		Landing: centered hero over a glyph field, drop the ascii art	skipped:landing	SKIP:landing p04	
+aacbac6d1da0118ceb6514e2fe0af7079c213eb6	2026-09-25		Landing: brand-lab hero type and CTA sizing; left-align hero on mobile	skipped:landing	SKIP:landing p04	
+68af62e21225f5756b94619e86f2674be11dbb00	2026-09-25		Landing: white buttons, one heading voice, lab tweet wall + closing	skipped:landing	SKIP:landing p04	
+c338a6e058845a23d6f07088d24cfe9b37af9462	2026-09-25		Landing: tighter hero line, one voice throughout, cleaner downloads	skipped:landing	SKIP:landing p04	
+67524512a3e96caa14d559382539f67d64408c41	2026-09-25	#548	fix(ui): keep project actions visible during initial load (#548)	ported a50abdd3a	PORTED p04	
+d1010657d69c9730f8020edc36cc2649b136b6fa	2026-09-25	#524	Jump to referenced lines when opening chat file links (#524)	ported 4927527af	PORTED p04	
+6aeaaecd7436d6bfd635c3e750c2362b54e09ec1	2026-09-25		Bump version to v0.2.91	skipped:version-bump	SKIP:version-bump p04	
+abeba7f390207c302d58451ad9e17b9bceb5bbf8	2026-09-25		Landing: drop the nav section links	skipped:landing	SKIP:landing p04	
+03b67beb862b8415fe32974891f4bed6b073ce8b	2026-09-25	#508	Enable file explorer for projectless sessions (#508)	ported d2309dda0	PORTED p04	
+731697b66f218fba67081e41c7f67bf244310d15	2026-09-25	#498	Explorer Subagents/Chats sections, Zeron MCP injection, and fork seams (#498)	ticketed wave10-16,56	PARTIAL p04	Missing: (1) steer mailbox backpressure. Roboco still try_sends on the 32-slot mailbox (sessions.rs:1090, :15…
+68ef78bb1e6fa0b84feeb68c382230f8c560f96a	2026-09-26		Bump version to v0.2.92	skipped:version-bump	SKIP:version-bump p04	
+bbd5f4ddd7be898accd594fa221ec7534567b4a8	2026-09-26	#568	Explorer: newest subagents first; side chats saved on first send (#568)	ported 69e97ec95	PORTED p04	
+8ed3d25e6a0a9672c9c6a2099d409e7017377d06	2026-09-26		Bump version to v0.2.93	skipped:version-bump	SKIP:version-bump p04	
+f8f9c97f080080760882b7a8fbb50523559f458a	2026-09-26		PR badges: always show the PR icon, drop the # prefix	ported c264c2870	PORTED p04	
+08965a1effd8f15bb4a97f3d8d16f4ca588dee44	2026-09-26		Let session navigation shortcuts work from Settings	ported b2ba67fa6	PORTED p04	
+e2923bf0db4ea0fdb4903c148f1cf1f6042e6e09	2026-09-26		Bump version to v0.2.94	skipped:version-bump	SKIP:version-bump p04	
+24d5e49177b0e6bb4315d2513adedd200ef4710c	2026-09-26	#569	Add contributor guide (#569)	skipped:docs-only	SKIP:docs-only p04	
+cdec9726cc4e0f343385a787bd89e2f1d446f639	2026-09-26	#567	Fix side chat composer conversation width (#567)	ported e94b16d83	PORTED p04	
+1f76f01763896578a17f404dace074887fa84635	2026-09-26	#571	Restore the most recently visited right-sidebar tab on close (#571)	ported 52c81dfb6	PORTED p04	
+a1ccea18382338752e36819006baf376bde6198d	2026-09-26	#572	Make tab navigation follow focus between chat and right pane (#572)	ported 108353696	PORTED p04	
+fe46a971a33b830ff9a3ffa48305e2279a738320	2026-09-26	#570	iOS: rewrite on a Rust core (analytic layout, incremental markdown, UIKit + Liquid Glass) (#570)	ported 597aa19c5	PORTED p04	
+198777a4a2a8ee8b0906a6323aa0d9d6f1c59b20	2026-09-26	#574	TestFlight: archive only (the simulator compile built x86_64, which the Rust core doesn't ship) (#574)	skipped:upstream-ci	SKIP:upstream-ci p04	
+eff952809ec81beb5d64c06e1806184032e167c8	2026-09-26	#575	TestFlight: archive unsigned, sign at export (stop minting dev certificates) (#575)	skipped:upstream-ci	SKIP:upstream-ci p04	
+119b5ec0c5ff4ee40b8a310606312261626ddcc7	2026-09-27	#576	iOS: new session remembers what you typed and picked when closed (#576)	ported	PORTED p04	in code (audit); no port commit cites it
+433aa148d55e3316dab9d69afc402e0bb8f55583	2026-09-27	#577	iOS: leaving search transitions smoothly (#577)	ported	PORTED p04	in code (audit); no port commit cites it
+52047c9511f524ca2ae379d8c1e5b8a353452597	2026-09-27	#584	iOS: sessions open at once with a loader; no crisp text under the title (#584)	ported	PORTED p04	in code (audit); no port commit cites it
+7a4343b0ad1f362fb4903dcee1da6a9f1a8b20c4	2026-09-27	#585	iOS: tapping links in the transcript opens them again (#585)	ported e23b0a4a0	PORTED p04	
+35a9139a10bc6622e2d380e11cefc464afb41b8f	2026-09-27	#389	Add agent update monitoring and controls on desktop and iOS (#389)	ticketed wave10-05,08	PORTED p04	audit PORTED (7811c20f0); residual slice named in the ticket
+d92d56a26e10969d96d090b1ccb097ab1a4ba643	2026-09-27	#586	Sidebar: "Star on GitHub" banner that stays dismissed (#586)	ported 4598f640a	PORTED p04	
+65f77b658b4629174c9107a1f119e0662f1b85e5	2026-09-27		Bump version to v0.2.95	skipped:version-bump	SKIP:version-bump p04	
+5017efa9051a76b4944068658608c162e1055bcb	2026-09-27	#592	Mobile: steering never kills the turn; queued images reach the agent (#592)	ported a606ecfe9	PORTED p04	
+747a3fd6036c0caa0dcc730a2aee20e7e750af21	2026-09-27		Bump version to v0.2.96	skipped:version-bump	SKIP:version-bump p04	
+d81ced916b5fba45c29223459ec771c9a5becfd1	2026-09-27	#593	iOS: worktree shows as a branch, aligned row icons, clean resting draft (#593)	ported	PORTED p04	in code (audit); no port commit cites it
+b89bafbe37946b4eececc3740695b63076ff485d	2026-09-27	#594	iOS: harness mark back to 20pt, centered on the title's x-height (#594)	ported	PORTED p04	in code (audit); no port commit cites it
+61b8abb38717dd0219c7519df8393e468070281d	2026-09-27	#589	Session push notifications on iOS (done / needs you / failed, like desktop) (#589)	superseded	SUPERSEDED p04	APNs and edge push (edge/src/apns.ts, registry-room) are cloud. Roboco covers the Android behaviour with loca…
+29f1076a04e8c44d8895934f645e8724db2a743d	2026-09-27	#597	TestFlight: Push capability step logs Apple's answer and doesn't block the build (#597)	skipped:upstream-ci	SKIP:upstream-ci p04	
+9b75664721ffa0a048b5c0895c6fe32fef5f7b41	2026-09-27	#588	Fix completion discovery in unsaved side chats (#588)	ported 67c6005d4	PORTED p04	
+109b39f30144339dff8740b00649418c4daeb9f3	2026-09-27	#595	Durable desktop updates: Check for Updates, background download, install on quit, Windows installer (#595)	ported 192076182	PORTED p04	
+9d3cc8b2dd0af8d7cba61a78097d1af5f1e0ab4e	2026-09-27	#596	Providers: update policy in expanded details, stable chevron (#596)	ported 24ea8e236	PORTED p04	
+f739b5ded367dc977b8c71e970cbee8be2b1f80d	2026-09-27	#590	Allow choosing a harness for new side chats (#590)	ported 0bb951545	PORTED p04	
+e13b18dee80434a0bfab5e6c57b81a9ac6c34049	2026-09-28	#599	Copy transcript selections with Cmd/Ctrl+C again (#599)	ported 7bd37bdb5	PORTED p04	
+f1ea80d7edf502cc7440d662c4cbbd4813520b8c	2026-09-27	#602	feat(ui): archive chats faster (#602)	ported 3027da3ef	PORTED p04	
+77b0ce3c3ecd7285ee8efbc78cf1d1b5284ccc49	2026-09-28		Bump version to v0.2.97	skipped:version-bump	SKIP:version-bump p04	
+c2744c2ff2584f4c8318edd833b7b22b719b8952	2026-09-27	#603	Landing: offer the Windows installer as the default download (#603)	skipped:landing	SKIP:landing p04	
+50cf9e97a32e54a8ea7e1174b80b5adc3b1d2ef4	2026-09-28		Landing: new hero and frosted app window on the Sep 16 page	skipped:landing	SKIP:landing p04	
+a7e505e6b2521d11918257f33ae161d37090567f	2026-09-28	#616	Cursor harness: load user MCP servers and plugins (#616)	ported ad821087c	PORTED p04	
+8f62632a90baf40017f47a234cffe17d109f1583	2026-09-28		Bump version to v0.2.98	skipped:version-bump	SKIP:version-bump p04	
+e5be482211f91e663b599561189cf51c32df567f	2026-09-29	#615	fix(ui): preserve fractional terminal scroll movement (#615)	ported f8acd4eef	PORTED p04	
+4d106b82633ae562cfc268f5b3248f3ccde1357e	2026-09-28	#604	Engine: stop the run loop spinning on empty subagent events (#604)	ported 7b4ed76c0	PORTED p04	
+e2caf64ae6fc27719579836af5b3f98f6b3f78e5	2026-09-28	#612	fix(ui): support file drag and drop in side chats (#612)	ported a6322f2aa	PORTED p04	
+bf64e71ffebae86544699a4fe134d2b96dcf231d	2026-09-28	#605	engine: diff-sync ignores file reads, which re-kicked every checkout (#605)	ported 55593697e	PORTED p04	
+d90b9c6a87e3bb1ace23d3181d9b920329022c39	2026-09-29	#620	Prevent terminal overlap with the composer and update notices (#620)	ported 5a76aa51b	PORTED p04	
+09d04b2979851e0cacd4b968ea86febae29fed8f	2026-09-28	#598	Desktop: shuffle wallpapers with preloading and adaptive colours (#598)	ported 8c9972f27	PORTED p04	
+2a38baa4e85a7b6074d7bf4945c3e7757c98a844	2026-09-28	#606	Transcript: open encoded and out-of-folder file links (#606)	ticketed wave10-06	PORTED p04	audit PORTED (cc84b5f9a); residual slice named in the ticket
+7d454cfe4aa68ca6cc8a53d6bdcbdb61d58f5f19	2026-09-29		Ignore .claude and CLAUDE.md	ported 404e1b2c5	PORTED p04	
+d1dc29f6cfbd30c92acf02e7e4f8233a7fc2c4f0	2026-09-29	#617	fix: restore antigravity detection, updates and sign-in suppression (#617)	ticketed wave10-08	PARTIAL p05	Windows slice missing. Upstream adds a --noop-browser early-exit in apps/zeron/src/main.rs and launches the a…
+11c9108940a09100d7f74ade3d9463772c6429d2	2026-09-29	#627	Linux: install a launcher entry and icon with both installers (#627)	ported 55fe4873f	PORTED p05	
+f843f1cec94c343bb3ba66794e96d9dd769bf2ec	2026-09-29	#638	Explorer: list running subagents first, longest-running on top (#638)	ported 03173c883	PORTED p05	
+aaeede8b489ccd4d8581e05d8d3a8425c6c01015	2026-09-29	#637	Engine: idle reaper no longer kills a parked session's live subagents (#637)	ported 36222bb25	PORTED p05	
+bc1368670f3362e40695887ff9ab8ec881ad226a	2026-09-29	#633	Transcript: show file names for unlabeled file links (#633)	ported cc84b5f9a	PORTED p05	
+c74978abf14a836a7e7ecac4ef675fc45bc347fa	2026-09-29	#651	fix: exclude child chats from the command palette (#651)	ported fa5bb9cc3	PORTED p05	
+546ecb68512dbc049cb4d7a86a6af27f5d15cb38	2026-09-29	#641	Sidebar: keep Ctrl+N jump hints on one line in compact rows (#641)	ported f779045ed	PORTED p05	
+4a7ef2ccaa1b8d96f1e4106b58acc12fdc0dee13	2026-09-29	#635	Engine: trim glibc malloc arenas on Linux (#635)	ported f0bd0afd1	PORTED p05	
+66226055f3c7073d3ef1b2625586218088b56f5a	2026-09-29	#650	Hide queue attachment filenames and fix hover overflow (#650)	ported 09f8892b8	PORTED p05	
+a86f0587dc78fca10a68d4d148cf0a2c7ead069b	2026-09-30	#634	OpenCode: attribute and clear 2.x context usage correctly (#634)	ported a93cc1935	PORTED p05	
+92be0f262bb043fdd7011809397697ede7b6d2b1	2026-09-29	#556	Fix transcript selection leaking through popups (#556)	ported 33b33a7ce	PORTED p05	
+e9e00e2120f4962d525ae4a62c06426cd93bc4ca	2026-09-30	#636	iOS: thinking renders as markdown in the tool-group accordion (#636)	ported b07a14767	PORTED p05	
+54b499490877041082600e76f56a6fb9bdd45191	2026-09-30	#642	Appearance: reduce motion, and pause animations in background (#642)	ported dfca8c02a	PORTED p05	
+26e2b0dd35b8fe1238446a1444778a5c40184f8a	2026-09-29	#628	UI: add hover tooltips to icon-only buttons (#628)	ported 9d91ded24	PORTED p05	
+df0cd2980a119d7af15d2ae393d1418e0a04d6e2	2026-09-29	#630	Replace Pi ACP adapter with native RPC integration (#630)	ticketed wave10-20,54	PARTIAL p05	Roboco's own native Pi driver stays, by decision. Missing portable slice: question prefill + multiline (ticke…
+ed3b1aae4a5189eef67143db7b8c5c3ee7a933c5	2026-09-29		Bump version to v0.2.99	skipped:version-bump	SKIP:version-bump p05	
+4aceec16025bce611593bd3b27e40a081b6f88af	2026-09-30	#665	Fix file tree edge fades at scroll boundaries (#665)	ported 17de869b3	PORTED p05	
+6641095b5b5d1bd682da58b4939334f03dbf3bc6	2026-09-30	#681	Fix Markdown drag selection across table columns (#681)	ported 33b33a7ce	PORTED p05	
+0fab030fcacae566356d319679f4a5e13b823c1e	2026-09-30	#669	Question panel: paint an opaque background (#669)	ported 2213db68e	PORTED p05	
+651aa7a95d5a65ce45406b7ad29d3975f7b8df0b	2026-09-30	#661	Providers: update Homebrew-installed CLIs with brew (#661)	ported aad9524e9	PORTED p05	
+cc8b147a3ccce7f3bf57697cd5ef41dd06f489f5	2026-09-30	#676	Fix subagent lifecycle identity and restart recovery (#676)	ported 711b6ed24	PORTED p05	
+626bccc85cb59bb101cf2274eb172c3db6cb7f1f	2026-10-01	#660	Appearance: add background positioning and zoom (#660)	ported 8c9972f27	PORTED p05	
+710b06ff854e2bb0e54ec5795e3d665a78923bcf	2026-09-30	#692	CI: seed the Rust cache from main and stop cancelling main runs	ported 9e2e5ee3f	MISSING p05	via ci-speed 01
+f4abe69b8805294b96e47606642914319662caa2	2026-09-30	#693	CI: run Windows tests in three parallel jobs on a cheaper profile	ticketed ci-speed-04	MISSING p05	Upstream splits into ui-tests / crate-tests / app jobs via a windows-ci-setup composite action. Roboco alread…
+52a3481dc5339fb628015857d25a1b4f403f421d	2026-09-30	#695	CI: add a macOS workflow with one compile and parallel jobs	skipped:upstream-ci	SKIP:upstream-ci p05	
+c286d118b48f592b4e1252802f7ff10c788caecd	2026-09-30	#695	CI: remove the macOS jobs from ui-tests and preview-tests	skipped:upstream-ci	SKIP:upstream-ci p05	
+366b3c9e2a8210b0efb6067ec23bcf088bfcf8bd	2026-09-30	#632	Fix drag-select failing when several transcripts share a frame (#632)	ported 33b33a7ce	PORTED p05	
+a2a593a5d51110db2f1bd3302235451662ee8c1a	2026-09-30		Bump version to v0.2.100	skipped:version-bump	SKIP:version-bump p05	
+c168ba5b4589352877ad5450168860a1ad308a26	2026-09-30	#693	windows: run the crate suites as two parallel jobs	ticketed ci-speed-04	MISSING p05	Port together with f4abe69b.
+fd3b2c0662901dde913fdaf5031008f5afb9f77e	2026-09-30	#691	footer	skipped:landing	SKIP:landing p05	
+9cb1de50f580abe6a081c11c9e8921319aebd783	2026-09-30	#694	CI: add Linux test helpers (setup action, nextest, apt with retries)	ticketed ci-speed-06	MISSING p05	Groundwork for 878307a3. Roboco already has .config/nextest.toml.
+878307a3d685a216e4100324be939a75c03eef65	2026-09-30	#694	CI: run Linux tests with nextest on a dev profile and one shared build	ticketed ci-speed-06	MISSING p05	Highest-value CI item: going from release to a dev profile with nextest and one shared build targets exactly…
+c72c66d8adce8a594a7acd342432b33cfb348c62	2026-10-01	#514	Add file tree context actions and drag-and-drop moves (#514)	ported a6322f2aa	PORTED p05	
+b3d7f48b5a1c33fc345f802302a266bf46d88abb	2026-10-01	#682	Fix command and skill labels in the message queue (#682)	ported 0f0878891	PORTED p05	
+42926c802a837097e6a05de89d48ca7ade326658	2026-10-01	#587	Right panel tabs: close button on the right (#587)	ported 9358c754e	PORTED p05	
+a73fa8fe4002c1f1fe393d6d4c5c05a858fd3763	2026-10-01	#471	Add optional compact model picker and effort controls (#471)	ticketed wave10-04	PORTED p05	audit PORTED (74abedd5a); residual slice named in the ticket
+b42fc2b8fbf247dd92796c2917f277535cea91ac	2026-10-01		Bump version to v0.2.101	skipped:version-bump	SKIP:version-bump p05	
+5d5d935991d3a659a5bba25f004874d41a74e7ae	2026-10-01	#694	CI: cover cursor paths in ui-tests, verify nextest after cache restore, nightly release-profile run	ticketed ci-speed-06	MISSING p05	Only matters once 878307a3 moves Linux to the dev profile. The nightly is a new workflow (wave-4 "7 policy wo…
+7aed43b472ef3fbed1cb9d8e74c5fe6c5bc0cd15	2026-10-01	#695	CI(macos): run CoreText tests on macOS, drop /etc/hosts patch, harden nextest download	skipped:upstream-ci	SKIP:upstream-ci p05	
+a5c00e0b507a7f520bc40be4dd8e15dcedd2141e	2026-10-01	#695	CI(macos): run the macOS jobs on macos-latest, as before	skipped:upstream-ci	SKIP:upstream-ci p05	
+27480d99b9b75d31d01832248bec3f898bd64dcc	2026-10-01	#686	OpenCode 2.x: fix instant "Run failed" (cold version probe), show start failures (#686)	ported a93cc1935	PORTED p05	
+80b946b153e431f8e3fdd7a99faf81b23c77706c	2026-10-02	#591	Add opt-in on-device dictation to the desktop composer (#591)	ported fc58ea330	PORTED p05	
+ae4181f517001ae151191d7bcab64c5651ea6320	2026-10-02	#721	Fix the compact panel's model name; test settings survive navigation (#721)	ported 74abedd5a	PORTED p05	
+64ad6f6ef03a8282c1847329804542f014c97d54	2026-10-02		Bump version to v0.2.102	skipped:version-bump	SKIP:version-bump p05	
+9782693b8561ff2764c8e38c16644d65a1b5bb31	2026-10-02	#740	Scope composer mic and attach hover fades per instance (#740)	ported fc58ea330	PORTED p05	
+01832f2cac72af4818bf0dcd9c6525c5dde5c4a0	2026-10-02	#706	MCP: create standalone sessions on a selected device and project (#706)	ticketed wave10-09	PORTED p05	audit PORTED (119724896); residual slice named in the ticket
+c14d45796c601763fc902bc6c40e5a2d724f8949	2026-10-02	#744	Let the composer's session branch label use free width and fade on overflow (#744)	ported 9ab5a364d	PORTED p05	
+542febc10b3d944cbd17e315a273a1cedc8c1290	2026-10-02	#745	Toggle fast mode with F in the compact model picker (#745)	ported 9ab5a364d	PORTED p05	
+1f7b74a7fc97b0ca1d0379e77141075d73db8adf	2026-10-02	#707	Todo: dedicated panel for the agent's checklist (#707)	ported 6871828a2	PORTED p05	
+55f5ed4c8d14024744d2a9e6e1f8448990740532	2026-10-02	#695	CI(macos): give macos-native the old job's 45 minute limit	skipped:upstream-ci	SKIP:upstream-ci p05	
+e94c49ad89a85920d8d2c94bb60d8b55a643cebd	2026-10-02	#749	Fix compact model picker browsing across providers (#749)	ported 9ab5a364d	PORTED p05	
+56dc5ff3a360a4b83f48f7ed134b8c26a2e812fc	2026-10-02	#750	CI: pin every action to a commit SHA, keep pins current with Dependabot	ticketed ci-speed-10	MISSING p05	Drift 2026-10-02 called this "worth adopting independently someday". It matters because release.yml holds the…
+c78bb1c106fd5da84b428728a1c807af5e5b29ee	2026-10-02	#751	Rename threads and side chats inline instead of in a dialog	ported 930e1d13f	PORTED p05	
+46bedeca053887b60b960c925e39b9bc56230e51	2026-10-02	#751	Test the inline rename in both full and compact sidebar rows	ported 930e1d13f	PORTED p05	
+2a884777a5a399c126c25fc6f5bd77c306a62983	2026-10-02	#757	Fix Shift+Backspace in composer and palette inputs (#757)	ported a8934e11c	PORTED p05	
+612df5126130c3117c80eb24483fec56fbd9bed3	2026-10-02	#763	fix(preview): leave authentication callback listeners unprobed (#763)	ported fe6a2f732	PORTED p05	
+e96eccb1aab3bf63fc475f5e85d2935736940cc9	2026-10-02	#754	Keep activity loaders pulsing with system reduced motion (#754)	ported 82f05b155	PORTED p05	
+edac0d7d9d58c294ab81e8ff088a7ef0a43d4bba	2026-10-03	#727	Fix Windows drive paths in the project folder picker (#727)	ported 22ba72f8a	PORTED p05	
+f9a4a18bedf71513a2abc0dbdf608b4bea5499e1	2026-10-03	#739	Convert BMP attachments to PNG so agents can read them (#739)	ported 56cefb77e	PORTED p05	
+e2a7706fac45ff2cc2a742b841036e2d93dcad5d	2026-10-03	#737	Add per-project new chat button and archive tooltip to the sidebar (#737)	ported 5f2565ad7	PORTED p05	
+9e1a11158b0626237c814f4bd36f5948483ed797	2026-10-03	#760	Render Mermaid diagrams in chat replies (#760)	ported cab3f28bf	PORTED p05	
+dbb639be372157a66603e2f0462d3702d3d33503	2026-10-05	#799	Group projects by git identity, plus Zeron Icons and rolling labels (#799)	ticketed wave10-21,73,74	PARTIAL p05	DECLINED: Zeron Icons, sidebar glyph morph, fork/worktree glyphs (user decision 2026-10-05, wave5/spec.md:52-…
+9b3773082a8171cd29387b07f2a2b92a48c6ad0b	2026-10-05		Bump version to v0.2.103	skipped:version-bump	SKIP:version-bump p05	
+73bd3c8429b48e73edc62a9b201fe13f1b50b6c9	2026-10-05	#775	Composer: mention images and files as chips (#775)	ported 1ed398d68	PORTED p05	
+3ef98ec2a3bd0b8b7e2ddb544072790a85f20a56	2026-10-05		Bump version to v0.2.104	skipped:version-bump	SKIP:version-bump p05	
+16d42a6352ee82de838cd65e294dd8d4be79d96d	2026-10-05		Simplify README and refresh its screenshot	skipped:docs-only	SKIP:docs-only p05	
+9ac03a54b36eddc43941d355d5723adb8357b494	2026-10-05		Add Korean and Japanese READMEs	skipped:docs-only	SKIP:docs-only p05	
+c8eb7524e06d8483c2c9054a8180b61e19256a74	2026-10-05		README: replace broken DeepWiki badge with a text link	skipped:docs-only	SKIP:docs-only p05	
+3d4bfd11b042948beb628fe8d5587ebe43b46035	2026-10-05	#811	Unify the sidebar project filter by repository identity (#811)	ported e514c5467	PORTED p05	
+d5c1cdc124c8d403eb0a11e94a8dae4a381fc958	2026-10-06	#816	Pin chip padding to Geist so insets don't follow the UI font (#816)	ported 1ed398d68	PORTED p06	
+8e6da95908ee536012dba4f3268ca4bd87fe602b	2026-10-06	#826	Fix iOS showing fixture conversations when a session fails to open (#826)	ported	PORTED p06	in code (audit); no port commit cites it
+4a5fb8b4438196aed3249e4efae1291d39100932	2026-10-07	#819	Internal session plumbing and packaging cleanup (#819)	ticketed wave10-76	MISSING p06	Product decision still open ("wave anchor behind a product decision", 2026-10-07 note; wave-6 spec:53). No us…
+9e83ceea2b92f3627c39f5db2403cb487dad6c54	2026-10-06		Bump version to v0.2.105	skipped:version-bump	SKIP:version-bump p06	—
+970f41fa7b930b27328efca05249f61bb3bea483	2026-10-07	#835	Fold dated Claude snapshot IDs into curated model rows (#835)	ported 02d6dca73	PORTED p06	
+8930cd10360ea7919765050216be908d9b6bf5bb	2026-10-07	#834	Fix voice helper compatibility with Codex 0.161 (#834)	ticketed wave10-76	MISSING p06	Blocked on #819. Not portable on its own
+916cb1ccb1342c2061963a5f6ecf5c977ba46f2c	2026-10-07		Bump version to v0.2.106	skipped:version-bump	SKIP:version-bump p06	—
+8646bde07e31e280dd3f7b887b465857e19527d7	2026-10-08	#818	Cut startup memory from ~700 MB to ~200 MB on large local profiles (#818)	ticketed wave10-75	PORTED p06	audit PORTED (f6b6fdf2a); residual slice named in the ticket
+e5466c533616d6466c6bd5a0b60cfacb7b9422ef	2026-10-07	#813	Windows browser, image previews in tool calls, selectable tool output (#813)	ticketed wave10-28	PARTIAL p06	Wave-7 ticket 22 is still open. Only the WebView2 host needs the pin sync. Tool images, selectable output, th…
+037f4c10d67a38175b2386e776aba54355b4e941	2026-10-08	#820	Engine: keep turn snapshots out of the checkout's object database (#820)	ported 81a030608	PORTED p06	
+91fd851c7c676e1d50d526340f64b7963f548fb6	2026-10-08	#748	Harden Claude/Codex adapters: no early "done", Stop kills, sends never do (#748)	ticketed wave10-12	PORTED p06	audit PORTED (1140aeccb); residual slice named in the ticket
+565b49c527fb738704f217b897f9ba3aee575285	2026-10-08		Bump version to v0.2.107	skipped:version-bump	SKIP:version-bump p06	—
+e799aecc16c863b987839a626574f7a0339d4275	2026-10-08	#777	Fix remote sends stranded by mobile suspension and lost host wakes (#777)	ticketed wave10-42	PORTED p06	audit PORTED (74257f957); residual slice named in the ticket
+0c4835d2b73aa632b7b4d626ee0826a25ec1c9b9	2026-10-08	#647	Explorer: group finished subagents, show running counts (#647)	ticketed wave10-65	PARTIAL p06	The files-panel Finished dropdown is dead upstream (deleted by #895), so it is correctly not ported
+1074bc540b995d6b7e5a6fa5431f1a2420df8d91	2026-10-08	#522	Open tool-call files in the files panel, and in the default editor (#522)	ported 90eb9c0ce	PORTED p06	
+afca583c12db7ca315b0429445106b6de73ba02c	2026-10-10	#484	Add a repository-scoped PR board and native inspection (#484)	ticketed wave10-57,76	MISSING p06	Wave-7 21 is PARKED (needs-triage). No user decision recorded. This commit bumps zui to 361ff20b, so it needs…
+b65b47536727c92e2a4f8b8c1aeaa683bf4b0abe	2026-10-09	#855	Queue polish, and drag a chat from the sidebar to mention it (#855)	ported f199cf67d	PORTED p06	
+672cc1444b8d7c51ff6b82c661c0757d650fd105	2026-10-10		Searchable popovers, ordered sidebar sections, and titlebar sidebar options	ported f382151fd	PORTED p06	
+05f5f2bff482539824394bd88aad0991ebffb8ea	2026-10-10		Drop the ellipsis from New project in project menus	ported f382151fd	PORTED p06	
+a408a81402e6ce1cafce8b39d3da6cde2e877ac1	2026-10-10		Sonner-style toasts, a nested Copy menu, and picker-style repository menu	ticketed wave10-76	PORTED p06	audit PORTED (64ea2a7e2); residual slice named in the ticket
+344436efb28298a8b122ad1a970aff6be3880524	2026-10-10		Bump version to v0.2.108	skipped:version-bump	SKIP:version-bump p06	—
+ae19fe31b1e3bd06da0e6bfe08600e5e2e94d196	2026-10-10		Widen the sidebar minimum so its options button fits beside the titlebar controls	ported f382151fd	PORTED p06	
+9e17e401710412adca91fe485886d65aa2d7e3eb	2026-10-10		Bump version to v0.2.109	skipped:version-bump	SKIP:version-bump p06	—
+d84ef73af667dde3cc1c8ec72ec0041112f48203	2026-10-10		Drop focus rings from the pull request views	ticketed wave10-76	MISSING p06	Rides #484 (wave-7 21)
+ac4acbc21fd6f7cf7977e6bb7816385b8a7d98bb	2026-10-10		Session card: project, device, side chats and actions behind one toggle	ticketed wave10-24	PORTED p06	audit PORTED (189c3d5a3); residual slice named in the ticket
+dace1a8ce515be33a0d14d59fc56d65d57f7fe06	2026-10-10	#677	Panels: content columns share the width, continuous transitions (#677)	ticketed wave10-71,72	MISSING p06	Wave-7 08 still says ready-for-agent and is truly open. The panel-lifecycle suite of panel_interaction_tests.…
+6774a37a03ad473732566f056f7ba6c00297e4f6	2026-10-10		Titlebar: frame-style session card toggle and folder-tree explorer toggle	ported 189c3d5a3	PORTED p06	
+73051ec7198088f28d49bfdfdd159179387a0e4e	2026-10-10	#863	Engine: fall back to the fetch URL when a remote's push URL is disabled (#863)	ported fb08088f8	PORTED p06	
+ec28627ce2e28304d01751d3462302ce7fd3d57a	2026-10-10		Bump version to v0.2.110	skipped:version-bump	SKIP:version-bump p06	—
+3487b507fa8920ab829339f3e3ad72a4bdb45036	2026-10-10	#856	Unified workspace search on fff, content search, and a tabbed cmd+K palette (#856)	ticketed wave10-05,69,70	MISSING p06	Wave-7 20 is open. The commit itself does not touch the gpui pin. It is authored on #484's 361ff20b tree, so…
+40091d469aa8a3f1ab1ec7cb404957b742940278	2026-10-10		Bump version to v0.2.111	skipped:version-bump	SKIP:version-bump p06	—
+057522d2318d7be05d311eb0bd491b975b248b66	2026-10-11	#870	Docs: add Spanish README and link it from the language switchers (#870)	skipped:docs-only	SKIP:docs-only p06	—
+488c0358252f0d542894ee6152c3a9d3bdc48ede	2026-10-11	#872	Shell: mouse back/forward buttons walk the route history (#872)	ported 3daee261f	PORTED p06	
+54954e4d22bd4d78b2e2c7160a913b1af548dc79	2026-10-10		Settings: quieter Providers page, stable rows when toggling	ported a3aa1d696	PORTED p06	
+edb23db4b409df035808e38c44180d1c7a2d2d7e	2026-10-11	#875	iOS: Group by Project setting for the Sessions page (#875)	ported 865203577	PORTED p06	
+1bc74d5dad3aad4579e5c40ab996bbacb5e927db	2026-10-11	#876	Projectless chats get their own folder; home is never indexed by fff (#876)	ticketed wave10-21	PARTIAL p06	The scratch path leaks into the UI on every new projectless chat
+50e33711afb0ba76cf797409c151a0948a39decd	2026-10-12	#843	Run the MCP bridge on two worker threads instead of one per core (#843)	ported 3f96c5e62	PORTED p06	
+9d943019ff15dc9c544be85932ea1565a593d17a	2026-10-12	#842	Opt out of macOS one-time-code AutoFill (#842)	skipped:macos-only	SKIP:macos-only p06	Roboco carries the plists, but there is no macOS build
+e54c3a8610d73d522421766f159a16e67c65d13c	2026-10-12	#812	Let dropped files from any folder attach on macOS (#812)	skipped:macos-only	SKIP:macos-only p06	—
+b40ac5ee31b59e98f283fc10d1132895afdae566	2026-10-11		Bump version to v0.2.112	skipped:version-bump	SKIP:version-bump p06	—
+c8c717862ddf3170288bffefb9a5153c8b2954ed	2026-10-11	#867	Session card: show beside a roomy transcript, float over a tight one (#867)	ported 189c3d5a3	PORTED p06	
+09beace00fbd4d521bf1e7fd4f591e5ab13162fb	2026-10-12	#873	Composer: show usage reset times on hover (#873)	ported c32447cde	PORTED p06	
+053ce2eac0da83a008f99f79acc365468e7d6831	2026-10-12	#573	Persist embedded browser sessions across tabs and app restarts (#573)	declined	MISSING p06	needs the in-app browser, which Roboco is removing (wave-10 decision 1)
+66524017f01fd383f61843b77fc34bd9dfd5b332	2026-10-13	#866	Open pull requests in side panes beside the board and the chat (#866)	ticketed wave10-76	MISSING p06	Rides parked #484
+2d40f8df6f06c72199eb8177a18cd06e47824573	2026-10-13	#821	Overscroll bounce effect for the transcript, sidebar and file tree at their ends (#821)	ported 106f36a38	PORTED p06	
+2c2963aaeea9dcd787994bdc629b64c91af053c8	2026-10-13	#774	Select several entries in the file tree (#774)	ported f08bdd585	PORTED p06	
+01a399db18ea03105acbd55732038764dae83172	2026-10-13	#530	Add per-device custom worktree locations (#530)	ticketed wave10-60	PARTIAL p06	Windows-relevant: the engine already handles the long-path two-step add. The commit message says "no roboco U…
+75b72602a0348f5697c7affc9f84afe367b763fb	2026-10-13	#725	Show harness icons in idle side chat and subagent tabs (#725)	ported 63495938b	PORTED p06	
+81e04e1c5cf6c4f3b89d96bcced61e076025e069	2026-10-15	#901	Add sidebar toggle for Archived section (#901)	ported f382151fd	PORTED p06	
+2a209cc6cd479ca847184287557cffda1a0c1baf	2026-10-15	#890	Cmd+K: fix Recent Files flicker (#890)	ported 783027f5b	PORTED p06	
+4141c761932aab133fc1ab5703c095e7ae37b137	2026-10-15	#861	Settings: delete every archived session at once (#861)	ported 3e34ed018	PORTED p06	
+8a0fded8914de3861a4cf51c1d8c0007c07893dd	2026-10-14	#900	Native visuals: agents show interactive Luau visuals rendered by GPUI (#900)	ticketed wave10-76	MISSING p06	Parked: "#900 stays parked" (2026-10-25 note:61; wave-9 spec:37). Not declined. Also carries an iPhone/mobile…
+6ac8859998909bc5afd55838afb0635c281f31c3	2026-10-14		Bump version to v0.2.113	skipped:version-bump	SKIP:version-bump p06	—
+9609f994a563f12f8a4ffbf7b5792760cd266f9e	2026-10-15	#833	OpenCode v2: answer the question tool's session forms (#833)	ported 7789a2f67	PORTED p06	
+3b2f78027a2c31622c39c35716da4d6e1af8de15	2026-10-15	#920	fix: send cursor model defaults for plus subscriptions (#920)	ported d45a46263	PORTED p06	
+26c8e8404d85a6e4a4973e802f26589ac1d91a2f	2026-10-17	#909	Reorder sidebar sections by dragging their header (#909)	ticketed wave10-41	PARTIAL p06	f382151fd says it held the mobile FFI "for a mobile follow-up". No ticket exists for it
+840fda748d6ee00667adc62d3b0cb5cb2bf107fa	2026-10-17	#903	Sidebar: show a session hover card beside each chat row (#903)	ticketed wave10-64	MISSING p06	Wave-8 13 "gated" on wave-7 07. 07 has landed (189c3d5a3), so the gate is cleared
+59182488115a5c53a9cfb24e2445b54dc22d2e39	2026-10-17	#895	Session card: side chats and subagents (#895)	ticketed wave10-75	PORTED p06	audit PORTED (189c3d5a3); residual slice named in the ticket
+c02739da309118c2174f427511110046f0bfba16	2026-10-17	#912	Render LaTeX math in messages with zatex (#912)	ticketed wave10-02	DECLINED p06	audit DECLINED; residual slice named in the ticket
+2e8f02ec2dfc521a20a5c43fcdbf4fae2381853a	2026-10-18		Bump version to v0.2.114	skipped:version-bump	SKIP:version-bump p06	—
+c526d6f7cfc7a53e5588e3e6c5df7484a14d649f	2026-10-18	#942	iOS: adapt to iPhone Duo (fold/unfold, uneven safe areas) (#942)	ticketed wave10-42	PARTIAL p06	Low value: Android split is at 840 dp, so the 280 pt narrow-sidebar rule rarely applies
+911ec56e412786f706f58b7d0bda5729c9d5d488	2026-10-19	#953	ACP: order advertised effort levels from lowest to highest (#953)	ported c2d0db230	PORTED p06	
+cc7da5c2aa54a6db6877eac918f719488eac1d24	2026-10-22	#966	Zeron Cloud, provider switching, and the phone model picker (#966)	ticketed wave10-03,09,10,31,34,36,38,39,40,42,44,45,46,57,58,59,68,75	PARTIAL p06	Cloud (vault, billing, machines, onboarding, crates/client, settings/cloud.rs/billing.rs) is SKIP:cloud. Also…
+b0d47b2dee61e80fa352f1d55e85cb323f66a917	2026-10-22		Bump version to v0.2.115	skipped:version-bump	SKIP:version-bump p06	—
+acd7c9ba76fa3e31049ae82b960fc9dc3d37ad22	2026-10-22		RPC: fragment large messages so a long transcript can't drop the engine socket	ported 2f51b449a	PORTED p06	
+69b67d338b57102ec550d750791a08b185391ba9	2026-10-22		Bump version to v0.2.116	skipped:version-bump	SKIP:version-bump p06	—
+f30a8641b26c5ead2847026475b5f9ea853eaedc	2026-10-22	#967	Log in from error cards, a one-row iOS bottom bar, and session delete (#967)	ticketed wave10-33,35,37	PARTIAL p06	Wave-9 18 and 19 are open
+d74456364520b0e419a18e954f2387749e47f1fc	2026-10-22		Bump version to v0.2.117	skipped:version-bump	SKIP:version-bump p06	—
+d6849cee93a4b39708b5a6ba7682bfe085aaed42	2026-10-22	#969	Cloud: repair Codex installs, start the engine on wake, group Cloud projects with clones (#969)	ported 6e4836d7f	PORTED p06	
+f725384bd1bb71fe7f3b929c9b66a66ee879286f	2026-10-22	#970	Claude logins after an update: let the app start the engine, fall back to the credentials file (#970)	ported fc016cf4e	PORTED p06	
+feed9105b2ba36d21f522ee3f5bcc9c7d3b84932	2026-10-22		Bump version to v0.2.118	skipped:version-bump	SKIP:version-bump p06	—
+4cd15917561a4d91a763e05356afd45ea6d37fff	2026-10-22	#971	iOS: the bottom bar's shell has no tab bar to come back (#971)	ticketed wave10-37	MISSING p06	Only meaningful with #967's bottom bar
+e680d5c9862588e2b80b122619ad6bc5e8f72a82	2026-10-22	#972	Cloud commits by the user, co-authored by zeronsh[bot] (#972)	declined	DECLINED p07	.scratch/upstream-ports-2026-10-wave9/issues/24-commit-credit.md (wontfix 2026-10-25); no commit_credit.rs in…
+c04487045e5f934818ab21bf5b7b7fbed16ef3d6	2026-10-22		Bump version to v0.2.119	skipped:version-bump	SKIP:version-bump p07	
+dfc38967db72f59f271d5924a40e7dd466839928	2026-10-22	#973	Cloud: per-user machine size (xlarge), set by an operator (#973)	skipped:cloud	SKIP:cloud p07	
+dd0c36fa3ec1e269a630562179e655b1ed26f0a0	2026-10-23	#974	Claude logins that stay signed in, and sturdier agent CLI updates (#974)	ported a59137538	PORTED p07	
+2e151ca65afcfb1d16ef833954fdf7bbbebf038a	2026-10-23	#977	Harden every provider: crash and stall detection, Windows-safe launching, and run recovery (#977)	ticketed wave10-08,11,12,13,14,16,17	PORTED p07	audit PORTED (16012431c); residual slice named in the ticket
+5b8edb2de8a826c4175fa7b5ceed1c7c9142a78d	2026-10-23	#980	iOS: don't crash Providers when there's no device to pick (#980)	skipped:ios	SKIP:ios p07	Wave-9 #21 lists it; nothing to port — tick that item off
+6f2721fab7aeceaf8530115f3c61abc8ac459364	2026-10-23	#981	iOS: keep the session through iPhone Duo fold and unfold (#981)	ticketed wave10-42	MISSING p07	Width-change pin (S) also fixes phone rotation; reuse-same-session across the 840dp breakpoint (M)
+a2c68b097ad69cc554b830d5b48186afe9ce74b8	2026-10-23	#982	iOS core build: find cargo where the caller's PATH does (#982)	skipped:ios	SKIP:ios p07	
+987bb2f878c83e50ff61f60bbf38f41dbc61614a	2026-10-23	#978	Agent CLI updates through the real owner, a known-bad release list, and Muse Code (#978)	ticketed wave10-75	PORTED p07	audit PORTED (b21e9f39b); residual slice named in the ticket
+1ec71a318493c61951b8608378bfc64de529221d	2026-10-23		Bump version to v0.2.120	skipped:version-bump	SKIP:version-bump p07	
+2d6895cbb3e1c81cfa285707ca6ae07397d2486a	2026-10-23	#983	TestFlight: build with Xcode 27.1 so iPhone Duo gets the native layout (#983)	skipped:upstream-ci	SKIP:upstream-ci p07	
+71033cc9609710a7bb77c27a26efd86efe10de47	2026-10-23	#975	Terminal: no added latency, direct P2P to other devices, predictive echo (#975)	ticketed wave10-66,67	MISSING p07	Skip the WebRTC P2P slice (remote_terminals.rs, terminals/link.rs, preview/peer.rs) per #17. Port: instant ke…
+4231cb7b017d95e45f676fa80539fba30a1e75e5	2026-10-23		Bump version to v0.2.121	skipped:version-bump	SKIP:version-bump p07	
+fd7d268ca45a6e5d83ebd1e3c73595a3ddcc332f	2026-10-24	#988	iOS: terminals, side chats and subagents beside every session (#988)	declined	DECLINED p07	wave-9 #23 (Android terminals/CompanionStrip wontfix) + #22 (mobile-core terminal)
+dfbb6876c066ac3bb758f98124844160bd20bd34	2026-10-24	#1007	iOS terminals: direct WebRTC link to the host computer (#1007)	declined	DECLINED p07	wave-9 #23; WebRTC/edge relay never ported (ADR 0004)
+3c97a05cfa154cf3f8f9ccb2ae6b4d0eb4a4a65c	2026-10-24	#1010	iOS: paint terminal box and block glyphs; fix the subagents chip icon (#1010)	declined	DECLINED p07	wave-9 #23 (glyph painter); chip icon fix lives in CompanionStrip.swift (iOS SVG-at-1pt rasterization bug), a…
+0e1b891f9addd0ec4c0abf723fe1170dd75fa916	2026-10-24		Bump version to v0.2.122	skipped:version-bump	SKIP:version-bump p07	
+d9775607557dcb56cbdc921ad2169e880cb0b9ec	2026-10-24	#985	Fix Codex approval policy for Zeron MCP tools (#985)	ported c3dac8f23	PORTED p07	
+4e5c05702f9e99326f94a816059f580d46919b3a	2026-10-24	#1016	Cloud: live subagent transcripts, and an engine download that can't hang (#1016)	skipped:cloud	SKIP:cloud p07	
+2ea4e3a05ebdb2879a5b1d70ed27d6da79330573	2026-10-24	#1014	iOS: rest the composer level with the sidebar toolbar (#1014)	ticketed wave10-42	MISSING p07	Tablet split only: centre the resting composer on SidebarToolbar's row
+ddf9316249c9b11808e94b7c0effb914b69aa4e6	2026-10-24	#958	Transcript rail: land prompts below the titlebar, one tick per prompt (#958)	ticketed wave10-63	MISSING p07	Port together with d460e8fe1 (the final rail.rs)
+77a3c0ff1b432bb70dc9464f7b5b7a7a812abca8	2026-10-24	#998	New project: type a folder's path, with ⇥ completion (#998)	ticketed wave10-05	PORTED p07	audit PORTED (a39f89e37); residual slice named in the ticket
+2ca10240276bc0d8c5770c612bb52333f7a08543	2026-10-24	#1020	CI: install cargo-nextest into a run-scoped bin dir on macOS (#1020)	skipped:upstream-ci	SKIP:upstream-ci p07	
+f6d4b1a018cac688c80bb04576037a23c49307bf	2026-10-24	#992	Composer: keep each project's checkout pick across project switches (#992)	ported faca1d333	PORTED p07	
+684becf0f87e781533c5233494a9e955088ce3e9	2026-10-24	#609	Android app on the shared Rust mobile core (Material 3 Expressive) (#609)	ported 8289573b5	SKIP:upstream-android p07	mobile-bindgen crate slice via ci-speed 07; the upstream Android app itself is reference-only
+ea3dcc8115c89b905a48f55d27a098320c4ad60f	2026-10-25	#1026	Pull request links: honor Default browser and Open links in Zeron, add In-app browser (#1026)	ticketed wave10-24,76	PARTIAL p07	Most of it targets the PR view and board that Roboco lacks (wave-7 #21 PARKED). Portable without that: an "In…
+8ae969ad95a2d06f6ecf699c8647fe76161edd7a	2026-10-24	#1029	Android: Gmail-style Sessions page; the transcript fades behind the composer (#1029)	skipped:upstream-android	SKIP:upstream-android p07	
+a9e6c48b771c50927b0ea7dbe30d82a0f0fe62d9	2026-10-25	#1023	Previews: only discover ports Zeron started, and list them beside the chat (#1023)	ported 55b30eddc	PORTED p07	
+534a5742c311ef3288ae6bfdc833ffd17ccf830e	2026-10-24	#1030	Bump version to v0.2.123 (#1030)	skipped:version-bump	SKIP:version-bump p07	
+79fd52198ada4337952da7a1c453e622b7013ce8	2026-10-24	#1032	Releases: serve the Android APK's stable name uncached; name each build uniquely (#1032)	skipped:upstream-android	SKIP:upstream-android p07	Roboco ships APKs via release.yml and the GitHub Release
+4443e6b589d7f53fc68c064fcd459f184372c9d7	2026-10-25	#1028	Session card: snap on chat switch instead of fading over the next chat (#1028)	ticketed wave10-65	MISSING p07	Near-verbatim: field + one line in shell.rs select + session_info_frame change + test
+187b402439999eb6315a089c92ff52fef11b6b34	2026-10-25	#1031	Syntax: Luau highlighting (#1031)	ticketed wave10-75	MISSING p07	tree-sitter-luau 1.2.0 dep + rewritten query in crates/syntax/src/lib.rs, icon in file_icons.rs, fence alias…
+a4187fd51ce914d583fba39420b201beacf71757	2026-10-25	#1034	Transcript rail: ten ticks at most; hovering opens the prompt list (#1034)	ticketed wave10-63	SUPERSEDED p07	audit SUPERSEDED; residual slice named in the ticket
+c04e3749820c64e442770d61d402f15643ae1ddc	2026-10-25		Bump version to v0.2.124	skipped:version-bump	SKIP:version-bump p07	
+d460e8fe14f2abd1fbd98bfc302e95c89586aa7a	2026-10-25	#1049	Transcript rail: back to one tick per prompt; long chats scroll the rail (#1049)	ticketed wave10-63	MISSING p07	Take upstream's final rail.rs (+ transcript.rs hooks, examples/rail-fixture.rs)
+255c540d651910ccab451b77ec59c05ba4266d41	2026-10-25		Bump version to v0.2.125	skipped:version-bump	SKIP:version-bump p07	
+85006f4b43547388631b7d9c43af5a5e9eb2286b	2026-10-25	#894	Files editor: drop stale syntax highlights after an external reload (#894)	ticketed wave10-02	MISSING p07	Crash fix. Stale ranges cut a multi-byte char and panicked in line layout. Cross-platform: the stale-range bu…
+4f465702de87041d90b5fa03b365a4e17407d45e	2026-10-25	#907	Keep the fork marker title from painting over popovers (#907)	ticketed wave10-24	MISSING p07	10-line flex-centre swap
+bc892abd03e546b63ce0b5d89db889f63f8c09a1	2026-10-25	#950	Session card: branch row shows the branch's changes, not the working tree (#950)	ticketed wave10-65	MISSING p07	session_info.rs SessionDiffs reshaped; click opens the Diff pane on Branch changes
+325384d8b1200630410580f179a7e7910c7ccb31	2026-10-25	#1052	Transcript: agent senders and provider switches as captions over the message (#1052)	ticketed wave10-29	MISSING p07	Caption Message from [mark] Chat (click opens sender), right-aligned [logo] From → [logo] To seam over the me…
+f65c5bc60aa43ea24bce646818932c474cc89bf0	2026-10-26	#1062	Mobile: agent senders as a caption over the message (iOS + Android) (#1062)	ticketed wave10-29,31	MISSING p07	Adds crates/proto/src/agent_messages.rs (header writer/parser moved into proto), layout/rows.rs caption row,…
+962a3207c31f0f955ac74d37510133f82289e0e4	2026-10-26		Bump version to v0.2.126	skipped:version-bump	SKIP:version-bump p07	
+d58474f0f9e2aa2c8e41ddabc27ff37f1855039e	2026-10-26	#1069	Cloud: per-account caps on awake machines and chats, set by an operator (#1069)	skipped:cloud	SKIP:cloud p07	
+98abb77f17b966c4db7e79ff31595d3331e204b2	2026-10-26	#993	Vault: keep the canary tests offline (#993)	skipped:cloud	SKIP:cloud p07	
+189115f36cde1771aaa715998c7b59141f9babaf	2026-10-26	#1012	Codex view_image shows in the chat, and the Browser says where local files open (#1012)	ticketed wave10-27	MISSING p07	Two independent halves. The browser half covers C:\…, c:/… and \\server\share paths (Windows)
+978e8dacbbcc79ad4fe0ce2029169763f4f3da28	2026-10-26	#1042	Claude subagents: forward a foreground subagent's text and thinking (#1042)	ticketed wave10-47	MISSING p07	Also carries #1041's code: sinks only for this chat's spawn chips (fixes a ● badge over an empty lanes card),…
+d8a14b35b12c05b6a3f0aea6a81caa6ad88ff2b0	2026-10-26	#1068	Messages an agent sends other chats read as one line naming the recipient (desktop, iOS, Android) (#1068)	ticketed wave10-32	MISSING p07	Depends on 325384d8b (shared caption) and f65c5bc60 (proto/agent_messages.rs). Mobile: new caption row in lay…
+ec0897feb567b1395289da127a7aede9e8a378cc	2026-10-26	#1066	Sidebar: a session left before its message lands shows its run, not Failed (#1066)	ticketed wave10-22	MISSING p07	Visible bug: a chat left before its host writes the first message (fresh worktree checkout) reads Working, lo…
+2514e3edfb4abedfb0e9e630c8390a8f2ca33a62	2026-10-26	#1041	Claude subagents: count and open only this chat's spawns (#1041)	skipped:docs-only	SKIP:docs-only p07	Its code landed squashed inside 978e8dacb (#1042), so port it from there
+e1d714daf7c37ccbe31d0bbadc38ffcbbab60794	2026-10-26	#1070	Landing: a privacy policy at zeron.sh/privacy	skipped:landing	SKIP:landing p07	
+45bea1cf303a9b444bbe0b0385816a1bfcb0da20	2026-10-26	#1070	Landing: privacy contact is sina@zeron.sh	skipped:landing	SKIP:landing p07	
+44d9beb1e79cfd1049f3108728b3176a4c88135b	2026-10-26	#1065	Session card: a row click switches sessions while the card is open (#1065)	skipped:macos-only	SKIP:macos-only p07	When wave-8 #13 ports #903, port the tooltip-layer form directly (upstream's cu…
+ae1ec6ad8d6fd2e04a25d675f1c83e8b41bdffea	2026-10-26	#1045	Fork: settle the running subagent chips a fork copies (#1045)	ticketed wave10-23	MISSING p07	Without it, a forked chip and its lanes row spin forever. Add side_chats.rs tests (already in ui-tests.yml --…
+daf047b7fd44d1d5242f40f63bad77d00350af14	2026-10-26	#1048	Tooltips on the icon-only buttons that had none (#1048)	ticketed wave10-65	MISSING p07	Skip the PR/billing/cloud buttons. Keep comments "+", model-picker tabs/star/Back, settings swatches/close/zo…
+95b294658fc105cd85b5334344cd8cd722b810a1	2026-10-26	#1043	Claude subagents: give a typed /skill's fork a chip and a tab (#1043)	ticketed wave10-48	MISSING p07	Needs 978e8dacb's spawn gate first
+81adbdabf254e7780cda5a0a4d27e0be4e94c0f8	2026-10-26		Sidebar: start a new chat from a "No project" group	ticketed wave10-21	MISSING p07	Useful for fleet (one "No project" group per device). Gate the + on the composer device picker's list
+4a0d416cf24452ece8790f051b22633a209d7d96	2026-10-26	#1051	Cursor shim tests: give a shim's first frame time for node to start (#1051)	ticketed ci-speed-03	MISSING p07	Windows CI flake: windows.yml:81 runs --test cursor_shim. First frame gets 30s
+4879a47549246db570ce41a3bbe3624de76d8595	2026-10-26	#1025	Compact mode: stop clipping subagent cards in the tool fold (#1025)	ticketed wave10-24	MISSING p07	5-line fix + test (+ optional subagent-fold-fixture)
+fbdda0a0cc5602e93d94a7e37950bd7c01931f4e	2026-10-27	#997	macOS browser: clicks outside the page take the keyboard back (#997)	skipped:macos-only	SKIP:macos-only p07	
+b8ed9d9c27b614c900e6569569b8a91fc9f8f257	2026-10-27	#1046	Providers: a switch to turn native subagents off (#1046)	ticketed wave10-55	MISSING p07	Fits Roboco's orchestration-v2 side chats well. Wire: rpc Get/SetNativeSubagents, McpServer::SIDE_CHATS_ONLY_…
+180a51088c25970643663524887e50255ab3d6ba	2026-10-27		Landing: drop rauchg from the sponsor chip	skipped:landing	SKIP:landing p07	
+64a26d3598465a739823e655a20bf1a9c16cbd3c	2026-10-27	#1022	Questions: show what was answered, and close one without answering (#1022)	ticketed wave10-52,53	MISSING p07	Wire: proto/agent.rs answers: Option<Vec<UserInputAnswer>>, proto/view.rs (+270), doc schema. Harness decline…
+d5a0152265112c235d79b29df92b550c73a5ca1a	2026-10-27	#1044	Claude subagents: fill a typed fork's tab while the CLI holds it (#1044)	ticketed wave10-49	MISSING p07	Needs 95b294658. Moves the Grok TailReader to a shared jsonl_tail (Roboco has the Grok ACP reader)
+00cc2e0592b6b44b0f98148346533e6f564339e2	2026-10-27	#1038	Remote chats: show the sync, not an outage, while a room catches up (#1038)	ticketed wave10-23	SKIP:cloud p07	audit SKIP:cloud; residual slice named in the ticket
+5d2b91901b139640965f781d0f564d054e5daf34	2026-10-27	#1036	Agents can show local images in chat: show_image, and Markdown images in replies (#1036)	ticketed wave10-50,51	MISSING p07	Wire: rpc method + MCP tool. Folder-jailed reads (uploads.rs +424), the Windows root-refusal test fix, right-…
+e16cc3e994fce6e621e77bea31910ee3b07ad65a	2026-10-26	#1060	Provider sign-ins get past the preview room's device limit (#1060)	ticketed wave10-75	SKIP:cloud late	audit SKIP:cloud; residual slice named in the ticket
+bf6d71aaaf00cc1e6f97d8daf4ccb2bbd0b4414f	2026-10-27	#1018	Settings search: find any setting from the sidebar, with ⌘F (#1018)	ticketed wave10-61	MISSING late	Settings search from the sidebar
+eabad36a225afa7ff7ad4661e9c2e50227946e58	2026-10-27	#1013	Shortcuts on non-US Mac layouts: bound where macOS puts them (AZERTY ⌘1 is ⌘&) (#1013)	skipped:macos-only	SKIP:macos-only late	non-US Mac layouts (pass3-skips-2: correct skip)
+b7942ee8bd34a55b55c3055da0677da9886441ab	2026-10-27	#814	Browser element annotations (#814)	declined	MISSING late	needs the in-app browser, which Roboco is removing (wave-10 decision 1)
+c31124aa91566b9ce142f72515a5704e4360b172	2026-10-27	#1039	Linux browser: WPE WebKit at the display's rate, frames shared with GPUI as dma-bufs (#1039)	ticketed wave10-57	MISSING late	the WPE browser is out (browser removal); only its zui pin move is in ticket 57
+3d2f1e64af3b40ec1354ca199fbe439c666f3681	2026-10-27	#1005	Smooth scrolling: mouse-wheel notches glide like Chrome's, with a setting (#1005)	ticketed wave10-62	MISSING late	smooth mouse-wheel scrolling
+46d4e42b34e49b0173ccd8f0018ba8eebd31d97d	2026-10-27	#1067	Render Markdown in user messages and the rail's preview card (#1067)	ticketed wave10-30,63	MISSING late	Markdown in user/agent bubbles + rail preview
+31d26eeb6b9447cc6ef26e994f0dc62849014ab0	2026-10-27		Bump version to v0.2.127	skipped:version-bump	SKIP:version-bump late	
