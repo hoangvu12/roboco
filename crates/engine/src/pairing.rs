@@ -27,7 +27,7 @@ pub struct PairingCode {
     pub expires_at: i64,
 }
 
-#[derive(Serialize, ts_rs::TS)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionGrant {
     pub session: PairedSession,

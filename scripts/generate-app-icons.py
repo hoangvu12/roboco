@@ -12,7 +12,6 @@ dist/roboco-artwork.png, or a path given as the first argument). Outputs:
 - dist/macos/icon-1024.png               824px artwork in an Apple squircle,
                                          margins and soft shadow baked in
                                          (sips can't alpha-mask; see 39644a46)
-- web/packages/app/public/favicon.png    128x128 rounded favicon
 - apps/android/app/src/main/res/
   mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/
   ic_launcher_art.png                    108/162/216/324/432 px opaque
@@ -153,13 +152,6 @@ def main() -> None:
     canvas.alpha_composite(mac_art, (MAC_OFFSET, MAC_OFFSET))
     canvas.save(os.path.join(ROOT, "dist/macos/icon-1024.png"), optimize=True, compress_level=9)
 
-    # Web favicon.
-    rounded(art, 128, CORNER_RADIUS_512 // 4).save(
-        os.path.join(ROOT, "web/packages/app/public/favicon.png"),
-        optimize=True,
-        compress_level=9,
-    )
-
     # Android launcher icon: the adaptive-icon background, full-bleed.
     for density, size in sorted(ANDROID_MIPMAPS.items()):
         art.resize((size, size), Image.LANCZOS).convert("RGB").save(
@@ -177,7 +169,6 @@ def main() -> None:
         "crates/ui/assets/icons/roboco-logo.svg",
         "dist/windows/roboco.ico",
         "dist/macos/icon-1024.png",
-        "web/packages/app/public/favicon.png",
     ]
     outputs += [
         f"apps/android/app/src/main/res/mipmap-{density}/ic_launcher_art.png"

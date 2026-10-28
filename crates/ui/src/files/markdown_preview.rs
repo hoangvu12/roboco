@@ -78,7 +78,7 @@ fn strip_outside_links(block: &mut Block) {
 /// Destinations a preview still treats as links: web navigation and mail,
 /// mirroring `preview_link_outcome`.
 fn web_target(target: &str) -> bool {
-    crate::browser::model::transcript_address(target).is_ok()
+    crate::markdown::web_address::transcript_address(target).is_ok()
         || (!target.chars().any(char::is_control)
             && url::Url::parse(target).is_ok_and(|url| url.scheme() == "mailto"))
 }
@@ -105,7 +105,7 @@ fn preview_link_outcome(activation: &render::LinkActivation) -> render::LinkOutc
     {
         render::LinkOutcome::External(target.clone())
     } else {
-        activation.web_outcome(false)
+        activation.web_outcome()
     }
 }
 

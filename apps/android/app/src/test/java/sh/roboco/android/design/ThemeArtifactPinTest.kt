@@ -11,7 +11,7 @@ import java.io.File
 
 /**
  * Pins the subset of the palette the desktop theme artifact also defines
- * (`web/packages/theme/src/generated/artifact.json`, generated from
+ * (`crates/theme/artifact/artifact.json`, generated from
  * `crates/theme/src/builtins.rs`). iOS is the visual reference, so only the
  * roles the two *share* must agree; every intentional divergence
  * (light background = builtin `shell`, light text `#27272C`, `tertiary`,
@@ -28,7 +28,7 @@ class ThemeArtifactPinTest {
             "decide deliberately whether iOS/Android should follow"
 
     private fun artifactVariant(id: String): JSONObject {
-        val path = File(TestRepoRoot.root(), "web/packages/theme/src/generated/artifact.json")
+        val path = File(TestRepoRoot.root(), "crates/theme/artifact/artifact.json")
         val families = JSONObject(path.readText()).getJSONArray("families")
         for (i in 0 until families.length()) {
             val family = families.getJSONObject(i)

@@ -318,8 +318,8 @@ fn schedule_pulse_every(view: EntityId, stride: u64, cx: &mut App) {
 // ---------------------------------------------------------------------------
 //
 // `CubicBezier`, `MotionSpec`, the named curves, and the fifteen named specs
-// live in `roboco_proto::motion` (gpui-free) so the web client's theme
-// artifact is generated from the same source of truth. Re-exported here; this
+// live in `roboco_proto::motion` (gpui-free) so the theme artifact
+// (`crates/theme/artifact`) is generated from the same source of truth. Re-exported here; this
 // module adds the gpui drive ([`MotionSpecExt`]) and the element helpers.
 pub use roboco_proto::motion::{
     CHEVRON, COLLAPSE, CubicBezier, DIALOG_IN, EASE, EASE_IN_OUT, EASE_OUT, EASE_OUT_EXPO,

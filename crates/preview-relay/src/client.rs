@@ -70,8 +70,7 @@ use crate::{
     mux::{self, BoxIo, Connector},
 };
 
-/// The client proxy's stable port. The engine owns 7331 and the browser
-/// helper 7333; 7332 is unclaimed. Tests may bind an ephemeral port instead.
+/// The client proxy's stable port. The engine owns 7331; 7332 is unclaimed. Tests may bind an ephemeral port instead.
 pub const CLIENT_PROXY_PORT: u16 = PREVIEW_CLIENT_PROXY_PORT;
 
 /// How one engine's relay is reached: the dial runs over the transport the

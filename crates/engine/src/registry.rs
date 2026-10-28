@@ -12,13 +12,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use roboco_harness::{Harness, HarnessError, mock::MockHarness};
 use roboco_proto::{AgentEvent, DoneStatus, HarnessId, ReasoningLevel, SteeringMode};
 
 /// What `ListHarnesses` reports per harness.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessDescriptor {
     pub id: HarnessId,
@@ -101,7 +100,7 @@ struct HarnessPrefsFile {
 }
 
 /// Per-device automatic session title preferences.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TitleSettings {
     /// None follows the session harness, using a supported installed fallback.

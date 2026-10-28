@@ -4,7 +4,7 @@
 //!
 //! These are the curves and constants the gpui viewport animates with
 //! (`roboco-ui/src/motion.rs`, `roboco-ui/src/loaders.rs`), lifted here so any
-//! surface — including the web client's generated theme artifact — animates
+//! surface — including the generated theme artifact Android pins — animates
 //! the *same* motion rather than inventing its own. A loading indicator is a
 //! brand surface; two of them that disagree read as two products.
 //!
@@ -436,8 +436,8 @@ pub const RESIZE_EDGE_BOUNCE_OUT_FRACTION: f32 = 0.32;
 //
 // Same constants as mugen's DEFAULT_SPRING (§1e), which follows the shape of
 // stackblitz/use-stick-to-bottom. `roboco-ui/src/transcript.rs` integrates
-// them at a fixed 60fps sub-frame; the web client reimplements the same
-// stepper in JS from these values.
+// them at a fixed 60fps sub-frame; other clients reimplement the same
+// stepper from these values.
 
 /// Retains velocity frame-to-frame (higher = more glide).
 pub const SPRING_DAMPING: f32 = 0.7;

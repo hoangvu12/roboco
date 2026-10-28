@@ -648,7 +648,6 @@ pub fn apply_keymap(
         // Pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), ToggleCommandPalette, None),
     ]);
-    crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
     // the user cleared it on purpose.
@@ -841,7 +840,6 @@ pub enum RightSurface {
     #[default]
     Picker,
     File(u64),
-    Browser(u64),
     Diff(u64),
     Terminal(u64),
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
@@ -1801,7 +1799,7 @@ pub struct Shell {
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
-    /// The surface-tab strip's `+` menu (Browser / Terminal / Diffs / History rows).
+    /// The surface-tab strip's `+` menu (Files / Terminal / Diffs / History rows).
     right_plus: popover::Popup<()>,
     /// Host-owned project Actions cached per (device, space).
     project_actions: crate::project_actions::ProjectActionsController,
@@ -1833,11 +1831,6 @@ pub struct Shell {
     side_chats: std::collections::HashMap<u64, SideChatTab>,
     side_chat_seq: u64,
     side_chat_creating: bool,
-    browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
-    browser_subs: std::collections::HashMap<u64, Subscription>,
-    browser_seq: u64,
-    browser_context: crate::browser::BrowserContext,
-    browser_profile: Option<String>,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -2032,6 +2025,9 @@ pub struct Shell {
     session_diffs: session_info::SessionDiffs,
     /// The servers behind the card's Ports section.
     session_previews: session_info::SessionPreviews,
+    /// Paired engines' servers opened from the ports card, per (engine,
+    /// chat): each keeps the client preview proxy routing while it runs.
+    opened_previews: session_info::OpenedPreviews,
     sidebar_edge_bounce: Option<motion::ResizeEdgeBounce>,
     /// Boundary currently held during a sidebar drag. Cleared on re-entry or
     /// release so the next genuine edge crossing can acknowledge the limit.
@@ -2299,11 +2295,6 @@ impl Shell {
             side_chats: std::collections::HashMap::new(),
             side_chat_seq: 0,
             side_chat_creating: false,
-            browsers: std::collections::HashMap::new(),
-            browser_subs: std::collections::HashMap::new(),
-            browser_seq: 0,
-            browser_context: crate::browser::BrowserContext::default(),
-            browser_profile: None,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -2416,6 +2407,7 @@ impl Shell {
             session_lanes: session_lanes::LaneState::default(),
             session_diffs: session_info::SessionDiffs::default(),
             session_previews: session_info::SessionPreviews::default(),
+            opened_previews: session_info::OpenedPreviews::default(),
             sidebar_edge_bounce: None,
             sidebar_resize_edge: None,
             pane_resize_active: None,
@@ -3142,15 +3134,6 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone(), false, None)),
-                RightSurface::Browser(id) => self.browsers.get(id).map(|browser| {
-                    let browser = browser.read(cx);
-                    (
-                        *surface,
-                        browser.title(),
-                        false,
-                        browser.page.url.clone().map(Into::into),
-                    )
-                }),
                 RightSurface::Picker => None,
             })
             .collect()
@@ -3202,8 +3185,7 @@ impl Shell {
             | RightSurface::Diff(_)
             | RightSurface::Terminal(_)
             | RightSurface::SideChat(_)
-            | RightSurface::Subagent(_)
-            | RightSurface::Browser(_) => {
+            | RightSurface::Subagent(_) => {
                 return None;
             }
         };
@@ -3320,7 +3302,7 @@ impl Shell {
                     });
                 }
             }
-            RightSurface::Subagent(_) | RightSurface::Browser(_) => {}
+            RightSurface::Subagent(_) => {}
             RightSurface::Picker => {}
         }
         self.sync_explorer_selection(cx);
@@ -3333,12 +3315,6 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let RightSurface::Browser(id) = surface {
-            if let Some(browser) = self.browsers.get(&id).cloned() {
-                browser.update(cx, |browser, cx| browser.focus_address(window, cx));
-            }
-            return;
-        }
         let files = match surface {
             RightSurface::File(id) => self.file_surfaces.get(&id).cloned(),
             _ => None,
@@ -3474,91 +3450,10 @@ impl Shell {
                 LinkOutcome::Rejected
             };
         }
-        let mut resolved = activation.clone();
-        if resolved.action == LinkAction::Primary {
-            resolved.action = if crate::settings::current(cx).open_web_links_in_roboco {
-                LinkAction::Internal
-            } else {
-                LinkAction::External
-            };
-        }
-        let outcome = resolved.web_outcome(cfg!(any(target_os = "macos", target_os = "linux")));
-        if outcome == LinkOutcome::Internal {
-            self.set_surfaces_open(true, cx);
-            self.add_browser_surface(activation.target.navigation.clone().ok(), window, cx);
-        }
-        outcome
+        // A web link opens in the system browser (ADR 0012).
+        activation.web_outcome()
     }
 
-    /// Browser tabs are independent instances owned by the current session.
-    fn add_browser_surface(
-        &mut self,
-        url: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.active_chat.is_empty() {
-            return;
-        }
-        let key = self.panel_key(cx);
-        let remote = {
-            let state = self.state.read(cx);
-            state.selected_chat_row().is_some_and(|chat| {
-                Some(chat.device_id.as_str()) != state.local_device_id.as_deref()
-            })
-        };
-        self.browser_seq += 1;
-        let id = self.browser_seq;
-        let browser = cx.new(|cx| {
-            crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
-        });
-        if let Ok(handle) = crate::request_routing::selected_target(self.state.read(cx)) {
-            let chat_id = self.active_chat.clone();
-            // Every pane carries the preview proxy: remote panes ingest and
-            // watch through it, local panes feed the browser bypass list.
-            let previews = self
-                .state
-                .update(cx, |state, _| state.ensure_preview_proxy());
-            browser.update(cx, |browser, cx| {
-                browser.watch_previews(handle, chat_id, previews, cx)
-            });
-        }
-        let owner = key.clone();
-        let sub = cx.subscribe_in(&browser, window, move |this, _, event, window, cx| {
-            match event {
-                crate::browser::BrowserEvent::Changed => cx.notify(),
-                crate::browser::BrowserEvent::NewTab(url) => {
-                    // A background page cannot open a tab in the wrong session.
-                    if this.panel_key(cx) == owner
-                        && this.resolved_right_active(cx) == RightSurface::Browser(id)
-                    {
-                        this.add_browser_surface(url.clone(), window, cx);
-                    }
-                }
-                crate::browser::BrowserEvent::Close => {
-                    this.close_right_surface(RightSurface::Browser(id), window, cx)
-                }
-            }
-        });
-        self.browsers.insert(id, browser.clone());
-        self.browser_subs.insert(id, sub);
-        self.right_tabs
-            .entry(key)
-            .or_default()
-            .push(RightSurface::Browser(id));
-        self.set_right_active(RightSurface::Browser(id), cx);
-        browser.update(cx, |browser, cx| {
-            if let Some(url) = url {
-                browser.navigate(&url, window, cx);
-            } else {
-                browser.focus_address(window, cx);
-            }
-        });
-    }
-
-    /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
-    /// FRESH diff tab with its own scope/base selection (multiple diff
-    /// panels, user request).
     fn add_diff_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, window, cx);
@@ -4205,12 +4100,6 @@ impl Shell {
         }
         match surface {
             RightSurface::File(_) => {}
-            RightSurface::Browser(id) => {
-                if let Some(browser) = self.browsers.remove(&id) {
-                    browser.update(cx, |browser, cx| browser.close(cx));
-                }
-                self.browser_subs.remove(&id);
-            }
             RightSurface::Diff(id) => {
                 // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
@@ -6311,16 +6200,6 @@ impl Shell {
 
     fn delete_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.delete_confirm = None;
-        if let Some(tabs) = self.right_tabs.get(&chat_id) {
-            for surface in tabs {
-                if let RightSurface::Browser(id) = surface {
-                    if let Some(browser) = self.browsers.remove(id) {
-                        browser.update(cx, |browser, cx| browser.close(cx));
-                    }
-                    self.browser_subs.remove(id);
-                }
-            }
-        }
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
             self.state.update(cx, |s, cx| s.select_chat(None, cx));
         }
@@ -10829,12 +10708,6 @@ impl Shell {
                         .child(div().flex_1().min_h_0().child(changes))
                         .into_any_element()
                 }
-                RightSurface::Browser(id) => self
-                    .browsers
-                    .get(&id)
-                    .cloned()
-                    .map(|browser| browser.into_any_element())
-                    .unwrap_or_else(|| self.render_surface_picker(cx)),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -10992,11 +10865,6 @@ impl Shell {
                     .flex_col()
                     .gap(px(8.0))
                     .child(
-                        row("surface-card-browser", icons::GLOBE, "Browser").on_click(cx.listener(
-                            |this, _, window, cx| this.add_browser_surface(None, window, cx),
-                        )),
-                    )
-                    .child(
                         row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.add_terminal_surface(cx);
@@ -11142,18 +11010,10 @@ impl Shell {
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::SideChat(_) => icons::CHAT_ROUND_LINE,
                 RightSurface::Terminal(_) => icons::TERMINAL,
-                RightSurface::Browser(_) => icons::GLOBE,
                 RightSurface::Picker => icons::PLUS,
             };
             // Working chats and subagents swap their harness icon for the
             // mini spinner; subagent liveness follows the doc's streaming tail.
-            let browser_favicon = match surface {
-                RightSurface::Browser(id) => self
-                    .browsers
-                    .get(&id)
-                    .and_then(|b| b.read(cx).favicon.clone()),
-                _ => None,
-            };
             let subagent_running = match surface {
                 RightSurface::SideChat(id) => self.side_chats.get(&id).is_some_and(|tab| {
                     let state = tab.state.read(cx);
@@ -11162,10 +11022,6 @@ impl Shell {
                         .as_deref()
                         .is_some_and(|id| state.indicator_for(id, Utc::now()) == Indicator::Working)
                 }),
-                RightSurface::Browser(id) => self
-                    .browsers
-                    .get(&id)
-                    .is_some_and(|b| b.read(cx).page.loading),
                 RightSurface::Subagent(id) => self.subagent_tabs.get(&id).is_some_and(|tab| {
                     self.state
                         .read(cx)
@@ -11312,8 +11168,6 @@ impl Shell {
                                 cx,
                             )
                             .into_any_element()
-                        } else if let Some(favicon) = browser_favicon {
-                            gpui::img(favicon).size(px(12.0)).into_any_element()
                         } else if matches!(surface, RightSurface::File(_)) {
                             crate::file_icons::icon(
                                 crate::file_icons::FileIconIdentity::file(
@@ -11505,20 +11359,6 @@ impl Shell {
                                         .text_color(theme.text_muted),
                                 )
                                 .child(SharedString::from("Files")),
-                        )
-                        .child(
-                            popover::menu_row(&theme, false, "right-plus-browser")
-                                .id("right-plus-browser-row")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.add_browser_surface(None, window, cx);
-                                    this.close_right_plus(cx);
-                                }))
-                                .child(
-                                    icon(icons::GLOBE)
-                                        .size(px(13.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Browser")),
                         )
                         .child(
                             popover::menu_row(&theme, false, "right-plus-terminal")
@@ -12151,60 +11991,6 @@ impl Render for Shell {
             .debug_gate
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
-
-        let browser_profile = {
-            let state = self.state.read(cx);
-            crate::links::workspace_locator(state.local_device_id.as_deref())
-        };
-        if browser_profile.is_some() && browser_profile != self.browser_profile {
-            if self.browser_profile.is_some() {
-                for browser in self.browsers.values() {
-                    browser.update(cx, |browser, cx| browser.close(cx));
-                }
-                self.browsers.clear();
-                self.browser_subs.clear();
-                self.browser_context = crate::browser::BrowserContext::default();
-            }
-            self.browser_profile = browser_profile;
-        }
-        let browser_active = matches!(gate, GatePhase::Ready)
-            && matches!(self.route, Route::Chat)
-            && (self.right_pane_open(cx) || self.tween_active(self.right_tween));
-        // Native clipping follows the animated GPUI mask. Drags only transfer
-        // pointer ownership; the browser continues rendering and reflowing.
-        let browser_dragging = cx.has_active_drag();
-        #[cfg(target_os = "macos")]
-        let browser_resize_inset = if self.right_pane_open(cx)
-            && !self.right_pane_expanded
-            && !self.tween_active(self.right_tween)
-        {
-            // The browser starts inside the panel's one-point left border.
-            px(PANE_RESIZE_HITBOX_HALF_WIDTH - 1.0)
-        } else {
-            px(0.0)
-        };
-        #[cfg(target_os = "macos")]
-        let browser_overlay_width = px(if self.files_visible_width(cx) > 0.0 {
-            self.files_visible_width(cx) + PANE_RESIZE_HITBOX_HALF_WIDTH
-        } else {
-            0.0
-        });
-        let selected_surface = self.resolved_right_active(cx);
-        for (id, browser) in &self.browsers {
-            let presentation = crate::browser::model::presentation(
-                browser_active && selected_surface == RightSurface::Browser(*id),
-                browser_dragging,
-            );
-            browser.update(cx, |browser, cx| {
-                #[cfg(target_os = "macos")]
-                {
-                    browser.set_resize_inset(browser_resize_inset, cx);
-                    browser.set_right_occlusion(browser_overlay_width, cx);
-                }
-                browser.set_shortcuts(&self.settings.keymap);
-                browser.set_presentation(presentation, cx);
-            });
-        }
 
         // Fullscreen hides the macOS traffic lights — reflow the control
         // cluster with a 200ms ease-out tween (§1.1). A fullscreen transition
@@ -13728,7 +13514,7 @@ mod tests {
     #[test]
     fn session_panels_right_history_tracks_visits_without_duplicates() {
         let mut panels = SessionPanels::default();
-        let [a, b, c, d] = [1, 2, 3, 4].map(RightSurface::Browser);
+        let [a, b, c, d] = [1, 2, 3, 4].map(RightSurface::Diff);
         for surface in [a, b, c, d, c, b, d, d] {
             panels.update("chat", |p| p.right_active = surface);
         }
@@ -13805,8 +13591,8 @@ mod tests {
                 shell.active_chat = "owner".into();
                 let mut tabs = Vec::new();
                 for _ in 0..4 {
-                    shell.add_browser_surface(None, window, cx);
-                    tabs.push(RightSurface::Browser(shell.browser_seq));
+                    shell.add_diff_surface(window, cx);
+                    tabs.push(RightSurface::Diff(shell.diff_seq));
                 }
                 let [a, b, c, d] = <[_; 4]>::try_from(tabs).unwrap();
                 for surface in [c, b, d] {
@@ -13820,8 +13606,8 @@ mod tests {
                 shell.close_right_surface(b, window, cx);
                 assert_eq!(shell.resolved_right_active(cx), c);
 
-                shell.add_browser_surface(None, window, cx);
-                let recent = RightSurface::Browser(shell.browser_seq);
+                shell.add_diff_surface(window, cx);
+                let recent = RightSurface::Diff(shell.diff_seq);
                 shell.add_file_surface("README.md".into(), window, cx);
                 let file = RightSurface::File(shell.file_surface_seq);
                 shell.close_right_surface(file, window, cx);
@@ -13832,8 +13618,8 @@ mod tests {
                 let file = RightSurface::File(shell.file_surface_seq);
                 let owner = shell.panel_key(cx);
                 shell.active_chat = "other".into();
-                shell.add_browser_surface(None, window, cx);
-                let other = RightSurface::Browser(shell.browser_seq);
+                shell.add_diff_surface(window, cx);
+                let other = RightSurface::Diff(shell.diff_seq);
                 shell.complete_file_close(file, &owner, cx);
                 assert_eq!(shell.resolved_right_active(cx), other);
                 shell.active_chat = "owner".into();
@@ -14517,13 +14303,13 @@ mod exit_regressions {
             .into_iter()
             .enumerate()
         {
-            let open_links_in_roboco = index % 2 == 0;
-            let terminal_family = if open_links_in_roboco {
+            let flip = index % 2 == 0;
+            let terminal_family = if flip {
                 crate::typography::UiFontFamily::System
             } else {
                 crate::typography::UiFontFamily::Geist
             };
-            let code_family = if open_links_in_roboco {
+            let code_family = if flip {
                 crate::typography::UiFontFamily::Geist
             } else {
                 crate::typography::UiFontFamily::System
@@ -14551,7 +14337,6 @@ mod exit_regressions {
                         settings.wallpaper_history =
                             vec![dir.path().join("wallpapers/current.png")];
                         settings.window_geometry = geometry;
-                        settings.open_web_links_in_roboco = open_links_in_roboco;
                         settings.terminal_font_family = terminal_family.clone();
                         settings.terminal_font_size = terminal_size;
                         settings.code_font_family = code_family.clone();
@@ -14560,7 +14345,7 @@ mod exit_regressions {
                         settings.skill_completion_by_harness.insert(
                             roboco_proto::HarnessId::ClaudeCode,
                             settings::SkillCompletionSettings {
-                                dollar: open_links_in_roboco,
+                                dollar: flip,
                                 separate_from_slash: true,
                             },
                         );
@@ -14585,7 +14370,6 @@ mod exit_regressions {
                         );
                         assert_eq!(current.window_geometry, geometry);
                         assert_eq!(current.new_thread_background_effect, effect);
-                        assert_eq!(current.open_web_links_in_roboco, open_links_in_roboco);
                         assert_eq!(current.terminal_font_family, terminal_family);
                         assert_eq!(current.terminal_font_size, terminal_size);
                         assert_eq!(current.code_font_family, code_family);
@@ -14595,7 +14379,7 @@ mod exit_regressions {
                             current
                                 .skill_completion(roboco_proto::HarnessId::ClaudeCode)
                                 .dollar,
-                            open_links_in_roboco
+                            flip
                         );
                         assert!(
                             current
@@ -14616,7 +14400,6 @@ mod exit_regressions {
                         Some(dir.path().join("wallpapers/current.png"))
                     );
                     assert_eq!(loaded.new_thread_background_effect, effect);
-                    assert_eq!(loaded.open_web_links_in_roboco, open_links_in_roboco);
                     assert_eq!(loaded.terminal_font_family, terminal_family);
                     assert_eq!(loaded.terminal_font_size, terminal_size);
                     assert_eq!(loaded.code_font_family, code_family);
@@ -15145,9 +14928,8 @@ mod exit_regressions {
             .unwrap();
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[gpui::test]
-    fn transcript_links_open_new_tabs_and_reject_stale_sessions(cx: &mut TestAppContext) {
+    fn transcript_web_links_open_externally_and_reject_stale_sessions(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             gpui_base::init(cx);
@@ -15168,7 +14950,7 @@ mod exit_regressions {
                 cx,
             )
         });
-        let weak = window
+        window
             .update(cx, |shell, window, cx| {
                 use crate::markdown::render::{
                     LinkAction, LinkActivation, LinkOutcome, LinkTarget,
@@ -15182,44 +14964,22 @@ mod exit_regressions {
                     action: LinkAction::Primary,
                     source_session: Some("first-session".into()),
                 };
+                // Every action on a web link opens it in the system browser
+                // (ADR 0012); no right-pane surface appears.
+                for action in [
+                    LinkAction::Primary,
+                    LinkAction::Internal,
+                    LinkAction::External,
+                ] {
+                    activation.action = action;
+                    assert_eq!(
+                        shell.activate_session_link(&activation, window, cx),
+                        LinkOutcome::External("https://example.com/docs".into()),
+                        "{action:?}"
+                    );
+                }
                 assert!(!shell.right_pane_open(cx));
-                assert_eq!(
-                    shell.activate_session_link(&activation, window, cx),
-                    LinkOutcome::Internal
-                );
-                assert!(shell.right_pane_open(cx));
-                let first = shell.browser_seq;
-                assert_eq!(
-                    shell.browsers[&first].read(cx).page.url.as_deref(),
-                    Some("https://example.com/docs")
-                );
-                assert_eq!(
-                    shell.resolved_right_active(cx),
-                    RightSurface::Browser(first)
-                );
-                shell.activate_session_link(&activation, window, cx);
-                assert_eq!(shell.browsers.len(), 2);
-                settings::update(settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.open_web_links_in_roboco = false;
-                });
-                assert_eq!(
-                    shell.activate_session_link(&activation, window, cx),
-                    LinkOutcome::External("https://example.com/docs".into())
-                );
-                assert_eq!(shell.browsers.len(), 2);
-                activation.action = LinkAction::Internal;
-                assert_eq!(
-                    shell.activate_session_link(&activation, window, cx),
-                    LinkOutcome::Internal,
-                    "the explicit internal action ignores the default preference"
-                );
-                assert_eq!(shell.browsers.len(), 3);
-                activation.action = LinkAction::External;
-                assert_eq!(
-                    shell.activate_session_link(&activation, window, cx),
-                    LinkOutcome::External("https://example.com/docs".into())
-                );
-                assert_eq!(shell.browsers.len(), 3);
+                assert!(shell.right_tabs.values().all(Vec::is_empty));
                 activation.source_session = Some("other-session".into());
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
@@ -15233,7 +14993,6 @@ mod exit_regressions {
                     shell.activate_session_link(&activation, window, cx),
                     LinkOutcome::Rejected
                 );
-                assert_eq!(shell.browsers.len(), 3);
                 shell.state.update(cx, |state, _| {
                     state.selected_chat = Some("first-session".into())
                 });
@@ -15255,20 +15014,15 @@ mod exit_regressions {
                     .update(cx, |transcript, cx| transcript.link_ui(cx))
                     .unwrap();
                 assert_eq!(ui.source_session.as_deref(), Some("first-session"));
-                activation.action = LinkAction::Internal;
+                activation.action = LinkAction::Primary;
                 activation.source_session = ui.source_session;
                 assert_eq!(
                     shell.activate_session_link(&activation, window, cx),
-                    LinkOutcome::Internal
+                    LinkOutcome::External("https://example.com/docs".into()),
+                    "a subagent transcript's links belong to its conversation"
                 );
-                assert_eq!(shell.browsers.len(), 4);
-                let weak = shell.browsers[&first].downgrade();
-                shell.close_right_surface(RightSurface::Browser(first), window, cx);
-                weak
             })
             .unwrap();
-        cx.run_until_parked();
-        assert!(weak.upgrade().is_none());
     }
 
     /// Encoded destinations open the decoded path, and an absolute
@@ -15408,9 +15162,8 @@ mod exit_regressions {
             .unwrap();
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[gpui::test]
-    fn markdown_preview_events_open_browser_from_tree_and_file_tabs(cx: &mut TestAppContext) {
+    fn markdown_preview_web_links_open_externally_from_tree_and_file_tabs(cx: &mut TestAppContext) {
         use crate::markdown::render::{LinkAction, LinkActivation, LinkTarget};
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -15446,7 +15199,6 @@ mod exit_regressions {
                 ]
             })
             .unwrap();
-        let mut last_external_url = None;
         for (index, surface) in surfaces.iter().enumerate() {
             let mut activation = LinkActivation {
                 target: LinkTarget::new("Docs", &format!("https://example.com/preview/{index}")),
@@ -15457,25 +15209,11 @@ mod exit_regressions {
                 cx.emit(FilesEvent::OpenWebLink(activation.clone()))
             });
             cx.run_until_parked();
-            assert_eq!(cx.opened_url(), last_external_url);
-            window
-                .update(cx, |shell, _, cx| {
-                    assert!(shell.right_pane_open(cx));
-                    assert_eq!(shell.browsers.len(), index + 1);
-                    assert_eq!(
-                        shell.resolved_right_active(cx),
-                        RightSurface::Browser(shell.browser_seq)
-                    );
-                    assert_eq!(
-                        shell.browsers[&shell.browser_seq]
-                            .read(cx)
-                            .page
-                            .url
-                            .as_deref(),
-                        Some(activation.target.original.as_str())
-                    );
-                })
-                .unwrap();
+            // A primary click opens the system browser too (ADR 0012).
+            assert_eq!(
+                cx.opened_url().as_deref(),
+                Some(activation.target.original.as_str())
+            );
             activation.action = LinkAction::External;
             surface.update(cx, |_, cx| {
                 cx.emit(FilesEvent::OpenWebLink(activation.clone()))
@@ -15485,7 +15223,7 @@ mod exit_regressions {
                 cx.opened_url().as_deref(),
                 Some(activation.target.original.as_str())
             );
-            last_external_url = Some(activation.target.original.clone());
+            let last_external_url = Some(activation.target.original.clone());
             activation.target = LinkTarget::new("Stale", "https://example.com/stale");
             activation.source_session = Some("stale-owner".into());
             for action in [LinkAction::Internal, LinkAction::External] {
@@ -15496,16 +15234,20 @@ mod exit_regressions {
                 cx.run_until_parked();
                 assert_eq!(cx.opened_url(), last_external_url);
             }
-            window
-                .update(cx, |shell, _, _| {
-                    assert_eq!(shell.browsers.len(), index + 1)
-                })
-                .unwrap();
         }
+        window
+            .update(cx, |shell, _, cx| {
+                let tabs = shell.right_tabs.get(&shell.panel_key(cx)).cloned().unwrap_or_default();
+                assert!(
+                    tabs.iter().all(|tab| !matches!(tab, RightSurface::Diff(_))),
+                    "web links never add a surface"
+                );
+            })
+            .unwrap();
     }
 
     #[gpui::test]
-    fn browser_tabs_keep_session_ownership_and_release_on_close(cx: &mut TestAppContext) {
+    fn right_tabs_keep_session_ownership_and_release_on_close(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             gpui_base::init(cx);
@@ -15527,45 +15269,42 @@ mod exit_regressions {
         });
         let weak = window
             .update(cx, |shell, window, cx| {
-                // A fresh-session canvas never accumulates ownerless tabs.
-                shell.add_browser_surface(None, window, cx);
-                assert!(shell.browsers.is_empty());
                 shell.active_chat = "first-session".into();
-                shell.add_browser_surface(None, window, cx);
-                let first = shell.browser_seq;
-                let weak = shell.browsers[&first].downgrade();
-                shell.add_browser_surface(None, window, cx);
-                let second = shell.browser_seq;
+                shell.add_diff_surface(window, cx);
+                let first = shell.diff_seq;
+                let weak = shell.diffs[&first].downgrade();
+                shell.add_diff_surface(window, cx);
+                let second = shell.diff_seq;
                 assert_ne!(first, second);
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(second)
+                    RightSurface::Diff(second)
                 );
                 shell.active_chat = "second-session".into();
                 assert!(shell.right_surface_rows(cx).is_empty());
-                shell.add_browser_surface(None, window, cx);
-                let other = shell.browser_seq;
+                shell.add_diff_surface(window, cx);
+                let other = shell.diff_seq;
                 shell.active_chat = "first-session".into();
                 assert_eq!(shell.right_surface_rows(cx).len(), 2);
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(second)
+                    RightSurface::Diff(second)
                 );
 
-                shell.add_browser_surface(None, window, cx);
-                let third = shell.browser_seq;
-                let middle = RightSurface::Browser(second);
+                shell.add_diff_surface(window, cx);
+                let third = shell.diff_seq;
+                let middle = RightSurface::Diff(second);
                 assert_eq!(
                     shell.tabs_to_close(middle, TabCloseAction::Left, cx),
-                    vec![RightSurface::Browser(first)]
+                    vec![RightSurface::Diff(first)]
                 );
                 assert_eq!(
                     shell.tabs_to_close(middle, TabCloseAction::Right, cx),
-                    vec![RightSurface::Browser(third)]
+                    vec![RightSurface::Diff(third)]
                 );
                 assert_eq!(
                     shell.tabs_to_close(middle, TabCloseAction::Others, cx),
-                    vec![RightSurface::Browser(first), RightSurface::Browser(third)]
+                    vec![RightSurface::Diff(first), RightSurface::Diff(third)]
                 );
                 assert_eq!(
                     shell.tabs_to_close(middle, TabCloseAction::This, cx),
@@ -15573,12 +15312,12 @@ mod exit_regressions {
                 );
                 assert!(
                     shell
-                        .tabs_to_close(RightSurface::Browser(first), TabCloseAction::Left, cx)
+                        .tabs_to_close(RightSurface::Diff(first), TabCloseAction::Left, cx)
                         .is_empty()
                 );
                 assert!(
                     shell
-                        .tabs_to_close(RightSurface::Browser(third), TabCloseAction::Right, cx)
+                        .tabs_to_close(RightSurface::Diff(third), TabCloseAction::Right, cx)
                         .is_empty()
                 );
                 for tab in shell.tabs_to_close(middle, TabCloseAction::Right, cx) {
@@ -15586,31 +15325,31 @@ mod exit_regressions {
                 }
                 shell.set_right_active(middle, cx);
 
-                // Closing a background tab preserves the selected address input.
+                // Closing a background tab preserves focus.
                 let focus = window.focused(cx);
-                shell.close_right_surface(RightSurface::Browser(first), window, cx);
+                shell.close_right_surface(RightSurface::Diff(first), window, cx);
                 assert_eq!(window.focused(cx), focus);
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(second)
+                    RightSurface::Diff(second)
                 );
-                shell.close_right_surface(RightSurface::Browser(second), window, cx);
+                shell.close_right_surface(RightSurface::Diff(second), window, cx);
                 assert_eq!(shell.resolved_right_active(cx), RightSurface::Picker);
                 shell.active_chat = "second-session".into();
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(other)
+                    RightSurface::Diff(other)
                 );
-                shell.close_right_surface(RightSurface::Browser(other), window, cx);
-                assert!(shell.browsers.is_empty());
-                assert!(shell.browser_subs.is_empty());
+                shell.close_right_surface(RightSurface::Diff(other), window, cx);
+                assert!(shell.diffs.is_empty());
+                assert!(shell.diff_subs.is_empty());
                 weak
             })
             .unwrap();
         cx.run_until_parked();
         assert!(
             weak.upgrade().is_none(),
-            "closed browser retained by callbacks"
+            "closed tab retained by callbacks"
         );
     }
 
@@ -15641,20 +15380,20 @@ mod exit_regressions {
                 shell.toggle_right_pane(cx);
                 assert!(shell.right_pane_open(cx));
 
-                shell.add_browser_surface(None, window, cx);
-                let first = shell.browser_seq;
-                shell.add_browser_surface(None, window, cx);
-                let second = shell.browser_seq;
+                shell.add_diff_surface(window, cx);
+                let first = shell.diff_seq;
+                shell.add_diff_surface(window, cx);
+                let second = shell.diff_seq;
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(second)
+                    RightSurface::Diff(second)
                 );
 
                 // ⌘W closes the active tab, not the window.
                 assert!(shell.close_active_surface(window, cx));
                 assert_eq!(
                     shell.resolved_right_active(cx),
-                    RightSurface::Browser(first)
+                    RightSurface::Diff(first)
                 );
 
                 // …and again for the last tab, which also collapses the
@@ -15752,76 +15491,6 @@ mod exit_regressions {
                 })
                 .unwrap();
         }
-    }
-}
-
-/// Native browser regression fixture hooks are excluded from shipped builds.
-#[cfg(feature = "browser-fixture")]
-impl Shell {
-    pub fn fixture_focus_mounted(&self, window: &Window, cx: &App) -> bool {
-        self.shortcut_focus.contains_focused(window, cx)
-    }
-    pub fn fixture_active_browser(
-        &self,
-        cx: &App,
-    ) -> Option<(u64, Entity<crate::browser::BrowserSurface>)> {
-        let RightSurface::Browser(id) = self.resolved_right_active(cx) else {
-            return None;
-        };
-        self.browsers.get(&id).cloned().map(|browser| (id, browser))
-    }
-    pub fn fixture_open_browser(
-        &mut self,
-        url: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> (u64, Entity<crate::browser::BrowserSurface>) {
-        self.set_surfaces_open(true, cx);
-        // Hosted Macs can expose only a 1024px desktop. Use the app's
-        // normal collapsed-sidebar layout to keep both conversation and
-        // preview readable in that real window.
-        if f32::from(window.viewport_size().width) < 1200.0 {
-            self.settings.sidebar_collapsed = true;
-        }
-        self.add_browser_surface(url, window, cx);
-        (self.browser_seq, self.browsers[&self.browser_seq].clone())
-    }
-    pub fn fixture_select_browser(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.set_right_active(RightSurface::Browser(id), cx);
-    }
-    pub fn fixture_close_browser(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_right_surface(RightSurface::Browser(id), window, cx);
-    }
-    pub fn fixture_browser_menu(&mut self, open: bool, cx: &mut Context<Self>) {
-        if open {
-            self.right_plus.open(());
-            cx.notify();
-        } else {
-            self.close_right_plus(cx);
-        }
-    }
-    pub fn fixture_browser_menu_mounted(&self) -> bool {
-        self.right_plus.get().is_some()
-    }
-    pub fn fixture_expand_browser(&mut self, cx: &mut Context<Self>) {
-        self.toggle_right_pane_expand(cx);
-    }
-    pub fn fixture_blur_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.route = Route::Settings(SettingsSection::Devices);
-        window.blur();
-        cx.notify();
-    }
-    pub fn fixture_toggle_sidebar(&mut self, right: bool, cx: &mut Context<Self>) {
-        if right {
-            // The fixtures drive the surface host only; the explorer stays put.
-            self.set_surfaces_open(!self.right_pane_open(cx), cx);
-        } else {
-            self.toggle_sidebar(cx);
-        }
-    }
-    pub fn fixture_resize_browser(&mut self, width: f32, cx: &mut Context<Self>) {
-        self.settings.right_pane_width = width;
-        cx.notify();
     }
 }
 

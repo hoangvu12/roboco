@@ -10,7 +10,7 @@ import sh.roboco.android.shell.NavRoute
  * WebView's Chromium resolves (`*.localhost` → loopback, in-process) with
  * no OS configuration.
  *
- * Pushed from the session screen's ⋯ menu ("Previews"); the slot decision
+ * Pushed from the session screen's ⋯ menu ("Ports"); the slot decision
  * (NavStack entry, not a `session/SessionBottomStack` slot) is recorded in
  * the ticket: the bottom stack's slot set is fixed by its owner tickets
  * (73 pill, 82 queue, 90/91 questions, 78 composer) and the WebView

@@ -20,10 +20,6 @@ name: release
 # Android job then builds unsigned APKs when the signing secrets are
 # absent).
 #
-# The web client bundle is built before the engine compiles (the engine's
-# build.rs stages web/packages/app/dist into crates/engine/web-staging/ for
-# rust-embed to bake into the binary — see crates/engine/build.rs).
-#
 # Android signing: the ANDROID_KEYSTORE_* secrets (see
 # docs/reference/android-development.md → Release signing). A tag push
 # without them fails before publishing; workflow_dispatch continues
@@ -60,20 +56,9 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-dev libxcb1-dev libx11-xcb-dev \
             libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+            libvulkan-dev pkg-config cmake
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: enable pnpm
-        run: corepack enable
-      - name: install web workspace
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      - name: build web bundle (engine embeds it at compile time)
-        working-directory: web
-        run: pnpm --filter "@roboco/app" run build
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
@@ -141,17 +126,6 @@ jobs:
             winget install --id JRSoftware.InnoSetup --exact --silent `
               --accept-package-agreements --accept-source-agreements
           }
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: enable pnpm
-        run: corepack enable
-      - name: install web workspace
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      - name: build web bundle (engine embeds it at compile time)
-        working-directory: web
-        run: pnpm --filter "@roboco/app" run build
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod

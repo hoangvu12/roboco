@@ -1,5 +1,7 @@
 # Android is a native client on a shared Rust mobile core
 
+The web client referenced here was removed by [ADR 0012](0012-no-web-client-no-embedded-browser.md).
+
 Roboco ships a native Android app (`apps/android/`, application id and package
 `sh.roboco.android`, display name "Roboco"). It ports upstream Zeron's iPhone
 app one to one in look and behaviour, minus everything that needed the cloud.

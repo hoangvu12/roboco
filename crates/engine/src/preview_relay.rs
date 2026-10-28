@@ -58,8 +58,6 @@ pub struct RelayScope {
 }
 
 /// `/preview-relay/{chatId}/{serviceId}` for url-safe ids, `None` otherwise.
-/// Like [`crate::tailcat_relay::relay_id_from_path`], this also decides which
-/// paths must not fall through to the web client's SPA shell.
 pub fn scope_from_path(path: &str) -> Option<RelayScope> {
     let rest = path.strip_prefix("/preview-relay/")?;
     let rest = rest.trim_end_matches('/');
@@ -72,13 +70,6 @@ pub fn scope_from_path(path: &str) -> Option<RelayScope> {
     } else {
         None
     }
-}
-
-/// Whether the path belongs to the relay route at all (well-formed or not).
-/// Malformed relay paths must answer 401/404 from the gate, never the web
-/// client's SPA shell — a reserved route, not a client-side route.
-pub fn is_relay_path(path: &str) -> bool {
-    path == "/preview-relay" || path.starts_with("/preview-relay/")
 }
 
 fn valid_id(id: &str) -> bool {
@@ -96,17 +87,13 @@ fn valid_id(id: &str) -> bool {
 /// the engine resolves them through the scoped
 /// [`PreviewService::relay_connector`] connector.
 ///
-/// `first_frame_auth` is the RPC socket's browser path: the session
-/// credential arrives as an `Auth` envelope in the first text frame (the
-/// handshake cannot carry an `Authorization` header from a browser).
-/// `cancel` is the listener's per-connection token — revoking the bind tears
+/// The listener authenticated the request's Bearer session before routing
+/// it here. `cancel` is the listener's per-connection token — revoking the bind tears
 /// the relay down with everything else.
 pub fn serve_relay_websocket(
     scope: RelayScope,
     mut request: Request<Incoming>,
     previews: PreviewService,
-    first_frame_auth: bool,
-    pairing: crate::pairing::PairingStore,
     cancel: CancellationToken,
 ) -> Reply {
     // The caller routes only validated WebSocket upgrades here; a request
@@ -124,21 +111,11 @@ pub fn serve_relay_websocket(
         let Ok(io) = upgraded.await else {
             return;
         };
-        // ProgressIo wrapping like the tailcat relay: the socket's byte
+        // ProgressIo wrapping like the RPC socket: the socket's byte
         // activity stays observable at the framing layer; the mux itself
         // bounds every buffer and window above it.
         let (io, _progress) = ProgressIo::new(hyper_util::rt::TokioIo::new(io));
-        let mut ws = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
-        if first_frame_auth {
-            let authenticated = tokio::select! {
-                _ = cancel.cancelled() => false,
-                authenticated =
-                    crate::listener::authenticate_first_frame(&mut ws, &pairing) => authenticated,
-            };
-            if !authenticated {
-                return;
-            }
-        }
+        let ws = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
         let transport = Arc::new(WsTransport::new(ws));
         let connector = previews.relay_connector(&scope.chat_id, &scope.service_id);
         // Engine side of the mux: never the initiator — it only answers

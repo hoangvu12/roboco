@@ -1,23 +1,18 @@
 //! The desktop/phone manager around the shared client preview proxy
 //! (ticket 04): registry-backed relay dialing, `WatchPreviews`-driven
 //! ingestion, and the watcher lifecycle that keeps the 7332 listener bound
-//! only while a remote preview is being viewed.
+//! only while an opened remote preview's server runs (the desktop shell
+//! holds the watchers, ADR 0012).
 //!
 //! The GPUI-free proxy itself lives in `roboco-preview-relay` (linked by
 //! this crate, so the desktop app and the Android mobile core share it).
 //! This module is the glue every registry-holding client needs: it dials
 //! each engine's `/preview-relay` route over the *same* endpoint and session
 //! credential the RPC socket uses — the registry's saved record, a LAN
-//! address or a Tailcat tunnel's loopback base — and it folds the local
-//! engine's own preview hostnames into the bypass list the Linux WebKitGTK
-//! proxy configuration needs (local previews keep their direct 7331 path).
+//! address or a Tailcat tunnel's loopback base. Local previews keep their
+//! direct 7331 path.
 
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
 use roboco_preview_relay::client::{ClientProxy, ClientProxyOptions, RelayDialer};
 use roboco_proto::PreviewService;
@@ -25,8 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::registry::{EngineKey, EngineRegistry};
 
-/// The manager's published state: the shared proxy's listener status plus
-/// the browser-platform bypass list.
+/// The manager's published state: the shared proxy's listener status.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PreviewProxyStatus {
     /// The bound 7332-family port while the listener runs.
@@ -35,11 +29,6 @@ pub struct PreviewProxyStatus {
     /// 7331 failure mode. Never a URL change: the rendered port stays
     /// `PREVIEW_CLIENT_PROXY_PORT` either way.
     pub error: Option<String>,
-    /// Hostnames the browser platform should route *around* the client
-    /// proxy: the local engine's live preview names (their path through the
-    /// engine's own 7331 proxy is unchanged) plus the loopback literals.
-    /// Linux's WebKitGTK proxy configuration consumes this.
-    pub bypass: Vec<String>,
 }
 
 /// A handle to the app's client preview proxy. Cheap to clone; one instance
@@ -47,7 +36,7 @@ pub struct PreviewProxyStatus {
 pub struct PreviewProxy {
     proxy: ClientProxy,
     registry: EngineRegistry,
-    local_bypass: Mutex<HashSet<String>>,
+    idle: Duration,
     stop: CancellationToken,
 }
 
@@ -60,12 +49,28 @@ impl PreviewProxy {
         labels_file: Option<PathBuf>,
         idle: Duration,
     ) -> Arc<Self> {
+        Self::start_on_port(
+            registry,
+            labels_file,
+            idle,
+            ClientProxyOptions::default().port,
+        )
+    }
+
+    /// [`Self::start`] on another listener port; tests pass `0` for an
+    /// ephemeral one, so a running Roboco holding 7332 cannot collide.
+    pub fn start_on_port(
+        registry: EngineRegistry,
+        labels_file: Option<PathBuf>,
+        idle: Duration,
+        port: u16,
+    ) -> Arc<Self> {
         let proxy = ClientProxy::new(
             Arc::new(RegistryDialer(registry.clone())),
             ClientProxyOptions {
+                port,
                 labels_file,
                 idle,
-                ..ClientProxyOptions::default()
             },
             registry.runtime_handle(),
         );
@@ -104,9 +109,14 @@ impl PreviewProxy {
         Arc::new(Self {
             proxy,
             registry,
-            local_bypass: Mutex::new(HashSet::new()),
+            idle,
             stop,
         })
+    }
+
+    /// How long the listener outlives its last watcher.
+    pub fn idle(&self) -> Duration {
+        self.idle
     }
 
     /// Mark an engine's previews as viewed (or not). The first watcher
@@ -138,39 +148,12 @@ impl PreviewProxy {
         self.proxy.by_hostname(hostname)
     }
 
-    /// Record the local engine's live preview hostnames (from its own
-    /// `WatchPreviews` snapshots) for the browser-platform bypass list.
-    /// Each call replaces the previous set.
-    pub fn note_local(&self, services: &[PreviewService]) {
-        let hostnames: HashSet<String> = services.iter().map(|s| s.hostname.clone()).collect();
-        let mut bypass = self.local_bypass.lock().unwrap_or_else(|e| e.into_inner());
-        if *bypass != hostnames {
-            *bypass = hostnames;
-        }
-    }
-
-    /// The current status, including the bypass list.
+    /// The current listener status.
     pub fn status(&self) -> PreviewProxyStatus {
         let client = self.proxy.status();
-        let mut bypass: Vec<String> = [
-            "localhost".to_owned(),
-            "127.0.0.1".to_owned(),
-            "::1".to_owned(),
-        ]
-        .into_iter()
-        .chain(
-            self.local_bypass
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .cloned(),
-        )
-        .collect();
-        bypass.sort();
         PreviewProxyStatus {
             port: client.port,
             error: client.error,
-            bypass,
         }
     }
 

@@ -118,7 +118,7 @@ fun ShellRouteContent(route: NavRoute) {
         // and the session ⋯ menu's "Account & Usage" push it.
         is AgentAccountsRoute -> AgentAccountsScreen(route)
         // agent-previews ticket 05: the preview panel (the phone's half of
-        // the session relay) — the session ⋯ menu's "Previews" row pushes
+        // the session relay) — the session ⋯ menu's "Ports" row pushes
         // it; its rows' Open pushes the in-app browser entry through this
         // same table.
         is PreviewPanelRoute -> PreviewPanelScreen(route)

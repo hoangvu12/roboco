@@ -1,6 +1,5 @@
 param(
     [Parameter(Mandatory)][string]$ReleasesUrl,
-    [switch]$SkipWebBuild,
     # A prebuilt roboco-tailcat.exe to embed instead of building one. Defaults
     # to ROBOCO_TAILCAT_EMBED: Windows CI builds the adapter and exports it
     # before its first cargo command, so this build reuses the engine every
@@ -49,22 +48,6 @@ function Get-WindowsPackageArch([string]$Path) {
 
 Push-Location $root
 try {
-    # The engine embeds the built web client (rust-embed, staged by
-    # crates/engine/build.rs). Build it before cargo so the embed has
-    # bytes to bake. Skippable for CI caches that already have a fresh
-    # dist, or when ROBOCO_WEB_DIST points at a vendored bundle.
-    if (-not $SkipWebBuild) {
-        $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
-        if (-not $pnpm) { throw 'pnpm is required to build the embedded web client (or pass -SkipWebBuild and set ROBOCO_WEB_DIST)' }
-        corepack enable | Out-Null
-        Push-Location (Join-Path $root 'web')
-        try {
-            & pnpm install --frozen-lockfile
-            if ($LASTEXITCODE -ne 0) { throw 'pnpm install failed' }
-            & pnpm --filter '@roboco/app' run build
-            if ($LASTEXITCODE -ne 0) { throw 'web build failed' }
-        } finally { Pop-Location }
-    }
     # The Tailcat adapter is embedded in roboco.exe (crates/engine/build.rs),
     # not shipped beside it: in-app updates replace roboco.exe only, and the
     # portable .exe is that file alone. Built outside target/package so the

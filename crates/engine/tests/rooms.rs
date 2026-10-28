@@ -554,18 +554,21 @@ fn read_unless_os_locked(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
-/// A paired-listener RPC with no session must fail: either the upgrade is
-/// refused, or (browser-style first-frame auth) the first non-Auth frame
-/// closes the socket. Bounded so a regression cannot hang the suite.
+/// A paired-listener RPC with no session must fail: the upgrade itself is
+/// refused (no first-frame fallback, ADR 0012). Bounded so a regression
+/// cannot hang the suite.
 async fn unauthenticated_call_fails(remote_url: &str, method: &str) -> bool {
     tokio::time::timeout(Duration::from_secs(10), async {
         match roboco_rpc::connect_ws(remote_url).await {
             Err(_) => true,
-            Ok(client) => client.call(method, json!({})).await.is_err(),
+            Ok(client) => {
+                let _ = client.call(method, json!({})).await;
+                false
+            }
         }
     })
     .await
-    .unwrap_or(true)
+    .unwrap_or(false)
 }
 
 #[tokio::test]

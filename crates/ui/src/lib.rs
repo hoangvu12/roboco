@@ -19,7 +19,6 @@ pub mod appearance;
 pub mod appshots;
 pub mod attachments;
 pub mod badges;
-pub mod browser;
 pub mod change_requests;
 pub mod changes;
 mod comment_ui;

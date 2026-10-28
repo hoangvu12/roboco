@@ -23,10 +23,9 @@ a live route before minting. It starts a background engine when necessary.
   exists on the client. Invites, and the addresses inside them, are secrets: the
   address can embed a pre-shared key, so it is written 0600, never logged, and
   errors describe only its shape.
-- Browsers pair through a loopback forwarder (`roboco engine tailcat connect`),
-  which prints `http://127.0.0.1:<port>/pair#token=…`; the engine serves its own
-  web client there, so no WASM dialer is needed. Cloudflare remains the option
-  that needs no client software at all.
+- `roboco engine tailcat connect` runs a loopback forwarder and prints
+  `http://127.0.0.1:<port>/pair#token=…`, a loopback pairing link for a Roboco
+  app. (It used to serve the browser client there; see the amendment below.)
 - The adapter is app-owned and vendored: `adapters/roboco-tailcat` builds the
   `roboco-tailcat` binary against upstream `tailscale/tailcat` (pinned at
   `fd101889796a947ac514e9d86ec731af2965fad3`). Linux tarballs, Windows ZIPs, and
@@ -37,9 +36,18 @@ a live route before minting. It starts a background engine when necessary.
   `ROBOCO_TAILCAT_DERP_MAP`) points a fleet at a relay it owns.
 - A route that cannot come up disables remote access instead of leaving an
   unpublishable listener behind.
-- Clients: the desktop, the browser (through the loopback forwarder) and
-  **Android**. The phone redeems an invite through its own in-process
+- Clients: the desktop and **Android**. The phone redeems an invite through its own in-process
   Tailcat tunnel (`libroboco_tailcat.so`, ADR 0009), stores the address and
   its own client identity Keystore-encrypted (never in plain metadata), and
   rebuilds the route on every reconnect: after app restarts, failed dials
   and network changes.
+
+## Amendment (2026-10-28): no browser clients
+
+[ADR 0012](0012-no-web-client-no-embedded-browser.md) removed the web client.
+Browsers no longer pair over Tailcat: the engine-side browser relay
+(`/pairing/tailcat-redeem`, `/tailcat-relay/*`) and
+`roboco engine tailcat browser-helper` are gone. `tailcat connect` stays as a
+loopback pairing link for an app. Cloudflare Tunnel stays supported, but it no
+longer means "no client software": the desktop and Android apps pair to its
+`https://` URL like any other.

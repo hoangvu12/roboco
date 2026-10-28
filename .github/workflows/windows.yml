@@ -72,11 +72,6 @@ on:
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_RELEASE_LTO: 'false'
-  # Test builds never serve the React app: stage the placeholder pages so
-  # `--release` engine builds pass on a clean checkout (build.rs forbids its
-  # debug-only fallback under release, and web/packages/app/dist is not
-  # committed). Real bundle builds happen in web-codegen/release workflows.
-  ROBOCO_WEB_DIST: ${{ github.workspace }}/crates/engine/assets/web
 
 permissions:
   contents: read
@@ -124,7 +119,7 @@ jobs:
         #   roboco-proto    lib (device_paths only, see the filter)
         #   roboco-rpc, roboco-ui, gpui_windows (shader layout)  lib
         #   roboco-preview  lib + discovery (the GetExtendedTcpTable join;
-        #                   preview-tests.yml runs the rest on Linux)
+        #                   ui-tests.yml's core-tests run the rest on Linux)
         #   roboco, roboco-update, roboco-markdown, roboco-engine-client
         #                   every test target, read from cargo metadata so a
         #                   new test file is picked up
@@ -223,10 +218,8 @@ jobs:
           "ROBOCO_TAILCAT_EMBED=$adapter" >> $env:GITHUB_ENV
       # Packaging's `cargo build --release -p roboco` is the application build.
       - name: Verify portable and installer packaging
-        # Exercise the release packaging script on every PR. -SkipWebBuild:
-        # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
-        # and the real web bundle is built by web-codegen/release workflows.
-        run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+        # Exercise the release packaging script on every PR.
+        run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Linker of the packaged roboco.exe
         # link.exe writes a "Rich" header (its build-tool record) into the DOS
         # stub; rust-lld writes none.

@@ -1,4 +1,4 @@
-//! Round-trip the checked-in web theme artifact against the live sources of
+//! Round-trip the checked-in theme artifact against the live sources of
 //! truth: `builtin_registry()` (post-hardening role set) for the variants and
 //! accent derivations, and `roboco_proto::{layout, motion}` for the layout
 //! and motion constants. If any of these fail, regenerate with
@@ -6,17 +6,17 @@
 
 use std::path::PathBuf;
 
-use roboco_theme::artifact::{self, FONT_FACES, render_files};
+use roboco_theme::artifact::{self, render_files};
 use roboco_theme::{
     AccentPreset, AccentRoles, AccentSelection, Color, ThemeFamily, ThemeVariant, builtin_registry,
 };
 
-fn web_package_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/packages/theme")
+fn artifact_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifact")
 }
 
 fn artifact_json() -> serde_json::Value {
-    let path = web_package_dir().join("src/generated/artifact.json");
+    let path = artifact_dir().join("artifact.json");
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("could not read {}: {err}", path.display()));
     serde_json::from_str(&content).expect("the theme artifact is valid JSON")
@@ -24,7 +24,7 @@ fn artifact_json() -> serde_json::Value {
 
 #[test]
 fn artifact_is_fresh() {
-    let generated = web_package_dir().join("src/generated");
+    let generated = artifact_dir();
     for (name, content) in render_files() {
         let path = generated.join(name);
         let existing = std::fs::read_to_string(&path)
@@ -61,8 +61,7 @@ fn artifact_contains_every_builtin_family_and_variant() {
 /// The three roles the desktop authors by hand travel on every exported
 /// variant: Roboco carries the authored tones, every other family carries the
 /// fallback the desktop's variant loader uses for a theme that did not author
-/// them. The web reads them as `--rb-text-dim`, `--rb-raised-hover`, and
-/// `--rb-danger-strong`.
+/// them (`textDim`, `raisedHover`, `dangerStrong`).
 #[test]
 fn exported_variants_carry_the_hand_authored_roles() {
     let json = artifact_json();
@@ -272,26 +271,4 @@ fn exported_layout_and_motion_match_the_shared_constants() {
     assert_eq!(px(&glide["undockSeconds"]), m::DOCK_GLIDE_UNDOCK_SECONDS);
     assert_eq!(px(&glide["settlePosition"]), m::DOCK_GLIDE_SETTLE_POSITION);
     assert_eq!(px(&glide["settleVelocity"]), m::DOCK_GLIDE_SETTLE_VELOCITY);
-}
-
-#[test]
-fn fonts_manifest_files_are_bundled() {
-    let fonts_dir = web_package_dir().join("fonts");
-    assert_eq!(FONT_FACES.len(), 16, "8 Geist + 8 Geist Mono faces");
-    let json = artifact_json();
-    assert_eq!(
-        json["fonts"].as_array().expect("fonts is an array").len(),
-        FONT_FACES.len()
-    );
-    for face in FONT_FACES {
-        assert!(
-            fonts_dir.join(face.file).is_file(),
-            "{} is missing from the web package",
-            face.file
-        );
-    }
-    assert!(
-        fonts_dir.join("licenses/Geist-OFL.txt").is_file(),
-        "the OFL license ships with the fonts"
-    );
 }

@@ -904,7 +904,7 @@ fn managed_restart_ready() -> bool {
 /// What the checker reports (the engine's `UpdateStatus` stream, the desktop
 /// strip). Version facts only — download/apply progress is owned by whoever
 /// drives the update (UI or CLI).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,

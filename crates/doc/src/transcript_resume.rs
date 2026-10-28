@@ -21,7 +21,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use ts_rs::TS;
 
 use crate::schema::SessionMessageEntry;
 use crate::transcript_delta::{TranscriptFrame, TranscriptUpsert, TranscriptUpdate};
@@ -32,7 +31,7 @@ pub const MAX_RESUME_TAIL: usize = 512;
 
 /// One entry of a resume tail: the entry id plus the digest the engine sent
 /// for it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptResumeEntry {
     pub id: String,
@@ -41,7 +40,7 @@ pub struct TranscriptResumeEntry {
 
 /// The client's summary of a held transcript copy: how many entries it holds,
 /// a digest over the common prefix, and the ids/digests of its last W entries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptResume {
     /// Entries the client holds.

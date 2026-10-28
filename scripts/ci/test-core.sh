@@ -33,7 +33,7 @@ for t in pi_resume pi_steering pi_forks \
   account_failover account_sign_in_state agent_origin codex_subagents completion_notices \
   continue_on_harness engine_local harness_switch limited_chats local_profiles \
   project_action_commands project_actions_remote project_actions_rpc remote_settings \
-  restart_resume resume_at_reset side_chats rooms room_relay; do
+  restart_resume resume_at_reset side_chats rooms; do
   tests+=(--test "$t")
 done
 

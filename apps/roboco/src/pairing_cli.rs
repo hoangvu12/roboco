@@ -72,7 +72,8 @@ pub enum TailcatCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Dial this engine's route and print the loopback pairing URL.
+    /// Dial this engine's route and print a loopback pairing link for a
+    /// Roboco app.
     Connect {
         /// Invite minted by the engine (`roboco-tailcat:…`) or a bare `tc…` address.
         #[arg(long)]
@@ -85,12 +86,6 @@ pub enum TailcatCommand {
         derp_map: Option<String>,
         #[arg(long)]
         json: bool,
-    },
-    /// Loopback HTTP helper so browsers paste `roboco-tailcat:…` without a local URL.
-    BrowserHelper {
-        /// Listen address (default 127.0.0.1:7333).
-        #[arg(long)]
-        listen: Option<String>,
     },
 }
 
@@ -181,15 +176,15 @@ fn tailcat(command: TailcatCommand, data_dir: &std::path::Path) -> anyhow::Resul
                 println!("{}", serde_json::json!({"url": url}));
             } else {
                 println!("{url}");
-                println!("Forwarding this engine over Tailcat until interrupted; Ctrl-C stops it.");
+                println!(
+                    "Paste this loopback pairing link into a Roboco app. Forwarding this \
+                     engine over Tailcat until interrupted; Ctrl-C stops it."
+                );
             }
             // Hold the route: the adapter dies with this process, exactly like a
             // tunnel process would.
             std::thread::park();
             Ok(())
-        }
-        TailcatCommand::BrowserHelper { listen } => {
-            crate::tailcat_browser_helper::run(data_dir, listen.as_deref())
         }
     }
 }

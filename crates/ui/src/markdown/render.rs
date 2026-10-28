@@ -211,7 +211,7 @@ pub fn activate_link(
         source_session: ui.and_then(|ui| ui.source_session.clone()),
     };
     let outcome = ui.map_or_else(
-        || activation.web_outcome(false),
+        || activation.web_outcome(),
         |ui| (ui.handler)(&activation, window, cx),
     );
     if let LinkOutcome::External(url) = outcome {
@@ -3808,8 +3808,3 @@ mod tests {
     }
 }
 
-/// Native fixture access to actual shaped link ranges; absent in shipped builds.
-#[cfg(feature = "browser-fixture")]
-pub fn fixture_link(target: &str) -> Option<(gpui::Point<gpui::Pixels>, gpui::FocusHandle)> {
-    super::link_interaction::fixture_link(target)
-}

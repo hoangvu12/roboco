@@ -34,7 +34,6 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
-rust-embed = "=8.7.2"
 tokio-tungstenite.workspace = true
 libc.workspace = true
 gethostname.workspace = true
@@ -44,7 +43,6 @@ reqwest.workspace = true
 semver = "1"
 ignore.workspace = true
 nucleo-matcher.workspace = true
-ts-rs.workspace = true
 # SVG transcript images rasterize to PNG for clients without an SVG decoder.
 resvg = "0.46"
 

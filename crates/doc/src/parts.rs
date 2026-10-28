@@ -4,7 +4,6 @@
 //! `packages/session-doc/src/{render-parts,messages}.ts`.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use roboco_proto::{AgentEvent, HarnessId, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
 
@@ -70,7 +69,7 @@ pub fn summarize_tool_output(text: &str) -> Option<String> {
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
 /// only because the claude harness emits none. Full diff text lives in the
 /// sidecar behind `diff_ref`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiffStat {
     pub path: String,
@@ -103,7 +102,7 @@ pub fn diff_stat(diff: &ToolDiff) -> ToolDiffStat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageStatus {
     Streaming,
@@ -112,7 +111,7 @@ pub enum MessageStatus {
 }
 
 /// Lifecycle of a spawned subagent, carried on its spawn chip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SubagentStatus {
     Running,
@@ -122,7 +121,7 @@ pub enum SubagentStatus {
 
 /// What the engine recorded when a notifiable side-chat turn came to rest
 /// (orchestration v2). The outcome of one row of a completion notice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NoticeOutcome {
     Completed,
@@ -154,7 +153,7 @@ impl NoticeOutcome {
 /// One side chat a completion notice reports: its id and title, the
 /// recorded outcome, and the one-line reason (error text, restart reason or
 /// question summary) when the outcome carries one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoticeSide {
     /// The side chat's full id — clients open the chat with it; the notice's
@@ -172,7 +171,7 @@ pub struct NoticeSide {
 }
 
 /// One rendered part of an assistant message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum MessagePart {
     Text {

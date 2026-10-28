@@ -78,7 +78,7 @@ import uniffi.roboco_core.LayoutFrame
  *   `app.setPinned(chatId, !pinned)`;
  * - row 2: "Copy Transcript" (SF `doc.on.doc`), never disabled — it reads
  *   only the local transcript;
- * - row 3: "Previews" (the app's `Safari` globe glyph — the agent-previews
+ * - row 3: "Ports" (the app's `Safari` globe glyph — the agent-previews
  *   ticket's panel: this chat's dev servers on the engine, relayed through
  *   the phone's in-app 7332 proxy), never disabled — the panel owns its
  *   own honest states (loading, reconnect, empty);

@@ -1,6 +1,0 @@
-packages:
-  - "packages/*"
-
-# vitest pulls esbuild, whose postinstall links the platform binary.
-allowBuilds:
-  esbuild: true

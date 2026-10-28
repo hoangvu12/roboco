@@ -54,13 +54,6 @@ on:
 permissions:
   contents: read
 
-# Test builds never serve the React app: stage the placeholder pages so
-# `--release` engine builds pass on a clean checkout (build.rs forbids its
-# debug-only fallback under release, and web/packages/app/dist is not
-# committed). The browser fixture renders its own pages, not the bundle.
-env:
-  ROBOCO_WEB_DIST: ${{ github.workspace }}/crates/engine/assets/web
-
 # Superseded PR runs are cancelled; main runs never are, not even while
 # queued (a per-run group). Only main pushes write the Rust caches (the
 # linux-ci action's save-rust-cache) and every key has one writer; PRs
@@ -207,7 +200,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
             libx11-dev libxcb1-dev libx11-xcb-dev
             libfontconfig1-dev libfreetype-dev libasound2-dev
-            libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+            libvulkan-dev pkg-config cmake
       - name: UI, headless layout and engine pairing CLI regressions
         run: >-
           cargo nextest run -P ci --locked --no-fail-fast
@@ -233,7 +226,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
             libx11-dev libxcb1-dev libx11-xcb-dev
             libfontconfig1-dev libfreetype-dev libasound2-dev
-            libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+            libvulkan-dev pkg-config cmake
       - name: Core tests (release)
         run: bash scripts/ci/test-core.sh --release
       - name: UI and CLI tests (release)

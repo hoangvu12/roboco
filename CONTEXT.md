@@ -26,8 +26,8 @@ _Avoid_: Cluster, network, account, room (in user-facing text)
 The protocol behind a fleet: a shared secret plus an address book, with no engine in charge; presenting the secret to a member mints an ordinary per-engine session, and each chat still belongs to exactly one engine. Rooms share reachability, never data. Plain rooms (no desktop UI; engines join through the CLI) keep the original hostless, verifier-only semantics.
 _Avoid_: sync room, Loro room — zeron's removed cloud concept; `room_gen` is an unrelated legacy wire name
 
-**Web client**:
-The engine-served Roboco client that runs in a browser at the engine's own remote access URL. Pairs like any other client and holds its session credential in browser storage, scoped to the engine's origin.
+**Web client** — *Retired (ADR 0012)*:
+The engine-served Roboco client that ran in a browser at the engine's own remote access URL. Removed with its browser plumbing; recoverable from the tag `web-final`. Roboco's clients are the desktop and Android apps.
 _Avoid_: Web app (when it means this), hosted app
 
 **Android app**:
@@ -170,7 +170,7 @@ The authenticated byte pipe (mux frames over a WebSocket on the engine's listene
 _Avoid_: Tunnel (Tailcat is a different thing), forward, WebRTC
 
 **Client preview proxy**:
-The loopback listener (`127.0.0.1:7332`) a client binds while viewing a remote engine's previews, routing by Host header against the `WatchPreviews` hostnames and dialing the session relay. The engine's own proxy stays on 7331.
+The loopback listener (`127.0.0.1:7332`) a client binds while an opened remote preview's server runs, routing by Host header against the `WatchPreviews` hostnames and dialing the session relay. On the desktop, opening a paired engine's server from the ports card starts a shell-owned watcher that holds it until that chat's servers have been gone for the idle window; on Android, the Ports panel holds it while it watches. The engine's own proxy stays on 7331.
 _Avoid_: Local proxy (that is 7331), forward proxy
 
 ## Theme vocabulary
