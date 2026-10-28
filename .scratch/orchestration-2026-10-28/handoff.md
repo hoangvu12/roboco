@@ -138,6 +138,10 @@ Keep a running "PRs" list in this file.
   once that worker is done (covered by the same OK).
 | `955e487b` | main checkout, read-only | research (user ask 2026-10-29): where the time goes + how to speed up ticket throughput and Roboco dev in general → `.scratch/dev-velocity/report-2026-10-29.md` | **done** (`10918d2de`), archived. Biggest losses were unwatched stalls (12 h 52 m lost notice on #39, 4 h 18 m orchestrator blocked on a user question), not coding. Memory ceiling = fixed 8 GB pagefile (32 GB RAM, commit limit ≈40 GB; low-VM events before the crash). Decisions 1–9 asked of the user (report §decisions); lane schedule E/H/T/S/F/A/C in the report (§schedule). |
 
+- **Voice removal (user decision 2026-10-29: "remove everywhere, make it a ticket")**: new ci-speed ticket **26**
+  (`26-remove-voice-dictation.md`) deletes `crates/voice` + desktop dictation + ONNX Runtime; it unblocks 21
+  (22.04 container + glibc guard). Plan: `4879f773` does 26 → 21 as one PR on a new branch in its worktree after
+  its ticket-14 PR merges.
 - **Orchestrator rules adopted from the dev-velocity report (no decision needed):** never wait on the user inside
   a turn (ask, end the turn, keep everything else moving); before archiving any chat, hand its live workers over;
   every worker prompt says: ONE background wait for CI, no interim turn ends, and run a read-only review agent
