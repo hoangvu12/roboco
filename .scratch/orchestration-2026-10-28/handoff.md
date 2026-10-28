@@ -66,10 +66,16 @@ meaning all three specs below. The user prefers **short, plain-language** status
   branches, open PRs on `hoangvu12/roboco`, and **merge a PR into `main` with a merge commit** once
   every required check is green AND you've verified the tickets' acceptance criteria.
 - Update ticket `Status:` lines and append `## Comments` evidence as work lands.
+- **Standing user instruction (2026-10-28): "just clean up everything once it's merged."** After a PR
+  merges (verify with `git merge-base --is-ancestor origin/<branch> origin/main`), do all of this without asking:
+  - remove its worktree;
+  - delete the local and the **remote** branch;
+  - drop its sccache basedir;
+  - archive its worker chat.
 - **Ask the user first** before:
   - tagging or publishing any release;
   - pushing to the zui / gpui-component forks;
-  - deleting remote branches;
+  - deleting remote branches that are **not** merged (`windows-native-support` = PR #313 on zeron: never);
   - anything paid;
   - anything that changes a recorded decision;
   - acting on parked tickets.
