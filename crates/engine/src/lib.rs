@@ -48,7 +48,6 @@ pub mod source_control;
 pub mod space_paths;
 pub mod spaces;
 pub mod tailcat;
-pub mod tailcat_relay;
 pub mod terminals;
 pub mod titles;
 pub mod transcript_budget;
@@ -794,32 +793,14 @@ pub async fn serve_engine_remote_with_previews(
     let rooms = rooms::RoomStore::open(data_dir)?;
     let socket = tokio::net::TcpListener::bind(address).await?;
     let address = socket.local_addr()?;
-    let tailcat_relays = tailcat_relay::TailcatRelayRegistry::new();
-    let data_dir_buf = data_dir.to_path_buf();
-    let paired = Arc::new(tailcat_relay::PairedListenerContext {
-        data_dir: data_dir_buf.clone(),
-        tailcat_relays: tailcat_relays.clone(),
-        adapter: None,
-    });
     let task = tokio::spawn(listener::serve_listener_with_policy(
         socket,
         service,
         pairing,
         rooms,
         listener::AccessPolicy::Paired,
-        Some(paired.clone()),
         previews,
     ));
-    let relays = tailcat_relays.clone();
-    tokio::spawn(async move {
-        if let Err(error) = tokio::task::spawn_blocking(move || {
-            tailcat_relay::TailcatRelayRegistry::restore_from_disk(&data_dir_buf, &relays)
-        })
-        .await
-        {
-            tracing::warn!(%error, "tailcat relay restore task failed");
-        }
-    });
     Ok(EngineListener { address, task })
 }
 

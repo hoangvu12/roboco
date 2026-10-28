@@ -4,6 +4,28 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use roboco_engine::{EngineCore, EngineProfile, HarnessRegistry, pairing::PairingStore};
 use roboco_rpc::{connect_ws, connect_ws_authenticated, memory_client, methods};
 use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+/// The HTTP status a WebSocket upgrade to `url` gets: 101 when it upgrades,
+/// otherwise the refusal's status.
+async fn upgrade_status(url: &str, bearer: Option<&str>, origin: Option<&str>) -> u16 {
+    let mut request = url.into_client_request().unwrap();
+    if let Some(bearer) = bearer {
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {bearer}").parse().unwrap());
+    }
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+    }
+    match tokio_tungstenite::connect_async(request).await {
+        Ok((_, response)) => response.status().as_u16(),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => response.status().as_u16(),
+        Err(other) => panic!("upgrade failed below HTTP: {other:?}"),
+    }
+}
 
 /// Generated media reads the same on the local in-process surface and over a
 /// paired peer connection, and with no path jail the agent-owned source path
@@ -137,17 +159,10 @@ async fn paired_bind_enforces_sessions_and_preserves_rpc_capabilities() {
             .status(),
         401
     );
-    // A credential-less dial now passes the HTTP upgrade — browsers
-    // authenticate with a first-frame Auth envelope instead — but the engine
-    // refuses RPC until a session credential arrives.
-    let unauthenticated = connect_ws(&url).await.unwrap();
-    assert!(
-        unauthenticated
-            .call(methods::ENGINE_INFO, json!({}))
-            .await
-            .is_err()
-    );
-    drop(unauthenticated);
+    // A credential-less dial is refused at the upgrade (ADR 0012: no
+    // first-frame fallback).
+    assert_eq!(upgrade_status(&url, None, None).await, 401);
+    assert!(connect_ws(&url).await.is_err());
     assert!(connect_ws_authenticated(&url, "wrong").await.is_err());
     let code = store.create_code("remote", 300).unwrap();
     let grant: Value = http
@@ -329,6 +344,139 @@ async fn paired_bind_serves_no_pages() {
             .unwrap()
             .status(),
         200
+    );
+    drop(remote);
+    core.shutdown().await;
+}
+
+/// Browser-shaped requests are refused on the paired bind (ADR 0012): any
+/// `Origin` is a 403 on every route, redeem and room presentation included;
+/// `OPTIONS` is not special and carries no CORS headers; the removed browser
+/// routes are 404; a Bearer-less upgrade is a 401. The Local bind keeps its
+/// own Origin rule unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paired_bind_refuses_browser_shaped_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble_with_profile(
+        EngineProfile::local(dir.path()).unwrap(),
+        Arc::new(HarnessRegistry::new()),
+        roboco_engine::HarnessId::Mock,
+    )
+    .unwrap();
+    let store = PairingStore::open(dir.path()).unwrap();
+    let remote = roboco_engine::serve_engine_remote(
+        "127.0.0.1:0".parse().unwrap(),
+        core.rpc_service(),
+        dir.path(),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", remote.address);
+    let url = format!("ws://{}", remote.address);
+    let http = reqwest::Client::new();
+    let origin = "https://browser.example";
+
+    // Origin on the redeem-style routes: refused before the code is spent.
+    let code = store.create_code("browser", 300).unwrap();
+    let refused = http
+        .post(format!("{base}/pairing/redeem"))
+        .header("origin", origin)
+        .bearer_auth(&code.credential)
+        .json(&json!({"label":"Browser"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+    assert!(!refused.headers().contains_key("access-control-allow-origin"));
+    assert_eq!(
+        http.post(format!("{base}/room/present"))
+            .header("origin", origin)
+            .json(&json!({"secret":"x","label":"Browser"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    // The same code still redeems natively: the refusal did not consume it.
+    let grant: Value = http
+        .post(format!("{base}/pairing/redeem"))
+        .bearer_auth(&code.credential)
+        .json(&json!({"label":"Laptop"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let credential = grant["credential"].as_str().unwrap();
+
+    // Origin with a valid session: still refused, HTTP and upgrade alike.
+    assert_eq!(
+        http.get(format!("{base}/health"))
+            .header("origin", origin)
+            .bearer_auth(credential)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(upgrade_status(&url, Some(credential), Some(origin)).await, 403);
+    assert_eq!(upgrade_status(&url, Some(credential), None).await, 101);
+
+    // Preflights: with an Origin they are refused like anything else;
+    // without one OPTIONS is just an unknown route. Neither carries CORS.
+    for path in ["/pairing/redeem", "/room/present"] {
+        let preflight = http
+            .request(reqwest::Method::OPTIONS, format!("{base}{path}"))
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), 403, "{path}");
+        assert!(!preflight.headers().contains_key("access-control-allow-origin"));
+        let bare = http
+            .request(reqwest::Method::OPTIONS, format!("{base}{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bare.status(), 404, "{path}");
+        assert!(!bare.headers().contains_key("access-control-allow-origin"));
+    }
+
+    // The browser-only routes are gone.
+    for path in ["/pairing/tailcat-redeem", "/pairing/room-redeem"] {
+        assert_eq!(
+            http.post(format!("{base}{path}"))
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        http.get(format!("{base}/tailcat-relay/x"))
+            .bearer_auth(credential)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(upgrade_status(&format!("{url}/tailcat-relay/x"), None, None).await, 404);
+
+    // A Bearer-less upgrade is a 401, before any upgrade.
+    assert_eq!(upgrade_status(&url, None, None).await, 401);
+    assert_eq!(
+        upgrade_status(&format!("{url}/preview-relay/chat/service"), None, None).await,
+        401
     );
     drop(remote);
     core.shutdown().await;

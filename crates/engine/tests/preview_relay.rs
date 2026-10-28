@@ -1,6 +1,6 @@
 //! The session-relay data plane against the real engine listener: the
 //! `/preview-relay/{chatId}/{serviceId}` upgrade is gated by the session gate
-//! exactly like the RPC socket (Bearer header or first-frame `Auth`), then
+//! exactly like the RPC socket (a Bearer header; nothing else), then
 //! carries the unmodified mux frame protocol to the preview service's
 //! chat-scoped connector — real HTTP round-trips to a loopback dev server,
 //! with the `transport.rs` idioms (large bodies, slow readers, half-close,
@@ -22,7 +22,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::SinkExt;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::UnsyncBoxBody};
 use hyper::{Request, Response, body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -36,7 +35,7 @@ use roboco_preview::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::sync::CancellationToken;
 
 type Socket =
@@ -356,11 +355,10 @@ async fn assert_cut(mux: &mux::Mux, what: &str) {
 // ---------------------------------------------------------------------------
 
 /// The gate: the relay upgrade is authenticated exactly like the RPC socket.
-/// A bad Bearer is refused at the handshake (401); a browser-shaped dial
-/// with no Bearer gets its first frame judged — a binary frame or a wrong
-/// `Auth` envelope closes the socket before any service resolves; query
-/// strings stay rejected everywhere; and the route is reserved (an
-/// authenticated plain GET finds 404, never the web client's SPA shell).
+/// A bad or missing Bearer is refused at the handshake (401) — there is no
+/// first-frame fallback (ADR 0012) — a browser-shaped dial carrying an
+/// `Origin` is refused (403) even with a valid Bearer; query strings stay
+/// rejected everywhere; and an authenticated plain GET finds 404.
 #[tokio::test]
 async fn unauthenticated_dials_are_rejected_on_the_route() {
     let dir = tempfile::tempdir().unwrap();
@@ -384,37 +382,36 @@ async fn unauthenticated_dials_are_rejected_on_the_route() {
             }
             other => panic!("expected an HTTP rejection, got {other:?}"),
         }
-        // A browser-shaped dial (no Bearer header possible) succeeds at the
-        // handshake and is judged on its first frame: a binary frame is not
-        // an `Auth` envelope, so the socket is cut before any OPEN resolves.
-        let mut ws = dial(&fixture.base, None, "chat-1", &fixture.chat_one)
-            .await
+        // No Bearer at all: refused before the upgrade, like the RPC socket.
+        match dial(&fixture.base, None, "chat-1", &fixture.chat_one).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status().as_u16(), 401, "missing bearer must 401");
+            }
+            Err(other) => panic!("expected an HTTP rejection, got {other:?}"),
+            Ok(_) => panic!("a dial without a bearer must fail"),
+        }
+        // A browser dial carries an Origin it cannot suppress: refused even
+        // with a valid Bearer.
+        let mut request = format!("{}/preview-relay/chat-1/{}", fixture.base, fixture.chat_one)
+            .replacen("http", "ws", 1)
+            .into_client_request()
             .unwrap();
-        ws.send(Message::Binary(vec![2, 0, 0, 0, 2])).await.unwrap();
-        let mux = mux::Mux::start(
-            Arc::new(WsTransport::new(ws)),
-            Arc::new(Refused),
-            true,
-            CancellationToken::new().child_token(),
+        request.headers_mut().insert(
+            "authorization",
+            format!("Bearer {}", fixture.token).parse().unwrap(),
         );
-        assert_cut(&mux, "an unauthenticated dial").await;
-        // The same dial with a wrong first-frame `Auth` envelope: same verdict.
-        let mut ws = dial(&fixture.base, None, "chat-1", &fixture.chat_one)
-            .await
-            .unwrap();
-        ws.send(Message::Text(r#"{"auth":"not-a-real-credential"}"#.into()))
-            .await
-            .unwrap();
-        let mux = mux::Mux::start(
-            Arc::new(WsTransport::new(ws)),
-            Arc::new(Refused),
-            true,
-            CancellationToken::new().child_token(),
-        );
-        assert_cut(&mux, "a wrong first-frame auth").await;
-        // The relay path is reserved: query strings are rejected on every
-        // route (no credentials or scope in URLs), and an authenticated
-        // non-upgrade request finds the route, not the SPA shell.
+        request
+            .headers_mut()
+            .insert("origin", "https://browser.example".parse().unwrap());
+        match tokio_tungstenite::connect_async(request).await {
+            Err(WsError::Http(response)) => {
+                assert_eq!(response.status().as_u16(), 403, "origin must 403");
+            }
+            Err(other) => panic!("expected an HTTP rejection, got {other:?}"),
+            Ok(_) => panic!("an origin-carrying dial must fail"),
+        }
+        // Query strings are rejected on every route (no credentials or scope
+        // in URLs), and an authenticated non-upgrade request is a 404.
         let http = reqwest::Client::new();
         let response = http
             .get(format!(
@@ -448,8 +445,7 @@ async fn unauthenticated_dials_are_rejected_on_the_route() {
 /// A session-authenticated client streams real HTTP through the mux, with
 /// the `transport.rs` idioms: large bodies, a stalled stream blocking
 /// nothing else, slow readers, half-close (every request shuts down its
-/// write half) and cancellation dropping the server connection. Also: the
-/// browser-shaped first-frame `Auth` dial with a valid credential.
+/// write half) and cancellation dropping the server connection.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn authenticated_round_trips_through_the_mux() {
@@ -558,26 +554,6 @@ async fn authenticated_round_trips_through_the_mux() {
             waited.is_ok(),
             "cancellation must drop the server connection"
         );
-
-        // The browser-shaped dial with a valid credential: first-frame
-        // `Auth`, then the same binary mux frames.
-        let mut ws = dial(&fixture.base, None, "chat-1", &fixture.chat_one)
-            .await
-            .unwrap();
-        ws.send(Message::Text(format!(r#"{{"auth":"{}"}}"#, fixture.token)))
-            .await
-            .unwrap();
-        let browser_stop = CancellationToken::new();
-        let browser_mux = mux::Mux::start(
-            Arc::new(WsTransport::new(ws)),
-            Arc::new(Refused),
-            true,
-            browser_stop.child_token(),
-        );
-        let (status, body) = get_ok(&browser_mux, &fixture.chat_one, "/").await;
-        assert!(status.starts_with("HTTP/1.1 200"));
-        assert_eq!(body, b"relay ok");
-        browser_stop.cancel();
 
         stop.cancel();
         fixture.remote.stop().await;

@@ -6,7 +6,6 @@
 mod daemon;
 mod paths;
 mod pairing_cli;
-mod tailcat_browser_helper;
 mod tailcat_setup;
 mod update_cli;
 

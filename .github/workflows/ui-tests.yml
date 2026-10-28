@@ -77,7 +77,7 @@ jobs:
           # fork_chat seam). The crate's unit tests were previously not run
           # by any workflow.
           cargo test --locked -p roboco-mcp
-          cargo test --locked -p roboco-engine --lib --test account_failover --test account_sign_in_state --test agent_origin --test codex_subagents --test completion_notices --test continue_on_harness --test engine_local --test harness_switch --test limited_chats --test local_profiles --test project_action_commands --test project_actions_remote --test project_actions_rpc --test remote_settings --test restart_resume --test resume_at_reset --test side_chats --test rooms --test room_relay
+          cargo test --locked -p roboco-engine --lib --test account_failover --test account_sign_in_state --test agent_origin --test codex_subagents --test completion_notices --test continue_on_harness --test engine_local --test harness_switch --test limited_chats --test local_profiles --test project_action_commands --test project_actions_remote --test project_actions_rpc --test remote_settings --test restart_resume --test resume_at_reset --test side_chats --test rooms
 
 
   # Mobile Rust core (spec D1, android-app#02): the crates the Android app's
