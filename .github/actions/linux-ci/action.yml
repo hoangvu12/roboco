@@ -18,9 +18,7 @@ inputs:
       write.
     default: 'false'
   apt-packages:
-    description: >-
-      apt packages to install (space separated). Nothing is installed when
-      empty, except lld on arm64 runners.
+    description: apt packages to install (space separated). Nothing is installed when empty.
     default: ''
 
 runs:
@@ -30,19 +28,6 @@ runs:
       shell: bash
       run: rustup show active-toolchain || rustup toolchain install
 
-    # aarch64 Linux does not link with rust-lld by default (x86_64 has since
-    # Rust 1.90), so arm64 runners add the system lld (ci-speed 14) and
-    # "Build settings" below points the aarch64 target at it.
-    - name: apt package list
-      id: apt-list
-      shell: bash
-      env:
-        APT_PACKAGES: ${{ inputs.apt-packages }}
-        ARCH_PACKAGES: ${{ runner.arch == 'ARM64' && 'lld' || '' }}
-      run: |
-        # shellcheck disable=SC2086 # joins and trims the two lists
-        echo "packages=$(echo $APT_PACKAGES $ARCH_PACKAGES)" >> "$GITHUB_OUTPUT"
-
     # Hosted-runner apt mirrors occasionally stall for minutes (release.yml
     # once spent 24 min in apt-get). apt-install.sh bounds and retries the
     # download into a .deb directory that main pushes save; everything else
@@ -51,31 +36,31 @@ runs:
     # re-downloading on top of a stale one.
     - name: apt cache key
       id: apt-key
-      if: steps.apt-list.outputs.packages != ''
+      if: inputs.apt-packages != ''
       shell: bash
       env:
-        APT_PACKAGES: ${{ steps.apt-list.outputs.packages }}
+        APT_PACKAGES: ${{ inputs.apt-packages }}
       run: |
         list=$(printf '%s\n' $APT_PACKAGES | sort | sha256sum | cut -c1-16)
         echo "key=apt-debs-v1-${ImageOS}-${RUNNER_ARCH}-${list}-${{ hashFiles('scripts/ci/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
     - name: Restore apt packages
       id: apt-cache
-      if: steps.apt-list.outputs.packages != ''
+      if: inputs.apt-packages != ''
       uses: actions/cache/restore@v4
       with:
         path: ~/apt-debs/*.deb
         key: ${{ steps.apt-key.outputs.key }}
     - name: Install system packages
-      if: steps.apt-list.outputs.packages != ''
+      if: inputs.apt-packages != ''
       shell: bash
       env:
-        APT_PACKAGES: ${{ steps.apt-list.outputs.packages }}
+        APT_PACKAGES: ${{ inputs.apt-packages }}
       run: |
         # shellcheck disable=SC2086 # the package list is word-split on purpose
         bash scripts/ci/apt-install.sh $APT_PACKAGES
     - name: Save apt packages
       if: >-
-        steps.apt-list.outputs.packages != '' && steps.apt-cache.outputs.cache-hit != 'true'
+        inputs.apt-packages != '' && steps.apt-cache.outputs.cache-hit != 'true'
         && github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: actions/cache/save@v4
       with:
@@ -83,16 +68,13 @@ runs:
         key: ${{ steps.apt-key.outputs.key }}
 
     # Exported for the rest of the job: tests build in the dev profile without
-    # debug info (smaller, faster to link), and aarch64 links with lld.
-    # CARGO_* variables are part of the rust-cache key, so every job sharing a
-    # key gets the same set from here.
+    # debug info (smaller, faster to link). CARGO_* variables are part of the
+    # rust-cache key, so every job sharing a key gets the same set from here.
+    # aarch64 (ci-speed 14) keeps the default bfd linker: lld measured no
+    # faster there (ticket 14's A/B) and would add an apt step to every job.
     - name: Build settings
       shell: bash
-      run: |
-        echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
-        if [ "$RUNNER_ARCH" = ARM64 ]; then
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-Clink-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
-        fi
+      run: echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
 
     - uses: Swatinem/rust-cache@v2
       with:

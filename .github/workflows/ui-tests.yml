@@ -9,8 +9,8 @@ name: UI tests
 # switch (upstream 5d5d93599).
 #
 # The four PR-tier jobs run on ubuntu-24.04-arm (ci-speed 14): free for
-# public repositories, and this repo's builds compile ≈ 20–25 % faster there
-# than on ubuntu-24.04. The backstop stays on x64, so x64 Linux still gets a
+# public repositories, and the same cold test builds finish 10–28 % sooner
+# there than on ubuntu-24.04 (ticket 14's A/B). The backstop stays on x64, so x64 Linux still gets a
 # daily signal; android.yml stays x64 (aapt2 and the emulator need it).
 #
 # Android-only changes (apps/android/**) do not run this workflow; android.yml
