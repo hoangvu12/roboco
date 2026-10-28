@@ -43,6 +43,8 @@ anyhow.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+# The delay proxy (tests/remote_open_engine.rs, fleet-redesign 17).
+roboco-engine-client = { workspace = true, features = ["test-support"] }
 # tests/tailcat_engine.rs prints the route's decisions.
 tracing-subscriber.workspace = true
 roboco-engine.workspace = true

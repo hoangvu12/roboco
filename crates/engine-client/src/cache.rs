@@ -71,13 +71,15 @@ impl EngineCache {
         write(&self.engine_dir(engine_key).join("rows.json"), rows)
     }
 
-    /// The legacy read: entries only (a cache predating digests).
+    /// The entries alone, whichever format the file is in (the bare array
+    /// of a cache predating digests, or the object with them).
     pub fn load_transcript(
         &self,
         engine_key: &str,
         chat_id: &str,
     ) -> Option<Vec<SessionMessageEntry>> {
-        read(&self.transcript_path(engine_key, chat_id))
+        self.load_transcript_state(engine_key, chat_id)
+            .map(|state| state.entries)
     }
 
     /// Entries plus their stored digests, reading either the current
