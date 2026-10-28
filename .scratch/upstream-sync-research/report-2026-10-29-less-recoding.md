@@ -419,6 +419,16 @@ not "no recoding".
 4. One-time move of Roboco-only tests out of the five hot files? (Recommended: yes, opportunistically.)
 5. ADR 0003 stays as is: no merging. (Recommended. The measurement backs it.)
 
+## User decisions (2026-10-29)
+
+The user accepted every recommendation ("do ur rec"):
+
+1. Yes: residual mode, the `Cargo.lock` regenerate rule and the conflict annotation go into `scripts/upstream/translate.py` before the wave-10 lanes start.
+2. Yes: mergiraf as an *optional*, opt-in fallback (used only when it fully resolves a file).
+3. Later: the generated renamed mirror (local-only, not pushed) for rerere/blame.
+4. Yes, opportunistically: move Roboco-only tests out of the five hot files the next time a port touches one of them.
+5. ADR 0003 stays: no merging of upstream or the renamed mirror.
+
 ## Scripts (`C:\tmp\upstream-less-recoding\scripts\`)
 
 | Script | What |

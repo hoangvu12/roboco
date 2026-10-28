@@ -12,12 +12,13 @@ Evidence from `release.yml` (research-web §3.1). The Windows package step takes
   - (c) arm64 only.
 
   Recommendation: (b).
+  **User decision (2026-10-29): (b)**, a nightly x64 `tests` run with no cache save.
 - The label moved to the VS 2026 image in September 2026. Watch for image churn in the first runs.
 - Record the decision and measurements here. If arm64 queue time or flakiness is worse, revert by changing one line.
 
 **Blocked by:** 04 (the split), 05 (linker settings are shared), 13 (if option (a) needs the paid cache headroom)
 
-**Status:** ready-for-human (coverage option a/b/c), then ready-for-agent
+**Status:** ready-for-agent (coverage option (b) chosen by the user 2026-10-29)
 
 **Parent:** `.scratch/ci-speed/spec.md`
 

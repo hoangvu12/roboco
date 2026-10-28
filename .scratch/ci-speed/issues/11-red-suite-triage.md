@@ -23,7 +23,7 @@ Run IDs are in `.scratch/ci-speed/data/` (`python -I fails.py data android.yml u
 **Parent:** `.scratch/ci-speed/spec.md`
 
 - [x] Per-suite table: failing tests, classification, evidence (run IDs), proposed action
-- [ ] User decision recorded per suite (orchestrator defaults recorded 2026-10-28, awaiting the user's OK); follow-up fix tickets filed (22–24)
+- [x] User decision recorded per suite (orchestrator defaults recorded 2026-10-28; **user OK 2026-10-29**); follow-up fix tickets filed (22–24)
 - [ ] Measured before/after (after the follow-ups land): failure share of runner-min for android.yml and ui-tests.yml (baseline 50 % and 12 %)
 
 ## Comments
