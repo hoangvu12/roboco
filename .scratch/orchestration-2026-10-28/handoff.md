@@ -293,7 +293,11 @@ oboco-w10-android` folder left). 16 `bisect/pr38-*` branches deleted (user OK).
   `bdd1bbe1` `..\roboco-ci-windows` / `ci/windows-split` = CI 03→04→05; `a7b1639c`
   `..\roboco-ci-linux-android` / `ci/linux-android-tiers` = CI 06, 08, 23. Web-line conflicts: whichever lands
   second resolves. Then 09 (docs/final measurement), 10 (after web removal), 14/15 (arm64), 16–21, 22, 24.
-- **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
+- **#42 merged `1c3d80b41`**: the `completion_notices` timeouts were NOT from #40. `SessionDoc::queue_command`
+  wrote `id` before `originChatId`, so the drain worker could run a chat's first command without its origin
+  (no notice owed). Fix: write `id` last (also queue rows). CI ticket 24 = same bug (its "20 green CI runs"
+  box is checked after merge). Cleaned up. Locked empty worktree folders free up once the worker chat is archived.
+- *(superseded)* **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
   timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..
 oboco-fix-notices` / `fix/completion-notices`.
 - #41 merged `2edb72a7a` (upstream sync: ledger 576 rows `docs/reference/upstream-ledger.tsv`, PR table, `scripts/upstream/`
