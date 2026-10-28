@@ -35,7 +35,7 @@ rename-translated merge, not a blank branch. The research behind this is
 | `docs/reference/upstream-prs.tsv` | Open and closed-unmerged upstream PRs the wave-10 audit tracked, with their decision. |
 | `scripts/upstream/rename-map.tsv` | The AGENTS.md rename map as data, used by every script. Change it together with AGENTS.md; a unit test checks every AGENTS.md pair. |
 | `scripts/upstream/path-rules.tsv` | Auto-skip paths, the iOS → Android-lane rule, version-bump subjects. |
-| `scripts/upstream/translate.py` | The translated cherry-pick: maps paths and names, then 3-way merges each file onto a Roboco rev. It reports CLEAN, TRIVIAL or REAL per commit and a state per file. `--apply --worktree` writes the merge, and `--commit` commits a CLEAN one with the trailer. |
+| `scripts/upstream/translate.py` | The translated cherry-pick: maps paths and names, then 3-way merges each file onto a Roboco rev. It reports CLEAN, TRIVIAL or REAL per commit and a state per file. `--apply --worktree` writes the merge, and `--commit` commits a CLEAN one with the trailer. Its passes (residual mode, the `Cargo.lock` rule, mergiraf, conflict hints) are described [below](#translatepy-passes); they live in `residual.py`, `lockfile.py`, `mergiraf.py` and `annotate.py`. |
 | `scripts/upstream/presence.py` | "Is this already in Roboco?": the share of a commit's translated added lines found in Roboco. |
 | `scripts/upstream/triage.py` | `scan` (the weekly triage page), `apply` (page decisions → ledger), `sync` (trailers → `ported`), `mark`, `check-rules`, `stats`. |
 
@@ -43,7 +43,97 @@ The scripts are Python 3 with the standard library only. They run the same on
 Windows and Linux, with no bash. Anything that writes is a dry run until you
 pass `--write`, or `--apply` for `translate.py`. `translate.py` refuses to write
 into a worktree on `zeron/main` or on any upstream commit. Tests:
-`python -m unittest discover scripts/upstream/tests`.
+`python -m unittest discover scripts/upstream/tests` (they need `git`, not
+mergiraf or cargo; the one test that runs a real mergiraf skips without it).
+
+### translate.py passes
+
+The research behind these is
+`.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md`. None of
+them makes a REAL port mechanical; they shrink it and say what is left.
+
+**`Cargo.lock`: regenerate, never merge.** Always on. When Roboco's lock
+differs from upstream's, the file is kept as Roboco's (state `REGENERATE`,
+class at least TRIVIAL) and upstream's change becomes a plan: the registry
+crates upstream bumped, as `cargo update -p <name>@<old> --precise <new>`
+(only where Roboco is still on upstream's old version), after one
+`cargo metadata --format-version 1` that settles the lock against the merged
+manifests. Git pins (the GPUI forks) are listed, never updated: Roboco pins
+its own forks. `--apply --refresh-lock` runs the plan in the worktree (it
+needs cargo and the registry index); otherwise run the printed commands
+before committing. CI builds Android with `--locked`, so a stale lock fails.
+
+**`--residual`: skip what Roboco already has.** For remainders of earlier
+partial ports (ledger notes like "audit PORTED (sha); residual slice"),
+replaying the whole commit re-conflicts on everything already ported. Residual
+mode splits each conflicted file's upstream change into hunks and reverts the
+ones Roboco provably carries before merging. It is conservative:
+
+- a hunk is skipped only when every significant line it adds is in the Roboco
+  file, as many times as upstream has it after the commit, and every
+  significant line it removes is gone. A line repeated elsewhere in the file
+  can't vouch for a second copy, so a new enum variant or a second `#[test]`
+  is never skipped because its neighbours exist;
+- a file keeps the plain merge when the residual one has more conflict
+  regions (or as many and more conflict lines);
+- every skipped hunk is listed in the report (upstream line range and first
+  line). Read the list: a hunk that matches by text can still sit in a
+  different function in Roboco.
+
+`--residual-threshold 0.8` skips a hunk when 80% of its lines are present (the
+research prototype's rule). It removes about twice as many regions, but it
+drops lines Roboco doesn't have: the report lists them as `lacking`, and
+`--commit` refuses such a result. Measured on the wave-10 conflict set
+(414 files, 1,816 regions): strict 1,579 regions and nothing dropped without
+evidence; 0.8 gives 1,358 regions but 571 unverified lines.
+
+Where a hunk was skipped, the upstream side of a remaining conflict shows the
+upstream^ text there. Don't take upstream's side of such a region wholesale.
+
+**`--mergiraf [PATH]`: optional structural fallback.** Opt-in, never
+required: [mergiraf](https://mergiraf.org) is an external, pre-1.0, GPL-3
+binary that the scripts never vendor or install. With the flag (or
+`ROBOCO_MERGIRAF=<path to the binary>` in the environment; `--no-mergiraf`
+overrides it), each file still conflicted after the other passes, in Rust,
+TOML or Kotlin, is merged again by mergiraf. Its result is used only when it
+resolves the whole file; a partial result, crash or timeout
+(`--mergiraf-timeout`, default 300 s per file) keeps git's conflict. Files it
+resolved show as `CLEAN (mergiraf)`, are listed in the report, and `--commit`
+won't commit them unreviewed: read each one and build. To install it, take
+the release archive for your platform from
+<https://codeberg.org/mergiraf/mergiraf/releases> (or
+`cargo install --locked mergiraf`), unpack it outside the repo, and pass its
+path or put it on `PATH`. 0.20.0 is the version measured.
+
+**Conflict hints.** Each conflict region left gets one line saying why it
+conflicts and what to do, from the three sides, blame on the upstream file at
+`<sha>^`, and the ledger at the target rev:
+
+| Hint | Meaning | Action |
+|---|---|---|
+| `already` | upstream's new lines here are all in the Roboco file | keep ours |
+| `prerequisite` | upstream^ code here comes from an upstream commit the ledger hasn't ported | port that commit first (or include it), then re-run |
+| `removed` | upstream's side carries cloud (edge, WorkOS, sync rooms), iOS or in-app browser code, or code from a skipped/declined/superseded commit | drop upstream's side |
+| `rename` | the sides differ only by the zeron → roboco rename | keep ours |
+| `ported` | the upstream^ code came from a commit Roboco ported differently | keep ours, re-apply upstream's change by intent |
+| `prefork` | Roboco rewrote this pre-fork upstream code | keep ours, re-apply upstream's change by intent |
+| `roboco-only` | Roboco-only lines sit where upstream changed the code | keep them and carry upstream's diff over |
+| `lacked` | upstream^ code Roboco lacks, origin unknown | check for a missing prerequisite (`presence.py`, `git log -S`) |
+| `drift` | both sides carry the same code, ordered or formatted apart | either side |
+
+Hints are advice, not proof: moved code blames wrong, and the evidence
+(commits, line counts) is printed next to each one. `--annotate` prints them
+in the report; `--no-blame` skips blame (faster, no `prerequisite` or
+`ported` hints).
+
+**The sidecar report.** `--apply` writes `<sha>.md` and `<sha>.json` to the
+worktree's git dir (`git rev-parse --git-path roboco-translate`, for example
+`.git/worktrees/<name>/roboco-translate/`), never into the tree, so it can't be
+committed by accident and the merged files carry only git's own markers. It
+holds the hints per region (lines refer to the file as written), the skipped
+residual hunks, the mergiraf files, the `Cargo.lock` plan and the files with no
+Roboco target. `--report-dir DIR` writes it elsewhere, also without `--apply`.
+A committed CLEAN result writes no report.
 
 ### Ledger format
 
@@ -119,11 +209,17 @@ presence, only the uncertain ones need a person.
    message the script prints. The trailer and the ledger row are the whole
    record. Several CLEAN shas can be passed at once; the run stops at the
    first one that isn't CLEAN. "Clean" means the text merged, not that it
-   builds: build and test the batch.
+   builds: build and test the batch. A commit whose only leftover is
+   `Cargo.lock` is TRIVIAL; `--refresh-lock` regenerates the lock with cargo,
+   and the commit then goes through as CLEAN.
 6. **REAL takes: seed from the translated merge.** `translate.py <sha> --apply
-   --worktree ../roboco-sync` writes the merge, conflict markers included, and
-   lists the files with no Roboco counterpart. The porting agent starts from
-   that, not from a blank branch, and resolves by intent (next section). Write
+   --worktree ../roboco-sync --residual` writes the merge, conflict markers
+   included, lists the files with no Roboco counterpart, and writes the
+   sidecar report with a hint per conflict region
+   ([translate.py passes](#translatepy-passes); add `--mergiraf` if it is
+   installed). The porting agent starts from that and the report, not from a
+   blank branch, and resolves by intent (next section). Take the commits in
+   upstream order (see [Lanes](#lanes-in-upstream-order)). Write
    a ticket (`.scratch/upstream-sync/issues/NN-<slug>.md`, ledger
    `ticketed upstream-sync-NN`) only when the port needs a design decision.
    Otherwise the commit trailer is the record. A port that spans several
@@ -145,12 +241,26 @@ Android lane. Run it after editing `path-rules.tsv`.
 
 Wave 10 (`.scratch/upstream-ports-2026-10-wave10/`) keeps its tickets. Each
 ticket that cites a merged upstream SHA starts by running
-`python scripts/upstream/translate.py <sha>` against its branch to see what
-lands cleanly. It then uses `--apply` to seed the port, and adds the
+`python scripts/upstream/translate.py <sha> --residual --annotate` against
+its branch to see what lands cleanly and what is left. Most wave-10 commits
+are remainders of partial ports, which is what `--residual` is for. The
+ticket then uses `--apply --residual` to seed the port, and adds the
 `Upstream-Commit:` trailer to the commit that completes it. Wave-10 rows
 are `ticketed wave10-NN` in the ledger. Each merged wave-10 PR runs
 `triage.py sync --write` to flip them. The weekly loop starts once wave 10
 is done.
+
+### Lanes in upstream order
+
+Within a lane (a ticket, or tickets that share files), replay the upstream
+commits **in upstream commit order** (`git log --reverse` on the mirror, or
+the ledger's row order), and **commit each port before replaying the next**.
+`translate.py` merges onto the worktree's HEAD, so the next replay sees the
+prerequisite already in place instead of conflicting on it. In the wave-10
+measurement, half of the upstream code missing from conflicts came from other
+pending wave-10 commits. When a region's hint says `prerequisite <sha>`, and
+that commit belongs to the lane, port it first and re-run. Ordering is often
+written in the ticket already ("Needs 978e8dacb first").
 
 ## Refresh the pristine mirror
 
@@ -194,8 +304,26 @@ on the Roboco side):
 4. Review `git diff`, run checks that fit the retained behaviour, and record the
    `Upstream-Commit:` trailer and any excluded behaviour in the commit. Finish
    only when the patch keeps Roboco's architecture and the checks pass.
+   Regenerate `Cargo.lock` with cargo (the report's commands, or
+   `--refresh-lock`); never hand-merge it.
 5. Remove clean temporary worktrees, and delete their temporary branches once
    the port commit or its evidence is kept.
+
+### The five hot files: move Roboco-only tests out when you touch them
+
+Five files carry about 29% of the conflict regions in wave 10:
+`crates/ui/src/shell.rs`, `crates/ui/src/composer.rs`,
+`crates/ui/src/shell/spaces.rs`, `crates/ui/src/transcript.rs` and
+`crates/engine/src/sessions.rs`. When a port touches one of them, move the
+Roboco-only tests in it (tests upstream doesn't have) into a child module
+in the same PR: `#[cfg(test)] mod roboco_tests;` at the end of `shell.rs`
+lives in `crates/ui/src/shell/roboco_tests.rs` (`spaces.rs` →
+`shell/spaces/roboco_tests.rs`, `sessions.rs` → `sessions/roboco_tests.rs`). Leave
+upstream's own inline test modules where they are, so upstream's later edits
+to them still merge. Don't move Roboco-only production code: it sits inside
+upstream's functions, and moving it means designing seams upstream's next
+rewrite would undo. Measured: moving the tests removes 13% of the hot-file
+regions.
 
 A commit already present in Roboco needs no production port: record it as
 `ported` (with the commit that brought it, if one exists). A historical replay
