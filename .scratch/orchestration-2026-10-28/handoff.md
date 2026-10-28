@@ -120,7 +120,7 @@ Keep a running "PRs" list in this file.
 
 ## >>> HANDOFF #3 (2026-10-29, from `efcef7d0` to the next orchestrator): START HERE <<<
 
-The user asked `efcef7d0` to hand off to a new orchestrator chat. Everything below (handoff #2, the
+The user asked `efcef7d0` to hand off to a new orchestrator chat. New orchestrator: **`aed16e2d`** ("Roboco Orchestrator #3"). Everything below (handoff #2, the
 `efcef7d0` log, the specs) still applies; this section is the exact state now. `main` = `07b155573`.
 
 **Merged since handoff #2** (all cleaned up: worktree, local + remote branch, basedir, chat archived):
