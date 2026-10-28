@@ -32,7 +32,7 @@ Upstream's fix switches the runners to `ubuntu-22.04`/`ubuntu-22.04-arm`. **Don'
 
 **Blocked by:** none for the container and guard. Coordinate the apt-list lines with the web-removal PR (whichever lands second rebases). Ticket 12 makes the toolchain inside the container deterministic.
 
-**Status:** needs-info: blocked on a user decision (ONNX Runtime prebuilt needs glibc 2.38 / GCC 13–14 libstdc++; options in the 2026-10-29 comment). Branch `ci/linux-arm64-glibc` has the container, guard and smoke, but the container build does not link
+**Status:** needs-info: blocked on a user decision (ONNX Runtime prebuilt needs glibc 2.38 / GCC 13–14 libstdc++; options in the 2026-10-29 comment). The attempt (container, guard, smoke; 66cb6bb98) does not link and was reverted from the ticket-14 PR (8b63937cc); it survives on `ci/scratch-glibc-floor`'s parent commit for the follow-up PR
 
 **Parent:** `.scratch/ci-speed/spec.md`
 
