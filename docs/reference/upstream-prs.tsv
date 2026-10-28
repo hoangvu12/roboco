@@ -1,7 +1,7 @@
 pr	state	date	title	status	audit	note
 #1086	open	2026-10-27	Cloud: an Anthropic API key can name its LLM gateway	skipped:cloud	SKIP:cloud prs-A	All of it is Cloud-vault plumbing. A local ANTHROPIC_BASE_URL per account would be a separate idea
 #1084	open	2026-10-27	Fix the Windows Icon to not be macOS'y	already	ALREADY prs-A	Binary-only PR
-#1081	open	2026-10-27	CI: LLD and a Dev Drive for Windows builds (~11% faster)	watch	FIX-CANDIDATE (slice) prs-A	Stacked on #1077, but the two composite actions (fast-linker, Dev Drive in windows-ci-setup) are separable. M…
+#1081	open	2026-10-27	CI: LLD and a Dev Drive for Windows builds (~11% faster)	already	FIX-CANDIDATE (slice) prs-A	The Windows slice (rust-lld via the setup action's config, a ReFS Dev Drive for target/) is carried by ci-speed 05, without #1077's ci.yml or linker-benchmark.yml. Roboco mounts the drive at .devdrive with a target junction (a mount root can't be tarred by the cache save). If upstream merges it, its commits show up in the weekly scan.
 #1080	open	2026-10-27	Find in thread (⌘F) and message search in the command palette	ticketed wave10-78	FEATURE-CANDIDATE prs-A	New RPC (wiregen); FTS5 index is engine-local (fits ADR 0004). Demo only, no review
 #1079	open	2026-10-27	Tasks and side chats: chats report back when they're done	watch	FEATURE-CANDIDATE (Coordinator/Tasks slice) prs-A	Stacked on #1076 (Cloud); no review
 #1077	open	2026-10-27	CI: one entry workflow with admission, reuse, priority/locks	skipped:upstream-ci	SKIP:upstream-ci prs-A	Ideas worth stealing: stress-round env knob, merging small tests/.rs into one tests/misc binary (link time)

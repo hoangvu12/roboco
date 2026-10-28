@@ -68,7 +68,7 @@ Still zeron-branded on purpose:
 
 Android builds and tests run on these runners ([ADR 0009](docs/adr/0009-android-client.md)); there are no macOS jobs.
 
-- `windows.yml` — Windows tests (PR + push)
+- `windows.yml` — Windows `tests` (one nextest build) and `app` (package, installer, startup) jobs (PR + push)
 - `ui-tests.yml` — ubuntu jobs only (engine-local recovery, UI regressions)
 - `preview-tests.yml` — ubuntu (preview/proto tests)
 - `theme-artifact.yml` — Rust freshness gate for `crates/theme/artifact/artifact.json` (`roboco-theme-export --check`), which Android's palette pin tests read

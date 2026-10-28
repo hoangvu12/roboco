@@ -55,7 +55,9 @@ try {
     if ($AdapterPath) {
         # Used verbatim: a different spelling of the same path is a different
         # ROBOCO_TAILCAT_EMBED value to build.rs, and rebuilds the engine.
-        if (-not [IO.Path]::IsPathFullyQualified($AdapterPath) -or -not (Test-Path -LiteralPath $AdapterPath -PathType Leaf)) {
+        # Fully qualified = drive + separator or UNC; written out because
+        # [IO.Path]::IsPathFullyQualified is missing from Windows PowerShell 5.1.
+        if ($AdapterPath -notmatch '^([A-Za-z]:[\\/]|[\\/]{2})' -or -not (Test-Path -LiteralPath $AdapterPath -PathType Leaf)) {
             throw "The Tailcat adapter to embed must be the absolute path of a built roboco-tailcat.exe, not $AdapterPath"
         }
         $adapter = $AdapterPath
