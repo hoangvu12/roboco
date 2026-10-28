@@ -8,7 +8,7 @@
 
 **Blocked by:** 02 (same steps of `windows.yml`)
 
-**Status:** ready-for-agent
+**Status:** implemented on branch `ci/windows-split` (2026-10-29, PR with 04 and 05); the CI acceptance items are checked on the PR run and measured again after merge
 
 **Parent:** `.scratch/ci-speed/spec.md`
 
@@ -18,3 +18,15 @@
 - [ ] Measured before/after: the added steps cost ≤ 2 min on the `tests`/`app` job
 
 ## Comments
+
+**2026-10-29 (implementation, branch `ci/windows-split`):**
+
+What changed (this commit; ticket 04 then moves these steps into the `tests`/`app` jobs):
+
+- **Login resolution on Windows.** "Harness catalog tests" → "Harness catalog and login tests": `cargo nextest run --release --locked -p roboco-engine --test codex_catalog --test codex_login_resolution -P ci`, as upstream `68ed902ed` runs it next to `codex_catalog`. The suite has a `#[cfg(windows)]` case (the npm `.cmd` shim layout) that no workflow ran before.
+- **`scripts/test-windows-startup.ps1`** runs after "Installer install/uninstall" as "GUI subsystem and redirected CLI output", on the packaged `target/release/roboco.exe`. Checked against Roboco before wiring it. The script already uses `roboco.exe` and no `ZERON_*`/`ROBOCO_*` env. It needs the PE subsystem to be 2, which `apps/roboco/src/main.rs:4` sets (`windows_subsystem = "windows"`). It needs `--help` and `--version` to print `roboco` with exit 0: the clap `name = "roboco"`, `version` is set, and `attach_parent_console` keeps redirected handles. It needs an unknown `--flag` to report `unexpected argument` on stderr with a non-zero exit, which is clap's error for an unknown long flag even with the optional `URL` positional. Upstream's `Mode: local only` wording is only in upstream's "CLI startup without HOME" step, not in this script. Roboco's step checks `Engine: not running` and stays unchanged.
+- **Cursor shim first frame: 30 s** (`4a0d416cf`, zeron#1051). `python scripts/upstream/translate.py 4a0d416cf` reported CLEAN, and `--apply` wrote it unchanged except for names: a `Frames` wrapper whose first `frame()` read waits 30 s and every later one 5 s. The end-of-stream read in `a_stop_during_startup_retries_is_not_lost` (formerly `:1000`) is a later frame and keeps 5 s, as upstream does. The commit carries `Upstream-Commit: 4a0d416cf…`, and the ledger row is flipped by `triage.py sync` in the 05 commit.
+
+Local check (Windows 11 dev host, debug profile): `cargo test --locked -p roboco-harness --test cursor_shim` → 31 passed (64 s, `node` v22). `cargo test --locked -p roboco-engine --test codex_login_resolution` → 3 passed, 1 failed: `codex_login_without_any_cli_fails_with_a_named_error`. The failure comes from this host. Its probe clears PATH and the home/npm env vars, but the resolver also reads the persisted PATH from the registry (`crates/harness/src/windows_process.rs` `registry_path`, `HKCU\Environment`), and this machine has a real `codex.cmd` in `%APPDATA%\npm`, so the login starts. GitHub's Windows images ship no codex CLI, and upstream runs the same test on its Windows runners. The test's own skip guard only checks the Homebrew/`/usr/local` paths. Hardening it against a registry-PATH codex is a test-isolation fix outside this ticket; it is noted here so a local failure is not mistaken for a regression.
+
+Coverage: +1 test binary (`roboco-engine::codex_login_resolution`) and +1 script step. Nothing removed.
