@@ -172,6 +172,39 @@ prerequisite of fleet-agents); then the fleet work as decided.
 - Nit for the next CI PR (03/04): `package-windows.ps1` uses `[IO.Path]::IsPathFullyQualified`
   (missing in Windows PowerShell 5.1).
 
+## Orchestrator #2 log (chat `efcef7d0`, from 2026-10-28 ≈ 02:50)
+
+- Took over. Queued a takeover message to `82cbdf25` (its next turn, and its completion notice, are now mine).
+- Watchers (Bash background): #35 `android-emulator` job 122579187946; dispatch run 40609763310 `android-benchmark-apk` job 122578974077.
+- **Started wave-10 lane 3 (Android) early**: it barely overlaps web removal (only the Android "Ports"
+  label, which the worker is told not to touch; ticket 36, the only proto change, goes last after
+  merging `origin/main`). Worker `66cf7296`, `..\roboco-w10-android` / `wave10/android` (sccache
+  basedir added). Scope 33–43 (36 last); not 59; ends with ONE PR, I merge.
+
+- **#36 merged** (`d7b6887d7`; dispatch benchmark APK green, its emulator red = known flaky suite) and
+  **#35 merged** (`6ee2e4731`, emulator re-run green). Worktrees `roboco-ci-bindgen`/`roboco-ci-caches`
+  removed, local branches deleted (remote branches kept: deleting needs the user's OK), basedirs
+  dropped, chats `0bf1abec`/`8ccd84a5` archived. `rust-toolchain.toml` = 1.99.1 on main now: plain
+  `cargo` works in worktrees that have merged main. **Still to do: measure** (CI 01/12/13/02/07 say
+  "measure after merge": the first main push seeds caches, the next PR must restore).
+- **Fleet design outcome landed** (from `9a104962`): `.scratch/fleet-redesign/` ("connect once"),
+  committed to main. It **supersedes `.scratch/fleet-merge/`** and **re-bases `.scratch/fleet-agents/`**
+  (its 01 is replaced by fleet-redesign 02–03; fleet-agents 02–05 follow in their own PR, still
+  blocked by wave-10 03). Fleet-redesign 01 (settings page scrolls) ships alone now; **02–11 = one PR
+  on `feature/connect-devices` after web removal merges.** ⚠ ADR number clash: web-removal ticket 10
+  writes ADR 0012, fleet-redesign 10 also says "ADR 0012": the second to land takes **0013**.
+- **Crash, 2026-10-28 ≈ 09:10 local (unclean shutdown / engine restart).** `.git/config` was zero-filled
+  (another chat restored it: core, origin, upstream, `branch.main`, `branch.zeron/main`, `rerere.enabled`;
+  the `kratos` remote isn't in it and `../Kratos` doesn't exist). 13 files of the #36 fast-forward in the
+  main checkout were zero-filled → restored from git. Half-made `roboco-settings-scroll` worktree
+  recreated. Lesson: after a crash, scan worktrees for NUL-filled files before trusting them.
+
+| chat | worktree / branch | scope | state |
+|---|---|---|---|
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
+| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | running |
+| `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | running |
+
 ## Implementation orchestrator log (chat `00743a45`, from 2026-10-28)
 
 ### Done by the orchestrator
@@ -226,6 +259,7 @@ prerequisite of fleet-agents); then the fleet work as decided.
 
 ## PRs
 
+- #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache
   writers; Windows on push:main; AVD cache dropped; Windows dedupe with `-AdapterPath`. Worker
   deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux

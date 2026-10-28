@@ -1,6 +1,6 @@
 # Fleet merge: one fleet for all my machines, and QR codes that scan
 
-Status: ready-for-agent (starts after the web-removal PR merges)
+Status: **superseded** by `.scratch/fleet-redesign/` (2026-10-28 design discussion). Its QR fixes carry into fleet-redesign 05/07. Do not implement.
 Spec date: 2026-10-28
 Diagnosis: orchestrator side chat `bde0242e` (2026-10-28), summarised under Problem Statement. Code refs are against `main` at `1ccaa3a8b`/`6126c05d6` (v0.14.0).
 

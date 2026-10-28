@@ -1,6 +1,6 @@
 # Fleet agents: agents create and drive chats on every machine in the fleet
 
-Status: ready-for-agent (starts after `.scratch/fleet-merge/` tickets 01–02)
+Status: ready-for-agent, **re-based on `.scratch/fleet-redesign/`**: ticket 01 here is replaced by fleet-redesign 02–03; tickets 02–05 start after the fleet-redesign PR merges (still blocked by wave-10 03), with "fleet member" read as "connected server".
 Spec date: 2026-10-28
 Origin: rooms spec user story 15 (`.scratch/rooms/spec.md:83-84`): "As an MCP user, I want the MCP server to hold room memberships and address any member engine, so agent tooling spans the fleet like the desktop does." No rooms ticket carried it, so it was never built. Fleet follow re-landed the rooms core without it. The user tried it on 2026-10-28 and expected it to work.
 
