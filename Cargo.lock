@@ -7843,6 +7843,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "roboco-mobile-bindgen"
+version = "0.14.0"
+dependencies = [
+ "uniffi",
+]
+
+[[package]]
 name = "roboco-mobile-client"
 version = "0.14.0"
 dependencies = [

@@ -28,7 +28,10 @@
 //! `<out>/jniLibs/<abi>/libroboco_mobile.so`, `<out>/jniLibs/<abi>/
 //! libroboco_tailcat.so` (the Go Tailcat transport, android-next#02; off with
 //! `--skip-tailcat` or `ROBOCO_ANDROID_TAILCAT=0`), `<out>/host/<libroboco_mobile
-//! or roboco_mobile.dll>` (JVM/Robolectric tests), `<out>/sizes.json`.
+//! or roboco_mobile.dll>` (JVM/Robolectric tests; not with `--skip-host`,
+//! which reads the bindings out of the first ABI's library instead),
+//! `<out>/sizes.json`. The generator is `uniffi-bindgen` from
+//! `crates/mobile-bindgen`, never a host build of the core.
 
 mod android_licenses;
 mod args;
@@ -38,7 +41,9 @@ mod kotlin;
 mod ndk;
 mod sizes;
 mod tailcat;
+mod uniffi_lock;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +52,10 @@ use anyhow::{Context, bail};
 /// The library name JNA resolves (library mode): `roboco_mobile` becomes
 /// `roboco_mobile.dll` on Windows and `libroboco_mobile.so` elsewhere.
 const LIB_NAME: &str = "roboco_mobile";
+
+/// The Cargo profile `uniffi-bindgen` (`roboco-mobile-bindgen`) builds at,
+/// whatever the core's profile.
+const BINDGEN_PROFILE: &str = "mobile";
 
 /// The core's file name inside `jniLibs/<abi>/`.
 const LIB_FILE_MOBILE: &str = "libroboco_mobile.so";
@@ -126,11 +135,16 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
         out.display()
     );
 
-    // 1. The bindgen binary, built from this crate so generator and runtime
-    //    share one UniFFI version. Feature-matched to the library build so
-    //    the two steps reuse each other's artifacts.
-    let language_feature = languages.feature();
-    let features = format!("bindgen,{language_feature}");
+    // 1. UniFFI's generator on its own (crates/mobile-bindgen, upstream
+    //    684becf0f): it reads the bindings out of any target's built core,
+    //    so it never compiles the core itself. Always at the `mobile`
+    //    profile: its own optimisation does not change what it generates,
+    //    and mobile-dist's thin LTO would only slow it down. Its uniffi
+    //    must be the core's, so drift in Cargo.lock stops here.
+    let lock_path = root.join("Cargo.lock");
+    let lock = fs::read_to_string(&lock_path)
+        .with_context(|| format!("reading {}", lock_path.display()))?;
+    uniffi_lock::check(&lock)?;
     run(
         root,
         &cargo(),
@@ -138,21 +152,21 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
             "build",
             "--locked",
             "-p",
-            "roboco-mobile",
-            "--bin",
-            "uniffi-bindgen",
-            "--features",
-            &features,
+            "roboco-mobile-bindgen",
             "--profile",
-            profile.as_str(),
+            BINDGEN_PROFILE,
         ],
         &[],
     )?;
-    let profile_dir = root.join("target").join(profile.as_str());
-    let bindgen = profile_dir.join(format!("uniffi-bindgen{}", std::env::consts::EXE_SUFFIX));
+    let bindgen = root
+        .join("target")
+        .join(BINDGEN_PROFILE)
+        .join(format!("uniffi-bindgen{}", std::env::consts::EXE_SUFFIX));
 
     // 2. The host library: what JVM (Robolectric) tests load through JNA,
-    //    and the default bindgen input.
+    //    and the bindgen input unless --skip-host.
+    let language_feature = languages.feature();
+    let profile_dir = root.join("target").join(profile.as_str());
     let host_library: Option<PathBuf>;
     if skip_host {
         host_library = None;
@@ -186,7 +200,8 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     }
 
     // 3. The Android libraries (cargo-ndk). Runs before the bindings when
-    //    --skip-host leaves the arm64 artifact as the only bindgen input.
+    //    --skip-host leaves the first ABI's artifact as the only bindgen
+    //    input.
     if !skip_ndk {
         // Resolution order per the ticket: ANDROID_NDK_HOME first (it pins
         // a specific NDK — the acceptance runs use it to build with 28.2
@@ -267,37 +282,105 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
     }
 
     // 4. Kotlin bindings, from the host library or (with --skip-host) the
-    //    unstripped arm64 cargo output — never a stripped or copied library:
-    //    library mode reads the UNIFFI_META_* symbols.
-    let bindgen_library = match host_library {
-        Some(path) => path,
+    //    first ABI's unstripped cargo output — never a stripped or copied
+    //    library: library mode reads the UNIFFI_META_* symbols.
+    let first_abi = &abis[0];
+    let bindgen_library = match &host_library {
+        Some(path) => path.clone(),
         None => {
-            let arm64 = root
-                .join("target")
-                .join("aarch64-linux-android")
-                .join(profile.as_str())
-                .join("libroboco_mobile.so");
-            if !arm64.is_file() {
+            let library = ndk_library(root, profile, first_abi)?;
+            if !library.is_file() {
                 bail!(
                     "--skip-host needs an Android build to generate bindings from: \
                      {} does not exist",
-                    arm64.display()
+                    library.display()
                 );
             }
-            arm64
+            library
         }
     };
     let kotlin_dir = out.join("kotlin");
-    // Delete first: removed items must not linger in the generated file.
-    if kotlin_dir.exists() {
-        fs::remove_dir_all(&kotlin_dir)
-            .with_context(|| format!("clearing {}", kotlin_dir.display()))?;
+    generate_kotlin(root, &bindgen, &bindgen_library, &kotlin_dir)?;
+
+    println!(
+        "kotlin bindings: {}",
+        kotlin_dir
+            .join("uniffi")
+            .join("roboco_core")
+            .join("roboco_core.kt")
+            .display()
+    );
+    println!("android-core: outputs in {}", out.display());
+
+    if !check {
+        return Ok(());
     }
-    fs::create_dir_all(&kotlin_dir)
-        .with_context(|| format!("creating {}", kotlin_dir.display()))?;
+    // With both a host and an Android library at hand, prove that
+    // --skip-host builds (APK-only and emulator runs) get the same bindings
+    // as the JVM tests: generate again from the first ABI and compare.
+    let mut failures = Vec::new();
+    if host_library.is_some() && !skip_ndk {
+        let ndk_kotlin = out.join(format!("kotlin-from-{first_abi}"));
+        generate_kotlin(
+            root,
+            &bindgen,
+            &ndk_library(root, profile, first_abi)?,
+            &ndk_kotlin,
+        )?;
+        let host_tree = read_tree(&kotlin_dir)?;
+        let ndk_tree = read_tree(&ndk_kotlin)?;
+        fs::remove_dir_all(&ndk_kotlin)
+            .with_context(|| format!("clearing {}", ndk_kotlin.display()))?;
+        if host_tree != ndk_tree {
+            failures.push(format!(
+                "Kotlin generated from the {first_abi} library differs from the host \
+                 library's: --skip-host builds would ship other bindings than the JVM \
+                 tests load"
+            ));
+        } else {
+            println!("bindings from the host and {first_abi} libraries are identical");
+        }
+    }
+    // --skip-ndk produced no Android libraries, so no ABI is *expected*:
+    // the checks still verify any jniLibs a previous full run left behind,
+    // plus the generated Kotlin and sizes.json.
+    let expected_abis: &[String] = if skip_ndk { &[] } else { &abis };
+    android_core_checks(
+        &out,
+        profile,
+        languages,
+        expected_abis,
+        tailcat_enabled,
+        failures,
+    )
+}
+
+/// The unstripped `libroboco_mobile.so` cargo-ndk built for `abi`.
+fn ndk_library(root: &Path, profile: args::Profile, abi: &str) -> anyhow::Result<PathBuf> {
+    let triple = ndk::target_triple(abi)
+        .ok_or_else(|| anyhow::anyhow!("no Rust target for Android ABI {abi:?}"))?;
+    Ok(root
+        .join("target")
+        .join(triple)
+        .join(profile.as_str())
+        .join(LIB_FILE_MOBILE))
+}
+
+/// Runs `uniffi-bindgen generate` over `library` into a fresh `out_dir`.
+fn generate_kotlin(
+    root: &Path,
+    bindgen: &Path,
+    library: &Path,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    // Delete first: removed items must not linger in the generated file.
+    if out_dir.exists() {
+        fs::remove_dir_all(out_dir).with_context(|| format!("clearing {}", out_dir.display()))?;
+    }
+    fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let bindgen = bindgen.to_string_lossy().into_owned();
-    let library_arg = bindgen_library.to_string_lossy().into_owned();
-    let out_dir_arg = kotlin_dir.to_string_lossy().into_owned();
+    let library_arg = library.to_string_lossy().into_owned();
+    let out_dir_arg = out_dir.to_string_lossy().into_owned();
     run(
         // Repo root as working directory: library mode finds
         // crates/mobile/uniffi.toml through `cargo metadata`.
@@ -314,26 +397,31 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
             &out_dir_arg,
         ],
         &[],
-    )?;
+    )
+}
 
-    println!(
-        "kotlin bindings: {}",
-        kotlin_dir
-            .join("uniffi")
-            .join("roboco_core")
-            .join("roboco_core.kt")
-            .display()
-    );
-    println!("android-core: outputs in {}", out.display());
-
-    if !check {
-        return Ok(());
+/// Every file under `dir`, keyed by its path relative to `dir`.
+fn read_tree(dir: &Path) -> anyhow::Result<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(current) = pending.pop() {
+        for entry in
+            fs::read_dir(&current).with_context(|| format!("reading {}", current.display()))?
+        {
+            let path = entry
+                .with_context(|| format!("reading {}", current.display()))?
+                .path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes =
+                    fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                let relative = path.strip_prefix(dir).unwrap_or(&path).to_owned();
+                files.insert(relative, bytes);
+            }
+        }
     }
-    // --skip-ndk produced no Android libraries, so no ABI is *expected*:
-    // the checks still verify any jniLibs a previous full run left behind,
-    // plus the generated Kotlin and sizes.json.
-    let expected_abis: &[String] = if skip_ndk { &[] } else { &abis };
-    android_core_checks(&out, profile, languages, expected_abis, tailcat_enabled)
+    Ok(files)
 }
 
 fn refuse_rustflags() -> anyhow::Result<()> {
@@ -358,8 +446,8 @@ fn android_core_checks(
     languages: args::Languages,
     expected_abis: &[String],
     tailcat_expected: bool,
+    mut failures: Vec<String>,
 ) -> anyhow::Result<()> {
-    let mut failures = Vec::new();
     let mut abi_sizes = Vec::new();
 
     let jni_libs = out.join("jniLibs");

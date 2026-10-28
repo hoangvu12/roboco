@@ -1,5 +1,10 @@
 param(
-    [Parameter(Mandatory)][string]$ReleasesUrl
+    [Parameter(Mandatory)][string]$ReleasesUrl,
+    # A prebuilt roboco-tailcat.exe to embed instead of building one. Defaults
+    # to ROBOCO_TAILCAT_EMBED: Windows CI builds the adapter and exports it
+    # before its first cargo command, so this build reuses the engine every
+    # earlier step compiled (build.rs reruns when the variable changes).
+    [string]$AdapterPath = $env:ROBOCO_TAILCAT_EMBED
 )
 $ErrorActionPreference = 'Stop'
 if (-not $ReleasesUrl.StartsWith('https://')) { throw 'Release feed must use HTTPS' }
@@ -47,29 +52,42 @@ try {
     # not shipped beside it: in-app updates replace roboco.exe only, and the
     # portable .exe is that file alone. Built outside target/package so the
     # release upload never publishes it as an arch-ambiguous loose asset.
-    $hostTriple = (& rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
-    $targetArch = switch -Wildcard ($hostTriple) {
-        'x86_64-pc-windows-*' { 'x86_64' }
-        'aarch64-pc-windows-*' { 'aarch64' }
-        default { throw "Unsupported Windows Rust host: $hostTriple" }
+    if ($AdapterPath) {
+        # Used verbatim: a different spelling of the same path is a different
+        # ROBOCO_TAILCAT_EMBED value to build.rs, and rebuilds the engine.
+        if (-not [IO.Path]::IsPathFullyQualified($AdapterPath) -or -not (Test-Path -LiteralPath $AdapterPath -PathType Leaf)) {
+            throw "The Tailcat adapter to embed must be the absolute path of a built roboco-tailcat.exe, not $AdapterPath"
+        }
+        $adapter = $AdapterPath
+        $targetArch = Get-WindowsPackageArch $adapter
+    } else {
+        $hostTriple = (& rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
+        $targetArch = switch -Wildcard ($hostTriple) {
+            'x86_64-pc-windows-*' { 'x86_64' }
+            'aarch64-pc-windows-*' { 'aarch64' }
+            default { throw "Unsupported Windows Rust host: $hostTriple" }
+        }
+        $goArch = if ($targetArch -eq 'aarch64') { 'arm64' } else { 'amd64' }
+        $adapterDir = Join-Path $root "target/tailcat/$targetArch"
+        New-Item -ItemType Directory -Force -Path $adapterDir | Out-Null
+        $adapter = Join-Path $adapterDir 'roboco-tailcat.exe'
+        Push-Location (Join-Path $root 'adapters/roboco-tailcat')
+        try {
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = 'windows'
+            $env:GOARCH = $goArch
+            & go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
+            if ($LASTEXITCODE -ne 0) { throw 'Tailcat adapter build failed' }
+        } finally { Pop-Location }
     }
-    $goArch = if ($targetArch -eq 'aarch64') { 'arm64' } else { 'amd64' }
-    $adapterDir = Join-Path $root "target/tailcat/$targetArch"
-    New-Item -ItemType Directory -Force -Path $adapterDir | Out-Null
-    $adapter = Join-Path $adapterDir 'roboco-tailcat.exe'
-    Push-Location (Join-Path $root 'adapters/roboco-tailcat')
-    try {
-        $env:CGO_ENABLED = '0'
-        $env:GOOS = 'windows'
-        $env:GOARCH = $goArch
-        & go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
-        if ($LASTEXITCODE -ne 0) { throw 'Tailcat adapter build failed' }
-    } finally { Pop-Location }
+    $callerEmbed = $env:ROBOCO_TAILCAT_EMBED
     $env:ROBOCO_TAILCAT_EMBED = $adapter
     try {
         cargo build --release --locked -p roboco
         if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
-    } finally { Remove-Item Env:ROBOCO_TAILCAT_EMBED }
+    } finally {
+        if ($null -eq $callerEmbed) { Remove-Item Env:ROBOCO_TAILCAT_EMBED } else { $env:ROBOCO_TAILCAT_EMBED = $callerEmbed }
+    }
     # Explicit pipes also work for the GUI-subsystem executable in CI. A
     # PowerShell collection match does not populate the scalar $Matches map.
     $probe = [Diagnostics.ProcessStartInfo]::new()

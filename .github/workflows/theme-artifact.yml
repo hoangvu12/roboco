@@ -37,9 +37,10 @@ on:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled; main runs never are (a per-run group).
 concurrency:
-  group: theme-artifact-${{ github.ref }}
-  cancel-in-progress: true
+  group: theme-artifact-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: '0'
@@ -53,6 +54,11 @@ jobs:
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: theme
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
       - name: Artifact freshness gate
         run: cargo run --locked -p roboco-theme --bin roboco-theme-export -- --check
       - name: Round-trip tests (registry ↔ artifact)

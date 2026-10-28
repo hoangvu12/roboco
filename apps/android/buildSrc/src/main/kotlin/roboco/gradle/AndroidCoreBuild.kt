@@ -28,6 +28,10 @@ import javax.inject.Inject
  * `-ProbocoSkipCore` skips the build **only while every requested ABI plus
  * the bindings and the host library exist** (upstream #609 skipped on arm64
  * alone, review bug 11: JNA then dies with `UnsatisfiedLinkError`).
+ *
+ * Without [buildHost] (ci-speed#07, see [HostCore]) the xtask runs with
+ * `--skip-host`: no host library, and the bindings come from the first
+ * requested ABI's library.
  */
 abstract class AndroidCoreBuild : DefaultTask() {
 
@@ -62,6 +66,13 @@ abstract class AndroidCoreBuild : DefaultTask() {
     @get:Input
     abstract val skipIfOutputsExist: Property<Boolean>
 
+    /**
+     * Whether to build the host library (JVM tests only). An input, so a
+     * test run after an APK-only build reruns the task and gets it.
+     */
+    @get:Input
+    abstract val buildHost: Property<Boolean>
+
     /** The repository root — the xtask's working directory. */
     @get:Internal
     abstract val repoRoot: DirectoryProperty
@@ -84,8 +95,8 @@ abstract class AndroidCoreBuild : DefaultTask() {
     abstract val hostDir: DirectoryProperty
 
     init {
-        // Skips only while the bindings, the host library and a `.so` for
-        // every requested ABI are all present.
+        // Skips only while the bindings, the host library (when built) and a
+        // `.so` for every requested ABI are all present.
         onlyIf { !skipIfOutputsExist.get() || !outputsComplete() }
     }
 
@@ -95,7 +106,7 @@ abstract class AndroidCoreBuild : DefaultTask() {
         val host = hostDir.get().asFile
         val hostLibrary = host.resolve("roboco_mobile.dll").isFile ||
             host.resolve("libroboco_mobile.so").isFile
-        if (!hostLibrary) return false
+        if (buildHost.get() && !hostLibrary) return false
         val jniLibs = jniLibsDir.get().asFile
         return abis.get().all { abi ->
             jniLibs.resolve("$abi/libroboco_mobile.so").isFile &&
@@ -121,6 +132,7 @@ abstract class AndroidCoreBuild : DefaultTask() {
                 languages.get(),
                 "--check",
                 *(if (tailcat.get()) emptyArray<String>() else arrayOf("--skip-tailcat")),
+                *(if (buildHost.get()) emptyArray<String>() else arrayOf("--skip-host")),
             )
             // Pin the NDK AGP resolved, not "the highest installed".
             environment("ANDROID_NDK_HOME", ndkHome.get())

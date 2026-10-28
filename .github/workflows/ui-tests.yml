@@ -27,9 +27,12 @@ on:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled; main runs never are, not even while
+# queued (a per-run group). Only main writes the Rust caches (save-if) and
+# every job has its own shared-key; PRs restore main's entries.
 concurrency:
-  group: ui-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: ui-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   engine-local-regressions:
@@ -40,6 +43,11 @@ jobs:
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-engine
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
       - name: OpenCode protocol and permission regressions
         run: |
           cargo test --locked -p roboco-harness --lib opencode::
@@ -81,6 +89,11 @@ jobs:
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-mobile
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
       # android-next#02: the Tailcat end-to-end test (mobile-client
       # tests/tailcat_engine.rs) loads the real host libroboco_tailcat, runs
       # the desktop adapter as the engine's server and a local DERP+STUN.
@@ -220,6 +233,11 @@ jobs:
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-ui
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
       - name: UI and headless layout regressions
         run: cargo test --release --locked -p roboco-ui --lib -- --test-threads=1
       - name: One-command engine pairing regressions
