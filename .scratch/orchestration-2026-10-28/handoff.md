@@ -131,7 +131,8 @@ Keep a running "PRs" list in this file.
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running |
 | `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open, CI running; reviewed OK |
-| `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | running |
+| `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open, CI running |
+| `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `.scratch/fleet-merge/` (7 tickets) |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
 ### Next
@@ -144,6 +145,12 @@ Keep a running "PRs" list in this file.
   `ci-speed/issues/22–24`). **Awaiting the user's OK**; ticket 11's decision box stays open until then.
   22–24 are new CI work items (23 rides with 08; 06 must turn on flaky-pass reporting).
 - Ask the user: pushing to zui forks (wave-10 57).
+- **New effort (user-approved 2026-10-28): `.scratch/fleet-merge/`**, a fourth spec. Pairing merges
+  fleets automatically (bigger wins, tie → acting desktop, no prompt); `RoomJoin { replace }` +
+  `rooms-v3`; phones re-fetch on reconnect; QR tiles sized/crisp + Enlarge; fleet-invite QR dropped
+  (Copy only); CLI QR dark-on-light + width hint. ADR 0011 amendment approved. One PR,
+  `feature/fleet-merge`, starts after the web-removal PR merges (05 could start earlier). The user
+  was given a paste-the-SG-invite workaround for today. Open: which QR they failed to scan.
 
 - 2026-10-28 ~00:00: an engine restart interrupted all three workers; each was told to resume.
 - Upstream moved: mirror now `ab189159f` (v0.2.128). #1088 access modes + plan mode is **not** in
@@ -158,3 +165,8 @@ Keep a running "PRs" list in this file.
   deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux
   `android` cache writer; Go cache kept on Linux jobs; preview-tests on ubuntu-24.04. After merge:
   measure (first main push seeds keys; next PR must restore).
+- **#36** `ci/mobile-bindgen` (CI 07): new `roboco-mobile-bindgen` crate; Gradle `HostCore.needed`
+  skips the host core for APK/device-only task graphs; `--check` byte-identity guard. Kotlin
+  byte-identical locally (both profiles). It also changes the **release** core path, so besides PR
+  CI I dispatched `android.yml` with `perf_apk=true` on the branch (run 40609763310: benchmark
+  APK = R8 + mobile-dist core) as the pre-merge proof. Merge needs both green.
