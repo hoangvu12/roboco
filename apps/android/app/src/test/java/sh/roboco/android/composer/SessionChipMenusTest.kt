@@ -184,6 +184,44 @@ class SessionChipMenusTest {
     private fun loadRows(deferred: MenuElement.Deferred): List<MenuItem> =
         runBlocking { deferred.load() }.filterIsInstance<MenuItem>()
 
+    // ------------------------------------------- the model picker (38)
+
+    @Test
+    fun withAPickerTheModelChipOpensItInsteadOfAMenuAndAPickApplies() {
+        val core = FakeChipMenuCore(row = chipMenuSessionRow(), config = chatConfig(model = "claude-fable-5"))
+        val menus = menus(core)
+        val shown = mutableListOf<ModelPickerRequest>()
+        menus.modelPicker = ModelPickerPresenter { shown += it }
+        fill(menus, core)
+
+        assertNull("no menu: the picker opens", menus.menu("model", RecordingPlatform()))
+        assertTrue("tap time makes no core call", core.callLog.isEmpty())
+        val request = shown.single()
+        assertEquals(listOf(ModelPickerTab(harness = "claude-code", label = "Claude Code")), request.tabs)
+        assertEquals("claude-code", request.harness)
+        assertEquals("claude-fable-5", request.model)
+        assertEquals(PICKER_HOST_FALLBACK, request.hostName)
+
+        val rows = runBlocking { request.load("claude-code") }
+        assertEquals(claudeFallbackModels().map { it.id }, rows.map { it.id })
+        assertEquals("Most intelligent model for building agents", rows.first().detail)
+        assertEquals("the load ran on the io lane", "fake-io", core.callLog.single { it.first.startsWith("listModels") }.second)
+
+        request.onPick("claude-code", rows.first())
+        core.awaitWrites(1)
+        assertEquals("claude-fable-5-1", core.setConfigs.single().model)
+        assertEquals("claude-code", core.setConfigs.single().harness)
+    }
+
+    @Test
+    fun theEffortChipKeepsItsMenuWithAPicker() {
+        val core = FakeChipMenuCore(row = chipMenuSessionRow(), config = chatConfig())
+        val menus = menus(core)
+        menus.modelPicker = ModelPickerPresenter { }
+        fill(menus, core)
+        assertNotNull(menus.menu("effort", RecordingPlatform()))
+    }
+
     // ------------------------------------------------------ applyModelPick
 
     @Test

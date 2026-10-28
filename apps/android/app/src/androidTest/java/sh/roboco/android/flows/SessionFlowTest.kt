@@ -844,11 +844,20 @@ class SessionFlowTest {
             compose.onAllNodesWithTag("composer-chip-model").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("composer-chip-model").performClick()
-        // The mock engine's models (Mock 1 / Fable 5).
+        // Wave-10 38: the tabbed picker sheet (upstream #966), the mock
+        // engine's models (Mock 1 / Fable 5) on the chat's provider page.
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("model-picker").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitUntil(timeoutMillis = 10_000) {
             compose.onAllNodesWithText("Mock 1").fetchSemanticsNodes().isNotEmpty()
         }
+        FlowSemantics.saveScreenshot("model-picker.png")
         compose.onAllNodesWithText("Mock 1")[0].performClick()
+        // The pick lands, then the sheet closes itself.
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("model-picker").fetchSemanticsNodes().isEmpty()
+        }
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }

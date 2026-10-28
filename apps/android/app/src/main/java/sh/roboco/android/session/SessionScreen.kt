@@ -470,6 +470,9 @@ fun SessionScreen(
     //     the context chip's account half (the tint filler and the menu
     //     rows), and its open action + toast are injected here where the
     //     nav stack and the app toaster live.
+    // Wave-10 38: the tabbed model picker the model chip opens (hosted
+    // over the screen below, with the side-chats overlay).
+    val modelPicker = remember(controller) { sh.roboco.android.composer.ModelPickerController() }
     composerBinding?.let { binding ->
         val chipMenus = remember(controller) { controller.filler<SessionChipMenus>() }
         val usage = remember(controller) { controller.filler<SessionAccountUsage>() }
@@ -486,6 +489,7 @@ fun SessionScreen(
                 // android-next #05: fold the account rows into the context
                 // chip's menu (the plain context card without accounts).
                 menus.accounts = usage
+                menus.modelPicker = modelPicker
                 // iOS render :488-491: the provider map is rebuilt on
                 // every chrome change (the chips it decorates are).
                 binding.chipMenus = { chips ->
@@ -659,6 +663,7 @@ fun SessionScreen(
             modifier = Modifier.fillMaxSize(),
         )
     }
+    sh.roboco.android.composer.ModelPickerOverlay(modelPicker)
     overlay()
     }
 }

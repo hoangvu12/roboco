@@ -173,6 +173,17 @@ class SessionChipMenus(
     @Volatile
     var accounts: ContextCardAccounts? = null
 
+    /**
+     * Wave-10 38: the tabbed model picker (upstream #966). Set by the
+     * session screen; with one, the model chip opens the picker instead
+     * of its flat menu. `null` (tests, previews) keeps the menu.
+     */
+    @Volatile
+    var modelPicker: ModelPickerPresenter? = null
+
+    /** The models each picker page loaded, by harness — a pick applies its [ModelInfo]. */
+    private val pickerModels = java.util.concurrent.ConcurrentHashMap<String, List<ModelInfo>>()
+
     /** The write lane: never cancelled — an in-flight write always finishes, like iOS's synchronous call. */
     private val writeScope = CoroutineScope(SupervisorJob() + io)
 
@@ -240,6 +251,15 @@ class SessionChipMenus(
         val row = s.row ?: return null // iOS: guard let row
         val sel = sessionSelection(s.config, row)
         val harness = sel?.harness ?: DEFAULT_HARNESS
+        if (chipId == SessionChipIds.Model) {
+            val picker = modelPicker
+            if (picker != null) {
+                // The picker opens instead of a menu; the strip gets no
+                // menu back (its fallback tap is inert in a session).
+                picker.present(modelPickerRequest(s.deviceId, row, harness, sel?.model))
+                return null
+            }
+        }
         return when (chipId) {
             SessionChipIds.Model -> Menu(
                 title = MODEL_MENU_TITLE,
@@ -278,6 +298,38 @@ class SessionChipMenus(
             }
             else -> null
         }
+    }
+
+    /**
+     * The picker for this chat (wave-10 38): the chat's provider as the
+     * one page, its models from the engine (the fallback when the call
+     * fails), the current one ticked; a pick of this provider's model
+     * applies it with #664's rule. Main thread, tap time; no core call —
+     * the page loads on IO when the sheet opens.
+     */
+    private fun modelPickerRequest(
+        deviceId: String,
+        row: SessionRow,
+        harness: String,
+        model: String?,
+    ): ModelPickerRequest = ModelPickerRequest(
+        tabs = listOf(ModelPickerTab(harness = harness, label = row.harnessLabel ?: harness)),
+        harness = harness,
+        model = model,
+        hostName = row.deviceName ?: PICKER_HOST_FALLBACK,
+        load = { h -> pickerRows(deviceId, h) },
+        onPick = { h, picked ->
+            val info = pickerModels[h]?.firstOrNull { it.id == picked.id }
+            if (h == harness && info != null) write { applyModelPick(it, info) }
+        },
+    )
+
+    /** One picker page's rows (IO), remembering the [ModelInfo]s for the pick. */
+    private suspend fun pickerRows(deviceId: String, harness: String): List<ModelPickerRow> = withContext(io) {
+        if (closed.get()) return@withContext emptyList()
+        val models = loadModels(deviceId, harness)
+        pickerModels[harness] = models
+        models.map { m -> ModelPickerRow(id = m.id, label = m.label, detail = m.description?.takeIf { it.isNotBlank() }) }
     }
 
     /**
@@ -404,6 +456,9 @@ class SessionChipMenus(
 }
 
 // ── copy (verbatim from the ticket / iOS) ──────────────────────────────────
+
+/** The picker's host line when the row names no computer. */
+const val PICKER_HOST_FALLBACK = "This computer"
 
 /** The model menu's pane title. */
 const val MODEL_MENU_TITLE = "Model"
