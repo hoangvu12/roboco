@@ -205,7 +205,16 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
 | `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | running |
-| `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | running |
+| `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | **PR #37** open, reviewed OK; worktree removed (branch pushed); chat archived; mobile-core flake `busy_sends_queue_steer_and_stop_and_send` re-run |
+| `3f08770e` | `..\roboco-remote-speed` / `feature/remote-speed` | fleet-redesign 17 then 16 (user-approved speed tickets, `1e9bc22a5`), one PR | running |
+
+- This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
+- Cleanup (user request, 10:30): archived `8b19126f`, `00743a45` and the done spec/research chats
+  `e1d7dca3`, `0f6f111d`, `95b2ff67`, `9f7fb723`. Merged remote branches `ci/caches-windows`,
+  `ci/mobile-bindgen` await the user's OK to delete.
+- 16's gate needs the user's real Laptop↔PC / PC↔SG/US measurements: the worker leaves a checklist;
+  pings stay only if at least one link goes direct (path label ships either way). Self-hosted DERP on
+  SG: undecided, not ticketed.
 
 ## Implementation orchestrator log (chat `00743a45`, from 2026-10-28)
 
