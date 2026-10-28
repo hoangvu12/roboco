@@ -1,0 +1,27 @@
+# Upstream path and subject rules for triage.py and translate.py.
+# Policy: docs/reference/upstream-ports.md (ADR 0003, ADR 0004, ADR 0009).
+#
+# kind     pattern                                  value
+# skip     files never ported; a commit made only of them is auto-skipped
+#          with reason `value`. translate.py drops them from the patch.
+# ios      iOS code: never ported, dropped from the patch. A commit made only
+#          of ios (+ skip) files goes to the Android lane, NEVER auto-skip:
+#          its iPhone behaviour may belong in apps/android (ADR 0009).
+# subject  regex on the commit subject; a match auto-skips with reason `value`
+#
+# Patterns: a trailing `/` matches a directory prefix; `*` and `?` are
+# fnmatch globs on the whole path; anything else is an exact path.
+#
+# kind	pattern	value	note
+skip	apps/landing/	landing	zeron.sh website
+skip	apps/www-redirect/	landing	zeron.sh redirect worker
+skip	edge/	cloud	edge Worker, WorkOS, sync rooms (ADR 0004)
+skip	apps/android/	upstream-android	upstream's own Android app: reference only (ADR 0009)
+skip	crates/zatex/	declined	zatex / LaTeX math declined (#912)
+skip	.github/workflows/macos.yml	upstream-ci	no macOS CI in Roboco
+skip	.github/workflows/testflight.yml	upstream-ci	no iOS / Apple CI in Roboco
+skip	.github/workflows/deploy.yml	cloud	wrangler deploys of edge and the website
+skip	README.*.md	docs-only	upstream README translations
+ios	apps/ios/	android-lane	Swift / Xcode; behaviour may port to apps/android
+subject	^Bump version to v\d	version-bump	release bumps
+subject	^Release v\d[\d.]*$	version-bump	release bumps
