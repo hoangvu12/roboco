@@ -225,7 +225,7 @@ Tickets:
 - **16:** the adapter keeps pushing for a direct path (`DiscoPing`, like `tailcat ping --until-direct`) and reports "Direct" or "Via relay (Tokyo)" per device.
 - **17:** measure what opening a remote chat does on a 160 ms proxy, then cut sequential waits (cached transcript first, parallel requests, defer what's off-screen).
 
-**Open, not ticketed:** a self-hosted relay on Linux SG (Tailscale's `derper`, which Roboco already supports through `--tailcat-derp-map`). It avoids the rate limit and is much closer than Tokyo. The user asked how it works before deciding.
+**Open, not ticketed:** a self-hosted relay on Linux SG (Tailscale's `derper`, which Roboco already supports through `--tailcat-derp-map`). It avoids the rate limit and is much closer than Tokyo. **Not now** (user, 2026-10-28). Revisit only if ticket 16 leaves links relayed. The idea: `roboco relay start` on SG, plus a relay choice set once on any device and spread to every connected server; phones need nothing because addresses carry the relay.
 
 ## User decisions (2026-10-28)
 
@@ -237,5 +237,5 @@ Tickets:
 - "Make sure that the connecting bring everyone along able to filter out connected devices": recorded as matching by device id, skipping what's already connected, and keeping removed devices out (Solution 4, User Story 4).
 - "About the UI… we gotta rework on it as well, also that remote access page isn't scrollable": tickets 01 and 07.
 - "Sounds good" to the overall direction; asked for the write-up.
-- Speed: "3, ok if it helps then just do it" (ticket 17). "4. if A works then go ahead" (ticket 16, with its measure-first gate). Self-hosted relay on SG: the user asked how it works; undecided.
+- Speed: "3, ok if it helps then just do it" (ticket 17). "4. if A works then go ahead" (ticket 16, with its measure-first gate). Self-hosted relay on SG: "no need for it for now".
 - "Remove the extra fleet specs": `fleet-merge`, `fleet-agents`, `fleet-follow` and `rooms` were deleted, and fleet-agents was absorbed as tickets 12–15 (commit `28440047b`).
