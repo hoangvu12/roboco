@@ -15,7 +15,7 @@ class StatusPillContentTest {
 
     @Test
     fun sendingIsTheTrailer() {
-        assertEquals(PillContent(PillGlyph.Trailer, "Sending…"), pillContent(SessionChrome.Banner.Sending, now))
+        assertEquals(PillContent(PillGlyph.Trailer, "Sending to host…"), pillContent(SessionChrome.Banner.Sending, now))
     }
 
     @Test

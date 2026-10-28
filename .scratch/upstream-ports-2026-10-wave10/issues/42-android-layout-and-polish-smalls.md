@@ -49,17 +49,59 @@ are behaviour spec only.
 
 **Blocked by:** 01.
 
-**Status:** ready-for-agent
+**Status:** done (2026-10-28, `wave10/android`) — Kotlin compiles in CI only
 
 **Source:** `pass3-ios-1.md` G1, #981, #1014; `pass2-features-android.md` N7;
 `2026-10-28.md` A35, §C; `pass2-big-2.md` gap 10.
 
-- [ ] `chooseRoot` test: a landscape phone gets Phone and a tablet gets Split
-- [ ] Width change while following stays pinned (TranscriptViewport test)
-- [ ] Tablet composer level with the toolbar (tablet golden)
-- [ ] #942 done or skip recorded
-- [ ] Toast golden shows the capsule and a 2-line label
-- [ ] Status pill copy + tests updated
-- [ ] Commit records the SHAs; wave-9 21 closed (#980 present, #1010 no target)
+- [x] `chooseRoot` test: a landscape phone gets Phone and a tablet gets Split
+- [x] Width change while following stays pinned (TranscriptViewport test)
+- [x] Tablet composer level with the toolbar (metrics test; no golden flow on CI)
+- [x] #942 done or skip recorded
+- [x] Toast shows the capsule and a 2-line label (ToastHostTest geometry; no golden flow on CI)
+- [x] Status pill copy + tests updated
+- [x] Commit records the SHAs; wave-9 21 closed (#980 present, #1010 no target)
 
 ## Comments
+
+2026-10-28 (wave10/android, lane 3): carried `6f2721fab` (#981 part 1),
+`2ea4e3a05` (#1014), `cc7da5c2a` (#966 toast), `e799aecc1` (#777 copy)
+by intent, plus I1 and the user's 2026-10-28 layout decision.
+
+1. **Root rule.** User decision: a tablet held upright follows the iPad
+   (split when wide enough). `SplitBreakpoint` 840 → **744 dp** (the
+   narrowest iPad that splits in portrait, the iPad mini), and I1's
+   `CompactHeight` 480 dp: a compact-height window (a landscape phone,
+   ~915 × 400) stays on the phone layout. `chooseRoot(hasEngines, width,
+   height)`, `AppRoot` passes `maxHeight`. At 744 dp the detail is still
+   ≥ 424 dp beside the 320 dp sidebar minimum. `RootKindTest` (landscape
+   phone, upright and sideways tablet, a 600 dp tablet, the compact
+   edge), `AppRootTest.exactly744DpSplitsAnd743DpIsThePhone`.
+2. **#981 (1).** `TranscriptViewport.noteWidthChange` (set by
+   `TranscriptState.setViewport` on a real width change) makes the next
+   frame pin to the tail while following instead of springing from the
+   old geometry; not following is untouched (130's anchor).
+   `TranscriptViewportTest.aWidthChangeWhileFollowingPinsToTheTail…`.
+   #981 (2) (keeping the live session across the breakpoint without a
+   rebuild) not taken, as the ticket says.
+3. **#1014.** `LocalSidebarToolbarMid` (provided by the split's detail
+   pane while the sidebar shows: the sidebar insets' `barBottom` + half
+   the 44 dp toolbar) → `BottomStackMetrics.stackBottomBesideToolbar`
+   centres the resting 50 dp composer on the toolbar's row; the keyboard
+   lifts it smoothly once the IME passes that rest.
+   `BottomStackMetricsTest.besideTheSidebarTheRestingComposerCentres…`.
+   On Android's own toolbar placement (`nav + 12`) this moves the
+   composer by ~1 dp; the rule now holds by construction.
+4. **#942 skipped** (user decision 2026-10-28).
+5. **N7.** The toast's action is a small filled capsule in the text
+   colour (SemiBold 14 in `Palette.background`, insets 6/12) and the
+   label wraps to two lines. The `above:` anchor stays skipped
+   (cloud-only); ticket 37 anchors toasts on the one-row bar.
+   `ToastHostTest` geometry updated (the row takes the action capsule's
+   height; the long label is two lines, 63 dp).
+6. **A35.** "Sending…" → "Sending to host…" (`StatusPill`, its content
+   and screenshot tests).
+
+Wave-9 21 closed: #980 already safe on Android; #1010's chip icon has no
+Android target (the declined CompanionStrip); #1014 is item 3 here.
+Goldens: no CI record flow (dropped in `33e5590da`).

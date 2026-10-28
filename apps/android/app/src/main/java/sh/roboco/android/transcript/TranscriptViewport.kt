@@ -132,13 +132,35 @@ class TranscriptViewport(private val nanoTime: () -> Long = System::nanoTime) {
      */
     fun onFrameApplied(contentHeight: Float, first: Boolean): Boolean {
         this.contentHeight = contentHeight
+        val rewrapped = widthChanged
+        widthChanged = false
         if (first) {
             offset = maxOffset
         } else if (following) {
-            if (!tracking) startSpring()
+            if (rewrapped && !tracking) {
+                // Wave-10 42 (upstream #981): a width change (rotation, a
+                // fold, the split resizing) re-wrapped every row; landing
+                // while following pins to the tail at once instead of
+                // springing there from the old geometry.
+                stopSpring()
+                offset = maxOffset
+            } else if (!tracking) {
+                startSpring()
+            }
         }
         report()
         return !first && !following
+    }
+
+    /** Set by [noteWidthChange]; consumed by the next [onFrameApplied]. */
+    private var widthChanged = false
+
+    /**
+     * The transcript's width changed and the engine is re-wrapping: the
+     * frame that lands next pins to the tail while following (#981).
+     */
+    fun noteWidthChange() {
+        widthChanged = true
     }
 
     /** R12: a top-inset change > 0.5 snaps while following, after the geometry hook. */

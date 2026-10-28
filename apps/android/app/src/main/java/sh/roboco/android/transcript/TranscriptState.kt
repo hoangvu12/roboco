@@ -290,6 +290,8 @@ class TranscriptState internal constructor(
     fun setViewport(widthDp: Float, textScale: Float) {
         if (isClosed) return
         if (widthDp != viewportWidthDp || textScale != this.textScale) {
+            // #981: a re-wrap from a real width change (not the first one).
+            if (viewportWidthDp > 0f && widthDp != viewportWidthDp) viewport.noteWidthChange()
             viewportWidthDp = widthDp
             this.textScale = textScale
             engine.setViewport(widthDp, textScale)

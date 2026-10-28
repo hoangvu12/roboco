@@ -108,7 +108,7 @@ fun pillContent(banner: SessionChrome.Banner, nowMs: Long): PillContent = when (
             text = if (secs > 0) "${banner.word} · ${formatElapsed(secs)}" else "${banner.word}…",
         )
     }
-    SessionChrome.Banner.Sending -> PillContent(PillGlyph.Trailer, "Sending…")
+    SessionChrome.Banner.Sending -> PillContent(PillGlyph.Trailer, "Sending to host…")
     SessionChrome.Banner.NotDelivered -> PillContent(PillGlyph.DotDanger, "Not delivered · Tap to retry")
     is SessionChrome.Banner.Failed -> PillContent(PillGlyph.DotDanger, banner.message)
     SessionChrome.Banner.Editing -> PillContent(PillGlyph.DotInput, "Editing queued message · Tap to cancel")

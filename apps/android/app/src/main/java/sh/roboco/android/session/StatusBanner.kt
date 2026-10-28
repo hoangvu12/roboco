@@ -56,7 +56,7 @@ data class BannerInputs(
 /**
  * The send→turn bridge (android-ui-parity #73, the port of the web's
  * `sendingBridge`, `web/packages/app/src/lib/transcript.ts:1279-1292`):
- * the pill shows `Sending…` only while a send of **this device** is in
+ * the pill shows `Sending to host…` only while a send of **this device** is in
  * flight and the engine has not yet reported the turn it started.
  *
  * `turnStarted <= sendStarted` counts as bridged (the turn at or before

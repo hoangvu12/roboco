@@ -138,6 +138,28 @@ class TranscriptViewportTest {
         assertEquals(2300f, quiet.offset, 0f)
     }
 
+    /** Wave-10 42 (upstream #981): a re-wrap after a width change pins to the tail while following. */
+    @Test
+    fun aWidthChangeWhileFollowingPinsToTheTailInsteadOfSpringing() {
+        val vp = newViewport()
+        vp.onFrameApplied(3000f, first = true)
+        vp.noteWidthChange()
+        vp.onFrameApplied(4200f, first = false) // narrower: every row re-wrapped taller
+        assertFalse("no spring from the old geometry", vp.springRunning)
+        assertEquals(vp.maxOffset, vp.offset, 0f)
+        // The mark is consumed: the next streaming frame springs as before.
+        vp.onFrameApplied(4300f, first = false)
+        assertTrue(vp.springRunning)
+
+        // Not following: the offset is left alone (130's anchor keeps the reading place).
+        val reading = newViewport()
+        reading.onFrameApplied(3000f, first = true)
+        reading.releaseFollow()
+        reading.noteWidthChange()
+        assertTrue(reading.onFrameApplied(4200f, first = false))
+        assertEquals(2300f, reading.offset, 0f)
+    }
+
     // -------------------------------------------------------- tail spring
 
     @Test

@@ -115,7 +115,7 @@ fun AppRoot(
             }
 
             is RootInput.Ready -> {
-                val kind = chooseRoot(input.hasEngines, maxWidth)
+                val kind = chooseRoot(input.hasEngines, maxWidth, maxHeight)
                 SideEffect { state.kind = kind }
                 RootCrossfade(
                     target = kind.group,
@@ -131,12 +131,12 @@ fun AppRoot(
                         }
 
                         RootGroup.Shell -> {
-                            // Re-chosen live: a width change across 840 dp
+                            // Re-chosen live: a size change across the breakpoint
                             // switches phone/split in place, inside the
                             // shell group, with no fade (108 owns the
                             // carry-over). The shell scope wraps the switch,
                             // so the hoisted shell state survives it.
-                            val shellKind = chooseRoot(hasEngines = true, width = maxWidth)
+                            val shellKind = chooseRoot(hasEngines = true, width = maxWidth, height = maxHeight)
                             shellScope(shellKind) {
                                 if (shellKind == RootKind.Split) {
                                     Box(
