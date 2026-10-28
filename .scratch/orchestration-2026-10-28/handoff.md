@@ -114,7 +114,9 @@ Keep a running "PRs" list in this file.
 ## >>> HANDOFF #2 (2026-10-28, from `00743a45` to the next orchestrator): START HERE <<<
 
 The user asked `00743a45` to hand off to a new orchestrator chat and to open a separate standalone
-**fleet design discussion chat**. State at handoff (≈ 02:30 local):
+**fleet design discussion chat**. New chats: orchestrator **`efcef7d0`** ("Roboco Orchestrator #2");
+fleet design discussion **`9a104962`** (writes its outcome under `.scratch/fleet-redesign/`).
+`00743a45` stopped its own watchers and is idle. State at handoff (≈ 02:30 local):
 
 **GitHub**
 - **PR #35** (`ci/caches-windows`, CI 01/12/13/02): every check green except `android-emulator`,
