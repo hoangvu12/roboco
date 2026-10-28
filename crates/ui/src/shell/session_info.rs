@@ -8,6 +8,10 @@
 //! and opening it floats it over the transcript instead.
 use super::*;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use crate::project_actions::{ProjectActionsStatus, action_icon};
 
 pub(super) const SESSION_CARD_WIDTH: f32 = 272.0;
@@ -69,6 +73,93 @@ pub(super) struct SessionPreviews {
     scroll: gpui::ScrollHandle,
     /// The card's floating scrollbar, the lanes card's treatment.
     bar: popover::MenuScrollbarState,
+}
+
+/// Paired engines' servers opened from the ports card (ADR 0012). The page
+/// loads in the system browser through the client preview proxy, so nothing
+/// on screen holds the proxy's 7332 listener: each opened (engine, chat)
+/// gets a watcher that does, keeps the proxy's routes current from the
+/// chat's `WatchPreviews` snapshots (dev-server restarts, collision labels),
+/// and lets go once the chat's servers have been gone for the proxy's idle
+/// window, the engine leaves the registry, or the shell drops.
+#[derive(Default)]
+pub(super) struct OpenedPreviews {
+    watchers: HashMap<(crate::engine_registry::EngineKey, String), OpenedPreview>,
+    /// Live watchers per engine: the proxy's watch set is per engine, so the
+    /// last watcher of an engine is the one that unwatches it.
+    counts: Arc<Mutex<HashMap<crate::engine_registry::EngineKey, usize>>>,
+}
+
+struct OpenedPreview {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    /// The watcher runs on the registry's tokio runtime (it needs no gpui
+    /// state, and its idle timing is wall-clock); dropping the entry, or
+    /// the shell, aborts it, and the abort drops its [`ProxyWatch`].
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for OpenedPreview {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl OpenedPreviews {
+    /// Whether a watcher for `chat` on `engine` is running.
+    pub(super) fn is_watching(&self, engine: &crate::engine_registry::EngineKey, chat: &str) -> bool {
+        self.watchers
+            .get(&(engine.clone(), chat.to_owned()))
+            .is_some_and(|opened| !opened.done.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// One opened preview's hold on the proxy's watcher for its engine. Dropped
+/// on every exit path of the watcher task, including the shell dropping it.
+struct ProxyWatch {
+    proxy: Arc<crate::engine_registry::PreviewProxy>,
+    engine: crate::engine_registry::EngineKey,
+    counts: Arc<Mutex<HashMap<crate::engine_registry::EngineKey, usize>>>,
+    done: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ProxyWatch {
+    fn new(
+        proxy: Arc<crate::engine_registry::PreviewProxy>,
+        engine: crate::engine_registry::EngineKey,
+        counts: Arc<Mutex<HashMap<crate::engine_registry::EngineKey, usize>>>,
+        done: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        *counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(engine.clone())
+            .or_default() += 1;
+        proxy.watch(&engine, true);
+        Self {
+            proxy,
+            engine,
+            counts,
+            done,
+        }
+    }
+}
+
+impl Drop for ProxyWatch {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let last = match counts.get_mut(&self.engine) {
+            Some(count) => {
+                *count = count.saturating_sub(1);
+                *count == 0
+            }
+            None => true,
+        };
+        if last {
+            counts.remove(&self.engine);
+            self.proxy.watch(&self.engine, false);
+        }
+    }
 }
 
 /// The ports card lists this many, then pages in [`PORTS_PAGE`] at a time.
@@ -511,8 +602,8 @@ impl Shell {
 
     /// A paired engine's server opens through the client preview proxy: hand
     /// the proxy this chat's services now, so the route exists before the
-    /// new browser tab's first request (the tab's own watch ingests the same
-    /// chat's services right after). Returns the URL that routes: the
+    /// browser's first request (the opened-preview watcher ingests the same
+    /// chat's services from then on). Returns the URL that routes: the
     /// service's effective hostname, which differs from the engine's only
     /// when another paired engine already claimed the name. A local chat's
     /// URL is returned unchanged.
@@ -540,9 +631,121 @@ impl Shell {
             .unwrap_or_else(|| url.to_owned())
     }
 
+    /// Open a ports-card row in the default browser. A local chat's server
+    /// opens at the engine's own always-on 7331 proxy; a paired engine's at
+    /// the client proxy on 7332, held up by an opened-preview watcher so the
+    /// page keeps loading after the card closes or the chat changes.
+    pub(super) fn open_session_preview(
+        &mut self,
+        service_id: &str,
+        url: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_session_info_overlay(cx);
+        let url = self.route_session_preview(service_id, url, cx);
+        if let (Some(engine), Some(chat)) = (
+            self.session_previews.remote.clone(),
+            self.session_previews.chat.clone(),
+        ) {
+            self.ensure_opened_preview(engine, chat, cx);
+        }
+        cx.open_url(&url);
+    }
+
+    /// Start the opened-preview watcher for `chat` on the paired `engine`
+    /// (idempotent while one runs); see [`OpenedPreviews`].
+    fn ensure_opened_preview(
+        &mut self,
+        engine: crate::engine_registry::EngineKey,
+        chat: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.opened_previews.is_watching(&engine, &chat) {
+            return;
+        }
+        let Some(proxy) = self
+            .state
+            .update(cx, |state, _| state.ensure_preview_proxy())
+        else {
+            return;
+        };
+        let Some(registry) = self.state.read(cx).registry().cloned() else {
+            return;
+        };
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = ProxyWatch::new(
+            proxy.clone(),
+            engine.clone(),
+            self.opened_previews.counts.clone(),
+            done.clone(),
+        );
+        let key = (engine.clone(), chat.clone());
+        let task = registry.runtime_handle().spawn(async move {
+            let _watch = watch;
+            let idle = proxy.idle();
+            let tick = (idle / 2).clamp(Duration::from_millis(50), Duration::from_secs(2));
+            // The chat's servers are `running` per its latest snapshot (the
+            // stream only sends changes); `seen` is the last moment they
+            // were. The window starts at the click, so a server still
+            // starting has it.
+            let mut seen = Instant::now();
+            let mut running = false;
+            let gone = |seen: Instant| seen.elapsed() > idle;
+            loop {
+                let Ok(target) = registry.target(&engine) else {
+                    return;
+                };
+                // Bounded: an offline engine's subscribe must not stall the
+                // idle window.
+                let subscription = tokio::time::timeout(
+                    tick,
+                    target.subscribe(
+                        methods::WATCH_PREVIEWS,
+                        serde_json::json!({ "chatId": chat }),
+                    ),
+                )
+                .await;
+                if let Ok(Ok(mut updates)) = subscription {
+                    loop {
+                        match tokio::time::timeout(tick, updates.recv()).await {
+                            Ok(None) => break,
+                            Ok(Some(value)) => {
+                                if let Ok(snapshot) =
+                                    serde_json::from_value::<roboco_proto::PreviewSnapshot>(value)
+                                {
+                                    running = !snapshot.services.is_empty();
+                                    let _ = proxy.ingest(&engine, snapshot.services);
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                        // An engine the registry reports offline runs nothing
+                        // we can reach, whatever its last snapshot said.
+                        if running && target.is_connected() {
+                            seen = Instant::now();
+                        }
+                        if gone(seen) || registry.target(&engine).is_err() {
+                            return;
+                        }
+                    }
+                }
+                // Stream ended or failed (offline, revoked): nothing runs that
+                // we can see, so the idle window keeps counting.
+                running = false;
+                if gone(seen) {
+                    return;
+                }
+                tokio::time::sleep(tick).await;
+            }
+        });
+        self.opened_previews
+            .watchers
+            .insert(key, OpenedPreview { done, task });
+    }
+
     /// The ports card: a row per server this chat can preview (one a Roboco
     /// agent or terminal started in its checkout, or one this chat's agent or
-    /// terminals started anywhere), opening it in a browser tab: the first
+    /// terminals started anywhere), opening it in the default browser: the first
     /// [`PORTS_INITIAL`], then a page more per "Show more", scrolling past
     /// `max_height`. `None` while nothing runs; `floating` over the
     /// transcript, it casts the popover's shadow.
@@ -573,8 +776,7 @@ impl Shell {
             vec![popover::menu_heading(theme, "Ports").into_any_element()];
         let available = snapshot.error.is_none();
         let remote = self.session_previews.remote.is_some();
-        // A paired engine's servers render against the client proxy, like
-        // the browser pane's.
+        // A paired engine's servers render against the client proxy.
         let proxy_port = if remote {
             roboco_proto::PREVIEW_CLIENT_PROXY_PORT
         } else {
@@ -588,9 +790,9 @@ impl Shell {
             let row_id = SharedString::from(format!("session-info-preview-{}", service.id));
             let port = SharedString::from(format!(":{}", service.port));
             let detail = SharedString::from(if remote || snapshot.remote {
-                format!("{} · {url}", service.device_name)
+                format!("{} · {url} — opens in your browser", service.device_name)
             } else {
-                url.clone()
+                format!("{url} — opens in your browser")
             });
             rows.push(
                 popover::picker_row(theme, false, false, row_id.clone())
@@ -598,12 +800,8 @@ impl Shell {
                     .tooltip(crate::settings::widgets::text_tooltip(detail))
                     .when(!available, |row| row.opacity(0.5).cursor_default())
                     .when(available, |row| {
-                        row.on_click(cx.listener(move |this, _, window, cx| {
-                            this.close_session_info_overlay(cx);
-                            let url = this.route_session_preview(&service_id, &url, cx);
-                            this.browser_context.register_preview(&url);
-                            this.set_surfaces_open(true, cx);
-                            this.add_browser_surface(Some(url.clone()), window, cx);
+                        row.on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_session_preview(&service_id, &url, cx);
                         }))
                     })
                     .child(popover::picker_icon_slot(row_glyph(icons::GLOBE, theme)))
@@ -849,6 +1047,9 @@ impl Shell {
         rows
     }
 }
+
+#[cfg(test)]
+mod opened_preview_tests;
 
 #[cfg(test)]
 mod tests {

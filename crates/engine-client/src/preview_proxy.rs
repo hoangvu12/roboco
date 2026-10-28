@@ -48,6 +48,7 @@ pub struct PreviewProxy {
     proxy: ClientProxy,
     registry: EngineRegistry,
     local_bypass: Mutex<HashSet<String>>,
+    idle: Duration,
     stop: CancellationToken,
 }
 
@@ -60,12 +61,28 @@ impl PreviewProxy {
         labels_file: Option<PathBuf>,
         idle: Duration,
     ) -> Arc<Self> {
+        Self::start_on_port(
+            registry,
+            labels_file,
+            idle,
+            ClientProxyOptions::default().port,
+        )
+    }
+
+    /// [`Self::start`] on another listener port; tests pass `0` for an
+    /// ephemeral one, so a running Roboco holding 7332 cannot collide.
+    pub fn start_on_port(
+        registry: EngineRegistry,
+        labels_file: Option<PathBuf>,
+        idle: Duration,
+        port: u16,
+    ) -> Arc<Self> {
         let proxy = ClientProxy::new(
             Arc::new(RegistryDialer(registry.clone())),
             ClientProxyOptions {
+                port,
                 labels_file,
                 idle,
-                ..ClientProxyOptions::default()
             },
             registry.runtime_handle(),
         );
@@ -105,8 +122,14 @@ impl PreviewProxy {
             proxy,
             registry,
             local_bypass: Mutex::new(HashSet::new()),
+            idle,
             stop,
         })
+    }
+
+    /// How long the listener outlives its last watcher.
+    pub fn idle(&self) -> Duration {
+        self.idle
     }
 
     /// Mark an engine's previews as viewed (or not). The first watcher

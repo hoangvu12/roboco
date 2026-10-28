@@ -19,7 +19,7 @@ use crate::theme::Theme;
 pub(crate) struct PairedEngines {
     pub runtime: tokio::runtime::Runtime,
     pub local_dir: tempfile::TempDir,
-    _remote_dir: tempfile::TempDir,
+    pub remote_dir: tempfile::TempDir,
     pub remote: EngineCore,
     listener: Option<EngineListener>,
     pub state: Entity<AppState>,
@@ -80,9 +80,11 @@ impl PairedEngines {
                 roboco_proto::HarnessId::Mock,
             )
             .unwrap();
-            let listener = roboco_engine::serve_engine_remote(
+            // With the preview relay route, as `roboco engine serve` wires it.
+            let listener = roboco_engine::serve_engine_remote_with_previews(
                 "127.0.0.1:0".parse().unwrap(),
                 core.rpc_service(),
+                Some(core.previews.clone()),
                 remote_dir.path(),
             )
             .await
@@ -117,7 +119,7 @@ impl PairedEngines {
         Self {
             runtime,
             local_dir,
-            _remote_dir: remote_dir,
+            remote_dir,
             remote,
             listener: Some(listener),
             state,
@@ -153,6 +155,13 @@ impl PairedEngines {
     ) {
         let state = self.state.clone();
         wait_until(cx, what, |cx| state.read_with(cx, |s, _| predicate(s)));
+    }
+
+    /// Stop serving the paired engine (its connections drop with the bind).
+    pub fn stop_listener(&mut self) {
+        if let Some(mut listener) = self.listener.take() {
+            self.runtime.block_on(listener.stop());
+        }
     }
 
     /// Stop the registry, the local engine and the paired engine.

@@ -5,8 +5,7 @@ pub const PREVIEW_PROXY_PORT: u16 = 7331;
 
 /// The *client-side* preview proxy's port (Phase C): a client relaying a
 /// remote engine's previews binds `127.0.0.1:7332` — unclaimed; the engine
-/// owns 7331 and the browser helper 7333 — only while a remote preview is
-/// being viewed. The engine never listens here.
+/// owns 7331 — only while an opened remote preview's server runs. The engine never listens here.
 pub const PREVIEW_CLIENT_PROXY_PORT: u16 = 7332;
 
 /// Stamped by the engine into the environment of every process it launches:

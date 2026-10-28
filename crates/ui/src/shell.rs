@@ -2030,6 +2030,9 @@ pub struct Shell {
     session_diffs: session_info::SessionDiffs,
     /// The servers behind the card's Ports section.
     session_previews: session_info::SessionPreviews,
+    /// Paired engines' servers opened from the ports card, per (engine,
+    /// chat): each keeps the client preview proxy routing while it runs.
+    opened_previews: session_info::OpenedPreviews,
     sidebar_edge_bounce: Option<motion::ResizeEdgeBounce>,
     /// Boundary currently held during a sidebar drag. Cleared on re-entry or
     /// release so the next genuine edge crossing can acknowledge the limit.
@@ -2414,6 +2417,7 @@ impl Shell {
             session_lanes: session_lanes::LaneState::default(),
             session_diffs: session_info::SessionDiffs::default(),
             session_previews: session_info::SessionPreviews::default(),
+            opened_previews: session_info::OpenedPreviews::default(),
             sidebar_edge_bounce: None,
             sidebar_resize_edge: None,
             pane_resize_active: None,
