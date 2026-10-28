@@ -10,6 +10,25 @@
 - Offline member: fail fast with "<device> is offline".
 - Update the MCP server instructions text (`crates/roboco-mcp/src/jsonrpc.rs:32`, the "engine is device-local" paragraph) and the tool descriptions (`tools.rs:51`).
 
+**From the research (`research-2026-10-28.md`; supersedes the transport and id bullets above):**
+- **Engine-forwarded (decided).** The MCP adds `targetDeviceId`. In the engine, replace the fail-closed guard (`crates/engine/src/rpc.rs:1452-1457`) with `forward()` over the fleet session (01), for fleet members only. Port upstream's shape by intent: `forward()`, `forwardable()`, `is_stream_method()` (re-subscribe and pipe), `forward_deadline()` (30 s default, longer for model lists) and link invalidation (`zeron/main:crates/engine/src/rpc.rs:1559-1640, 1975, 2085-2253`). The receiving engine sees its own id, so forwards can't loop.
+- **Allowlist** (wider than upstream's):
+  - chat ops in `Mutate`;
+  - `QueueCommand`, `QueueMessage`, `ForkSideChat` (route by the *source* chat's host), `AckSideChat`;
+  - `WatchChats`, `WatchSessions`, `WatchSpaces`, `WatchDocMessages`, `WatchPreviews`;
+  - `ListHarnesses`, `ListModels`, `ListAgentAccounts`.
+
+  Admin, pairing and room RPCs never forward.
+- **Ids:** outputs give the raw chat UUID plus `deviceId`/`deviceName`, not opaque `ScopedId`. Chat-addressed tools accept an optional `device` or `<chatId>@<device>`. Resolution is a concurrent fan-out over members' `WatchChats` (2–3 s budget per member; offline members skipped with a note), with a chat→device cache.
+- **`list_devices`** returns `{id, name, platform, local, online}`. Upstream has no online flag; ours comes from 01's status.
+- **Port PR #706 by intent** (`01832f2ca`):
+  - host-first resolution, with ambiguity rejected before any write;
+  - validation against the host's catalog;
+  - MCP-minted chat ids, with createChat idempotent on them;
+  - mixed batches with per-request errors and no rollback (`zeron/main:crates/mcp/src/tools.rs:786-814, 978-1253`; `zeron.rs:446-515`).
+- **Retries reuse the same chat/command ids.** A send never depends on a transcript read: a slow remote read must not fail `send_message` (upstream #1076 lesson).
+- **Return address:** `QueueCommand`/`QueueMessage` carry `(originDeviceId, originChatId)`; a remote createChat carries `parentDeviceId` next to `parentChatId` and `notify`.
+
 **Blocked by:** 01
 
 **Status:** ready-for-agent

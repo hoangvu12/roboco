@@ -10,6 +10,17 @@
 - An offline member gives a fast, plain error.
 - Each member's session list shows the "(fleet)" engine sessions. Revoking one makes the next call re-mint it or fail plainly. A machine that left the fleet is unreachable.
 
+**Extra cases from the research:**
+- an offline member inside a `create_chats` batch (the others succeed);
+- an engine restart in the middle of a forwarded stream;
+- a revoked fleet session re-minting;
+- a member reachable over both LAN and Tailcat listed **once**;
+- a clock-skewed member;
+- no duplicate notice after the parent already ran `read_chat`;
+- a local process without the IPC token refused.
+
+Over Tailcat, check the per-method deadlines against real latency.
+
 **Blocked by:** 01–04
 
 **Status:** ready-for-human

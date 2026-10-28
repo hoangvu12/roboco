@@ -49,7 +49,28 @@ Every fleet member engine opens its own sessions to the other members with the f
 
 ### Decided in this spec (overrule in a ticket comment before building, never silently)
 - **No extra per-machine switch.** Membership is the switch: a machine in the fleet accepts fleet sessions; a machine left out (opt-out + `room leave`) does not. Agents on any member can drive any member. The ADR amendment says so plainly.
-- Fleet sessions are minted by the engine, never by the MCP process. The MCP server calls its own engine, which forwards over its fleet session; or the MCP server reads credentials via a local-only RPC. Pick one in ticket 02 and record it. Prefer engine-forwarded, so credentials never leave the engine process.
+- **Engine-forwarded, upstream's shape** (research §TL;DR item 2). The MCP adds `targetDeviceId`. The engine's fail-closed guard (`crates/engine/src/rpc.rs:1452-1457`) becomes a `forward()` over the fleet session, for fleet members only, with an explicit allowlist, stream re-subscription and per-method deadlines. Credentials never leave the engine process.
+- **Forward allowlist** (wider than upstream's, because we have no sync):
+  - chat ops in `Mutate`;
+  - `QueueCommand`, `QueueMessage`, `ForkSideChat`, `AckSideChat`;
+  - `WatchChats`, `WatchSessions`, `WatchSpaces`, `WatchDocMessages`, `WatchPreviews`;
+  - `ListHarnesses`, `ListModels`, `ListAgentAccounts`.
+
+  Admin, pairing and room RPCs never forward.
+- **Agent-facing ids:**
+  - outputs give the raw chat UUID plus `deviceId`/`deviceName`;
+  - chat-addressed tools also accept an optional `device`, or `<chatId>@<device>`;
+  - resolution is a concurrent fan-out over members' `WatchChats`, with a chat→device cache;
+  - the opaque `ScopedId` stays client-side only.
+- **Members are identified by `EngineInfo.deviceId`,** not by address or label. Sessions are minted lazily (first use, or a book change), reused, and revoked on re-mint.
+- **Return addresses:** `(originDeviceId, originChatId)` on `QueueCommand`/`QueueMessage`, and `parentDeviceId` beside `parentChatId` on a remote createChat.
+- **Notices: push plus pull catch-up.**
+  - The child's host pushes from a durable outbox, and the parent dedupes by a deterministic `noticeId`.
+  - The parent pulls missed outcomes when its link to the child's host comes up.
+  - Only delegated turns are reported, within a 6 h window.
+  - Acks use the child host's serials, and Stop suppression uses the parent's own dispatch records. Never cross-machine wall clocks.
+- **Idempotent retries:** createChat on the MCP-minted chat id, QueueCommand on its command id. Sends never depend on a transcript read.
+- **Prerequisite: the IPC token** (wave-10 ticket 03). Roboco's loopback IPC has no credential today (`crates/engine/src/listener.rs:43-47`). With forwarding, any local process could otherwise drive every fleet member.
 - Only fleet rooms grant this. Plain rooms keep the verifier-only invariant and never hold secrets at rest, so they can't.
 - Sessions are labelled with the presenting engine's device name, so a member's session list shows which machine holds them.
 
@@ -75,13 +96,15 @@ Every fleet member engine opens its own sessions to the other members with the f
 
 | # | ticket | blocked by |
 |---|---|---|
-| 01 | `issues/01-engine-fleet-peer-sessions.md` | fleet-merge 01, 02 |
+| 01 | `issues/01-engine-fleet-peer-sessions.md` | fleet-merge 01, 02; wave-10 03 (IPC token) |
 | 02 | `issues/02-mcp-tools-span-the-fleet.md` | 01 |
 | 03 | `issues/03-cross-engine-completion-notices.md` | 02 |
 | 04 | `issues/04-adr-and-docs.md` | 01–03 |
 | 05 | `issues/05-final-verification.md` | 01–04 |
 
 One PR, branch `feature/fleet-agents` off `main`, after the fleet-merge PR.
+
+Research: `research-2026-10-28.md` (how upstream does it through WorkOS + its cloud, and what carries over). The decisions above already include its corrections.
 
 ## User decisions (2026-10-28)
 

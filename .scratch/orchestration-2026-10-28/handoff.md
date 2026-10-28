@@ -133,7 +133,7 @@ Keep a running "PRs" list in this file.
 | `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open, CI running; reviewed OK |
 | `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open, CI running |
 | `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `.scratch/fleet-merge/` (7 tickets) |
-| `a53396d3` | main checkout, read-only | research: how upstream drives other devices (WorkOS/cloud), mapped onto fleet-agents | running |
+| `a53396d3` | main checkout, read-only | research: how upstream drives other devices | done → `fleet-agents/research-2026-10-28.md`; spec + tickets updated; fleet-agents now also blocked by wave-10 03 (IPC token); archived |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
 ### Next

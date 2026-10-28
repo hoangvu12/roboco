@@ -8,7 +8,20 @@
 - A member that refuses (left the fleet, old engine) is skipped with a plain status. An offline member is retried with backoff and never blocks.
 - Credentials and secrets never appear in logs, `Debug` or error text.
 
-**Blocked by:** fleet-merge 01, 02
+**From the research (`research-2026-10-28.md`):**
+- **Identify members by `EngineInfo.deviceId`** (learned after `present`), not by book address or label. A member reachable over both LAN and Tailcat is one row. Skip self by device id. Store `{device_id, label, addresses[], credential, session_id, last_ok}`.
+- **Mint lazily** (first use, or a book change), reuse until refused, and revoke the old session on re-mint so session lists don't grow.
+- **Link behaviour ported by intent** from upstream `LinkCache` (`zeron/main:crates/rpc/src/device_room.rs:783-1080`):
+  - lazy per-member link with a dial lock; 3 attempts (1.5 s, 3 s);
+  - a readiness probe (`EngineInfo`) before caching;
+  - 5→60 s cooldown that decays after 10 min;
+  - clear on network change;
+  - invalidate on Closed/Transport/timeout;
+  - an end-to-end keepalive.
+- **Status per member:** `Live` (link open or probe OK within ~45 s) / `Unreachable` (in cooldown) / `Refused` (left the fleet or old engine). This feeds `list_devices`.
+- A two-engine harness in the shape of `zeron/main:crates/engine/tests/device_routing.rs`.
+
+**Blocked by:** fleet-merge 01, 02; wave-10 03 (IPC token)
 
 **Status:** ready-for-agent
 

@@ -8,6 +8,8 @@
 - `docs/reference/remote-access.md` (fleet section) and CONTEXT.md (fleet).
 - `.scratch/rooms/spec.md`: a comment that story 15 is delivered by this spec.
 
+**From the research:** the ADR 0011 amendment must explain why engine-forwarded *on-behalf-of* control is acceptable for engines. The 2026-10-25 multi-engine research rejected that model for *clients*. The reasons: attribution is per presenting engine and revocable, and agents aren't clients. The amendment also lists the forward allowlist and states that loopback IPC trust is fleet-wide, which is why the IPC token (wave-10 03) is a prerequisite. The ADR 0004 note says the only cross-engine durable state is the child host's notice outbox and the parent's dedupe ledger. Port #706's `docs/mcp.md` examples (standalone, projectless, mixed batch) and add device-addressed ones.
+
 **Blocked by:** 01–03
 
 **Status:** ready-for-agent
