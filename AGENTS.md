@@ -15,6 +15,8 @@ Roboco (repo/project/binary: `roboco`, app display name: `Roboco`) is an indepen
 
 Before refreshing the mirror or porting a commit, follow [the upstream port workflow](docs/reference/upstream-ports.md). Review the selected upstream change on a mirror-derived branch, then carry its intent into a Roboco branch by hand across the rebrand and removed cloud code. Keep `rerere` enabled.
 
+Syncing runs as a weekly loop. `docs/reference/upstream-ledger.tsv` records a decision for every upstream commit. The tools are in `scripts/upstream/`: `triage.py` builds the weekly page, and `translate.py` does the rename-translated cherry-pick. Each port commit carries an `Upstream-Commit: <sha>` trailer. `scripts/upstream/rename-map.tsv` mirrors the map below; change both together.
+
 Rename mapping for retained code:
 
 - `zeron-*` crates / `zeron_*` libs -> `roboco-*` / `roboco_*`
