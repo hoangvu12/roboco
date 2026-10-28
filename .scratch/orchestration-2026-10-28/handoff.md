@@ -136,7 +136,12 @@ Keep a running "PRs" list in this file.
   rule approved); upstream less-recoding recs 1, 2, 4, 5 yes, 3 (renamed mirror) later; delete scratch branches:
   `ci/scratch-startup-broken` deleted; `ci/scratch-arm64-ab` + `ci/scratch-glibc-floor` (from `4879f773`) delete
   once that worker is done (covered by the same OK).
-| `955e487b` | main checkout, read-only | research (user ask 2026-10-29): where the time goes + how to speed up ticket throughput and Roboco dev in general → `.scratch/dev-velocity/report-2026-10-29.md` | running |
+| `955e487b` | main checkout, read-only | research (user ask 2026-10-29): where the time goes + how to speed up ticket throughput and Roboco dev in general → `.scratch/dev-velocity/report-2026-10-29.md` | **done** (`10918d2de`), archived. Biggest losses were unwatched stalls (12 h 52 m lost notice on #39, 4 h 18 m orchestrator blocked on a user question), not coding. Memory ceiling = fixed 8 GB pagefile (32 GB RAM, commit limit ≈40 GB; low-VM events before the crash). Decisions 1–9 asked of the user (report §decisions); lane schedule E/H/T/S/F/A/C in the report (§schedule). |
+
+- **Orchestrator rules adopted from the dev-velocity report (no decision needed):** never wait on the user inside
+  a turn (ask, end the turn, keep everything else moving); before archiving any chat, hand its live workers over;
+  every worker prompt says: ONE background wait for CI, no interim turn ends, and run a read-only review agent
+  (`/code-review` or a reviewer subagent) on its diff before its one push.
 
 - Ticket count 2026-10-29: 131 total (web-removal 11, ci-speed 25, wave-10 78, fleet-redesign 17): ≈26 done,
   ≈17 in flight, ≈83 not started (+3 parked).
