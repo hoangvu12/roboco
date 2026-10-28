@@ -17,7 +17,7 @@ import org.junit.runner.RunWith
  * `uit:TransitionTourTests.swift`): drives every glass transition slowly,
  * with animations on, for screen recordings and visual motion review —
  * not assertions. [Tour]-annotated, so PR CI skips it; the tablet job
- * (`android-emulator-tablet`, push/dispatch only) runs it and the
+ * (`android-emulator-tablet`, nightly/dispatch only) runs it and the
  * artefact copy pulls the recordings.
  *
  * `screenrecord` runs through the one UiAutomation connection (bounded at

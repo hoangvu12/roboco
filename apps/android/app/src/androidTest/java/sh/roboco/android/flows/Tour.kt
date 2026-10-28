@@ -6,7 +6,7 @@ package sh.roboco.android.flows
  * recorded with `screenrecord` for motion review. Excluded by
  * [sh.roboco.android.RobocoTestRunner] unless the run passes
  * `-Pandroid.testInstrumentationRunnerArguments.flowIncludeTour=true` —
- * the tablet job does (`FLOW_INCLUDE_TOUR=1`), on pushes to main and
+ * the tablet job does (`FLOW_INCLUDE_TOUR=1`), nightly and on
  * `workflow_dispatch`.
  */
 @Retention(AnnotationRetention.RUNTIME)
