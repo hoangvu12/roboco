@@ -10,12 +10,11 @@ copied to every member, with no engine in charge; any online member can welcome
 a client that presents the secret. Engines persist only a SHA-256 verifier of
 the secret (the pairing invariant; no usable room secret is ever at rest on an
 engine), while the secret itself lives with clients — Keystore on Android,
-browser storage on the web, app config on the desktop. The book's member
+app config on the desktop (and, until ADR 0012, browser storage on the web). The book's member
 addresses are 0600-class secrets exactly like relay `connect.json` entries.
-Native clients dial members directly through their own Tailcat tunnels;
-browsers, which cannot dial, redeem through the engine serving them: that
-engine relays the presentation over its own tunnel and then byte-pumps frames
-through the existing relay, never storing the secret. Books merge as unions,
+Native clients dial members directly through their own Tailcat tunnels.
+Browsers, which cannot dial, used to redeem through the engine serving them;
+that relay was removed by ADR 0012 (see the amendment below). Books merge as unions,
 maintained by clients; missing members are retried on reconnect, and a
 presentation is repeatable, so interrupted joins self-heal.
 
@@ -123,8 +122,18 @@ embeds the fleet (QR density, scanner changes, a second grammar); a
 desktop-only introducer (the phone could not join through a headless server);
 per-invite member scoping (deferred).
 
-**Status note.** The trunk's wave-9 merge dropped the v0.13.0 rooms code and
-this ADR; fleet follow re-landed the rooms core with the amendment. The
-browser relay flow (`/pairing/room-redeem`) and the 100 MB attachment cap
-described under Consequences were dropped by the same merge and are **not**
-re-landed by fleet follow.
+**Status note** (corrected 2026-10-28). The trunk's wave-9 merge dropped the
+v0.13.0 rooms code and this ADR; fleet follow re-landed the rooms core with
+the amendment. The browser relay flow (`/pairing/room-redeem`) and the 100 MB
+attachment cap described under Consequences came back with the v0.13.0 merge
+as well (an earlier version of this note said they had not). The 100 MB cap
+(`uploads-100mb-v1`) stays.
+
+## Amendment (2026-10-28): no browser join
+
+[ADR 0012](0012-no-web-client-no-embedded-browser.md) removed the web client,
+and with it the browser room join: `/pairing/room-redeem` and the engine-side
+relay that carried a browser's presentation are gone. Native clients join
+exactly as above, by presenting the secret at `POST /room/present`, which now
+refuses any request carrying an `Origin` header. Fleet follow never had a
+browser path, so nothing current regresses.

@@ -47,8 +47,6 @@ cargo run -p roboco
 
 Windows development notes: [docs/reference/windows-development.md](docs/reference/windows-development.md). The daemon keeps running across reboots once installed. No account configuration is required.
 
-The desktop sidebar browser also needs the [Linux browser runtime](docs/reference/linux-browser.md).
-
 Day-to-day:
 
 ```bash
@@ -70,7 +68,7 @@ Remote access uses direct engine pairing. Each engine owns its data; the desktop
 For account-free Tailcat access, run `roboco engine tailcat invite` on each VM
 and paste the invite into desktop **Settings → Devices**. The command starts the
 engine if needed and enables Tailcat; releases bundle the `roboco-tailcat`
-adapter. See [remote access](docs/reference/remote-access.md) for browser pairing,
+adapter. See [remote access](docs/reference/remote-access.md) for app pairing,
 source-build prerequisites, and service setup.
 
 See the [development notes](docs/reference/windows-development.md) for Windows source builds.

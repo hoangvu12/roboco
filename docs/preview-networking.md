@@ -1,18 +1,23 @@
 # Project previews
 
-Run an HTTP development server in a project and open a Browser tab in that
-session. The empty tab lists its running services, and a Ports card beside
-the chat lists them too — one row per server this chat can preview. **Open**
-navigates to
-`http://<device>.<project>.localhost:7331`; additional services receive persistent
-names such as `<device>.<project>-api.localhost:7331`. A chat on *another*
-engine's session opens the same way through the client-side preview proxy
-(`127.0.0.1:7332`, below): the pane renders
+Run an HTTP development server in a project and the **Ports** card beside the
+chat lists it — one row per server this chat can preview. On the desktop,
+clicking a row opens it in your default browser at
+`http://<device>.<project>.localhost:7331`; additional services receive
+persistent names such as `<device>.<project>-api.localhost:7331`. Roboco has no
+in-app browser on the desktop ([ADR 0012](adr/0012-no-web-client-no-embedded-browser.md)).
+A chat on *another* engine opens the same way through the client-side preview
+proxy (`127.0.0.1:7332`, below): the browser opens
 `http://<device>.<project>.localhost:7332`, and the client relays it over the
-session relay.
+session relay. Android's Ports panel (the ⋯ menu) loads the same URLs in its
+in-app WebView.
 
-The daemon owns this listener, discovery and peer connections. Closing a browser
-tab does not stop discovery or change an address. Account teardown cancels the
+`*.localhost` resolution is the browser's: Chrome, Edge and Firefox resolve
+every `*.localhost` name to loopback without touching DNS or the hosts file, so
+no system change is needed.
+
+The daemon owns this listener, discovery and peer connections. Closing a
+browser tab does not stop discovery or change an address. Account teardown cancels the
 proxy, discovery, signaling, and existing peer streams before the next profile
 starts. A busy proxy port produces an inline error instead of changing the URL.
 
@@ -69,11 +74,8 @@ copying paths or entering ports.
 
 ## HTTP and stream transport
 
-On macOS 14 and later, WebKit receives a per-domain HTTP CONNECT configuration
-for preview hostnames, avoiding older macOS DNS behavior without system changes.
-The CONNECT endpoint admits only known preview names at the proxy port, and its
-tunnels share bounded limits and account cancellation. Other website traffic
-retains normal routing.
+The proxy's HTTP CONNECT endpoint admits only known preview names at the proxy
+port, and its tunnels share bounded limits and account cancellation.
 
 The loopback proxy validates the Host against its catalog, then opens an opaque
 service ID through a transport-independent multiplexer. Locally, framed streams
@@ -103,18 +105,17 @@ subprotocol and close handshake, allowing Vite HMR through the same URL.
 A remote device opens a preview over the client's own engine session — no cloud,
 no signaling, no second credential. The engine serves
 `GET /preview-relay/{chatId}/{serviceId}` as a WebSocket upgrade on its existing
-listener, beside the tailcat-relay routing: an opaque binary pump in the
-`serve_relay_websocket` shape. Both ids ride the path, never a query string —
+listener: an opaque binary pump in the `serve_relay_websocket` shape. Both ids ride the path, never a query string —
 the listener rejects query parameters on every route, so neither scope nor
 credentials can end up in a URL. There is no new RPC method, no RPC envelope
 change and no base64: each WebSocket binary message is exactly one mux frame,
 bounded by the mux's own frame-size check.
 
 Authentication is the existing session gate, exactly as for the RPC socket: a
-`Bearer` session credential on the upgrade for native clients, or a first-frame
-`Auth` envelope for browser-shaped dials. The local (native IPC) bind keeps its
-credential-free, origin-rejecting boundary unchanged; the paired bind requires
-the credential. Revocation is inherited from the same machinery: a revoked
+`Bearer` session credential on the upgrade, or a 401 before the upgrade. There
+is no browser path: the paired bind refuses any request carrying an `Origin`
+(403), as the local (native IPC) bind always has; the local bind stays
+credential-free, and the paired bind requires the credential. Revocation is inherited from the same machinery: a revoked
 session cannot dial again, and listener teardown — what disabling remote
 access and engine shutdown run — cuts open relay sockets with every other
 connection.
@@ -132,8 +133,8 @@ own live catalog turns that into an address.
 
 ## Client-side preview proxy
 
-A client watching another engine's previews binds `127.0.0.1:7332` —
-unclaimed (the engine owns 7331, the browser helper 7333) — and serves that
+A client opening another engine's previews binds `127.0.0.1:7332` —
+unclaimed (the engine owns 7331) — and serves that
 engine's preview hostnames by dialing its relay route over the session
 transport the client already holds: the registry's saved endpoint and
 credential (a LAN WebSocket, or a Tailcat tunnel's loopback base; tunneled
@@ -157,30 +158,30 @@ service) relay — the client is always the initiator and never answers OPENs
 applies (one implementation, in `roboco-preview-relay`'s `http` module):
 hop-by-hop stripping, Host/Origin preserved, `X-Forwarded-Host`, localhost
 redirect rewrites, bounded upgrade tunnels, and WebSocket passthrough for
-HMR. WebKit's per-domain CONNECT registration (macOS) tunnels into this
-listener; WebKitGTK's proxy mode sends absolute-form requests it routes by
-authority — no `*.localhost` synthesis is needed on either platform.
+HMR. The system browser resolves `*.localhost` to loopback itself and sends
+origin-form requests that route by Host.
 
-The lifecycle is lazy: 7332 binds only while some engine's previews are
-being viewed (the browser panes hold watcher lifetimes), and it shuts down
-once the idle window passes after the last watcher leaves. A busy port
-surfaces an inline error — mirroring the 7331 failure mode — and never
-changes the URL: the pane renders 7332 either way. Revocation is inherited
-from the session the relay rides: a revoked credential cannot dial again,
-and listener teardown or an engine going offline cuts open relays, taking
-the pane to its reconnect state.
+The lifecycle is lazy: 7332 binds only while a watcher holds some engine,
+and it shuts down once the idle window (30 s) passes after the last watcher
+leaves. On the desktop the shell owns the watchers. Clicking a paired
+engine's server in the ports card starts an *opened-preview watcher* for
+that (engine, chat). It marks the engine watched, keeps a
+`WatchPreviews {chatId}` subscription that ingests every snapshot into the
+proxy (so dev-server restarts and collision labels keep routing), and ends,
+unwatching on every exit path, when that chat's servers have been gone for
+the idle window, the engine leaves the registry, or the app quits. So the
+browser tab keeps loading after the card closes or the chat changes, and
+stops within about a minute of the dev server stopping. A revoked session
+behaves the same way once its connection drops: nothing can be seen, so the
+idle window runs out. Local chats need no watcher, because 7331 is the
+engine's own always-on proxy. On Android, the Ports panel holds the watcher
+while it is open.
 
-Platform browsers: macOS extends the WebKit CONNECT registration to 7332
-(one proxy configuration per preview port, matching only its own preview
-hostnames). Linux configures WebKitGTK's custom proxy mode
-(`webkit_network_proxy_settings_*`, verified against the webkit2gtk-4.1
-headers) for the `http` and `ws` schemes only — the API has no per-hostname
-scoping (its ignore list is a bypass list), so https and wss stay direct and
-a bypass list keeps the local engine's preview hostnames and loopback dev
-servers on their unchanged direct path; plain-http external sites in the
-embedded pane fall back to the "open in your default browser" affordance
-while remote previews are being viewed. Windows has no embedded browser:
-previews open in the user's browser, where `*.localhost` synthesis works.
+A busy port surfaces an inline error — mirroring the 7331 failure mode — and
+never changes the URL: the rendered port is 7332 either way. Revocation is
+inherited from the session the relay rides: a revoked credential cannot dial
+again, and listener teardown or an engine going offline cuts open relays.
+
 Android's WebView resolves `*.localhost` natively (Chromium), so it loads
 `http://<hostname>:7332` against the in-app proxy directly.
 
@@ -222,8 +223,8 @@ streaming HTTP headers and redirects, WebSocket traffic, and the mux frame
 path in both directions.
 
 `cargo test --locked -p roboco-engine --test preview_relay` covers the relay
-route against the real listener: the session gate (Bearer, first-frame `Auth`,
-unauthenticated refusal), real HTTP round-trips through the mux including large
+route against the real listener: the session gate (Bearer, the missing-Bearer
+401, the `Origin` 403), real HTTP round-trips through the mux including large
 bodies, slow readers, half-close and cancellation, chat/service scoping
 refusals, and listener teardown cutting an open relay.
 
@@ -238,14 +239,10 @@ refused-credential degradation.
 real paired engine: `WatchPreviews`-driven ingestion, a full HTTP round-trip
 through the registry's dial (`/preview-relay` over the saved endpoint and
 credential), revocation cutting the open relay, unpairing dropping routes,
-and the busy-port inline error. The desktop pane's rewrite (7332 URLs, no
-tunnel degradation, the reconnect state after revocation) is covered in
-`roboco-ui`'s browser pane tests with a real remote engine.
-
-Build `cargo build -p roboco-ui --example preview-fixture --features browser-fixture`.
-Run the fixture with an output directory, an available display and `VITE_BINARY`
-pointing to an installed `vite/bin/vite.js`. It starts real Vite/API processes in
-an isolated project, discovers them through daemon RPC and waits for a native
-click on Vite's Open button. It then verifies HMR, disappearance and a port-change
-restart while capturing the native UI. Screenshots/videos belong in PR user
-attachments, not the repository.
+and the busy-port inline error. The desktop's ports card is covered in
+`roboco-ui` (`shell/session_info/opened_preview_tests.rs`) with a real paired
+engine. A row opens the routed 7332 URL externally and adds no tab. That URL
+serves the remote dev server through the proxy after the card closes and the
+chat changes. The watcher ends, and the listener idles out, when the servers
+stop, the session is revoked or the engine is forgotten. A local row opens
+its 7331 URL with no watcher.

@@ -58,6 +58,3 @@ neighbor-anchored intents above, persisted as list positions in
 ```sh
 cargo nextest run --locked -p roboco-ui --lib -E 'test(pin) or test(session)'
 ```
-
-Web parity suites: `pnpm --filter "@roboco/app" exec vitest run
-tests/sidebar-pins.test.ts tests/sidebar-store.test.ts`.

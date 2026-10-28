@@ -2,8 +2,8 @@
 
 `roboco mcp` serves the Model Context Protocol on stdin/stdout and proxies every
 tool into the running engine's localhost IPC (`ws://127.0.0.1:$ROBOCO_IPC_PORT`,
-default 27654) — the same `roboco_rpc` surface the headed app and the web client
-dial. It is a subcommand of the one `roboco` binary: no Node runtime, no extra
+default 27654) — the same `roboco_rpc` surface the headed app
+dials. It is a subcommand of the one `roboco` binary: no Node runtime, no extra
 install, a few MB resident.
 
 Crate: `crates/roboco-mcp` (`roboco-mcp`). The protocol layer is hand-rolled
@@ -131,7 +131,7 @@ An additive `agentOrigin` (ticket 23) rides the same RPC when a chat's agent
 forks through the `fork_chat` MCP tool: `{ chatId, notify }` marks the copy
 agent-created, the durable row the engine's completion notices key on
 (`notify: false` is the opt-out). The assignment replaces anything the source
-row carried, so forks made without it — the UI, the web client, a terminal —
+row carried, so forks made without it — the UI, a terminal —
 stay user-made and never notify, even when the source itself was
 agent-created.
 
@@ -189,7 +189,7 @@ changes). It is read-only — the engine mints hostnames on discovery, there is
 no create/delete — and a server with no chat context (a terminal) returns an
 empty list rather than an error. The engine's own proxy bind failure rides the
 result as `error`. A clickable transcript rendering of the links is a possible
-follow-up; the Ports card and browser pane remain the canonical open paths.
+follow-up; the ports card remains the canonical open path.
 
 `wait_for_turn`, `send_message` with `wait`, `read_chat` and `get_chat` all
 report the observation to the engine for the calling chat afterwards

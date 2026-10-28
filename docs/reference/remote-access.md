@@ -68,15 +68,6 @@ The desktop owns its Tailcat connection; no `connect` command is required.
 On **Android**, scan or paste the invite on the Pair page. The app keeps its
 own Tailcat connection and reconnects after restarts and network changes.
 
-For the **browser**, run this on the machine running the browser:
-
-```sh
-roboco engine tailcat browser-helper
-```
-
-Then paste the invite into the web client's **Settings → Devices**. Keep the helper
-running. Alternatively, use the explicit forwarder described below.
-
 Advanced foreground/service setup still supports:
 
 ```sh
@@ -107,14 +98,23 @@ roboco engine tailcat connect --invite roboco-tailcat:…
 ```
 
 The first two run beside the engine. `connect` runs on the *client* machine: it
-dials the invite and prints that engine's loopback pairing URL, for example
-`http://127.0.0.1:43627/pair#token=…`. Paste it where a pairing link goes — a
-browser tab, or **Settings → Devices** — and keep the forwarder running; it
+dials the invite and prints a loopback pairing link for a Roboco app, for
+example `http://127.0.0.1:43627/pair#token=…`. Paste it where a pairing link
+goes (**Settings → Devices**) and keep the forwarder running; it
 dialled out through Tailcat, so there is no inbound port and no tunnel account.
 Everything after the redeem is unchanged: sessions live until revoked, and
 `roboco engine pairing list` / `revoke` work the same over either transport.
 
 ## Pairing administration
+
+Clients pair through the Android app's in-app scanner, a CLI QR
+(`roboco engine pairing create --qr`, `tailcat invite --qr`,
+`room invite --qr`), or by pasting a `/pair#token=` link into **Settings →
+Devices**. The link is a parseable format, not a page: the engine serves no
+web client, so opening it in a browser (or scanning the QR with a phone's
+system camera) lands on a 404. The paired listener also refuses any request
+that carries an `Origin` header (403) and any WebSocket upgrade without a
+Bearer session (401).
 
 These commands work while the engine is running and use its normal data directory
 (`ROBOCO_DATA_DIR` can select another engine installation):
@@ -393,16 +393,10 @@ need a paired session and the `rooms-v2` capability. No room code ever changes
 remote-access settings: the desktop's only remote-access call is the read-only
 `GetRemoteAccess` that decides which engines to push to.
 
-The web client has no fleet join in this release. Its **Join room** flow
-(beside the pair flow) takes plain room invites only and refuses fleet
-invites. The browser cannot dial members itself, so for each member it calls
-the origin engine's `POST /pairing/room-redeem {invite, target, label}`. The
-origin engine dials the target from its own book, relays the presentation over
-its tunnel, and returns the target's session grant with its base URL rewritten
-to `…/tailcat-relay/{id}`; the existing relay byte pump then carries the
-traffic. The origin engine relays the secret in transit but never stores it,
-and the browser keeps each member's credential and the room secret in browser
-storage, scoped to the origin.
+There is no browser join: Roboco has no web client
+([ADR 0012](../adr/0012-no-web-client-no-embedded-browser.md)), and the
+engine-side browser relay (`/pairing/room-redeem`, `/tailcat-relay/*`) is
+gone.
 
 ## Saved settings
 
@@ -477,9 +471,8 @@ module any client can call):
    numbers. An older engine is never flagged as a whole — each missing feature
    says so individually when its capability is absent.
 
-The web client is served by its engine (ADR 0006), so it cannot skew and does
-not park on these rules. The Android app is installed separately and follows
-them in full (client-side lenient decoding lands with it).
+The Android app is installed separately and follows these rules in full
+(client-side lenient decoding lands with it).
 
 ### When a change needs a capability
 
