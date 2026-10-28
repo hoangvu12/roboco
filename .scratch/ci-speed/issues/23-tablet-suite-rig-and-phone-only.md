@@ -10,7 +10,7 @@ User decision (2026-10-28): the tablet suite runs nightly, not per push. It stay
 
 **Blocked by:** none (coordinate with 08, which moves the job to nightly)
 
-**Status:** implemented on `ci/linux-android-tiers` (with 06 and 08, one PR); verified by a dispatched tablet run on the branch (below); 3 green nights after merge outstanding
+**Status:** in review, PR #44 (with 06 and 08); the first green tablet run ever on a dispatch of the branch (below); 3 green nights after merge outstanding
 
 **Parent:** `.scratch/ci-speed/spec.md` (from ticket 11)
 
@@ -39,3 +39,12 @@ The failing set moved since the triage. Wave-10 37's one-row bottom bar (PR #38)
 Mechanism: new `flows/PhoneOnly.kt`, `annotation class PhoneOnly(val reason: String)`, so every tag says why. `RobocoTestRunner` adds it to `notAnnotation` at a ≥ 600 dp smallest width, the mirror of `@TabletOnly`. The phone job is unaffected: below 600 dp nothing new is excluded. The Tour/TransitionTourTest KDocs now say "nightly/dispatch".
 
 Not done here (outside the ticket's rows): `TabletLayoutTest.sidebarOpensSessionsBesideIt`'s 5 s flake (5/12 in the triage) was green in 40725884775; watch it in the nightlies. A tablet-shaped variant of the three Back-based flows (switch rows in the sidebar instead of Back) would bring that coverage to the split; ticket 25 can pick it up if wanted.
+
+**2026-10-29 (dispatch of the branch, run 40739301969):** `android-emulator-tablet` **green for the first time**: 48 tests, 0 failures, 8 m 46 s instrumented, 27.1 min job.
+
+- The count was 58 before; the 10 `@PhoneOnly` tests no longer run here.
+- `TailcatPairingFlowTest` passed (6.1 s), so the rig works.
+- `KeyboardFlowTest` passed (32.2 s), which confirms the sidebar-geometry diagnosis.
+- `TabletLayoutTest` ×2 and `TransitionTourTest` ×2 passed.
+- On the phone, both runs of the branch ran 53 tests (the same as main 40725884775), so `@PhoneOnly` removes nothing there. `KeyboardFlowTest` passed with the transcript-relative x in both.
+- Acceptance rows 1–3 are met. Row 4 (3 green nights) starts after merge.

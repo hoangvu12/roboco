@@ -24,7 +24,7 @@
 
 **Blocked by:** 01 (cache keys)
 
-**Status:** implemented on `ci/linux-android-tiers` (with 06 and 23, one PR); gate dry-run below; the ≥ 10-run measurement comes after merge
+**Status:** in review, PR #44 (with 06 and 23); gate dry-run below; the ≥ 10-run measurement comes after merge
 
 **Parent:** `.scratch/ci-speed/spec.md`
 
@@ -86,3 +86,11 @@ Deviations:
 - `ci:full` with a stub `gh` returning the label → `full=true`, everything on. The same engine-only PR without the label → all false.
 - Job conditions with those outputs: an Android-path PR whose files classify false runs `changes` + `android (ubuntu)` only (emulator `if` false, Windows `if` false, R8 `if` false, tablet `if` false on `pull_request`).
 - This PR touches android.yml, so the gate puts it in both path tiers (emulator + Windows leg run, R8 does not).
+
+**2026-10-29 (PR #44 runs: PR 40739293146, dispatch 40739301969):**
+
+- `changes` in CI matched the dry run. On the PR: `android-changes: 21 changed files`, `full=false android_relevant=true gradle_host=true`. On the dispatch: `workflow_dispatch run: the full tier`, all true.
+- PR run: `android (ubuntu-24.04)` 20.5 (R8 / release APK / sizes steps **skipped**), `android (windows-2022)` 23.0, `android-emulator` 36.5, tablet skipped.
+  - The emulator's one failure was `SessionFlowTest.newSessionFromAccessory`: "multithreaded access to SnapshotStateObserver … DefaultDispatcher-worker". That is the known ticket 22 flake. It passed in the dispatch run on the same commit; 52/53 others passed.
+- Dispatch (full tier): `android (ubuntu-24.04)` 23.2 (R8 smoke 4.1 min, `roboco-android-release-unsigned` and `android-core-sizes` uploaded), `android (windows-2022)` 25.5, `android-emulator` 35.5 (53/53), `android-emulator-tablet` 27.1 (48/48, ticket 23).
+- These are job times. Run walls (≈ 58–60) include up to 18 min of queueing, because this PR started four runs at once.
