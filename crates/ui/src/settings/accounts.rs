@@ -131,6 +131,43 @@ pub(crate) fn usage_resets(
         .join(" · ")
 }
 
+/// Wave-10 36: listen on this computer's loopback `port` for a remote
+/// engine's sign-in redirect and relay it there (`RelayAgentLoginCallback`
+/// with the login's random requester). `Err` is the "Port … is in use on
+/// this computer" message.
+async fn listen_for_remote_callback(
+    runtime: &tokio::runtime::Handle,
+    port: u16,
+    engine: roboco_engine_client::registry::EngineTarget,
+    login_id: String,
+    requester: String,
+) -> Result<roboco_engine_client::login_relay::LoginRelay, String> {
+    roboco_engine_client::login_relay::listen(
+        runtime,
+        port,
+        "computer",
+        Box::new(move |path| {
+            let (engine, login_id, requester) = (engine.clone(), login_id.clone(), requester.clone());
+            Box::pin(async move {
+                let params = serde_json::to_value(roboco_proto::RelayAgentLoginCallback {
+                    login_id,
+                    requester_device_id: requester,
+                    path,
+                })
+                .map_err(|e| e.to_string())?;
+                engine
+                    .call_as::<roboco_proto::RelayedLoginCallback>(
+                        methods::RELAY_AGENT_LOGIN_CALLBACK,
+                        params,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }),
+    )
+    .await
+}
+
 // The pure sign-in rules (which agents sign in, their login options,
 // switching) live in `roboco_proto::providers`, shared with the Android
 // core's `agent_login_rules` (upstream #966 moved them to proto too).
@@ -452,6 +489,10 @@ pub struct AccountsPage {
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    /// Wave-10 36: a loopback sign-in started on a remote (fleet) engine —
+    /// the listener on this computer's loopback relaying the browser's
+    /// redirect to that engine. Dropped with the login.
+    login_relay: Option<roboco_engine_client::login_relay::LoginRelay>,
     _observe: Subscription,
     _code_events: Subscription,
 }
@@ -479,6 +520,7 @@ impl AccountsPage {
             load_task: None,
             action_task: None,
             poll_task: None,
+            login_relay: None,
             _observe: observe,
             _code_events: code_events,
         };
@@ -512,6 +554,7 @@ impl AccountsPage {
         // login/action state and reload with a forced usage probe (the new
         // device's cache is cold).
         self.login = None;
+        self.login_relay = None;
         self.busy_account = None;
         self.confirm_switch = None;
         self.error = None;
@@ -815,19 +858,79 @@ impl AccountsPage {
             return;
         };
         self.login = Some(LoginFlow::Starting { harness, provider });
+        self.login_relay = None;
         self.error = None;
+        // Wave-10 36: a login on another (fleet) engine redirects to THAT
+        // computer's loopback, but the browser runs here. Name a fresh
+        // random requester (only this page can relay the callback) and
+        // relay the redirect this computer's browser lands on.
+        let remote = {
+            let state = self.state.read(cx);
+            let local = state.local_target().ok().map(|target| target.key().clone());
+            local.as_ref() != Some(engine.key())
+        };
+        let requester = remote.then(|| uuid::Uuid::new_v4().to_string());
+        let runtime = self.state.read(cx).registry().map(|registry| registry.runtime_handle());
         let mut params = serde_json::json!({ "harness": harness });
         if let (Some(provider), Some(object)) = (provider, params.as_object_mut()) {
             object.insert("provider".into(), serde_json::json!(provider));
         }
+        if let (Some(requester), Some(object)) = (&requester, params.as_object_mut()) {
+            object.insert("requesterDeviceId".into(), serde_json::json!(requester));
+        }
         let params = self.params(params);
+        let relay_engine = engine.clone();
         self.action_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.call(methods::START_AGENT_LOGIN, params).await;
+            let result = result.and_then(|value| {
+                serde_json::from_value::<AgentLoginStart>(value)
+                    .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
+            });
+            // The relay listener, for a loopback login on a remote engine.
+            let relay = match (&result, requester, runtime) {
+                (Ok(start), Some(requester), Some(runtime))
+                    if start.mode == AgentLoginMode::Browser =>
+                {
+                    match start.callback_port {
+                        Some(port) => Some(
+                            listen_for_remote_callback(
+                                &runtime,
+                                port,
+                                relay_engine,
+                                start.login_id.clone(),
+                                requester,
+                            )
+                            .await,
+                        ),
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
             this.update(cx, |page, cx| {
-                match result.and_then(|value| {
-                    serde_json::from_value::<AgentLoginStart>(value)
-                        .map_err(|e| roboco_rpc::RpcError::Failed(e.to_string()))
-                }) {
+                let result = match (result, relay) {
+                    (Ok(start), Some(Err(busy))) => {
+                        // This computer can't catch the redirect: end the
+                        // sign-in on the remote engine and say why.
+                        let params = page.params(serde_json::json!({ "loginId": start.login_id }));
+                        if let Ok(engine) = crate::request_routing::device_target(
+                            page.state.read(cx),
+                            page.target_device.as_deref(),
+                        ) {
+                            cx.spawn(async move |_, _| {
+                                let _ = engine.call(methods::CANCEL_AGENT_LOGIN, params).await;
+                            })
+                            .detach();
+                        }
+                        Err(roboco_rpc::RpcError::Failed(busy))
+                    }
+                    (Ok(start), Some(Ok(relay))) => {
+                        page.login_relay = Some(relay);
+                        Ok(start)
+                    }
+                    (result, _) => result,
+                };
+                match result {
                     Ok(start) => {
                         if !start.cli_opens_browser {
                             cx.open_url(&start.url);
@@ -858,6 +961,7 @@ impl AccountsPage {
                     }
                     Err(err) => {
                         page.login = None;
+                        page.login_relay = None;
                         page.error = Some(format!("Login failed to start: {err}").into());
                     }
                 }
@@ -898,6 +1002,7 @@ impl AccountsPage {
                 match result {
                     Ok(_) => {
                         page.login = None;
+                        page.login_relay = None;
                         page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                     }
                     Err(err) => {
@@ -947,6 +1052,7 @@ impl AccountsPage {
                         Some(poll) => match poll.status {
                             AgentLoginStatus::Done => {
                                 page.login = None;
+                                page.login_relay = None;
                                 page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                                 cx.notify();
                                 true
@@ -995,6 +1101,7 @@ impl AccountsPage {
             _ => None,
         };
         self.login = None;
+        self.login_relay = None;
         self.poll_task = None;
         if let (Some(login_id), Some(engine)) = (
             login_id,

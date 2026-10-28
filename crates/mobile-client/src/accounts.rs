@@ -67,6 +67,17 @@ pub fn usage_level(used_fraction: f32) -> UsageLevel {
 #[derive(Default)]
 pub(crate) struct AccountsState {
     pub(crate) snapshots: Mutex<HashMap<String, AgentAccountsSnapshot>>,
+    /// Wave-10 36: the sign-ins this phone started on a computer, by login
+    /// id — the random requester it named (the only key that relays the
+    /// login's callback) and, for a loopback login, the listener catching
+    /// the browser's redirect.
+    pub(crate) logins: Mutex<HashMap<String, PhoneLogin>>,
+}
+
+/// One sign-in this phone started on a computer (wave-10 36).
+pub(crate) struct PhoneLogin {
+    requester: String,
+    relay: Option<roboco_engine_client::login_relay::LoginRelay>,
 }
 
 impl crate::Client {
@@ -147,13 +158,36 @@ impl crate::Client {
     ) -> Result<AgentLoginStart, ClientError> {
         let inner = self.inner_arc();
         let handle = resolve(&inner, device_id)?;
+        // Wave-10 36: a fresh random requester per sign-in — the computer
+        // publishes the login's callback route for it alone, and only this
+        // phone knows it.
+        let requester = uuid::Uuid::new_v4().to_string();
         let value = handle
             .call(
                 roboco_rpc::methods::START_AGENT_LOGIN,
-                serde_json::json!({ "harness": harness, "provider": provider }),
+                serde_json::json!({
+                    "harness": harness,
+                    "provider": provider,
+                    "requesterDeviceId": requester,
+                }),
             )
             .await?;
-        decode_as(value, "agent login start")
+        let start: AgentLoginStart = decode_as(value, "agent login start")?;
+        lock(&inner.accounts.logins).insert(
+            start.login_id.clone(),
+            PhoneLogin {
+                requester,
+                relay: None,
+            },
+        );
+        if start.mode == roboco_proto::AgentLoginMode::Browser
+            && let Some(port) = start.callback_port
+            && let Err(message) = relay_login_callback(&inner, &handle, &start.login_id, port).await
+        {
+            self.cancel_agent_login(device_id, &start.login_id);
+            return Err(ClientError::HostError { message });
+        }
+        Ok(start)
     }
 
     /// `PollAgentLogin`: still pending, done, or failed (a page that only
@@ -171,7 +205,27 @@ impl crate::Client {
                 serde_json::json!({ "loginId": login_id }),
             )
             .await?;
-        decode_as(value, "agent login poll")
+        let poll: AgentLoginPoll = decode_as(value, "agent login poll")?;
+        match poll.status {
+            roboco_proto::AgentLoginStatus::Pending => {
+                // A page that only became known now (an agent that had to
+                // install first, Antigravity's) gets its relay here.
+                let listening = lock(&inner.accounts.logins)
+                    .get(login_id)
+                    .is_some_and(|login| login.relay.is_some());
+                if let Some(port) = poll.callback_port
+                    && !listening
+                {
+                    relay_login_callback(&inner, &handle, login_id, port)
+                        .await
+                        .map_err(|message| ClientError::HostError { message })?;
+                }
+            }
+            roboco_proto::AgentLoginStatus::Done | roboco_proto::AgentLoginStatus::Error => {
+                lock(&inner.accounts.logins).remove(login_id);
+            }
+        }
+        Ok(poll)
     }
 
     /// `CompleteAgentLogin`: the code the sign-in page showed, pasted back
@@ -193,6 +247,7 @@ impl crate::Client {
             .await?;
         let snapshot: AgentAccountsSnapshot = decode(value)?;
         store(&inner, &handle, snapshot.clone());
+        lock(&inner.accounts.logins).remove(login_id);
         Ok(snapshot)
     }
 
@@ -200,6 +255,8 @@ impl crate::Client {
     /// a cancel that can't reach the engine is reaped there by its TTL).
     pub fn cancel_agent_login(&self, device_id: &str, login_id: &str) {
         let inner = self.inner_arc();
+        // The listener stops with its login.
+        lock(&inner.accounts.logins).remove(login_id);
         let Ok(handle) = resolve(&inner, device_id) else {
             return;
         };
@@ -228,6 +285,54 @@ impl crate::Client {
 
 fn resolve(inner: &std::sync::Arc<ClientInner>, device_id: &str) -> Result<EngineHandle, ClientError> {
     crate::catalog_live::resolve_engine(inner, device_id)
+}
+
+/// Listen on this phone's loopback `port` for `login_id`'s browser
+/// redirect and relay it to the computer (`RelayAgentLoginCallback` with
+/// the login's requester) — wave-10 36, upstream #966's
+/// `relay_login_callback`. `Err` carries the "Port … is in use on this
+/// phone" message.
+async fn relay_login_callback(
+    inner: &std::sync::Arc<ClientInner>,
+    handle: &EngineHandle,
+    login_id: &str,
+    port: u16,
+) -> Result<(), String> {
+    let requester = lock(&inner.accounts.logins)
+        .get(login_id)
+        .map(|login| login.requester.clone())
+        .ok_or_else(|| "This sign-in attempt expired — start again.".to_owned())?;
+    let (relay_handle, relay_login) = (handle.clone(), login_id.to_owned());
+    let relay = roboco_engine_client::login_relay::listen(
+        crate::runtime::shared().handle(),
+        port,
+        "phone",
+        Box::new(move |path| {
+            let (handle, login_id, requester) =
+                (relay_handle.clone(), relay_login.clone(), requester.clone());
+            Box::pin(async move {
+                let value = handle
+                    .call(
+                        roboco_rpc::methods::RELAY_AGENT_LOGIN_CALLBACK,
+                        serde_json::to_value(roboco_proto::RelayAgentLoginCallback {
+                            login_id,
+                            requester_device_id: requester,
+                            path,
+                        })
+                        .map_err(|e| e.to_string())?,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                serde_json::from_value::<roboco_proto::RelayedLoginCallback>(value)
+                    .map_err(|e| e.to_string())
+            })
+        }),
+    )
+    .await?;
+    if let Some(login) = lock(&inner.accounts.logins).get_mut(login_id) {
+        login.relay = Some(relay);
+    }
+    Ok(())
 }
 
 async fn agent_account_call(

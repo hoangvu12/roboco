@@ -559,18 +559,10 @@ class AgentAccountsModel(
                 }
                 return
             }
-            if (start.callbackPort != null) {
-                // The page returns to the computer's own loopback, which
-                // this phone's browser can't reach (ticket 36 relays it).
-                alerts.show(
-                    RobocoAlert(
-                        title = SignInCopy.LoopbackTitle,
-                        message = SignInCopy.loopbackMessage(harnessLabel(row.harness), nameOf(deviceId)),
-                        buttons = listOf(AlertButton("OK", role = AlertButtonRole.Cancel)),
-                    ),
-                )
-                return
-            }
+            // Wave-10 36: a loopback sign-in (`callbackPort`) needs nothing
+            // here — the core listens on that port of this phone and relays
+            // the browser's redirect to the computer; a busy port already
+            // failed the start ("Port … is in use on this phone").
             var opened = false
             if (start.url.isNotEmpty()) {
                 openUrl(start.url)

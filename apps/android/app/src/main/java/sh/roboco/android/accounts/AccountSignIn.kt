@@ -102,16 +102,6 @@ object SignInCopy {
      */
     fun about(deviceName: String) =
         "Switching changes the login $deviceName uses for new sessions. Signing in runs on $deviceName; you finish in the browser here."
-
-    /**
-     * A loopback sign-in before ticket 36's relay: the page returns to
-     * the computer's own `localhost`, which this phone's browser can't
-     * reach — the honest "finish on the computer" answer.
-     */
-    const val LoopbackTitle = "Finish on the computer"
-
-    fun loopbackMessage(agent: String, deviceName: String) =
-        "$agent's sign-in returns to $deviceName itself, so this phone can't finish it yet. Sign in from Roboco on $deviceName."
 }
 
 /** One "Add account" row: the option it starts and its title. */

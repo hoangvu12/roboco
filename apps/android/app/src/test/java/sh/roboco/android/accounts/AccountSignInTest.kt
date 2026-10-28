@@ -314,17 +314,33 @@ class AccountSignInTest {
         assertNull(r.model.signingIn)
     }
 
+    /** Wave-10 36: a loopback sign-in opens its page and polls like any other (the core relays the redirect). */
     @Test
-    fun aLoopbackSignInSaysToFinishOnTheComputerAndCancelsIt() = runTest {
+    fun aLoopbackSignInOpensItsPageAndFollowsItToTheEnd() = runTest {
         val signIn = FakeSignIn()
         signIn.start = login(url = "https://auth.openai.com/oauth/authorize", port = 1455.toUShort())
+        signIn.polls.add(DeviceLoginPollInfo(status = "done", message = null, url = null, callbackPort = null))
         val r = rig(signIn)
         r.model.onAddRow(r.addRow("claude-code"))
         advanceUntilIdle()
-        assertEquals(SignInCopy.LoopbackTitle, r.alerts.shown.single().title)
-        assertTrue("no page the phone can't finish", r.opened.isEmpty())
-        assertEquals(listOf("start:claude-code:-", "cancel:login-1"), signIn.calls)
+        assertEquals(listOf("https://auth.openai.com/oauth/authorize"), r.opened)
+        assertEquals(listOf("start:claude-code:-", "poll:login-1"), signIn.calls)
+        assertTrue("nothing to alert", r.alerts.shown.isEmpty())
         assertNull(r.model.signingIn)
+    }
+
+    /** Wave-10 36: a busy phone port fails the start with the core's message. */
+    @Test
+    fun aBusyPhonePortAlertsTheCoresMessage() = runTest {
+        val signIn = FakeSignIn()
+        signIn.startThrows = CoreException.HostException(
+            "Port 1455 is in use on this phone, so the sign-in can't come back to it.",
+        )
+        val r = rig(signIn)
+        r.model.onAddRow(r.addRow("claude-code"))
+        advanceUntilIdle()
+        assertEquals("Couldn't sign in", r.alerts.shown.single().title)
+        assertEquals("Port 1455 is in use on this phone, so the sign-in can't come back to it.", r.alerts.shown.single().message)
     }
 
     @Test

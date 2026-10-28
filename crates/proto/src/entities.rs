@@ -1196,6 +1196,36 @@ pub struct AgentAccountWarning {
     pub message: String,
 }
 
+/// `RelayAgentLoginCallback` params (wave-10 36, upstream #966): a sign-in's
+/// browser callback, caught on the loopback of the device whose browser
+/// finished it (a phone signing a computer's agent in, or a desktop managing
+/// another fleet engine), replayed on the computer running the login. Only
+/// a live login started with this `requester_device_id`, only its
+/// registered port, only a plain path + query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayAgentLoginCallback {
+    pub login_id: String,
+    /// The requester the login was started for (`StartAgentLogin`'s
+    /// `requesterDeviceId`). Roboco clients send a fresh random value per
+    /// sign-in, so only the client that started the login can relay it.
+    pub requester_device_id: String,
+    /// The callback's request target: `/path?query`, never a URL.
+    pub path: String,
+}
+
+/// `RelayAgentLoginCallback` reply: how the computer's listener answered
+/// the replayed callback, so the device that caught the browser answers it
+/// alike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayedLoginCallback {
+    /// The HTTP status; `0` when the listener's reply had none.
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+}
+
 /// `StartAgentLogin` reply: open `url`, then either paste the code back
 /// (`CompleteAgentLogin`) or poll until the browser flow lands (`PollAgentLogin`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

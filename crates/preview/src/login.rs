@@ -70,6 +70,15 @@ impl CallbackRoutes {
         self.0.lock().unwrap().contains_key(login_id)
     }
 
+    /// The loopback port a relayed callback for `login_id` may reach
+    /// (upstream #966's `port_for`): only a live login this `peer` started.
+    pub fn port_for(&self, login_id: &str, peer: &str) -> anyhow::Result<u16> {
+        match self.target(Some(peer), &service_id(login_id)) {
+            Some(result) => result,
+            None => Err(anyhow::anyhow!("no sign-in is waiting for this callback")),
+        }
+    }
+
     /// Where a peer's `service` open goes: `None` when it isn't a sign-in
     /// callback at all, an error unless it names a live login this `peer`
     /// started. Local (same-device) opens carry no peer and are refused.

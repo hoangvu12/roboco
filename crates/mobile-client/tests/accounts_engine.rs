@@ -400,55 +400,39 @@ async fn a_forced_list_through_a_frozen_link_hits_the_deadline() {
     .await;
 }
 
-/// Wave-10 34 (upstream #966's `device_login_*`): a phone starts a
-/// computer's sign-in over the paired link. Claude's login is engine-served
-/// (a loopback PKCE listener on the computer, no CLI and no network until
-/// the browser lands), so start → poll → cancel runs offline: the start
-/// names the page and the computer's callback port, a poll stays pending,
-/// and after a cancel the attempt is gone.
+/// Wave-10 34 + 36 (upstream #966's `device_login_*` and the callback
+/// relay): a phone starts a computer's sign-in over the paired link.
+/// Claude's login is engine-served — a loopback PKCE listener on the
+/// computer, no CLI and no network until the browser lands — so the phone
+/// listens on that same port of its own loopback to relay the redirect.
+/// In a test the "phone" and the computer share one loopback, so the port
+/// is genuinely taken: the start answers with the busy-port message and
+/// cancels the sign-in on the computer (36's "a busy phone port shows the
+/// error"). Polling an unknown attempt says it expired; an agent Roboco
+/// doesn't sign in to is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_phone_starts_polls_and_cancels_a_computers_sign_in() {
+async fn a_phone_starts_a_computers_sign_in_and_a_busy_port_says_so() {
     with_env_lock(async {
         let rig = AccountsRig::start().await;
-        let start = rig
+        match rig
             .client
             .start_agent_login(&rig.device_id, "claude-code", None)
             .await
-            .expect("start");
-        assert_eq!(start.mode, roboco_proto::AgentLoginMode::Browser);
-        assert!(!start.url.is_empty(), "the sign-in page");
-        let port = start.callback_port.expect("Claude's loopback callback port");
-        assert!(
-            start.url.contains(&format!("localhost%3A{port}")),
-            "the page redirects to the computer's port: {}",
-            start.url
-        );
-
-        let poll = rig
-            .client
-            .poll_agent_login(&rig.device_id, &start.login_id)
-            .await
-            .expect("poll");
-        assert_eq!(poll.status, roboco_proto::AgentLoginStatus::Pending);
-
-        rig.client.cancel_agent_login(&rig.device_id, &start.login_id);
-        let gone = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match rig
-                    .client
-                    .poll_agent_login(&rig.device_id, &start.login_id)
-                    .await
-                {
-                    Err(ClientError::HostError { message }) => return message,
-                    _ => tokio::time::sleep(Duration::from_millis(20)).await,
-                }
+        {
+            Err(ClientError::HostError { message }) => {
+                assert!(
+                    message.starts_with("Port ") && message.contains("is in use on this phone"),
+                    "the busy-port message: {message}"
+                );
             }
-        })
-        .await
-        .expect("the cancel reaches the computer");
-        assert!(gone.contains("expired"), "a cancelled attempt is gone: {gone}");
-
-        // An agent Roboco doesn't sign in to is refused by the computer.
+            other => panic!("the shared loopback port is busy: {other:?}"),
+        }
+        match rig.client.poll_agent_login(&rig.device_id, "no-such-login").await {
+            Err(ClientError::HostError { message }) => {
+                assert!(message.contains("expired"), "{message}");
+            }
+            other => panic!("an unknown attempt has expired: {other:?}"),
+        }
         assert!(
             rig.client
                 .start_agent_login(&rig.device_id, "mock", None)
