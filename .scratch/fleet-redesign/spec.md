@@ -215,10 +215,10 @@ All four older fleet folders were deleted on 2026-10-28 (still readable in git a
 
 ## Connection speed (added 2026-10-28)
 
-Measured on the user's PC (Ho Chi Minh City):
-- The Tailcat link to another of their machines runs at about **160 ms per round trip** and about **1.2 MB/s**.
-- It is relayed through Tailscale's rate-limited **Tokyo** DERP; the PC reaches Tokyo at 85 ms.
-- The PC and Laptop are on different networks.
+Measured on the user's **Laptop** (Wi-Fi, Ho Chi Minh City), on its Tailcat link to the **PC** (wired, a different network):
+- About **160 ms per round trip** and about **1.1–1.2 MB/s**, stable, with no drops, re-measured after a fresh re-pair at 10:10.
+- Relayed through Tailscale's rate-limited **Tokyo** DERP; the Laptop reaches Tokyo at 85 ms.
+- The user reports the PC "lags and keeps reconnecting" on the Laptop while it is smooth on the phone.
 - The desktop already reuses one connection per engine. The waits come from relayed round trips and from requests that wait on each other.
 
 Tickets:

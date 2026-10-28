@@ -1,9 +1,10 @@
 # 16 — Tailcat: keep trying for a direct path, and report which path is used
 
-**Why:** measured on the user's PC (2026-10-28):
-- The Tailcat link to another of their machines runs at about **160 ms per round trip** and about **1.2 MB/s**.
-- It goes through Tailscale's rate-limited **Tokyo** relay. The PC reaches that relay at 85 ms; the PC is in Ho Chi Minh City.
-- The PC and Laptop are on different networks.
+**Why:** measured on the user's **Laptop**, on its link to the **PC** (2026-10-28; the earlier "PC" wording in this ticket was wrong, the session ran on the Laptop):
+- The Laptop (Wi-Fi) and the PC (wired) are on different networks in Ho Chi Minh City.
+- The Laptop → PC Tailcat link runs at about **160 ms per round trip** and about **1.1–1.2 MB/s**. It was re-measured after a fresh re-pair at 10:10: stable, with no drops.
+- It goes through Tailscale's rate-limited **Tokyo** relay; the Laptop reaches that relay at 85 ms.
+- The user sees the PC "laggy and reconnecting" on the Laptop, but smooth on the phone. The phone→PC path should be checked the same way: it may be direct.
 
 **The gap in our adapter:** Tailcat's docs say `Client.DiscoPing` "actively triggers direct path discovery, so pinging repeatedly upgrades the connection when NAT traversal is possible", while `Client.Ping` "always measures the DERP path". Our adapter calls `DiscoPing` only as a health probe after a failed dial (`adapters/roboco-tailcat/adapter.go:392-420`). After the startup `Ping` (`:241`), it never pushes for a direct path.
 
