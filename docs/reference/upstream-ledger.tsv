@@ -43,7 +43,7 @@ d8ce7b6ebbf727f066af4e5c0801e79142488acb	2026-09-15	#378	Fix Codex account login
 67c960f4ddf3858c4a33f13701f91ff0e4050f9a	2026-09-16	#376	fix(opencode): harden 1.18 session create + speak the 2.x wire (#376)	ported c132bc596	PORTED p00	
 bc7aa5494983120b5d7d92a1bd9a847ae5a69687	2026-09-15	#313	Harden Windows batch arguments and keep unsupported in-app blur opaque	ported 00aeaa8d2	PORTED p00	
 2966c16e65f4012b63ec8af8f2ff6f2f3bd4b626	2026-09-15	#313	Require secure update feeds and patch Rustls handshake validation	ported 0d68e39de	PORTED p00	
-68ed902ed5d8db29cfd0aba87caeacbc1cece199	2026-09-15	#313	Fail closed on unresolved Windows shells and exercise login and startup in CI	ticketed ci-speed-03	PARTIAL p00	code ported (5a1897b20); the Windows CI hunks are ci-speed 03
+68ed902ed5d8db29cfd0aba87caeacbc1cece199	2026-09-15	#313	Fail closed on unresolved Windows shells and exercise login and startup in CI	ported d72b60a98	PARTIAL p00	code ported (5a1897b20); the Windows CI hunks (codex_login_resolution, test-windows-startup.ps1) via ci-speed 03
 f247ed91d9529d161b711ff4f720c35f6d03d43f	2026-09-15	#313	Cover Unicode batch paths and reject path expansion syntax	ported bdd22dbb3	PORTED p00	
 a65ae8cb9b2fffb32e68d3fae61749372384c5dc	2026-09-15	#313	Run native process security tests before the full Windows build	ported 065da1c35	PORTED p00	
 25f5616034875608b0c05a8b8dc85d784f3dac8e	2026-09-15	#313	Exercise the Windows portable packaging script in PR validation	ported a06315e60	PORTED p00	
@@ -384,12 +384,12 @@ ed3b1aae4a5189eef67143db7b8c5c3ee7a933c5	2026-09-29		Bump version to v0.2.99	ski
 cc8b147a3ccce7f3bf57697cd5ef41dd06f489f5	2026-09-30	#676	Fix subagent lifecycle identity and restart recovery (#676)	ported 711b6ed24	PORTED p05	
 626bccc85cb59bb101cf2274eb172c3db6cb7f1f	2026-10-01	#660	Appearance: add background positioning and zoom (#660)	ported 8c9972f27	PORTED p05	
 710b06ff854e2bb0e54ec5795e3d665a78923bcf	2026-09-30	#692	CI: seed the Rust cache from main and stop cancelling main runs	ported 9e2e5ee3f	MISSING p05	via ci-speed 01
-f4abe69b8805294b96e47606642914319662caa2	2026-09-30	#693	CI: run Windows tests in three parallel jobs on a cheaper profile	ticketed ci-speed-04	MISSING p05	Upstream splits into ui-tests / crate-tests / app jobs via a windows-ci-setup composite action. Roboco alread…
+f4abe69b8805294b96e47606642914319662caa2	2026-09-30	#693	CI: run Windows tests in three parallel jobs on a cheaper profile	ported 7388ff8e6	MISSING p05	Upstream splits into ui-tests / crate-tests / app jobs via a windows-ci-setup composite action. Roboco alread…
 52a3481dc5339fb628015857d25a1b4f403f421d	2026-09-30	#695	CI: add a macOS workflow with one compile and parallel jobs	skipped:upstream-ci	SKIP:upstream-ci p05	
 c286d118b48f592b4e1252802f7ff10c788caecd	2026-09-30	#695	CI: remove the macOS jobs from ui-tests and preview-tests	skipped:upstream-ci	SKIP:upstream-ci p05	
 366b3c9e2a8210b0efb6067ec23bcf088bfcf8bd	2026-09-30	#632	Fix drag-select failing when several transcripts share a frame (#632)	ported 33b33a7ce	PORTED p05	
 a2a593a5d51110db2f1bd3302235451662ee8c1a	2026-09-30		Bump version to v0.2.100	skipped:version-bump	SKIP:version-bump p05	
-c168ba5b4589352877ad5450168860a1ad308a26	2026-09-30	#693	windows: run the crate suites as two parallel jobs	ticketed ci-speed-04	MISSING p05	Port together with f4abe69b.
+c168ba5b4589352877ad5450168860a1ad308a26	2026-09-30	#693	windows: run the crate suites as two parallel jobs	ported 7388ff8e6	MISSING p05	Port together with f4abe69b.
 fd3b2c0662901dde913fdaf5031008f5afb9f77e	2026-09-30	#691	footer	skipped:landing	SKIP:landing p05	
 9cb1de50f580abe6a081c11c9e8921319aebd783	2026-09-30	#694	CI: add Linux test helpers (setup action, nextest, apt with retries)	ticketed ci-speed-06	MISSING p05	Groundwork for 878307a3. Roboco already has .config/nextest.toml.
 878307a3d685a216e4100324be939a75c03eef65	2026-09-30	#694	CI: run Linux tests with nextest on a dev profile and one shared build	ticketed ci-speed-06	MISSING p05	Highest-value CI item: going from release to a dev profile with nextest and one shared build targets exactly…
@@ -558,7 +558,7 @@ ae1ec6ad8d6fd2e04a25d675f1c83e8b41bdffea	2026-10-26	#1045	Fork: settle the runni
 daf047b7fd44d1d5242f40f63bad77d00350af14	2026-10-26	#1048	Tooltips on the icon-only buttons that had none (#1048)	ticketed wave10-65	MISSING p07	Skip the PR/billing/cloud buttons. Keep comments "+", model-picker tabs/star/Back, settings swatches/close/zo…
 95b294658fc105cd85b5334344cd8cd722b810a1	2026-10-26	#1043	Claude subagents: give a typed /skill's fork a chip and a tab (#1043)	ticketed wave10-48	MISSING p07	Needs 978e8dacb's spawn gate first
 81adbdabf254e7780cda5a0a4d27e0be4e94c0f8	2026-10-26		Sidebar: start a new chat from a "No project" group	ticketed wave10-21	MISSING p07	Useful for fleet (one "No project" group per device). Gate the + on the composer device picker's list
-4a0d416cf24452ece8790f051b22633a209d7d96	2026-10-26	#1051	Cursor shim tests: give a shim's first frame time for node to start (#1051)	ticketed ci-speed-03	MISSING p07	Windows CI flake: windows.yml:81 runs --test cursor_shim. First frame gets 30s
+4a0d416cf24452ece8790f051b22633a209d7d96	2026-10-26	#1051	Cursor shim tests: give a shim's first frame time for node to start (#1051)	ported d72b60a98	MISSING p07	Windows CI flake: windows.yml:81 runs --test cursor_shim. First frame gets 30s
 4879a47549246db570ce41a3bbe3624de76d8595	2026-10-26	#1025	Compact mode: stop clipping subagent cards in the tool fold (#1025)	ticketed wave10-24	MISSING p07	5-line fix + test (+ optional subagent-fold-fixture)
 fbdda0a0cc5602e93d94a7e37950bd7c01931f4e	2026-10-27	#997	macOS browser: clicks outside the page take the keyboard back (#997)	skipped:macos-only	SKIP:macos-only p07	
 b8ed9d9c27b614c900e6569569b8a91fc9f8f257	2026-10-27	#1046	Providers: a switch to turn native subagents off (#1046)	ticketed wave10-55	MISSING p07	Fits Roboco's orchestration-v2 side chats well. Wire: rpc Get/SetNativeSubagents, McpServer::SIDE_CHATS_ONLY_…
