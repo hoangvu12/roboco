@@ -205,10 +205,27 @@ All four older fleet folders were deleted on 2026-10-28 (still readable in git a
 | 13 | `issues/13-agents-cross-machine-notices.md` | 12 |
 | 14 | `issues/14-agents-adr-and-docs.md` | 10, 12, 13 |
 | 15 | `issues/15-agents-final-verification.md` | 11–14 |
+| 16 | `issues/16-tailcat-keep-trying-direct.md` | — |
+| 17 | `issues/17-faster-remote-chat-open.md` | — |
 
 - Ticket 01 is a small, independent fix and can ship on its own right away.
 - 02–11: one PR, one commit per ticket, branch `feature/connect-devices` off `main`, after the web-removal PR merges.
 - 12–15 (agents): a second PR, `feature/connect-agents`, after the first merges.
+- 16–17 (connection speed, added 2026-10-28): independent of the rest. They can start now as their own PR, `feature/remote-speed`. Ticket 16 has a measure-first gate.
+
+## Connection speed (added 2026-10-28)
+
+Measured on the user's PC (Ho Chi Minh City):
+- The Tailcat link to another of their machines runs at about **160 ms per round trip** and about **1.2 MB/s**.
+- It is relayed through Tailscale's rate-limited **Tokyo** DERP; the PC reaches Tokyo at 85 ms.
+- The PC and Laptop are on different networks.
+- The desktop already reuses one connection per engine. The waits come from relayed round trips and from requests that wait on each other.
+
+Tickets:
+- **16:** the adapter keeps pushing for a direct path (`DiscoPing`, like `tailcat ping --until-direct`) and reports "Direct" or "Via relay (Tokyo)" per device.
+- **17:** measure what opening a remote chat does on a 160 ms proxy, then cut sequential waits (cached transcript first, parallel requests, defer what's off-screen).
+
+**Open, not ticketed:** a self-hosted relay on Linux SG (Tailscale's `derper`, which Roboco already supports through `--tailcat-derp-map`). It avoids the rate limit and is much closer than Tokyo. The user asked how it works before deciding.
 
 ## User decisions (2026-10-28)
 
@@ -220,3 +237,5 @@ All four older fleet folders were deleted on 2026-10-28 (still readable in git a
 - "Make sure that the connecting bring everyone along able to filter out connected devices": recorded as matching by device id, skipping what's already connected, and keeping removed devices out (Solution 4, User Story 4).
 - "About the UI… we gotta rework on it as well, also that remote access page isn't scrollable": tickets 01 and 07.
 - "Sounds good" to the overall direction; asked for the write-up.
+- Speed: "3, ok if it helps then just do it" (ticket 17). "4. if A works then go ahead" (ticket 16, with its measure-first gate). Self-hosted relay on SG: the user asked how it works; undecided.
+- "Remove the extra fleet specs": `fleet-merge`, `fleet-agents`, `fleet-follow` and `rooms` were deleted, and fleet-agents was absorbed as tickets 12–15 (commit `28440047b`).
