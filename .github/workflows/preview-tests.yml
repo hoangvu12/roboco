@@ -1,21 +1,30 @@
 name: Preview networking
 on:
   pull_request:
-    paths: ['crates/preview/**', 'crates/proto/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/preview-tests.yml']
+    paths: ['crates/preview/**', 'crates/proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.github/workflows/preview-tests.yml']
   push:
     branches: [main]
-    paths: ['crates/preview/**', 'crates/proto/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/preview-tests.yml']
+    paths: ['crates/preview/**', 'crates/proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.github/workflows/preview-tests.yml']
 permissions:
   contents: read
+# Superseded PR runs are cancelled; main runs never are (a per-run group).
 concurrency:
-  group: preview-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: preview-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   networking:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml, like every other workflow: the compiler version
+      # is part of the cache key.
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: preview
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: 'true'
       - run: cargo test --locked -p roboco-preview

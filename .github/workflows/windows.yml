@@ -10,6 +10,31 @@ on:
       - 'apps/roboco/**'
       - 'dist/windows/**'
       - 'crates/**'
+      # Android-only crates: the desktop does not link them.
+      - '!crates/text/**'
+      - '!crates/mobile/**'
+      - '!crates/mobile-client/**'
+      - '!crates/android-assets/**'
+      - 'scripts/test-windows-*.ps1'
+      - 'scripts/package-windows.ps1'
+      - '.github/workflows/windows.yml'
+  # Main runs seed the Rust cache every PR restores (PR-scoped entries are
+  # unreadable from other branches).
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'apps/roboco/**'
+      - 'dist/windows/**'
+      - 'crates/**'
+      # Android-only crates: the desktop does not link them.
+      - '!crates/text/**'
+      - '!crates/mobile/**'
+      - '!crates/mobile-client/**'
+      - '!crates/android-assets/**'
       - 'scripts/test-windows-*.ps1'
       - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
@@ -37,9 +62,11 @@ env:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled; main runs never are, not even while
+# queued (a per-run group), so every merge gets a full run and seeds caches.
 concurrency:
-  group: windows-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -64,14 +91,36 @@ jobs:
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
         with:
-          # The workspace crates are most of the compile time; caching them
-          # makes same-SHA reruns and follow-up PR pushes near-instant.
-          cache-workspace-crates: 'true'
+          # Only main writes; PRs restore main's entry.
+          shared-key: windows-tests
+          add-job-id-key: 'false'
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
+          # Cargo rebuilds workspace crates after every checkout (mtime
+          # freshness), so caching them only grows the entry.
+          cache-workspace-crates: 'false'
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.144
+      - name: Build the Tailcat adapter (embedded by every cargo build below)
+        # crates/engine/build.rs reruns when ROBOCO_TAILCAT_EMBED changes, so
+        # every cargo command in this job sees the same value, exported here
+        # before the first one; package-windows.ps1 then embeds this build
+        # instead of building its own (which rebuilt the engine and the app
+        # in packaging, and again in the next test step without it).
+        working-directory: adapters/roboco-tailcat
+        env:
+          CGO_ENABLED: '0'
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target\tailcat\x86_64'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $adapter = Join-Path $dir 'roboco-tailcat.exe'
+          go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "ROBOCO_TAILCAT_EMBED=$adapter" >> $env:GITHUB_ENV
       - name: Native harness security and integration tests
         # Runs before the full application build: the hardened process
         # behavior must fail the PR early, not after the expensive build.
@@ -82,8 +131,7 @@ jobs:
       # shell- and python-fixture suites are unix-only.
       - name: Portable harness integration tests
         run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test opencode --test cursor_shim --test pi_rpc -P ci
-      - name: Build application
-        run: cargo build --release --locked -p roboco
+      # Packaging's `cargo build --release -p roboco` is the application build.
       - name: Verify portable and installer packaging
         # Exercise the release packaging script on every PR. -SkipWebBuild:
         # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
@@ -113,21 +161,14 @@ jobs:
         # dependency on the runner image; Linux/macOS run the same suite in
         # preview-tests.yml as the unchanged regression gate.
         run: cargo nextest run --release --locked -p roboco-preview --lib --test discovery -P ci
-      - name: Mobile core crates
-        # Mobile Rust core for the Android app (android-app 02-05). The
-        # engine-client tests are timing-sensitive (reconnect backoff, loopback
-        # engines); retries come from the ci nextest profile. Later mobile
-        # crates append their `-p` flags here.
-        run: cargo nextest run --release --locked -p roboco-text -p roboco-markdown -p roboco-mobile -p roboco-engine-client -p roboco-mobile-client -P ci
-      - name: Mobile core host build and bindings
-        # android-app#10: the Windows host path — .dll naming, the .exe
-        # bindgen, Kotlin generation from the host library. The Android .so
-        # builds run in ui-tests.yml's android-core job (ubuntu).
-        run: cargo xtask android-core --skip-ndk --check
-      - name: OpenCode wire integration tests
-        run: cargo nextest run --release --locked -p roboco-harness --test opencode -P ci
-      - name: Native harness integration tests
-        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test codex_availability --test windows_native -P ci
+      - name: Desktop-linked mobile core crates
+        # The two mobile-core crates the desktop links (`cargo tree -p roboco
+        # -i`). roboco-text/-mobile/-mobile-client are Android-only: ui-tests
+        # mobile-core and android.yml test them, and android.yml's Windows
+        # leg covers the xtask host path (.dll naming, .exe bindgen). The
+        # engine-client tests are timing-sensitive (reconnect backoff,
+        # loopback engines); retries come from the ci nextest profile.
+        run: cargo nextest run --release --locked -p roboco-markdown -p roboco-engine-client -P ci
       - name: Harness catalog tests
         run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
       - name: Engine-local integration tests
