@@ -31,9 +31,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,8 +47,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.requestFocus
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -63,7 +59,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
-import kotlinx.coroutines.flow.first
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.CapsuleShape
 import sh.roboco.android.design.GlassStage
@@ -222,14 +217,6 @@ fun rememberSearchMorphProgress(searchSelected: Boolean): State<Float> {
  *   one-row bar stays composed under a pushed page, so a push flips this
  *   off and a focused field lets go (IME hidden) — the old Search screen's
  *   leave. Only this field's own focus is cleared.
- * @param lazyText wave-10 37: the one-row bar's field is always on screen,
- *   so its `BasicTextField` exists only while it is in use — on the front
- *   page ([held]) and tapped, focused or holding a query; otherwise a
- *   static placeholder stands in (same look, same `search-field` tag) and
- *   a tap or focus request brings the field in, focused. An always-composed
- *   text field under every screen cost the CI emulator its device (PR #38
- *   bisect: the bar without the field kept it). The tab shell's field is
- *   only composed while Search is selected, so it keeps `false`.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -241,7 +228,6 @@ fun SearchTabField(
     onSearchTabTap: () -> Unit,
     modifier: Modifier = Modifier,
     held: Boolean = true,
-    lazyText: Boolean = false,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -257,21 +243,6 @@ fun SearchTabField(
     val hasText by remember(state) { derivedStateOf { state.text.text.isNotEmpty() } }
     val imeVisible = WindowInsets.isImeVisible
 
-    // `lazyText`: whether the real text field is composed now (see the KDoc).
-    var engaged by remember { mutableStateOf(false) }
-    val textLive = !lazyText || (held && (engaged || focused || hasText))
-    val textLiveState = rememberUpdatedState(textLive)
-    var hadFocus by remember { mutableStateOf(false) }
-    LaunchedEffect(focused) {
-        if (focused) {
-            hadFocus = true
-        } else if (hadFocus) {
-            // Let go with nothing typed: back to the placeholder.
-            hadFocus = false
-            if (state.text.text.isEmpty()) engaged = false
-        }
-    }
-
     // Auto-focus: one token per entry into Search, one frame after the
     // field is composed (requesting focus on the same frame a requester is
     // first attached throws "FocusRequester is not initialized"), the
@@ -281,9 +252,6 @@ fun SearchTabField(
         val token = state.activationToken
         if (token == 0 || token == state.consumedToken) return@LaunchedEffect
         state.consumedToken = token
-        // A lazy field composes first (its requester attaches with it).
-        engaged = true
-        snapshotFlow { textLiveState.value }.first { it }
         withFrameNanos { }
         runCatching { focusRequester.requestFocus() }
         keyboard?.show()
@@ -304,7 +272,6 @@ fun SearchTabField(
             keyboard?.hide()
             focusManager.clearFocus(force = true)
         }
-        if (!held) engaged = false
     }
 
     // The orphan-caret guard: with the IME up and the field focused, the
@@ -333,13 +300,8 @@ fun SearchTabField(
                         interactionSource = searchSource,
                         indication = null,
                     ) {
-                        if (textLive) {
-                            runCatching { focusRequester.requestFocus() }
-                            keyboard?.show()
-                        } else {
-                            // The placeholder: bring the field in, focused.
-                            state.activate()
-                        }
+                        runCatching { focusRequester.requestFocus() }
+                        keyboard?.show()
                     }
                 } else {
                     // Ticket 26's circle: the tab semantics and the haptic tap.
@@ -371,7 +333,7 @@ fun SearchTabField(
         Layout(
             content = {
                 SearchMagnifier(progress)
-                if (showText && textLive) {
+                if (showText) {
                     SearchFieldText(
                         state = state,
                         hasText = hasText,
@@ -379,8 +341,6 @@ fun SearchTabField(
                         focusRequester = focusRequester,
                         interactionSource = searchSource,
                     )
-                } else if (showText) {
-                    SearchFieldPlaceholder(progress) { state.activate() }
                 }
                 if (active && hasText) {
                     SearchClearButton(
@@ -453,46 +413,6 @@ private fun SearchMagnifier(progress: () -> Float) {
         tint = lerp(palette.text, palette.secondary, p.coerceIn(0f, 1f)),
         sizePt = SearchMorphGeometry.magnifierPt(p),
     )
-}
-
-/**
- * A lazy field's stand-in (wave-10 37): [SearchMorph.Placeholder] exactly
- * where [SearchFieldText] draws it, tagged `search-field` with its label;
- * a focus or click request (TalkBack, tests) brings the real field in
- * through [onEngage]. Touches land on the capsule's own tap.
- */
-@Composable
-private fun SearchFieldPlaceholder(progress: () -> Float, onEngage: () -> Unit) {
-    val palette = RobocoTheme.palette
-    val typeScale = LocalTypeScale.current
-    Box(
-        Modifier
-            .fillMaxHeight()
-            .testTag("search-field")
-            // Its own node, as the text field's is: never merged into the
-            // capsule's clickable (a merged-tree finder must reach it).
-            .semantics(mergeDescendants = true) {
-                contentDescription = SearchMorph.FieldDescription
-                onClick {
-                    onEngage()
-                    true
-                }
-                requestFocus {
-                    onEngage()
-                    true
-                }
-            }
-            .graphicsLayer { alpha = SearchMorphGeometry.contentAlpha(progress()) },
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        BasicText(
-            SearchMorph.Placeholder,
-            style = uiStyle(Face.Sans, typeScale.fixed(17f), palette.tertiary),
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Clip,
-        )
-    }
 }
 
 /**

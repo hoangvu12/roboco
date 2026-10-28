@@ -85,26 +85,31 @@ only; goldens not re-captured (see comments).
 - `OneRowBarShellTest` / `SessionFlowTest.settingsFromBottomBar` check that
   the hidden bar isn't **displayed** (it stays composed, unplaced, #30)
   rather than gone from the tree; new `aPushLetsGoOfTheSearchFieldsFocus`.
-
 2026-10-28 (PR #38 android-emulator device loss): the CI emulator dropped
-off adb 7–10 min into the flow suite on every run of this branch, then hung
-to the job timeout. A bisect with `workflow_dispatch` runs (flow-tests
-diagnostics cherry-picked) put it here: 33 and 35 keep the device (35 twice);
-37, 39, 42, 43, 36 lose it. Two experiments on 37 isolate it: the bar switched
-off (`oneRowBar = false`) keeps the device, and so does the bar with its
-search field replaced by a spacer — the always-composed `BasicTextField`
-in the bar is the trigger (it was never composed outside the Search tab
-before). Host memory never ran low and no OOM/ANR/crash line was logged;
-the guest froze shortly after returning to the front page.
+off adb 7–10 min into the flow suite on almost every run of this branch
+(then hung to the job timeout in cleanup). Bisect (`workflow_dispatch`
+runs, flow-tests diagnostics cherry-picked): 33 and 35 keep the device
+(2/2 each); 37, 39, 42, 43 lose it (36 kept it once). Experiments on 37 and
+on the PR head, two samples each where it mattered:
+- the one-row bar off (`oneRowBar = false`): kept (2/2);
+- the bar with its search field replaced by a spacer: kept (2/2 on 37,
+  1/1 on the head);
+- `SearchTabField` without its `GlassSurface`: kept (2/2);
+- a minimal glass capsule + text field instead of `SearchTabField`: lost
+  (2/2);
+- the field's effects off, its IME padding off, its `isImeVisible` read
+  off, or its text field composed lazily: lost.
+So the trigger is a blurred glass **capsule** in the always-on bar on the
+CI emulator's software GPU (SwiftShader); the bar's glass circles are fine
+and the host never ran low on memory (no OOM/ANR/crash line). The bar's
+search capsule on the non-blur glass tier kept the device too (see the PR).
 
-Fix: `SearchTabField(lazyText = true)` for the bar — the real text field
-exists only while it is in use (front page, and tapped, focused or holding
-a query); otherwise a static placeholder with the same look and the
-`search-field` tag stands in, and a tap / focus request brings the field in,
-focused. JVM: `OneRowBarShellTest.theBarsTextFieldExistsOnlyWhileInUse`.
+Fix: the bar's search capsule draws on `GlassTier.Fallback` (the flat glass
+fill and rim, no live blur); the circles keep the blur. Follow-up if the
+blurred capsule is wanted back: blur it only on a hardware GPU.
 
-Also found by the bisect's one run that reached `bottomBarSearch` (36):
-the phone list never filtered — `SessionsScreen` ran the query search only
-with the sidebar's pinned accessory. `SessionsScreen(filters = …)` now runs
-it for the bar too (`ShellRouteContent` passes `filters = true` under the
-one-row bar).
+Also found by the bisect's runs that reached `bottomBarSearch`: the phone
+list never filtered — `SessionsScreen` ran the query search only with the
+sidebar's pinned accessory. `SessionsScreen(filters = …)` now runs it for
+the bar too (`ShellRouteContent` passes `filters = true` under the one-row
+bar).

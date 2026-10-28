@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -15,6 +16,8 @@ import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.SymbolWeight
 import sh.roboco.android.design.glass.GlassCircleButton
+import sh.roboco.android.design.glass.GlassTier
+import sh.roboco.android.design.glass.LocalGlassTier
 
 /**
  * The phone's one-row bottom bar (wave-10 37, upstream #967 + #971's
@@ -81,23 +84,26 @@ fun SessionsBottomBar(
                 size = circle.dp,
                 iconPt = 19f,
             )
-            SearchTabField(
-                state = searchState,
-                progress = { 1f },
-                // The field's final rect is `rowWidth − (circle + gap)`
-                // wide (the morph's return circle beside it): hand it the
-                // width that makes that rect this slot.
-                rowWidth = fieldWidth + circle + gap,
-                active = true,
-                onSearchTabTap = {},
-                modifier = Modifier
-                    .weight(1f)
-                    .height(circle.dp),
-                held = onFrontPage,
-                // The real text field only while it's in use (PR #38's
-                // emulator device loss; see SearchTabField's lazyText).
-                lazyText = true,
-            )
+            // The capsule draws on the non-blur glass tier: a live-blurred
+            // glass capsule in this always-on bar cost the CI emulator
+            // (software GPU) its device (PR #38's bisect); the circles
+            // keep the blur.
+            CompositionLocalProvider(LocalGlassTier provides GlassTier.Fallback) {
+                SearchTabField(
+                    state = searchState,
+                    progress = { 1f },
+                    // The field's final rect is `rowWidth − (circle + gap)`
+                    // wide (the morph's return circle beside it): hand it the
+                    // width that makes that rect this slot.
+                    rowWidth = fieldWidth + circle + gap,
+                    active = true,
+                    onSearchTabTap = {},
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(circle.dp),
+                    held = onFrontPage,
+                )
+            }
             GlassCircleButton(
                 icon = RobocoIcons.Plus,
                 contentDescription = "New session",

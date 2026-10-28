@@ -129,33 +129,6 @@ class OneRowBarShellTest {
         assertFalse("the push let go of it (and the IME)", fieldFocused())
     }
 
-    /**
-     * PR #38's emulator device loss: the bar's real text field exists only
-     * while it is in use — a placeholder at rest, the field (focused) on a
-     * focus request, the placeholder again once a page is pushed.
-     */
-    @Test
-    fun theBarsTextFieldExistsOnlyWhileInUse() {
-        setContent()
-        assertTrue("the placeholder carries the field's tag", placeholderInTree())
-        assertFalse("at rest the bar draws a placeholder, no text field", fieldEditable())
-        compose.onNodeWithTag("search-field", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.RequestFocus)
-        compose.waitForIdle()
-        assertTrue("a focus request brings the field in", fieldEditable())
-        assertTrue("…focused", fieldFocused())
-        compose.onNodeWithTag("bottom-settings").performClick()
-        compose.waitForIdle()
-        assertFalse("a push drops it again", fieldEditable())
-    }
-
-    private fun placeholderInTree(): Boolean =
-        compose.onAllNodesWithTag("search-field", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
-
-    private fun fieldEditable(): Boolean =
-        compose.onAllNodesWithTag("search-field", useUnmergedTree = true).fetchSemanticsNodes()
-            .any { SemanticsActions.SetText in it.config }
-
     private fun fieldFocused(): Boolean =
         compose.onAllNodesWithTag("search-field", useUnmergedTree = true).fetchSemanticsNodes()
             .any { it.config.getOrNull(SemanticsProperties.Focused) == true }
