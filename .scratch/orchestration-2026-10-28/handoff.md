@@ -136,6 +136,10 @@ Keep a running "PRs" list in this file.
   rule approved); upstream less-recoding recs 1, 2, 4, 5 yes, 3 (renamed mirror) later; delete scratch branches:
   `ci/scratch-startup-broken` deleted; `ci/scratch-arm64-ab` + `ci/scratch-glibc-floor` (from `4879f773`) delete
   once that worker is done (covered by the same OK).
+| `955e487b` | main checkout, read-only | research (user ask 2026-10-29): where the time goes + how to speed up ticket throughput and Roboco dev in general → `.scratch/dev-velocity/report-2026-10-29.md` | running |
+
+- Ticket count 2026-10-29: 131 total (web-removal 11, ci-speed 25, wave-10 78, fleet-redesign 17): ≈26 done,
+  ≈17 in flight, ≈83 not started (+3 parked).
 - #12 closed (user OK 2026-10-29; branch `web-pierre-adoption` kept). #16 Mimir stays open (user: not web-related;
   it's mostly engine/harness/ui/`integrations/mimir`, plus 18 `web/` files + wiregen that #39 deletes; last
   updated 2026-10-03, so it needs a big refresh if revived).
