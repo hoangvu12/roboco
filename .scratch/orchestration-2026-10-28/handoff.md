@@ -118,6 +118,22 @@ meaning all three specs below. The user prefers **short, plain-language** status
 After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
 Keep a running "PRs" list in this file.
 
+## >>> PAUSED (2026-10-29): all Roboco work stopped by the user <<<
+
+The user moved to a new project built on upstream zeron (`..\roboco-next`, not part of this repo's workflow).
+All workers were interrupted; worktrees removed; nothing was merged after #47. Unfinished work is saved on
+`origin` branches (local branches deleted):
+
+| branch | what | state |
+|---|---|---|
+| `feature/web-removal` | PR #39, web-removal 02–11 | open PR; last fix pushed (Linux ui-tests stack overflow), CI not rechecked |
+| `ci/windows-tests-arm64` | PR #45, CI 15 | open PR, early |
+| `ci/android-emulator-speed` | CI 22 → 16 → 17 (+ retry commit `4da667e6b`) | no PR; A/B dispatch runs had failed early (emulator build step) |
+| `ci/remove-voice-glibc` | CI 26 (voice removal) WIP | 2 WIP commits, **never compiled or tested**; 21 not started |
+| `ci/scratch-glibc-floor`, `ci/scratch-win-arm64-seed`, `ci/scratch-win-arm64-pwsh-diag` | test-only scratch branches | delete when convenient (user OK'd scratch deletions) |
+
+PR #16 (Mimir) left open. Open user decisions (dev-velocity report §decisions, CI 21 floor) stay open.
+
 ## Orchestrator #3 log (chat `aed16e2d`, from 2026-10-29)
 
 | chat | worktree / branch | scope | state |
