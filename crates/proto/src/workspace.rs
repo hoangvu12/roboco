@@ -196,7 +196,8 @@ mod tests {
                     "projectless-scratch-v1",
                     "uploads-100mb-v1",
                     "rooms-v1",
-                    "rooms-v2"
+                    "rooms-v2",
+                    "provider-switch-v1"
                 ],
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": 1,
