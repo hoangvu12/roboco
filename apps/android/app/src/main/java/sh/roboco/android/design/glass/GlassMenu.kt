@@ -1051,25 +1051,35 @@ private fun Modifier.contentHeightWhenUnbounded(): Modifier = layout { measurabl
 private fun textColumnStart(slotReserved: Boolean): Dp =
     if (slotReserved) GlassMenuTokens.TextStart else GlassMenuTokens.TextStartNoSlot
 
-/** The `Menu.title` line: secondary 13, two lines, from the text column to −20. */
+/**
+ * The `Menu.title` line: secondary 13, two lines, from the text column to
+ * −20. A title with a line break (the session ⋯ menu's title over where it
+ * runs, wave-10 33) keeps each line to one, ellipsized, so a long first
+ * line never pushes the second out.
+ */
 @Composable
 private fun MenuTitleLine(line: MenuLine.Title, slotReserved: Boolean) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
-    BasicText(
-        line.text,
-        Modifier
-            .fillMaxWidth()
-            .padding(
-                start = textColumnStart(slotReserved),
-                end = GlassMenuTokens.PadEnd,
-                top = GlassMenuTokens.TitlePadTop,
-                bottom = GlassMenuTokens.TitlePadBottom,
-            ),
-        style = uiStyle(Face.Sans, typeScale.scaled(13f), palette.secondary),
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-    )
+    val style = uiStyle(Face.Sans, typeScale.scaled(13f), palette.secondary)
+    val modifier = Modifier
+        .fillMaxWidth()
+        .padding(
+            start = textColumnStart(slotReserved),
+            end = GlassMenuTokens.PadEnd,
+            top = GlassMenuTokens.TitlePadTop,
+            bottom = GlassMenuTokens.TitlePadBottom,
+        )
+    val lines = line.text.split('\n')
+    if (lines.size == 1) {
+        BasicText(line.text, modifier, style = style, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        return
+    }
+    Column(modifier) {
+        for (text in lines.take(2)) {
+            BasicText(text, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 /** The drill-in back row: Medium 16, the backward chevron in the leading slot. */

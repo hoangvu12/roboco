@@ -26,8 +26,10 @@ import sh.roboco.android.session.SessionCore
 import sh.roboco.android.session.contextReading
 import sh.roboco.android.session.contextUsageCard
 import uniffi.roboco_core.ChatConfig
+import uniffi.roboco_core.HarnessInfo
 import uniffi.roboco_core.ModelInfo
 import uniffi.roboco_core.SandboxLevel
+import uniffi.roboco_core.SendState
 import uniffi.roboco_core.SessionRow
 
 /**
@@ -46,6 +48,13 @@ interface ChipMenuCore {
 
     /** `CoreClient.listModels(deviceId, harness)` — the engine's catalog. */
     suspend fun listModels(deviceId: String, harness: String): List<ModelInfo>
+
+    /**
+     * `CoreClient.listHarnesses(deviceId)` — the providers the host
+     * offers (wave-10 39's other picker pages). Never throws; the
+     * default (fakes that predate 39) offers none.
+     */
+    suspend fun listHarnesses(deviceId: String): List<HarnessInfo> = emptyList()
 
     /** The core's static fallback when [listModels] fails outright. */
     fun fallbackModels(harness: String): List<ModelInfo>
@@ -76,6 +85,9 @@ class CoreChipMenuCore(
 
     override suspend fun listModels(deviceId: String, harness: String): List<ModelInfo> =
         client.listModels(deviceId, harness)
+
+    override suspend fun listHarnesses(deviceId: String): List<HarnessInfo> =
+        client.listHarnesses(deviceId)
 
     override fun fallbackModels(harness: String): List<ModelInfo> =
         uniffi.roboco_core.fallbackModels(harness)
@@ -173,6 +185,31 @@ class SessionChipMenus(
     @Volatile
     var accounts: ContextCardAccounts? = null
 
+    /**
+     * Wave-10 38: the tabbed model picker (upstream #966). Set by the
+     * session screen; with one, the model chip opens the picker instead
+     * of its flat menu. `null` (tests, previews) keeps the menu.
+     */
+    @Volatile
+    var modelPicker: ModelPickerPresenter? = null
+
+    /** The models each picker page loaded, by harness — a pick applies its [ModelInfo]. */
+    private val pickerModels = java.util.concurrent.ConcurrentHashMap<String, List<ModelInfo>>()
+
+    /**
+     * Wave-10 39 (I2): what a chat with no model of its own runs — its
+     * host's default (the catalog's first model) by `device|harness`,
+     * seeded from the built-in list so the chip never shows a bare agent
+     * name, then replaced by the host's own list (upstream
+     * `CoreSessionSource.defaultModel`).
+     */
+    private val defaultModels = java.util.concurrent.ConcurrentHashMap<String, ModelPickerRow>()
+    private val defaultModelsLoading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** The host's providers, read ahead once it can switch (a page must not wait on the host). */
+    @Volatile
+    private var hostHarnesses: Pair<String, List<HarnessInfo>>? = null
+
     /** The write lane: never cancelled — an in-flight write always finishes, like iOS's synchronous call. */
     private val writeScope = CoroutineScope(SupervisorJob() + io)
 
@@ -198,7 +235,16 @@ class SessionChipMenus(
         val deviceId: String,
         /** android-next #01: the context card's numbers (`ComposerState.contextUsage`). */
         val context: ContextReading?,
-    )
+        /** Wave-10 39: the host advertises `provider-switch-v1`. */
+        val hostSwitches: Boolean = false,
+        /** A turn is running on the host. */
+        val running: Boolean = false,
+        /** A send is still on its way (its turn starts on the current provider). */
+        val sendPending: Boolean = false,
+    ) {
+        /** Not mid-turn, and no send on its way (upstream's `canSwitchProvider`). */
+        val canSwitch: Boolean get() = hostSwitches && !running && !sendPending
+    }
 
     override fun bind(invalidate: () -> Unit) {
         this.invalidate = invalidate
@@ -207,17 +253,76 @@ class SessionChipMenus(
     /**
      * Stores the snapshot and returns the chrome **unchanged** — this
      * filler fills no chrome field; the menus only decorate the chips
-     * ticket 78 already filled. No FFI: everything comes from [input].
+     * ticket 78 already filled — except a model-less chat's model chip
+     * (wave-10 39), named from [defaultModel]: the built-in list's
+     * first (a static FFI read), then the host's, loaded on [writeScope].
      */
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
         val usage = input.composer.contextUsage
-        snapshot = Snapshot(
+        val sendState = input.composer.sendState
+        val next = Snapshot(
             row = input.row,
             config = input.config,
             deviceId = input.composer.host.deviceId,
             context = contextReading(usage?.tokens, usage?.window),
+            hostSwitches = input.composer.host.capabilities.providerSwitch,
+            running = input.composer.live.turnRunning,
+            sendPending = sendState == SendState.SENDING || sendState == SendState.QUEUED,
         )
-        return chrome
+        snapshot = next
+        if (next.canSwitch) readAheadHarnesses(next.deviceId)
+        // Wave-10 39 (I2): a chat with no model of its own names the
+        // model it runs (the host's default), never the bare agent name.
+        val row = input.row ?: return chrome
+        if (!row.model.isNullOrEmpty() || row.modelLabel != null) return chrome
+        val byDefault = defaultModel(next.deviceId, row.harness ?: DEFAULT_HARNESS) ?: return chrome
+        val chips = chrome.chips.map { chip ->
+            if (chip.id == SessionChipIds.Model) chip.copy(title = byDefault.label) else chip
+        }
+        return if (chips == chrome.chips) chrome else chrome.copy(chips = chips)
+    }
+
+    /**
+     * The default model for `device|harness`: the built-in list's first at
+     * once, the host's first once its catalog answers (one load per key;
+     * a changed answer refreshes the chrome).
+     */
+    private fun defaultModel(deviceId: String, harness: String): ModelPickerRow? {
+        val key = "$deviceId|$harness"
+        if (defaultModels[key] == null) {
+            core.fallbackModels(harness).firstOrNull()?.let { defaultModels.putIfAbsent(key, it.pickerRow()) }
+        }
+        if (deviceId.isNotEmpty() && defaultModelsLoading.add(key)) {
+            writeScope.launch {
+                val first = try {
+                    core.listModels(deviceId, harness).firstOrNull()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (t: Throwable) {
+                    null
+                } ?: return@launch
+                val row = first.pickerRow()
+                if (defaultModels.put(key, row) != row) invalidate()
+            }
+        }
+        return defaultModels[key]
+    }
+
+    /** Reads the host's providers once per device (again after an empty answer). */
+    private fun readAheadHarnesses(deviceId: String) {
+        if (hostHarnesses?.first == deviceId) return
+        hostHarnesses = deviceId to emptyList()
+        writeScope.launch {
+            val list = try {
+                core.listHarnesses(deviceId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                emptyList()
+            }
+            // Nothing back (offline, slow): ask again on the next refresh.
+            hostHarnesses = if (list.isEmpty()) null else deviceId to list
+        }
     }
 
     /**
@@ -240,6 +345,15 @@ class SessionChipMenus(
         val row = s.row ?: return null // iOS: guard let row
         val sel = sessionSelection(s.config, row)
         val harness = sel?.harness ?: DEFAULT_HARNESS
+        if (chipId == SessionChipIds.Model) {
+            val picker = modelPicker
+            if (picker != null) {
+                // The picker opens instead of a menu; the strip gets no
+                // menu back (its fallback tap is inert in a session).
+                picker.present(modelPickerRequest(s, row, harness, sel?.model))
+                return null
+            }
+        }
         return when (chipId) {
             SessionChipIds.Model -> Menu(
                 title = MODEL_MENU_TITLE,
@@ -278,6 +392,59 @@ class SessionChipMenus(
             }
             else -> null
         }
+    }
+
+    /**
+     * The picker for this chat (wave-10 38): the chat's provider as the
+     * one page, its models from the engine (the fallback when the call
+     * fails), the current one ticked; a pick of this provider's model
+     * applies it with #664's rule. Main thread, tap time; no core call —
+     * the page loads on IO when the sheet opens.
+     */
+    private fun modelPickerRequest(
+        s: Snapshot,
+        row: SessionRow,
+        harness: String,
+        model: String?,
+    ): ModelPickerRequest {
+        val deviceId = s.deviceId
+        val own = ModelPickerTab(harness = harness, label = row.harnessLabel ?: harness)
+        // Wave-10 39: the other providers the host offers, only when it can
+        // switch now; until its list is in, only the chat's own.
+        val others = if (s.canSwitch) {
+            hostHarnesses?.takeIf { it.first == deviceId }?.second.orEmpty()
+                .filter { it.offered && it.id != harness }
+                .map { h -> ModelPickerTab(h.id, h.label, footer = providerSwitchFooter(h.label)) }
+        } else {
+            emptyList()
+        }
+        return ModelPickerRequest(
+            tabs = listOf(own) + others,
+            harness = harness,
+            // No model of its own: it runs the default, so that's the one ticked.
+            model = model ?: defaultModels["$deviceId|$harness"]?.id,
+            hostName = row.deviceName ?: PICKER_HOST_FALLBACK,
+            note = providerSwitchNote(s.canSwitch, s.running, s.hostSwitches),
+            load = { h -> pickerRows(deviceId, h) },
+            onPick = { h, picked ->
+                if (h == harness) {
+                    val info = pickerModels[h]?.firstOrNull { it.id == picked.id }
+                    if (info != null) write { applyModelPick(it, info) }
+                } else if (snapshot?.canSwitch == true) {
+                    // Re-checked at the pick: a turn may have started since
+                    // the sheet opened with other providers' pages.
+                    write { applyProviderPick(it, h, picked.id) }
+                }
+            },
+        )
+    }
+
+    /** One picker page's rows (IO), remembering the [ModelInfo]s for the pick. */
+    private suspend fun pickerRows(deviceId: String, harness: String): List<ModelPickerRow> = withContext(io) {
+        if (closed.get()) return@withContext emptyList()
+        val models = loadModels(deviceId, harness)
+        pickerModels[harness] = models
+        models.map { m -> ModelPickerRow(id = m.id, label = m.label, detail = m.description?.takeIf { it.isNotBlank() }) }
     }
 
     /**
@@ -404,6 +571,41 @@ class SessionChipMenus(
 }
 
 // ── copy (verbatim from the ticket / iOS) ──────────────────────────────────
+
+/** The picker's host line when the row names no computer. */
+const val PICKER_HOST_FALLBACK = "This computer"
+
+/** A model row of the picker from the catalog record. */
+private fun ModelInfo.pickerRow(): ModelPickerRow =
+    ModelPickerRow(id = id, label = label, detail = description?.takeIf { it.isNotBlank() })
+
+/** Over another provider's page (upstream's footer, verbatim). */
+fun providerSwitchFooter(label: String): String = "Your next message continues this chat with $label."
+
+/**
+ * The note over the chat's own page (upstream `CoreSessionSource`): none
+ * when it can switch; mid-turn, when it can switch again; nothing on a
+ * host that switches but is busy sending; an older host says so. Pure.
+ */
+fun providerSwitchNote(canSwitch: Boolean, running: Boolean, hostSwitches: Boolean): String? = when {
+    canSwitch -> null
+    running -> "You can switch provider when this turn ends."
+    hostSwitches -> null
+    else -> "This computer needs a newer Roboco to switch provider."
+}
+
+/**
+ * A pick on another provider's page (upstream #966): the chat moves to
+ * that provider with the picked model; the old provider's effort and
+ * options don't carry over. A same-provider pick only sets the model.
+ * Sandbox is never changed. Pure.
+ */
+fun applyProviderPick(config: ChatConfig, harness: String, modelId: String): ChatConfig =
+    if (harness != config.harness) {
+        config.copy(harness = harness, model = modelId, reasoning = null, modelOptions = emptyMap())
+    } else {
+        config.copy(model = modelId)
+    }
 
 /** The model menu's pane title. */
 const val MODEL_MENU_TITLE = "Model"

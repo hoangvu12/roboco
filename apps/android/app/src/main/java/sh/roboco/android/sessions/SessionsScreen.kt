@@ -91,7 +91,9 @@ import sh.roboco.android.shell.TitleMode
  * trimmed query is non-empty, an idle sidebar never re-maps Recent rows
  * on every workspace revision (49's `WhileSubscribed` stops upstream 5 s
  * later), and while a new search is in flight the previous value stays
- * on screen — no blank frame.
+ * on screen — no blank frame. [filters] runs that search without a pinned
+ * accessory: the phone's one-row bar (wave-10 37) owns its field and
+ * passes only the [query].
  *
  * [SessionsScreenContent] is the injectable half (sections, actions, hero
  * and bottom padding as parameters); this wrapper reads the app's
@@ -109,6 +111,7 @@ fun SessionsScreen(
     topInset: Dp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
     pinnedAccessory: (@Composable () -> Unit)? = null,
     pinnedAccessoryHeight: Dp = 0.dp,
+    filters: Boolean = pinnedAccessory != null,
 ) {
     val app = LocalContext.current.applicationContext as RobocoApplication
     // 43: the prompts' engine list comes from the live client; provided
@@ -142,7 +145,7 @@ fun SessionsScreen(
         val fixture = LocalSidebarFixtures.current
         val queryState = rememberUpdatedState(query)
         val searching = query.searchTrim().isNotEmpty()
-        val results: SearchResults? = if (pinnedAccessory != null) {
+        val results: SearchResults? = if (filters) {
             val entry = LocalNavEntry.current
             val model = entry.retain("sidebar-search-model") {
                 val source: Flow<SearchSource?> = if (fixture != null) {

@@ -113,23 +113,7 @@ impl crate::Client {
         };
         let engine_id = handle.engine_id().to_owned();
         match list_harnesses_live(&handle).await {
-            Ok(mut list) => {
-                list.retain(|h| h.id != "mock" || inner.config.show_mock_harness);
-                if inner.config.show_mock_harness {
-                    // The engine marks the mock not-offered (a test rig must
-                    // never displace a real agent); the debug flag
-                    // re-offers it — "debug builds and tests set it so the
-                    // mock harness is offered".
-                    for harness in list.iter_mut().filter(|h| h.id == "mock") {
-                        harness.enabled = Some(true);
-                    }
-                }
-                write_catalog_cache(&inner, &engine_id, "harnesses.json", &list);
-                lock(&inner.catalog.state).harnesses.insert(engine_id, list.clone());
-                // Composers recompute their mid-turn-steering flags.
-                crate::session::recompute_all_composers(&inner);
-                list
-            }
+            Ok(list) => store_harnesses(&inner, engine_id, list),
             Err(_) => {
                 let cached = read_catalog_cache::<Vec<HarnessInfo>>(
                     &inner,
@@ -148,6 +132,32 @@ impl crate::Client {
                 }
             }
         }
+    }
+
+    /// Offer `harness` on `device_id`'s engine or not (`SetHarnessEnabled`,
+    /// wave-10 40 — upstream #966's `set_harness_enabled`). The engine
+    /// refuses the last enabled agent and one that isn't installed; its
+    /// reply is the fresh catalog, stored like a live list so New session
+    /// and the pickers offer the change at once.
+    pub async fn set_harness_enabled(
+        &self,
+        device_id: &str,
+        harness: &str,
+        enabled: bool,
+    ) -> Result<Vec<HarnessInfo>, ClientError> {
+        let inner = self.inner_arc();
+        let handle = resolve_engine(&inner, device_id)?;
+        let engine_id = handle.engine_id().to_owned();
+        let value = handle
+            .call(
+                roboco_rpc::methods::SET_HARNESS_ENABLED,
+                serde_json::json!({ "harness": harness, "enabled": enabled }),
+            )
+            .await?;
+        let list: Vec<HarnessInfo> = serde_json::from_value(value).map_err(|error| ClientError::HostError {
+            message: format!("undecodable harness catalog: {error}"),
+        })?;
+        Ok(store_harnesses(&inner, engine_id, list))
     }
 
     /// The engine's model catalog for `harness`: live (normalized, labels
@@ -177,6 +187,30 @@ impl crate::Client {
             }
         }
     }
+}
+
+/// A live catalog in: the mock filtered (or re-offered under
+/// `show_mock_harness`), the disk cache and the in-memory catalog
+/// refreshed, the composers' steering flags recomputed.
+fn store_harnesses(
+    inner: &Arc<ClientInner>,
+    engine_id: String,
+    mut list: Vec<HarnessInfo>,
+) -> Vec<HarnessInfo> {
+    list.retain(|h| h.id != "mock" || inner.config.show_mock_harness);
+    if inner.config.show_mock_harness {
+        // The engine marks the mock not-offered (a test rig must never
+        // displace a real agent); the debug flag re-offers it — "debug
+        // builds and tests set it so the mock harness is offered".
+        for harness in list.iter_mut().filter(|h| h.id == "mock") {
+            harness.enabled = Some(true);
+        }
+    }
+    write_catalog_cache(inner, &engine_id, "harnesses.json", &list);
+    lock(&inner.catalog.state).harnesses.insert(engine_id, list.clone());
+    // Composers recompute their mid-turn-steering flags.
+    crate::session::recompute_all_composers(inner);
+    list
 }
 
 async fn list_harnesses_live(handle: &EngineHandle) -> Result<Vec<HarnessInfo>, ClientError> {

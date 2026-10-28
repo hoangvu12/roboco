@@ -504,6 +504,18 @@ class RobocoApplication : Application() {
         RunWatchController(this, applicationScope, notifier = notifier)
     }
 
+    /**
+     * Wave-10 43 (#626): the system is short of memory — shrink the core's
+     * warm sessions ([sh.roboco.android.background.trimIsCritical]). Off
+     * main: an eviction sizes transcripts.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        val critical = sh.roboco.android.background.trimIsCritical(level) ?: return
+        val client = clientOrNull() ?: return
+        appScope.launch(Dispatchers.IO) { client.trimMemory(critical) }
+    }
+
     override fun onCreate() {
         super.onCreate()
         // #609's Fonts.init swallowed missing faces (review bug 8); a

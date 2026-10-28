@@ -93,6 +93,14 @@ class SearchTabState {
     fun onTabSelected(old: TabId, new: TabId) {
         if (new == TabId.Search && old != TabId.Search) activationToken++
     }
+
+    /**
+     * Wave-10 37: the one-row bar's field has no tab to enter — the
+     * router's `showSearch()` (⌘⇧F, a deep link) activates it directly.
+     */
+    fun activate() {
+        activationToken++
+    }
 }
 
 /**

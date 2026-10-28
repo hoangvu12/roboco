@@ -1,6 +1,8 @@
 package sh.roboco.android.shell
 
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.tappableElement
 import androidx.compose.runtime.Composable
@@ -38,12 +40,30 @@ fun bottomChromeContentPadding(barBottom: Dp): Dp =
  * padding agree.
  */
 @Composable
-fun rememberBottomChromeInsets(): BottomChromeInsets {
+fun rememberBottomChromeInsets(oneRowBar: Boolean = false): BottomChromeInsets {
     val density = LocalDensity.current
     val nav = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
     val tap = with(density) { WindowInsets.tappableElement.getBottom(density).toDp() }
-    return remember(nav, tap) {
+    // The one-row bar rides on the IME while its field is focused, so the
+    // filtered list clears the keyboard too (the bar's own IME lift).
+    val ime = if (oneRowBar) {
+        with(density) { WindowInsets.ime.exclude(WindowInsets.navigationBars).getBottom(density).toDp() }
+    } else {
+        0.dp
+    }
+    return remember(nav, tap, oneRowBar, ime) {
         val bar = tabBarBottomGap(nav, tap)
-        BottomChromeInsets(bar, bottomChromeContentPadding(bar))
+        BottomChromeInsets(
+            bar,
+            if (oneRowBar) oneRowBarContentPadding(bar, ime) else bottomChromeContentPadding(bar),
+        )
     }
 }
+
+/**
+ * Wave-10 37: the list padding under the one-row bar — `barBottom + 48
+ * (the row) + 8`, the same last-row clearance as the tab chrome's, plus
+ * the IME above the navigation bar (`imeAboveNav`) the bar rides on.
+ */
+fun oneRowBarContentPadding(barBottom: Dp, imeAboveNav: Dp = 0.dp): Dp =
+    barBottom + imeAboveNav + SessionsBottomBarMetrics.Height.dp + 8.dp

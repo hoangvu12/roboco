@@ -49,12 +49,20 @@ internal class PhoneShellAdapter(
     private val keyboard: SoftwareKeyboardController?,
     private val focusManager: FocusManager,
     private val view: View,
+    /** Wave-10 37: the one-row bar — Settings and Search are not tabs. */
+    private val oneRowBar: Boolean = false,
+    /** The bar's field, activated by Search (one-row bar only). */
+    private val search: SearchTabState? = null,
 ) : PhoneShell {
 
     /** 31's contract: the [SheetHandoff] from [hideSheetForHandoff], completed by [dismissSheet] once the motion ends. */
     private var pendingHandoff: SheetHandoff? = null
 
     override fun selectTab(tab: TabId) {
+        if (oneRowBar) {
+            selectOnTheFrontPage(tab)
+            return
+        }
         // Programmatic selection: no haptic, no re-select pop-to-root
         // (those are onTabTap's user-path behaviours).
         tabs.select(tab)
@@ -62,6 +70,31 @@ internal class PhoneShellAdapter(
 
     override val isSheetPresented: Boolean
         get() = sheetHost?.isPresenting == true
+
+    /**
+     * The one-row bar's "tabs" (upstream #967's `showSettings` /
+     * `showSearch`): Sessions is the only stack. Settings dismisses a
+     * presented sheet and pushes over the list (once — a second
+     * `showSettings` with Settings on top does nothing); Search goes back
+     * to the list and activates the bar's field.
+     */
+    private fun selectOnTheFrontPage(tab: TabId) {
+        tabs.select(TabId.Sessions)
+        val stack = tabs.stack(TabId.Sessions)
+        when (tab) {
+            TabId.Settings -> {
+                if (isSheetPresented) dismissSheet(animated = false)
+                if (stack.top.route == SettingsRoute) return
+                stack.popToRoot(animated = false)
+                stack.push(SettingsRoute, animated = true)
+            }
+            TabId.Search -> {
+                stack.popToRoot(animated = false)
+                search?.activate()
+            }
+            TabId.Sessions -> Unit
+        }
+    }
 
     override fun presentNewSession(prompt: String?, onCreated: (chatId: String, handoff: DraftHandoff?) -> Unit) {
         // `MainTabController.swift:136-148`: New Session in a page sheet at
@@ -186,8 +219,10 @@ fun rememberPhoneShell(
     keyboard: SoftwareKeyboardController? = LocalSoftwareKeyboardController.current,
     focusManager: FocusManager = LocalFocusManager.current,
     view: View = LocalView.current,
-): PhoneShell = remember(tabs, sheetHost, alerts, actionSheet, toaster, keyboard, focusManager, view) {
-    PhoneShellAdapter(tabs, sheetHost, alerts, actionSheet, toaster, keyboard, focusManager, view)
+    oneRowBar: Boolean = false,
+    search: SearchTabState? = null,
+): PhoneShell = remember(tabs, sheetHost, alerts, actionSheet, toaster, keyboard, focusManager, view, oneRowBar, search) {
+    PhoneShellAdapter(tabs, sheetHost, alerts, actionSheet, toaster, keyboard, focusManager, view, oneRowBar, search)
 }
 
 /** Unwraps [ContextWrapper]s down to the hosting [Activity], or null (previews, tests). */

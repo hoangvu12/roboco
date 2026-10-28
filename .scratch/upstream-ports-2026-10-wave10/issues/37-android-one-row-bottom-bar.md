@@ -25,16 +25,91 @@ Toasts anchor over the new bar (upstream `Toast.swift`, #967).
 
 **Blocked by:** 33 (shared sessions screen + goldens).
 
-**Status:** ready-for-agent. Golden re-capture uses the
-`record_goldens` dispatch (a human triggers it on GitHub) and the G1–G5
-parity gates (android-app#30).
+**Status:** done (2026-10-28, `wave10/android`) — Kotlin compiles in CI
+only; goldens not re-captured (see comments).
 
 **Source:** wave-9 `issues/19-android-bottom-bar.md`; `2026-10-28.md` §C;
 `part-06.md` `f30a8641b`/`4cd159175`.
 
-- [ ] The bar is one row; Search filters in place; Settings pushes; no tab bar can come back (#971 test)
-- [ ] Toasts anchor above the bar
-- [ ] Sessions goldens re-captured; parity gates green
-- [ ] Commit records `f30a8641b` + `4cd159175` (iOS bar parts); absorbs wave-9 19
+- [x] The bar is one row; Search filters in place; Settings pushes; no tab bar can come back (#971 test)
+- [x] Toasts anchor above the bar
+- [ ] Sessions goldens re-captured; parity gates green (no CI record flow any more)
+- [x] Commit records `f30a8641b` + `4cd159175` (iOS bar parts); absorbs wave-9 19
 
 ## Comments
+
+2026-10-28 (wave10/android, lane 3): carried `f30a8641b` (#967) and
+`4cd159175` (#971) iOS bar parts by intent.
+
+- `SessionsBottomBar` (new): one 48 dp row — Settings (`bottom-settings`),
+  the search field (ticket 29's `SearchTabField` at its settled search
+  shape) and a prominent filled New session (`new-session`, the iOS id).
+  No voice item (voice dropped, ADR 0009); the old accessory's live
+  counts went with the accessory, as on iOS.
+- `MainTabShell(oneRowBar = true)` — what `RobocoAppContent` always
+  passes: the bar replaces the tab chrome, Sessions is the only stack
+  (`PhoneShellAdapter.selectTab` maps Settings → push `SettingsRoute`
+  over the list, dismissing a sheet first; Search → front page + activate
+  the field), so no tab can be selected and no tab bar can come back.
+  System back with a query clears it before leaving.
+- "The bar belongs to the front page alone": `NavStack.chromeOnRootOnly`
+  + `hidesChrome(entry)`, read by every chrome reader (the slot fade,
+  `NavStackHost` layers, ticket 30's `ChromeVisibilityController`); the
+  phone turns it on for the Sessions stack, so Settings, folders and
+  everything they push hide the bar (iOS `hidesBottomBarWhenPushed`).
+- Search filters in place: the Sessions root gets the field's query
+  (`LocalBottomBarSearch` → `SessionsScreen(query = …)`, the sidebar's
+  in-place results path).
+- Toasts: the bar publishes its top through the same
+  `ChromeVisibilityController.updateChromeTop`, so toasts sit above it;
+  the list padding is the bar's (`oneRowBarContentPadding`).
+- Deviation / follow-up: the legacy tab chrome (`GlassTabBar`,
+  `TabChromeLayout`, the search morph, `NewSessionAccessory`) stays
+  behind `oneRowBar = false` for its existing component tests and
+  galleries only; production never mounts it. Deleting it and porting
+  those tests is a follow-up (it is ~4 k lines plus their goldens).
+- Tests: `OneRowBarShellTest` (one row, no tab cells; Settings pushes,
+  the bar steps aside and returns; the root-only chrome policy);
+  instrumented `SessionFlowTest.settingsFromBottomBar` /
+  `bottomBarSearch` (replacing `tabsAndSearch` / `searchTabRoundTrip`),
+  `TransitionTourTest` updated.
+- Goldens: CI's `record_goldens` job was dropped in `33e5590da`; no
+  Sessions golden re-capture is possible on CI.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- A push over the list lets go of the search field's focus and hides the
+  IME (`SearchTabField(held = …)`, fed from the Sessions stack's top); only
+  the field's own focus is cleared.
+- The list's bottom padding under the bar includes the IME the bar rides
+  on, so the last filtered results clear the keyboard.
+- `OneRowBarShellTest` / `SessionFlowTest.settingsFromBottomBar` check that
+  the hidden bar isn't **displayed** (it stays composed, unplaced, #30)
+  rather than gone from the tree; new `aPushLetsGoOfTheSearchFieldsFocus`.
+2026-10-28 (PR #38 android-emulator device loss): the CI emulator dropped
+off adb 7–10 min into the flow suite on almost every run of this branch
+(then hung to the job timeout in cleanup). Bisect (`workflow_dispatch`
+runs, flow-tests diagnostics cherry-picked): 33 and 35 keep the device
+(2/2 each); 37, 39, 42, 43 lose it (36 kept it once). Experiments on 37 and
+on the PR head, two samples each where it mattered:
+- the one-row bar off (`oneRowBar = false`): kept (2/2);
+- the bar with its search field replaced by a spacer: kept (2/2 on 37,
+  1/1 on the head);
+- `SearchTabField` without its `GlassSurface`: kept (2/2);
+- a minimal glass capsule + text field instead of `SearchTabField`: lost
+  (2/2);
+- the field's effects off, its IME padding off, its `isImeVisible` read
+  off, or its text field composed lazily: lost.
+So the trigger is a blurred glass **capsule** in the always-on bar on the
+CI emulator's software GPU (SwiftShader); the bar's glass circles are fine
+and the host never ran low on memory (no OOM/ANR/crash line). The bar's
+search capsule on the non-blur glass tier kept the device too (see the PR).
+
+Fix: the bar's search capsule draws on `GlassTier.Fallback` (the flat glass
+fill and rim, no live blur); the circles keep the blur. Follow-up if the
+blurred capsule is wanted back: blur it only on a hardware GPU.
+
+Also found by the bisect's runs that reached `bottomBarSearch`: the phone
+list never filtered — `SessionsScreen` ran the query search only with the
+sidebar's pinned accessory. `SessionsScreen(filters = …)` now runs it for
+the bar too (`ShellRouteContent` passes `filters = true` under the one-row
+bar).

@@ -306,11 +306,11 @@ fun NavStackHost(
 
         val chromeMode = if (t != null && below != null && above != null) {
             chromePlacement(
-                showBelow = !below.route.hidesBottomChrome,
-                showAbove = !above.route.hidesBottomChrome,
+                showBelow = !stack.hidesChrome(below),
+                showAbove = !stack.hidesChrome(above),
             )
         } else {
-            if (stack.top.route.hidesBottomChrome) ChromeLayer.Hidden else ChromeLayer.Fixed
+            if (stack.hidesChrome(stack.top)) ChromeLayer.Hidden else ChromeLayer.Fixed
         }
         val chromePlaceable = if (chromeMode != ChromeLayer.Hidden) {
             chromeMeasurable?.measure(Constraints(maxWidth = w, maxHeight = h))

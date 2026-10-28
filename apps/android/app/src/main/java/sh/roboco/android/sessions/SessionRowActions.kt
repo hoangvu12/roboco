@@ -23,6 +23,7 @@ import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.design.glass.MenuSection
 import sh.roboco.android.design.rememberContextMenuLiftState
+import sh.roboco.android.shell.LocalAppRouter
 import uniffi.roboco_core.SessionRow
 import uniffi.roboco_core.SectionView
 
@@ -70,6 +71,9 @@ interface SessionRowCommands {
     /** The menu's "Rename…": 43's pre-filled "Rename Session" alert. */
     fun renameSession(row: SessionRow)
 
+    /** The menu's "Delete": 43's "Delete session?" confirm, then 42's delete (upstream #967). */
+    fun deleteSession(row: SessionRow)
+
     /** The menu's "New Section…" on the chat's engine: creates only. */
     fun newSection(engineId: String?)
 
@@ -83,9 +87,15 @@ interface SessionRowCommands {
 /**
  * The production adapter: one-line delegations, with `archive` mapping
  * 42's [ActionOutcome] to accepted (`Ok`/`Gone`) or refused (everything
- * else — a blank `Skipped` never archived anything either).
+ * else — a blank `Skipped` never archived anything either). [onDeleted]
+ * hears a confirmed delete (the router leaves the session if it is the
+ * one open beside the tablet sidebar).
  */
-fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRowCommands =
+fun SessionRowCommands(
+    actions: RowActions,
+    prompts: SessionPrompts,
+    onDeleted: (chatId: String) -> Unit = {},
+): SessionRowCommands =
     object : SessionRowCommands {
         override fun setPinned(chatId: String, pinned: Boolean) {
             actions.setPinned(chatId, pinned)
@@ -113,6 +123,10 @@ fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRow
             prompts.renameSession(row)
         }
 
+        override fun deleteSession(row: SessionRow) {
+            prompts.confirmDeleteSession(row.id, if (row.hasTitle) row.title else "") { onDeleted(row.id) }
+        }
+
         override fun newSection(engineId: String?) {
             prompts.newSection(engineId)
         }
@@ -129,7 +143,10 @@ fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRow
 fun rememberSessionRowCommands(): SessionRowCommands {
     val actions = LocalRowActions.current
     val prompts = rememberSessionPrompts()
-    return remember(actions, prompts) { SessionRowCommands(actions, prompts) }
+    val router = LocalAppRouter.current
+    return remember(actions, prompts, router) {
+        SessionRowCommands(actions, prompts) { chatId -> router.leaveDeletedSession(chatId) }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +227,9 @@ fun sessionSwipeActions(
  *
  *  - normal: Pin/Unpin, "Move to Section ▸" (drill-in; every section of
  *    the chat's engine in stored order, empty ones included, then "No
- *    Section", then "New Section…"), "Rename…", "Archive" (destructive);
- *  - archived: "Unarchive", "Rename…".
+ *    Section", then "New Section…"), "Rename…", "Archive", "Delete"
+ *    (destructive — upstream #967 moved the red from Archive to Delete);
+ *  - archived: "Unarchive", "Rename…", "Delete".
  */
 fun sessionRowMenu(
     row: SessionRow,
@@ -235,6 +253,7 @@ fun sessionRowMenu(
                     icon = MenuIcon.Symbol(RobocoIcons.Pencil),
                     testTag = "row-menu-rename",
                 ) { cmd.renameSession(row) },
+                deleteRowItem(row, cmd, strings),
             ),
         )
     }
@@ -282,13 +301,22 @@ fun sessionRowMenu(
             MenuItem(
                 title = strings(R.string.swipe_archive),
                 icon = MenuIcon.Symbol(RobocoIcons.Archivebox),
-                destructive = true,
                 testTag = "row-menu-archive",
                 // No slide: the row just disappears when the snapshot drops it.
             ) { cmd.archive(row.id) { } },
+            deleteRowItem(row, cmd, strings),
         ),
     )
 }
+
+/** "Delete" (trash, destructive): the confirm first, never an immediate write. */
+private fun deleteRowItem(row: SessionRow, cmd: SessionRowCommands, strings: (Int) -> String): MenuItem =
+    MenuItem(
+        title = strings(R.string.menu_delete),
+        icon = MenuIcon.Symbol(RobocoIcons.Trash),
+        destructive = true,
+        testTag = "row-menu-delete",
+    ) { cmd.deleteSession(row) }
 
 // ---------------------------------------------------------------------------
 // The row wrapper and the list hookup

@@ -210,6 +210,8 @@ fn export_all(cfg: &Config) -> Result<()> {
         roboco_proto::AgentLoginMode,
         roboco_proto::AgentLoginPoll,
         roboco_proto::AgentLoginStatus,
+        roboco_proto::RelayAgentLoginCallback,
+        roboco_proto::RelayedLoginCallback,
         roboco_proto::AgentUsageWindow,
         roboco_proto::ProjectActionIcon,
         roboco_proto::ProjectAction,

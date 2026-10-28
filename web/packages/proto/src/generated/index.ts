@@ -96,6 +96,8 @@ export * from "./QueuedMessage";
 export * from "./ReadWorkspaceFileRequest";
 export * from "./ReadWorkspaceImageRequest";
 export * from "./ReasoningLevel";
+export * from "./RelayAgentLoginCallback";
+export * from "./RelayedLoginCallback";
 export * from "./RemoteAccessSnapshot";
 export * from "./RemoteAccessStatus";
 export * from "./RenewQueueEditOutcome";

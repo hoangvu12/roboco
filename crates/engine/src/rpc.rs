@@ -612,11 +612,12 @@ struct StartAgentLoginParams {
     /// Hermes): which provider to sign in to; `None` = the agent's default.
     #[serde(default)]
     provider: Option<String>,
-    /// Stamped by the requesting engine when it forwards the start: the
-    /// device whose browser finishes the sign-in. The login's callback port
-    /// is served over P2P to that device alone. Roboco has no engine-to-
-    /// engine forward to stamp it (ADR 0004); the field parses for wire
-    /// compatibility and stays `None` in production.
+    /// The requester whose browser finishes the sign-in: its callback route
+    /// is published for that requester alone (wave-10 36: Roboco clients
+    /// send a fresh random value per sign-in and relay the callback with
+    /// it, `RelayAgentLoginCallback`). Upstream's requesting engine stamps
+    /// it when it forwards a start; Roboco has no engine-to-engine forward
+    /// (ADR 0004) — only the client that started the login names it.
     #[serde(default)]
     requester_device_id: Option<String>,
 }
@@ -3543,6 +3544,17 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&start)
+            }
+            methods::RELAY_AGENT_LOGIN_CALLBACK => {
+                // Wave-10 36: a phone (or a desktop managing this engine)
+                // relays the browser callback it caught on its own loopback.
+                let p: roboco_proto::RelayAgentLoginCallback = parse_params(params)?;
+                let relayed = self
+                    .agent_accounts
+                    .relay_callback(&p.login_id, &p.requester_device_id, &p.path)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&relayed)
             }
             methods::COMPLETE_AGENT_LOGIN => {
                 let p: CompleteAgentLoginParams = parse_params(params)?;

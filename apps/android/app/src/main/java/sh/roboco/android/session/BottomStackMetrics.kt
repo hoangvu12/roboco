@@ -64,6 +64,25 @@ object BottomStackMetrics {
     fun stackBottom(H: Float, ime: Float, nav: Float, gap: Float = KeyboardGap.value): Float =
         H - max(ime, nav) - gap
 
+    /** The composer's resting height (one line, no attachments): `ComposerBar.restHeight`. */
+    val ComposerRestHeight = 50.dp
+
+    /**
+     * Wave-10 42 (upstream #1014): beside the tablet sidebar the resting
+     * composer is centred on the sidebar toolbar's row — [toolbarMid] up
+     * from the window bottom — instead of the fixed gap above the nav
+     * inset, so the two sit level (it may sink into the safe area, as the
+     * toolbar does). The keyboard still lifts it: once the IME top passes
+     * that rest, the keyboard rule wins, smoothly.
+     */
+    fun stackBottomBesideToolbar(
+        H: Float,
+        ime: Float,
+        toolbarMid: Float,
+        restHeight: Float = ComposerRestHeight.value,
+        gap: Float = KeyboardGap.value,
+    ): Float = kotlin.math.min(H - toolbarMid + restHeight / 2f, H - ime - gap)
+
     /**
      * How much of the window the stack plus its pad covers:
      * `maxY − stackTop + 8` (`:371`) — the transcript's effective

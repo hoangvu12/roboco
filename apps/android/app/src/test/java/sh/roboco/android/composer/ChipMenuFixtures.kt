@@ -152,6 +152,8 @@ fun chipMenuComposerState(
     deviceId: String = "device-1",
     chatId: String = "chat-a",
     contextUsage: ContextUsage? = null,
+    providerSwitch: Boolean = false,
+    turnRunning: Boolean = false,
 ): ComposerState = ComposerState(
     chatId = chatId,
     revision = 1uL,
@@ -168,11 +170,12 @@ fun chipMenuComposerState(
             queueEditLease = true,
             queuedAttachments = true,
             midTurnSteering = null,
+            providerSwitch = providerSwitch,
         ),
     ),
     live = LiveStatus(
         indicator = ChatIndicator.IDLE,
-        turnRunning = false,
+        turnRunning = turnRunning,
         workingSinceMs = null,
         streaming = false,
         canInterrupt = false,

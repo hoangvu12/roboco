@@ -106,6 +106,10 @@ class FolderScreenTest {
             calls += "unarchive($chatId)"
             result(onResult)
         }
+        override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+            calls += "delete($chatId)"
+            result(onResult)
+        }
 
         override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {
             calls += "move($chatId, ${toSection ?: "null"})"

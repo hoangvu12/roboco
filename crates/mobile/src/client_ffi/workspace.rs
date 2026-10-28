@@ -179,6 +179,37 @@ impl CoreClient {
             .set_section_collapsed(&section_id, collapsed)?)
     }
 
+    /// Pin between neighbours (`None` at either end), as a drop into
+    /// Pinned does (wave-10 41, upstream #909). Leaves every section.
+    pub fn pin_session_at(
+        &self,
+        chat_id: String,
+        after: Option<String>,
+        before: Option<String>,
+    ) -> CoreResult<()> {
+        Ok(self
+            .client
+            .pin_session_at(&chat_id, after.as_deref(), before.as_deref())?)
+    }
+
+    /// Move a session into a section between its members (`None` at either
+    /// end; `section_id: None` = back to Recent), as a drop into the
+    /// section does (wave-10 41, upstream #909).
+    pub fn place_session(
+        &self,
+        chat_id: String,
+        section_id: Option<String>,
+        after: Option<String>,
+        before: Option<String>,
+    ) -> CoreResult<()> {
+        Ok(self.client.place_session(
+            &chat_id,
+            section_id.as_deref(),
+            after.as_deref(),
+            before.as_deref(),
+        )?)
+    }
+
     /// Move a chat into a section (`None` = back to Recent). Refused when
     /// the section and chat belong to different engines.
     pub fn assign_section(&self, chat_id: String, section_id: Option<String>) -> CoreResult<()> {

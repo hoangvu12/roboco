@@ -175,6 +175,7 @@ private class PinnedReorderGalleryActions(
     override fun setPinned(chatId: String, pinned: Boolean, onResult: (ActionOutcome) -> Unit) {}
     override fun archive(chatId: String, onResult: (ActionOutcome) -> Unit) {}
     override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {}
+    override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {}
     override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {}
     override fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit) {}
     override fun createSection(

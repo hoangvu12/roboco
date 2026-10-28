@@ -276,19 +276,20 @@ fun SessionScreen(
     val openSubagent: (String, String, Boolean) -> Unit = remember {
         { docId: String, title: String, frozen: Boolean -> currentOpenSubagent?.invoke(docId, title, frozen) }
     }
-    // wave-9 #14 (upstream #967): an error card's "Log in" opens this
-    // chat's agent on the Accounts & Usage page, the usage chip's route.
-    // The desktop also starts the agent's first login option; here the
-    // page is left for the user to pick one (full parity: wave-9 #18).
+    // wave-9 #14 + wave-10 35 (upstream #967): an error card's "Log in"
+    // opens this chat's agent on the Accounts & Usage page and starts its
+    // first login (the desktop's `start_first_login`) — unless the chat is
+    // Limited, whose banner owns the recovery (`errorCardLogInRoute`).
     val actionStack = LocalNavStack.current
     val actionEntry = LocalNavEntry.current
     val performAction: (String) -> Unit = remember(controller, actionStack, actionEntry) {
         { action: String ->
             if (action == "sign-in" && actionStack.top.id == actionEntry.id) {
                 actionStack.push(
-                    sh.roboco.android.accounts.AgentAccountsRoute(
-                        deviceId = controller.hostDeviceId.ifEmpty { null },
-                        focusHarness = controller.harness,
+                    sh.roboco.android.accounts.errorCardLogInRoute(
+                        hostDeviceId = controller.hostDeviceId,
+                        harness = controller.harness,
+                        limited = controller.chrome.value.limited != null,
                     ),
                     animated = true,
                 )
@@ -469,6 +470,9 @@ fun SessionScreen(
     //     the context chip's account half (the tint filler and the menu
     //     rows), and its open action + toast are injected here where the
     //     nav stack and the app toaster live.
+    // Wave-10 38: the tabbed model picker the model chip opens (hosted
+    // over the screen below, with the side-chats overlay).
+    val modelPicker = remember(controller) { sh.roboco.android.composer.ModelPickerController() }
     composerBinding?.let { binding ->
         val chipMenus = remember(controller) { controller.filler<SessionChipMenus>() }
         val usage = remember(controller) { controller.filler<SessionAccountUsage>() }
@@ -485,6 +489,7 @@ fun SessionScreen(
                 // android-next #05: fold the account rows into the context
                 // chip's menu (the plain context card without accounts).
                 menus.accounts = usage
+                menus.modelPicker = modelPicker
                 // iOS render :488-491: the provider map is rebuilt on
                 // every chrome change (the chips it decorates are).
                 binding.chipMenus = { chips ->
@@ -658,6 +663,7 @@ fun SessionScreen(
             modifier = Modifier.fillMaxSize(),
         )
     }
+    sh.roboco.android.composer.ModelPickerOverlay(modelPicker)
     overlay()
     }
 }

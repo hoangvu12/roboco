@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -409,9 +410,11 @@ private fun ToastCapsule(
  * the animated capsule and [ToastCapsuleStatic] so the geometry can never
  * drift between them. All values from the ticket's spec tables
  * (`Toast.swift:47-88`): padding 12/20, spacing 14, centred cross-axis,
- * Geist Medium 15 / `Palette.text` label, Geist SemiBold 15 /
- * `Palette.accent` action, action insets 0, capsule shape, no press effect
- * on the capsule itself.
+ * Geist Medium 15 / `Palette.text` label (up to two lines), capsule shape,
+ * no press effect on the capsule itself. Wave-10 42 (N7, upstream #966):
+ * the action is a small filled capsule in the text colour — Geist
+ * SemiBold 14 in `Palette.background`, insets 6/12 — like the desktop's,
+ * and it never shrinks (the label wraps first).
  */
 @Composable
 private fun ToastCapsuleBody(
@@ -424,7 +427,7 @@ private fun ToastCapsuleBody(
     val typeScale = LocalTypeScale.current
     val palette = RobocoTheme.palette
     val labelStyle = uiStyle(Face.SansMedium, typeScale.fixed(15f), palette.text)
-    val actionStyle = uiStyle(Face.SansSemibold, typeScale.fixed(15f), palette.accent)
+    val actionStyle = uiStyle(Face.SansSemibold, typeScale.fixed(14f), palette.background)
     GlassSurface(
         modifier = modifier
             .testTag("toast")
@@ -447,10 +450,9 @@ private fun ToastCapsuleBody(
         ) {
             BasicText(
                 model.text,
-                Modifier.weight(1f, fill = false), // the label truncates, never the action
+                Modifier.weight(1f, fill = false), // the label wraps (two lines), never the action
                 style = labelStyle,
-                maxLines = 1,
-                softWrap = false,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             model.action?.let { title ->
@@ -460,16 +462,19 @@ private fun ToastCapsuleBody(
                     title,
                     Modifier
                         .testTag("toast-action")
-                        // UIKit's .plain highlighted title, approximated: dim
-                        // to 0.5, no ripple.
+                        // UIKit's .filled highlighted state, approximated:
+                        // dim to 0.5, no ripple.
                         .graphicsLayer { alpha = if (pressed) 0.5f else 1f }
+                        .clip(CapsuleShape)
+                        .background(palette.text)
                         .clickable(
                             interactionSource = interaction,
                             indication = null,
                             onClickLabel = title,
                             role = Role.Button,
                             onClick = actionClick,
-                        ),
+                        )
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     style = actionStyle,
                     maxLines = 1,
                     softWrap = false,

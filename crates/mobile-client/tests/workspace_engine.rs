@@ -502,6 +502,46 @@ async fn pin_and_section_ops_reach_the_engine_and_a_second_client() {
     })
     .await;
 
+    // Wave-10 41 (upstream #909's drag): a drop into the section before
+    // pin-1 places pin-2 there; the engine's state (what a desktop reads)
+    // carries the placed order.
+    client
+        .place_session(&pin_2, Some(&section), None, Some(&pin_1))
+        .unwrap();
+    wait_for_engine_sidebar(&second, &engine_id, "placed before pin-1", |sidebar| {
+        sidebar
+            .sections_by_profile
+            .get("local")
+            .and_then(|sections| sections.first())
+            .is_some_and(|section| section.session_ids == ["pin-2".to_owned(), "pin-1".to_owned()])
+    })
+    .await;
+    // A drop into Pinned before pin-2: pin-1 leaves the section and its pin
+    // moves in front.
+    client.pin_session_at(&pin_1, None, Some(&pin_2)).unwrap();
+    wait_for_engine_sidebar(&second, &engine_id, "pinned at the slot", |sidebar| {
+        let pins_ok = sidebar
+            .pins_by_profile
+            .get("local")
+            .is_some_and(|ids| ids.as_slice() == ["pin-1".to_owned(), "pin-2".to_owned()]);
+        let section_ok = sidebar
+            .sections_by_profile
+            .get("local")
+            .and_then(|sections| sections.first())
+            .is_some_and(|section| section.session_ids == ["pin-2".to_owned()]);
+        pins_ok && section_ok
+    })
+    .await;
+    wait_for_workspace(&client, "pin-1 shows pinned again", |snapshot| {
+        snapshot.front.pinned.iter().any(|r| r.id == pin_1)
+            && snapshot
+                .front
+                .sections
+                .iter()
+                .any(|s| s.id == section && s.sessions.iter().all(|r| r.id != pin_1))
+    })
+    .await;
+
     client.shutdown();
     second.shutdown();
     engine.listener.stop().await;

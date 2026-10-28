@@ -33,8 +33,12 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowClipboardManager
+import sh.roboco.android.design.AlertButtonRole
+import sh.roboco.android.design.Alerts
 import sh.roboco.android.design.Appearance
+import sh.roboco.android.design.LocalAlerts
 import sh.roboco.android.design.LocalToaster
+import sh.roboco.android.design.RobocoAlert
 import sh.roboco.android.design.RobocoIcons
 import sh.roboco.android.design.RobocoTheme
 import sh.roboco.android.design.Toaster
@@ -114,6 +118,7 @@ class SessionMenuTest {
     ) : RowActions {
         val pins = mutableListOf<Pair<String, Boolean>>()
         val archives = mutableListOf<String>()
+        val deletes = mutableListOf<String>()
         var isClosingAtArchive: Boolean? = null
             private set
 
@@ -128,6 +133,10 @@ class SessionMenuTest {
         }
 
         override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {}
+        override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+            deletes += chatId
+            onResult(outcome)
+        }
         override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {}
         override fun movePin(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) {}
         override fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit) {}
@@ -141,6 +150,16 @@ class SessionMenuTest {
         override fun deleteSection(sectionId: String, onResult: (ActionOutcome) -> Unit) {}
         override fun sectionsFor(engineId: String): List<SectionView> = emptyList()
         override fun report(error: Throwable) {}
+    }
+
+    /** The [Alerts] fake: records every alert instead of presenting it. */
+    private class RecordingAlerts : Alerts {
+        val shown = mutableListOf<RobocoAlert>()
+        override fun show(alert: RobocoAlert) {
+            shown += alert
+        }
+        override fun updateCurrent(alert: RobocoAlert) {}
+        override fun dismissAll() {}
     }
 
     /** The [AppRouter] fake: counts the leave calls and reports [leave]. */
@@ -225,6 +244,7 @@ class SessionMenuTest {
         stack: NavStack,
         entry: NavEntry,
         ref: HostRef,
+        alerts: Alerts = Alerts.Noop,
     ) {
         compose.setContent {
             RobocoTheme(Appearance.Light) {
@@ -236,6 +256,7 @@ class SessionMenuTest {
                         LocalToaster provides RecordingToaster(),
                         LocalNavStack provides stack,
                         LocalNavEntry provides entry,
+                        LocalAlerts provides alerts,
                     ) {
                         val wired = rememberSessionMenu(controller, transcript)
                         SessionHeader(
@@ -309,7 +330,7 @@ class SessionMenuTest {
 
         assertEquals("Archive", archive.title)
         assertEquals(RobocoIcons.Archivebox, (archive.icon as MenuIcon.Symbol).icon)
-        assertTrue(archive.destructive)
+        assertFalse("upstream #967: Archive is no longer destructive", archive.destructive)
         assertFalse(archive.disabled)
 
         assertEquals(
@@ -322,6 +343,44 @@ class SessionMenuTest {
             ),
             listOf(pin.testTag, copy.testTag, previews.testTag, accounts.testTag, archive.testTag),
         )
+    }
+
+    @Test
+    fun deleteTrailsArchiveDestructiveAndTheTitleHeadsTheMenu() {
+        var deletes = 0
+        val menu = sessionMenu(
+            pinned = false,
+            canWrite = true,
+            onSetPinned = {},
+            onCopyTranscript = {},
+            onShowPreviews = {},
+            onShowAccounts = {},
+            onArchive = {},
+            onDelete = { deletes++ },
+            title = "Fix the deploy script",
+            subtitle = "roboco @ studio",
+        )
+        assertEquals("Fix the deploy script\nroboco @ studio", menu.title)
+        assertEquals(6, menu.children.size)
+        val delete = menu.children[5] as MenuItem
+        assertEquals("Delete", delete.title)
+        assertEquals(RobocoIcons.Trash, (delete.icon as MenuIcon.Symbol).icon)
+        assertTrue(delete.destructive)
+        assertFalse(delete.disabled)
+        assertEquals("session-menu-delete", delete.testTag)
+        delete.action()
+        assertEquals(1, deletes)
+
+        val readOnly = sessionMenu(false, false, {}, {}, {}, {}, {}, onDelete = {})
+        assertTrue("Delete disabled with Archive while read-only", (readOnly.children[5] as MenuItem).disabled)
+    }
+
+    @Test
+    fun theHeaderIsTheTitleOverWhereItRuns() {
+        assertNull(sessionMenuHeader("", ""))
+        assertEquals("Fix", sessionMenuHeader("Fix", ""))
+        assertEquals("roboco @ studio", sessionMenuHeader("", "roboco @ studio"))
+        assertEquals("Fix\nroboco @ studio", sessionMenuHeader("Fix", "roboco @ studio"))
     }
 
     @Test
@@ -679,6 +738,36 @@ class SessionMenuTest {
 
         finishClose()
         compose.onNodeWithTag("glass-menu").assertDoesNotExist()
+    }
+
+    @Test
+    fun deleteAsksFirstThenDeletesAndLeavesOnOk() {
+        val core = FakeSessionCore("c1")
+        val controller = newController(core)
+        val transcript = newTranscript(MenuEngine())
+        val ref = HostRef()
+        val actions = MenuActions({ ref.host?.isClosing == true })
+        val router = RecordingRouter(leave = false)
+        val alerts = RecordingAlerts()
+        val stack = NavStack(MenuRootRoute)
+        val entry = stack.push(MenuSessionRoute, animated = false)
+        host(controller, transcript, actions, router, stack, entry, ref, alerts)
+        openMenu()
+
+        compose.onNodeWithTag("session-menu-delete").performClick()
+        frame()
+        assertTrue("nothing is deleted before the confirm", actions.deletes.isEmpty())
+        val confirm = alerts.shown.single()
+        assertEquals("Delete session?", confirm.title)
+        assertEquals(listOf(AlertButtonRole.Cancel, AlertButtonRole.Destructive), confirm.buttons.map { it.role })
+
+        compose.runOnUiThread { confirm.buttons[1].onClick("") }
+        compose.waitForIdle()
+        assertEquals(listOf("c1"), actions.deletes)
+        assertEquals("the router was asked once", listOf("c1"), router.leaves)
+        assertFalse("off the deleted session", stack.entries.contains(entry))
+
+        finishClose()
     }
 
     @Test

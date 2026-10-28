@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -43,11 +45,18 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import android.content.ClipData
+import android.content.ClipboardManager
 import sh.roboco.android.RobocoApplication
+import sh.roboco.android.composer.openInCustomTab
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.CapsuleShape
+import sh.roboco.android.design.GroupedAccessory
 import sh.roboco.android.design.GroupedFooter
+import sh.roboco.android.design.GroupedHeader
 import sh.roboco.android.design.GroupedPosition
+import sh.roboco.android.design.GroupedRow
+import sh.roboco.android.design.RobocoSwitch
 import sh.roboco.android.design.GroupedRowContainer
 import sh.roboco.android.design.HarnessMark
 import sh.roboco.android.design.Icon
@@ -86,9 +95,10 @@ import uniffi.roboco_core.WorkspaceSnapshot
  * use (optimistic, toast confirms, single-choice per group); remove is in
  * the row's context menu, confirmed through the action sheet; pull to
  * refresh re-probes; a computer picker appears when more than one engine
- * is paired; logins are added on the computer itself (their OAuth
- * redirects land on its loopback — the about footer says so, there is no
- * sign-in button).
+ * is paired. Wave-10 34 adds "Add account" (upstream #966's iPhone
+ * flow): one row per login option under each agent the computer offers;
+ * the computer runs the sign-in and the phone finishes it in a Custom
+ * Tab ([AgentAccountsModel.onAddRow]).
  *
  * The behaviour lives in [AgentAccountsModel]; this file only draws. The
  * page is pushed as [AgentAccountsRoute] (the Settings section, the usage
@@ -103,8 +113,16 @@ fun AgentAccountsScreen(
     workScope: CoroutineScope? = null,
     io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Wave-10 34's "Add account" seam. Production (no [core] passed) builds
+     * the live one; a caller that fakes [core] passes its own or none (no
+     * add rows — the read-only page's tests never touch the FFI).
+     */
+    signIn: AccountSignIn? = null,
 ) {
-    val app = LocalContext.current.applicationContext as? RobocoApplication
+    val context = LocalContext.current
+    val dark = RobocoTheme.isDark
+    val app = context.applicationContext as? RobocoApplication
     val devicesFlow = workspace ?: app?.workspaceFeed?.snapshot
     val snapshot by (devicesFlow ?: remember { MutableStateFlow<WorkspaceSnapshot?>(null) }).collectAsState()
     val devices = remember(snapshot) {
@@ -116,6 +134,11 @@ fun AgentAccountsScreen(
     val effectiveCore = core ?: remember(app) {
         app?.let { CoreAccountsCore(client = { it.clientOrNull() }) }
     }
+    val effectiveSignIn = signIn ?: if (core == null) {
+        remember(app) { app?.let { CoreAccountSignIn(client = { it.clientOrNull() }) } }
+    } else {
+        null
+    }
     val scope = workScope ?: remember(app) {
         CoroutineScope(
             (app?.appScope ?: CoroutineScope(Dispatchers.Main.immediate)).coroutineContext +
@@ -125,7 +148,11 @@ fun AgentAccountsScreen(
     // The device-name lambda reads the latest device list without
     // re-creating the model on every workspace change.
     val latestDevices by rememberUpdatedState(devices)
-    val model = remember(effectiveCore, scope, io, toaster, alerts, sheets) {
+    // The tab opener and the clipboard read the latest context/appearance
+    // without re-creating the model (and losing the page) on a theme flip.
+    val latestContext by rememberUpdatedState(context)
+    val latestDark by rememberUpdatedState(dark)
+    val model = remember(effectiveCore, effectiveSignIn, scope, io, toaster, alerts, sheets) {
         if (effectiveCore != null) {
             AgentAccountsModel(
                 core = effectiveCore,
@@ -134,12 +161,31 @@ fun AgentAccountsScreen(
                 alerts = alerts,
                 sheets = sheets,
                 deviceName = { id -> latestDevices.firstOrNull { it.id == id }?.name ?: "your computer" },
+                deviceOnline = { id -> latestDevices.firstOrNull { it.id == id }?.online ?: true },
                 io = io,
                 nowMs = nowMs,
+                signIn = effectiveSignIn,
+                openUrl = { url -> openInCustomTab(latestContext, url, latestDark) },
+                copyText = { text ->
+                    // A sign-in code: marked sensitive, so the system's
+                    // clipboard preview never shows it (API 33's
+                    // `ClipDescription.EXTRA_IS_SENSITIVE`, by its key on 31–32).
+                    val clip = ClipData.newPlainText("Code", text).apply {
+                        description.extras = android.os.PersistableBundle().apply {
+                            putBoolean("android.content.extra.IS_SENSITIVE", true)
+                        }
+                    }
+                    latestContext.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+                },
             )
         } else {
             null
         }
+    }
+    // Leaving the page ends a computer's sign-in rather than polling for
+    // ten minutes behind it (iOS `viewWillDisappear`).
+    DisposableEffect(model) {
+        onDispose { model?.cancelSignIn() }
     }
     // The opener's device, else the primary one once the workspace knows
     // the engines. Re-resolved only while nothing is open yet.
@@ -149,11 +195,31 @@ fun AgentAccountsScreen(
         }
     }
 
+    // wave-10 35: an error card's "Log in" starts the agent's first login
+    // once the accounts and the computer's agents are both in (its waiting
+    // row can then show, with its Tap to cancel) — once per page. The model
+    // refuses an agent with no section, so nothing starts unseen.
+    var firstLoginStarted by remember { mutableStateOf(false) }
+    val accountsIn = model?.snapshot != null
+    val agentsIn = model?.agents != null
+    LaunchedEffect(accountsIn, agentsIn) {
+        val harness = route.focusHarness
+        if (model != null && route.signIn && !firstLoginStarted && harness != null && accountsIn && agentsIn) {
+            if (model.startFirstLogin(harness)) firstLoginStarted = true
+        }
+    }
+
     val listState = rememberLazyListState()
     val chrome = LocalBottomChrome.current
     // The session opener's agent: scroll that harness's section header to
     // the top once its snapshot lands (the first section already is).
-    val focusIndex = focusSectionIndex(model?.snapshot, route.focusHarness)
+    val focusIndex = model?.let { m ->
+        if (m.snapshot == null) {
+            null
+        } else {
+            focusSectionIndex(m.sections(), route.focusHarness) { harness -> extraRowCount(m, harness) }
+        }
+    }
     LaunchedEffect(focusIndex, route.focusHarness) {
         if (focusIndex != null && focusIndex > 0) {
             listState.scrollToItem(focusIndex)
@@ -224,17 +290,24 @@ private fun DevicePicker(devices: List<DeviceView>, model: AgentAccountsModel) {
  * The lazy item index of `focusHarness`'s section header (0 when it is
  * the first section or absent), for the session opener's scroll. Pure.
  */
-internal fun focusSectionIndex(snapshot: AgentAccountsSnapshot?, focusHarness: String?): Int? {
-    if (focusHarness == null || snapshot == null) return null
-    val groups = providerGroups(snapshot)
+internal fun focusSectionIndex(
+    groups: List<ProviderGroup>,
+    focusHarness: String?,
+    extraRows: (String) -> Int,
+): Int? {
+    if (focusHarness == null) return null
     var index = 0
     for (group in groups) {
         if (group.harness == focusHarness) return index
-        // header + rows + optional warnings footer
-        index += 1 + group.accounts.size + if (group.warnings.isNotEmpty()) 1 else 0
+        // header + rows + add rows + optional warnings footer
+        index += 1 + group.accounts.size + extraRows(group.harness) + if (group.warnings.isNotEmpty()) 1 else 0
     }
     return null
 }
+
+/** The add rows plus the waiting row under `harness` (lazy items after its accounts). */
+private fun extraRowCount(model: AgentAccountsModel, harness: String): Int =
+    model.addRows(harness).size + if (model.signingIn?.harness == harness) 1 else 0
 
 /**
  * Emits the page: one section per harness (header with the brand mark,
@@ -250,7 +323,7 @@ internal fun LazyListScope.agentAccountsPage(
     harnessLabel: (String) -> String = ::harnessLabelOf,
 ) {
     val snapshot: AgentAccountsSnapshot? = model.snapshot
-    val groups = snapshot?.let { providerGroups(it) } ?: emptyList()
+    val groups = model.sections()
     if (snapshot == null) {
         item(key = "grouped:accounts:status", contentType = "grouped-row") {
             AccountsStatusRow(
@@ -271,8 +344,13 @@ internal fun LazyListScope.agentAccountsPage(
         item(key = "grouped:accounts:${group.harness}:header", contentType = "grouped-header") {
             HarnessHeader(group.harness, harnessLabel(group.harness))
         }
+        // One card per agent: its logins, then the add rows (wave-10 34),
+        // then the sign-in under way.
+        val addRows = model.addRows(group.harness)
+        val waiting = model.signingIn?.takeIf { it.harness == group.harness }
+        val cardRows = group.accounts.size + addRows.size + if (waiting != null) 1 else 0
         group.accounts.forEachIndexed { row, account ->
-            val position = GroupedPosition.of(row, group.accounts.size)
+            val position = GroupedPosition.of(row, cardRows)
             item(
                 key = "grouped:accounts:${group.harness}:row:${account.id}",
                 contentType = "grouped-row",
@@ -285,6 +363,17 @@ internal fun LazyListScope.agentAccountsPage(
                 )
             }
         }
+        addRows.forEachIndexed { offset, add ->
+            val position = GroupedPosition.of(group.accounts.size + offset, cardRows)
+            item(key = "grouped:accounts:${group.harness}:${add.id}", contentType = "grouped-row") {
+                AddAccountRowView(add, position, enabled = model.addEnabled) { model.onAddRow(add) }
+            }
+        }
+        if (waiting != null) {
+            item(key = "grouped:accounts:${group.harness}:waiting", contentType = "grouped-row") {
+                SignInWaitingRow(waiting, GroupedPosition.of(cardRows - 1, cardRows)) { model.cancelSignIn() }
+            }
+        }
         if (group.warnings.isNotEmpty()) {
             item(key = "grouped:accounts:${group.harness}:footer", contentType = "grouped-footer") {
                 GroupedFooter(
@@ -293,6 +382,26 @@ internal fun LazyListScope.agentAccountsPage(
                     color = RobocoTheme.palette.warning,
                 )
             }
+        }
+    }
+    // Wave-10 40: the computer's agents, each with its on/off switch.
+    val agentRows = model.agentRows()
+    if (agentRows.isNotEmpty()) {
+        item(key = "grouped:accounts:agents:header", contentType = "grouped-header") {
+            GroupedHeader(AgentsCopy.header(model.nameOfSelected()))
+        }
+        agentRows.forEachIndexed { ix, agent ->
+            item(key = "grouped:accounts:agents:${agent.harness}", contentType = "grouped-row") {
+                AgentToggleRowView(
+                    agent = agent,
+                    position = GroupedPosition.of(ix, agentRows.size),
+                    busy = agent.harness in model.toggling,
+                    onChange = { on -> model.setAgentEnabled(agent.harness, on) },
+                )
+            }
+        }
+        item(key = "grouped:accounts:agents:footer", contentType = "grouped-footer") {
+            GroupedFooter(AgentsCopy.Footer)
         }
     }
     item(key = "grouped:accounts:about", contentType = "grouped-footer") {
@@ -305,7 +414,11 @@ internal fun LazyListScope.agentAccountsPage(
                 )
             }
             GroupedFooter(
-                AccountsCopy.signInSection(model.nameOfSelected()),
+                if (model.canAddAccounts) {
+                    SignInCopy.about(model.nameOfSelected())
+                } else {
+                    AccountsCopy.signInSection(model.nameOfSelected())
+                },
                 Modifier.testTag("accounts-about"),
             )
         }
@@ -349,6 +462,118 @@ internal fun HarnessHeader(harness: String, label: String) {
  * catalog lookup, like the new-session chips' `ChipLabels.harnessLabel`).
  */
 internal fun harnessLabelOf(harness: String): String = uniffi.roboco_core.harnessLabel(harness)
+
+/**
+ * One agent of the computer (wave-10 40, iOS's Providers computer row):
+ * its name over "Installed" / "Not installed" / "Offline", dimmed when not
+ * installed, and its switch — a locked or busy switch ignores the flip and
+ * springs back.
+ */
+@Composable
+internal fun AgentToggleRowView(
+    agent: AgentToggleRow,
+    position: GroupedPosition,
+    busy: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    GroupedRow(
+        title = agent.label,
+        subtitle = agent.subtitle,
+        position = position,
+        modifier = if (agent.dimmed) Modifier.alpha(0.5f) else Modifier,
+        accessories = listOf(
+            GroupedAccessory.Custom {
+                // A locked or busy switch refuses the flip without its haptic.
+                RobocoSwitch(
+                    checked = agent.on,
+                    onCheckedChange = onChange,
+                    modifier = if (agent.toggleEnabled && !busy) Modifier else Modifier.alpha(0.5f),
+                    testTag = "agent-toggle-${agent.harness}",
+                    enabled = agent.toggleEnabled && !busy,
+                )
+            },
+        ),
+        testTag = "agent-${agent.harness}",
+        onClick = null,
+    )
+}
+
+/**
+ * One "Add account" row (iOS's quiet add cell): a muted plus and the label
+ * in the text colour, lined up with the account names; both tertiary while
+ * another sign-in or a switch is under way.
+ */
+@Composable
+internal fun AddAccountRowView(
+    row: AddAccountRow,
+    position: GroupedPosition,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val palette = RobocoTheme.palette
+    val typeScale = LocalTypeScale.current
+    GroupedRowContainer(
+        position = position,
+        onClick = if (enabled) onClick else null,
+        testTag = row.id,
+    ) {
+        Spacer(Modifier.width(16.dp))
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            Icon(
+                RobocoIcons.Plus,
+                if (enabled) palette.secondary else palette.tertiary,
+                14f,
+                SymbolWeight.Semibold,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        BasicText(
+            row.title,
+            style = uiStyle(Face.SansMedium, typeScale.fixed(15f), if (enabled) palette.text else palette.tertiary),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 13.dp),
+        )
+        Spacer(Modifier.width(16.dp))
+    }
+}
+
+/**
+ * The sign-in under way (iOS's waiting cell): "Finish signing in in the
+ * browser…", the device-code note and "Tap to cancel", and a spinner. A
+ * tap ends it here and on the computer.
+ */
+@Composable
+internal fun SignInWaitingRow(state: SignInState, position: GroupedPosition, onCancel: () -> Unit) {
+    val palette = RobocoTheme.palette
+    val typeScale = LocalTypeScale.current
+    GroupedRowContainer(
+        position = position,
+        onClick = onCancel,
+        testTag = "sign-in-waiting",
+    ) {
+        Spacer(Modifier.width(16.dp))
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(vertical = 12.dp),
+        ) {
+            BasicText(
+                SignInCopy.Waiting,
+                style = uiStyle(Face.SansMedium, typeScale.fixed(16f), palette.text),
+            )
+            BasicText(
+                signInDetail(state),
+                style = uiStyle(Face.Sans, typeScale.fixed(13f), palette.secondary),
+                modifier = Modifier.testTag("sign-in-waiting-detail"),
+            )
+        }
+        ActivitySpinner(palette.secondary, Modifier.size(20.dp))
+        Spacer(Modifier.width(16.dp))
+    }
+}
 
 /**
  * The centered status row (iOS's message cell): secondary 15 pt text on

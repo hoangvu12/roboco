@@ -19,6 +19,7 @@ mod failover;
 mod new_session;
 mod notify;
 mod previews;
+mod providers;
 mod rooms;
 mod session;
 mod types;
@@ -29,6 +30,7 @@ pub use failover::*;
 pub use new_session::*;
 pub use notify::*;
 pub use previews::*;
+pub use providers::*;
 pub use rooms::*;
 pub use session::*;
 pub use types::*;
@@ -234,6 +236,13 @@ impl CoreClient {
     /// App is backgrounding: flush pending cache writes, close spares.
     pub fn on_background(&self) {
         self.client.on_background();
+    }
+
+    /// The system is short of memory (`onTrimMemory`): shrink the warm
+    /// sessions to a smaller byte budget (`critical`: keep only what's on
+    /// screen or busy) — wave-10 43.
+    pub fn trim_memory(&self, critical: bool) {
+        self.client.trim_memory(critical);
     }
 }
 
