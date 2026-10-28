@@ -287,10 +287,11 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
   removal must strip them). Emulator device loss root cause: ticket 37's live-blurred search capsule froze the CI
   emulator's software GPU → capsule on `GlassTier.Fallback` (follow-up: blur only on hardware GPU). Flow-test
   diagnostics added (bounded cleanup adb, live logcat, mem/CPU log). Golden PNGs need a re-record (no CI runs
-  Roborazzi). Cleaned up (empty locked `..oboco-w10-android` folder left). **16 `bisect/pr38-*` branches on
-  origin await the user's OK to delete.**
+  Roborazzi). Cleaned up (empty locked `..
+oboco-w10-android` folder left). 16 `bisect/pr38-*` branches deleted (user OK).
 - **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
-  timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..oboco-fix-notices` / `fix/completion-notices`.
+  timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..
+oboco-fix-notices` / `fix/completion-notices`.
 - #41 merged `2edb72a7a` (upstream sync: ledger 576 rows `docs/reference/upstream-ledger.tsv`, PR table, `scripts/upstream/`
   translate/presence/triage + 31 unit tests, weekly-loop docs; no CI covers it, tests run locally). Cleaned up;
   an empty, locked `..
