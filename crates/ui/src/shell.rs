@@ -12790,6 +12790,63 @@ impl Render for Shell {
 mod tests {
     use super::*;
 
+    /// The source that renders each settings section's page column.
+    fn settings_page_source(section: SettingsSection) -> (&'static str, &'static str) {
+        match section {
+            SettingsSection::General | SettingsSection::Shortcuts => {
+                ("shortcuts.rs", include_str!("settings/shortcuts.rs"))
+            }
+            SettingsSection::Appshots => ("appshots.rs", include_str!("settings/appshots.rs")),
+            SettingsSection::Appearance => {
+                ("appearance.rs", include_str!("settings/appearance.rs"))
+            }
+            SettingsSection::Notifications => (
+                "notifications.rs",
+                include_str!("settings/notifications.rs"),
+            ),
+            SettingsSection::Voice => ("dictation/model.rs", include_str!("dictation/model.rs")),
+            SettingsSection::Harnesses => ("harnesses.rs", include_str!("settings/harnesses.rs")),
+            SettingsSection::Agents => ("accounts.rs", include_str!("settings/accounts.rs")),
+            SettingsSection::Devices => ("devices.rs", include_str!("settings/devices.rs")),
+            SettingsSection::RemoteAccess => (
+                "remote_access.rs",
+                include_str!("settings/remote_access.rs"),
+            ),
+            SettingsSection::Files => ("files.rs", include_str!("settings/files.rs")),
+            SettingsSection::Archived => ("archived.rs", include_str!("settings/archived.rs")),
+        }
+    }
+
+    /// Every settings page has the shared scroll host ([`settings::widgets::PageScroll`]):
+    /// a tracked `overflow_y_scroll` around each page column, the floating
+    /// rail, and the list-hover wiring. Remote access shipped without one and
+    /// its lower cards were unreachable (fleet-redesign 01).
+    #[test]
+    fn every_settings_page_has_a_scroll_host() {
+        for section in SettingsSection::ALL {
+            let (file, source) = settings_page_source(section);
+            let columns = source.matches("widgets::page_column()").count();
+            let hosts = source.matches(".track_scroll(&self.scroll.scroll)").count();
+            assert!(columns > 0, "{file} renders no page column for {section:?}");
+            assert_eq!(
+                columns, hosts,
+                "{file}: every page column needs `.overflow_y_scroll().track_scroll(&self.scroll.scroll)`"
+            );
+            assert!(
+                source.matches(".overflow_y_scroll()").count() >= hosts,
+                "{file}: the tracked page must overflow-scroll"
+            );
+            assert!(
+                source.contains("popover::rail(") || source.contains("render_scrollbar("),
+                "{file}: no floating rail for {section:?}"
+            );
+            assert!(
+                source.contains("set_list_hovered") || source.contains("on_scroll_hovered"),
+                "{file}: no list-hover wiring for {section:?}"
+            );
+        }
+    }
+
     pub(super) fn chat_with_path(
         cwd: Option<&str>,
         source: Option<(&str, &str)>,
