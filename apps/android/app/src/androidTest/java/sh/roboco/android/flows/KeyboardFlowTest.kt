@@ -1,11 +1,13 @@
 package sh.roboco.android.flows
 
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.unit.dp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -27,8 +29,8 @@ import sh.roboco.android.MainActivity
  * `main` engine and `chat-deploy`.
  *
  * The IME's top edge is tracked through raw window swipes (UiAutomator,
- * 8 dp from the left edge — inside the 18 dp row margin so no link is
- * hit, `mob:layout/rows.rs:124`):
+ * 8 dp inside the transcript's left edge — inside the 18 dp row margin so
+ * no link is hit, `mob:layout/rows.rs:124`):
  * 1. focus `composer-input`, type "Half-written thought", wait ≤ 3 s
  *    for the IME;
  * 2. a drag ending a quarter of the IME above the window bottom (past
@@ -68,7 +70,12 @@ class KeyboardFlowTest {
         val imeBottom = ViewCompat.getRootWindowInsets(decor)!!
             .getInsets(WindowInsetsCompat.Type.ime()).bottom
         val windowH = decor.height
-        val x = (8 * compose.density.density).toInt()
+        // 8 dp inside the transcript's left edge: the window's own edge on a
+        // phone, the session column's beside the tablet split's sidebar.
+        // A window-relative 8 dp landed in the sidebar there, so the drag
+        // never reached the IME (the tablet job's 1 s timeout, ci-speed 23).
+        val transcriptLeft = compose.onNodeWithTag("transcript").getBoundsInRoot().left
+        val x = ((transcriptLeft + 8.dp).value * compose.density.density).toInt()
         assertTrue("the IME is showing", imeVisible())
 
         // 2. A drag ending a quarter of the IME above the bottom: past

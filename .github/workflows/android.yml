@@ -547,6 +547,20 @@ jobs:
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
+      # The Tailcat smoke's rig, as in android-emulator: without it
+      # TailcatPairingFlowTest's assumption fails, which this runner setup
+      # reports as a failure (ci-speed 23).
+      - name: Build the Tailcat smoke pieces (adapter, local DERP relay)
+        working-directory: adapters/roboco-tailcat
+        run: |
+          out="$RUNNER_TEMP/tailcat"
+          mkdir -p "$out"
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat" ./cmd/roboco-tailcat
+          CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -o "$out/roboco-tailcat-testderp" ./cmd/roboco-tailcat-testderp
+          {
+            echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
+            echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
+          } >> "$GITHUB_ENV"
       - name: Run the tablet + tour suite
         uses: reactivecircus/android-emulator-runner@v2
         with:
