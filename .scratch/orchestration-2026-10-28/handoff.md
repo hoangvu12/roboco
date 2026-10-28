@@ -124,9 +124,25 @@ Keep a running "PRs" list in this file.
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | #39: merge main, strip #38's TS derives, fix `engine-local-regressions` + `ui-tests`, push once, watch CI | running (my turn; notice comes to me) |
 | `bdd1bbe1` | `..\roboco-ci-windows` / `ci/windows-split` | #43 CI 03→04→05 | **merged `060f7e3b0`**, cleaned up (empty locked folder may remain). Remote scratch branch `ci/scratch-startup-broken` (unmerged; ticket 03's broken-expectation proof): delete needs the user's OK. After-merge: first main run must log `Cache saved` for `windows-tests` + `windows-app`; then warm p50s (≥5 PR + ≥3 main runs) and cache size ≤ 3.5 GB → tickets 04/05 boxes (CI 09). 03's cursor_shim Linux box closes with 06 (#44). |
-| `a7b1639c` | `..\roboco-ci-linux-android` / `ci/linux-android-tiers` | #44 CI 06, 08, 23 (`core-tests` red at takeover) | running; takeover message queued |
+| `a7b1639c` | `..\roboco-ci-linux-android` / `ci/linux-android-tiers` | #44 CI 06, 08, 23 | **merged `787a048cf`**, cleaned up. Red core-tests was a stale harness test (fixed). New ticket 25 (tablet picker / failed-open, needs-triage; tests tagged `@PhoneOnly`). Deviation accepted: engine/harness-only PRs don't trigger android.yml at all (APK doesn't link them; dispatch for full tier). `ci:full` label not created yet. After-merge: caches seeded, ≥10-run measurements, 2 green nightly backstops, 3 green nightly tablets. Web overlap (ROBOCO_WEB_DIST/webkit apt in ui-tests.yml, room_relay in test-core.sh, crates/theme in android-changes.sh) handed to `82cbdf25` (steer sent). |
+| `4879f773` | `..\roboco-ci-linux-arm64` / `ci/linux-arm64-glibc` | CI 14 (Linux tests on arm64) + 21 (glibc 2.35 floor via 22.04 container), one PR | 14 done (cargo −10–28% on arm64, ui-tests job only −7%; lld dropped); shipping 14 alone (21's commit reverted). **21 BLOCKED**: ort-sys's prebuilt ONNX Runtime static lib needs glibc 2.38 + GCC 13 libstdc++, so the 22.04 container can't link, and v0.14.0 already needs Ubuntu 23.10/24.04+. Options asked of the user: (1) accept a 24.04 floor now (guard + 24.04 smoke + docs), (2) follow-up: bundle Microsoft's `libonnxruntime.so` via parakeet-rs `load-dynamic` to reach 22.04. Earlier: (turn ended while waiting on its background CI monitors; they re-invoke it). Dispatched release.yml on its branch: verified `publish` is tag-only, so nothing publishes. Pushed scratch A/B branches (`ci/scratch-arm64-ab` + a GLIBC_MAX=2.30 negative-test branch): unmerged, delete only with the user's OK |
+| `b170d20f` | `..\roboco-ci-android-speed` / `ci/android-emulator-speed` | CI 22 → 16 → 17, one PR; 22's named-test retry rule = separate commit, needs the user's OK on ticket-11 defaults before merge | running |
 | `6798cc35` | main checkout, read-only (prototypes `C:\tmp\upstream-less-recoding\`) | research: less re-coding per upstream port (renamed mirror via filter-repo, mergiraf, hot-file split, re-baseline) measured on wave-10 02–32/44–75 → `.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md` | **done** (`505d60bb4`), archived. Result: merging even a renamed mirror = 249 conflicted files/week + revives declined code → ADR 0003 stands. Remaining wave-10 tickets are hard leftovers (56/58 REAL); best combo (translate.py residual mode + mergiraf only when it fully resolves a file + regenerate `Cargo.lock` + per-conflict notes; lane-ordered porting) cuts conflict spots 2,099→1,376 (−34%), ≈ −20–25% porting time (≈35–55 h). Wholesale-take and hot-file refactors don't pay. **Asked the user** decisions 1–5 (report §decisions); not yet answered. |
 
+| `d72f1cd9` | `..\roboco-ci-windows-arm64` / `ci/windows-tests-arm64` | CI 15 (Windows `tests` on arm64; nightly x64 = option b) | running |
+| `8539230d` | `..\roboco-upstream-translate` / `tools/translate-residual` (no sccache basedir: Python only) | translate.py: residual mode, Cargo.lock regenerate, conflict notes, opt-in mergiraf; docs (lane order, hot-file test moves) | running |
+
+- **User decisions 2026-10-29 ("do ur rec"):** CI 15 = option (b) nightly x64; CI 11 defaults OK (22's retry
+  rule approved); upstream less-recoding recs 1, 2, 4, 5 yes, 3 (renamed mirror) later; delete scratch branches:
+  `ci/scratch-startup-broken` deleted; `ci/scratch-arm64-ab` + `ci/scratch-glibc-floor` (from `4879f773`) delete
+  once that worker is done (covered by the same OK).
+| `955e487b` | main checkout, read-only | research (user ask 2026-10-29): where the time goes + how to speed up ticket throughput and Roboco dev in general → `.scratch/dev-velocity/report-2026-10-29.md` | running |
+
+- Ticket count 2026-10-29: 131 total (web-removal 11, ci-speed 25, wave-10 78, fleet-redesign 17): ≈26 done,
+  ≈17 in flight, ≈83 not started (+3 parked).
+- #12 closed (user OK 2026-10-29; branch `web-pierre-adoption` kept). #16 Mimir stays open (user: not web-related;
+  it's mostly engine/harness/ui/`integrations/mimir`, plus 18 `web/` files + wiregen that #39 deletes; last
+  updated 2026-10-03, so it needs a big refresh if revived).
 - Next: review #39 when `82cbdf25` reports; review/merge #43/#44 when green; relay the research
   recommendation to the user in one short message.
 
