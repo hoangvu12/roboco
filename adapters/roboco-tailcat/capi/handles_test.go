@@ -44,3 +44,13 @@ func TestCloseIsIdempotentAndIgnoresUnknownHandles(t *testing.T) {
 		t.Fatalf("%d handles open", open)
 	}
 }
+
+func TestPathAndBackgroundIgnoreUnknownHandles(t *testing.T) {
+	for _, handle := range []int64{0, -1, 42} {
+		if line := pathOf(handle); line != "" {
+			t.Fatalf("pathOf(%d) = %q, want unknown", handle, line)
+		}
+		setBackground(handle, true)
+		setBackground(handle, false)
+	}
+}

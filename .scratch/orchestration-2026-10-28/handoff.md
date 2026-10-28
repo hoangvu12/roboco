@@ -160,6 +160,10 @@ once"; spec + tickets 01–15). The old fleet specs (`fleet-merge`, `fleet-agent
 01 alone now (in flight); 02–11 one PR on `feature/connect-devices` after web removal merges; 12–15
 their own PR after that (blocked by wave-10 03, IPC token). Its ADR is **0013** (web removal takes 0012).
 
+**Upstream sync (user decisions 2026-10-28):** weekly batches after wave 10; small CLEAN/TRIVIAL ports
+skip tickets (trailer + ledger row); ledger + tools in the repo; NO upstream-first PRs to zeron. Wave-10
+ports use `translate.py` as the first step once the tooling PR lands.
+
 **Queue after web removal merges** (unchanged): CI 03→04→05, 06, 08, then 09; CI 10 after web
 removal; CI 22–24 (from the 11 triage); wave 10 lanes (fixes first: 02, 03; wave-10 03 is also a
 prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
@@ -210,9 +214,10 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
-| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | **PR #38** open (all 11 committed; 41 partial: drag gesture follow-up; 36 carries a TS derive since web removal hadn't merged); review done → 1 blocker (`OneRowBarShellTest` unplaced-node assert; same in `SessionFlowTest`) + 9 should-fix + nits sent back as one batch (11:50); 36's requester = per-sign-in UUID secret, documented as deviation |
+| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | **PR #38** open (all 11 committed; 41 partial: drag gesture follow-up; 36 carries a TS derive since web removal hadn't merged); review batch applied (`b5b0ce766`); JVM/compile green. **`android-emulator` device loss** (emulator drops off adb 8–10 min in, every run incl. the first push; 60-min cancel = cleanup adb with no timeout). 13:00: diagnostics patch + parallel bisect via `bisect/pr38-NN` dispatch branches (delete them after; they're unmerged → tell the user). Earlier: review done → 1 blocker (`OneRowBarShellTest` unplaced-node assert; same in `SessionFlowTest`) + 9 should-fix + nits sent back as one batch (11:50); 36's requester = per-sign-in UUID secret, documented as deviation |
 | `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | **PR #37** open, reviewed OK; worktree removed (branch pushed); chat archived; mobile-core flake `busy_sends_queue_steer_and_stop_and_send` re-run |
-| `1e9159f7` | main checkout (report only, prototype in `C:\tmp`) | research: faster upstream sync (user asked; rebase ruled out) → `.scratch/upstream-sync-research/report-2026-10-28.md` | running |
+| `1e9159f7` | main checkout (report only, prototype in `C:\tmp`) | research: faster upstream sync → `.scratch/upstream-sync-research/report-2026-10-28.md` (+ user decisions) | done, archived |
+| `2f7a0fd7` | `..\roboco-upstream-tools` / `tools/upstream-sync` | ledger (`docs/reference/upstream-ledger.tsv`), `scripts/upstream/{translate,presence,triage}.py`, weekly-loop docs; one PR | running |
 | `3f08770e` | `..\roboco-remote-speed` / `feature/remote-speed` | fleet-redesign 17 then 16 (user-approved speed tickets, `1e9bc22a5`), one PR | running |
 
 - This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
@@ -278,6 +283,8 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #40 merged `9ce048640` (fleet-redesign 17 done; 16 built, its gate = the user's Laptop↔PC / phone↔PC check,
+  checklist in ticket 16; `pushForDirectPath` in `adapters/roboco-tailcat/path.go` turns pings off). Cleaned up.
 - #37 merged `f1e6ae5fa` (fleet-redesign 01, settings page scrolls; mobile-core flake re-run green). Remote
   branch `fix/settings-scroll` kept (deleting needs the user's OK). Manual: rail/fade vs Accounts page.
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache

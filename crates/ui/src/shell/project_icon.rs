@@ -147,15 +147,19 @@ impl ProjectIcon {
                     return executor.spawn(async move { load_local_icon(&root) }).await;
                 }
                 let client = WorkspaceFilesClient::new(engine?, context.clone());
-                for path in ICON_PATHS {
+                // Every candidate at once: over a slow link (fleet-redesign
+                // 17) one read after another cost a round trip per path,
+                // seconds per project. The first hit in priority order wins.
+                let reads = ICON_PATHS.iter().map(|path| {
                     // This also resolves the current checkout identity on the owning host.
-                    let file = match client
-                        .read_file(roboco_proto::ReadWorkspaceFileRequest {
-                            target: context.target.clone(),
-                            path: (*path).into(),
-                        })
-                        .await
-                    {
+                    client.read_file(roboco_proto::ReadWorkspaceFileRequest {
+                        target: context.target.clone(),
+                        path: (*path).into(),
+                    })
+                });
+                let results = futures::future::join_all(reads).await;
+                for (path, result) in ICON_PATHS.iter().zip(results) {
+                    let file = match result {
                         Ok(file) => file,
                         Err(error) if error.retryable() => return None,
                         Err(_) => continue,

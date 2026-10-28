@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -74,6 +75,11 @@ type Client struct {
 	// one health probe and at most one of them replaces the tunnel.
 	resetMu   sync.Mutex
 	lastReset time.Time
+
+	// path pushes for a direct path and keeps the last one measured
+	// (fleet-redesign 16); stopPath ends its pings.
+	path     *pathProber
+	stopPath context.CancelFunc
 }
 
 // tunnel is one tailcat.Client generation. A reset replaces the whole
@@ -98,6 +104,18 @@ func newTunnel(tc *tailcat.Client) *tunnel {
 // URL returns the local loopback URL. It remains stable until Close.
 func (c *Client) URL() string { return c.url }
 
+// Path is how this client last reached its server: directly or through a
+// relay region, with the measured round trip. Never an address or a key.
+func (c *Client) Path() PathStatus { return c.path.Status() }
+
+// OnPath sets a sink for every new path measurement (the `connect`
+// subprocess prints them as status lines).
+func (c *Client) OnPath(sink func(PathStatus)) { c.path.OnStatus(sink) }
+
+// SetBackground pauses the path pings while the app is in the background
+// (a phone, ADR 0010) and restarts the burst when it comes back.
+func (c *Client) SetBackground(background bool) { c.path.SetBackground(background) }
+
 // closeDrainTimeout bounds how long Close waits for the in-tunnel FINs to be
 // acknowledged. Without the drain, tearing down the in-process TCP stack
 // loses them and the engine only notices the dead sockets when its silence
@@ -108,6 +126,7 @@ const closeDrainTimeout = 1500 * time.Millisecond
 // connections. It is safe to call more than once.
 func (c *Client) Close() {
 	c.once.Do(func() {
+		c.stopPath()
 		// proxy.close cancels and joins all dial/copy workers first, so no
 		// reset can race this and every tunnel socket is already closed.
 		c.proxy.close()
@@ -227,6 +246,12 @@ func startClient(address, listenAddress, statePath, derpMap string) (*Client, er
 // connectClient is the shared body of the file-backed and caller-held
 // client paths: address and listener are already validated.
 func connectClient(address, listenAddress string, state *stateFile, derpMap string) (*Client, error) {
+	return connectClientWith(address, listenAddress, state, derpMap, defaultPathCadence())
+}
+
+// connectClientWith is connectClient with the path probe cadence chosen
+// (tests shrink it).
+func connectClientWith(address, listenAddress string, state *stateFile, derpMap string, cadence pathCadence) (*Client, error) {
 	newTC := func() *tailcat.Client {
 		return &tailcat.Client{
 			Server:     tailcat.Addr(address),
@@ -258,7 +283,22 @@ func connectClient(address, listenAddress string, state *stateFile, derpMap stri
 	// tunnel, and so from ever counting as a failed dial.
 	c.proxy.awaitFirstBytes = true
 	c.proxy.start()
+	c.path = newPathProber(cadence, c.discoPing)
+	pathCtx, stopPath := context.WithCancel(context.Background())
+	c.stopPath = stopPath
+	go c.path.run(pathCtx)
 	return c, nil
+}
+
+// discoPing pings the server over the current tunnel. A pong proves the
+// tunnel handshaken, like a successful dial.
+func (c *Client) discoPing(ctx context.Context) (*ipnstate.PingResult, error) {
+	t := c.cur.Load()
+	result, err := t.tc.DiscoPing(ctx)
+	if err == nil {
+		t.handshaken.Store(true)
+	}
+	return result, err
 }
 
 // Bound each tunnel dial: the proxy's lifetime context alone can leave a
@@ -343,6 +383,8 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		return conn, err
 	}
 	c.afterFailedDial(ctx, t)
+	// A failed dial may mean the path changed: push for a direct one again.
+	c.path.Rearm()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -363,7 +405,7 @@ func (c *Client) afterFailedDial(ctx context.Context, failed *tunnel) {
 		sinceReset: now.Sub(c.lastReset),
 		age:        now.Sub(failed.created),
 		handshaken: failed.handshaken.Load(),
-	}, func() error { return failed.probe(ctx) })
+	}, func() error { return failed.probe(ctx, c.path) })
 	if verdict != resetTunnel || ctx.Err() != nil {
 		debugLogf("adapter: no reset of %p (%v)", failed.tc, verdict)
 		return
@@ -390,20 +432,23 @@ func (t *tunnel) dial(ctx context.Context) (net.Conn, error) {
 }
 
 // probe checks the tunnel end to end within healthProbeTimeout. The caller
-// holds Client.resetMu.
+// holds Client.resetMu. A pong also tells path which way it came.
 //
 // tailcat.Client.Ping is no health check here: once the first meow
 // handshake completed it returns at once without waiting for an ack. A
 // disco ping needs a pong from the server, via the relay or a direct path,
 // and a restarted server that has forgotten this peer ignores it.
-func (t *tunnel) probe(ctx context.Context) error {
+func (t *tunnel) probe(ctx context.Context, path *pathProber) error {
 	if !t.probedAt.IsZero() && time.Since(t.probedAt) < probeReuse {
 		return t.probeErr
 	}
 	attempt, cancel := context.WithTimeout(ctx, healthProbeTimeout)
 	defer cancel()
 	started := time.Now()
-	_, err := t.tc.DiscoPing(attempt)
+	result, err := t.tc.DiscoPing(attempt)
+	if err == nil {
+		path.observe(result)
+	}
 	if ctx.Err() != nil {
 		// The caller gave up mid-probe: that says nothing about the tunnel.
 		// Caching it would let another dial of the same burst reset a

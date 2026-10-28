@@ -11,6 +11,7 @@ use std::{
 
 use gpui::{AppContext, Entity, TestAppContext};
 use roboco_engine::{EngineCore, EngineListener};
+use roboco_engine_client::delay_proxy::{DelayProxy, LinkProfile};
 
 use crate::engine_registry::{EngineKey, EngineRegistry, EngineTarget, ScopedId};
 use crate::state::{AppState, EngineBootConfig};
@@ -27,6 +28,9 @@ pub(crate) struct PairedEngines {
     pub registry: EngineRegistry,
     pub key: EngineKey,
     pub target: EngineTarget,
+    /// The slow link the pairing (and so every request) goes through, when
+    /// started with [`PairedEngines::start_over`].
+    pub proxy: Option<DelayProxy>,
 }
 
 /// Pump gpui until `done` holds, sleeping between passes so tokio workers
@@ -51,6 +55,17 @@ impl PairedEngines {
     /// Boot the local engine through `AppState::bootstrap`, pair a second
     /// real engine over loopback, and wait until it is connected.
     pub fn start(cx: &mut TestAppContext) -> Self {
+        Self::start_over(cx, None, |_| {})
+    }
+
+    /// [`Self::start`], with the paired engine reached through a delay
+    /// proxy shaped like `link` (when given), and `seed` run on the paired
+    /// engine before the desktop pairs it.
+    pub fn start_over(
+        cx: &mut TestAppContext,
+        link: Option<LinkProfile>,
+        seed: impl FnOnce(&EngineCore),
+    ) -> Self {
         cx.executor().allow_parking();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -73,13 +88,14 @@ impl PairedEngines {
             );
             crate::settings::init(Default::default(), local_dir.path(), cx);
         });
-        let (remote, listener, pairing_url) = runtime.block_on(async {
+        let (remote, listener, pairing_url, proxy) = runtime.block_on(async {
             let core = EngineCore::assemble_with_profile(
                 roboco_engine::EngineProfile::local(remote_dir.path()).unwrap(),
                 Arc::new(roboco_engine::HarnessRegistry::new()),
                 roboco_proto::HarnessId::Mock,
             )
             .unwrap();
+            seed(&core);
             let listener = roboco_engine::serve_engine_remote(
                 "127.0.0.1:0".parse().unwrap(),
                 core.rpc_service(),
@@ -87,16 +103,21 @@ impl PairedEngines {
             )
             .await
             .unwrap();
+            let proxy = match link {
+                Some(link) => Some(DelayProxy::start(listener.address, link).await),
+                None => None,
+            };
+            let address = proxy
+                .as_ref()
+                .map_or(listener.address, |proxy| proxy.address);
             let code = roboco_engine::pairing::PairingStore::open(remote_dir.path())
                 .unwrap()
                 .create_code("paired fixture", 300)
                 .unwrap();
-            let url = roboco_engine::pairing::pairing_url(
-                &format!("http://{}", listener.address),
-                &code.credential,
-            )
-            .unwrap();
-            (core, listener, url)
+            let url =
+                roboco_engine::pairing::pairing_url(&format!("http://{address}"), &code.credential)
+                    .unwrap();
+            (core, listener, url, proxy)
         });
         let boot = EngineBootConfig {
             data_dir: local_dir.path().to_path_buf(),
@@ -125,6 +146,7 @@ impl PairedEngines {
             registry,
             key,
             target,
+            proxy,
         }
     }
 
