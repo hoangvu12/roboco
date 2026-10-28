@@ -109,6 +109,10 @@ class SwipeRowTest {
             calls += "unarchive $chatId"
         }
 
+        override fun deleteSession(row: SessionRow) {
+            calls += "delete ${row.id}"
+        }
+
         override fun move(chatId: String, sectionId: String?) {
             calls += "move $chatId ${sectionId ?: "-"}"
         }

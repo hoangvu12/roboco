@@ -59,6 +59,7 @@ private class FakeSessionWrites(var mode: WriteMode = WriteMode.Ok) : SessionWri
     override fun unpinSession(chatId: String) = fail()
     override fun archiveSession(chatId: String) = fail()
     override fun unarchiveSession(chatId: String) = fail()
+    override fun deleteSession(chatId: String) = fail()
     override fun assignSection(chatId: String, sectionId: String?) = fail()
     override fun movePin(chatId: String, after: String?, before: String?) = fail()
     override fun renameSession(chatId: String, title: String) = fail()

@@ -41,6 +41,7 @@ import sh.roboco.android.design.glass.flattenLevel
 import sh.roboco.android.design.glass.rememberGlassMenuState
 import sh.roboco.android.sessions.ActionOutcome
 import sh.roboco.android.sessions.LocalRowActions
+import sh.roboco.android.sessions.rememberSessionPrompts
 import sh.roboco.android.shell.AppRouter
 import sh.roboco.android.shell.LocalAppRouter
 import sh.roboco.android.shell.LocalNavEntry
@@ -84,8 +85,15 @@ import uniffi.roboco_core.LayoutFrame
  * - row 4: "Account & Usage" (android-next#05, PR #578's SF
  *   `gauge.with.dots.needle.33percent` — the app's `Gauge` glyph), never
  *   disabled — it only reads cached state and pushes a page;
- * - row 5: "Archive" (SF `archivebox`), destructive, disabled with Pin
- *   while the engine is offline (79's `canWrite`).
+ * - row 5: "Archive" (SF `archivebox`), disabled with Pin while the
+ *   engine is offline (79's `canWrite`) — no longer destructive (#967);
+ * - row 6: "Delete" (SF `trash`), destructive, disabled like Archive —
+ *   upstream #967, after the "Delete session?" confirm. `null`
+ *   [onDelete] (galleries, older tests) leaves the row out.
+ *
+ * Upstream #967 also heads the menu with the session's title over
+ * "project @ device" ([title]/[subtitle], one wrapped `Menu.title`; blank
+ * = no title line). Roboco keeps the header bar's two-line title as well.
  *
  * Keep it pure: no `@Composable`, no state reads. [rememberSessionMenu]
  * calls this once per open, from the click lambda.
@@ -99,8 +107,11 @@ fun sessionMenu(
     onShowAccounts: () -> Unit,
     onArchive: () -> Unit,
     sideChats: SideChatMenuRows? = null,
+    onDelete: (() -> Unit)? = null,
+    title: String = "",
+    subtitle: String = "",
 ): Menu = Menu(
-    title = null,
+    title = sessionMenuHeader(title, subtitle),
     children = listOfNotNull(
         MenuItem(
             title = if (pinned) "Unpin" else "Pin",
@@ -131,13 +142,34 @@ fun sessionMenu(
         MenuItem(
             title = "Archive",
             icon = MenuIcon.Symbol(RobocoIcons.Archivebox),
-            destructive = true,
             disabled = !canWrite,
             testTag = "session-menu-archive",
             action = onArchive,
         ),
+        onDelete?.let {
+            MenuItem(
+                title = "Delete",
+                icon = MenuIcon.Symbol(RobocoIcons.Trash),
+                destructive = true,
+                disabled = !canWrite,
+                testTag = "session-menu-delete",
+                action = it,
+            )
+        },
     ),
 )
+
+/**
+ * The ⋯ menu's header (upstream #967): the title, then where it runs on
+ * its own line — a menu subtitle isn't drawn in the header, so the two
+ * share the wrapped title line. `null` when both are blank.
+ */
+internal fun sessionMenuHeader(title: String, subtitle: String): String? = when {
+    title.isBlank() && subtitle.isBlank() -> null
+    subtitle.isBlank() -> title
+    title.isBlank() -> subtitle
+    else -> "$title\n$subtitle"
+}
 
 /**
  * android-next #06's ⋯ rows (upstream #899's inline group between Copy
@@ -207,13 +239,25 @@ fun rememberSessionMenu(
     val nav = LocalNavStack.current
     val entry = LocalNavEntry.current
     val toaster = LocalToaster.current
+    val prompts = rememberSessionPrompts(rowActions = actions)
     // The application context: the clipboard service outlives any
     // activity-level context flip while this remembered lambda is held.
     val appContext = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
-    return remember(controller, transcript, menuState, actions, router, nav, entry, toaster) {
+    return remember(controller, transcript, menuState, actions, router, nav, entry, toaster, prompts) {
         val open: (Rect) -> Unit = { anchor: Rect ->
             val chatId = controller.chatId
+            val chrome = controller.chrome.value
+            // Off this session once it's gone (iOS `leave()`): the split's
+            // draft, else the guarded pop. Shared by Archive and Delete.
+            val leave = {
+                leaveAfterArchive(
+                    chatId,
+                    router,
+                    isTopAndIdle = { nav.top == entry && nav.transition == null },
+                    pop = { nav.pop(animated = true) },
+                )
+            }
             // android-next #05: the session's harness and computer scope
             // the Accounts & Usage page (a mid-transition guard like the
             // Devices section's).
@@ -258,17 +302,13 @@ fun rememberSessionMenu(
                 onShowAccounts = showAccounts,
                 onArchive = {
                     actions.archive(chatId) { outcome ->
-                        if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) {
-                            leaveAfterArchive(
-                                chatId,
-                                router,
-                                isTopAndIdle = { nav.top == entry && nav.transition == null },
-                                pop = { nav.pop(animated = true) },
-                            )
-                        }
+                        if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) leave()
                     }
                 },
                 sideChats = currentSideChats(),
+                onDelete = { prompts.confirmDeleteSession(chatId, chrome.title, onDeleted = leave) },
+                title = chrome.title,
+                subtitle = chrome.subtitle,
             )
             menuState.open(anchor, menu)
         }
@@ -383,6 +423,7 @@ private fun SessionMenuOpenPreview(pinned: Boolean, canWrite: Boolean) {
                     onShowPreviews = {},
                     onShowAccounts = {},
                     onArchive = {},
+                    onDelete = {},
                 ).children,
                 { null },
                 isRoot = true,

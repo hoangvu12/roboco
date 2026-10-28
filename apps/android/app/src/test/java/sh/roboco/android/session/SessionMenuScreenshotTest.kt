@@ -87,7 +87,13 @@ class SessionMenuScreenshotTest {
 
     private fun dpPx(dp: Int): Float = with(shotDensity) { dp.dp.toPx() }
 
-    private fun shot(appearance: Appearance, pinned: Boolean, canWrite: Boolean, file: String) {
+    /**
+     * [headed]: upstream #967's menu — the title over "project @ device"
+     * heads it and Delete trails Archive. The panel grows by those two
+     * lines, so the worked-example geometry below is checked only for the
+     * plain menus.
+     */
+    private fun shot(appearance: Appearance, pinned: Boolean, canWrite: Boolean, file: String, headed: Boolean = false) {
         compose.setContent {
             RobocoTheme(appearance) {
                 ToastHost {
@@ -111,6 +117,9 @@ class SessionMenuScreenshotTest {
                                             onShowPreviews = {},
                                             onShowAccounts = {},
                                             onArchive = {},
+                                            onDelete = if (headed) ({}) else null,
+                                            title = if (headed) "Fix the deploy script" else "",
+                                            subtitle = if (headed) "roboco @ studio" else "",
                                         ),
                                     )
                                 },
@@ -132,6 +141,18 @@ class SessionMenuScreenshotTest {
         // The worked example: the panel sits at x 146 → 396, y 24 → 254,
         // its trailing edge shared with the ⋯ circle's (396).
         val panel = compose.onNodeWithTag("glass-menu").fetchSemanticsNode()
+        if (headed) {
+            compose.onNodeWithTag("session-menu-delete").assertExists()
+            val more = compose.onNodeWithTag("session-more").fetchSemanticsNode()
+            assertEquals(
+                "the headed panel still shares the ⋯ circle's trailing edge",
+                more.positionInRoot.x + more.size.width,
+                panel.positionInRoot.x + panel.size.width,
+                1f,
+            )
+            compose.onRoot().captureRoboImage("session/$file")
+            return
+        }
         assertEquals(dpPx(146), panel.positionInRoot.x, 1f)
         assertEquals(dpPx(396), panel.positionInRoot.x + panel.size.width, 1f)
         assertEquals(dpPx(24), panel.positionInRoot.y, 1f)
@@ -160,5 +181,15 @@ class SessionMenuScreenshotTest {
     @Test
     fun lightReadOnly() {
         shot(Appearance.Light, pinned = false, canWrite = false, "session_menu_light_readonly.png")
+    }
+
+    @Test
+    fun lightHeadedWithDelete() {
+        shot(Appearance.Light, pinned = false, canWrite = true, "session_menu_light_headed_delete.png", headed = true)
+    }
+
+    @Test
+    fun darkHeadedWithDelete() {
+        shot(Appearance.Dark, pinned = true, canWrite = true, "session_menu_dark_headed_delete.png", headed = true)
     }
 }

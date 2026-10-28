@@ -15,6 +15,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.longClick
@@ -636,6 +639,66 @@ class SessionFlowTest {
         }
     }
 
+    /**
+     * `testSessionMenuHeaderAndDelete` (upstream #967): the list's
+     * long-press menu deletes after "Delete session?" (Cancel keeps the
+     * row); the session's ⋯ menu is headed by its title and deletes too,
+     * back on the list without the row. Runs on `chat-home` — no other
+     * flow test reads it, and the fixture engine lives for the whole run.
+     */
+    @Test
+    fun sessionMenuHeaderAndDelete() {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNode(FlowSemantics.sessionRow("chat-home")).performTouchInput { longClick() }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("row-menu-delete").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("list-menu-delete.png")
+        compose.onNodeWithTag("row-menu-delete").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("Delete session?").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("delete-confirm.png")
+        compose.onNodeWithTag("alert-cancel").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithText("Delete session?").fetchSemanticsNodes().isEmpty()
+        }
+        assertTrue(
+            "cancel keeps the session",
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isNotEmpty(),
+        )
+
+        compose.onNode(FlowSemantics.sessionRow("chat-home")).performClick()
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("session-more").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("session-more").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("session-menu-delete").fetchSemanticsNodes().isNotEmpty()
+        }
+        // The title heads the menu (the header line inside the panel).
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(
+                hasText("Clean up ~/Downloads", substring = true) and hasAnyAncestor(hasTestTag("glass-menu")),
+                useUnmergedTree = true,
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("session-menu.png")
+        compose.onNodeWithTag("session-menu-delete").performClick()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("alert-primary").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("alert-primary").performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("session-more").fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-home")).fetchSemanticsNodes().isEmpty()
+        }
+    }
+
     /** `testToolGroupExpandsAndShowsDetail` (:344): the disclosure and the inline detail. */
     @Test
     fun toolGroupExpandsAndShowsDetail() {
@@ -1119,6 +1182,7 @@ class SessionFlowTest {
             name.startsWith("searchTab") ||
             name.startsWith("pullToRefresh") ||
             name.startsWith("archiveWithUndo") ||
+            name.startsWith("sessionMenuHeaderAndDelete") ||
             name.startsWith("newSessionFromAccessory") -> null
         name.startsWith("questionPanel") -> "chat:chat-ask"
         name.startsWith("sendGlides") -> "chat:chat-runway"

@@ -117,6 +117,15 @@ interface SessionPrompts {
      */
     fun confirmDeleteSection(sectionId: String, name: String, onDeleted: () -> Unit = {})
 
+    /**
+     * "Delete session?" (upstream #967's `confirmDelete`, the desktop's
+     * dialog): Cancel or a destructive Delete, which calls
+     * [RowActions.delete]. [onDeleted] runs on [ActionOutcome.Ok] or
+     * [ActionOutcome.Gone] — the ⋯ menu leaves the session then; the list
+     * needs nothing (the overlay drops the row).
+     */
+    fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit = {})
+
     companion object {
         /** Previews and tests: every launcher is a no-op. */
         val Noop: SessionPrompts = object : SessionPrompts {
@@ -125,6 +134,7 @@ interface SessionPrompts {
             override fun renameSection(sectionId: String, currentName: String, onRenamed: ((String) -> Unit)?) {}
             override fun moveToSection(row: SessionRow) {}
             override fun confirmDeleteSection(sectionId: String, name: String, onDeleted: () -> Unit) {}
+            override fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit) {}
         }
     }
 }
@@ -189,6 +199,16 @@ internal class DefaultSessionPrompts(
         sheets.show(
             deleteSectionSheet(name) {
                 rowActions.deleteSection(sectionId) { outcome ->
+                    if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) onDeleted()
+                }
+            },
+        )
+    }
+
+    override fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit) {
+        alerts.show(
+            deleteSessionAlert(title) {
+                rowActions.delete(chatId) { outcome ->
                     if (outcome == ActionOutcome.Ok || outcome == ActionOutcome.Gone) onDeleted()
                 }
             },

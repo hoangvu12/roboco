@@ -31,6 +31,7 @@ interface SessionWrites {
     fun unpinSession(chatId: String)
     fun archiveSession(chatId: String)
     fun unarchiveSession(chatId: String)
+    fun deleteSession(chatId: String)
     fun assignSection(chatId: String, sectionId: String?)
     fun movePin(chatId: String, after: String?, before: String?)
     fun renameSession(chatId: String, title: String)
@@ -49,6 +50,7 @@ fun CoreClient.asSessionWrites(): SessionWrites = object : SessionWrites {
     override fun unpinSession(chatId: String) = this@asSessionWrites.unpinSession(chatId)
     override fun archiveSession(chatId: String) = this@asSessionWrites.archiveSession(chatId)
     override fun unarchiveSession(chatId: String) = this@asSessionWrites.unarchiveSession(chatId)
+    override fun deleteSession(chatId: String) = this@asSessionWrites.deleteSession(chatId)
     override fun assignSection(chatId: String, sectionId: String?) =
         this@asSessionWrites.assignSection(chatId, sectionId)
     override fun movePin(chatId: String, after: String?, before: String?) =
@@ -203,6 +205,10 @@ class CoreRowActions(
 
     override fun unarchive(chatId: String, onResult: (ActionOutcome) -> Unit) {
         dispatch("unarchive", OpKind.Chat, onResult) { it.unarchiveSession(chatId) }
+    }
+
+    override fun delete(chatId: String, onResult: (ActionOutcome) -> Unit) {
+        dispatch("delete", OpKind.Chat, onResult) { it.deleteSession(chatId) }
     }
 
     override fun move(chatId: String, toSection: String?, onResult: (ActionOutcome) -> Unit) {

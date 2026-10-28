@@ -211,6 +211,10 @@ private class SwipeGalleryCommands(
         onLog("rename ${row.id}")
     }
 
+    override fun deleteSession(row: CoreSessionRow) {
+        onLog("delete ${row.id}")
+    }
+
     override fun newSection(engineId: String?) {
         onLog("newSection engine=${engineId ?: "none"}")
     }

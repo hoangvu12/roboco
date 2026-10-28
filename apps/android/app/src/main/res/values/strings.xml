@@ -102,6 +102,7 @@
     <string name="menu_no_section" translatable="false">No Section</string>
     <string name="menu_new_section" translatable="false">New Section…</string>
     <string name="menu_rename" translatable="false">Rename…</string>
+    <string name="menu_delete" translatable="false">Delete</string>
     <!-- The Settings "Sessions" section (android-ui-parity #100), verbatim
          from ios:Shell/MoreViewController.swift:212-215. `group_by_project`
          is owned by this ticket only: ticket 46's ⋯ menu writes its labels
