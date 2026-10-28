@@ -237,6 +237,13 @@ impl CoreClient {
     pub fn on_background(&self) {
         self.client.on_background();
     }
+
+    /// The system is short of memory (`onTrimMemory`): shrink the warm
+    /// sessions to a smaller byte budget (`critical`: keep only what's on
+    /// screen or busy) — wave-10 43.
+    pub fn trim_memory(&self, critical: bool) {
+        self.client.trim_memory(critical);
+    }
 }
 
 // ── static helpers ─────────────────────────────────────────────────────────

@@ -787,6 +787,19 @@ impl Client {
         self.inner.sessions.close_background();
     }
 
+    /// The platform is short of memory (Android `onTrimMemory`, wave-10 43):
+    /// evict warm sessions against a quarter of the budget, or — `critical`
+    /// — against none, keeping only what is on screen, streaming, sending,
+    /// and the most recently used one.
+    pub fn trim_memory(&self, critical: bool) {
+        let budget = if critical {
+            0
+        } else {
+            session::WARM_SESSION_BYTE_BUDGET / 4
+        };
+        self.inner.sessions.evict_within(budget);
+    }
+
     /// Stop all tasks (sign-out / app teardown). Snapshots stay readable.
     pub fn shutdown(&self) {
         self.inner.client_cancel.cancel();
