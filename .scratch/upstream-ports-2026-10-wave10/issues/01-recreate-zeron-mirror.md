@@ -55,3 +55,22 @@ One commit after the audit window (`31d26eeb6..zeron/main`):
   message-markdown fixture. Touches the same surfaces as tickets 30 (#1067
   Markdown bubbles) and 63 (rail). **Not taken by wave 10**; it needs its own
   drift review (candidate follow-up after 30 and 63 land).
+
+**2026-10-28, later:** mirror fast-forwarded to **`ab189159f`** (v0.2.128,
+no diff against `upstream/main`). Two more commits after the audit window:
+
+- `1295d5773` Access modes and plan mode for every agent; Muse answers every
+  approval stage (#1088). 114 files, +4153/−322: `AccessMode`
+  (Supervised / Auto-accept edits / Full access) and plan mode on
+  `RunRequest`/`ChatConfig` (**proto change**), `Harness::access_modes`/
+  `supports_plan`, a composer access-mode chip, MCP `create_chat(s)` gain
+  `access`/`plan`, Codex honours them. The Muse half is declined (Muse is a
+  recorded decline). **Not in wave 10**; needs its own drift review and
+  a ticket (it collides with 25 composer, 52–55 questions and the MCP tools).
+- `ab189159f` version bump (not ported).
+
+User check (2026-10-28, a screenshot from upstream): the "Limit reached"
+error card with **Log in** and the `Claude Code → Cursor` switch caption over
+the message. Desktop card + Log in already ship (`transcript.rs:9170`);
+Log in starting the first login on Android = 35; the switch caption =
+29 (desktop) + 31 (Android).
