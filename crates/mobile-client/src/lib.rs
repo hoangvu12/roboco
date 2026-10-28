@@ -966,6 +966,28 @@ impl Client {
         self.store().assign_section(chat_id, section_id)
     }
 
+    /// Pin between neighbours (`None` at either end) — a drop into Pinned.
+    pub fn pin_session_at(
+        &self,
+        chat_id: &str,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().pin_session_at(chat_id, after, before)
+    }
+
+    /// Move a chat into a section between its members (`None` anchors at
+    /// either end; `section_id: None` = back to Recent) — a drop there.
+    pub fn place_session(
+        &self,
+        chat_id: &str,
+        section_id: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.store().place_session(chat_id, section_id, after, before)
+    }
+
     fn store(&self) -> &Arc<workspace::WorkspaceStore> {
         self.inner
             .workspace

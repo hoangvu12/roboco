@@ -69,6 +69,30 @@ interface RowActions {
         onResult: (ActionOutcome) -> Unit = {},
     )
 
+    /**
+     * Pin between neighbours (`null` at either end) — a drop into Pinned
+     * (wave-10 41, the core's `pinSessionAt`). The default reports
+     * [ActionOutcome.Skipped] (previews and fakes).
+     */
+    fun pinAt(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit = {}) {
+        onResult(ActionOutcome.Skipped)
+    }
+
+    /**
+     * Move a chat into a section between its members (`null` anchors at
+     * either end; `sectionId == null` = back to Recent) — a drop there
+     * (wave-10 41, the core's `placeSession`). Default: [ActionOutcome.Skipped].
+     */
+    fun place(
+        chatId: String,
+        sectionId: String?,
+        after: String?,
+        before: String?,
+        onResult: (ActionOutcome) -> Unit = {},
+    ) {
+        onResult(ActionOutcome.Skipped)
+    }
+
     /** Rename a chat; a blank trimmed title is skipped. */
     fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit = {})
 

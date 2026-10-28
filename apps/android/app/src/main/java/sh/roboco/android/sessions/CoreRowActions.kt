@@ -34,6 +34,8 @@ interface SessionWrites {
     fun deleteSession(chatId: String)
     fun assignSection(chatId: String, sectionId: String?)
     fun movePin(chatId: String, after: String?, before: String?)
+    fun pinSessionAt(chatId: String, after: String?, before: String?)
+    fun placeSession(chatId: String, sectionId: String?, after: String?, before: String?)
     fun renameSession(chatId: String, title: String)
     fun createSection(name: String, engineId: String?): String
     fun renameSection(sectionId: String, name: String)
@@ -55,6 +57,10 @@ fun CoreClient.asSessionWrites(): SessionWrites = object : SessionWrites {
         this@asSessionWrites.assignSection(chatId, sectionId)
     override fun movePin(chatId: String, after: String?, before: String?) =
         this@asSessionWrites.movePin(chatId, after, before)
+    override fun pinSessionAt(chatId: String, after: String?, before: String?) =
+        this@asSessionWrites.pinSessionAt(chatId, after, before)
+    override fun placeSession(chatId: String, sectionId: String?, after: String?, before: String?) =
+        this@asSessionWrites.placeSession(chatId, sectionId, after, before)
     override fun renameSession(chatId: String, title: String) =
         this@asSessionWrites.renameSession(chatId, title)
     override fun createSection(name: String, engineId: String?): String =
@@ -217,6 +223,20 @@ class CoreRowActions(
 
     override fun movePin(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) {
         dispatch("move pin", OpKind.Sidebar, onResult) { it.movePin(chatId, after, before) }
+    }
+
+    override fun pinAt(chatId: String, after: String?, before: String?, onResult: (ActionOutcome) -> Unit) {
+        dispatch("pin", OpKind.Sidebar, onResult) { it.pinSessionAt(chatId, after, before) }
+    }
+
+    override fun place(
+        chatId: String,
+        sectionId: String?,
+        after: String?,
+        before: String?,
+        onResult: (ActionOutcome) -> Unit,
+    ) {
+        dispatch("assign", OpKind.Sidebar, onResult) { it.placeSession(chatId, sectionId, after, before) }
     }
 
     override fun rename(chatId: String, title: String, onResult: (ActionOutcome) -> Unit) {

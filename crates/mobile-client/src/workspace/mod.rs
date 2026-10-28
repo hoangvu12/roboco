@@ -519,6 +519,65 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    /// Pin between neighbours (wave-10 41, upstream #909's
+    /// `pin_session_at`), as a drop into Pinned does: a chat already in
+    /// the raw pin list moves there, any other is pinned there (both `None`
+    /// = after the last visible pin, like [`Self::pin_session`]); either
+    /// way it leaves every section. Anchors are scoped ids; anchors from
+    /// other engines count as absent.
+    pub fn pin_session_at(
+        &self,
+        chat_id: &str,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let inner = self.inner()?;
+        let (handle, raw) = require_chat(&inner, chat_id)?;
+        ensure_writable(&handle)?;
+        let engine_id = handle.engine_id().to_owned();
+        let (_profile, pins, sections) = self.effective_sidebar(&inner, &engine_id)?;
+        let after = same_engine_raw(after, &engine_id);
+        let before = same_engine_raw(before, &engine_id);
+        let change = if pins.contains(&raw) {
+            PinChange::Move {
+                session_id: raw.clone(),
+                after,
+                before,
+            }
+        } else if after.is_none() && before.is_none() {
+            PinChange::Pin {
+                session_id: raw.clone(),
+                after: sidebar::visible_pins(&pins, &sections).last().cloned(),
+                before: None,
+            }
+        } else {
+            PinChange::Pin {
+                session_id: raw.clone(),
+                after,
+                before,
+            }
+        };
+        let mut next = pins.clone();
+        change.project(&mut next);
+        sidebar::validate_pin_list(&pins, &next).map_err(invalid_argument)?;
+        let next_sections = sidebar::assign_section(&sections, &raw, None);
+        if next == pins && next_sections == sections {
+            return Ok(());
+        }
+        {
+            let mut state = lock(&self.state);
+            if next != pins {
+                state.pins.insert(engine_id.clone(), next);
+            }
+            if next_sections != sections {
+                state.sections.insert(engine_id.clone(), next_sections);
+            }
+        }
+        self.kick_writer(&engine_id);
+        self.notify.notify_one();
+        Ok(())
+    }
+
     /// Unpin: the pin list minus the id.
     pub fn unpin_session(&self, chat_id: &str) -> Result<(), ClientError> {
         let inner = self.inner()?;
@@ -707,6 +766,46 @@ impl WorkspaceStore {
         self.assign_section_internal(&inner, &engine_id, &raw, target.as_deref())
     }
 
+    /// Move a chat into a section between its members (wave-10 41,
+    /// upstream #909's `place_session`), as a drop into the section does;
+    /// `None` anchors at either end, both `None` appends; `section_id:
+    /// None` = back to Recent. Anchors are scoped ids of the same engine.
+    pub fn place_session(
+        &self,
+        chat_id: &str,
+        section_id: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let inner = self.inner()?;
+        let (_handle, raw) = require_chat(&inner, chat_id)?;
+        let engine_id = ScopedId::parse(chat_id)
+            .map(|scoped| scoped.engine.0)
+            .map_err(not_found_chat(chat_id))?;
+        let target = match section_id {
+            None => None,
+            Some(section_id) => {
+                let scoped = ScopedId::parse(section_id).map_err(not_found_section(section_id))?;
+                if scoped.engine.0 != engine_id {
+                    return Err(ClientError::InvalidArgument {
+                        message: "The section and the session belong to different engines".into(),
+                    });
+                }
+                Some(scoped.raw_id)
+            }
+        };
+        let after = same_engine_raw(after, &engine_id);
+        let before = same_engine_raw(before, &engine_id);
+        self.place_internal(
+            &inner,
+            &engine_id,
+            &raw,
+            target.as_deref(),
+            after.as_deref(),
+            before.as_deref(),
+        )
+    }
+
     /// The shared tail of `assign_section` / `pin_session`'s un-section
     /// arm: connected + sidebar-ready, then the section edit.
     fn assign_section_internal(
@@ -715,6 +814,20 @@ impl WorkspaceStore {
         engine_id: &str,
         raw: &str,
         target: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.place_internal(inner, engine_id, raw, target, None, None)
+    }
+
+    /// The section edit behind `assign_section` (no anchors: appended) and
+    /// `place_session`: connected + sidebar-ready, then the placement.
+    fn place_internal(
+        &self,
+        inner: &Arc<ClientInner>,
+        engine_id: &str,
+        raw: &str,
+        target: Option<&str>,
+        after: Option<&str>,
+        before: Option<&str>,
     ) -> Result<(), ClientError> {
         let handle = crate::engine_handle_of(inner, engine_id)?;
         ensure_writable(&handle)?;
@@ -727,7 +840,7 @@ impl WorkspaceStore {
                 message: "The section no longer exists".into(),
             });
         }
-        let next = sidebar::assign_section(&sections, raw, target);
+        let next = sidebar::place_in_section(&sections, raw, target, after, before);
         if next == sections {
             return Ok(());
         }
@@ -1393,4 +1506,12 @@ mod tests {
             lock(&self.0).clone()
         }
     }
+}
+
+/// A scoped anchor id as a raw id of `engine_id`; another engine's (or an
+/// unparsable) anchor counts as absent.
+fn same_engine_raw(id: Option<&str>, engine_id: &str) -> Option<String> {
+    id.and_then(|id| ScopedId::parse(id).ok())
+        .filter(|scoped| scoped.engine.0 == engine_id)
+        .map(|scoped| scoped.raw_id)
 }

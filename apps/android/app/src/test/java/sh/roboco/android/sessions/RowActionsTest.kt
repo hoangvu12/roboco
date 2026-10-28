@@ -85,6 +85,10 @@ class RowActionsTest {
         override fun archiveSession(chatId: String) = go("archive $chatId")
         override fun unarchiveSession(chatId: String) = go("unarchive $chatId")
         override fun deleteSession(chatId: String) = go("delete $chatId")
+        override fun pinSessionAt(chatId: String, after: String?, before: String?) =
+            go("pinAt $chatId after=${after ?: "none"} before=${before ?: "none"}")
+        override fun placeSession(chatId: String, sectionId: String?, after: String?, before: String?) =
+            go("place $chatId=${sectionId ?: "none"} after=${after ?: "none"} before=${before ?: "none"}")
         override fun assignSection(chatId: String, sectionId: String?) =
             go("assign $chatId=${sectionId ?: "none"}")
         override fun movePin(chatId: String, after: String?, before: String?) =
@@ -202,6 +206,25 @@ class RowActionsTest {
         advanceUntilIdle()
         assertEquals(listOf(ActionOutcome.Ok, ActionOutcome.EngineOffline), outcomes)
         assertEquals(listOf("Engine not connected"), h.toaster.texts)
+    }
+
+    @Test
+    fun dropsRouteToPinSessionAtAndPlaceSession() = runTest {
+        val h = newHarness()
+        val outcomes = mutableListOf<ActionOutcome>()
+        h.actions.applyDrop("a", SessionDropWrite.PinAt("p1", null), outcomes::add)
+        h.actions.applyDrop("a", SessionDropWrite.Place("s1", null, "b"), outcomes::add)
+        h.actions.applyDrop("a", SessionDropWrite.LeaveSection, outcomes::add)
+        h.actions.applyDrop("a", SessionDropWrite.NoMove, outcomes::add)
+        advanceUntilIdle()
+        assertEquals(
+            listOf("pinAt a after=p1 before=none", "place a=s1 after=none before=b", "assign a=none"),
+            h.fake.calls,
+        )
+        assertEquals(
+            listOf(ActionOutcome.Skipped, ActionOutcome.Ok, ActionOutcome.Ok, ActionOutcome.Ok),
+            outcomes,
+        )
     }
 
     @Test

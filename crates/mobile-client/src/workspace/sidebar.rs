@@ -227,9 +227,83 @@ pub fn assign_section(
         .collect()
 }
 
+/// A placement (wave-10 41, upstream #909's `place_session`): the chat
+/// leaves every section and joins `target` between its members — before
+/// the surviving `before` anchor, else after the surviving `after`
+/// anchor, else at the end — and the target un-collapses to show it.
+/// `None` means back to Recent (membership only: Recent sorts by
+/// activity). A missing target leaves the list unchanged.
+pub fn place_in_section(
+    sections: &[SidebarSection],
+    chat_id: &str,
+    target: Option<&str>,
+    after: Option<&str>,
+    before: Option<&str>,
+) -> Vec<SidebarSection> {
+    if target.is_some_and(|target| !sections.iter().any(|section| section.id == target)) {
+        return sections.to_vec();
+    }
+    sections
+        .iter()
+        .map(|section| {
+            let mut session_ids: Vec<String> = section
+                .session_ids
+                .iter()
+                .filter(|id| id.as_str() != chat_id)
+                .cloned()
+                .collect();
+            if Some(section.id.as_str()) == target {
+                let at = before
+                    .and_then(|before| session_ids.iter().position(|id| id == before))
+                    .or_else(|| {
+                        after
+                            .and_then(|after| session_ids.iter().position(|id| id == after))
+                            .map(|ix| ix + 1)
+                    })
+                    .unwrap_or(session_ids.len());
+                session_ids.insert(at, chat_id.to_owned());
+                SidebarSection {
+                    session_ids,
+                    collapsed: false,
+                    ..section.clone()
+                }
+            } else {
+                SidebarSection {
+                    session_ids,
+                    ..section.clone()
+                }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_lands_between_the_anchors_and_leaves_other_sections() {
+        let sections = vec![section("a", &["x", "y", "z"]), section("b", &["m", "n"])];
+        let ids = |s: &[SidebarSection], ix: usize| s[ix].session_ids.clone();
+        // Before wins.
+        let next = place_in_section(&sections, "m", Some("a"), Some("x"), Some("z"));
+        assert_eq!(ids(&next, 0), ["x", "y", "m", "z"]);
+        assert_eq!(ids(&next, 1), ["n"], "it left its old section");
+        // Only after: one past it.
+        let next = place_in_section(&sections, "m", Some("a"), Some("x"), None);
+        assert_eq!(ids(&next, 0), ["x", "m", "y", "z"]);
+        // A stale anchor falls back to the other, then to the end.
+        let next = place_in_section(&sections, "m", Some("a"), Some("gone"), None);
+        assert_eq!(ids(&next, 0), ["x", "y", "z", "m"]);
+        // Within its own section: a reorder.
+        let next = place_in_section(&sections, "z", Some("a"), None, Some("x"));
+        assert_eq!(ids(&next, 0), ["z", "x", "y"]);
+        // Back to Recent: membership only.
+        let next = place_in_section(&sections, "y", None, None, None);
+        assert_eq!(ids(&next, 0), ["x", "z"]);
+        // An unknown target changes nothing.
+        assert_eq!(place_in_section(&sections, "m", Some("nope"), None, None), sections);
+    }
 
     fn section(id: &str, sessions: &[&str]) -> SidebarSection {
         SidebarSection {
