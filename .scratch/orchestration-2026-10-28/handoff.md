@@ -123,7 +123,7 @@ Keep a running "PRs" list in this file.
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | #39: merge main, strip #38's TS derives, fix `engine-local-regressions` + `ui-tests`, push once, watch CI | running (my turn; notice comes to me) |
-| `bdd1bbe1` | `..\roboco-ci-windows` / `ci/windows-split` | #43 CI 03→04→05 | running; takeover message queued |
+| `bdd1bbe1` | `..\roboco-ci-windows` / `ci/windows-split` | #43 CI 03→04→05 | **merged `060f7e3b0`**, cleaned up (empty locked folder may remain). Remote scratch branch `ci/scratch-startup-broken` (unmerged; ticket 03's broken-expectation proof): delete needs the user's OK. After-merge: first main run must log `Cache saved` for `windows-tests` + `windows-app`; then warm p50s (≥5 PR + ≥3 main runs) and cache size ≤ 3.5 GB → tickets 04/05 boxes (CI 09). 03's cursor_shim Linux box closes with 06 (#44). |
 | `a7b1639c` | `..\roboco-ci-linux-android` / `ci/linux-android-tiers` | #44 CI 06, 08, 23 (`core-tests` red at takeover) | running; takeover message queued |
 | `6798cc35` | main checkout, read-only (prototypes `C:\tmp\upstream-less-recoding\`) | research: less re-coding per upstream port (renamed mirror via filter-repo, mergiraf, hot-file split, re-baseline) measured on wave-10 02–32/44–75 → `.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md` | running |
 
