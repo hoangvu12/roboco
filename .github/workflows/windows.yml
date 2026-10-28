@@ -48,6 +48,20 @@ on:
         description: 'Run native GUI/pixel probes (requires a usable desktop and Direct3D)'
         type: boolean
         default: false
+      # Fallback and A/B switches; pushes and PRs always run with both on.
+      fast_linker:
+        description: 'Link with rust-lld (off: link.exe)'
+        type: boolean
+        default: true
+      dev_drive:
+        description: 'Build on a Dev Drive, Cargo/rustup homes on D: (off: image defaults)'
+        type: boolean
+        default: true
+      runner:
+        description: 'Runner image'
+        type: choice
+        options: [windows-2022, windows-2025]
+        default: windows-2022
 
 # Test-build tuning, following the big Rust projects (rust-analyzer, Zed,
 # Bevy): no incremental compilation, and neutralize the distribution
@@ -83,13 +97,15 @@ jobs:
   # package/feature set; the application build is the `app` job's, in
   # parallel.
   tests:
-    runs-on: windows-2022
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'windows-2022' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/windows-ci-setup
         with:
           cache-key: windows-tests
+          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
@@ -174,13 +190,15 @@ jobs:
   # and smoke-tested. Its own cache: `cargo build -p roboco` resolves
   # different dependency features than the test build.
   app:
-    runs-on: windows-2022
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'windows-2022' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/windows-ci-setup
         with:
           cache-key: windows-app
+          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
       - name: Build the Tailcat adapter (embedded by every cargo build below)
         # crates/engine/build.rs reruns when ROBOCO_TAILCAT_EMBED changes, so
         # every cargo command in this job sees the same value, exported here
@@ -204,6 +222,17 @@ jobs:
         # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
         # and the real web bundle is built by web-codegen/release workflows.
         run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+      - name: Linker of the packaged roboco.exe
+        # link.exe writes a "Rich" header (its build-tool record) into the DOS
+        # stub; rust-lld writes none.
+        env:
+          FAST_LINKER: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+        run: |
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath target/release/roboco.exe).Path)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $rich = [Text.Encoding]::ASCII.GetString($bytes, 0, $peOffset).Contains('Rich')
+          "roboco.exe linked by $(if ($rich) { 'link.exe (Rich header)' } else { 'rust-lld (no Rich header)' })"
+          if (($env:FAST_LINKER -eq 'true') -eq $rich) { throw "fast-linker is $env:FAST_LINKER, but the Rich header says otherwise" }
       - name: Installer install/uninstall
         run: ./scripts/test-windows-installer.ps1
       - name: GUI subsystem and redirected CLI output
