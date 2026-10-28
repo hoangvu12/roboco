@@ -418,4 +418,15 @@ class SessionRowMenuTest {
         )
         assertEquals(listOf(section("s1", "Work")), cmd.sectionsFor("eng-A"))
     }
+
+    /** Wave-10 33: a confirmed row delete tells the router (the tablet leaves the open session). */
+    @Test
+    fun aConfirmedDeleteReachesTheRouterHook() {
+        val deleted = mutableListOf<String>()
+        val prompts = object : SessionPrompts by FakePrompts() {
+            override fun confirmDeleteSession(chatId: String, title: String, onDeleted: () -> Unit) = onDeleted()
+        }
+        SessionRowCommands(FakeRowActions(), prompts) { deleted += it }.deleteSession(row("c1"))
+        assertEquals(listOf("c1"), deleted)
+    }
 }

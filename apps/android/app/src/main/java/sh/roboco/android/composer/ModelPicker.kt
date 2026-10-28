@@ -228,13 +228,32 @@ private fun ModelPickerSheet(request: ModelPickerRequest, onDismissed: () -> Uni
         state = rememberGlassSheetState(detents),
         grabber = true,
         title = ModelPickerCopy.Title,
+        // The close circle is glass: it sits after the sheet's haze source
+        // (GlassSheet's rule), level with the title row in the content.
+        glass = {
+            val sheet = this
+            Box(Modifier.fillMaxSize()) {
+                GlassCircleButton(
+                    icon = RobocoIcons.Xmark,
+                    contentDescription = ModelPickerCopy.Close,
+                    onClick = { sheet.dismiss() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = ModelPickerHeaderMetrics.CloseTop, end = ModelPickerHeaderMetrics.EndPadding)
+                        .testTag("model-picker-close"),
+                    size = ModelPickerHeaderMetrics.CloseSize,
+                    iconPt = 13f,
+                    weight = SymbolWeight.Semibold,
+                    ink = RobocoTheme.palette.secondary,
+                )
+            }
+        },
     ) { bottomInset ->
         val sheet = this
         Column(Modifier.fillMaxSize()) {
             ModelPickerHeader(
                 subtitle = pickerSubtitle(request.tabs, request.hostName),
                 harness = request.tabs.singleOrNull()?.harness,
-                onClose = { sheet.dismiss() },
             )
             if (request.tabs.size > 1) {
                 ProviderSwitcher(
@@ -277,15 +296,25 @@ private fun ModelPickerSheet(request: ModelPickerRequest, onDismissed: () -> Uni
     }
 }
 
-/** "Model" over where it runs (with one provider, its mark first), and the close circle. */
+/** The header's geometry, shared by the title row and the close circle laid over it. */
+private object ModelPickerHeaderMetrics {
+    val TopPadding = 18.dp
+    val EndPadding = 18.dp
+    val CloseSize = 36.dp
+
+    /** The title column is ~49 dp (22 + 3 + 13 sp lines): the circle centred on it. */
+    val CloseTop = TopPadding + 6.dp
+}
+
+/** "Model" over where it runs (with one provider, its mark first); room on the right for the close circle. */
 @Composable
-private fun ModelPickerHeader(subtitle: String, harness: String?, onClose: () -> Unit) {
+private fun ModelPickerHeader(subtitle: String, harness: String?) {
     val palette = RobocoTheme.palette
     val typeScale = LocalTypeScale.current
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 24.dp, end = 18.dp, top = 18.dp, bottom = 4.dp),
+            .padding(start = 24.dp, end = ModelPickerHeaderMetrics.EndPadding, top = ModelPickerHeaderMetrics.TopPadding, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f).testTag("model-picker-title")) {
@@ -307,17 +336,8 @@ private fun ModelPickerHeader(subtitle: String, harness: String?, onClose: () ->
                 )
             }
         }
-        Spacer(Modifier.width(12.dp))
-        GlassCircleButton(
-            icon = RobocoIcons.Xmark,
-            contentDescription = ModelPickerCopy.Close,
-            onClick = onClose,
-            modifier = Modifier.testTag("model-picker-close"),
-            size = 36.dp,
-            iconPt = 13f,
-            weight = SymbolWeight.Semibold,
-            ink = palette.secondary,
-        )
+        // The close circle's slot ([ModelPicker]'s `glass`, over this row).
+        Spacer(Modifier.width(12.dp + ModelPickerHeaderMetrics.CloseSize))
     }
 }
 

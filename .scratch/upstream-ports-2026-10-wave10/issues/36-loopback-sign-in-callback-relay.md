@@ -79,10 +79,10 @@ callback fits ADR 0011 (reachability only, never data).
   `/path?query` (`relayable_callback_path`: no scheme/host, no `//`,
   no whitespace or control characters — so no header injection — ≤ 8 KiB).
   It is replayed as exactly one `GET` with `Connection: close`, 20 s
-  timeout, ≤ 64 KiB of reply head read; only `{status, location}` come
-  back. Nothing else on the computer is reachable.
+  timeout, ≤ 64 KiB of reply head read; only `{status}` comes back
+  (review fix: no `Location`, which can carry tokens). Nothing else on the computer is reachable.
 - **Proto:** `RelayAgentLoginCallback {loginId, requesterDeviceId, path}`
-  and `RelayedLoginCallback {status, location?}` in `entities.rs`, with
+  and `RelayedLoginCallback {status}` in `entities.rs`, with
   `TS` like their neighbours (the web removal had **not** merged into
   `origin/main` when this landed — `origin/feature/web-removal` doesn't
   exist on the remote), registered in `wiregen` and regenerated
@@ -128,3 +128,30 @@ callback fits ADR 0011 (reachability only, never data).
   paired computer end to end, and a desktop signing a remote fleet
   engine's Codex in — neither can run on CI (no provider CLI/network, and
   phone and computer share one loopback in tests).
+
+2026-10-28 (PR #38 review fixes, one batch):
+- `RelayedLoginCallback` is `{status}` only: a success redirect's
+  `Location` can carry an `id_token`, and nothing read it.
+  `RelayAgentLoginCallback`'s `Debug` redacts the requester and the
+  path's query (ADR 0008; test
+  `a_relayed_callbacks_debug_hides_the_requester_and_the_code`). The
+  `TS` derives stay, per the orchestrator, for the web-removal merge.
+- **The requester is not an identity.** `requesterDeviceId` is a
+  per-sign-in UUIDv4 secret the client presents, not the paired caller's
+  device id: Roboco's RPC isn't per-connection, so the engine can't know
+  the caller. That's acceptable under ADR 0011 because the relay grants
+  nothing a paired client can't already do (it can start, poll and
+  cancel that login itself), the port is only ever the one the engine
+  registered for that live login, the path is validated (plain
+  `/path?query`, no injection), and it is one GET with a 20 s timeout
+  whose status alone comes back. Reachability only, never data.
+- The listener binds both loopback families (like `CallbackForwarder`)
+  and serves each connection on its own (≤ 8), so a browser preconnect
+  can't hold up the real callback.
+- The desktop managing a remote engine now also relays Antigravity: a
+  page that arrives with a poll is opened once (as upstream does) and,
+  with a `callbackPort`, starts the listener once
+  (`AccountsPage::relay_late_callback`); a busy port ends the sign-in.
+- Rust checks: `cargo check` of proto/engine-client/engine/ui/mobile-client/mobile,
+  `cargo test -p roboco-engine-client --lib login_relay`,
+  `-p roboco-engine --lib relay`, `-p roboco-proto` (see the PR).

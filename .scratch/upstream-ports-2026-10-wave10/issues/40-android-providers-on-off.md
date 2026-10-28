@@ -60,3 +60,9 @@ intent; the Cloud rows are excluded.
 - Deviation: no instrumented flow — the fixture engine offers only the
   mock (which the engine never enables from Settings), so there is no
   second agent to turn on or off there. Manual phone check recorded.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- A locked or busy agent switch refuses the flip without its haptic
+  (`RobocoSwitch(enabled = …)`). A flip the computer refuses later still
+  felt the tap (the haptic fires before the write, per the switch's
+  contract); it springs back with the alert.

@@ -105,3 +105,10 @@ by intent, plus I1 and the user's 2026-10-28 layout decision.
 Wave-9 21 closed: #980 already safe on Android; #1010's chip icon has no
 Android target (the declined CompanionStrip); #1014 is item 3 here.
 Goldens: no CI record flow (dropped in `33e5590da`).
+
+2026-10-28 (PR #38 review fixes, one batch):
+- `PageSheetDefaults.TabletBreakpoint` follows `SplitBreakpoint` (744 dp),
+  so a split window never gets phone sheets.
+- Goldens: CI's record job is gone (`33e5590da`), so the session menu,
+  status pill and toast goldens can't be re-recorded here — listed in the
+  PR as needing a re-record.

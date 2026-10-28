@@ -75,3 +75,13 @@ only; goldens not re-captured (see comments).
   `TransitionTourTest` updated.
 - Goldens: CI's `record_goldens` job was dropped in `33e5590da`; no
   Sessions golden re-capture is possible on CI.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- A push over the list lets go of the search field's focus and hides the
+  IME (`SearchTabField(held = …)`, fed from the Sessions stack's top); only
+  the field's own focus is cleared.
+- The list's bottom padding under the bar includes the IME the bar rides
+  on, so the last filtered results clear the keyboard.
+- `OneRowBarShellTest` / `SessionFlowTest.settingsFromBottomBar` check that
+  the hidden bar isn't **displayed** (it stays composed, unplaced, #30)
+  rather than gone from the tree; new `aPushLetsGoOfTheSearchFieldsFocus`.

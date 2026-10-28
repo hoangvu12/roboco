@@ -162,7 +162,8 @@ fun sessionMenu(
 /**
  * The ⋯ menu's header (upstream #967): the title, then where it runs on
  * its own line — a menu subtitle isn't drawn in the header, so the two
- * share the wrapped title line. `null` when both are blank.
+ * share the title, split by a line break (the menu draws each line once,
+ * ellipsized). `null` when both are blank.
  */
 internal fun sessionMenuHeader(title: String, subtitle: String): String? = when {
     title.isBlank() && subtitle.isBlank() -> null

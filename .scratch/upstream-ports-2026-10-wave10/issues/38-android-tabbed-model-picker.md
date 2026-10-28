@@ -66,3 +66,9 @@ CloudRepoPicker), `crates/client` catalog, wallpaper/toast hunks.
   runs on the io lane; a pick writes the config; effort keeps its menu);
   instrumented `SessionFlowTest.modelPickerInSession` now waits for the
   sheet, picks "Mock 1" and sees it close.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- The close circle is no longer inside the sheet's own `hazeSource`: it
+  moved to `GlassSheet`'s new `glass` slot (siblings after the source,
+  no content inset), over a spacer in the title row.
+- Model rows key as `model:<id>` (earlier on the PR, `011d0b994`).

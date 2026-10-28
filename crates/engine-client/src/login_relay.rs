@@ -13,12 +13,16 @@
 //! nothing but the one callback crosses, over the client's own paired link.
 
 use std::future::Future;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use roboco_proto::RelayedLoginCallback;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::task::JoinHandle;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 /// How long the listener waits for the browser (upstream's ten minutes).
 pub const LOGIN_RELAY_WAIT: Duration = Duration::from_secs(10 * 60);
@@ -30,10 +34,14 @@ pub type RelayFn = Box<
         + Sync,
 >;
 
+/// Connections served at once: a browser's speculative preconnects must not
+/// hold the real callback back, nor may a stray client pile them up.
+const MAX_CONNECTIONS: usize = 8;
+
 /// A listening relay. Dropping it stops listening (the login ended, was
 /// cancelled, or the page went away).
 pub struct LoginRelay {
-    task: JoinHandle<()>,
+    stop: CancellationToken,
     port: u16,
 }
 
@@ -46,13 +54,13 @@ impl LoginRelay {
     /// Whether it still listens (it stops after a relayed success or the
     /// wait).
     pub fn is_listening(&self) -> bool {
-        !self.task.is_finished()
+        !self.stop.is_cancelled()
     }
 }
 
 impl Drop for LoginRelay {
     fn drop(&mut self) {
-        self.task.abort();
+        self.stop.cancel();
     }
 }
 
@@ -61,47 +69,86 @@ pub fn port_busy_message(port: u16, device: &str) -> String {
     format!("Port {port} is in use on this {device}, so the sign-in can't come back to it.")
 }
 
-/// Bind `127.0.0.1:port` on `runtime` and relay the browser's callback
-/// through `relay`. `Err` when the port can't be bound ([`port_busy_message`]
-/// with `device` — "phone", "computer"). A success (2xx/3xx from the
-/// computer) answers the browser with a "signed in" page and stops; a
-/// refusal answers 502 and keeps listening (the user can retry the page);
-/// `/favicon…` gets a 404.
+/// Bind `port` on both loopback families (like the CLIs' redirect targets
+/// and `CallbackForwarder`) on `runtime` and relay the browser's callback
+/// through `relay`. `Err` when the port can't be bound
+/// ([`port_busy_message`] with `device` — "phone", "computer"). Each
+/// connection is served on its own, so a preconnect never blocks the real
+/// callback. A success (2xx/3xx from the computer) answers the browser with
+/// a "signed in" page and stops; a refusal answers 502 and keeps listening
+/// (the user can retry the page); `/favicon…` gets a 404.
 pub async fn listen(
     runtime: &tokio::runtime::Handle,
     port: u16,
     device: &str,
     relay: RelayFn,
 ) -> Result<LoginRelay, String> {
-    let listener = runtime
-        .spawn(async move { tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await })
+    let listeners = runtime
+        .spawn(async move {
+            let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+            let mut listeners = vec![v4];
+            match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+                Ok(v6) => listeners.push(v6),
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => return Err(error),
+                // No IPv6 loopback on this device: `localhost` can't resolve there.
+                Err(_) => {}
+            }
+            Ok::<_, std::io::Error>(listeners)
+        })
         .await
         .map_err(|e| e.to_string())?
         .map_err(|_| port_busy_message(port, device))?;
-    let task = runtime.spawn(async move {
-        let serve = async {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    continue;
-                };
-                let Some(path) = read_request_target(&mut socket).await else {
-                    continue;
-                };
-                if path.starts_with("/favicon") {
-                    let _ = socket.write_all(&http_response("404 Not Found", "")).await;
-                    continue;
+    let stop = CancellationToken::new();
+    let relay = Arc::new(relay);
+    let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    for listener in listeners {
+        let (stop, relay, slots) = (stop.clone(), relay.clone(), slots.clone());
+        runtime.spawn(async move {
+            let serve = async {
+                loop {
+                    let Ok((socket, _)) = listener.accept().await else {
+                        continue;
+                    };
+                    let Ok(permit) = slots.clone().try_acquire_owned() else {
+                        continue;
+                    };
+                    let (stop, relay) = (stop.clone(), relay.clone());
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        tokio::select! {
+                            _ = stop.cancelled() => {}
+                            signed_in = serve_one(socket, &relay) => if signed_in { stop.cancel() },
+                        }
+                    });
                 }
-                let status = relay(path).await.map(|reply| reply.status).unwrap_or(0);
-                if (200..400).contains(&status) {
-                    let _ = socket.write_all(&http_response("200 OK", SIGNED_IN_PAGE)).await;
-                    return;
-                }
-                let _ = socket.write_all(&http_response("502 Bad Gateway", REFUSED_PAGE)).await;
+            };
+            tokio::select! {
+                _ = stop.cancelled() => {}
+                _ = tokio::time::sleep(LOGIN_RELAY_WAIT) => stop.cancel(),
+                _ = serve => {}
             }
-        };
-        let _ = tokio::time::timeout(LOGIN_RELAY_WAIT, serve).await;
-    });
-    Ok(LoginRelay { task, port })
+        });
+    }
+    Ok(LoginRelay { stop, port })
+}
+
+/// One browser connection; `true` once the computer accepted the callback
+/// (the browser was told it's signed in).
+async fn serve_one(mut socket: TcpStream, relay: &RelayFn) -> bool {
+    let Some(path) = read_request_target(&mut socket).await else {
+        return false;
+    };
+    if path.starts_with("/favicon") {
+        let _ = socket.write_all(&http_response("404 Not Found", "")).await;
+        return false;
+    }
+    let status = relay(path).await.map(|reply| reply.status).unwrap_or(0);
+    if (200..400).contains(&status) {
+        let _ = socket.write_all(&http_response("200 OK", SIGNED_IN_PAGE)).await;
+        return true;
+    }
+    let _ = socket.write_all(&http_response("502 Bad Gateway", REFUSED_PAGE)).await;
+    false
 }
 
 const SIGNED_IN_PAGE: &str = "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
@@ -122,7 +169,7 @@ fn http_response(status: &str, body: &str) -> Vec<u8> {
 
 /// The request target of the browser's `GET` (`/path?query`), read off the
 /// request line; `None` for anything else (or a slow/oversized head).
-async fn read_request_target(socket: &mut tokio::net::TcpStream) -> Option<String> {
+async fn read_request_target(socket: &mut TcpStream) -> Option<String> {
     let mut head = Vec::new();
     let mut buf = [0u8; 2048];
     let read = async {
@@ -182,7 +229,7 @@ mod tests {
             Box::new(move |path| {
                 seen_in.lock().unwrap().push(path);
                 let status = answers_in.lock().unwrap().remove(0);
-                Box::pin(async move { Ok(RelayedLoginCallback { status, location: None }) })
+                Box::pin(async move { Ok(RelayedLoginCallback { status }) })
             }),
         )
         .await

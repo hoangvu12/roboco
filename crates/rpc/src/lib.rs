@@ -267,7 +267,7 @@ pub mod methods {
     pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
     /// `{loginId, requesterDeviceId, path}`: replay a sign-in's browser
     /// callback the requesting device caught on its own loopback (wave-10
-    /// 36, upstream #966). Answers `RelayedLoginCallback {status, location?}`.
+    /// 36, upstream #966). Answers `RelayedLoginCallback {status}`.
     pub const RELAY_AGENT_LOGIN_CALLBACK: &str = "RelayAgentLoginCallback";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";

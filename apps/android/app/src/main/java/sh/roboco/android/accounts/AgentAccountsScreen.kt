@@ -167,8 +167,15 @@ fun AgentAccountsScreen(
                 signIn = effectiveSignIn,
                 openUrl = { url -> openInCustomTab(latestContext, url, latestDark) },
                 copyText = { text ->
-                    latestContext.getSystemService(ClipboardManager::class.java)
-                        ?.setPrimaryClip(ClipData.newPlainText("Code", text))
+                    // A sign-in code: marked sensitive, so the system's
+                    // clipboard preview never shows it (API 33's
+                    // `ClipDescription.EXTRA_IS_SENSITIVE`, by its key on 31–32).
+                    val clip = ClipData.newPlainText("Code", text).apply {
+                        description.extras = android.os.PersistableBundle().apply {
+                            putBoolean("android.content.extra.IS_SENSITIVE", true)
+                        }
+                    }
+                    latestContext.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
                 },
             )
         } else {
@@ -189,13 +196,15 @@ fun AgentAccountsScreen(
     }
 
     // wave-10 35: an error card's "Log in" starts the agent's first login
-    // once the accounts (and the offered agents) are in — once per page.
+    // once the accounts and the computer's agents are both in (its waiting
+    // row can then show, with its Tap to cancel) — once per page. The model
+    // refuses an agent with no section, so nothing starts unseen.
     var firstLoginStarted by remember { mutableStateOf(false) }
     val accountsIn = model?.snapshot != null
-    val offeredIn = model?.offered?.isNotEmpty() == true
-    LaunchedEffect(accountsIn, offeredIn) {
+    val agentsIn = model?.agents != null
+    LaunchedEffect(accountsIn, agentsIn) {
         val harness = route.focusHarness
-        if (model != null && route.signIn && !firstLoginStarted && harness != null && accountsIn) {
+        if (model != null && route.signIn && !firstLoginStarted && harness != null && accountsIn && agentsIn) {
             if (model.startFirstLogin(harness)) firstLoginStarted = true
         }
     }
@@ -474,11 +483,13 @@ internal fun AgentToggleRowView(
         modifier = if (agent.dimmed) Modifier.alpha(0.5f) else Modifier,
         accessories = listOf(
             GroupedAccessory.Custom {
+                // A locked or busy switch refuses the flip without its haptic.
                 RobocoSwitch(
                     checked = agent.on,
-                    onCheckedChange = { on -> if (agent.toggleEnabled && !busy) onChange(on) },
+                    onCheckedChange = onChange,
                     modifier = if (agent.toggleEnabled && !busy) Modifier else Modifier.alpha(0.5f),
                     testTag = "agent-toggle-${agent.harness}",
+                    enabled = agent.toggleEnabled && !busy,
                 )
             },
         ),

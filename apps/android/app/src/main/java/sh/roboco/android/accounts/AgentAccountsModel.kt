@@ -250,7 +250,15 @@ class AgentAccountsModel(
         agents = null
         signIn?.let { seam ->
             workScope.launch {
-                val list = withContext(io) { seam.harnesses(deviceId) }
+                // A computer that can't answer offers nothing to add (and
+                // no switches) — never an uncaught failure in the app scope.
+                val list = try {
+                    withContext(io) { seam.harnesses(deviceId) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (t: Throwable) {
+                    emptyList()
+                }
                 if (this@AgentAccountsModel.deviceId == deviceId) applyAgents(list)
             }
         }
@@ -528,9 +536,14 @@ class AgentAccountsModel(
      * The error card's "Log in" (wave-10 35): start `harness`'s first login
      * option, as if its first add row were tapped. `false` when there is
      * none to start (no seam, no accounts yet, an agent that keeps one
-     * login and has it, or something else is under way).
+     * login and has it, or something else is under way) — and until its
+     * waiting row can show: the accounts **and** the computer's agents are
+     * in, and the agent has a section (an agent the computer doesn't offer
+     * never starts a sign-in nobody can see or cancel).
      */
     fun startFirstLogin(harness: String): Boolean {
+        if (snapshot == null || agents == null) return false
+        if (sections().none { it.harness == harness }) return false
         val row = addRows(harness).firstOrNull() ?: return false
         if (!addEnabled) return false
         onAddRow(row)
@@ -572,6 +585,7 @@ class AgentAccountsModel(
             // the browser's redirect to the computer; a busy port already
             // failed the start ("Port … is in use on this phone").
             var opened = false
+            var copiedCode: String? = null
             if (start.url.isNotEmpty()) {
                 openUrl(start.url)
                 opened = true
@@ -599,7 +613,11 @@ class AgentAccountsModel(
                         }
                         poll.message?.let { note ->
                             signingIn = signingIn?.copy(message = note)
-                            deviceCodeIn(note)?.let(copyText)
+                            // Copied once per code, not on every poll.
+                            deviceCodeIn(note)?.takeIf { it != copiedCode }?.let { code ->
+                                copiedCode = code
+                                copyText(code)
+                            }
                         }
                     }
                 }
@@ -647,6 +665,9 @@ class AgentAccountsModel(
                 ),
             ),
         )
+        // The sign-in ended under the prompt (the waiting row, a device
+        // switch, leaving the page): take the prompt down with it.
+        cont.invokeOnCancellation { alerts.dismissAll() }
     }
 
     private fun nameOf(deviceId: String): String = deviceName(deviceId)

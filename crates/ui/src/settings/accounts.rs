@@ -493,6 +493,11 @@ pub struct AccountsPage {
     /// the listener on this computer's loopback relaying the browser's
     /// redirect to that engine. Dropped with the login.
     login_relay: Option<roboco_engine_client::login_relay::LoginRelay>,
+    /// The current login's random requester (a remote engine only), for a
+    /// loopback page that arrives with a poll (Antigravity).
+    login_requester: Option<String>,
+    /// The page a poll brought (opened once).
+    login_late_url: Option<String>,
     _observe: Subscription,
     _code_events: Subscription,
 }
@@ -521,6 +526,8 @@ impl AccountsPage {
             action_task: None,
             poll_task: None,
             login_relay: None,
+            login_requester: None,
+            login_late_url: None,
             _observe: observe,
             _code_events: code_events,
         };
@@ -870,6 +877,8 @@ impl AccountsPage {
             local.as_ref() != Some(engine.key())
         };
         let requester = remote.then(|| uuid::Uuid::new_v4().to_string());
+        self.login_requester = requester.clone();
+        self.login_late_url = None;
         let runtime = self.state.read(cx).registry().map(|registry| registry.runtime_handle());
         let mut params = serde_json::json!({ "harness": harness });
         if let (Some(provider), Some(object)) = (provider, params.as_object_mut()) {
@@ -1070,6 +1079,21 @@ impl AccountsPage {
                                 if let Some(text) = poll.message {
                                     *message = Some(text.into());
                                 }
+                                // A page learned after the start (Antigravity
+                                // prints its own once its server is up): open
+                                // it once — and on a remote engine relay its
+                                // loopback redirect, like a start reply's
+                                // (wave-10 36).
+                                if let Some(url) = poll
+                                    .url
+                                    .filter(|url| page.login_late_url.as_ref() != Some(url))
+                                {
+                                    cx.open_url(&url);
+                                    page.login_late_url = Some(url);
+                                    if let Some(port) = poll.callback_port {
+                                        page.relay_late_callback(port, cx);
+                                    }
+                                }
                                 cx.notify();
                                 false
                             }
@@ -1091,6 +1115,59 @@ impl AccountsPage {
                 }
             }
         }));
+    }
+
+    /// Wave-10 36: a loopback page that arrived with a poll on a remote
+    /// engine — listen here (once), like a start reply's port. A busy port
+    /// ends the sign-in and says why, as at the start.
+    fn relay_late_callback(&mut self, port: u16, cx: &mut Context<Self>) {
+        if self.login_relay.is_some() {
+            return;
+        }
+        let (Some(requester), Some(LoginFlow::Browser { start, .. })) =
+            (self.login_requester.clone(), &self.login)
+        else {
+            return;
+        };
+        let login_id = start.login_id.clone();
+        let Ok(engine) = crate::request_routing::device_target(
+            self.state.read(cx),
+            self.target_device.as_deref(),
+        ) else {
+            return;
+        };
+        let Some(runtime) = self
+            .state
+            .read(cx)
+            .registry()
+            .map(|registry| registry.runtime_handle())
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let relay =
+                listen_for_remote_callback(&runtime, port, engine, login_id.clone(), requester)
+                    .await;
+            this.update(cx, |page, cx| {
+                let current = matches!(
+                    &page.login,
+                    Some(LoginFlow::Browser { start, .. }) if start.login_id == login_id
+                );
+                if !current {
+                    return;
+                }
+                match relay {
+                    Ok(relay) => page.login_relay = Some(relay),
+                    Err(busy) => {
+                        page.cancel_login(cx);
+                        page.error = Some(format!("Login failed: {busy}").into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn cancel_login(&mut self, cx: &mut Context<Self>) {

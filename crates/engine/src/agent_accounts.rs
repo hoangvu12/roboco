@@ -2025,13 +2025,8 @@ impl AgentAccounts {
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u16>().ok())
             .unwrap_or(0);
-        let location = head.lines().find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.trim()
-                .eq_ignore_ascii_case("location")
-                .then(|| value.trim().to_owned())
-        });
-        Ok(roboco_proto::RelayedLoginCallback { status, location })
+        // The status only: a success redirect's Location can carry tokens.
+        Ok(roboco_proto::RelayedLoginCallback { status })
     }
 
     /// Claude: the CLI's own automatic login — PKCE against a loopback
@@ -4847,9 +4842,6 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
-/// The loopback port an authorize url's `redirect_uri` lands on — where the
-/// login's CLI (or our own listener) waits for the browser. `None` for flows
-/// that don't redirect to this machine.
 /// Whether `path` is a request target a relayed sign-in callback may carry
 /// (wave-10 36): a plain `/path?query`, never a URL, a protocol-relative
 /// `//host`, whitespace, control characters or more than 8 KiB.
@@ -4860,6 +4852,9 @@ pub(crate) fn relayable_callback_path(path: &str) -> bool {
         && !path.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
+/// The loopback port an authorize url's `redirect_uri` lands on — where the
+/// login's CLI (or our own listener) waits for the browser. `None` for flows
+/// that don't redirect to this machine.
 pub(crate) fn loopback_port(url: &str) -> Option<u16> {
     let url = reqwest::Url::parse(url).ok()?;
     let redirect = url
@@ -6028,7 +6023,7 @@ mod login_tests {
 
     /// Wave-10 36: the relay reaches only a live login started for this
     /// requester, on its registered port, with a plain path — and replays
-    /// it as one GET whose status and Location come back.
+    /// it as one GET whose status (never its Location) comes back.
     #[tokio::test]
     async fn the_callback_relay_reaches_only_the_requesters_live_login() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -6064,8 +6059,7 @@ mod login_tests {
             .relay_callback("login-1", "phone-nonce", "/cb?code=1&state=s")
             .await
             .unwrap();
-        assert_eq!(relayed.status, 302);
-        assert_eq!(relayed.location.as_deref(), Some("https://example.com/done"));
+        assert_eq!(relayed, roboco_proto::RelayedLoginCallback { status: 302 }, "the status, never the Location");
         let request = seen.await.unwrap();
         assert!(request.starts_with("GET /cb?code=1&state=s HTTP/1.1\r\n"), "{request}");
         assert!(request.contains(&format!("Host: localhost:{port}")));

@@ -182,14 +182,14 @@ class SessionFlowTest {
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("settings-screen").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isEmpty()
-        }
+        // The bar stays composed when hidden (#30), so "gone" is "not
+        // displayed", not "not in the tree".
+        val accessories = compose.onAllNodesWithTag("new-session")
+        fun barShown() = (0 until accessories.fetchSemanticsNodes().size).any { accessories[it].isDisplayed() }
+        compose.waitUntil(timeoutMillis = 5_000) { !barShown() }
         FlowSemantics.saveScreenshot("settings.png")
         device.pressBack()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.waitUntil(timeoutMillis = 5_000) { barShown() }
         compose.onNodeWithTag("bottom-settings").assertExists()
     }
 

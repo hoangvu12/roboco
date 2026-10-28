@@ -2,6 +2,11 @@ package sh.roboco.android.shell
 
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.isDisplayed
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -68,6 +73,16 @@ class OneRowBarShellTest {
     private fun exists(tag: String): Boolean =
         compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
 
+    /**
+     * The bar is never removed from composition (#30): hidden, it stays
+     * composed but unplaced, and an unplaced node can keep its semantics —
+     * so "shown" is a node that is displayed.
+     */
+    private fun shown(tag: String): Boolean {
+        val nodes = compose.onAllNodesWithTag(tag)
+        return (0 until nodes.fetchSemanticsNodes().size).any { nodes.get(it).isDisplayed() }
+    }
+
     private fun back() {
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.waitForIdle()
@@ -93,14 +108,30 @@ class OneRowBarShellTest {
         assertEquals("still the one stack", TabId.Sessions, state.selected)
         assertEquals(SettingsRoute, state.stack(TabId.Sessions).top.route)
         assertTrue(exists("tab-root-more"))
-        assertFalse("the bar belongs to the front page", exists("new-session"))
+        assertFalse("the bar belongs to the front page", shown("new-session"))
+        assertFalse(shown("bottom-settings"))
 
         back()
         assertFalse(exists("tab-root-more"))
-        assertTrue("back on the list, the bar is back", exists("new-session"))
-        assertTrue(exists("bottom-settings"))
+        assertTrue("back on the list, the bar is back", shown("new-session"))
+        assertTrue(shown("bottom-settings"))
         assertFalse("and still no tab cells", exists("tab-more"))
     }
+
+    @Test
+    fun aPushLetsGoOfTheSearchFieldsFocus() {
+        setContent()
+        compose.onNodeWithTag("search-field", useUnmergedTree = true).performSemanticsAction(SemanticsActions.RequestFocus)
+        compose.waitForIdle()
+        assertTrue("the field took the focus", fieldFocused())
+        compose.onNodeWithTag("bottom-settings").performClick()
+        compose.waitForIdle()
+        assertFalse("the push let go of it (and the IME)", fieldFocused())
+    }
+
+    private fun fieldFocused(): Boolean =
+        compose.onAllNodesWithTag("search-field", useUnmergedTree = true).fetchSemanticsNodes()
+            .any { it.config.getOrNull(SemanticsProperties.Focused) == true }
 
     @Test
     fun theSessionsStackShowsChromeOnItsRootOnly() {

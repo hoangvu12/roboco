@@ -98,8 +98,11 @@ class AccountSignInTest {
         override fun show(alert: RobocoAlert) {
             shown += alert
         }
+        var dismissed = 0
         override fun updateCurrent(alert: RobocoAlert) {}
-        override fun dismissAll() {}
+        override fun dismissAll() {
+            dismissed++
+        }
     }
 
     private object NoToaster : Toaster {
@@ -279,6 +282,33 @@ class AccountSignInTest {
     }
 
     @Test
+    fun theDeviceCodeIsCopiedOncePerCodeNotOnEveryPoll() = runTest {
+        val signIn = FakeSignIn()
+        val note = "Enter the code ABCD-1234 when asked."
+        signIn.polls.addAll(listOf(pending(message = note), pending(message = note), pending(message = note)))
+        val r = rig(signIn)
+        r.model.onAddRow(r.addRow("grok"))
+        advanceTimeBy(5_000)
+        assertEquals(listOf("ABCD-1234"), r.copied)
+        r.model.cancelSignIn()
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun cancellingUnderThePastePromptTakesItDown() = runTest {
+        val signIn = FakeSignIn()
+        signIn.start = login(pasteCode = true)
+        val r = rig(signIn)
+        r.model.onAddRow(r.addRow("claude-code"))
+        advanceUntilIdle()
+        assertEquals(1, r.alerts.shown.size)
+        r.model.cancelSignIn()
+        advanceUntilIdle()
+        assertEquals("the prompt went with the sign-in", 1, r.alerts.dismissed)
+        assertEquals("cancel:login-1", signIn.calls.last())
+    }
+
+    @Test
     fun claudesPasteFallbackTakesTheCodeBackToTheComputer() = runTest {
         val signIn = FakeSignIn()
         signIn.start = login(url = "https://claude.ai/oauth/authorize?code=true", pasteCode = true)
@@ -393,6 +423,48 @@ class AccountSignInTest {
         r.model.cancelSignIn()
         advanceUntilIdle()
         assertTrue("an agent Roboco doesn't sign in to starts nothing", !r.model.startFirstLogin("mock"))
+    }
+
+    @Test
+    fun startFirstLoginWaitsForAWaitingRowThatCanShow() = runTest {
+        val signIn = FakeSignIn()
+        signIn.harnesses = listOf(harness("grok", "Grok"))
+        val r = rig(signIn)
+        assertTrue(
+            "Claude Code isn't offered and has no accounts: no section, so nothing starts unseen",
+            !r.model.startFirstLogin("claude-code"),
+        )
+        assertTrue(r.signIn.calls.isEmpty())
+        assertTrue(r.model.startFirstLogin("grok"))
+        r.model.cancelSignIn()
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun aComputerThatCantListItsAgentsOffersNothingAndNeverCrashes() = runTest {
+        val signIn = object : AccountSignIn by FakeSignIn() {
+            override suspend fun harnesses(deviceId: String): List<HarnessInfo> =
+                throw CoreException.HostException("offline")
+        }
+        val alerts = FakeAlerts()
+        val model = AgentAccountsModel(
+            core = FakeCore(),
+            workScope = this,
+            toaster = NoToaster,
+            alerts = alerts,
+            sheets = NoSheets,
+            deviceName = { "Studio" },
+            harnessLabel = { it },
+            io = Dispatchers.Unconfined,
+            nowMs = { 1_760_000_000_000L },
+            signIn = signIn,
+            openUrl = {},
+            copyText = {},
+        )
+        model.open("device-1")
+        advanceUntilIdle()
+        assertEquals(emptyList<HarnessInfo>(), model.agents)
+        assertTrue(model.agentRows().isEmpty())
     }
 
     // ------------------------------------------------- Agents on/off (40)

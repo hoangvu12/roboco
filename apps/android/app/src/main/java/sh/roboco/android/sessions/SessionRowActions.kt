@@ -23,6 +23,7 @@ import sh.roboco.android.design.glass.MenuIcon
 import sh.roboco.android.design.glass.MenuItem
 import sh.roboco.android.design.glass.MenuSection
 import sh.roboco.android.design.rememberContextMenuLiftState
+import sh.roboco.android.shell.LocalAppRouter
 import uniffi.roboco_core.SessionRow
 import uniffi.roboco_core.SectionView
 
@@ -86,9 +87,15 @@ interface SessionRowCommands {
 /**
  * The production adapter: one-line delegations, with `archive` mapping
  * 42's [ActionOutcome] to accepted (`Ok`/`Gone`) or refused (everything
- * else — a blank `Skipped` never archived anything either).
+ * else — a blank `Skipped` never archived anything either). [onDeleted]
+ * hears a confirmed delete (the router leaves the session if it is the
+ * one open beside the tablet sidebar).
  */
-fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRowCommands =
+fun SessionRowCommands(
+    actions: RowActions,
+    prompts: SessionPrompts,
+    onDeleted: (chatId: String) -> Unit = {},
+): SessionRowCommands =
     object : SessionRowCommands {
         override fun setPinned(chatId: String, pinned: Boolean) {
             actions.setPinned(chatId, pinned)
@@ -117,7 +124,7 @@ fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRow
         }
 
         override fun deleteSession(row: SessionRow) {
-            prompts.confirmDeleteSession(row.id, if (row.hasTitle) row.title else "")
+            prompts.confirmDeleteSession(row.id, if (row.hasTitle) row.title else "") { onDeleted(row.id) }
         }
 
         override fun newSection(engineId: String?) {
@@ -136,7 +143,10 @@ fun SessionRowCommands(actions: RowActions, prompts: SessionPrompts): SessionRow
 fun rememberSessionRowCommands(): SessionRowCommands {
     val actions = LocalRowActions.current
     val prompts = rememberSessionPrompts()
-    return remember(actions, prompts) { SessionRowCommands(actions, prompts) }
+    val router = LocalAppRouter.current
+    return remember(actions, prompts, router) {
+        SessionRowCommands(actions, prompts) { chatId -> router.leaveDeletedSession(chatId) }
+    }
 }
 
 // ---------------------------------------------------------------------------

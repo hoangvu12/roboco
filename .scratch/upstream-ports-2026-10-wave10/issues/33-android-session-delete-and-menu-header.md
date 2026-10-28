@@ -72,3 +72,12 @@ delete/menu parts by intent.
   `33e5590da`, so new captures run as render/geometry checks inside
   `testDebugUnitTest` and no PNG is committed (the existing
   `session_menu_*` shots are unchanged: they pass no `onDelete`/title).
+
+2026-10-28 (PR #38 review fixes, one batch):
+- The ⋯ menu header keeps each line to one, ellipsized (`GlassMenu`'s
+  `MenuTitleLine` splits a title with a line break), so a long title can't
+  push "project @ device" out.
+- Deleting the session open beside the tablet sidebar from its row menu
+  now leaves it for the draft (`AppRouter.leaveDeletedSession`, the
+  tablet router's override; `SessionRowCommands(onDeleted)`), as the ⋯
+  menu's Delete does. Test: `SessionRowMenuTest.aConfirmedDeleteReachesTheRouterHook`.

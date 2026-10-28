@@ -70,3 +70,9 @@ an ordered `sessionIds`).
   (extended: a placement before a member, and a pin at a slot that leaves
   the section, both read back from the engine by a second client — what
   a desktop sees); JVM `SessionDropTest`, `RowActionsTest.dropsRouteTo…`.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- The drag gesture stays a follow-up: it has to hand off from the
+  context-menu lift and needs a compiler and a device to tune, which this
+  host doesn't have. Status stays in-progress; the PR title says
+  "41 core only; gesture follow-up".

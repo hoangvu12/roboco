@@ -86,3 +86,14 @@ needed), `apps/android/.../accounts/*`.
   sign-in needs a real provider CLI (Grok/Hermes) or Anthropic's
   network on the CI runner, and the fixture engine's Claude start is
   loopback (36's case). Recorded as a manual phone check.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- The device code is copied once per code, not on every 1.5 s poll, and
+  the clip is marked sensitive (`android.content.extra.IS_SENSITIVE`).
+- A sign-in cancelled under Claude's paste prompt takes the prompt down
+  (`invokeOnCancellation` → `Alerts.dismissAll`).
+- A computer whose agent list fails offers nothing and no longer throws
+  into the app scope.
+- Earlier on the PR (`011d0b994`): a cancelled sign-in's cleanup can't
+  clear a newer one; a cancel during `start` still cancels on the computer.
+- Tests: `AccountSignInTest` copy-once, prompt-dismissal and failing-list cases.

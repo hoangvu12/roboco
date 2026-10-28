@@ -398,6 +398,12 @@ class TabletAppRouter(
         return true
     }
 
+    override fun leaveDeletedSession(chatId: String): Boolean {
+        if (shell.isCollapsed || shell.currentChatId != chatId || !shell.detailShowsSession) return false
+        showDraft(prompt = null, focus = false)
+        return true
+    }
+
     /**
      * Ticket 108's `SplitDetailColumn.showSession` (iOS `:180-183`): the
      * detail open stripped of `openSession`'s steps 1-5 — no

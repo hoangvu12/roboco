@@ -56,6 +56,15 @@ interface AppRouter {
      */
     fun leaveArchivedSession(chatId: String): Boolean = false
 
+    /**
+     * Wave-10 33: [chatId] was deleted from a list (the tablet sidebar's
+     * row menu) — if it is the session open beside the sidebar, the
+     * column leaves it for the draft, as after the ⋯ menu's Delete. True
+     * when the router moved. The phone's list never shows its open
+     * session, so the phone router and [Noop] keep this default.
+     */
+    fun leaveDeletedSession(chatId: String): Boolean = false
+
     companion object {
         /** Previews / tests without a shell: does nothing. */
         val Noop: AppRouter = object : AppRouter {

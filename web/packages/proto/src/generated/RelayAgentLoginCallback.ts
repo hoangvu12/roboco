@@ -7,6 +7,9 @@
  * another fleet engine), replayed on the computer running the login. Only
  * a live login started with this `requester_device_id`, only its
  * registered port, only a plain path + query.
+ *
+ * `Debug` redacts the requester (a per-sign-in secret) and the path's
+ * query (the OAuth code and state), per ADR 0008.
  */
 export type RelayAgentLoginCallback = { loginId: string, 
 /**

@@ -3,10 +3,11 @@
 /**
  * `RelayAgentLoginCallback` reply: how the computer's listener answered
  * the replayed callback, so the device that caught the browser answers it
- * alike.
+ * alike. The status only — a success redirect's `Location` can carry
+ * tokens, so it never leaves the computer.
  */
 export type RelayedLoginCallback = { 
 /**
  * The HTTP status; `0` when the listener's reply had none.
  */
-status: number, location?: string | null, };
+status: number, };

@@ -68,3 +68,9 @@ comment; `pass2-features-android.md` KNOWN table.
   The card's layout is pinned by `crates/mobile/src/layout/tests.rs`
   (the notice row's `("sign-in", "Log in")` action) and the flow test
   saves `error-card.png` as an artifact.
+
+2026-10-28 (PR #38 review fixes, one batch):
+- Log in starts only once the accounts **and** the computer's agents are
+  in, and only for an agent with a section, so its waiting row (with Tap
+  to cancel) can always show; leaving the page still cancels.
+  Test: `AccountSignInTest.startFirstLoginWaitsForAWaitingRowThatCanShow`.

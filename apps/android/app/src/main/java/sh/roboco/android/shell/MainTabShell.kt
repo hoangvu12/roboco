@@ -435,6 +435,7 @@ fun MainTabShell(
                                 searchState = searchState,
                                 onSettings = { router.showSettings() },
                                 onNewSession = accessoryTap,
+                                onFrontPage = state.stack(TabId.Sessions).let { !it.hidesChrome(it.top) },
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))

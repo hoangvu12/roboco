@@ -51,7 +51,9 @@ val LocalBottomBarSearch = staticCompositionLocalOf<SearchTabState?> { null }
  * The bar itself. [onSettings] pushes Settings over the list (the
  * router's `showSettings`), [onNewSession] presents the New Session sheet.
  * The field is [SearchTabField] over [searchState]: typing filters the
- * list in place, its clear button empties the query.
+ * list in place, its clear button empties the query. [onFrontPage] is
+ * `false` while a page is pushed over the list: the bar stays composed
+ * (hidden), and a focused field lets go of its focus and the IME.
  */
 @Composable
 fun SessionsBottomBar(
@@ -59,6 +61,7 @@ fun SessionsBottomBar(
     onSettings: () -> Unit,
     onNewSession: () -> Unit,
     modifier: Modifier = Modifier,
+    onFrontPage: Boolean = true,
 ) {
     val palette = RobocoTheme.palette
     BoxWithConstraints(modifier.fillMaxWidth().height(SessionsBottomBarMetrics.Height.dp)) {
@@ -90,6 +93,7 @@ fun SessionsBottomBar(
                 modifier = Modifier
                     .weight(1f)
                     .height(circle.dp),
+                held = onFrontPage,
             )
             GlassCircleButton(
                 icon = RobocoIcons.Plus,

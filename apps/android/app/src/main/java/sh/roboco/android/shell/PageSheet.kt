@@ -158,8 +158,12 @@ object PageSheetDefaults {
     /** The sheet's width on tablets: `min(704 dp, windowWidth)`, centred (starred). */
     val TabletMaxWidth = 704.dp
 
-    /** At this window width and above, the sheet is a centred tablet card without recession. */
-    val TabletBreakpoint = 840.dp
+    /**
+     * At this window width and above, the sheet is a centred tablet card
+     * without recession — the split shell's [SplitBreakpoint] (wave-10 42:
+     * 744 dp, an upright tablet), so a split window never gets phone sheets.
+     */
+    val TabletBreakpoint = SplitBreakpoint
 }
 
 /**
