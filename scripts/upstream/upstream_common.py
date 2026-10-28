@@ -28,6 +28,7 @@ FORK_POINT = "b765f6ffb"  # last upstream commit Roboco merged (2026-09-15)
 TRIVIAL_MAX_REGIONS = 3
 TRIVIAL_MAX_LINES = 30
 TRIVIAL_FILES = ("Cargo.lock",)
+LOCKFILES = ("Cargo.lock",)  # regenerated with cargo, never merged (report-2026-10-29, 5e)
 PRESENCE_PORTED = 0.6
 PRESENCE_MISSING = 0.3
 
@@ -199,7 +200,8 @@ class Repo:
         return self.git("rev-parse", "--show-toplevel").strip()
 
     def rev(self, rev):
-        return self.git("rev-parse", "--verify", "--quiet", rev + "^{commit}").strip()
+        """The full sha of `rev`, or "" when it doesn't name a commit."""
+        return self.git("rev-parse", "--verify", "--quiet", rev + "^{commit}", check=False).strip()
 
     def default_target(self):
         """`main`, or `origin/main` in a clone without a local main branch."""
@@ -258,6 +260,7 @@ class Repo:
         if self._cat:
             self._cat.stdin.close()
             self._cat.wait()
+            self._cat.stdout.close()
             self._cat = None
 
 
@@ -326,11 +329,13 @@ def merge3(ours, base, theirs, style="merge", labels=("roboco", "upstream^", "up
 
 
 class FileResult:
-    __slots__ = ("status", "upath", "path", "state", "reason", "regions", "lines",
-                 "merged", "mode", "old_path", "base", "theirs", "ours")
+    __slots__ = ("status", "upath", "usrc", "path", "state", "reason", "regions", "lines",
+                 "merged", "mode", "old_path", "base", "theirs", "ours", "merged_theirs", "how",
+                 "residual", "lock", "notes")
 
     def __init__(self, status, upath, path, state, **kw):
         self.status, self.upath, self.path, self.state = status, upath, path, state
+        self.usrc = kw.get("usrc", upath)  # upstream path of `base` (differs on renames)
         self.reason = kw.get("reason", "")
         self.regions = kw.get("regions", 0)
         self.lines = kw.get("lines", 0)
@@ -340,13 +345,20 @@ class FileResult:
         self.base = kw.get("base")
         self.theirs = kw.get("theirs")
         self.ours = kw.get("ours")
+        self.merged_theirs = self.theirs  # what was merged as theirs (residual mode filters it)
+        self.how = ""  # what resolved it beyond git: residual, mergiraf, regenerated
+        self.residual = None  # residual-mode details for the report
+        self.lock = None  # Cargo.lock plan for the report
+        self.notes = []  # extra report lines (a mergiraf attempt that didn't resolve, ...)
 
     def label(self):
         if self.state == "conflict":
             return f"CONFLICT {self.regions}r/{self.lines}l" + (f" ({self.reason})" if self.reason else "")
         if self.state in ("skipped", "missing"):
             return f"{self.state.upper()} {self.reason}".strip()
-        return self.state.upper()
+        if self.state == "regenerate":
+            return "REGENERATE (kept ours)"
+        return self.state.upper() + (f" ({self.how})" if self.how else "")
 
 
 class Replay:
@@ -375,6 +387,8 @@ class Replay:
         missing = self.count("missing")
         conflicted = [f for f in live if f.state == "conflict"]
         if not missing and not conflicted:
+            if self.count("regenerate"):
+                return "TRIVIAL"  # Cargo.lock to regenerate with cargo, never merged
             return "CLEAN" if any(f.state in ("clean", "added", "deleted") for f in live) else "ALREADY-IN"
         nontrivial = [f for f in conflicted if not f.path.startswith(TRIVIAL_FILES)]
         if not missing and (not nontrivial or (self.regions <= TRIVIAL_MAX_REGIONS
@@ -387,7 +401,8 @@ class Replay:
         return (f"files={live} (+{self.count('skipped')} skipped) "
                 f"clean={self.count('clean') + self.count('added') + self.count('deleted')} "
                 f"noop={self.count('noop')} conflicted={self.count('conflict')} "
-                f"({self.regions}r/{self.lines}l) missing={self.count('missing')}")
+                f"({self.regions}r/{self.lines}l) missing={self.count('missing')}"
+                + (f" regenerate={self.count('regenerate')}" if self.count("regenerate") else ""))
 
 
 def replay(repo, sha, target, renames=None, rules=None, mode="full", style="merge"):
@@ -397,6 +412,8 @@ def replay(repo, sha, target, renames=None, rules=None, mode="full", style="merg
     after `sha`, both translated through the rename map. This is what
     `git cherry-pick` would do if upstream history were already renamed.
     mode: "full" (paths + text), "paths" (paths only), "raw" (a plain cherry-pick).
+    A Cargo.lock that Roboco changed is never merged: it stays Roboco's, in state
+    "regenerate" (lockfile.py turns upstream's change into cargo commands).
     """
     renames = renames or RenameMap()
     rules = rules or PathRules()
@@ -429,7 +446,7 @@ def replay(repo, sha, target, renames=None, rules=None, mode="full", style="merg
         if ours is None and st in "RC" and msrc != mdst:
             ours = repo.blob(target, msrc)
             old = msrc if (ours is not None and st == "R") else None
-        common = dict(mode=new_mode, old_path=old, base=base, theirs=theirs, ours=ours)
+        common = dict(mode=new_mode, old_path=old, base=base, theirs=theirs, ours=ours, usrc=src)
         if ours is None:
             parts = mdst.split("/")
             top = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
@@ -444,10 +461,15 @@ def replay(repo, sha, target, renames=None, rules=None, mode="full", style="merg
         if ours == theirs:
             res.files.append(FileResult(st, dst, mdst, "noop", **common))
             continue
+        if mdst.rsplit("/", 1)[-1] in LOCKFILES and ours != base:
+            res.files.append(FileResult(st, dst, mdst, "regenerate", **common))
+            continue
         merged, regions, lines = merge3(ours, base, theirs, style=style)
         if regions:
             res.files.append(FileResult(st, dst, mdst, "conflict", regions=regions, lines=lines,
                                         merged=merged, **common))
+        elif merged == ours and not old:
+            res.files.append(FileResult(st, dst, mdst, "noop", **common))  # Roboco already has it
         else:
             res.files.append(FileResult(st, dst, mdst, "clean", merged=merged, **common))
     return res
