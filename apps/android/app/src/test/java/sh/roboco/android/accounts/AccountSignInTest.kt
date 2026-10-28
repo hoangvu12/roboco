@@ -318,6 +318,30 @@ class AccountSignInTest {
         assertTrue(r.model.addEnabled)
     }
 
+    // ------------------------------------- the error card's Log in (35)
+
+    @Test
+    fun logInStartsTheFirstLoginUnlessTheChatIsLimited() {
+        val plain = errorCardLogInRoute(hostDeviceId = "dev-1", harness = "claude-code", limited = false)
+        assertEquals(AgentAccountsRoute("dev-1", focusHarness = "claude-code", signIn = true), plain)
+        val limited = errorCardLogInRoute(hostDeviceId = "dev-1", harness = "claude-code", limited = true)
+        assertTrue("the Limited banner owns the recovery: one call to action", !limited.signIn)
+        assertEquals("claude-code", limited.focusHarness)
+        assertNull("no host: the primary computer", errorCardLogInRoute("", "codex", false).deviceId)
+    }
+
+    @Test
+    fun startFirstLoginRunsTheAgentsFirstOptionOnce() = runTest {
+        val r = rig()
+        assertTrue(r.model.startFirstLogin("claude-code"))
+        advanceTimeBy(100)
+        assertEquals(listOf("start:claude-code:-"), r.signIn.calls)
+        assertTrue("one at a time", !r.model.startFirstLogin("grok"))
+        r.model.cancelSignIn()
+        advanceUntilIdle()
+        assertTrue("an agent Roboco doesn't sign in to starts nothing", !r.model.startFirstLogin("mock"))
+    }
+
     @Test
     fun aFailedPollOrStartAlertsWhy() = runTest {
         val signIn = FakeSignIn()

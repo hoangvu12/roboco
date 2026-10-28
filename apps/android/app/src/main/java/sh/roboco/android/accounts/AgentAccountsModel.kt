@@ -462,6 +462,19 @@ class AgentAccountsModel(
     }
 
     /**
+     * The error card's "Log in" (wave-10 35): start `harness`'s first login
+     * option, as if its first add row were tapped. `false` when there is
+     * none to start (no seam, no accounts yet, an agent that keeps one
+     * login and has it, or something else is under way).
+     */
+    fun startFirstLogin(harness: String): Boolean {
+        val row = addRows(harness).firstOrNull() ?: return false
+        if (!addEnabled) return false
+        onAddRow(row)
+        return signingIn != null
+    }
+
+    /**
      * The waiting row's tap, a device switch and leaving the page: ends
      * the sign-in here and on the computer (best effort).
      */

@@ -699,6 +699,38 @@ class SessionFlowTest {
         }
     }
 
+    /**
+     * Wave-10 35 (upstream #967's error card): a run refused as signed out
+     * shows the red card with "Log in"; the tap opens the chat's agent on
+     * Accounts & Usage. The mock agent's `/error <message>` prompt fails
+     * the run with that message. Runs on `chat-preview` (its preview test
+     * only reads the composer and the ⋯ menu). The mock harness signs in
+     * to nothing, so no login starts here — `AccountSignInTest` covers the
+     * start.
+     */
+    @Test
+    fun errorCardLogInOpensTheAgentsAccounts() {
+        compose.waitUntil(timeoutMillis = 20_000) {
+            compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("composer-input").performClick().performTextInput("/error Not logged in")
+        compose.onNodeWithTag("composer-send").performClick()
+        compose.waitUntil(timeoutMillis = 30_000) {
+            compose.onAllNodesWithTag("transcript-action-sign-in", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("error-card.png")
+        if (imeVisible()) {
+            device.pressBack()
+            compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        }
+        compose.onAllNodesWithTag("transcript-action-sign-in", useUnmergedTree = true)[0].performClick()
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("agent-accounts").fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("error-card-accounts.png")
+    }
+
     /** `testToolGroupExpandsAndShowsDetail` (:344): the disclosure and the inline detail. */
     @Test
     fun toolGroupExpandsAndShowsDetail() {
@@ -1184,6 +1216,7 @@ class SessionFlowTest {
             name.startsWith("archiveWithUndo") ||
             name.startsWith("sessionMenuHeaderAndDelete") ||
             name.startsWith("newSessionFromAccessory") -> null
+        name.startsWith("errorCardLogIn") -> "chat:chat-preview"
         name.startsWith("questionPanel") -> "chat:chat-ask"
         name.startsWith("sendGlides") -> "chat:chat-runway"
         name.startsWith("toolGroupsRender") -> "chat:chat-veil"

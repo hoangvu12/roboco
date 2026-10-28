@@ -276,19 +276,20 @@ fun SessionScreen(
     val openSubagent: (String, String, Boolean) -> Unit = remember {
         { docId: String, title: String, frozen: Boolean -> currentOpenSubagent?.invoke(docId, title, frozen) }
     }
-    // wave-9 #14 (upstream #967): an error card's "Log in" opens this
-    // chat's agent on the Accounts & Usage page, the usage chip's route.
-    // The desktop also starts the agent's first login option; here the
-    // page is left for the user to pick one (full parity: wave-9 #18).
+    // wave-9 #14 + wave-10 35 (upstream #967): an error card's "Log in"
+    // opens this chat's agent on the Accounts & Usage page and starts its
+    // first login (the desktop's `start_first_login`) — unless the chat is
+    // Limited, whose banner owns the recovery (`errorCardLogInRoute`).
     val actionStack = LocalNavStack.current
     val actionEntry = LocalNavEntry.current
     val performAction: (String) -> Unit = remember(controller, actionStack, actionEntry) {
         { action: String ->
             if (action == "sign-in" && actionStack.top.id == actionEntry.id) {
                 actionStack.push(
-                    sh.roboco.android.accounts.AgentAccountsRoute(
-                        deviceId = controller.hostDeviceId.ifEmpty { null },
-                        focusHarness = controller.harness,
+                    sh.roboco.android.accounts.errorCardLogInRoute(
+                        hostDeviceId = controller.hostDeviceId,
+                        harness = controller.harness,
+                        limited = controller.chrome.value.limited != null,
                     ),
                     animated = true,
                 )

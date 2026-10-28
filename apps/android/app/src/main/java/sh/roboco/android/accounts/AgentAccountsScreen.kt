@@ -182,6 +182,18 @@ fun AgentAccountsScreen(
         }
     }
 
+    // wave-10 35: an error card's "Log in" starts the agent's first login
+    // once the accounts (and the offered agents) are in — once per page.
+    var firstLoginStarted by remember { mutableStateOf(false) }
+    val accountsIn = model?.snapshot != null
+    val offeredIn = model?.offered?.isNotEmpty() == true
+    LaunchedEffect(accountsIn, offeredIn) {
+        val harness = route.focusHarness
+        if (model != null && route.signIn && !firstLoginStarted && harness != null && accountsIn) {
+            if (model.startFirstLogin(harness)) firstLoginStarted = true
+        }
+    }
+
     val listState = rememberLazyListState()
     val chrome = LocalBottomChrome.current
     // The session opener's agent: scroll that harness's section header to
