@@ -136,6 +136,9 @@ Keep a running "PRs" list in this file.
   rule approved); upstream less-recoding recs 1, 2, 4, 5 yes, 3 (renamed mirror) later; delete scratch branches:
   `ci/scratch-startup-broken` deleted; `ci/scratch-arm64-ab` + `ci/scratch-glibc-floor` (from `4879f773`) delete
   once that worker is done (covered by the same OK).
+- #12 closed (user OK 2026-10-29; branch `web-pierre-adoption` kept). #16 Mimir stays open (user: not web-related;
+  it's mostly engine/harness/ui/`integrations/mimir`, plus 18 `web/` files + wiregen that #39 deletes; last
+  updated 2026-10-03, so it needs a big refresh if revived).
 - Next: review #39 when `82cbdf25` reports; review/merge #43/#44 when green; relay the research
   recommendation to the user in one short message.
 
