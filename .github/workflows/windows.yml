@@ -28,11 +28,6 @@ on:
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_RELEASE_LTO: 'false'
-  # Test builds never serve the React app: stage the placeholder pages so
-  # `--release` engine builds pass on a clean checkout (build.rs forbids its
-  # debug-only fallback under release, and web/packages/app/dist is not
-  # committed). Real bundle builds happen in web-codegen/release workflows.
-  ROBOCO_WEB_DIST: ${{ github.workspace }}/crates/engine/assets/web
 
 permissions:
   contents: read
@@ -85,10 +80,8 @@ jobs:
       - name: Build application
         run: cargo build --release --locked -p roboco
       - name: Verify portable and installer packaging
-        # Exercise the release packaging script on every PR. -SkipWebBuild:
-        # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
-        # and the real web bundle is built by web-codegen/release workflows.
-        run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+        # Exercise the release packaging script on every PR.
+        run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Installer install/uninstall
         run: ./scripts/test-windows-installer.ps1
       - name: Shader layout tests
