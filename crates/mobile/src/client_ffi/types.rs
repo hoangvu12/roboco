@@ -429,6 +429,11 @@ pub struct EngineView {
     /// metadata only; the secret never crosses a view.
     #[uniffi(default = None)]
     pub room: Option<EngineRoomRef>,
+    /// How a connected Tailcat engine is reached, as the engine list shows
+    /// it: "Direct · 35 ms" or "Via relay (Tokyo) · 160 ms"
+    /// (fleet-redesign 16). `None` for LAN engines and until measured.
+    #[uniffi(default = None)]
+    pub link_path: Option<String>,
 }
 
 impl From<mc::EngineView> for EngineView {
@@ -451,6 +456,7 @@ impl From<mc::EngineView> for EngineView {
             diagnostics: view.diagnostics.into(),
             tailcat: view.transport == mc::TransportKind::Tailcat,
             room: view.room.map(Into::into),
+            link_path: view.link_path.map(|path| path.label()),
         }
     }
 }

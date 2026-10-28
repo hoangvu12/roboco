@@ -26,6 +26,7 @@ internal fun engineView(
     version: String? = "1.2.3",
     lastConnectedMs: Long? = null,
     notice: String? = null,
+    linkPath: String? = null,
 ): EngineView = EngineView(
     engineId = id,
     name = name,
@@ -48,4 +49,5 @@ internal fun engineView(
         missingStreams = emptyList(),
         generation = 0uL,
     ),
+    linkPath = linkPath,
 )

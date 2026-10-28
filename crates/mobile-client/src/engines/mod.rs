@@ -195,6 +195,10 @@ pub struct EngineView {
     /// The room this engine was joined through (ADR 0011), if any —
     /// metadata only; the secret never crosses a view.
     pub room: Option<EngineRoom>,
+    /// How a connected Tailcat engine is reached: directly or through a
+    /// relay, with the round trip (fleet-redesign 16). `None` for LAN
+    /// engines and until measured.
+    pub link_path: Option<roboco_proto::tailcat::LinkPath>,
 }
 
 /// The aggregate posture across every engine.

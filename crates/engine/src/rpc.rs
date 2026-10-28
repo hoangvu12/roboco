@@ -1396,6 +1396,13 @@ fn doc_messages_stream(
     .boxed()
 }
 
+/// The opening tail's bounds: at most this many parts, and about this many
+/// bytes of them. Over a relayed link (~1.2 MB/s, fleet-redesign 17) 64 KB
+/// is a ~50 ms first paint, and still a screenful of the newest messages;
+/// the part bound alone let big tool outputs make it hundreds of KB.
+const OPENING_TAIL_PARTS: usize = 128;
+const OPENING_TAIL_BYTES: usize = 64 * 1024;
+
 /// First paint reads only the local tail; full history is deferred until the
 /// next stream poll. No network dependency or persisted truncation.
 async fn opening_doc_messages_stream(
@@ -1405,7 +1412,9 @@ async fn opening_doc_messages_stream(
 ) -> Result<BoxStream<'static, serde_json::Value>, RpcError> {
     let (handle, preview) = tokio::task::spawn_blocking(move || {
         let handle = host.open(&chat_id)?;
-        let entries = handle.doc().read_opening_tail(128)?;
+        let entries = handle
+            .doc()
+            .read_opening_tail_within(OPENING_TAIL_PARTS, OPENING_TAIL_BYTES)?;
         let mut preview = serde_json::to_value(roboco_doc::TranscriptUpdate {
             frame: roboco_doc::TranscriptFrame::reset(&entries),
             context_usage: handle.doc().context_usage(),

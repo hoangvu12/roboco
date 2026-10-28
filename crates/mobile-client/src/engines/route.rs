@@ -56,6 +56,9 @@ pub(crate) struct TailcatRoute {
     opener: Arc<dyn TunnelOpener>,
     /// The live tunnel, if any.
     slot: Mutex<Option<Arc<Tunnel>>>,
+    /// The app is in the background: a tunnel opened now starts with its
+    /// path pings paused.
+    background: std::sync::atomic::AtomicBool,
     /// Held across an open, so concurrent dials share it.
     gate: tokio::sync::Mutex<()>,
 }
@@ -115,6 +118,28 @@ impl Route {
         matches!(self, Route::Tailcat(_))
     }
 
+    /// How a Tailcat route's live tunnel last reached the engine
+    /// (fleet-redesign 16); `None` for a direct route or no tunnel.
+    pub(crate) fn link_path(&self) -> Option<roboco_proto::tailcat::LinkPath> {
+        match self {
+            Route::Direct { .. } => None,
+            Route::Tailcat(route) => lock(&route.slot).as_ref().and_then(|tunnel| tunnel.path()),
+        }
+    }
+
+    /// The app went to (or came back from) the background: pause or re-arm
+    /// the tunnel's path pings (ADR 0010).
+    pub(crate) fn set_background(&self, background: bool) {
+        if let Route::Tailcat(route) = self {
+            route
+                .background
+                .store(background, std::sync::atomic::Ordering::Release);
+            if let Some(tunnel) = lock(&route.slot).as_ref() {
+                tunnel.set_background(background);
+            }
+        }
+    }
+
     /// The identity a Tailcat route holds now (what the record stores).
     pub(crate) fn client_state(&self) -> Option<String> {
         match self {
@@ -143,6 +168,7 @@ impl TailcatRoute {
             client_state: Mutex::new(client_state),
             opener,
             slot: Mutex::new(None),
+            background: std::sync::atomic::AtomicBool::new(false),
             gate: tokio::sync::Mutex::new(()),
         }
     }
@@ -177,6 +203,9 @@ impl TailcatRoute {
         tracing::debug!(url = tunnel.url(), "tailcat route: tunnel open");
         if !client_state.is_empty() {
             *lock(&self.client_state) = client_state;
+        }
+        if self.background.load(std::sync::atomic::Ordering::Acquire) {
+            tunnel.set_background(true);
         }
         let tunnel = Arc::new(tunnel);
         *lock(&self.slot) = Some(tunnel.clone());

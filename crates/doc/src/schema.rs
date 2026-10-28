@@ -741,12 +741,25 @@ impl SessionDoc {
         &self,
         max_parts: usize,
     ) -> Result<Vec<SessionMessageEntry>, DocError> {
+        self.read_opening_tail_within(max_parts, usize::MAX)
+    }
+
+    /// [`Self::read_opening_tail`], also bounded by `max_bytes` of part
+    /// JSON: on a slow link a part count alone can make the first-paint
+    /// frame hundreds of KB (big tool outputs). The newest part is always
+    /// included, whatever its size.
+    pub fn read_opening_tail_within(
+        &self,
+        max_parts: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<SessionMessageEntry>, DocError> {
         use loro::{Container, ValueOrContainer};
         let messages = self.doc.get_list("messages");
         let mut remaining = max_parts;
+        let mut budget = max_bytes;
         let mut entries = Vec::new();
         for index in (0..messages.len()).rev() {
-            if remaining == 0 {
+            if remaining == 0 || budget == 0 {
                 break;
             }
             let Some(ValueOrContainer::Container(Container::Map(map))) = messages.get(index) else {
@@ -756,14 +769,30 @@ impl SessionDoc {
             let mut tail = Vec::new();
             if let Some(ValueOrContainer::Container(Container::List(parts))) = map.get("parts") {
                 let count = remaining.min(parts.len());
-                for part_index in parts.len().saturating_sub(count)..parts.len() {
+                // Newest first, until either bound is reached.
+                for part_index in (parts.len().saturating_sub(count)..parts.len()).rev() {
+                    if budget == 0 {
+                        break;
+                    }
                     if let Some(part) = parts.get(part_index) {
-                        tail.push(part.get_deep_value().to_json_value());
+                        let part = part.get_deep_value().to_json_value();
+                        let size = part.to_string().len();
+                        let first = entries.is_empty() && tail.is_empty();
+                        if size > budget && !first {
+                            budget = 0;
+                            break;
+                        }
+                        budget = budget.saturating_sub(size);
+                        tail.push(part);
                     }
                 }
-                remaining -= count.max(1).min(remaining);
+                tail.reverse();
+                remaining -= tail.len().max(1).min(remaining);
             } else {
                 remaining -= 1;
+            }
+            if tail.is_empty() && budget == 0 {
+                break;
             }
             value["parts"] = serde_json::Value::Array(tail);
             if let Ok(entry) = entry_from_json(value) {
@@ -2039,6 +2068,40 @@ mod tests {
             doc.export_snapshot().unwrap(),
             "preview never mutates storage"
         );
+    }
+
+    /// A byte budget stops the tail early on big parts, newest first, and
+    /// always keeps the newest part even when it alone is over budget.
+    #[test]
+    fn opening_tail_is_bounded_by_bytes_too() {
+        let doc = SessionDoc::init("whale").unwrap();
+        for turn in 0..10 {
+            doc.push_message(&SessionMessageEntry {
+                origin_chat_id: None,
+                id: format!("turn-{turn}"),
+                role: MessageRole::Assistant,
+                parts: vec![MessagePart::Text {
+                    id: format!("text-{turn}"),
+                    text: "x".repeat(10_000),
+                }],
+                created_at: turn,
+                device_id: "device".into(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+                provider_turn: None,
+            })
+            .unwrap();
+        }
+        let tail = doc.read_opening_tail_within(128, 35_000).unwrap();
+        assert_eq!(
+            tail.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["turn-7", "turn-8", "turn-9"]
+        );
+        let newest = doc.read_opening_tail_within(128, 10).unwrap();
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].id, "turn-9");
+        assert_eq!(doc.read_opening_tail(128).unwrap().len(), 10);
     }
 
     #[test]
