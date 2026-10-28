@@ -23,6 +23,7 @@ import uniffi.roboco_core.AgentLoginRules
 import uniffi.roboco_core.CoreException
 import uniffi.roboco_core.DeviceLoginInfo
 import uniffi.roboco_core.DeviceLoginPollInfo
+import uniffi.roboco_core.HarnessInfo
 import uniffi.roboco_core.LoginOptionInfo
 
 /**
@@ -52,13 +53,22 @@ class AccountSignInTest {
 
     private class FakeSignIn : AccountSignIn {
         val calls = mutableListOf<String>()
-        var offered = listOf("claude-code", "grok")
+        var harnesses = listOf(harness("claude-code", "Claude Code"), harness("grok", "Grok"))
+        val toggles = mutableListOf<String>()
+        var toggleThrows: Throwable? = null
         var start: DeviceLoginInfo = login()
         var startThrows: Throwable? = null
         val polls = ArrayDeque<DeviceLoginPollInfo>()
         var completeAnswer: AgentAccountsSnapshot? = null
 
-        override suspend fun offered(deviceId: String): List<String> = offered
+        override suspend fun harnesses(deviceId: String): List<HarnessInfo> = harnesses
+
+        override suspend fun setEnabled(deviceId: String, harness: String, enabled: Boolean): List<HarnessInfo> {
+            toggles += "$harness:$enabled"
+            toggleThrows?.let { throw it }
+            harnesses = harnesses.map { if (it.id == harness) it.copy(enabled = enabled, offered = enabled) else it }
+            return harnesses
+        }
 
         override suspend fun start(deviceId: String, harness: String, provider: String?): DeviceLoginInfo {
             calls += "start:$harness:${provider ?: "-"}"
@@ -103,6 +113,18 @@ class AccountSignInTest {
     // ----------------------------------------------------------- fixtures
 
     private companion object {
+        fun harness(id: String, label: String, installed: Boolean = true, offered: Boolean = installed) = HarnessInfo(
+            id = id,
+            label = label,
+            supportsSteering = null,
+            steeringMode = null,
+            reasoningLevels = emptyList(),
+            installed = installed,
+            enabled = null,
+            offered = offered,
+            midTurnSteering = null,
+        )
+
         fun option(provider: String?, label: String, first: String, more: String) =
             LoginOptionInfo(provider = provider, label = label, firstTitle = first, moreTitle = more)
 
@@ -340,6 +362,51 @@ class AccountSignInTest {
         r.model.cancelSignIn()
         advanceUntilIdle()
         assertTrue("an agent Roboco doesn't sign in to starts nothing", !r.model.startFirstLogin("mock"))
+    }
+
+    // ------------------------------------------------- Agents on/off (40)
+
+    @Test
+    fun agentRowsLockTheLastOneOnAMissingCliAndOffline() {
+        val list = listOf(
+            harness("codex", "Codex"),
+            harness("cursor", "Cursor", installed = false),
+            harness("claude-code", "Claude Code", offered = false),
+        )
+        val rows = agentToggleRows(list, online = true)
+        assertEquals(listOf("claude-code", "codex", "cursor"), rows.map { it.harness })
+        val (claude, codex, cursor) = rows
+        assertTrue(!claude.on && claude.toggleEnabled)
+        assertTrue("the last agent on stays on", codex.on && !codex.toggleEnabled)
+        assertEquals("Not installed", cursor.subtitle)
+        assertTrue(cursor.dimmed && !cursor.toggleEnabled && !cursor.on)
+        assertEquals("Installed", codex.subtitle)
+        val offline = agentToggleRows(list, online = false)
+        assertTrue(offline.none { it.toggleEnabled })
+        assertEquals("Offline", offline.first { it.harness == "codex" }.subtitle)
+    }
+
+    @Test
+    fun aFlipWritesTheComputerAndARefusalAlerts() = runTest {
+        val r = rig()
+        assertEquals(listOf("claude-code", "grok"), r.model.agentRows().map { it.harness })
+        r.model.setAgentEnabled("grok", false)
+        advanceUntilIdle()
+        assertEquals(listOf("grok:false"), r.signIn.toggles)
+        assertTrue(r.model.agentRows().first { it.harness == "grok" }.let { !it.on })
+        assertEquals("the offered list follows", listOf("claude-code"), r.model.offered)
+        assertTrue("the last one on is locked: the flip is ignored", run {
+            r.model.setAgentEnabled("claude-code", false)
+            r.signIn.toggles.size == 1
+        })
+
+        r.signIn.toggleThrows = CoreException.HostException("grok CLI is not installed on this device")
+        r.model.setAgentEnabled("grok", true)
+        advanceUntilIdle()
+        val alert = r.alerts.shown.last()
+        assertEquals("Couldn't turn it on", alert.title)
+        assertEquals("grok CLI is not installed on this device", alert.message)
+        assertTrue(r.model.toggling.isEmpty())
     }
 
     @Test

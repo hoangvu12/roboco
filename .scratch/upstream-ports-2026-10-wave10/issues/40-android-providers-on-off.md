@@ -25,12 +25,38 @@ engine-local), `crates/mobile/src/client_ffi/providers.rs:167`.
 
 **Blocked by:** 01. **Blocks:** 59 (Android first-run's "Your agents" step).
 
-**Status:** ready-for-agent
+**Status:** done (2026-10-28, `wave10/android`) — Kotlin compiles in CI only
 
 **Source:** `pass2-features-android.md` N2.
 
-- [ ] Toggling an agent changes what New session offers (flow test against the fixture engine)
-- [ ] The last enabled agent can't be turned off; the error copy and haptic match
-- [ ] Commit records the `cc7da5c2a` providers slice
+- [~] Toggling an agent changes what New session offers (the core stores the reply as the live catalog; real-engine Rust test; no flow test — see comments)
+- [x] The last enabled agent can't be turned off; the error copy and haptic match
+- [x] Commit records the `cc7da5c2a` providers slice
 
 ## Comments
+
+2026-10-28 (wave10/android, lane 3): carried `cc7da5c2a` (#966)
+`Cloud/ProvidersViewController.swift:303-381` (the computer rows and
+`setEnabled`) and `client_ffi/providers.rs` `set_harness_enabled` by
+intent; the Cloud rows are excluded.
+
+- Core: `roboco-mobile-client` `set_harness_enabled` (`SetHarnessEnabled`
+  over the engine handle); the reply goes through the same store as a
+  live `ListHarnesses` (mock rule, disk cache, in-memory catalog,
+  composers recomputed), so New session and the pickers see the change at
+  once. FFI `CoreClient.setHarnessEnabled`.
+- Android: an "Agents on <computer>" section on the Accounts & Usage page
+  (iOS puts it on Settings → Providers per computer; Roboco's per-computer
+  page is this one): installed first then by name, "Installed" / "Not
+  installed" (dimmed) / "Offline", a `RobocoSwitch` per agent locked for
+  the last one on, a missing CLI and an offline computer; a refusal alerts
+  "Couldn't turn it on" / "Couldn't turn it off" with the engine's reason.
+  The selection haptic is `RobocoSwitch`'s own (it plays on the flip).
+- Tests: `cargo test -p roboco-mobile-client --test session_engine
+  set_harness_enabled_follows_the_engines_rules` (the mock refused from
+  Settings, a no-op disable answering with the catalog, an unknown agent
+  refused); JVM `AccountSignInTest.agentRowsLockTheLastOneOnAMissingCliAndOffline`,
+  `aFlipWritesTheComputerAndARefusalAlerts`.
+- Deviation: no instrumented flow — the fixture engine offers only the
+  mock (which the engine never enables from Settings), so there is no
+  second agent to turn on or off there. Manual phone check recorded.

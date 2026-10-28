@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -50,8 +51,12 @@ import sh.roboco.android.RobocoApplication
 import sh.roboco.android.composer.openInCustomTab
 import sh.roboco.android.core.Face
 import sh.roboco.android.design.CapsuleShape
+import sh.roboco.android.design.GroupedAccessory
 import sh.roboco.android.design.GroupedFooter
+import sh.roboco.android.design.GroupedHeader
 import sh.roboco.android.design.GroupedPosition
+import sh.roboco.android.design.GroupedRow
+import sh.roboco.android.design.RobocoSwitch
 import sh.roboco.android.design.GroupedRowContainer
 import sh.roboco.android.design.HarnessMark
 import sh.roboco.android.design.Icon
@@ -156,6 +161,7 @@ fun AgentAccountsScreen(
                 alerts = alerts,
                 sheets = sheets,
                 deviceName = { id -> latestDevices.firstOrNull { it.id == id }?.name ?: "your computer" },
+                deviceOnline = { id -> latestDevices.firstOrNull { it.id == id }?.online ?: true },
                 io = io,
                 nowMs = nowMs,
                 signIn = effectiveSignIn,
@@ -369,6 +375,26 @@ internal fun LazyListScope.agentAccountsPage(
             }
         }
     }
+    // Wave-10 40: the computer's agents, each with its on/off switch.
+    val agentRows = model.agentRows()
+    if (agentRows.isNotEmpty()) {
+        item(key = "grouped:accounts:agents:header", contentType = "grouped-header") {
+            GroupedHeader(AgentsCopy.header(model.nameOfSelected()))
+        }
+        agentRows.forEachIndexed { ix, agent ->
+            item(key = "grouped:accounts:agents:${agent.harness}", contentType = "grouped-row") {
+                AgentToggleRowView(
+                    agent = agent,
+                    position = GroupedPosition.of(ix, agentRows.size),
+                    busy = agent.harness in model.toggling,
+                    onChange = { on -> model.setAgentEnabled(agent.harness, on) },
+                )
+            }
+        }
+        item(key = "grouped:accounts:agents:footer", contentType = "grouped-footer") {
+            GroupedFooter(AgentsCopy.Footer)
+        }
+    }
     item(key = "grouped:accounts:about", contentType = "grouped-footer") {
         val updated = model.updatedText
         Column {
@@ -427,6 +453,39 @@ internal fun HarnessHeader(harness: String, label: String) {
  * catalog lookup, like the new-session chips' `ChipLabels.harnessLabel`).
  */
 internal fun harnessLabelOf(harness: String): String = uniffi.roboco_core.harnessLabel(harness)
+
+/**
+ * One agent of the computer (wave-10 40, iOS's Providers computer row):
+ * its name over "Installed" / "Not installed" / "Offline", dimmed when not
+ * installed, and its switch — a locked or busy switch ignores the flip and
+ * springs back.
+ */
+@Composable
+internal fun AgentToggleRowView(
+    agent: AgentToggleRow,
+    position: GroupedPosition,
+    busy: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    GroupedRow(
+        title = agent.label,
+        subtitle = agent.subtitle,
+        position = position,
+        modifier = if (agent.dimmed) Modifier.alpha(0.5f) else Modifier,
+        accessories = listOf(
+            GroupedAccessory.Custom {
+                RobocoSwitch(
+                    checked = agent.on,
+                    onCheckedChange = { on -> if (agent.toggleEnabled && !busy) onChange(on) },
+                    modifier = if (agent.toggleEnabled && !busy) Modifier else Modifier.alpha(0.5f),
+                    testTag = "agent-toggle-${agent.harness}",
+                )
+            },
+        ),
+        testTag = "agent-${agent.harness}",
+        onClick = null,
+    )
+}
 
 /**
  * One "Add account" row (iOS's quiet add cell): a muted plus and the label

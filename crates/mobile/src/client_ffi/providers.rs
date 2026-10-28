@@ -9,7 +9,7 @@
 
 use roboco_proto::{AgentLoginMode, AgentLoginStatus, HarnessId};
 
-use super::{AgentAccountsSnapshot, CoreClient, CoreResult, on_runtime};
+use super::{AgentAccountsSnapshot, CoreClient, CoreResult, HarnessInfo, on_runtime};
 
 // ── the records ────────────────────────────────────────────────────────────
 
@@ -187,6 +187,24 @@ impl CoreClient {
     /// Give up on a computer's sign-in (best effort on the computer).
     pub fn device_login_cancel(&self, device_id: String, login_id: String) {
         self.client.cancel_agent_login(&device_id, &login_id);
+    }
+
+    /// Offer `harness` on `device_id` or not (wave-10 40); the device's
+    /// fresh catalog. The engine refuses the last enabled agent.
+    pub async fn set_harness_enabled(
+        &self,
+        device_id: String,
+        harness: String,
+        enabled: bool,
+    ) -> CoreResult<Vec<HarnessInfo>> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .set_harness_enabled(&device_id, &harness, enabled)
+                .await
+        })
+        .await
+        .map(|list| list.iter().map(Into::into).collect())
     }
 }
 

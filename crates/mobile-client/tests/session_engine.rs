@@ -1179,6 +1179,37 @@ async fn the_warm_set_keeps_at_most_six_detached_sessions() {
 
 // ── catalogs ───────────────────────────────────────────────────────────────
 
+/// Wave-10 40 (upstream #966's `set_harness_enabled`): the phone turns an
+/// agent on or off on the computer over the paired link. The engine's
+/// rules answer: the mock can't be turned on from Settings (refused, as
+/// `HostError`), and turning off an agent that isn't enabled is a clean
+/// no-op whose reply — the fresh catalog — is stored like a live list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_harness_enabled_follows_the_engines_rules() {
+    let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());
+    let rig = rig().await;
+    match rig.client.set_harness_enabled(&rig.engine_id, "mock", true).await {
+        Err(ClientError::HostError { message }) => {
+            assert!(message.contains("cannot be enabled"), "the refusal: {message}");
+        }
+        other => panic!("the mock is never enabled from Settings: {other:?}"),
+    }
+    // The rig registers only the mock, which detection never enables:
+    // turning it off is the no-op, and the reply is the stored catalog
+    // (the debug flag re-offers the mock, as for a live list).
+    let list = rig
+        .client
+        .set_harness_enabled(&rig.engine_id, "mock", false)
+        .await
+        .expect("a no-op disable answers with the catalog");
+    assert!(list.iter().any(|h| h.id == "mock"), "the fresh catalog: {list:?}");
+    // An agent the computer doesn't know is refused, never invented.
+    assert!(matches!(
+        rig.client.set_harness_enabled(&rig.engine_id, "devin", false).await,
+        Err(ClientError::HostError { .. })
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_live_catalog_and_its_fallbacks() {
     let _guard = mock_env().lock().unwrap_or_else(|p| p.into_inner());

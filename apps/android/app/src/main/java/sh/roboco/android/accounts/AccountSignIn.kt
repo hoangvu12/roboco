@@ -9,6 +9,7 @@ import uniffi.roboco_core.CoreClient
 import uniffi.roboco_core.CoreException
 import uniffi.roboco_core.DeviceLoginInfo
 import uniffi.roboco_core.DeviceLoginPollInfo
+import uniffi.roboco_core.HarnessInfo
 
 /**
  * "Add account" (wave-10 34, upstream #966's iPhone `DeviceSignIn`): the
@@ -21,8 +22,11 @@ import uniffi.roboco_core.DeviceLoginPollInfo
  */
 interface AccountSignIn {
 
-    /** The agents `deviceId` offers (`CoreClient.listHarnesses`, ids only; never throws). */
-    suspend fun offered(deviceId: String): List<String>
+    /** The agents on `deviceId` (`CoreClient.listHarnesses`; never throws). */
+    suspend fun harnesses(deviceId: String): List<HarnessInfo>
+
+    /** `CoreClient.setHarnessEnabled` — wave-10 40; the device's fresh catalog. */
+    suspend fun setEnabled(deviceId: String, harness: String, enabled: Boolean): List<HarnessInfo>
 
     /** `CoreClient.deviceLoginStart`. */
     suspend fun start(deviceId: String, harness: String, provider: String?): DeviceLoginInfo
@@ -44,10 +48,11 @@ interface AccountSignIn {
 class CoreAccountSignIn(
     private val client: () -> CoreClient?,
 ) : AccountSignIn {
-    override suspend fun offered(deviceId: String): List<String> =
-        withContext(Dispatchers.IO) {
-            client()?.listHarnesses(deviceId).orEmpty().filter { it.offered }.map { it.id }
-        }
+    override suspend fun harnesses(deviceId: String): List<HarnessInfo> =
+        withContext(Dispatchers.IO) { client()?.listHarnesses(deviceId).orEmpty() }
+
+    override suspend fun setEnabled(deviceId: String, harness: String, enabled: Boolean): List<HarnessInfo> =
+        withContext(Dispatchers.IO) { live().setHarnessEnabled(deviceId, harness, enabled) }
 
     override suspend fun start(deviceId: String, harness: String, provider: String?): DeviceLoginInfo =
         withContext(Dispatchers.IO) { live().deviceLoginStart(deviceId, harness, provider) }
@@ -175,6 +180,66 @@ fun signInDetail(state: SignInState): String =
  */
 fun deviceCodeIn(note: String): String? =
     note.split(' ').map { it.trimEnd('.', ',') }.firstOrNull { it.contains('-') && it.length >= 7 }
+
+/** The Agents section's copy (upstream #966 `ProvidersViewController`, verbatim). */
+object AgentsCopy {
+    fun header(deviceName: String) = "Agents on $deviceName"
+
+    const val Installed = "Installed"
+    const val NotInstalled = "Not installed"
+    const val Offline = "Offline"
+
+    fun failedTitle(on: Boolean) = if (on) "Couldn't turn it on" else "Couldn't turn it off"
+
+    const val Footer = "New sessions on this computer offer the agents that are on. The last one stays on."
+}
+
+/** One agent's row: what it says and whether its switch takes a flip. */
+data class AgentToggleRow(
+    val harness: String,
+    val label: String,
+    val subtitle: String,
+    /** The switch's state (an agent that isn't installed reads off). */
+    val on: Boolean,
+    /** The last agent standing stays on; an offline computer or a missing CLI can't change. */
+    val toggleEnabled: Boolean,
+    /** Not installed: dimmed. */
+    val dimmed: Boolean,
+)
+
+/**
+ * The computer's agents (iOS `computerRows`): installed first, then by
+ * name; "Installed" / "Not installed" / "Offline"; the switch on for an
+ * offered agent, and locked for the last one on, a missing CLI or an
+ * offline computer. Pure.
+ */
+fun agentToggleRows(list: List<HarnessInfo>, online: Boolean): List<AgentToggleRow> {
+    val enabledCount = list.count { it.offered }
+    return list
+        .sortedWith(compareBy({ if (it.installed) 0 else 1 }, { it.label }))
+        .map { h ->
+            val on = h.installed && h.offered
+            AgentToggleRow(
+                harness = h.id,
+                label = h.label,
+                subtitle = when {
+                    !h.installed -> AgentsCopy.NotInstalled
+                    online -> AgentsCopy.Installed
+                    else -> AgentsCopy.Offline
+                },
+                on = on,
+                toggleEnabled = online && h.installed && !(on && enabledCount <= 1),
+                dimmed = !h.installed,
+            )
+        }
+}
+
+/** Why a switch didn't take, for its alert. Pure. */
+fun agentToggleFailure(error: Throwable, deviceName: String): String = when (error) {
+    is CoreException.HostUnavailable -> "$deviceName is offline. Try again when it's back."
+    is CoreException.HostException -> error.reason.ifBlank { "The change could not be applied." }
+    else -> "The change could not be applied."
+}
 
 /** Why a sign-in failed, for the alert. Pure. */
 fun signInFailure(error: Throwable, deviceName: String): String = when (error) {

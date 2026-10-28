@@ -176,6 +176,8 @@ class AgentAccountsModel(
     /** Puts a device code on the clipboard (iOS's `UIPasteboard`). */
     private val copyText: (String) -> Unit = {},
     private val pollDelayMs: Long = 1_500L,
+    /** Whether the selected computer is online (the Agents switches lock offline). */
+    private val deviceOnline: (deviceId: String) -> Boolean = { true },
     /** The sign-in's deadline (iOS: ten minutes). */
     private val signInDeadlineMs: Long = 10 * 60 * 1_000L,
 ) {
@@ -200,6 +202,14 @@ class AgentAccountsModel(
 
     /** The agents the selected computer offers (the empty sections' source). */
     var offered: List<String> by mutableStateOf(emptyList())
+        private set
+
+    /** Wave-10 40: the computer's whole agent catalog (`null` until it answers). */
+    var agents: List<uniffi.roboco_core.HarnessInfo>? by mutableStateOf(null)
+        private set
+
+    /** The agents whose switch is being written. */
+    var toggling: Set<String> by mutableStateOf(emptySet())
         private set
 
     /** The sign-in under way (its waiting row), if any. */
@@ -233,10 +243,11 @@ class AgentAccountsModel(
         load = AccountsLoad.Loading
         cancelSignIn()
         offered = emptyList()
+        agents = null
         signIn?.let { seam ->
             workScope.launch {
-                val agents = withContext(io) { seam.offered(deviceId) }
-                if (this@AgentAccountsModel.deviceId == deviceId) offered = agents
+                val list = withContext(io) { seam.harnesses(deviceId) }
+                if (this@AgentAccountsModel.deviceId == deviceId) applyAgents(list)
             }
         }
         workScope.launch {
@@ -420,6 +431,53 @@ class AgentAccountsModel(
                         buttons = listOf(AlertButton("OK", role = AlertButtonRole.Cancel)),
                     ),
                 )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ Agents (40)
+
+    private fun applyAgents(list: List<uniffi.roboco_core.HarnessInfo>) {
+        agents = list
+        offered = list.filter { it.offered }.map { it.id }
+    }
+
+    /** The Agents section's rows; empty before the catalog answers. */
+    fun agentRows(): List<AgentToggleRow> {
+        val deviceId = deviceId ?: return emptyList()
+        val list = agents ?: return emptyList()
+        return agentToggleRows(list, deviceOnline(deviceId))
+    }
+
+    /**
+     * A switch flip (iOS `setEnabled`): the computer offers the agent or
+     * not, its fresh catalog replaces the rows (and the core's catalog, so
+     * New session offers the change); a refusal alerts "Couldn't turn it
+     * on/off". Locked rows and a write in flight ignore the flip — the
+     * switch springs back to its state.
+     */
+    fun setAgentEnabled(harness: String, on: Boolean) {
+        val deviceId = deviceId ?: return
+        val seam = signIn ?: return
+        val row = agentRows().firstOrNull { it.harness == harness } ?: return
+        if (!row.toggleEnabled || harness in toggling || row.on == on) return
+        toggling = toggling + harness
+        workScope.launch {
+            try {
+                val list = withContext(io) { seam.setEnabled(deviceId, harness, on) }
+                if (this@AgentAccountsModel.deviceId == deviceId) applyAgents(list)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                alerts.show(
+                    RobocoAlert(
+                        title = AgentsCopy.failedTitle(on),
+                        message = agentToggleFailure(t, nameOf(deviceId)),
+                        buttons = listOf(AlertButton("OK", role = AlertButtonRole.Cancel)),
+                    ),
+                )
+            } finally {
+                toggling = toggling - harness
             }
         }
     }
