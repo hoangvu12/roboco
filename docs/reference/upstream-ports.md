@@ -63,11 +63,13 @@ its own forks. `--apply --refresh-lock` runs the plan in the worktree (it
 needs cargo and the registry index); otherwise run the printed commands
 before committing. CI builds Android with `--locked`, so a stale lock fails.
 
-**`--residual`: skip what Roboco already has.** For remainders of earlier
-partial ports (ledger notes like "audit PORTED (sha); residual slice"),
-replaying the whole commit re-conflicts on everything already ported. Residual
-mode splits each conflicted file's upstream change into hunks and reverts the
-ones Roboco provably carries before merging. It is conservative:
+**Residual mode: skip what Roboco already has.** On by default
+(`--no-residual` turns it off for a plain translated cherry-pick). For
+remainders of earlier partial ports (ledger notes like "audit PORTED (sha);
+residual slice"), replaying the whole commit re-conflicts on everything
+already ported. Residual mode splits each conflicted file's upstream change
+into hunks and reverts the ones Roboco provably carries before merging. Its
+worst case is the plain merge. It is conservative:
 
 - a hunk is skipped only when every significant line it adds is in the Roboco
   file, as many times as upstream has it after the commit, and every
@@ -80,8 +82,8 @@ ones Roboco provably carries before merging. It is conservative:
   line). Read the list: a hunk that matches by text can still sit in a
   different function in Roboco.
 
-`--residual-threshold 0.8` skips a hunk when 80% of its lines are present (the
-research prototype's rule). It removes about twice as many regions, but it
+`--residual-threshold 0.8` (opt-in) skips a hunk when 80% of its lines are
+present (the research prototype's rule). It removes about twice as many regions, but it
 drops lines Roboco doesn't have: the report lists them as `lacking`, and
 `--commit` refuses such a result. Measured on the wave-10 conflict set
 (414 files, 1,816 regions): strict 1,579 regions and nothing dropped without
@@ -89,6 +91,16 @@ evidence; 0.8 gives 1,358 regions but 571 unverified lines.
 
 Where a hunk was skipped, the upstream side of a remaining conflict shows the
 upstream^ text there. Don't take upstream's side of such a region wholesale.
+
+**Possible duplicates in clean merges.** Always on, report-only. When Roboco
+ported an upstream change somewhere else in a file, git can merge upstream's
+copy cleanly beside it, and nothing conflicts. For every file git merged
+cleanly, a hunk is flagged as `possible duplicate` when Roboco already has
+all of it (the strict rule above) and the merge leaves more copies of its
+lines than either side has. Check each one and delete the extra copy. The
+flag never changes the merge, the class or `--commit`. Example: `9601a2440`
+merges a second `*scenario:image-*)` arm into
+`crates/harness/tests/fixtures/fake-codex.sh`.
 
 **`--mergiraf [PATH]`: optional structural fallback.** Opt-in, never
 required: [mergiraf](https://mergiraf.org) is an external, pre-1.0, GPL-3
@@ -131,8 +143,8 @@ worktree's git dir (`git rev-parse --git-path roboco-translate`, for example
 `.git/worktrees/<name>/roboco-translate/`), never into the tree, so it can't be
 committed by accident and the merged files carry only git's own markers. It
 holds the hints per region (lines refer to the file as written), the skipped
-residual hunks, the mergiraf files, the `Cargo.lock` plan and the files with no
-Roboco target. `--report-dir DIR` writes it elsewhere, also without `--apply`.
+residual hunks, the possible duplicates, the mergiraf files, the `Cargo.lock`
+plan and the files with no Roboco target. `--report-dir DIR` writes it elsewhere, also without `--apply`.
 A committed CLEAN result writes no report.
 
 ### Ledger format
@@ -213,7 +225,7 @@ presence, only the uncertain ones need a person.
    `Cargo.lock` is TRIVIAL; `--refresh-lock` regenerates the lock with cargo,
    and the commit then goes through as CLEAN.
 6. **REAL takes: seed from the translated merge.** `translate.py <sha> --apply
-   --worktree ../roboco-sync --residual` writes the merge, conflict markers
+   --worktree ../roboco-sync` writes the merge, conflict markers
    included, lists the files with no Roboco counterpart, and writes the
    sidecar report with a hint per conflict region
    ([translate.py passes](#translatepy-passes); add `--mergiraf` if it is
@@ -241,10 +253,10 @@ Android lane. Run it after editing `path-rules.tsv`.
 
 Wave 10 (`.scratch/upstream-ports-2026-10-wave10/`) keeps its tickets. Each
 ticket that cites a merged upstream SHA starts by running
-`python scripts/upstream/translate.py <sha> --residual --annotate` against
-its branch to see what lands cleanly and what is left. Most wave-10 commits
-are remainders of partial ports, which is what `--residual` is for. The
-ticket then uses `--apply --residual` to seed the port, and adds the
+`python scripts/upstream/translate.py <sha> --annotate` against its branch
+to see what lands cleanly and what is left. Most wave-10 commits are
+remainders of partial ports, which residual mode (the default) is for. The
+ticket then uses `--apply` to seed the port, and adds the
 `Upstream-Commit:` trailer to the commit that completes it. Wave-10 rows
 are `ticketed wave10-NN` in the ledger. Each merged wave-10 PR runs
 `triage.py sync --write` to flip them. The weekly loop starts once wave 10

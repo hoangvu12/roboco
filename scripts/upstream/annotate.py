@@ -325,6 +325,18 @@ def markdown(rec):
                 lack = f"; lacking: {', '.join(_code(x[:60]) for x in h['lacking'][:3])}" if h["lacking"] else ""
                 out.append(f"  - {where} (+{h['added']}/-{h['removed']}): {_code(h['first'])}{lack}")
         out.append("")
+    dups = [f for f in rec["files"] if f.get("duplicates")]
+    if dups:
+        out += ["## Possible duplicates in clean merges", "",
+                "Git merged these hunks without a conflict, but Roboco already has them elsewhere in the file, "
+                "so the merge may carry two copies. Check each one and delete the extra copy (report only: "
+                "nothing was changed for it).", ""]
+        for f in dups:
+            for h in f["duplicates"]:
+                a, b = h["upstream_lines"]
+                doubled = ", ".join(_code(x[:60]) for x in h["doubled"][:3])
+                out.append(f"- `{f['path']}`: upstream lines {a}-{b}: {_code(h['first'])}; now doubled: {doubled}")
+        out.append("")
     mg = [f for f in rec["files"] if "mergiraf" in f.get("how", "")]
     if mg:
         out += ["## Resolved by mergiraf (review each)", ""]

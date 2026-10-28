@@ -16,9 +16,12 @@ Cargo.lock: kept as Roboco's, refreshed with cargo, never merged).
 TRIVIAL = no missing targets, and conflicts only in Cargo.lock or at most
 3 regions / 30 lines in total, or a Cargo.lock to regenerate.
 
-Extra passes on conflicted files (docs/reference/upstream-ports.md):
-  --residual      skip upstream hunks Roboco already has (partial earlier
-                  ports); the skipped hunks are listed for review
+Extra passes (docs/reference/upstream-ports.md):
+  residual        on by default (--no-residual): skip upstream hunks Roboco
+                  already has (partial earlier ports) in conflicted files;
+                  the skipped hunks are listed for review
+  duplicates      report-only: hunks a clean merge may have doubled because
+                  Roboco ported them elsewhere in the file
   --mergiraf      opt-in: try mergiraf, keep it only when it resolves the
                   whole file (external binary, never required)
 Every conflict region left gets a hint (why it conflicts, what to do) in a
@@ -34,9 +37,9 @@ commit of upstream history.
 Examples:
   python scripts/upstream/translate.py 85006f4b4
   python scripts/upstream/translate.py 85006f4b4 4f465702d --target main --quiet
-  python scripts/upstream/translate.py 2a38baa4e --residual --annotate
+  python scripts/upstream/translate.py 2a38baa4e --annotate
   python scripts/upstream/translate.py 4f465702d --apply --worktree ../roboco-batch --commit
-  python scripts/upstream/translate.py 3487b507f --residual --mergiraf --apply --worktree ../roboco-batch
+  python scripts/upstream/translate.py 3487b507f --mergiraf --apply --worktree ../roboco-batch
   python scripts/upstream/translate.py --sample sample.tsv --out results.tsv
 """
 import argparse
@@ -77,8 +80,12 @@ def same_name_hints(repo, target, path, cache):
 
 
 def refine(res, opts):
-    """Residual mode and the mergiraf fallback on each conflicted file; the Cargo.lock plans."""
+    """Residual mode and the mergiraf fallback on each conflicted file; the Cargo.lock plans;
+    the possible-duplicate check on files git merged cleanly."""
     for f in res.files:
+        if f.state == "clean" and f.merged is not None and f.ours is not None:
+            f.duplicates = residual.duplicates(f.ours, f.base, f.theirs, f.merged)
+            continue
         if f.state == "regenerate":
             plan = lockfile.plan(f.ours, f.base, f.theirs)
             f.lock = {"plan": plan, "describe": lockfile.describe(plan),
@@ -146,6 +153,9 @@ def report(repo, res, subject, quiet, cache, notes=None):
         print(f"    {f.label():<28} {f.path}{moved}{extra}{residual_note(f)}")
         for ln in f.notes:
             print(f"        {ln}")
+        for h in f.duplicates:
+            print(f"        possible duplicate: upstream lines {h['upstream_lines'][0]}-{h['upstream_lines'][1]} "
+                  f"`{h['first']}` ({len(h['doubled'])} line(s) now doubled; Roboco has it elsewhere)")
         if f.lock:
             for ln in f.lock["describe"]:
                 print(f"        {ln}")
@@ -169,6 +179,8 @@ def file_record(f, regions=None):
         d["lock"]["updates"] = [list(u) for u in f.lock["plan"]["updates"]]
     if f.notes:
         d["notes"] = list(f.notes)
+    if f.duplicates:
+        d["duplicates"] = f.duplicates
     if regions:
         d["regions_detail"] = regions
     return d
@@ -433,11 +445,14 @@ def main(argv=None):
     ap.add_argument("--commit", action="store_true",
                     help="with --apply, commit a CLEAN result with an Upstream-Commit: trailer")
     ap.add_argument("--allow-dirty", action="store_true", help="with --apply, allow uncommitted changes")
-    ap.add_argument("--residual", action="store_true",
-                    help="skip upstream hunks Roboco already has (partial earlier ports); lists what it skipped")
+    ap.add_argument("--residual", action="store_true", default=True,
+                    help="skip upstream hunks Roboco already has (partial earlier ports) and list what it "
+                         "skipped (the default)")
+    ap.add_argument("--no-residual", dest="residual", action="store_false",
+                    help="merge whole upstream hunks, as a plain translated cherry-pick")
     ap.add_argument("--residual-threshold", type=float, metavar="R",
                     help=f"share of a hunk's lines that must already be in Roboco to skip it "
-                         f"(default {residual.DEFAULT_THRESHOLD}: all of them; implies --residual)")
+                         f"(default {residual.DEFAULT_THRESHOLD}: all of them)")
     ap.add_argument("--mergiraf", nargs="?", const="", metavar="PATH",
                     help=f"opt-in: try mergiraf on files still conflicted, keep it only when it resolves the "
                          f"whole file (binary: PATH, ${mergiraf.ENV}, or mergiraf on PATH)")
@@ -471,7 +486,8 @@ def main(argv=None):
     if args.residual_threshold is not None:
         if not 0 < args.residual_threshold <= 1:
             ap.error("--residual-threshold takes a share in (0, 1]")
-        args.residual = True
+        if not args.residual:
+            ap.error("--residual-threshold can't be combined with --no-residual")
     else:
         args.residual_threshold = residual.DEFAULT_THRESHOLD
     args.mergiraf = pick_mergiraf(args)

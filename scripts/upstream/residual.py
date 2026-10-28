@@ -116,6 +116,38 @@ def residual_theirs(ours, base, theirs, threshold=DEFAULT_THRESHOLD):
     return Residual("\n".join(out).encode("utf-8"), hunks, bl, tl)
 
 
+def duplicates(ours, base, theirs, merged):
+    """Hunks a clean merge may have doubled: report-only, for files git merged without conflict.
+
+    When Roboco ported an upstream change somewhere else in the file, git can
+    merge upstream's copy cleanly next to it. A hunk is flagged when Roboco
+    already has all of it (the strict residual rule) and the merge left more
+    copies of some of its lines than either Roboco or upstream has. Returns
+    hunk dicts with a `doubled` list; empty when nothing looks doubled.
+    """
+    try:
+        ol, tl, ml = _decode(ours), _decode(theirs), _decode(merged)
+    except UnicodeDecodeError:
+        return []
+    have = collections.Counter(x.strip() for x in ol)
+    after = collections.Counter(x.strip() for x in tl)
+    now = collections.Counter(x.strip() for x in ml)
+    if not any(significant(x) and n > max(have[x], after[x]) for x, n in now.items()):
+        return []  # cheap exit: no line got more copies than either side has
+    r = residual_theirs(ours, base, theirs)
+    if r is None:
+        return []
+    out = []
+    for h in r.dropped:
+        doubled = [x.strip() for x in r._theirs[h.j1:h.j2]
+                   if significant(x) and now[x.strip()] > max(have[x.strip()], after[x.strip()])]
+        if doubled:
+            d = h.as_dict(r._theirs, r._base)
+            d["doubled"] = list(dict.fromkeys(doubled))
+            out.append(d)
+    return out
+
+
 def no_worse(before, after):
     """Use the residual merge only when it isn't worse: (regions, lines) pairs."""
     (r0, l0), (r1, l1) = before, after

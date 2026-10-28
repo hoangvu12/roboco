@@ -4,6 +4,7 @@ import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import annotate  # noqa: E402
 import residual  # noqa: E402
 import translate  # noqa: E402
 import upstream_common as uc  # noqa: E402
@@ -189,6 +190,51 @@ class RefineTest(unittest.TestCase):
         self.assertIn("lines Roboco lacks", translate.review_needed(res)[0])
         f.residual["dropped"][0]["lacking"] = []
         self.assertEqual(translate.review_needed(res), [])
+
+
+FN_A = ("pub fn a() -> u32 {", "    1", "}", "")
+FN_B = ("pub fn b() -> u32 {", "    let two = 1 + 1;", "    two", "}", "")
+FN_C = ("pub fn c() -> u32 {", "    let three = 3;", "    three", "}", "")
+FN_Z = ("pub fn z() -> u32 {", "    26", "}")
+
+
+class DuplicatesTest(unittest.TestCase):
+    def test_clean_merge_that_doubles_a_port_is_flagged(self):
+        # Roboco ported `b` below `z`; upstream adds it above: git merges both copies cleanly.
+        base, theirs, ours = text(*FN_A, *FN_Z), text(*FN_A, *FN_B, *FN_Z), text(*FN_A, *FN_Z, "", *FN_B)
+        merged, regions, _ = uc.merge3(ours, base, theirs)
+        self.assertEqual(regions, 0)
+        self.assertEqual(merged.decode().count("pub fn b()"), 2)
+        (h,) = residual.duplicates(ours, base, theirs, merged)
+        self.assertEqual(h["first"], "pub fn b() -> u32 {")
+        self.assertIn("let two = 1 + 1;", h["doubled"])
+
+    def test_new_code_and_single_copies_are_not_flagged(self):
+        base, theirs = text(*FN_A, *FN_Z), text(*FN_A, *FN_C, *FN_Z)
+        ours = text(*FN_A, *FN_Z, "", *FN_B)
+        merged, _, _ = uc.merge3(ours, base, theirs)
+        self.assertEqual(residual.duplicates(ours, base, theirs, merged), [])
+        # Roboco has `b` at the same place: one copy after the merge, nothing to flag.
+        ours = text(*FN_A, *FN_B, *FN_Z)
+        merged, _, _ = uc.merge3(ours, base, text(*FN_A, *FN_B, *FN_Z, "// upstream note"))
+        self.assertEqual(residual.duplicates(ours, base, text(*FN_A, *FN_B, *FN_Z, "// upstream note"), merged), [])
+
+    def test_refine_reports_but_never_blocks(self):
+        base, theirs, ours = text(*FN_A, *FN_Z), text(*FN_A, *FN_B, *FN_Z), text(*FN_A, *FN_Z, "", *FN_B)
+        merged, _, _ = uc.merge3(ours, base, theirs)
+        res = uc.Replay("a" * 40, "b" * 40)
+        f = uc.FileResult("M", "lib.rs", "lib.rs", "clean", merged=merged, base=base, theirs=theirs, ours=ours)
+        res.files.append(f)
+        translate.refine(res, opts(residual=False))
+        self.assertEqual(len(f.duplicates), 1)
+        self.assertEqual((f.state, f.merged), ("clean", merged))
+        self.assertEqual(res.classify(), "CLEAN")
+        self.assertEqual(translate.review_needed(res), [])
+        rec = translate.as_json(res, "subject")
+        self.assertEqual(rec["files"][0]["duplicates"][0]["first"], "pub fn b() -> u32 {")
+        md = annotate.markdown(rec)
+        self.assertIn("## Possible duplicates in clean merges", md)
+        self.assertIn("`lib.rs`: upstream lines", md)
 
 
 if __name__ == "__main__":

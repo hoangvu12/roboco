@@ -331,7 +331,7 @@ def merge3(ours, base, theirs, style="merge", labels=("roboco", "upstream^", "up
 class FileResult:
     __slots__ = ("status", "upath", "usrc", "path", "state", "reason", "regions", "lines",
                  "merged", "mode", "old_path", "base", "theirs", "ours", "merged_theirs", "how",
-                 "residual", "lock", "notes")
+                 "residual", "lock", "notes", "duplicates")
 
     def __init__(self, status, upath, path, state, **kw):
         self.status, self.upath, self.path, self.state = status, upath, path, state
@@ -350,6 +350,7 @@ class FileResult:
         self.residual = None  # residual-mode details for the report
         self.lock = None  # Cargo.lock plan for the report
         self.notes = []  # extra report lines (a mergiraf attempt that didn't resolve, ...)
+        self.duplicates = []  # hunks a clean merge may have doubled (report-only)
 
     def label(self):
         if self.state == "conflict":

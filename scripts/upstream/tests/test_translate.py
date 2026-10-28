@@ -97,15 +97,15 @@ class TranslateEndToEnd(unittest.TestCase):
         return self.git("rev-parse", "--path-format=absolute", "--git-path", "roboco-translate", cwd=self.wt).strip()
 
     def test_plain_replay_conflicts_and_annotates(self):
-        out = self.run_translate(self.u1, "--repo", self.repo, "--target", "main", "--annotate")
+        out = self.run_translate(self.u1, "--repo", self.repo, "--target", "main", "--annotate", "--no-residual")
         self.assertIn("TRIVIAL", out.splitlines()[0])
         self.assertIn("REGENERATE (kept ours)", out)
         self.assertIn("CONFLICT", out)
         self.assertIn("upstream bumped: serde 1.0.1 -> 1.0.2", out)
         self.assertIn("cargo update -p serde@1.0.1 --precise 1.0.2", out)
 
-    def test_residual_apply(self):
-        out = self.run_translate(self.u1, "--apply", "--worktree", self.wt, "--residual", "--commit")
+    def test_residual_is_the_default(self):
+        out = self.run_translate(self.u1, "--apply", "--worktree", self.wt, "--commit")
         self.assertIn("TRIVIAL", out.splitlines()[0])  # only the lockfile is left: cargo's job
         self.assertIn("residual: 1 hunk(s) already in Roboco, 1 to port", out)
         self.assertIn("not committing a TRIVIAL result", out)
@@ -122,7 +122,7 @@ class TranslateEndToEnd(unittest.TestCase):
         self.assertTrue(os.path.exists(md[:-3] + ".json"))
 
     def test_plain_apply_writes_annotated_conflicts_outside_the_tree(self):
-        self.run_translate(self.u1, "--apply", "--worktree", self.wt)
+        self.run_translate(self.u1, "--apply", "--worktree", self.wt, "--no-residual")
         lib = self.read("crates/roboco-core/src/lib.rs")
         self.assertIn("<<<<<<< roboco", lib)
         self.assertIn("||||||| upstream^", lib)
@@ -143,6 +143,11 @@ class TranslateEndToEnd(unittest.TestCase):
         out = self.run_translate(self.u3, "--repo", self.repo, "--target", "main")
         self.assertIn("ALREADY-IN", out.splitlines()[0])
         self.assertIn("NOOP", out)
+
+    def test_threshold_needs_residual(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            translate.main([self.u1, "--repo", self.repo, "--target", "main",
+                            "--no-residual", "--residual-threshold", "0.8"])
 
     def test_unknown_commit(self):
         with self.assertRaises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
