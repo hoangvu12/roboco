@@ -111,6 +111,65 @@ meaning all three specs below. The user prefers **short, plain-language** status
 After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
 Keep a running "PRs" list in this file.
 
+## >>> HANDOFF #2 (2026-10-28, from `00743a45` to the next orchestrator): START HERE <<<
+
+The user asked `00743a45` to hand off to a new orchestrator chat and to open a separate standalone
+**fleet design discussion chat**. State at handoff (≈ 02:30 local):
+
+**GitHub**
+- **PR #35** (`ci/caches-windows`, CI 01/12/13/02): every check green except `android-emulator`,
+  which is re-running (attempt 2 of run 40609187561; attempt 1 = the known `KeyboardFlowTest` flake,
+  CI ticket 22). Reviewed OK (see PRs below). **Merge with a merge commit when it's green.** Then
+  remove worktree `..\roboco-ci-caches`, delete local branch `ci/caches-windows` (the remote branch
+  only with the user's OK), drop its sccache basedir, and archive chat `8ccd84a5`.
+- **PR #36** (`ci/mobile-bindgen`, CI 07): every PR check green. It also needs the **dispatched
+  android.yml run 40609763310** (attempt 2) to pass `android-benchmark-apk` (R8 + mobile-dist core =
+  the release path this PR changes). Attempt 1 failed in `sdkmanager` (corrupt NDK zip), which is not
+  code. Its `android-emulator`/`-tablet` jobs in that dispatch are known flakes/red and not required.
+  Reviewed OK (`HostCore.needed` is conservative). Merge when the benchmark job is green; same cleanup
+  (`..\roboco-ci-bindgen`, chat `0bf1abec`).
+- Merge order: either first. The second gets an update from `main` only if GitHub says it conflicts
+  (both touch `Cargo.lock`? #36 does, #35 doesn't; likely no conflict).
+- After each merge: tell the user in 2–4 plain sentences; record measurements later (CI tickets
+  say "measure after merge": the first main push seeds the caches, and the next PR must restore).
+
+**Workers still running**
+- `82cbdf25`, web removal, `..\roboco-web-removal` / `feature/web-removal`: tickets 02–06
+  committed (`3fa2fc34e..68ed1bfd0`), working on 07 (ports card → system browser + shell-owned
+  watcher), then 08–10 and 11's automatable parts. It will push, open ONE PR and reply. **Its
+  completion notice goes to `00743a45`, not to you.** To receive it, queue a message to it
+  (`send_messages`, `mode: "queue"`) asking it to repeat its final report after its current turn. The
+  queued turn is then yours, and its notice comes to you. Don't steer it mid-turn.
+- Every other side chat of `00743a45` is done and archived.
+
+**Background watchers** of `00743a45` die with it. Set up your own `gh pr checks --watch` (Bash tool,
+`run_in_background`) for #35/#36 and the dispatch run.
+
+**Fleet: ON HOLD pending the design discussion.** The user feels the fleet is "still too buggy" and
+wants something reliable but still easy. A standalone chat ("Fleet design discussion") is
+discussing that with the user directly. **Do not start `.scratch/fleet-merge/` or
+`.scratch/fleet-agents/`** until that chat's outcome lands (it may replace or rewrite both specs).
+When it produces a decision/spec, treat that as the user's input and schedule it.
+
+**Queue after web removal merges** (unchanged): CI 03→04→05, 06, 08, then 09; CI 10 after web
+removal; CI 22–24 (from the 11 triage); wave 10 lanes (fixes first: 02, 03; wave-10 03 is also a
+prerequisite of fleet-agents); then the fleet work as decided.
+
+**Pending user questions** (ask when relevant; don't block on them):
+- CI 11 triage defaults (tablet nightly + non-blocking until 3 green nights; nextest retries with
+  flaky reporting; JUnit retry rule on named phone flakes). Awaiting OK.
+- Wave-10 57: pushing to `hoangvu12/zui` / `gpui-component` needs the OK at that time.
+- Which QR the user failed to scan (fleet-merge 04/05 fix all of them either way).
+- Upstream #1088 (access modes + plan mode) is not in wave 10 and needs its own drift review + ticket.
+
+**Housekeeping**
+- sccache server not restarted since the basedirs were added (other builds were running). Restart
+  only when no `cargo`/`rustc` is running (`tasklist | grep -i -E "cargo|rustc"`).
+- `rust-toolchain.toml` becomes 1.99.1 on `main` once #35 merges. After that, plain `cargo` works and
+  `cargo +1.99.0` notes go stale.
+- Nit for the next CI PR (03/04): `package-windows.ps1` uses `[IO.Path]::IsPathFullyQualified`
+  (missing in Windows PowerShell 5.1).
+
 ## Implementation orchestrator log (chat `00743a45`, from 2026-10-28)
 
 ### Done by the orchestrator
@@ -129,9 +188,9 @@ Keep a running "PRs" list in this file.
 
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
-| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running |
-| `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open, CI running; reviewed OK |
-| `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open, CI running |
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running (02–06 committed) |
+| `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open; reviewed OK; emulator re-run pending |
+| `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open; PR checks green; dispatch benchmark re-run pending |
 | `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `.scratch/fleet-merge/` (7 tickets) |
 | `a53396d3` | main checkout, read-only | research: how upstream drives other devices | done → `fleet-agents/research-2026-10-28.md`; spec + tickets updated; fleet-agents now also blocked by wave-10 03 (IPC token); archived |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
