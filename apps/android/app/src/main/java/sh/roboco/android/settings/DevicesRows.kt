@@ -146,6 +146,15 @@ fun engineConnectionLabel(state: EngineState, lastError: String?): String = when
 }
 
 /**
+ * A connected Tailcat engine's path instead of the plain "Connected":
+ * "Direct · 35 ms" or "Via relay (Tokyo) · 160 ms" (fleet-redesign 16).
+ * The core builds the text; it never carries an address. `null` for LAN
+ * engines, before the first measurement, and in every other state.
+ */
+fun connectedPathLabel(engine: EngineView): String? =
+    engine.linkPath?.trim()?.takeIf { it.isNotEmpty() && engine.state is EngineState.Connected }
+
+/**
  * The section's rows, `MoreViewController.swift:189-190` adapted: one
  * [DevicesRowSpec.Engine] per engine **in `engines()` order** (pairing
  * order; never sorted — Rust already dedupes re-pairs by `engineId` and
@@ -159,7 +168,7 @@ fun devicesRows(engines: List<EngineView>?): List<DevicesRowSpec> =
         DevicesRowSpec.Engine(
             engineId = e.engineId,
             title = e.name.trim().ifEmpty { e.host },
-            label = engineConnectionLabel(e.state, e.lastError),
+            label = connectedPathLabel(e) ?: engineConnectionLabel(e.state, e.lastError),
             connected = e.state is EngineState.Connected,
         )
     } + DevicesRowSpec.Pair

@@ -9,8 +9,11 @@ the original Go dependency closure are in `licenses/bundle`.
 
 The engine starts `roboco-tailcat serve --state <server.key> --target 127.0.0.1:<port>`
 or `roboco-tailcat connect --config <private-connect.json> --state <client.key>
---listen 127.0.0.1:0`. The only stdout line is readiness JSON (`address` or
-`url`); the secret address stays out of argv. The engine currently sets
+--listen 127.0.0.1:0`. The first stdout line is readiness JSON (`address` or
+`url`); the secret address stays out of argv. With `ROBOCO_TAILCAT_STATUS=1`,
+`connect` then prints one path status line per measurement,
+`{"path":"direct","rttMs":35}` or `{"path":"relay","region":"tok","rttMs":160}`
+(never an address or a key). The engine currently sets
 `ROBOCO_TAILCAT_PARENT_PIPE=1` to terminate the subprocess when its stdin
 closes; both the Go adapter and Rust launcher use this Roboco-owned flag.
 
@@ -22,6 +25,15 @@ without waiting for an ack. The loopback proxy dials the tunnel only once the
 caller sends bytes, so a bare connect-and-close liveness check never does.
 `Close` drains in-tunnel TCP (`DrainTCP`, 1.5 s) before tearing the client
 down, so the engine receives the FINs instead of waiting out its lease.
+
+Every client also pushes for a direct path (`path.go`, fleet-redesign 16):
+disco pings at 1, 3, 10 and 30 s after it connects, then every minute while
+the pongs come back over a relay; it stops pushing once a pong comes back
+direct (re-checking every 5 min) and re-arms on a tunnel reset, a failed
+dial, a network change or a return to the foreground. `pushForDirectPath`
+switches the push off in one place (the path label keeps a ping per connect).
+Android reads the path with `roboco_tailcat_path` and pauses the pings in the
+background with `roboco_tailcat_set_background`.
 
 Build from this directory with Go 1.27.1 or `GOTOOLCHAIN=auto`:
 

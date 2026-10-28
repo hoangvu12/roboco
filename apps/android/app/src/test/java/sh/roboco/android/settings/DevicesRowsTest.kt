@@ -145,6 +145,21 @@ class DevicesRowsTest {
     }
 
     @Test
+    fun aConnectedTailcatEngineShowsItsPath() {
+        val rows = devicesRows(
+            listOf(
+                engineView(id = "pc", name = "PC", state = EngineState.Connected, linkPath = "Via relay (Tokyo) \u00b7 160 ms"),
+                engineView(id = "lan", name = "Laptop", state = EngineState.Connected),
+                engineView(id = "away", name = "SG", state = EngineState.Reconnecting, linkPath = "Direct \u00b7 35 ms"),
+            ),
+        )
+        assertEquals("Via relay (Tokyo) \u00b7 160 ms", (rows[0] as DevicesRowSpec.Engine).label)
+        assertEquals("Connected", (rows[1] as DevicesRowSpec.Engine).label)
+        // A stale path never hides a reconnect.
+        assertEquals("Reconnecting\u2026", (rows[2] as DevicesRowSpec.Engine).label)
+    }
+
+    @Test
     fun aBlankNameFallsBackToTheHost() {
         val rows = devicesRows(listOf(engineView(id = "e1", name = "  ", state = EngineState.Connected)))
         assertEquals("studio.local:27655", (rows[0] as DevicesRowSpec.Engine).title)

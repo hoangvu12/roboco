@@ -66,3 +66,27 @@ func openHandles() int {
 	defer mu.Unlock()
 	return len(clients)
 }
+
+// pathOf is a client's last path status line ({"path":"direct","rttMs":35}
+// or {"path":"relay","region":"tok","rttMs":160}); "" while unknown or for
+// an unknown handle. It never carries an address or a key.
+func pathOf(handle int64) string {
+	mu.Lock()
+	client := clients[handle]
+	mu.Unlock()
+	if client == nil {
+		return ""
+	}
+	return client.Path().JSON()
+}
+
+// setBackground pauses (or, on return, re-arms) a client's path pings.
+// Unknown handles are ignored.
+func setBackground(handle int64, background bool) {
+	mu.Lock()
+	client := clients[handle]
+	mu.Unlock()
+	if client != nil {
+		client.SetBackground(background)
+	}
+}

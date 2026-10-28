@@ -12,6 +12,7 @@ import (
 
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 
 	native "github.com/hoangvu12/roboco/adapters/roboco-tailcat"
@@ -94,7 +95,40 @@ func runConnect(args []string) error {
 	if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"url": cl.URL()}); err != nil {
 		return errors.New("could not emit readiness")
 	}
+	if os.Getenv(statusEnv) == "1" {
+		emitPathStatus(cl, os.Stdout)
+	}
 	return waitSignal()
+}
+
+// statusEnv asks `connect` for path status lines after its readiness line
+// (fleet-redesign 16). An environment variable, not a flag: an older
+// adapter ignores it instead of refusing to start.
+const statusEnv = "ROBOCO_TAILCAT_STATUS"
+
+// emitPathStatus prints one JSON line per path measurement:
+// {"path":"direct","rttMs":35} or {"path":"relay","region":"tok","rttMs":160}.
+// No address or key ever appears in them. A write error (the parent stopped
+// reading) ends the lines; the client keeps running.
+func emitPathStatus(cl *native.Client, out io.Writer) {
+	var mu sync.Mutex
+	broken := false
+	emit := func(status native.PathStatus) {
+		line := status.JSON()
+		if line == "" {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if broken {
+			return
+		}
+		if _, err := io.WriteString(out, line+"\n"); err != nil {
+			broken = true
+		}
+	}
+	cl.OnPath(emit)
+	emit(cl.Path())
 }
 
 type connectConfig struct {
