@@ -151,7 +151,7 @@ class SideChatsEntryTest {
         var news = 0
         var forks = 0
         val m = menu(canWrite = true, rows = SideChatMenuRows(forking = false, onNew = { news++ }, onFork = { forks++ }))
-        // Pin, Copy, the side-chat group, Previews (agent-previews
+        // Pin, Copy, the side-chat group, Ports (agent-previews
         // ticket 05), Account & Usage (#05), Archive.
         assertEquals(6, m.children.size)
         assertEquals("Copy Transcript", (m.children[1] as MenuItem).title)
@@ -170,7 +170,7 @@ class SideChatsEntryTest {
         rows[1].action()
         assertEquals(1, news)
         assertEquals(1, forks)
-        assertEquals("Previews", (m.children[3] as MenuItem).title)
+        assertEquals("Ports", (m.children[3] as MenuItem).title)
         assertEquals("Archive", (m.children[5] as MenuItem).title)
     }
 

@@ -2,7 +2,7 @@ package sh.roboco.android.browser
 
 /**
  * The preview surfaces' copy (agent-previews ticket 05) — the desktop
- * `preview_body` vocabulary (`ui/src/browser/view.rs`) verbatim where the
+ * `preview_body` vocabulary (`ui/src/browser/view.rs` at tag `web-final`) verbatim where the
  * phone shows the same thing: the remote subtitle, the row label shape
  * (`device · localhost:port`), the loading and reconnect states, and the
  * honest remote empty state. The ellipses are U+2026.
@@ -10,14 +10,14 @@ package sh.roboco.android.browser
 object PreviewsCopy {
 
     /** The panel page's nav title and TalkBack pane title. */
-    const val PageTitle = "Previews"
+    const val PageTitle = "Ports"
 
-    /** The panel's title with the chat's title as context (`Previews · Wrangler deploy hygiene`). */
+    /** The panel's title with the chat's title as context (`Ports · Wrangler deploy hygiene`). */
     fun pageTitle(chatTitle: String): String =
         if (chatTitle.isBlank()) PageTitle else "$PageTitle \u00b7 $chatTitle"
 
     /** The session ⋯ menu's row that pushes the panel. */
-    const val SessionMenuRow = "Previews"
+    const val SessionMenuRow = "Ports"
 
     /** The section header above the rows (the desktop's remote subtitle). */
     const val RunningOnYourDevice = "Running on your device"

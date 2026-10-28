@@ -45,7 +45,8 @@ import sh.roboco.android.design.glass.rememberGlassMenuState
  * The three fixtures:
  * - `session_menu_light_unpinned` — "Pin", all rows enabled (the fifth row
  *   set is android-next #05's "Account & Usage" and agent-previews' 05's
- *   "Previews", never disabled);
+ *   "Ports" row, never disabled; the golden predates the rename and
+ *   still shows "Previews" until it is re-recorded);
  * - `session_menu_dark_pinned` — "Unpin" with the slash icon, enabled;
  * - `session_menu_light_readonly` — Pin and Archive disabled (grey
  *   titles, full-ink icons; Copy Transcript enabled).

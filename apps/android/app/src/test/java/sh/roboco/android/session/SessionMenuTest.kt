@@ -297,7 +297,7 @@ class SessionMenuTest {
         assertFalse(copy.destructive)
         assertFalse(copy.disabled)
 
-        assertEquals("Previews", previews.title)
+        assertEquals("Ports", previews.title)
         assertEquals(RobocoIcons.Safari, (previews.icon as MenuIcon.Symbol).icon)
         assertFalse(previews.destructive)
         assertFalse("the panel owns its own honest states", previews.disabled)

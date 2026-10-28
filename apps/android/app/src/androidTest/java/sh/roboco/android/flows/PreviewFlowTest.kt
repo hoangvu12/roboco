@@ -24,7 +24,7 @@ import sh.roboco.android.MainActivity
  * The preview panel + in-app browser flow (agent-previews ticket 05): the
  * phone's half of the session relay, end to end against the fixture
  * engine — pair, open the `chat-preview` chat, open the ⋯ menu's
- * "Previews" row, and let the panel's `WatchPreviews` subscription list
+ * "Ports" row, and let the panel's `WatchPreviews` subscription list
  * the fixture's seeded dev server. Tapping the row pushes the browser
  * entry, whose WebView loads `http://{hostname}:7332` — the in-app client
  * proxy — over the engine session the phone already holds.
@@ -64,7 +64,7 @@ class PreviewFlowTest {
             compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()
         }
 
-        // 2. The ⋯ menu's Previews row opens the panel.
+        // 2. The ⋯ menu's Ports row opens the panel.
         compose.onNodeWithTag("session-more").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodesWithTag("glass-menu").fetchSemanticsNodes().isNotEmpty()
