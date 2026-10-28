@@ -1,344 +1,51 @@
 name: Windows tests
 
+# SCRATCH (do not merge): Windows PowerShell 5.1 command-discovery timing on
+# windows-11-arm vs windows-2022 (ci-speed 15 ConPTY failures).
 on:
-  pull_request:
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'apps/roboco/**'
-      - 'dist/windows/**'
-      - 'crates/**'
-      # Android-only crates: the desktop does not link them.
-      - '!crates/text/**'
-      - '!crates/mobile/**'
-      - '!crates/mobile-client/**'
-      - '!crates/android-assets/**'
-      - 'scripts/test-windows-*.ps1'
-      - 'scripts/package-windows.ps1'
-      - '.github/workflows/windows.yml'
-      - '.github/actions/windows-ci-setup/**'
-      - '.config/nextest.toml'
-  # Main runs seed the Rust cache every PR restores (PR-scoped entries are
-  # unreadable from other branches).
-  push:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - 'apps/roboco/**'
-      - 'dist/windows/**'
-      - 'crates/**'
-      # Android-only crates: the desktop does not link them.
-      - '!crates/text/**'
-      - '!crates/mobile/**'
-      - '!crates/mobile-client/**'
-      - '!crates/android-assets/**'
-      - 'scripts/test-windows-*.ps1'
-      - 'scripts/package-windows.ps1'
-      - '.github/workflows/windows.yml'
-      - '.github/actions/windows-ci-setup/**'
-      - '.config/nextest.toml'
-  # x64 coverage for `tests`, which PRs and pushes run on arm64: once a day
-  # on main, cold (no Rust cache), with no `app` job (pushes cover that).
-  schedule:
-    - cron: '11 4 * * *'
   workflow_dispatch:
-    inputs:
-      native_gui:
-        description: 'Run native GUI/pixel probes (requires a usable desktop and Direct3D)'
-        type: boolean
-        default: false
-      # Fallback and A/B switches; pushes and PRs always run with all on.
-      fast_linker:
-        description: 'Link with rust-lld (off: link.exe)'
-        type: boolean
-        default: true
-      dev_drive:
-        description: 'Build on a Dev Drive, Cargo/rustup homes on D: (off: image defaults)'
-        type: boolean
-        default: true
-      rust_cache:
-        description: 'Restore the main-seeded Rust cache (off: cold, as the nightly x64 run)'
-        type: boolean
-        default: true
-      tests_runner:
-        description: 'Runner image for tests (the nightly uses windows-2022)'
-        type: choice
-        options: [windows-11-arm, windows-2022, windows-2025]
-        default: windows-11-arm
-      app_runner:
-        description: 'Runner image for app (x64: it packages the shipped build)'
-        type: choice
-        options: [windows-2022, windows-2025]
-        default: windows-2022
-
-# Test-build tuning, following the big Rust projects (rust-analyzer, Zed,
-# Bevy): no incremental compilation, and neutralize the distribution
-# profile's thin LTO for test binaries — LTO buys the shipped binary nothing
-# here and costs most of the release-compile time. release.yml still builds
-# real LTO binaries for distribution. The rest of the CI release profile
-# (workspace crates at opt-level 0) comes from .github/actions/windows-ci-setup.
-env:
-  CARGO_INCREMENTAL: '0'
-  CARGO_PROFILE_RELEASE_LTO: 'false'
-  # Test builds never serve the React app: stage the placeholder pages so
-  # `--release` engine builds pass on a clean checkout (build.rs forbids its
-  # debug-only fallback under release, and web/packages/app/dist is not
-  # committed). Real bundle builds happen in web-codegen/release workflows.
-  ROBOCO_WEB_DIST: ${{ github.workspace }}/crates/engine/assets/web
 
 permissions:
   contents: read
 
-# Superseded PR runs are cancelled; main runs never are, not even while
-# queued (a per-run group), so every merge gets a full run and seeds caches.
-concurrency:
-  group: windows-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-defaults:
-  run:
-    shell: pwsh
-
 jobs:
-  # Every Windows test suite in ONE nextest build. The separate cargo
-  # invocations this replaces each rebuilt the shared graph with a different
-  # package/feature set; the application build is the `app` job's, in
-  # parallel.
-  #
-  # PRs and pushes run it on windows-11-arm (free, and this repo's Windows
-  # builds are 20-25 % faster there), the nightly on windows-2022 for x64
-  # coverage. Back to x64 everywhere: change the last literal below.
-  tests:
-    runs-on: ${{ github.event_name == 'schedule' && 'windows-2022' || github.event_name == 'workflow_dispatch' && inputs.tests_runner || 'windows-11-arm' }}
-    timeout-minutes: 45
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-11-arm, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/windows-ci-setup
-        with:
-          cache-key: windows-tests
-          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
-          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
-          rust-cache: ${{ github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.rust_cache) }}
-      # The Cursor shim suite runs the shim under node: one pinned version on
-      # both architectures, whatever each image ships.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.144
-      - name: Select the Windows test suites
-        # A suite runs on Windows when it has Windows-specific code paths or
-        # the desktop links it (Android-only crates run on Linux and in
-        # android.yml). The argument list for the nextest run below:
-        #   roboco-harness  lib + the native suites (codex_availability,
-        #                   windows_native) + the driver suites whose fixtures
-        #                   need no POSIX shell: OpenCode (in-test HTTP/SSE),
-        #                   the Cursor shim (node), Pi RPC (Rust peer);
-        #                   native-fixture for the whole build
-        #   roboco-engine   lib + worktree paths (upstream #530), harness
-        #                   catalog and login resolution, engine-local suites
-        #   roboco-proto    lib (device_paths only, see the filter)
-        #   roboco-rpc, roboco-ui, gpui_windows (shader layout)  lib
-        #   roboco-preview  lib + discovery (the GetExtendedTcpTable join;
-        #                   preview-tests.yml runs the rest on Linux)
-        #   roboco, roboco-update, roboco-markdown, roboco-engine-client
-        #                   every test target, read from cargo metadata so a
-        #                   new test file is picked up
-        # gpui_windows is a dependency: `-p` finds it through roboco-ui.
+      - name: Windows PowerShell 5.1 command discovery
+        shell: pwsh
         run: |
-          $everyTarget = 'roboco', 'roboco-update', 'roboco-markdown', 'roboco-engine-client'
-          $metadata = cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $allTests = $metadata.packages | Where-Object { $everyTarget -contains $_.name } |
-            ForEach-Object { $_.targets } | Where-Object { $_.kind -contains 'test' } |
-            ForEach-Object { '--test', $_.name }
-          $selection = @(
-            '-p', 'roboco-harness', '-p', 'roboco-engine', '-p', 'roboco-proto', '-p', 'roboco-rpc',
-            '-p', 'roboco-preview', '-p', 'roboco-ui', '-p', 'gpui_windows',
-            '-p', 'roboco', '-p', 'roboco-update', '-p', 'roboco-markdown', '-p', 'roboco-engine-client',
-            '--features', 'roboco-harness/native-fixture',
-            '--lib', '--bin', 'roboco',
-            '--test', 'codex_availability', '--test', 'windows_native',
-            '--test', 'opencode', '--test', 'cursor_shim', '--test', 'pi_rpc',
-            '--test', 'worktree_on_run', '--test', 'codex_catalog', '--test', 'codex_login_resolution',
-            '--test', 'engine_local', '--test', 'local_first', '--test', 'local_profiles', '--test', 'project_actions_rpc',
-            '--test', 'discovery'
-          ) + $allTests
-          "WINDOWS_TESTS=$($selection -join ' ')" >> $env:GITHUB_ENV
-          $selection -join ' '
-      - name: Windows tests
-        # One invocation builds and runs. A separate `--no-run` step would make
-        # this one recompile ort-sys and everything above it (roboco-voice,
-        # roboco-ui, roboco; 1.5-2 min): its build script downloads the ONNX
-        # runtime during the run and marks it rerun-if-changed, so the second
-        # cargo command always sees it as newer. The log's "Finished" line
-        # and nextest's Summary give the build and run times.
-        #
-        # The filter trims the three suites that ran by name before: proto
-        # device_paths, the engine's worktree_location_ tests, and the gpui
-        # shader layout tests (`not package(roboco*)`: a dependency, which a
-        # package() matcher cannot name). roboco-ui and roboco-engine-client
-        # run one test at a time (.config/nextest.toml test groups);
-        # retries come from the ci profile.
-        env:
-          RUST_BACKTRACE: '1'
-        run: >-
-          cargo nextest run --release --locked -P ci --no-fail-fast @($env:WINDOWS_TESTS -split ' ')
-          -E 'all() - (package(roboco-proto) - test(device_paths)) - (binary_id(roboco-engine::worktree_on_run) - test(worktree_location_)) - ((not package(roboco*)) - test(layout))'
-      - name: UI native font geometry test ran
-        # Upstream 3f19c19e: the real-font assertion measures diff geometry
-        # against DirectWrite (non-headless platform). It used to be its own
-        # step; it is mandatory, so a filter or selection change that drops it
-        # fails here.
-        run: |
-          [xml]$junit = Get-Content -LiteralPath target/nextest/ci/junit.xml -Raw
-          $cases = @($junit.SelectNodes('//testcase') | Where-Object { $_.name -like '*native_diff_font_geometry*' })
-          if ($cases.Count -eq 0) { throw 'native_diff_font_geometry did not run' }
-          foreach ($case in $cases) {
-            if ($case.SelectSingleNode('failure|error|skipped')) { throw "$($case.name) did not pass" }
-            "PASS: $($case.classname) $($case.name)"
+          $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $bytes = [IO.File]::ReadAllBytes($ps); $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          "OS arch $env:PROCESSOR_ARCHITECTURE; powershell.exe machine 0x{0:X4}" -f [BitConverter]::ToUInt16($bytes, $pe + 4)
+          $cache = "$env:LOCALAPPDATA\Microsoft\Windows\PowerShell\ModuleAnalysisCache"
+          function CacheState { if (Test-Path $cache) { "cache: $((Get-Item $cache).Length) bytes, $((Get-Item $cache).LastWriteTimeUtc)" } else { 'cache: missing' } }
+          CacheState
+          $env:PSModulePath = $null
+          & $ps -NoProfile -Command '$env:PSModulePath -split ";" | ForEach-Object { "{0}  modules={1}" -f $_, @(Get-ChildItem $_ -Directory -ErrorAction SilentlyContinue).Count }'
+          function Time($label, $cmd) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            & $ps -NoProfile -NonInteractive -Command $cmd | Out-Null
+            "{0,-40} {1,6:N1} s" -f $label, $sw.Elapsed.TotalSeconds
           }
-      - name: Architecture and linker of the test build
-        # The roboco binary the CLI tests ran: aarch64 on windows-11-arm, and
-        # linked by the same fast-linker switch as on x64.
-        run: ./scripts/test-windows-linker.ps1 -FastLinker '${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}'
-      - name: Upload the test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-tests-junit
-          path: target/nextest/ci/junit.xml
-          if-no-files-found: warn
-          retention-days: 14
-
-  # The application as shipped (with the embedded Tailcat adapter), packaged
-  # and smoke-tested. Its own cache: `cargo build -p roboco` resolves
-  # different dependency features than the test build. Always x64 (the
-  # shipped x86_64 build), on every PR and push; not part of the nightly.
-  app:
-    if: github.event_name != 'schedule'
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.app_runner || 'windows-2022' }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/windows-ci-setup
-        with:
-          cache-key: windows-app
-          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
-          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
-          rust-cache: ${{ github.event_name != 'workflow_dispatch' || inputs.rust_cache }}
-      - name: Build the Tailcat adapter (embedded by every cargo build below)
-        # crates/engine/build.rs reruns when ROBOCO_TAILCAT_EMBED changes, so
-        # every cargo command in this job sees the same value, exported here
-        # before the first one; package-windows.ps1 embeds this build instead
-        # of building its own.
-        working-directory: adapters/roboco-tailcat
-        env:
-          CGO_ENABLED: '0'
-          GOOS: windows
-          GOARCH: amd64
-        run: |
-          $dir = Join-Path $env:GITHUB_WORKSPACE 'target\tailcat\x86_64'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $adapter = Join-Path $dir 'roboco-tailcat.exe'
-          go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "ROBOCO_TAILCAT_EMBED=$adapter" >> $env:GITHUB_ENV
-      # Packaging's `cargo build --release -p roboco` is the application build.
-      - name: Verify portable and installer packaging
-        # Exercise the release packaging script on every PR. -SkipWebBuild:
-        # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
-        # and the real web bundle is built by web-codegen/release workflows.
-        run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
-      - name: Linker of the packaged roboco.exe
-        run: ./scripts/test-windows-linker.ps1 -FastLinker '${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}'
-      - name: Installer install/uninstall
-        run: ./scripts/test-windows-installer.ps1
-      - name: GUI subsystem and redirected CLI output
-        # The packaged roboco.exe is a GUI-subsystem binary (no console flash
-        # at startup), and --help, --version and argument errors still reach
-        # redirected stdout/stderr with the right exit codes.
-        run: ./scripts/test-windows-startup.ps1
-      - name: CLI startup without HOME
-        run: |
-          # Exercise real path resolution without touching the runner's account.
-          # Port zero cannot connect to another running engine.
-          $env:HOME = $null
-          $env:ROBOCO_DATA_DIR = $null
-          $env:ROBOCO_IPC_PORT = '0'
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "roboco smoke O'Brien 日本語"
-          $expected = Join-Path $env:LOCALAPPDATA 'Roboco'
-          $probe = [Diagnostics.ProcessStartInfo]::new()
-          $probe.FileName = (Resolve-Path -LiteralPath './target/release/roboco.exe').Path
-          $probe.Arguments = 'status'
-          $probe.UseShellExecute = $false
-          $probe.CreateNoWindow = $true
-          $probe.RedirectStandardOutput = $true
-          $probe.RedirectStandardError = $true
-          $process = [Diagnostics.Process]::Start($probe)
-          try {
-            $stdout = $process.StandardOutput.ReadToEndAsync()
-            $stderr = $process.StandardError.ReadToEndAsync()
-            if (-not $process.WaitForExit(10000)) {
-              $process.Kill()
-              throw 'Isolated status probe timed out'
-            }
-            if ($process.ExitCode -ne 0) { throw "Status failed: $($stderr.Result)" }
-            $output = $stdout.Result -split '\r?\n'
-          } finally { $process.Dispose() }
-          $output
-          if (-not ($output -contains "Data dir: $expected")) {
-            throw 'Windows startup did not select LOCALAPPDATA/Roboco'
-          }
-          if (-not ($output -contains 'Engine: not running')) {
-            throw 'An isolated Windows startup must report no running engine'
-          }
-      - name: Build rendering fixture
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
-        run: cargo build --release --locked -p roboco-ui --example windows-render-fixture --features windows-render-fixture
-      - name: Upload GUI test binaries
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-gui-binaries
-          path: |
-            target/release/roboco.exe
-            target/release/examples/windows-render-fixture.exe
-          if-no-files-found: error
-          retention-days: 1
-
-  native-gui:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
-    needs: app
-    runs-on: windows-2022
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-gui-binaries
-          path: target/release
-      - name: App lifecycle tests
-        run: ./scripts/test-windows-lifecycle.ps1
-      - name: Rendering tests
-        run: ./scripts/test-windows-rendering.ps1
-      - name: Upload GUI test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-native-probes
-          path: |
-            target/windows-render-*/capture.png
-            target/windows-render-*/measurements.json
-            target/windows-render-*/stdout.txt
-            target/windows-render-*/stderr.txt
-            target/windows-lifecycle-*/result.txt
-            target/windows-lifecycle-*/run-*.txt
-          if-no-files-found: warn
+          Time 'startup only ([Console]::WriteLine)' "[Console]::WriteLine('x')"
+          # A killed process never writes the analysis cache: time a run killed
+          # mid-discovery, then clean exits.
+          $p = Start-Process $ps -ArgumentList '-NoProfile','-Command','Split-Path -Leaf (Get-Location); Start-Sleep 60' -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew(); Start-Sleep 5; $p.Kill(); "killed after 5 s"
+          CacheState
+          Time 'Split-Path/Get-Location #1' 'Split-Path -Leaf (Get-Location)'
+          CacheState
+          Time 'Split-Path/Get-Location #2' 'Split-Path -Leaf (Get-Location)'
+          Time 'Set-Content #1' "Set-Content -NoNewline -Path $env:RUNNER_TEMP\x.txt -Value ok"
+          Time 'Start-Process' "Start-Process -FilePath cmd -ArgumentList '/c','exit' -WindowStyle Hidden -Wait"
+          Time 'Get-Command (all)' 'Get-Command | Measure-Object'
+          CacheState
+          Time 'Split-Path/Get-Location #3' 'Split-Path -Leaf (Get-Location)'
+          & $ps -NoProfile -Command '"PS {0}; CLR {1}" -f $PSVersionTable.PSVersion, $PSVersionTable.CLRVersion'
+          Get-ChildItem "$env:WINDIR\assembly" -Directory | Select-Object -ExpandProperty Name
