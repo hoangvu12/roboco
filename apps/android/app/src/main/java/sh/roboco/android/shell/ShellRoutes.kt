@@ -65,7 +65,9 @@ fun ShellRouteContent(route: NavRoute) {
             // Ticket 46: the Sessions tab's real root.
             // Wave-10 37: the one-row bar's field filters this list in
             // place (the sidebar's query path); "" under the tab shell.
-            TabId.Sessions -> SessionsScreen(query = LocalBottomBarSearch.current?.query ?: "")
+            TabId.Sessions -> LocalBottomBarSearch.current.let { search ->
+                SessionsScreen(query = search?.query ?: "", filters = search != null)
+            }
             // Ticket 49: the Search tab's root — the model + list state
             // live on the entry, so the query, results and scroll survive
             // tab switches (29 refocuses the field on re-entry).

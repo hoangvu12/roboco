@@ -102,3 +102,9 @@ exists only while it is in use (front page, and tapped, focused or holding
 a query); otherwise a static placeholder with the same look and the
 `search-field` tag stands in, and a tap / focus request brings the field in,
 focused. JVM: `OneRowBarShellTest.theBarsTextFieldExistsOnlyWhileInUse`.
+
+Also found by the bisect's one run that reached `bottomBarSearch` (36):
+the phone list never filtered — `SessionsScreen` ran the query search only
+with the sidebar's pinned accessory. `SessionsScreen(filters = …)` now runs
+it for the bar too (`ShellRouteContent` passes `filters = true` under the
+one-row bar).
