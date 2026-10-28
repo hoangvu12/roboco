@@ -1,7 +1,29 @@
 # cargo-nextest repository configuration.
-# CI runs with `-P ci` (windows.yml): transient failures (ConPTY teardown,
-# timing-sensitive engine tests) get two retries before they can fail a run —
-# a retry is minutes cheaper than rerunning a whole Windows job.
+# CI runs with `-P ci` (windows.yml, ui-tests.yml): transient failures (ConPTY
+# teardown, timing-sensitive engine tests such as completion_notices, ticket
+# 24) get two retries before they can fail a run — a retry is minutes cheaper
+# than rerunning a whole job. A pass on retry is reported as FLAKY in the
+# final summary; `--retries 0` reproduces the strict run.
 [profile.ci]
 retries = 2
 failure-output = "immediate-final"
+
+# Suites that must not overlap with themselves (ci-speed 06): the GPUI test
+# scheduler and the engine-client suite's real loopback engines with
+# restart/reconnect waits ran with `--test-threads=1` under `cargo test`. A
+# one-thread group keeps that while the rest of the same nextest run (the
+# roboco CLI tests, the other mobile crates) runs in parallel. Linux only for
+# now: windows.yml still runs each suite in its own `-j 1`/parallel step.
+[test-groups]
+serial-ui = { max-threads = 1 }
+serial-engine-client = { max-threads = 1 }
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "linux")'
+filter = 'package(roboco-ui)'
+test-group = 'serial-ui'
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "linux")'
+filter = 'package(roboco-engine-client)'
+test-group = 'serial-engine-client'

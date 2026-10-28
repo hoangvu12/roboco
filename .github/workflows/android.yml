@@ -261,10 +261,18 @@ jobs:
           path: apps/android/app/build/outputs/apk/release/*.apk
           retention-days: 14
           if-no-files-found: error
-      - name: Test the asset generator and the xtask (Rust)
-        if: runner.os == 'Linux'
-        run: cargo test --locked -p roboco-android-assets -p roboco-xtask
-        working-directory: .
+      - name: Upload the distribution core sizes
+        # The R8 smoke's mobile-dist core (x86_64): the sizes ui-tests'
+        # deleted android-core job recorded (ci-speed 06).
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-core-sizes
+          path: target/android-core/mobile-dist/sizes.json
+          if-no-files-found: warn
+          retention-days: 30
+      # The asset generator and xtask Rust tests run in ui-tests.yml's
+      # core-tests (scripts/ci/test-core.sh) since ci-speed 06.
       - name: Check the native libraries in the debug APKs
         # android-next#02: every split carries the core AND the Tailcat
         # transport for its own ABI. Sizes go to the job summary (stored is
