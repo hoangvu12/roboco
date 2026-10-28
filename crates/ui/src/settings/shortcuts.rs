@@ -558,178 +558,8 @@ impl popover::ScrollRailHost for ShortcutsPage {
     }
 }
 
-/// One rebindable shortcut on the settings page of the feature it drives
-/// (Settings → Voice). Records and refuses combos exactly like a Shortcuts
-/// row, then saves straight to the store and re-applies the keymap.
-pub struct ShortcutField {
-    id: ShortcutId,
-    focus: FocusHandle,
-    recording: bool,
-    recording_subscriptions: Option<[gpui::Subscription; 3]>,
-    notice: Option<SharedString>,
-}
-
-impl ShortcutField {
-    pub fn new(id: ShortcutId, cx: &mut Context<Self>) -> Self {
-        cx.on_release(|field, _| {
-            if field.recording {
-                crate::appshots::set_recording(false);
-            }
-        })
-        .detach();
-        Self {
-            id,
-            focus: cx.focus_handle(),
-            recording: false,
-            recording_subscriptions: None,
-            notice: None,
-        }
-    }
-
-    fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.recording = true;
-        crate::appshots::set_recording(true);
-        let field = cx.entity().downgrade();
-        // Bound actions run before Div key listeners; intercept first so the
-        // chord being recorded (⌘D itself) never starts dictation.
-        let interceptor = cx.intercept_keystrokes(move |event, window, cx| {
-            let _ = field.update(cx, |field, cx| {
-                if field.focus.is_focused(window) {
-                    field.record_keystroke(&event.keystroke, cx);
-                }
-            });
-        });
-        let blur = cx.on_blur(&self.focus, window, |field, _, cx| {
-            field.stop_recording();
-            cx.notify();
-        });
-        // The Voice page outlives its window (closing it keeps the app
-        // running), and a close does not blur. Never leave Appshots'
-        // capture shortcut suspended.
-        let field = cx.entity().downgrade();
-        let closed = cx.on_window_closed(move |cx, _| {
-            field
-                .update(cx, |field, cx| {
-                    field.stop_recording();
-                    cx.notify();
-                })
-                .ok();
-        });
-        self.recording_subscriptions = Some([interceptor, blur, closed]);
-        self.notice = None;
-        window.focus(&self.focus, cx);
-        cx.notify();
-    }
-
-    fn stop_recording(&mut self) {
-        if self.recording {
-            crate::appshots::set_recording(false);
-        }
-        self.recording = false;
-        self.recording_subscriptions = None;
-    }
-
-    fn record_keystroke(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
-        let mods = &keystroke.modifiers;
-        match record_key(
-            &keystroke.key,
-            mods.control,
-            mods.alt,
-            mods.shift,
-            mods.platform,
-        ) {
-            RecordOutcome::Cancelled => self.stop_recording(),
-            RecordOutcome::Ignored => {}
-            RecordOutcome::Set(combo) => {
-                self.stop_recording();
-                let current = crate::settings::current(cx);
-                self.notice = refusal(
-                    &current.keymap,
-                    current.composer_send_behavior,
-                    self.id,
-                    &combo,
-                );
-                if self.notice.is_none() {
-                    self.save(Some(combo), cx);
-                }
-            }
-        }
-        cx.notify();
-        cx.stop_propagation();
-    }
-
-    /// `None` restores the default binding.
-    fn save(&mut self, combo: Option<String>, cx: &mut Context<Self>) {
-        let id = self.id;
-        crate::settings::update(
-            crate::settings::SavePolicy::Immediate,
-            cx,
-            |settings| match combo {
-                Some(combo) => settings.keymap.set(id, combo),
-                None => settings.keymap.reset(id),
-            },
-        );
-        let current = crate::settings::current(cx);
-        crate::shell::apply_keymap(cx, &current.keymap, current.composer_send_behavior);
-        cx.notify();
-    }
-}
-
-impl Render for ShortcutField {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).for_settings_surface();
-        let combo = crate::settings::current(cx).keymap.get(self.id).to_string();
-        let ix = ShortcutId::ALL
-            .iter()
-            .position(|&id| id == self.id)
-            .unwrap_or(0);
-        let reset = cx.entity().downgrade();
-        let record = reset.clone();
-        let helper: Option<SharedString> = if self.recording {
-            Some("Press Escape to cancel.".into())
-        } else {
-            self.notice.clone()
-        };
-        div()
-            .id("shortcut-field")
-            .track_focus(&self.focus)
-            .flex()
-            .flex_col()
-            .items_end()
-            .gap(px(4.0))
-            .child(binding_control(
-                self.id,
-                ix,
-                &combo,
-                self.recording,
-                &theme,
-                move |_, cx| {
-                    reset
-                        .update(cx, |field, cx| {
-                            field.stop_recording();
-                            field.notice = None;
-                            field.save(None, cx);
-                        })
-                        .ok();
-                },
-                move |window, cx| {
-                    record
-                        .update(cx, |field, cx| field.start_recording(window, cx))
-                        .ok();
-                },
-            ))
-            .children(helper.map(|helper| {
-                div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted)
-                    .child(helper)
-            }))
-    }
-}
-
 /// Reset (when customized) plus the click-to-record combo chip; recording
-/// inverts it to the accent wash. Shared by Settings → Shortcuts and the
-/// feature pages that own a shortcut ([`ShortcutField`]).
+/// inverts it to the accent wash.
 fn binding_control(
     id: ShortcutId,
     ix: usize,
@@ -843,7 +673,7 @@ fn refusal(
     conflict_owner(keymap, id, combo).map(|owner| {
         // Name the page for shortcuts that live on their feature's page.
         let page = match group(owner) {
-            page @ ("Appshots" | "Voice") => format!(" in Settings → {page}"),
+            page @ "Appshots" => format!(" in Settings → {page}"),
             _ => String::new(),
         };
         format!(
@@ -875,7 +705,7 @@ pub fn modifier_send_label(is_macos: bool) -> &'static str {
 /// extends the match and appears on the page by construction
 /// (`every_shortcut_lands_in_a_rendered_group` holds the other half: its group
 /// name must be listed here).
-const GROUP_ORDER: [&str; 9] = [
+const GROUP_ORDER: [&str; 8] = [
     "Appearance",
     "Files",
     "Browser",
@@ -884,14 +714,12 @@ const GROUP_ORDER: [&str; 9] = [
     "Projects",
     "Jump to session",
     "Appshots",
-    "Voice",
 ];
 
 /// The section a shortcut's row renders under.
 fn group(id: ShortcutId) -> &'static str {
     match id {
         ShortcutId::RandomWallpaper => "Appearance",
-        ShortcutId::ToggleDictation => "Voice",
         ShortcutId::CaptureAppshot => "Appshots",
         ShortcutId::SaveFile => "Files",
         ShortcutId::BrowserReload => "Browser",
@@ -911,8 +739,8 @@ fn group(id: ShortcutId) -> &'static str {
 
 impl Render for ShortcutsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Feature pages (Voice) rebind their shortcut through the store. Read
-        // it back so a later commit here never republishes an older keymap.
+        // Other surfaces may rebind through the store. Read it back so a later
+        // commit here never republishes an older keymap.
         if self.recording.is_none()
             && let Some(store) = cx.try_global::<crate::settings::SettingsStore>()
         {
@@ -946,8 +774,8 @@ impl Render for ShortcutsPage {
         // own top margin is zeroed.
         let mut groups: Vec<gpui::AnyElement> = Vec::new();
         for name in GROUP_ORDER {
-            if name == "Appshots" || name == "Voice" {
-                // Feature pages own these rows: Settings → Appshots and → Voice.
+            if name == "Appshots" {
+                // Its feature page owns these rows: Settings → Appshots.
                 continue;
             }
             let mut card = widgets::section_card(&theme).mt_0();
@@ -1078,84 +906,6 @@ impl Render for ShortcutsPage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[gpui::test]
-    fn voice_shortcut_records_on_its_own_page_and_shortcuts_reads_it_back(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        cx.update(|cx| {
-            gpui_base::init(cx);
-            cx.set_global(Theme::default());
-            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
-        });
-        assert_eq!(ShortcutId::ToggleDictation.default_combo(), "mod-d");
-        assert_eq!(group(ShortcutId::ToggleDictation), "Voice");
-        let modifier = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
-        let (field, cx) =
-            cx.add_window_view(|_, cx| ShortcutField::new(ShortcutId::ToggleDictation, cx));
-        // A chord another shortcut owns is refused and the binding is kept.
-        field.update_in(cx, |field, window, cx| field.start_recording(window, cx));
-        cx.simulate_keystrokes(&format!("{modifier}-b"));
-        field.update(cx, |field, cx| {
-            assert!(!field.recording);
-            assert!(field.notice.is_some());
-            assert_eq!(
-                crate::settings::current(cx).keymap.toggle_dictation,
-                "mod-d"
-            );
-        });
-        field.update_in(cx, |field, window, cx| field.start_recording(window, cx));
-        cx.simulate_keystrokes(&format!("{modifier}-shift-v"));
-        field.update(cx, |field, cx| {
-            assert!(field.notice.is_none());
-            assert_eq!(
-                crate::settings::current(cx).keymap.toggle_dictation,
-                "mod-shift-v"
-            );
-        });
-        // Closing the window mid-recording (the app keeps running) must not
-        // leave Appshots' capture shortcut suspended.
-        field.update_in(cx, |field, window, cx| field.start_recording(window, cx));
-        cx.update(|window, _| window.remove_window());
-        cx.run_until_parked();
-        field.update(cx, |field, _| assert!(!field.recording));
-        // Elsewhere, a clash with a feature page's shortcut says where it lives.
-        let notice = refusal(
-            &KeymapConfig::default(),
-            ComposerSendBehavior::Enter,
-            ShortcutId::ToggleSidebar,
-            "mod-d",
-        )
-        .unwrap();
-        assert!(
-            notice.ends_with("Hold to dictate in Settings → Voice."),
-            "{notice}"
-        );
-        // Settings → Shortcuts, opened later with an older copy, adopts the
-        // store's binding so its own commits cannot revert Voice's.
-        let (page, cx) = cx.add_window_view(|_, cx| {
-            let state = cx.new(|_| AppState::new());
-            ShortcutsPage::new(
-                state,
-                KeymapConfig::default(),
-                false,
-                ComposerSendBehavior::Enter,
-                false,
-                false,
-                AppshotDestination::Automatic,
-                cx,
-            )
-        });
-        cx.update(|window, cx| window.draw(cx).clear());
-        page.update(cx, |page, _| {
-            assert_eq!(page.keymap.toggle_dictation, "mod-shift-v");
-        });
-    }
 
     #[gpui::test]
     fn conversation_controls_work_after_moving_out_of_shortcuts(cx: &mut gpui::TestAppContext) {

@@ -18,6 +18,10 @@ skip	apps/www-redirect/	landing	zeron.sh redirect worker
 skip	edge/	cloud	edge Worker, WorkOS, sync rooms (ADR 0004)
 skip	apps/android/	upstream-android	upstream's own Android app: reference only (ADR 0009)
 skip	crates/zatex/	declined	zatex / LaTeX math declined (#912)
+skip	crates/voice/	declined	desktop dictation removed (ci-speed 26, user 2026-10-29)
+skip	crates/ui/src/dictation*	declined	desktop dictation removed (ci-speed 26)
+skip	crates/ui/src/composer_dictation_tests.rs	declined	desktop dictation removed (ci-speed 26)
+skip	docs/design/desktop-parakeet-v3.md	declined	desktop dictation removed (ci-speed 26)
 skip	.github/workflows/macos.yml	upstream-ci	no macOS CI in Roboco
 skip	.github/workflows/testflight.yml	upstream-ci	no iOS / Apple CI in Roboco
 skip	.github/workflows/deploy.yml	cloud	wrangler deploys of edge and the website

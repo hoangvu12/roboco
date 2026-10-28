@@ -146,7 +146,6 @@ try {
     $licenses = Join-Path $stage 'licenses/fonts'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
     Copy-Item -Path 'crates/ui/assets/fonts/licenses/*' -Destination $licenses
-    Copy-Item -LiteralPath 'crates/voice/NOTICE.md' -Destination (Join-Path $stage 'licenses/parakeet-v3.txt')
     Copy-Item -Path 'adapters/roboco-tailcat/licenses/bundle' -Destination (Join-Path $stage 'licenses/tailcat') -Recurse
     Copy-Item -LiteralPath 'adapters/roboco-tailcat/LICENSE.kratos' -Destination (Join-Path $stage 'licenses/tailcat/LICENSE.kratos')
     Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force

@@ -569,14 +569,6 @@ pub fn apply_keymap(
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
     crate::app_menus::bind_keys(cx);
-    cx.bind_keys([KeyBinding::new(
-        &valid_or_default(
-            &keymap.toggle_dictation,
-            ShortcutId::ToggleDictation.default_combo(),
-        ),
-        crate::composer::ToggleDictation,
-        Some("MessageComposer"),
-    )]);
     cx.bind_keys([
         KeyBinding::new(
             &valid_or_default(&keymap.random_wallpaper, "mod-u"),
@@ -679,8 +671,6 @@ pub enum SettingsSection {
     Appearance,
     Files,
     Notifications,
-    /// On-device dictation: model download/verify, microphone, shortcut.
-    Voice,
     Shortcuts,
     /// Composer and conversation behavior plus thread naming.
     #[default]
@@ -692,11 +682,10 @@ pub enum SettingsSection {
 impl SettingsSection {
     /// Sections shown in Settings, grouped by spacing alone: preferences,
     /// providers and devices, then workspace data.
-    pub const ALL: [SettingsSection; 12] = [
+    pub const ALL: [SettingsSection; 11] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
-        SettingsSection::Voice,
         SettingsSection::Shortcuts,
         SettingsSection::Harnesses,
         SettingsSection::Agents,
@@ -733,7 +722,6 @@ impl SettingsSection {
             SettingsSection::Appearance => "appearance",
             SettingsSection::Files => "files",
             SettingsSection::Notifications => "notifications",
-            SettingsSection::Voice => "voice",
             SettingsSection::Shortcuts => "shortcuts",
             SettingsSection::General => "general",
             SettingsSection::Appshots => "appshots",
@@ -751,7 +739,6 @@ impl SettingsSection {
             "appearance" => SettingsSection::Appearance,
             "files" => SettingsSection::Files,
             "notifications" => SettingsSection::Notifications,
-            "voice" => SettingsSection::Voice,
             "shortcuts" => SettingsSection::Shortcuts,
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
@@ -777,7 +764,6 @@ impl SettingsSection {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Files => "Files",
             SettingsSection::Notifications => "Notifications",
-            SettingsSection::Voice => "Voice",
             SettingsSection::Shortcuts => "Shortcuts",
             SettingsSection::General => "General",
             SettingsSection::Appshots => "Appshots",
@@ -4612,7 +4598,7 @@ impl Shell {
         self.settings_base = settings::current(cx);
     }
 
-    /// Controls outside the Shell (Voice, typography, diff and transcript
+    /// Controls outside the Shell (typography, diff and transcript
     /// toggles, …) save to the central store directly. Fold those into the
     /// working copy while keeping the Shell's own edits, so a geometry save
     /// can never publish an older value over another surface's choice.
@@ -5706,7 +5692,6 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
-            SettingsSection::Voice => crate::dictation::card(cx).into_any_element(),
             SettingsSection::Shortcuts
             | SettingsSection::General
             | SettingsSection::Appshots => {
@@ -7239,7 +7224,6 @@ impl Shell {
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Files => icons::FOLDER,
             SettingsSection::Notifications => icons::BELL,
-            SettingsSection::Voice => icons::MICROPHONE,
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::General => icons::SETTINGS,
             SettingsSection::Appshots => icons::MONITOR,
@@ -12806,7 +12790,6 @@ mod tests {
                 "notifications.rs",
                 include_str!("settings/notifications.rs"),
             ),
-            SettingsSection::Voice => ("dictation/model.rs", include_str!("dictation/model.rs")),
             SettingsSection::Harnesses => ("harnesses.rs", include_str!("settings/harnesses.rs")),
             SettingsSection::Agents => ("accounts.rs", include_str!("settings/accounts.rs")),
             SettingsSection::Devices => ("devices.rs", include_str!("settings/devices.rs")),
@@ -14227,11 +14210,9 @@ mod exit_regressions {
         });
         window
             .update(cx, |shell, _, cx| {
-                // Voice, transcript and diff controls save straight to the
-                // store. None of them is known to the Shell.
+                // Transcript and diff controls save straight to the store.
+                // None of them is known to the Shell.
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.dictation_enabled = true;
-                    settings.dictation_input = Some("coreaudio:usb".into());
                     settings.transcript_compact_mode = true;
                     settings.code_fences_fit_content = true;
                     settings.diff_split = true;
@@ -14242,8 +14223,6 @@ mod exit_regressions {
                 shell.settings.sidebar_width = 300.0;
                 shell.schedule_save(cx);
                 let saved = settings::current(cx);
-                assert!(saved.dictation_enabled);
-                assert_eq!(saved.dictation_input.as_deref(), Some("coreaudio:usb"));
                 assert!(saved.transcript_compact_mode);
                 assert!(saved.code_fences_fit_content);
                 assert!(saved.diff_split);
@@ -14253,12 +14232,12 @@ mod exit_regressions {
                 // An outside change to a field the Shell also holds still wins
                 // once the Shell has nothing newer of its own.
                 settings::update(settings::SavePolicy::Immediate, cx, |settings| {
-                    settings.dictation_enabled = false;
+                    settings.transcript_compact_mode = false;
                     settings.sidebar_width = 320.0;
                 });
                 shell.schedule_save(cx);
                 let saved = settings::current(cx);
-                assert!(!saved.dictation_enabled);
+                assert!(!saved.transcript_compact_mode);
                 assert_eq!(saved.sidebar_width, 320.0);
                 assert_eq!(shell.settings.sidebar_width, 320.0);
             })
@@ -16476,7 +16455,6 @@ mod settings_modal_regressions {
             ("settings/harnesses", SettingsSection::Harnesses),
             ("settings/agents", SettingsSection::Agents),
             ("settings/general", SettingsSection::General),
-            ("settings/voice", SettingsSection::Voice),
             ("settings/conversations", SettingsSection::General),
             ("settings/files", SettingsSection::Files),
             ("settings/appshots", SettingsSection::Appshots),
@@ -16485,6 +16463,8 @@ mod settings_modal_regressions {
             assert_eq!(settings_open_route(route, remembered), Some(section), "{route}");
         }
         assert_eq!(settings_open_route("settings/billing", remembered), None);
+        // The Voice page left with dictation (ci-speed 26).
+        assert_eq!(settings_open_route("settings/voice", remembered), None);
         assert_eq!(settings_open_route("new", remembered), None);
     }
 

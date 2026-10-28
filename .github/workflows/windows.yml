@@ -151,12 +151,8 @@ jobs:
           "WINDOWS_TESTS=$($selection -join ' ')" >> $env:GITHUB_ENV
           $selection -join ' '
       - name: Windows tests
-        # One invocation builds and runs. A separate `--no-run` step would make
-        # this one recompile ort-sys and everything above it (roboco-voice,
-        # roboco-ui, roboco; 1.5-2 min): its build script downloads the ONNX
-        # runtime during the run and marks it rerun-if-changed, so the second
-        # cargo command always sees it as newer. The log's "Finished" line
-        # and nextest's Summary give the build and run times.
+        # One invocation builds and runs. The log's "Finished" line and
+        # nextest's Summary give the build and run times.
         #
         # The filter trims the three suites that ran by name before: proto
         # device_paths, the engine's worktree_location_ tests, and the gpui

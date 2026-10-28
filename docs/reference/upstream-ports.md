@@ -24,6 +24,11 @@ rename-translated merge, not a blank branch. The research behind this is
 - The website (`apps/landing`, `apps/www-redirect`), upstream release bumps,
   macOS-only code, translated READMEs, and recorded declines (ledger rows with
   status `declined`).
+- Desktop voice dictation (`crates/voice`, `crates/ui/src/dictation*`, the
+  Parakeet/ONNX Runtime stack): removed from Roboco on every platform
+  (user decision 2026-10-29, `.scratch/ci-speed/issues/26-remove-voice-dictation.md`).
+  Files under those paths are declined; a commit that also touches portable
+  code still goes to review with them dropped.
 
 `scripts/upstream/path-rules.tsv` encodes the path part of this list.
 

@@ -400,8 +400,6 @@ impl SettingsStore {
 }
 
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
-    let data_dir = data_dir.into();
-    crate::dictation::init(data_dir.clone(), cx);
     cx.set_global(SettingsStore {
         current: settings,
         data_dir: data_dir.into(),
@@ -855,11 +853,6 @@ pub const SKILL_COMPLETION_HARNESSES: [(roboco_proto::HarnessId, &str); 9] = [
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
-    pub dictation_enabled: bool,
-    /// Dictation microphone as a [`roboco_voice::InputDevice`] id; `None`
-    /// follows the system default.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dictation_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
     /// Submit using Enter or the platform modifier plus Enter.
@@ -1062,8 +1055,6 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
-            dictation_enabled: false,
-            dictation_input: None,
             window_geometry: None,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
@@ -1177,7 +1168,6 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// rather than panicking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
-    ToggleDictation,
     CaptureAppshot,
     RandomWallpaper,
     SaveFile,
@@ -1196,8 +1186,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 15 + JUMP_SLOTS] = [
-        ShortcutId::ToggleDictation,
+    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
         ShortcutId::SaveFile,
@@ -1230,7 +1219,6 @@ impl ShortcutId {
     /// Row label (roboco lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
-            ShortcutId::ToggleDictation => "Hold to dictate",
             ShortcutId::CaptureAppshot => "Capture Appshot",
             ShortcutId::RandomWallpaper => "Random wallpaper",
             ShortcutId::SaveFile => "Save file",
@@ -1258,7 +1246,6 @@ impl ShortcutId {
     /// this guards against only exists off macOS).
     pub fn default_combo_on(self, mac: bool) -> &'static str {
         match self {
-            ShortcutId::ToggleDictation => "mod-d",
             ShortcutId::CaptureAppshot if mac => "ctrl-alt-space",
             ShortcutId::CaptureAppshot => "mod-alt-space",
             ShortcutId::RandomWallpaper => "mod-u",
@@ -1307,7 +1294,6 @@ impl ShortcutId {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KeymapConfig {
-    pub toggle_dictation: String,
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), serde(skip))]
     pub capture_appshot: String,
     pub random_wallpaper: String,
@@ -1333,7 +1319,6 @@ pub struct KeymapConfig {
 impl Default for KeymapConfig {
     fn default() -> Self {
         Self {
-            toggle_dictation: ShortcutId::ToggleDictation.default_combo().into(),
             capture_appshot: ShortcutId::CaptureAppshot.default_combo().into(),
             random_wallpaper: ShortcutId::RandomWallpaper.default_combo().into(),
             save_file: ShortcutId::SaveFile.default_combo().into(),
@@ -1377,7 +1362,6 @@ pub fn sidebar_pin_profile_key(
 impl KeymapConfig {
     pub fn get(&self, id: ShortcutId) -> &str {
         match id {
-            ShortcutId::ToggleDictation => &self.toggle_dictation,
             ShortcutId::CaptureAppshot => &self.capture_appshot,
             ShortcutId::RandomWallpaper => &self.random_wallpaper,
             ShortcutId::SaveFile => &self.save_file,
@@ -1402,7 +1386,6 @@ impl KeymapConfig {
 
     pub fn set(&mut self, id: ShortcutId, combo: String) {
         match id {
-            ShortcutId::ToggleDictation => self.toggle_dictation = combo,
             ShortcutId::CaptureAppshot => self.capture_appshot = combo,
             ShortcutId::RandomWallpaper => self.random_wallpaper = combo,
             ShortcutId::SaveFile => self.save_file = combo,
@@ -1684,8 +1667,6 @@ impl UiSettings {
             }};
         }
         merge!(
-            dictation_enabled,
-            dictation_input,
             window_geometry,
             composer_send_behavior,
             skills_in_slash_menu,
@@ -2096,7 +2077,6 @@ mod tests {
             height: 800.0,
         };
         let settings = UiSettings {
-            dictation_enabled: false,
             window_geometry: Some(geometry),
             ..Default::default()
         };
@@ -2168,7 +2148,14 @@ mod tests {
         assert_eq!(legacy.sidebar_width, 300.0);
         // Unknown names and malformed values read as General without
         // defaulting the rest of the file.
-        for raw in [r#""billing""#, "42", "null", r#"{"section":"devices"}"#] {
+        // "voice": the dictation page, removed with dictation (ci-speed 26).
+        for raw in [
+            r#""billing""#,
+            r#""voice""#,
+            "42",
+            "null",
+            r#"{"section":"devices"}"#,
+        ] {
             std::fs::write(
                 UiSettings::path(dir.path()),
                 format!(r#"{{"sidebarWidth": 300, "settingsSection": {raw}}}"#),
@@ -2848,12 +2835,44 @@ mod tests {
         );
     }
 
+    /// Desktop dictation was removed (ci-speed 26). A settings file written
+    /// before that, with its settings and a rebound "Hold to dictate"
+    /// shortcut, still loads every other value, and the next save drops the
+    /// dead keys.
+    #[test]
+    fn removed_dictation_settings_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{
+                "dictationEnabled": true,
+                "dictationInput": "coreaudio:usb-mic",
+                "settingsSection": "voice",
+                "sidebarWidth": 300,
+                "soundEnabled": false,
+                "keymap": {"toggleDictation": "mod-shift-v", "saveFile": "mod-s", "newSession": "mod-k"}
+            }"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(!loaded.sound_enabled);
+        assert_eq!(loaded.keymap.new_session, "mod-k");
+        assert_eq!(
+            loaded.keymap.toggle_sidebar,
+            ShortcutId::ToggleSidebar.default_combo()
+        );
+        loaded.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+        for key in ["dictationEnabled", "dictationInput", "toggleDictation"] {
+            assert!(!text.contains(key), "{key} survived the save: {text}");
+        }
+    }
+
     #[test]
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
-            dictation_enabled: false,
-            dictation_input: Some("coreaudio:usb-mic".into()),
             window_geometry: None,
             sidebar_width: 300.0,
             sidebar_collapsed: true,

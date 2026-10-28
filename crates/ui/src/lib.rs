@@ -28,7 +28,6 @@ pub mod composer;
 mod composer_dock;
 mod composer_markdown;
 mod context_usage;
-mod dictation;
 pub mod edge_fade;
 pub mod engine_cache;
 pub mod engine_registry;
@@ -40,6 +39,7 @@ pub mod history;
 pub mod icons;
 pub(crate) mod image_media;
 pub(crate) mod image_viewer;
+mod legacy_data;
 pub mod links;
 pub mod loaders;
 pub mod markdown;
@@ -158,6 +158,10 @@ pub fn run_app(config: UiConfig) {
         let data_dir = config.boot().data_dir.clone();
         let ui_settings = settings::UiSettings::load(&data_dir);
         settings::init(ui_settings.clone(), data_dir.clone(), cx);
+        // Desktop dictation was removed; free its downloaded model once.
+        let legacy_dir = data_dir.clone();
+        cx.background_spawn(async move { legacy_data::remove_dictation_model(&legacy_dir) })
+            .detach();
         let font_availability = typography::register_fonts(cx);
         // Typography first: theme installation reads the effective family, so
         // the first frame has the final font and palette without a flash.

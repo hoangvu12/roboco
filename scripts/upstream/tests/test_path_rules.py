@@ -23,6 +23,22 @@ class PathRulesTest(unittest.TestCase):
         self.assertEqual(f("README.ja.md"), "docs-only")
         self.assertEqual(f("apps/ios/Zeron/App.swift"), "ios")
 
+    def test_desktop_dictation_is_declined(self):
+        # Removed in Roboco (ci-speed 26): upstream voice/dictation never ports.
+        f = self.r.file_reason
+        for p in ("crates/voice/src/lib.rs", "crates/voice/model.json", "crates/ui/src/dictation.rs",
+                  "crates/ui/src/dictation/model.rs", "crates/ui/src/composer_dictation_tests.rs",
+                  "docs/design/desktop-parakeet-v3.md"):
+            self.assertEqual(f(p), "declined", p)
+        self.assertEqual(self.r.route("Voice: faster model load (#999)",
+                                      ["crates/voice/src/lib.rs", "crates/ui/src/dictation/model.rs"]),
+                         ("auto-skip", "declined"))
+        # A commit that also touches portable code still goes to review.
+        self.assertEqual(self.r.route("Composer + voice", ["crates/voice/src/lib.rs", "crates/ui/src/composer.rs"])[0],
+                         "review")
+        for p in ("crates/ui/src/composer.rs", "crates/voicemail/a.rs", "crates/ui/src/dictionary.rs"):
+            self.assertIsNone(f(p), p)
+
     def test_portable_files(self):
         f = self.r.file_reason
         for p in ("crates/ui/src/shell.rs", "README.md", ".github/workflows/windows.yml",
