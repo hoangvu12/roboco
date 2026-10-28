@@ -95,7 +95,8 @@ class CheckedInLedgerTest(unittest.TestCase):
         led = uc.Ledger.load(os.path.join(uc.REPO_ROOT, uc.LEDGER))
         self.assertGreaterEqual(len(led.rows), 576)
         with open(os.path.join(uc.REPO_ROOT, uc.LEDGER), encoding="utf-8", newline="") as fh:
-            self.assertEqual(fh.read(), led.dumps(), "ledger must round-trip (LF, no stray tabs)")
+            on_disk = fh.read().replace("\r\n", "\n")  # a checkout made before .gitattributes
+        self.assertEqual(on_disk, led.dumps(), "ledger must round-trip (no stray tabs or columns)")
 
     def test_pr_ledger(self):
         rows = uc.read_table(os.path.join(uc.REPO_ROOT, uc.PR_LEDGER))

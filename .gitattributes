@@ -6,3 +6,7 @@ web/packages/theme/src/generated/* text eol=lf
 # `layout_fixture_markdown`); a Windows checkout must keep it LF
 # (android-app#05).
 crates/mobile/src/layout/fixture.md text eol=lf
+# Upstream sync ledger and tables: triage.py rewrites them with LF; keep
+# Windows checkouts LF too so a rewrite never shows as a whole-file diff.
+docs/reference/upstream-*.tsv text eol=lf
+scripts/upstream/*.tsv text eol=lf
