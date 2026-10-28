@@ -119,7 +119,9 @@ reverse` their ports, and run `:app:connectedDebugAndroidTest` with the
 `fixture*` instrumentation arguments — each test mints a fresh pairing
 URL from `/mint` and pairs through the debug `pair` launch extra
 (`FixtureRule`). The `@Tour` motion recordings run in the tablet CI job
-(`FLOW_INCLUDE_TOUR=1`), the transcript bench on a physical device.
+(`FLOW_INCLUDE_TOUR=1`), the transcript bench on a physical device. A
+failed test listed in `scripts/flaky-retry.txt` (with its reason) gets
+one logged retry in `flow-tests.sh`, when it is the only kind of failure.
 
 **Linux (KVM):** install the emulator + system image
 (`sdkmanager "emulator" "platform-tools"

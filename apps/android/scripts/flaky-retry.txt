@@ -1,0 +1,7 @@
+# Flow tests that get ONE retry when they fail (flow-tests.sh step 4;
+# ci-speed 22, ticket 11's decision: no quarantine). Opt-in per test, each
+# with its reason; every retry is logged. Remove a line once its test is
+# fixed; delete the file to turn retries off.
+#
+# <class>#<method> <reason>
+sh.roboco.android.flows.KeyboardFlowTest#interactiveDismissClosesPastHalfAndReopensAboveIt the IME hides but the composer never collapses to the capsule within 10 s (39919545157, 40256496025, 40545477841: no exception, no focus clear in logcat); cause unproven

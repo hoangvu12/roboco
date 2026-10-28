@@ -178,18 +178,73 @@ LOGCAT_PID=$!
   done
 ) >"$ARTIFACTS/host-mon.txt" 2>&1 &
 HOSTMON_PID=$!
+RUNNER_ARGS=(
+  -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL"
+  -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL"
+  -Pandroid.testInstrumentationRunnerArguments.fixtureQuestion="http://127.0.0.1:$QUESTION_CONTROL"
+  -Pandroid.testInstrumentationRunnerArguments.fixtureMainPort="$MAIN_PORT"
+  -Pandroid.testInstrumentationRunnerArguments.fixtureSlowPort="$SLOW_PORT"
+  -Pandroid.testInstrumentationRunnerArguments.fixtureQuestionPort="$QUESTION_PORT"
+  "${TAILCAT_ARGS[@]}"
+  "${TOUR_ARGS[@]}"
+)
 # --console=plain: every task's outcome in the log, so a rebuild inside
 # the emulator step would show (CI builds the APKs first, ci-speed 16).
-./gradlew --console=plain :app:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureQuestion="http://127.0.0.1:$QUESTION_CONTROL" \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureMainPort="$MAIN_PORT" \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureSlowPort="$SLOW_PORT" \
-  -Pandroid.testInstrumentationRunnerArguments.fixtureQuestionPort="$QUESTION_PORT" \
-  "${TAILCAT_ARGS[@]}" \
-  "${TOUR_ARGS[@]}"
+./gradlew --console=plain :app:connectedDebugAndroidTest "${RUNNER_ARGS[@]}"
 status=$?
+
+# 4. One retry for the tests listed in flaky-retry.txt (ci-speed 22, ticket
+#    11's decision: no quarantine), and only when every failure is listed.
+#    Each retry runs alone in a fresh orchestrated process, like a first
+#    run; it is logged as a ::warning:: and in the job summary, and its
+#    report lands in $ARTIFACTS/retry-<n>/ (the main report stays the
+#    first attempt's). A lost device fails no test case, so it never
+#    retries. Drop a line once its test is fixed.
+RETRY_LIST="scripts/flaky-retry.txt"
+RESULTS="app/build/outputs/androidTest-results/connected"
+REPORTS="app/build/reports/androidTests"
+failed_tests() {
+  python3 - "$RESULTS" <<'PY'
+import glob, sys, xml.etree.ElementTree as ET
+for f in sorted(glob.glob(sys.argv[1] + "/**/*.xml", recursive=True)):
+    for case in ET.parse(f).iter("testcase"):
+        if case.find("failure") is not None or case.find("error") is not None:
+            print(case.get("classname") + "#" + case.get("name"))
+PY
+}
+retry_reason() {
+  awk -v t="$1" '!/^#/ && $1 == t { $1 = ""; sub(/^ +/, ""); print; exit }' "$RETRY_LIST"
+}
+if (( status != 0 )) && [[ -f "$RETRY_LIST" ]] && command -v python3 >/dev/null; then
+  mapfile -t failed < <(failed_tests | sort -u)
+  retryable=${#failed[@]}
+  for test in "${failed[@]}"; do
+    [[ -n "$(retry_reason "$test")" ]] || retryable=0
+  done
+  if (( retryable > 0 )); then
+    mv "$REPORTS" "$ARTIFACTS/attempt-1-reports" 2>/dev/null || true
+    mv "$RESULTS" "$ARTIFACTS/attempt-1-results" 2>/dev/null || true
+    status=0
+    n=0
+    for test in "${failed[@]}"; do
+      n=$((n + 1))
+      reason=$(retry_reason "$test")
+      echo "flow-tests: RETRY $test (flaky-retry.txt: $reason)"
+      ./gradlew --console=plain :app:connectedDebugAndroidTest "${RUNNER_ARGS[@]}" \
+        -Pandroid.testInstrumentationRunnerArguments.class="$test"
+      retry_status=$?
+      if (( retry_status == 0 )); then outcome="passed on retry"; else outcome="failed again"; status=$retry_status; fi
+      echo "::warning title=Flaky test retried::$test failed, then $outcome ($reason)"
+      [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && \
+        echo "- flaky retry: \`$test\` failed, then $outcome ($reason)" >>"$GITHUB_STEP_SUMMARY"
+      mkdir -p "$ARTIFACTS/retry-$n"
+      mv "$REPORTS" "$ARTIFACTS/retry-$n/reports" 2>/dev/null || true
+      mv "$RESULTS" "$ARTIFACTS/retry-$n/results" 2>/dev/null || true
+    done
+    mv "$ARTIFACTS/attempt-1-reports" "$REPORTS" 2>/dev/null || true
+    mv "$ARTIFACTS/attempt-1-results" "$RESULTS" 2>/dev/null || true
+  fi
+fi
 
 echo "flow-tests: connectedDebugAndroidTest exit $status (artefacts in $ARTIFACTS)"
 exit $status
