@@ -469,7 +469,9 @@ private fun SearchFieldPlaceholder(progress: () -> Float, onEngage: () -> Unit) 
         Modifier
             .fillMaxHeight()
             .testTag("search-field")
-            .semantics {
+            // Its own node, as the text field's is: never merged into the
+            // capsule's clickable (a merged-tree finder must reach it).
+            .semantics(mergeDescendants = true) {
                 contentDescription = SearchMorph.FieldDescription
                 onClick {
                     onEngage()
