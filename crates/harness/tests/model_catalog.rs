@@ -143,7 +143,6 @@ fn auth_context_child() {
         ".codex/auth.json",
         ".grok/auth.json",
         ".hermes/auth.json",
-        ".pi/agent/auth.json",
         ".gemini/antigravity-acp/oauth_creds.json",
         ".local/share/devin/credentials.toml",
     ]) {
