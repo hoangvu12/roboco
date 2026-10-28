@@ -148,6 +148,8 @@ def translate_cell(res):
         bits.append(f"{res.count('conflict')}x/{res.regions}r")
     if res.count("missing"):
         bits.append(f"{res.count('missing')}m")
+    if res.count("regenerate"):
+        bits.append("lock")
     return cls + (" " + " ".join(bits) if bits else "")
 
 
