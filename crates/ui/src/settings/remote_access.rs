@@ -1,6 +1,6 @@
 //! Settings for this engine's listener and paired clients, plus the Fleet
 //! card (fleet follow — `fleet` module).
-use crate::{settings::widgets, state::AppState, theme::Theme};
+use crate::{popover, settings::widgets, state::AppState, theme::Theme};
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, Image, ImageFormat, ImageSource, Render,
     SharedString, Task, Window, div, img, prelude::*, px,
@@ -34,6 +34,7 @@ struct TailcatInviteLink {
 
 pub struct RemoteAccessPage {
     state: Entity<AppState>,
+    scroll: widgets::PageScroll,
     snapshot: Option<RemoteAccessSnapshot>,
     /// The minted pairing link; `qr_svg` is `None` against older engines, and
     /// the page then shows no QR (the URL and Copy stay as they are).
@@ -63,6 +64,7 @@ impl RemoteAccessPage {
             fleet,
             _observe: observe,
             state,
+            scroll: widgets::PageScroll::default(),
             snapshot: None,
             link: None,
             invite: None,
@@ -150,6 +152,22 @@ impl RemoteAccessPage {
             evict_qr(old.qr_svg, cx);
         }
         self.invite_expiry_task = Some(wake_at_expiry(expires_at, cx));
+    }
+
+    fn on_scroll_hovered(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
+        if self.scroll.set_list_hovered(*hovered) {
+            cx.notify();
+        }
+    }
+}
+
+impl popover::ScrollRailHost for RemoteAccessPage {
+    fn rail_bar(&mut self) -> &mut popover::MenuScrollbarState {
+        self.scroll.rail_bar()
+    }
+
+    fn rail_scroll(&self) -> Option<gpui::ScrollHandle> {
+        self.scroll.rail_scroll()
     }
 }
 
@@ -485,6 +503,7 @@ impl Render for RemoteAccessPage {
             };
             card = card.child(
                 widgets::card_row(&theme, false)
+                    .debug_selector(move || format!("remote-session-{index}"))
                     .child(widgets::status_dot(dot))
                     .child(
                         div()
@@ -509,7 +528,21 @@ impl Render for RemoteAccessPage {
                     }),
             );
         }
-        page.child(card)
+        let scrollbar = popover::rail(self, "remote-access-page-scrollbar", &theme, cx);
+        div()
+            .id("remote-access-page-host")
+            .relative()
+            .size_full()
+            .on_hover(cx.listener(Self::on_scroll_hovered))
+            .child(
+                div()
+                    .id("remote-access-page")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll.scroll)
+                    .child(page.child(card)),
+            )
+            .children(scrollbar)
     }
 }
 
@@ -846,6 +879,74 @@ mod tests {
             assert_eq!(invite.url, bare_url);
             assert!(invite.qr_svg.is_none());
         });
+    }
+
+    /// The page scrolls like every other settings page (fleet-redesign 01):
+    /// with more paired sessions than the window holds, the last row starts
+    /// below the window edge and a wheel brings it into view.
+    #[gpui::test]
+    fn the_page_scrolls_its_last_row_into_view(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(16);
+        let (replies, inbound) = tokio::sync::mpsc::channel::<String>(16);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                roboco_rpc::RpcClient::new(out, inbound),
+            ));
+        });
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let (page, cx) = cx.add_window_view(|_, cx| RemoteAccessPage::new(state, cx));
+        cx.simulate_resize(gpui::size(px(900.0), px(500.0)));
+
+        const SESSIONS: usize = 40;
+        let now = chrono::Utc::now().timestamp_millis();
+        let sessions: Vec<_> = (0..SESSIONS)
+            .map(|index| {
+                json!({"id": format!("session-{index}"), "label": format!("Phone {index}"),
+                       "createdAt": now, "lastSeen": now, "revokedAt": null})
+            })
+            .collect();
+        let snapshot = json!({
+            "status": {"enabled": true, "configuredEnabled": true,
+                       "address": "127.0.0.1:27655", "source": "test", "error": null},
+            "sessions": sessions
+        });
+        assert_eq!(
+            reply_to_next_request(&runtime, cx, &mut requests, &replies, snapshot),
+            "GetRemoteAccess"
+        );
+        draw(cx);
+        const LAST: &str = "remote-session-39";
+        let window_bottom = px(500.0);
+        let before = cx.debug_bounds(LAST).expect("last session row laid out");
+        assert!(
+            before.bottom() > window_bottom,
+            "the content is taller than the window"
+        );
+        let scroll = page.read_with(cx, |page, _| page.scroll.scroll.clone());
+        assert_eq!(scroll.offset().y, px(0.0));
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(450.0), px(250.0)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-10_000.0))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        draw(cx);
+        assert!(scroll.offset().y < px(0.0), "the wheel moved the page");
+        let after = cx.debug_bounds(LAST).expect("last session row laid out");
+        assert!(
+            after.top() >= px(0.0) && after.bottom() <= window_bottom,
+            "the last row is visible after scrolling: {after:?}"
+        );
     }
 
     /// The Fleet card follows the local engine's rooms-v2 capability: absent

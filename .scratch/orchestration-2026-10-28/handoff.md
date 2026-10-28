@@ -66,10 +66,16 @@ meaning all three specs below. The user prefers **short, plain-language** status
   branches, open PRs on `hoangvu12/roboco`, and **merge a PR into `main` with a merge commit** once
   every required check is green AND you've verified the tickets' acceptance criteria.
 - Update ticket `Status:` lines and append `## Comments` evidence as work lands.
+- **Standing user instruction (2026-10-28): "just clean up everything once it's merged."** After a PR
+  merges (verify with `git merge-base --is-ancestor origin/<branch> origin/main`), do all of this without asking:
+  - remove its worktree;
+  - delete the local and the **remote** branch;
+  - drop its sccache basedir;
+  - archive its worker chat.
 - **Ask the user first** before:
   - tagging or publishing any release;
   - pushing to the zui / gpui-component forks;
-  - deleting remote branches;
+  - deleting remote branches that are **not** merged (`windows-native-support` = PR #313 on zeron: never);
   - anything paid;
   - anything that changes a recorded decision;
   - acting on parked tickets.
@@ -211,7 +217,7 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 - This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
 - Cleanup (user request, 10:30): archived `8b19126f`, `00743a45` and the done spec/research chats
   `e1d7dca3`, `0f6f111d`, `95b2ff67`, `9f7fb723`. Merged remote branches `ci/caches-windows`,
-  `ci/mobile-bindgen` await the user's OK to delete.
+  `ci/mobile-bindgen` deleted (user OK, 10:40). Main checkout `target/` kept (user didn't approve deleting it).
 - 16's gate needs the user's real Laptop↔PC / PC↔SG/US measurements: the worker leaves a checklist;
   pings stay only if at least one link goes direct (path label ships either way). Self-hosted DERP on
   SG: undecided, not ticketed.
@@ -271,6 +277,8 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #37 merged `f1e6ae5fa` (fleet-redesign 01, settings page scrolls; mobile-core flake re-run green). Remote
+  branch `fix/settings-scroll` kept (deleting needs the user's OK). Manual: rail/fade vs Accounts page.
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache
   writers; Windows on push:main; AVD cache dropped; Windows dedupe with `-AdapterPath`. Worker
   deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux
