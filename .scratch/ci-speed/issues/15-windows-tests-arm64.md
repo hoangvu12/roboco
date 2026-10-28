@@ -18,7 +18,7 @@ Evidence from `release.yml` (research-web §3.1). The Windows package step takes
 
 **Blocked by:** 04 (the split), 05 (linker settings are shared), 13 (if option (a) needs the paid cache headroom)
 
-**Status:** ready-for-agent (coverage option (b) chosen by the user 2026-10-29)
+**Status:** implemented on branch `ci/windows-tests-arm64` (2026-10-29, coverage option (b)); the p50 items and the scheduled nightly runs are measured after merge
 
 **Parent:** `.scratch/ci-speed/spec.md`
 
@@ -30,3 +30,21 @@ Baseline: ticket 04/05 after-numbers for `tests` (target ≤ 22 min warm).
 - [ ] The chosen x64 coverage option runs green at least twice
 
 ## Comments
+
+**2026-10-29 (implementation, branch `ci/windows-tests-arm64`):**
+
+What changed:
+
+- **`tests` runs on `windows-11-arm`** for PRs and pushes. Its `runs-on` is `schedule` → `windows-2022`, dispatch → the `tests_runner` input, else `windows-11-arm`. Reverting to x64 means changing that last literal.
+- **Nightly x64 (option (b))**: `schedule: '11 4 * * *'` (UTC, apart from android's 02:47 and ui-tests' 03:23). On schedule, only `tests` runs, on `windows-2022`, with `rust-cache: false`. It neither saves nor restores a Rust cache, so it owns no entry and keeps no stale x64 entry alive. `app` gets `if: github.event_name != 'schedule'`, because every PR and push already runs it on x64, and `native-gui` is dispatch-only as before.
+- **Dispatch inputs**: `runner` is split into `tests_runner` (`windows-11-arm` default, `windows-2022`, `windows-2025`) and `app_runner` (`windows-2022`, `windows-2025`; it stays x64 because it packages the shipped x86_64 build). New `rust_cache` (default on): off reproduces the nightly's cold build. A dispatch with `tests_runner=windows-2022, rust_cache=false` is the nightly's `tests` job, plus an `app` run.
+- **`windows-ci-setup`**:
+  - The "Ensure clang for aarch64 ring builds" step comes from release.yml (`runner.arch == 'ARM64'`; choco fallback).
+  - The fxc lookup accepts the SDK's `x64` or `arm64` build, as release.yml does.
+  - New `rust-cache` input.
+  - **`save-if` is now `push` to main only** (was any run on `refs/heads/main`). Without this, the nightly or a dispatch A/B on main would write an entry.
+- **Cache key per architecture**: rust-cache already puts `runner.os`-`runner.arch` in the key (`v0-rust-windows-tests-Windows_NT-x64-…` today), so `shared-key: windows-tests` gives arm64 its own `…-Windows_NT-arm64-…` entry. It replaces the x64 one, which stops being saved and ages out. It does not add a key.
+- **LLD on aarch64**: no new setting. Ticket 05 writes `[target.<host triple>] linker = "rust-lld.exe"` into `$CARGO_HOME/config.toml`, so the arm64 job gets `[target.aarch64-pc-windows-msvc]`. That is per target, and it is the same switch in every job that shares a key (there is one job per key). The new "Architecture and linker of the test build" step checks the `roboco.exe` the CLI tests ran: PE machine (`aarch64`) and no Rich header. The `app` job's inline check moved into the same script, `scripts/test-windows-linker.ps1`, which is covered by the `scripts/test-windows-*.ps1` path filter. Checked locally under PowerShell 5.1 against `notepad.exe`: `-FastLinker false` passes ("x86_64, linked by link.exe"), and `-FastLinker true` throws.
+- **node**: `actions/setup-node@v4` with node 24 in `tests` on both architectures (`cursor_shim` spawns `node` and fails without it). **Go**: not needed. Since ticket 04, `tests` builds no Tailcat adapter, and no selected suite runs `go`.
+- Docs: the AGENTS.md CI line and `docs/reference/windows-development.md` "Verification" now describe the arm64 `tests` job and the nightly x64 run.
+- Lint: `actionlint` clean on `windows.yml`, which also validates the composite action.

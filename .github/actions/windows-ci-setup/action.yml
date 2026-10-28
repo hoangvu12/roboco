@@ -11,8 +11,16 @@ inputs:
   cache-key:
     description: >-
       rust-cache shared-key: the dependency graph this job builds. Exactly one
-      job saves each key, and only on main.
+      job saves each key, and only on pushes to main. rust-cache adds the
+      runner's OS and architecture to the key (`Windows_NT-x64`,
+      `Windows_NT-arm64`), so one name serves both architectures.
     required: true
+  rust-cache:
+    description: >-
+      Restore the job's Rust cache. 'false' builds cold and touches no cache
+      entry (the nightly x64 tests run: no entry of its own, and it keeps no
+      stale one alive by restoring it).
+    default: 'true'
   fast-linker:
     description: >-
       Link with rust-lld (ships with the toolchain) instead of link.exe.
@@ -79,10 +87,27 @@ runs:
     - name: Rust toolchain
       shell: pwsh
       run: rustup show active-toolchain || rustup toolchain install
-    - name: Locate Windows SDK shader compiler
+    - name: Ensure clang for aarch64 ring builds
+      # As in release.yml: ring 0.17 has no MSVC assembly path for
+      # aarch64-pc-windows-msvc, so native ARM64 builds need LLVM's clang on
+      # PATH. The arm64 image ships LLVM; choco is the fallback.
+      if: runner.arch == 'ARM64'
       shell: pwsh
       run: |
-        $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+        if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+          choco install llvm -y --no-progress
+        }
+        clang --version | Select-Object -First 1
+    - name: Locate Windows SDK shader compiler
+      shell: pwsh
+      # fxc is host-architecture neutral; the arm64 image may carry only one
+      # of the SDK's builds (the same lookup as release.yml).
+      run: |
+        $patterns = @(
+          "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe",
+          "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/arm64/fxc.exe"
+        )
+        $fxc = Get-ChildItem $patterns -ErrorAction SilentlyContinue |
           Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
         "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
@@ -134,14 +159,17 @@ runs:
         Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free, Root
         exit 0
     - uses: Swatinem/rust-cache@v2
+      if: inputs.rust-cache == 'true'
       with:
         shared-key: ${{ inputs.cache-key }}
         add-job-id-key: 'false'
         # The real directory, never the ./target junction: tar would store the
         # junction itself.
         workspaces: ${{ inputs.dev-drive == 'true' && '. -> ../roboco-devdrive/target' || '. -> target' }}
-        # Only main writes; PRs restore main's entry.
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        # Only pushes to main write; PRs restore main's entry. Dispatch and
+        # scheduled runs on main never save, so an A/B run on another image
+        # adds no entry.
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         cache-on-failure: 'true'
         # Cargo rebuilds workspace crates after every checkout (mtime
         # freshness), and they are opt-level 0 here, so caching them only
