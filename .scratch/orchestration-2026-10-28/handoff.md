@@ -130,7 +130,7 @@ Keep a running "PRs" list in this file.
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running |
-| `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | running |
+| `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open, CI running; reviewed OK |
 | `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | running |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
@@ -145,6 +145,16 @@ Keep a running "PRs" list in this file.
   22–24 are new CI work items (23 rides with 08; 06 must turn on flaky-pass reporting).
 - Ask the user: pushing to zui forks (wave-10 57).
 
+- 2026-10-28 ~00:00: an engine restart interrupted all three workers; each was told to resume.
+- Upstream moved: mirror now `ab189159f` (v0.2.128). #1088 access modes + plan mode is **not** in
+  wave 10 (noted in wave-10 01; needs its own drift review + ticket).
+- Nit for the next CI PR (03/04): `package-windows.ps1` uses `[IO.Path]::IsPathFullyQualified`,
+  which Windows PowerShell 5.1 lacks; it only runs when `-AdapterPath`/`ROBOCO_TAILCAT_EMBED` is set.
+
 ## PRs
 
-(none yet)
+- **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache
+  writers; Windows on push:main; AVD cache dropped; Windows dedupe with `-AdapterPath`. Worker
+  deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux
+  `android` cache writer; Go cache kept on Linux jobs; preview-tests on ubuntu-24.04. After merge:
+  measure (first main push seeds keys; next PR must restore).
