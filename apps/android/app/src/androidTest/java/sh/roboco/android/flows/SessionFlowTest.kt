@@ -26,6 +26,7 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
@@ -212,9 +213,12 @@ class SessionFlowTest {
         }
         FlowSemantics.saveScreenshot("bottom-bar-search.png")
         compose.onNodeWithTag("search-clear", useUnmergedTree = true).performClick()
+        // The field's own Search key lets go of it and hides the IME. A
+        // back press here was lost on the CI emulator while the list
+        // re-laid out (PR #38: no IME hide followed it).
         if (imeVisible()) {
-            device.pressBack()
-            compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+            compose.onNodeWithTag("search-field").performImeAction()
+            compose.waitUntil(timeoutMillis = 10_000) { !imeVisible() }
         }
         compose.waitUntil(timeoutMillis = 5_000) {
             compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
