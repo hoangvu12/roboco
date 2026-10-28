@@ -25,10 +25,13 @@ entry and link registration.
 
 ## Build and run
 
-Install stable MSVC Rust, Visual Studio C++ build tools, Windows SDK, CMake,
-and Git for Windows. On ARM64 also install LLVM so `clang` is on PATH —
-`ring` compiles its crypto with Clang on `aarch64-pc-windows-msvc`, and MSVC
-alone is not enough. Then run:
+Install rustup with the MSVC host, Visual Studio C++ build tools, Windows
+SDK, CMake, and Git for Windows. `rust-toolchain.toml` pins an exact Rust
+version (the one CI uses); rustup installs it on the first `cargo` command in
+the checkout, so plain `cargo` works without a `+<version>` override. On
+ARM64 also install LLVM so `clang` is on PATH — `ring` compiles its crypto
+with Clang on `aarch64-pc-windows-msvc`, and MSVC alone is not enough. Then
+run:
 
 ```powershell
 cargo run --locked -p roboco

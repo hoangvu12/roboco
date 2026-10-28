@@ -51,11 +51,7 @@ pub fn goarch(abi: &str) -> Option<&'static str> {
 
 /// The clang target triple (without the API level) for an Android ABI.
 fn clang_triple(abi: &str) -> Option<&'static str> {
-    match abi {
-        "arm64-v8a" => Some("aarch64-linux-android"),
-        "x86_64" => Some("x86_64-linux-android"),
-        _ => None,
-    }
+    crate::ndk::target_triple(abi)
 }
 
 /// The NDK's prebuilt host directory name. The NDK ships x86_64 host

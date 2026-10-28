@@ -23,20 +23,28 @@ With main-only Rust saves, AVD and Gradle still push the total to ≈ 14.5 GB. L
 
 **Blocked by:** none. Do it with or right after 01: both edit `rust-cache`/`setup-gradle` lines in `android.yml`; 01 owns the Rust lines, this ticket the AVD, Gradle and Go lines.
 
-**Status:** ready-for-agent (the paid-limit item is ready-for-human)
+**Status:** implemented on branch `ci/caches-windows` (2026-10-28); paid limit declined by the user; the acceptance items are measured after merge
 
 **Parent:** `.scratch/ci-speed/spec.md`
 
 Baseline (2026-10-28): 15.91 GB / 38 entries; `avd-36-pixel-7-20261012` 2.75 GB; emulator "Post Run actions/cache@v4" 0.30 min p50; emulator "Run actions/cache@v4" 0.01 min p50 (miss).
 
-- [ ] No `avd-*` key is created after merge; emulator boot time in the log ≤ 70 s
-- [ ] `gh api …/actions/caches`: Gradle entries come from one job (plus Windows only if measured necessary); total Gradle ≤ 1.2 GB
-- [ ] `cache/usage` stays < 9.5 GB for 7 consecutive days after 01 + 13 (or under the paid limit, if chosen) with no main Rust key evicted (`last_accessed_at` of each shared key within its workflow's run cadence)
-- [ ] Measured before/after over ≥ 10 runs: emulator job p50 (expect ≈ −0.3…+0.5 min; the boot is now always cold), Windows Gradle leg p50 (≤ +1 min)
-- [ ] User's paid-limit decision recorded under Comments
+- [ ] No `avd-*` key is created after merge; emulator boot time in the log ≤ 70 s — measure after merge (the existing `avd-36-pixel-7-20261012` entry, 2.75 GB, ages out by LRU or can be deleted by hand)
+- [ ] `gh api …/actions/caches`: Gradle entries come from one job (plus Windows only if measured necessary); total Gradle ≤ 1.2 GB — measure after merge
+- [ ] `cache/usage` stays < 9.5 GB for 7 consecutive days after 01 + 13 with no main Rust key evicted (`last_accessed_at` of each shared key within its workflow's run cadence) — measure after merge; ticket 01's estimate says this likely needs the web removal too
+- [ ] Measured before/after over ≥ 10 runs: emulator job p50 (expect ≈ −0.3…+0.5 min; the boot is now always cold), Windows Gradle leg p50 (≤ +1 min) — measure after merge; if the Windows leg is > 1 min slower, let it write on main (`cache-read-only: ${{ github.ref != 'refs/heads/main' }}`)
+- [x] User's paid-limit decision recorded under Comments (no paid limit, 2026-10-28)
 
 ## Comments
 
 ### 2026-10-28 — user decision
 
 No paid cache limit (and no paid runners). Keep every cache inside the free 10 GB.
+
+### 2026-10-28 — implementation (branch `ci/caches-windows`)
+
+- **AVD**: both `actions/cache` `avd-36-*` steps and their `force-avd-creation` expressions are gone from `android-emulator` and `android-emulator-tablet` (the action's default `force-avd-creation: true` now applies; checked in its `action.yml`). `emulator-options` gain `-no-snapshot-save`.
+- **Gradle**: `setup-gradle` has `cache-read-only: true` on `android-emulator`, `android-emulator-tablet` and `android-benchmark-apk`; the `android` matrix uses `${{ runner.os == 'Windows' || github.ref != 'refs/heads/main' }}`, so only `android (ubuntu)` on main writes (the same as setup-gradle's default for that leg). `release.yml`'s setup-gradle is untouched: tag refs are already read-only by default.
+- **Go — deviation from "`cache: false` elsewhere"**: `setup-go`'s key is `setup-go-<OS>-<arch>-<image>-go-<version>-<go.sum hash>` with no job component, so every Linux job already shares the one Linux entry (0.46 GB in the snapshot), and a reader that finds it never writes. Turning the cache off in the other Linux jobs would save no space and make each of them (the emulator included, on the Android critical path) download modules and rebuild the Go cache, ≈ +1 min each. So Linux jobs keep it; the Windows Gradle leg gets `cache: ${{ runner.os == 'Linux' }}` (that removes the separate 0.33 GB Windows entry), and ticket 01 turned it off in `release.yml` (the tag entry). Which Linux job writes the shared entry on main is whichever finishes first; PRs only write when `go.sum` changes.
+- `docs/reference/ci.md` budget table: left to ticket 09, as written above.
+- Lint: `actionlint` 1.7.12 clean on `android.yml`.

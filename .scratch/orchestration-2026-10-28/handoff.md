@@ -16,7 +16,8 @@ meaning all three specs below. The user prefers **short, plain-language** status
 - The main checkout `C:\Users\HP MEDIA\Desktop\nguyenvu\roboco` is on `main`, clean apart from
   **untracked** planning files: `.scratch/web-removal/`, `.scratch/ci-speed/`,
   `.scratch/upstream-ports-2026-10-wave10/`, `.scratch/upstream-drift/2026-10-28*.md` +
-  `audit-2026-10-28/`, this folder, and the old `.scratch/fleet-follow/handoff-2026-10-28.md`.
+  `audit-2026-10-28/`, this folder, and the old `.scratch/fleet-follow/handoff-2026-10-28.md` (fleet-follow is
+  deleted since; readable at `42cbc82ac`).
   **Worktrees branched off `main` will NOT contain these untracked files.** First step: commit the
   planning docs (explicit-path `git add` only) so workers see them. Either push a docs-only commit to `main`
   or open a quick docs PR; `.scratch/` changes don't need the full CI.
@@ -147,21 +148,23 @@ fleet design discussion **`9a104962`** (writes its outcome under `.scratch/fleet
 **Background watchers** of `00743a45` die with it. Set up your own `gh pr checks --watch` (Bash tool,
 `run_in_background`) for #35/#36 and the dispatch run.
 
-**Fleet: ON HOLD pending the design discussion.** The user feels the fleet is "still too buggy" and
-wants something reliable but still easy. A standalone chat ("Fleet design discussion") is
-discussing that with the user directly. **Do not start `.scratch/fleet-merge/` or
-`.scratch/fleet-agents/`** until that chat's outcome lands (it may replace or rewrite both specs).
-When it produces a decision/spec, treat that as the user's input and schedule it.
+**Fleet: DECIDED (design discussion done).** The plan is **`.scratch/fleet-redesign/`** ("connect
+once"; spec + tickets 01–15). The old fleet specs (`fleet-merge`, `fleet-agents`, `fleet-follow`,
+`rooms`) are deleted (readable at `42cbc82ac`); fleet-agents became fleet-redesign 12–15. Schedule:
+01 alone now (in flight); 02–11 one PR on `feature/connect-devices` after web removal merges; 12–15
+their own PR after that (blocked by wave-10 03, IPC token). Its ADR is **0013** (web removal takes 0012).
 
 **Queue after web removal merges** (unchanged): CI 03→04→05, 06, 08, then 09; CI 10 after web
 removal; CI 22–24 (from the 11 triage); wave 10 lanes (fixes first: 02, 03; wave-10 03 is also a
-prerequisite of fleet-agents); then the fleet work as decided.
+prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 
 **Pending user questions** (ask when relevant; don't block on them):
 - CI 11 triage defaults (tablet nightly + non-blocking until 3 green nights; nextest retries with
   flaky reporting; JUnit retry rule on named phone flakes). Awaiting OK.
 - Wave-10 57: pushing to `hoangvu12/zui` / `gpui-component` needs the OK at that time.
-- Which QR the user failed to scan (fleet-merge 04/05 fix all of them either way).
+- Fleet speed tickets (show direct vs relayed Tailcat, prefer LAN, reuse the open connection): proposed
+  to the user by `9a104962` (Tailcat measured ≈ 160 ms RTT, ≈ 1.2 MB/s via the Tokyo DERP). Not filed
+  until the user says yes.
 - Upstream #1088 (access modes + plan mode) is not in wave 10 and needs its own drift review + ticket.
 
 **Housekeeping**
@@ -171,6 +174,38 @@ prerequisite of fleet-agents); then the fleet work as decided.
   `cargo +1.99.0` notes go stale.
 - Nit for the next CI PR (03/04): `package-windows.ps1` uses `[IO.Path]::IsPathFullyQualified`
   (missing in Windows PowerShell 5.1).
+
+## Orchestrator #2 log (chat `efcef7d0`, from 2026-10-28 ≈ 02:50)
+
+- Took over. Queued a takeover message to `82cbdf25` (its next turn, and its completion notice, are now mine).
+- Watchers (Bash background): #35 `android-emulator` job 122579187946; dispatch run 40609763310 `android-benchmark-apk` job 122578974077.
+- **Started wave-10 lane 3 (Android) early**: it barely overlaps web removal (only the Android "Ports"
+  label, which the worker is told not to touch; ticket 36, the only proto change, goes last after
+  merging `origin/main`). Worker `66cf7296`, `..\roboco-w10-android` / `wave10/android` (sccache
+  basedir added). Scope 33–43 (36 last); not 59; ends with ONE PR, I merge.
+
+- **#36 merged** (`d7b6887d7`; dispatch benchmark APK green, its emulator red = known flaky suite) and
+  **#35 merged** (`6ee2e4731`, emulator re-run green). Worktrees `roboco-ci-bindgen`/`roboco-ci-caches`
+  removed, local branches deleted (remote branches kept: deleting needs the user's OK), basedirs
+  dropped, chats `0bf1abec`/`8ccd84a5` archived. `rust-toolchain.toml` = 1.99.1 on main now: plain
+  `cargo` works in worktrees that have merged main. **Still to do: measure** (CI 01/12/13/02/07 say
+  "measure after merge": the first main push seeds caches, the next PR must restore).
+- **Fleet design outcome landed** (from `9a104962`): `.scratch/fleet-redesign/` ("connect once"),
+  committed to main (`912d8e797`, then `28440047b` by `9a104962`: old fleet folders deleted,
+  fleet-agents absorbed as fleet-redesign 12–15, research note moved, ADR renumbered **0013**).
+  Fleet-redesign 01 (settings page scrolls) ships alone now; **02–11 = one PR on
+  `feature/connect-devices` after web removal merges; 12–15 their own PR after that.**
+- **Crash, 2026-10-28 ≈ 09:10 local (unclean shutdown / engine restart).** `.git/config` was zero-filled
+  (another chat restored it: core, origin, upstream, `branch.main`, `branch.zeron/main`, `rerere.enabled`;
+  the `kratos` remote isn't in it and `../Kratos` doesn't exist). 13 files of the #36 fast-forward in the
+  main checkout were zero-filled → restored from git. Half-made `roboco-settings-scroll` worktree
+  recreated. Lesson: after a crash, scan worktrees for NUL-filled files before trusting them.
+
+| chat | worktree / branch | scope | state |
+|---|---|---|---|
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
+| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | running |
+| `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | running |
 
 ## Implementation orchestrator log (chat `00743a45`, from 2026-10-28)
 
@@ -193,8 +228,8 @@ prerequisite of fleet-agents); then the fleet work as decided.
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11, one PR | running (02–06 committed) |
 | `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open; reviewed OK; emulator re-run pending |
 | `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open; PR checks green; dispatch benchmark re-run pending |
-| `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `.scratch/fleet-merge/` (7 tickets) |
-| `a53396d3` | main checkout, read-only | research: how upstream drives other devices | done → `fleet-agents/research-2026-10-28.md`; spec + tickets updated; fleet-agents now also blocked by wave-10 03 (IPC token); archived |
+| `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `fleet-merge` (superseded by `fleet-redesign`, deleted) |
+| `a53396d3` | main checkout, read-only | research: how upstream drives other devices | done → research now at `fleet-redesign/research-agents-2026-10-28.md`; spec + tickets updated; fleet-agents now also blocked by wave-10 03 (IPC token); archived |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
 ### Next
@@ -207,13 +242,13 @@ prerequisite of fleet-agents); then the fleet work as decided.
   `ci-speed/issues/22–24`). **Awaiting the user's OK**; ticket 11's decision box stays open until then.
   22–24 are new CI work items (23 rides with 08; 06 must turn on flaky-pass reporting).
 - Ask the user: pushing to zui forks (wave-10 57).
-- **New effort (user-approved 2026-10-28): `.scratch/fleet-merge/`**, a fourth spec. Pairing merges
+- *(Superseded by `.scratch/fleet-redesign/`; kept as history.)* **New effort (user-approved 2026-10-28): `fleet-merge`**, a fourth spec. Pairing merges
   fleets automatically (bigger wins, tie → acting desktop, no prompt); `RoomJoin { replace }` +
   `rooms-v3`; phones re-fetch on reconnect; QR tiles sized/crisp + Enlarge; fleet-invite QR dropped
   (Copy only); CLI QR dark-on-light + width hint. ADR 0011 amendment approved. One PR,
   `feature/fleet-merge`, starts after the web-removal PR merges (05 could start earlier). The user
   was given a paste-the-SG-invite workaround for today. Open: which QR they failed to scan.
-- **New effort: `.scratch/fleet-agents/`** (5 tickets). Agents' MCP tools create/drive chats on any
+- *(Absorbed into fleet-redesign 12–15.)* **New effort: `fleet-agents`** (5 tickets). Agents' MCP tools create/drive chats on any
   fleet member: engines hold fleet sessions on each other, tools route by device, completion notices
   cross machines. This is rooms spec **user story 15**, never ticketed or built (I wrongly called it
   new at first). The user expects it; it runs right after the fleet-merge PR.
@@ -226,6 +261,7 @@ prerequisite of fleet-agents); then the fleet work as decided.
 
 ## PRs
 
+- #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache
   writers; Windows on push:main; AVD cache dropped; Windows dedupe with `-AdapterPath`. Worker
   deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux

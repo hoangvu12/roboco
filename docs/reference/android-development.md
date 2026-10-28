@@ -12,7 +12,7 @@ Gradle properties and layout.
 | JDK | 17 (build) + 21 (Robolectric test JVMs) | Temurin; `./gradlew` picks 17, the `Test` tasks request a 21 toolchain launcher |
 | Android SDK | `platforms;android-37.0`, build-tools 35 | `ANDROID_HOME` points at the SDK |
 | NDK | 28.2.13676358 | r28+ aligns ELF to 16 KB by default; `ndkVersion` is pinned in `app/build.gradle.kts` |
-| Rust | stable (`rust-toolchain.toml`) | targets `aarch64`/`x86_64-linux-android` |
+| Rust | the exact version in `rust-toolchain.toml` (rustup installs it on first use) | targets `aarch64`/`x86_64-linux-android` |
 | cargo-ndk | 4.1.2 | `cargo xtask android-core` calls it |
 | Go | the `go` line of `adapters/roboco-tailcat/go.mod` (1.27.1) | builds `libroboco_tailcat.so`, the Tailcat transport, with the NDK clang as the cgo compiler; `GOTOOLCHAIN=auto` (the default) fetches the pinned version |
 | Gradle | 9.6.0 (wrapper) | AGP 9.4.1, Kotlin 2.4.21, Compose BOM 2026.09.00 |
@@ -92,7 +92,17 @@ local single-ABI build stays single: `./gradlew
 
 Rebuilds with no source changes run no Rust work: the core/assets tasks are
 `UP-TO-DATE`, and `-ProbocoSkipCore` skips them (unless an output is
-missing). Release builds (R8 + the `mobile-dist` core) are heavyweight and
+missing).
+
+The host core (`target/android-core/mobile/host`, what the JVM tests load
+through JNA) is built only by debug invocations that may run JVM tests.
+`assemble*`, `install*` and `connected*AndroidTest` on their own skip it
+(`--skip-host`, `buildSrc` `HostCore`), and the Kotlin bindings are read out
+of the first requested ABI's library instead. The generator is
+`crates/mobile-bindgen` (UniFFI's `uniffi-bindgen` on its own, so making
+bindings never compiles the core for the host). Its `uniffi` must match
+`roboco-mobile`'s; the xtask refuses to run when `Cargo.lock` resolves them
+differently. Release builds (R8 + the `mobile-dist` core) are heavyweight and
 mostly a CI concern — see [Release builds](#release-builds) for the local
 path.
 
