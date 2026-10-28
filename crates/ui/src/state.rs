@@ -2998,6 +2998,13 @@ impl AppState {
         cx.notify();
     }
 
+    /// Drop the in-memory warm transcripts, as an app restart does: the next
+    /// open of a chat reads its disk cache.
+    #[cfg(test)]
+    pub(crate) fn forget_warm_transcripts(&mut self) {
+        self.transcript_cache.clear();
+    }
+
     /// Replace the selected chat's queue subscription without clearing its
     /// current projection. This is used after an optimistic mutation fails:
     /// the authoritative opening frame repairs the local list even though the
@@ -3396,6 +3403,10 @@ fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) ->
     })
 }
 
+/// How many held entries a resume summary names one by one (the rest are
+/// one prefix digest) — the phone core's window.
+const TRANSCRIPT_RESUME_WINDOW: usize = 128;
+
 fn spawn_transcript_watch(
     cx: &mut Context<AppState>,
     handle: EngineTarget,
@@ -3410,13 +3421,21 @@ fn spawn_transcript_watch(
     let engine_key = handle.key().0.clone();
     let raw_chat = ScopedId::parse(&chat_id).ok().map(|id| id.raw_id);
     cx.spawn(async move |this, cx| {
+        // The engine's entry digests for the copy this chat shows: they let
+        // a reopen resume from that copy (a small delta) instead of pulling
+        // the whole transcript again (fleet-redesign 17, the phone's
+        // ticket-12 resume). Kept in step with every applied frame, and
+        // cached with the entries.
+        let mut digests: std::collections::HashMap<String, String> = Default::default();
         if let (Some(cache), Some(raw_chat)) = (cache.clone(), raw_chat.clone()) {
             let key = engine_key.clone();
-            let entries = cx
+            let cached = cx
                 .background_executor()
-                .spawn(async move { cache.load_transcript(&key, &raw_chat) })
+                .spawn(async move { cache.load_transcript_state(&key, &raw_chat) })
                 .await;
-            if let Some(entries) = entries {
+            if let Some(cached) = cached {
+                digests = cached.digests;
+                let entries = cached.entries;
                 if this
                     .update(cx, |state, cx| {
                         if state.selected_chat.as_deref() == Some(chat_id.as_str())
@@ -3432,6 +3451,12 @@ fn spawn_transcript_watch(
                 }
             }
         }
+        let resumable = handle
+            .engine_info()
+            .supports(roboco_proto::capabilities::TRANSCRIPT_RESUME_V1);
+        // Set by a desync or a malformed frame: the next subscribe is a plain
+        // reset (resending the same summary could loop).
+        let mut plain_next = false;
         let mut last_cache_write = std::time::Instant::now() - std::time::Duration::from_secs(1);
         // Outer loop: a delta desync (missed frame) resubscribes immediately
         // and the fresh stream's opening reset heals the copy; a subscribe
@@ -3457,9 +3482,43 @@ fn spawn_transcript_watch(
             delay
         };
         'resubscribe: loop {
-            let params = serde_json::json!({ "chatId": chat_id, "openingTail": true });
+            // A held copy (warm, or from the disk cache) resumes; otherwise
+            // the opening tail paints first and the full mirror follows.
+            let plain = std::mem::take(&mut plain_next);
+            let resume = if resumable && !plain {
+                this.update(cx, |state, _| {
+                    (state.selected_chat.as_deref() == Some(chat_id.as_str())
+                        && state.transcript_replayed
+                        && !state.transcript.is_empty())
+                    .then(|| {
+                        roboco_doc::TranscriptResume::from_held(
+                            &state.transcript,
+                            &digests,
+                            TRANSCRIPT_RESUME_WINDOW,
+                        )
+                    })
+                    .flatten()
+                })
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
+            let mut params = serde_json::json!({ "chatId": chat_id });
+            match &resume {
+                Some(resume) => {
+                    params["resume"] = serde_json::to_value(resume).unwrap_or_default();
+                    params["digests"] = serde_json::Value::Bool(true);
+                }
+                None => {
+                    params["openingTail"] = serde_json::Value::Bool(true);
+                    if resumable {
+                        params["digests"] = serde_json::Value::Bool(true);
+                    }
+                }
+            }
             let mut rx = match handle
-                .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
+                .subscribe_transcript(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {
                 Ok(rx) => rx,
@@ -3504,6 +3563,7 @@ fn spawn_transcript_watch(
                         // copy, so resubscribe for a fresh reset — delayed,
                         // in case the reset itself is what can't parse.
                         tracing::warn!(error = %err, "malformed transcript frame; resubscribing");
+                        plain_next = true;
                         let delay = backoff(&mut retry_delay);
                         cx.background_executor().timer(delay).await;
                         continue 'resubscribe;
@@ -3516,6 +3576,13 @@ fn spawn_transcript_watch(
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
                         if history_pending && state.transcript_replayed {
                             return None;
+                        }
+                        // The provisional opening tail carries no digests and
+                        // never becomes the resumable copy.
+                        if !history_pending
+                            && !roboco_doc::apply_update_digests(&mut digests, &update)
+                        {
+                            digests.clear();
                         }
                         if let Err(err) =
                             state.receive_opening_transcript_update(update, history_pending, cx)
@@ -3544,15 +3611,20 @@ fn spawn_transcript_watch(
                     // The healthy heal path: an immediate resubscribe with a
                     // fresh opening reset, so the backoff resets too.
                     retry_delay = RETRY_DELAY;
+                    plain_next = true;
                     continue 'resubscribe;
                 }
                 if let (Ok(Some(entries)), Some(cache), Some(raw_chat)) =
                     (alive, cache.clone(), raw_chat.clone())
                 {
                     let key = engine_key.clone();
+                    let held = crate::engine_cache::CachedTranscript {
+                        entries,
+                        digests: digests.clone(),
+                    };
                     if let Err(error) = cx
                         .background_executor()
-                        .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                        .spawn(async move { cache.save_transcript_state(&key, &raw_chat, &held) })
                         .await
                     {
                         tracing::debug!(%error, "transcript cache write failed");
@@ -3575,9 +3647,13 @@ fn spawn_transcript_watch(
                 (final_entries, cache.clone(), raw_chat.clone())
             {
                 let key = engine_key.clone();
+                let held = crate::engine_cache::CachedTranscript {
+                    entries,
+                    digests: digests.clone(),
+                };
                 if let Err(error) = cx
                     .background_executor()
-                    .spawn(async move { cache.save_transcript(&key, &raw_chat, &entries) })
+                    .spawn(async move { cache.save_transcript_state(&key, &raw_chat, &held) })
                     .await
                 {
                     tracing::debug!(%error, "transcript cache write failed");
@@ -3658,7 +3734,7 @@ fn spawn_subagent_watch(
         'resubscribe: loop {
             let params = serde_json::json!({ "chatId": doc_id });
             let mut rx = match handle
-                .subscribe_checked(methods::WATCH_DOC_MESSAGES, params)
+                .subscribe_transcript(methods::WATCH_DOC_MESSAGES, params)
                 .await
             {
                 Ok(rx) => rx,

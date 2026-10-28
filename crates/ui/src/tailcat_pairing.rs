@@ -4,7 +4,7 @@
 //! base by starting a Tailcat forwarder client (a Go adapter child process)
 //! and keeping it alive on the registry entry.
 
-use roboco_engine::tailcat::TailcatClient;
+use roboco_engine::tailcat::{LinkPath, TailcatClient};
 use roboco_engine_client::{PairingResolver, ResolvedPairing, RestoredRoute};
 use std::collections::HashMap;
 use std::path::Path;
@@ -72,14 +72,36 @@ pub(crate) fn route(address: &str) -> String {
     format!("{ROUTE_PREFIX}{address}")
 }
 
+/// The live forwarders, by Tailcat address (the secret never leaves this
+/// map).
+static FORWARDERS: LazyLock<Mutex<HashMap<String, Weak<TailcatClient>>>> =
+    LazyLock::new(Default::default);
+
+/// How the forwarder behind `endpoint` (an engine's loopback dial URL)
+/// last reached its engine: directly or through a relay region, with the
+/// round trip (fleet-redesign 16). `None` for an endpoint no forwarder
+/// serves (a LAN engine) and until the adapter has measured it.
+pub(crate) fn link_path(endpoint: &str) -> Option<LinkPath> {
+    let port = reqwest::Url::parse(endpoint).ok()?.port()?;
+    let forwarders = FORWARDERS.lock().unwrap_or_else(|e| e.into_inner());
+    forwarders
+        .values()
+        .filter_map(Weak::upgrade)
+        .find(|client| {
+            reqwest::Url::parse(client.url())
+                .ok()
+                .and_then(|url| url.port())
+                == Some(port)
+        })?
+        .link_path()
+}
+
 /// One live forwarder per Tailcat address in this process. Every registry
 /// shares it (each side-chat pane opens its own registry), and so do
 /// pairings and fleet joins, instead of each starting an adapter process;
 /// it stops when the last one drops it. One whose loopback stopped
 /// accepting is replaced.
 pub(crate) fn forwarder(address: &str, data_dir: &Path) -> anyhow::Result<Arc<TailcatClient>> {
-    static FORWARDERS: LazyLock<Mutex<HashMap<String, Weak<TailcatClient>>>> =
-        LazyLock::new(Default::default);
     // Held while a forwarder starts, so concurrent restores share it.
     let mut forwarders = FORWARDERS.lock().unwrap_or_else(|e| e.into_inner());
     forwarders.retain(|_, client| client.strong_count() > 0);
@@ -127,6 +149,15 @@ mod tests {
             panic!("a dead route must fail");
         };
         assert!(!format!("{error:#}").contains(secret), "{error:#}");
+    }
+
+    /// fleet-redesign 16: only an endpoint a live forwarder serves has a
+    /// Tailcat path; a LAN engine's (or a malformed) endpoint has none.
+    #[test]
+    fn only_forwarder_endpoints_have_a_link_path() {
+        assert!(link_path("ws://192.168.1.20:7330").is_none());
+        assert!(link_path("ws://127.0.0.1:1/").is_none());
+        assert!(link_path("not a url").is_none());
     }
 
     /// F4: the route a fleet join saves is one this resolver claims, so a

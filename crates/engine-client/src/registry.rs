@@ -312,6 +312,16 @@ struct Entry {
     /// registry entry; dropped when the entry is forgotten, or when it is
     /// found dead so the route is rebuilt.
     keepalive: Option<Box<dyn std::any::Any + Send>>,
+    /// A remote engine's pre-dialed spare connection, which the next
+    /// transcript stream takes for itself (fleet-redesign 17, the phone
+    /// core's spare): a multi-MB transcript on the shared connection held
+    /// every other request — another chat's open, the health probe — behind
+    /// its bytes on a slow link, and leaving the chat could not stop them.
+    /// Dialed once the shared connection is up, refilled after each take,
+    /// dropped with the shared connection.
+    spare: Option<Arc<RpcClient>>,
+    /// A spare dial is in flight.
+    spare_dialing: bool,
 }
 struct RegistryState {
     entries: BTreeMap<EngineKey, Entry>,
@@ -454,6 +464,139 @@ impl EngineTarget {
         let params = crate::routing::wire_params(&self.key, method, params)?;
         self.live()?.subscribe_checked(method, params).await
     }
+
+    /// [`Self::subscribe_checked`] for a transcript stream. On a remote
+    /// engine it takes the warm spare connection for itself: its bytes then
+    /// never queue another request behind them, and dropping the stream
+    /// closes that connection, so leaving a chat stops the rest of its
+    /// download at once. Without a spare (the local engine, or before one is
+    /// dialed) it rides the shared connection, as before.
+    pub async fn subscribe_transcript(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<TranscriptStream, RpcError> {
+        let params = crate::routing::wire_params(&self.key, method, params)?;
+        let shared = self.live()?;
+        let spare = self
+            .registry
+            .upgrade()
+            .and_then(|inner| take_spare(&inner, &self.key));
+        if let Some(spare) = spare {
+            match spare.subscribe_checked(method, params.clone()).await {
+                Ok(inner) => {
+                    return Ok(TranscriptStream {
+                        inner,
+                        own: Some(spare),
+                    });
+                }
+                // A spare that died idle: the shared connection serves.
+                Err(_) => spare.close(),
+            }
+        }
+        Ok(TranscriptStream {
+            inner: shared.subscribe_checked(method, params).await?,
+            own: None,
+        })
+    }
+}
+
+/// A transcript stream from [`EngineTarget::subscribe_transcript`]: owns the
+/// connection it rides, when it took one, and closes it when dropped.
+pub struct TranscriptStream {
+    inner: roboco_rpc::RpcSubscription,
+    own: Option<Arc<RpcClient>>,
+}
+
+impl TranscriptStream {
+    pub async fn recv(&mut self) -> Option<Value> {
+        self.inner.recv().await
+    }
+
+    /// Whether it rides a connection of its own (tests).
+    pub fn owns_connection(&self) -> bool {
+        self.own.is_some()
+    }
+}
+
+impl Drop for TranscriptStream {
+    fn drop(&mut self) {
+        if let Some(own) = self.own.take() {
+            own.close();
+        }
+    }
+}
+
+/// Take the engine's live spare connection, and start dialing the next one
+/// (in the background) either way.
+fn take_spare(inner: &Arc<Inner>, key: &EngineKey) -> Option<Arc<RpcClient>> {
+    let spare = {
+        let mut state = lock(&inner.state);
+        let entry = state.entries.get_mut(key)?;
+        entry.spare.take().filter(|client| !client.is_closed())
+    };
+    refill_spare(inner, key);
+    spare
+}
+
+/// Dial a spare for a connected remote engine unless one is held or on its
+/// way.
+fn refill_spare(inner: &Arc<Inner>, key: &EngineKey) {
+    let mut state = lock(&inner.state);
+    let Some(entry) = state.entries.get_mut(key) else {
+        return;
+    };
+    if entry.spare.as_ref().is_some_and(|spare| !spare.is_closed())
+        || entry.spare_dialing
+        || entry.client.is_none()
+        || entry.saved.is_none()
+    {
+        return;
+    }
+    entry.spare_dialing = true;
+    let weak = Arc::downgrade(inner);
+    let key = key.clone();
+    inner
+        .runtime
+        .spawn(async move { dial_spare(weak, key).await });
+}
+
+/// Dial a spare with the engine's saved endpoint and credential, and keep it
+/// on the entry while the shared connection it was dialed beside lives.
+async fn dial_spare(weak: Weak<Inner>, key: EngineKey) {
+    let Some((saved, generation)) = weak.upgrade().and_then(|inner| {
+        lock(&inner.state).entries.get(&key).and_then(|entry| {
+            entry
+                .saved
+                .clone()
+                .map(|saved| (saved, entry.snapshot.generation))
+        })
+    }) else {
+        return;
+    };
+    let dialed = tokio::time::timeout(
+        Duration::from_secs(15),
+        roboco_rpc::connect_ws_authenticated(&saved.endpoint, &saved.credential),
+    )
+    .await;
+    let client = match dialed {
+        Ok(Ok(client)) => Some(Arc::new(client)),
+        _ => None,
+    };
+    let Some(inner) = weak.upgrade() else {
+        return;
+    };
+    let mut state = lock(&inner.state);
+    let Some(entry) = state.entries.get_mut(&key) else {
+        return;
+    };
+    entry.spare_dialing = false;
+    // A reconnect since the dial began made it stale.
+    if entry.client.is_some() && entry.snapshot.generation == generation {
+        entry.spare = client;
+    } else if let Some(client) = client {
+        client.close();
+    }
 }
 
 /// Reply deadline for a unary engine call. Adapter catalog discovery
@@ -537,6 +680,8 @@ fn entry(
         client: None,
         saved,
         keepalive,
+        spare: None,
+        spare_dialing: false,
     }
 }
 impl EngineRegistry {
@@ -1016,6 +1161,9 @@ impl EngineRegistry {
             let mut state = lock(&self.inner.state);
             for entry in state.entries.values_mut() {
                 entry.client = None;
+                if let Some(spare) = entry.spare.take() {
+                    spare.close();
+                }
                 entry.snapshot.state = EngineConnectionState::Off;
             }
             std::mem::take(&mut state.tasks)
@@ -1192,6 +1340,9 @@ async fn supervise(
             error.contains("401") || error.contains("403") || error.contains("identity changed");
         if !update(&weak, &key, |entry| {
             entry.client = None;
+            if let Some(spare) = entry.spare.take() {
+                spare.close();
+            }
             entry.snapshot.state = if refused {
                 EngineConnectionState::Off
             } else {
@@ -1287,6 +1438,12 @@ async fn loopback_accepts(endpoint: &str) -> bool {
     )
 }
 
+/// Bytes that must arrive during a timed-out remote health check for it to
+/// count as slow rather than dead. Both ends ping every 15 s, so a few bytes
+/// of pings and pongs prove nothing; a reply queued behind a big frame comes
+/// with kilobytes of that frame (the mobile core's `PROGRESS_BYTES`).
+const PROBE_PROGRESS_BYTES: u64 = 8 * 1024;
+
 async fn drive(
     weak: &Weak<Inner>,
     key: &EngineKey,
@@ -1324,12 +1481,19 @@ async fn drive(
         .map_err(|_| RpcError::Transport("Engine subscriptions timed out".into()))??;
     if !update(weak, key, |e| {
         e.client = Some(client.clone());
+        if let Some(stale) = e.spare.take() {
+            stale.close();
+        }
         e.snapshot.info = info;
         e.snapshot.state = EngineConnectionState::Connected;
         e.snapshot.last_error = None;
         e.snapshot.generation += 1;
     }) {
         return Ok(());
+    }
+    // Warm a spare now, so the first chat opened on this engine has one.
+    if let Some(inner) = weak.upgrade() {
+        refill_spare(&inner, key);
     }
     let mut health = tokio::time::interval(Duration::from_secs(5));
     loop {
@@ -1351,6 +1515,7 @@ async fn drive(
                 } else {
                     Duration::from_secs(5)
                 };
+                let before = client.bytes_received();
                 let probed =
                     tokio::time::timeout(probe, client.call_as(methods::ENGINE_INFO, json!({}))).await;
                 let info: EngineInfo = match probed {
@@ -1358,6 +1523,22 @@ async fn drive(
                         tracing::debug!(
                             engine = %key.0,
                             "engine health check lagged (in-process); keeping the connection"
+                        );
+                        continue;
+                    }
+                    // Slow, not dead (fleet-redesign 17): on a ~1 MB/s link
+                    // the reply queues behind a big frame (a transcript, a
+                    // file) for longer than the probe window. Tearing the
+                    // connection down for that dropped and redialed it in a
+                    // loop while the big frame never finished. The phone
+                    // core keeps the same rule.
+                    Err(_)
+                        if client.bytes_received().saturating_sub(before)
+                            >= PROBE_PROGRESS_BYTES =>
+                    {
+                        tracing::debug!(
+                            engine = %key.0,
+                            "engine health check queued behind a large frame; keeping the connection"
                         );
                         continue;
                     }

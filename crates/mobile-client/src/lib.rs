@@ -754,6 +754,9 @@ impl Client {
         self.inner.foreground.send_replace(true);
         let state = lock(&self.inner.engines);
         for entry in &state.entries {
+            entry.route.set_background(false);
+        }
+        for entry in &state.entries {
             // A dial in flight (Connecting) finishes on its own; an offline
             // engine waits for the network.
             let command = match entry.state {
@@ -770,6 +773,9 @@ impl Client {
     /// subscriptions of detached, quiet sessions close (ticket 08).
     pub fn on_background(&self) {
         self.inner.foreground.send_replace(false);
+        for entry in &lock(&self.inner.engines).entries {
+            entry.route.set_background(true);
+        }
         {
             let cache_tx = self.inner.cache_tx.clone();
             crate::runtime::shared().spawn(async move {
@@ -1419,6 +1425,10 @@ pub(crate) fn engine_view(entry: &EngineEntry) -> EngineView {
         from_cache: entry.from_cache,
         diagnostics: entry.diagnostics.clone(),
         room: entry.paired.room.clone(),
+        // Refreshed with every publish; the link's 5 s probe publishes.
+        link_path: (entry.state == EngineState::Connected)
+            .then(|| entry.route.link_path())
+            .flatten(),
     }
 }
 
