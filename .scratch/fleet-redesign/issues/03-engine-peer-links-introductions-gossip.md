@@ -1,8 +1,8 @@
 # 03 — Engine: peer links, introductions and gossip (connecting brings everyone along)
 
-**What to build:** in `crates/engine`, servers keep live links to their peers, tell each other who they know, and introduce what's missing. No client needs to be open. This replaces fleet-agents ticket 01.
+**What to build:** in `crates/engine`, servers keep live links to their peers, tell each other who they know, and introduce what's missing. No client needs to be open. This replaces the old fleet-agents ticket 01, and tickets 12–13 build on these links.
 
-- **Peer links**, ported by intent from upstream `LinkCache` (`zeron/main:crates/rpc/src/device_room.rs:783-1080`; notes in `.scratch/fleet-agents/research-2026-10-28.md`):
+- **Peer links**, ported by intent from upstream `LinkCache` (`zeron/main:crates/rpc/src/device_room.rs:783-1080`; notes in `../research-agents-2026-10-28.md`):
   - one lazy link per peer, with a dial lock and 3 attempts (1.5 s, 3 s);
   - an `EngineInfo` readiness probe that also checks the device id matches the row;
   - a 5→60 s cooldown, cleared on network change;

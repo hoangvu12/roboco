@@ -11,7 +11,7 @@
 7. QR: the desktop dialog QR scans from about 50 cm on the laptop screen; `roboco connect --qr` scans from a dark terminal over SSH.
 8. Settings → Devices scrolls, and every row state seen during the run reads correctly (screenshots).
 9. LAN-only check: one pair connected over the LAN route.
-10. Record each step's evidence (dated) in this file under Comments. Then hand over to `.scratch/fleet-agents/` (re-based on this spec).
+10. Record each step's evidence (dated) in this file under Comments. Then hand over to tickets 12–15 (agents).
 
 **Blocked by:** 01–10
 

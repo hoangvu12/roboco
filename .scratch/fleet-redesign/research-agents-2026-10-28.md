@@ -2,6 +2,8 @@
 
 Read-only research side chat `a53396d3` (its full report, with every citation, is that chat's final reply). Mirror `zeron/main` @ `ab189159f`; roboco `main` @ `c4a3d84eb`. Citations are on `zeron/main` unless prefixed `roboco:`. **(guess)** marks inference.
 
+> Moved here from the deleted `.scratch/fleet-agents/` (2026-10-28). Where this note says "fleet session", "fleet member" or "fleet-merge", read: the peer session from fleet-redesign tickets 02–03, a connected server, and fleet-redesign itself. The changes it lists were adopted into tickets 12–15.
+
 ## TL;DR
 
 Upstream's cross-device agent features rest on **two** mechanisms. Only one of them is portable:

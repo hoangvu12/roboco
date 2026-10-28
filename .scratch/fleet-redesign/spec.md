@@ -49,7 +49,7 @@ The user has four servers: PC (Windows desktop app), Laptop (desktop app), Linux
    - a 128-bit one-time secret.
 
    That's about 160 characters (`roboco:` + base64url) instead of about 475, and it never grows with the number of devices. The QR is drawn crisp, large enough to scan, and has Enlarge. CLI QRs print dark on light and warn when the terminal is too narrow. Engines on a custom DERP map, and LAN-only engines, use the same grammar with a longer route field.
-8. **Agents span connected servers.** Peer sessions are what `.scratch/fleet-agents/` needs. `list_devices` shows every connected server with online status, chat tools route by device, and completion notices cross machines. Fleet-agents tickets 02–05 build on this spec. Its ticket 01 is replaced by tickets 02–03 here.
+8. **Agents span connected servers** (tickets 12–15). The engine forwards an agent's Roboco tool calls over the peer sessions. `list_devices` shows every connected server with online status, chat tools route by device, and completion notices cross machines (push plus pull catch-up). Research: `research-agents-2026-10-28.md`.
 9. **The settings page is rebuilt.** Remote access and Devices merge into one **Devices** page: this computer, Connect a device / Enter a code, your devices, and a collapsed Advanced section. It scrolls.
 10. **Rooms are deleted.** Plain and fleet rooms, fleet invites, the Fleet card, `fleet-v1.json`, `/room/present`, `/pairing/room-redeem`, the room RPCs and `roboco engine room *` all go. The same goes for the fleet-secret-at-rest exception in the ADR 0011 amendment.
 
@@ -161,16 +161,18 @@ What does **not** change:
 
 ## Supersedes / keeps
 
-- **`.scratch/fleet-merge/`: superseded.** Ideas carried over: the QR fixes (its tickets 04 and 05 become ticket 07's QR part and ticket 05's QR part here), phones following changes, and convergence of the user's three fleets. Merge rules, `RoomJoin{replace}`, `rooms-v3` and pending moves are dropped.
-- **`.scratch/fleet-agents/`: kept and re-based.**
-  - Its ticket 01 (engine fleet peer sessions via the fleet secret) is replaced by tickets 02–03 here.
-  - Tickets 02–05 stand, with "fleet member" read as "connected server" and the session coming from the `peers` store.
-  - It is still blocked by wave-10 ticket 03 (IPC token).
-- **`.scratch/fleet-follow/`, `.scratch/rooms/`:** history. Their code is deleted by ticket 09.
+All four older fleet folders were deleted on 2026-10-28 (still readable in git at `42cbc82ac`):
+
+- **`fleet-merge`: superseded.** Ideas carried over: the QR fixes (its tickets 04 and 05 became ticket 07's QR part and ticket 05's QR part here), phones following changes, and convergence of the user's three fleets. Merge rules, `RoomJoin{replace}`, `rooms-v3` and pending moves are dropped.
+- **`fleet-agents`: absorbed.**
+  - Its ticket 01 (engine peer sessions via the fleet secret) is replaced by tickets 02–03.
+  - Its tickets 02–05 became tickets 12–15, with "fleet member" read as "connected server".
+  - Its research note moved to `research-agents-2026-10-28.md`.
+- **`fleet-follow`, `rooms`: shipped history** (v0.14.0, v0.13.0). Their code is deleted by ticket 09.
 
 ## ADR changes to record (ticket 10)
 
-- **New ADR 0012 "Connected devices"**, superseding ADR 0011 and its fleet amendment. It records:
+- **New ADR 0013 "Connected devices"** (0012 is taken by the web-removal PR, which supersedes ADRs 0006/0007), superseding ADR 0011 and its fleet amendment. It records:
   - servers vs controllers;
   - mutual connect;
   - transitive introductions by servers that hold sessions on both sides;
@@ -179,7 +181,7 @@ What does **not** change:
   - identity by device id;
   - the deletion of rooms and the fleet secret at rest.
 
-  It also records why this is now acceptable although ADR 0011 rejected "engines as clients" and "on-behalf-of" designs: attribution is per presenting engine and revocable, and there's no secret group credential. ADR 0011 gets a "Superseded by 0012" line.
+  It also records why this is now acceptable although ADR 0011 rejected "engines as clients" and "on-behalf-of" designs: attribution is per presenting engine and revocable, and there's no secret group credential. ADR 0011 gets a "Superseded by 0013" line.
 - **ADR 0004:** a note that peer sessions are control over a session, not sync.
 - **ADR 0008:** the compact `roboco:` connect-code grammar, region-id routes, the 15-minute TTL, and the old forms that are still accepted.
 - **CONTEXT.md:** Fleet rewritten; Room deleted; Server, Controller and Connect code added.
@@ -199,10 +201,14 @@ What does **not** change:
 | 09 | `issues/09-delete-rooms.md` | 06, 08 |
 | 10 | `issues/10-adr-and-docs.md` | 02–09 |
 | 11 | `issues/11-final-verification.md` | 01–10 |
+| 12 | `issues/12-agents-tools-span-connected-servers.md` | 03; wave-10 03 (IPC token) |
+| 13 | `issues/13-agents-cross-machine-notices.md` | 12 |
+| 14 | `issues/14-agents-adr-and-docs.md` | 10, 12, 13 |
+| 15 | `issues/15-agents-final-verification.md` | 11–14 |
 
 - Ticket 01 is a small, independent fix and can ship on its own right away.
 - 02–11: one PR, one commit per ticket, branch `feature/connect-devices` off `main`, after the web-removal PR merges.
-- Fleet-agents 02–05 follow in their own PR after this one.
+- 12–15 (agents): a second PR, `feature/connect-agents`, after the first merges.
 
 ## User decisions (2026-10-28)
 

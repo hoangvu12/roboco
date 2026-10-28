@@ -1,8 +1,8 @@
-# 10 — ADR 0012 and docs
+# 10 — ADR 0013 and docs
 
 **What to build:**
 
-- **`docs/adr/0012-connected-devices.md`**, superseding ADR 0011 and its fleet amendment. It records:
+- **`docs/adr/0013-connected-devices.md`** (0012 is the web-removal PR's ADR; if that number moved, take the next free one and update this spec), superseding ADR 0011 and its fleet amendment. It records:
   - servers vs controllers;
   - a mutual connect;
   - transitive introductions by a server that holds sessions on both sides;
@@ -12,7 +12,7 @@
   - the deletion of rooms and of the fleet secret at rest;
   - the accepted consequence (connecting any server gives it all of yours).
 
-  It also explains why engines as clients of each other is now acceptable although ADR 0011 rejected it: attribution is per presenting engine and revocable, and there's no group credential. Add a "Superseded by 0012" line to ADR 0011.
+  It also explains why engines as clients of each other is now acceptable although ADR 0011 rejected it: attribution is per presenting engine and revocable, and there's no group credential. Add a "Superseded by 0013" line to ADR 0011.
 - **ADR 0004:** a note that peer sessions are control over a session, never sync.
 - **ADR 0008:** the compact `roboco:` code grammar, region-id routes, the 15-min TTL, and the legacy forms that are still accepted.
 - **`CONTEXT.md`:**
@@ -36,7 +36,7 @@
 **Parent:** `.scratch/fleet-redesign/spec.md`
 
 - [ ] No user-facing doc says room or fleet invite; links resolve
-- [ ] ADR 0012 states every "Decided in this spec" item from the spec, or links to it
+- [ ] ADR 0013 states every "Decided in this spec" item from the spec, or links to it
 - [ ] `CONTEXT.md` entries follow ADR 0005's prescriptive style
 
 ## Comments
