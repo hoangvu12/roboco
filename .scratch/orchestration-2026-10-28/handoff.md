@@ -211,7 +211,7 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 - This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
 - Cleanup (user request, 10:30): archived `8b19126f`, `00743a45` and the done spec/research chats
   `e1d7dca3`, `0f6f111d`, `95b2ff67`, `9f7fb723`. Merged remote branches `ci/caches-windows`,
-  `ci/mobile-bindgen` await the user's OK to delete.
+  `ci/mobile-bindgen` deleted (user OK, 10:40). Main checkout `target/` kept (user didn't approve deleting it).
 - 16's gate needs the user's real Laptop↔PC / PC↔SG/US measurements: the worker leaves a checklist;
   pings stay only if at least one link goes direct (path label ships either way). Self-hosted DERP on
   SG: undecided, not ticketed.
@@ -271,6 +271,8 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #37 merged `f1e6ae5fa` (fleet-redesign 01, settings page scrolls; mobile-core flake re-run green). Remote
+  branch `fix/settings-scroll` kept (deleting needs the user's OK). Manual: rail/fade vs Accounts page.
 - **#35** `ci/caches-windows` (CI 01, 12, 13, 02): toolchain pinned to 1.99.1; main-only cache
   writers; Windows on push:main; AVD cache dropped; Windows dedupe with `-AdapterPath`. Worker
   deviations accepted: per-run concurrency group for non-PR runs; `android-emulator` is the Linux
