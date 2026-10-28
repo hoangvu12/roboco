@@ -1,0 +1,64 @@
+name: Windows CI setup
+description: >-
+  Prepare a windows.yml job: toolchain, shader compiler, the CI release
+  profile and the job's main-seeded Rust cache.
+
+# Defender real-time scanning is already off on GitHub-hosted Windows images
+# (runner-images Configure-WindowsDefender.ps1 disables it and excludes C:\
+# and D:\), so there is no step for it.
+
+inputs:
+  cache-key:
+    description: >-
+      rust-cache shared-key: the dependency graph this job builds. Exactly one
+      job saves each key, and only on main.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Rust toolchain
+      shell: pwsh
+      run: rustup show active-toolchain || rustup toolchain install
+    - name: Locate Windows SDK shader compiler
+      shell: pwsh
+      run: |
+        $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+          Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
+        "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+    - name: CI release profile
+      shell: pwsh
+      # CI only: these binaries are not the shipped ones (release.yml builds
+      # those with the committed profile). Workspace crates build at
+      # opt-level 0; dependencies (gpui, tokio, ...) keep opt-level 3, and the
+      # workflow's CARGO_PROFILE_RELEASE_LTO turns thin LTO off. It stays
+      # `--release` because GPUI compiles its release shaders only there.
+      # Upstream measured this profile against the dev profile on Windows:
+      # 23.7 vs 31.5 min for the test build.
+      #
+      # Written to $CARGO_HOME/config.toml, so Cargo.toml is untouched and
+      # every cargo command in the job sees it, including the one inside
+      # scripts/package-windows.ps1. `package."*"` means every non-workspace
+      # package, so new workspace crates need no edit here.
+      run: |
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+        $config = Join-Path $cargoHome 'config.toml'
+        Add-Content -LiteralPath $config -Value @(
+          '[profile.release]'
+          'opt-level = 0'
+          '[profile.release.package."*"]'
+          'opt-level = 3'
+        )
+        Get-Content -LiteralPath $config
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        add-job-id-key: 'false'
+        # Only main writes; PRs restore main's entry.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: 'true'
+        # Cargo rebuilds workspace crates after every checkout (mtime
+        # freshness), and they are opt-level 0 here, so caching them only
+        # grows the entry.
+        cache-workspace-crates: 'false'

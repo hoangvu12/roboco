@@ -1,7 +1,29 @@
 # cargo-nextest repository configuration.
+
+# Suites that run one test at a time. The gpui UI suite always has
+# (`--test-threads=1`, then nextest `-j 1`), and the engine-client tests time
+# reconnect backoff against loopback engines. Separate groups, so the two
+# serial suites still overlap each other and everything else.
+[test-groups]
+serial-ui = { max-threads = 1 }
+serial-engine-client = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(roboco-ui)'
+test-group = 'serial-ui'
+
+[[profile.default.overrides]]
+filter = 'package(roboco-engine-client)'
+test-group = 'serial-engine-client'
+
 # CI runs with `-P ci` (windows.yml): transient failures (ConPTY teardown,
 # timing-sensitive engine tests) get two retries before they can fail a run —
 # a retry is minutes cheaper than rerunning a whole Windows job.
 [profile.ci]
 retries = 2
 failure-output = "immediate-final"
+
+# target/nextest/ci/junit.xml: windows.yml checks that the native font test
+# ran and uploads the report (the per-test record for coverage comparisons).
+[profile.ci.junit]
+path = "junit.xml"
