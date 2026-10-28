@@ -1,7 +1,6 @@
 //! Workspace lifecycle types shared by the engine and its clients.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Protocol features are advertised explicitly because personal/integration
 /// builds may share a semver with upstream while exposing a different RPC and
@@ -18,10 +17,6 @@ pub mod capabilities {
     /// The engine serves the device-local agent-CLI update lifecycle
     /// (harness-updates watch/check/apply/cancel/policy RPCs).
     pub const HARNESS_UPDATES_V1: &str = "harness-updates-v1";
-    /// The engine serves the browser web client (ADR 0006): embedded pages at
-    /// the remote listener root, CORS-open pairing redeem, and first-frame
-    /// `Auth` WebSocket authentication.
-    pub const WEB_CLIENT: &str = "web-client";
     /// The engine accepts `digests` / `resume` on `WatchDocMessages` and
     /// attaches engine-computed entry digests to transcript frames, so a
     /// reconnecting client can catch up with a delta instead of a reset.
@@ -50,7 +45,6 @@ pub mod capabilities {
         MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
         MESSAGE_QUEUE_EDIT_LEASE_V1,
         HARNESS_UPDATES_V1,
-        WEB_CLIENT,
         TRANSCRIPT_RESUME_V1,
         PROJECTLESS_SCRATCH_V1,
         UPLOADS_100MB_V1,
@@ -67,7 +61,7 @@ pub mod capabilities {
 ///
 /// Authentication can change while a runtime is alive, but its workspace scope
 /// cannot. Switching scopes requires assembling a new runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WorkspaceScope {
     Local,
@@ -87,7 +81,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MIN_CLIENT_PROTOCOL_VERSION: u32 = 1;
 
 /// Stable information about the engine runtime reached by a client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineInfo {
     pub device_id: String,
@@ -190,11 +184,11 @@ mod tests {
                     "message-queue-clean-attachment-text-v1",
                     "message-queue-edit-lease-v1",
                     "harness-updates-v1",
-                    "web-client",
                     "transcript-resume-v1",
                     "projectless-scratch-v1",
                     "uploads-100mb-v1",
-                    "rooms-v1"
+                    "rooms-v1",
+                    "rooms-v2"
                 ],
                 "version": env!("CARGO_PKG_VERSION"),
                 "protocolVersion": 1,

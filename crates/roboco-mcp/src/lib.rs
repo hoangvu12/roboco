@@ -2,7 +2,7 @@
 //!
 //! `roboco mcp` speaks MCP (JSON-RPC 2.0, newline-delimited) on stdin/stdout
 //! and proxies every tool into the engine's localhost IPC — the same
-//! `roboco_rpc` WebSocket the headed app and the web client dial. Nothing here
+//! `roboco_rpc` WebSocket the headed app dials. Nothing here
 //! talks to any edge or touches the filesystem: the engine stays the single
 //! authority for chats, devices, projects, and the command plane.
 //!

@@ -2,10 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use ts_rs::TS;
 
 /// An engine's effective remote-access state (`GetRemoteAccess`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAccessStatus {
     pub enabled: bool,
@@ -17,7 +16,7 @@ pub struct RemoteAccessStatus {
 
 /// A paired client session — the credential a paired client holds for an
 /// engine (CONTEXT.md). Does not expire; lives until revoked.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairedSession {
     pub id: String,
@@ -29,7 +28,7 @@ pub struct PairedSession {
 
 /// The `GetRemoteAccess` snapshot; also the reply of `SetRemoteAccess` and
 /// `RevokePairingSession`, so a caller always lands on fresh state.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAccessSnapshot {
     pub status: RemoteAccessStatus,
@@ -37,7 +36,7 @@ pub struct RemoteAccessSnapshot {
 }
 
 /// A freshly minted single-use pairing link (`CreatePairingLink`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingLink {
     pub url: String,
@@ -47,7 +46,6 @@ pub struct PairingLink {
     /// scannable render on any surface. Optional and additive (ADR 0005):
     /// older engines mint links without it, and clients show no QR then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub qr_svg: Option<String>,
 }
 

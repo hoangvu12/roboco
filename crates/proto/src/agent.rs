@@ -1,9 +1,8 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessId {
     ClaudeCode,
@@ -79,7 +78,7 @@ pub const RESUME_CONTINUE_PROMPT: &str = "Continue where you left off.";
 pub const SIDE_CHAT_MESSAGE_HEADER_TAIL: &str = ". You are a side chat created by that chat; your final reply is delivered to it automatically. Do not report or acknowledge with `send_message`.";
 
 /// Durable user preference for one agent's independently-installed CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessUpdatePolicy {
     /// Check and surface an update, but never mutate the installation without
@@ -93,7 +92,7 @@ pub enum HarnessUpdatePolicy {
 }
 
 /// Best-effort classification of the installation that owns an agent CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessInstallSource {
     Npm,
@@ -106,7 +105,7 @@ pub enum HarnessInstallSource {
 }
 
 /// The externally visible harness-update state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessUpdatePhase {
     Dormant,
@@ -125,7 +124,7 @@ pub enum HarnessUpdatePhase {
 
 /// Real provider progress only. An absent value means the UI must render an
 /// indeterminate activity indicator rather than inventing a percentage.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessUpdateProgress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,7 +135,7 @@ pub struct HarnessUpdateProgress {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessUpdateFailure {
     pub message: String,
@@ -148,7 +147,7 @@ pub struct HarnessUpdateFailure {
     pub kind: HarnessUpdateFailureKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessUpdateFailureKind {
     /// The version probe or release lookup failed; checking again retries.
@@ -160,7 +159,7 @@ pub enum HarnessUpdateFailureKind {
 }
 
 /// One row in the device-local harness-update stream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessUpdateStatus {
     pub harness: HarnessId,
@@ -201,7 +200,7 @@ pub struct HarnessUpdateStatus {
 
 /// How well a CLI release works with this roboco (see the engine's
 /// compatibility policy).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessCompatibilityStatus {
     Supported,
@@ -211,7 +210,7 @@ pub enum HarnessCompatibilityStatus {
     Broken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessCompatibility {
     pub status: HarnessCompatibilityStatus,
@@ -242,7 +241,7 @@ impl HarnessUpdateStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningLevel {
     Minimal,
@@ -258,7 +257,7 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxLevel {
     ReadOnly,
@@ -266,7 +265,7 @@ pub enum SandboxLevel {
     DangerFullAccess,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SteeringMode {
     /// Steer delivered at the next step boundary within the live turn.
@@ -275,7 +274,7 @@ pub enum SteeringMode {
     TurnBoundary,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Model {
     pub id: String,
@@ -290,7 +289,7 @@ pub struct Model {
     pub options: Vec<ModelOption>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     pub id: String,
@@ -299,14 +298,14 @@ pub struct ModelOption {
     pub default_choice: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOptionChoice {
     pub id: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {
     pub prompt: String,
@@ -320,7 +319,6 @@ pub struct RunRequest {
     pub reasoning: Option<ReasoningLevel>,
     /// Harness-specific option selections (option id -> choice id), JSON round-tripped.
     #[serde(default)]
-    #[ts(type = "Record<string, unknown>")]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub cwd: String,
     pub sandbox: SandboxLevel,
@@ -379,7 +377,6 @@ pub struct RunRequest {
     /// plane, the session doc, or the run journal — and a remote sender can
     /// never inject environment into a host's agents.
     #[serde(skip)]
-    #[ts(skip)]
     pub env: std::collections::BTreeMap<String, String>,
 }
 
@@ -389,7 +386,7 @@ pub struct RunRequest {
 /// builder produces it; the driver pastes it in front of the prompt on the
 /// fresh session it starts). The engine fills `fallback_history` at run
 /// time — it is never persisted in the command payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderFork {
     /// The provider session being forked (the fork's source).
@@ -410,7 +407,7 @@ pub struct ProviderFork {
 /// record it so a fork can continue the provider session at exactly the
 /// turn that produced the entry. The session id is part of the ref because
 /// a chat's provider session can change (fresh-start fallbacks).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderTurnRef {
     pub harness: HarnessId,
@@ -422,7 +419,7 @@ pub struct ProviderTurnRef {
 /// of whatever the user configured. Each driver spells it in its own dialect
 /// (Claude `--mcp-config`, ACP `session/new` `mcpServers`, Codex
 /// `mcp_servers.*` config overrides).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServer {
     pub name: String,
@@ -438,7 +435,7 @@ pub struct McpServer {
 /// blocking CreateWorktree RPC — so the send path stays durable: a lost relay
 /// frame can't wedge the composer on "Sending…" while the session runs anyway
 /// (2026-08-18 user report).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeSpec {
     /// The repo whose worktree to create (the space's folder on the host).
@@ -460,7 +457,7 @@ pub struct WorktreeSpec {
 pub const LIVE_PLAN_TOOL_ID: &str = "acp-plan";
 
 /// A decoded tool invocation, reduced to the fields each kind renders.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ToolCall {
     Exec {
@@ -510,13 +507,11 @@ pub enum ToolCall {
         server: String,
         tool: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(type = "unknown")]
         input: Option<serde_json::Value>,
     },
     Unknown {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(type = "unknown")]
         input: Option<serde_json::Value>,
     },
 }
@@ -585,7 +580,7 @@ pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
 /// Where one checklist item stands. Claude's TodoWrite, OpenCode and ACP plans
 /// distinguish the item being worked on from those still waiting; Codex and
 /// Cursor only report done / not done.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TodoStatus {
     #[default]
@@ -613,7 +608,7 @@ impl TodoStatus {
 /// working. `status` is additive and written only when it adds information —
 /// i.e. for an in-progress item; a missing or unreadable value derives from
 /// `done`. Build items with [`TodoItem::new`] to keep the two consistent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
     pub text: String,
@@ -623,7 +618,6 @@ pub struct TodoItem {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "lenient_todo_status"
     )]
-    #[ts(optional)]
     pub status: Option<TodoStatus>,
 }
 
@@ -659,7 +653,7 @@ where
 
 /// A slash command advertised by the agent (ACP `availableCommands`): typed as
 /// `/name` at the start of the composer, sent to the agent as prompt text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommand {
     pub name: String,
@@ -672,7 +666,7 @@ pub struct SlashCommand {
 
 /// A file modification carried inline on a tool result (ACP
 /// `ToolCallContent::Diff`). `old_text: None` means a new file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiff {
     pub path: String,
@@ -681,7 +675,7 @@ pub struct ToolDiff {
     pub new_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInputQuestion {
     pub id: String,
@@ -692,14 +686,14 @@ pub struct UserInputQuestion {
     pub multi_select: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInputAnswer {
     pub question_id: String,
     pub labels: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DoneStatus {
     Completed,
@@ -714,7 +708,7 @@ pub enum DoneStatus {
 ///
 /// Wire names are frozen (ADR 0005): this whole type is additive — older
 /// clients ignore the `kind` field and keep rendering the message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentErrorKind {
     /// A harness account's plan usage limit blocked the turn. The window is
@@ -736,7 +730,7 @@ pub enum AgentErrorKind {
 /// The normalized streaming event every harness emits.
 ///
 /// Mirrors roboco's `AgentEvent` tagged enum.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     #[serde(rename_all = "camelCase")]
@@ -1238,7 +1232,7 @@ mod tests {
 
     /// The enum-level `rename_all = "camelCase"` renames VARIANTS only;
     /// struct-variant fields keep their snake_case spelling on the wire (there
-    /// is no `rename_all_fields` here). Pin the quirk: ts-rs mirrors it, and a
+    /// is no `rename_all_fields` here). Pin the quirk: clients decode it, and a
     /// future `rename_all_fields` addition would be a wire break, not a fix.
     #[test]
     fn tool_call_variant_fields_keep_snake_case() {
@@ -1261,7 +1255,7 @@ mod tests {
 }
 
 /// Host-owned context snapshot, replicated with the chat document.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsage {
     pub tokens: Option<u64>,

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// The engine's user-facing settings. Additive only (ADR 0005): every field
 /// carries `#[serde(default)]` so settings files from older engines — and
 /// older engines reading newer files — keep loading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct EngineSettings {
     /// Arm **Resume at reset** automatically whenever a chat becomes

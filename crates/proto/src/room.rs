@@ -16,7 +16,6 @@ use std::fmt;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use ts_rs::TS;
 
 /// Prefix of a room invite carrying the room secret plus its address book.
 pub const INVITE_PREFIX: &str = "roboco-room:";
@@ -124,7 +123,7 @@ pub fn validate_room_member(member: &RoomMember) -> Result<(), RoomInviteError> 
 
 /// One address-book entry: a member engine's label and the address a client
 /// dials it through (a transport secret — ADR 0008).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomMember {
     pub label: String,
@@ -143,7 +142,7 @@ impl fmt::Debug for RoomMember {
 
 /// A room's address book: the `GetRoomBook` reply and the
 /// `UpdateRoomBook` fresh snapshot.
-#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoomBook {
     pub members: Vec<RoomMember>,

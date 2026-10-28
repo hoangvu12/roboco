@@ -188,7 +188,7 @@ fn queue_text_hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(
     tag = "outcome",
     rename_all = "camelCase",
@@ -209,7 +209,7 @@ pub enum BeginQueueEditOutcome {
     Missing,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(
     tag = "outcome",
     rename_all = "camelCase",
@@ -229,7 +229,7 @@ pub enum FinishQueueEditAction {
     ReleaseUnchanged,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(
     tag = "outcome",
     rename_all = "camelCase",

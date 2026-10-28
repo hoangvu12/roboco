@@ -1,10 +1,9 @@
 //! Client-side compatibility assessment against an engine's [`EngineInfo`].
 //!
-//! Pure and dependency-free so any client (mobile, desktop, web) can call it
+//! Pure and dependency-free so any client (mobile, desktop) can call it
 //! right after the first `EngineInfo` round trip. The mobile client is the
 //! first consumer: it is installed separately from its engine and will meet
-//! engines both older and newer than itself. The web client is engine-served
-//! (ADR 0006) and cannot skew, so it does not need this.
+//! engines both older and newer than itself.
 
 use crate::EngineInfo;
 

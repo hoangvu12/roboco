@@ -2,7 +2,7 @@
 //!
 //! These constants are the desktop's (`roboco-ui/src/theme.rs` exposes them as
 //! `Theme::…` associated constants), lifted here so any surface — including
-//! the web client's generated theme artifact — lays out with the *same*
+//! the generated theme artifact Android pins — lays out with the *same*
 //! numbers rather than re-deriving its own spacing ladder.
 //!
 //! Everything is plain px. UI text scales rems off the 16px root; these

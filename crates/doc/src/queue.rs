@@ -17,12 +17,11 @@
 
 use loro::ToJson;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::schema::{DocError, SessionDoc};
 
 /// One unsent message waiting its turn.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
     /// Stable through promotion: the host uses this as the transcript user
@@ -69,7 +68,7 @@ pub struct QueuedMessage {
 /// Why a queued row is not currently eligible for automatic or explicit
 /// delivery. Kept on the row so moves preserve it and deleting the row cannot
 /// leave an orphaned lease behind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",

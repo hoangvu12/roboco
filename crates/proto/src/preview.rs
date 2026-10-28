@@ -1,6 +1,5 @@
 //! Device-local discovery metadata and the browser's live preview list.
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 pub const PREVIEW_PROXY_PORT: u16 = 7331;
 
@@ -26,7 +25,7 @@ pub fn terminal_origin(terminal_id: &str) -> String {
     format!("terminal:{terminal_id}")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewService {
     /// Persisted identities; neither includes a listening port or process ID.
@@ -55,7 +54,7 @@ impl PreviewService {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewSnapshot {
     pub services: Vec<PreviewService>,
@@ -79,7 +78,7 @@ impl Default for PreviewSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchPreviewsParams {
     pub chat_id: String,

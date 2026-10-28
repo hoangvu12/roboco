@@ -12,14 +12,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use ts_rs::TS;
 
 use crate::parts::MessagePart;
 use crate::schema::SessionMessageEntry;
 
 /// Transcript changes and the current host-owned context snapshot travel together.
 /// Older readers ignore `contextUsage`; older hosts decode as unknown usage.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptUpdate {
     #[serde(flatten)]
@@ -44,7 +43,7 @@ pub struct TranscriptUpdate {
 /// Keeping the cutoff (rather than a one-frame boolean) lets a viewport
 /// coalesce historical and live updates without animating the history or
 /// swallowing the first live arrival. No transcript text is duplicated.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptBaseline {
     pub entries: HashMap<String, HashMap<String, usize>>,
 }
@@ -111,7 +110,7 @@ impl TranscriptBaseline {
 }
 
 /// One `WatchDocMessages` stream item.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TranscriptFrame {
     Reset {
@@ -133,7 +132,7 @@ pub enum TranscriptFrame {
 /// An inserted or replaced entry, positioned after `after` (`None` = head).
 /// Anchors are prior upserts of the same frame or unchanged entries, so
 /// applying upserts in frame order always finds them settled.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptUpsert {
     pub after: Option<String>,
     pub entry: SessionMessageEntry,
@@ -143,7 +142,7 @@ pub struct TranscriptUpsert {
 /// upserts re-send the whole live entry per tick, which for a long single
 /// reply is the whole reply again (continuations re-join before the watch);
 /// this carries only the new tokens.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextAppend {
     pub entry: String,
     pub part: String,

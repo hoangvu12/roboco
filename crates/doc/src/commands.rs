@@ -9,13 +9,12 @@
 //!    `based_on.turn_id` is already past → Superseded; otherwise Execute.
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use roboco_proto::{RunRequest, UserInputAnswer};
 
 use crate::constants::COMMAND_DEFAULT_TTL_MS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionCommandKind {
     Run,
@@ -24,7 +23,7 @@ pub enum SessionCommandKind {
     RespondInput,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionCommandStatus {
     Pending,
@@ -35,7 +34,7 @@ pub enum SessionCommandStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SessionCommandPayload {
     #[serde(rename_all = "camelCase")]
@@ -68,14 +67,14 @@ impl SessionCommandPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandBasedOn {
     pub turn_id: Option<String>,
     pub frontier: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCommandEntry {
     pub id: String,

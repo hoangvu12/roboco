@@ -2,7 +2,6 @@
 //! decoded; ordinary slash/dollar text remains ordinary prompt text.
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use ts_rs::TS;
 
 pub const INVOCATION_SCHEME: &str = "roboco-invoke:";
 
@@ -37,14 +36,14 @@ pub fn valid_skill_command_name(name: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillCommand {
     pub name: String,
     pub harness: crate::HarnessId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skill {
     pub name: String,
@@ -56,7 +55,7 @@ pub struct Skill {
     pub command: Option<SkillCommand>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Invocation {
     Command {
