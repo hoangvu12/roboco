@@ -283,9 +283,18 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #38 merged `3395065c0` (wave-10 33–43; 41 core only, drag gesture follow-up; 36 carries TS derives → web
+  removal must strip them). Emulator device loss root cause: ticket 37's live-blurred search capsule froze the CI
+  emulator's software GPU → capsule on `GlassTier.Fallback` (follow-up: blur only on hardware GPU). Flow-test
+  diagnostics added (bounded cleanup adb, live logcat, mem/CPU log). Golden PNGs need a re-record (no CI runs
+  Roborazzi). Cleaned up (empty locked `..oboco-w10-android` folder left). **16 `bisect/pr38-*` branches on
+  origin await the user's OK to delete.**
+- **Main regression from #40:** `engine-local-regressions` (`crates/engine/tests/completion_notices.rs:293`
+  timeouts) red since `9ce048640`. Fix worker `26b1ca3b`, `..oboco-fix-notices` / `fix/completion-notices`.
 - #41 merged `2edb72a7a` (upstream sync: ledger 576 rows `docs/reference/upstream-ledger.tsv`, PR table, `scripts/upstream/`
   translate/presence/triage + 31 unit tests, weekly-loop docs; no CI covers it, tests run locally). Cleaned up;
-  an empty, locked `..oboco-upstream-tools` folder is left: remove it later. **Wave-10 ports now start with
+  an empty, locked `..
+oboco-upstream-tools` folder is left: remove it later. **Wave-10 ports now start with
   `scripts/upstream/translate.py`; small CLEAN/TRIVIAL ports need no ticket.** First weekly triage after wave 10
   (pending: zeron #1089 bubble fade, #1088 access modes + plan mode).
 - #40 merged `9ce048640` (fleet-redesign 17 done; 16 built, its gate = the user's Laptop↔PC / phone↔PC check,
