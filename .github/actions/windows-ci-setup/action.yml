@@ -28,11 +28,13 @@ inputs:
 runs:
   using: composite
   steps:
-    # Dynamic: the VHDX grows as the build writes, up to the size. Mounted at
-    # .devdrive, not at ./target as upstream does: a volume's root holds a
-    # System Volume Information folder nobody may read, and the Rust cache's
-    # save would tar it and fail. The real target dir is .devdrive/target, and
-    # ./target is a junction to it, so every script keeps its paths.
+    # Dynamic: the VHDX grows as the build writes, up to the size. Mounted
+    # beside the workspace, not at ./target as upstream does: a volume's root
+    # holds a System Volume Information folder nobody may read, and rust-cache
+    # fails on it (windows-2022: its restore scans the workspace and stops at
+    # EPERM; its save would tar the target dir). The real target dir is
+    # ../roboco-devdrive/target, and ./target is a junction to it, so every
+    # script keeps its paths.
     - name: Dev Drive
       if: inputs.dev-drive == 'true'
       uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
@@ -40,12 +42,12 @@ runs:
         drive-size: 50GB
         drive-format: ReFS
         drive-type: Dynamic
-        mount-path: ${{ github.workspace }}/.devdrive
+        mount-path: ${{ github.workspace }}/../roboco-devdrive
     - name: target/ on the Dev Drive
       if: inputs.dev-drive == 'true'
       shell: pwsh
       run: |
-        $real = Join-Path $env:GITHUB_WORKSPACE '.devdrive\target'
+        $real = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\roboco-devdrive\target'))
         New-Item -ItemType Directory -Force -Path $real | Out-Null
         New-Item -ItemType Junction -Path (Join-Path $env:GITHUB_WORKSPACE 'target') -Target $real | Out-Null
         Get-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'target') | Format-List FullName, LinkType, Target
@@ -126,7 +128,7 @@ runs:
       if: inputs.dev-drive == 'true'
       shell: pwsh
       run: |
-        $drive = Join-Path $env:GITHUB_WORKSPACE '.devdrive'
+        $drive = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\roboco-devdrive'))
         Get-Volume -FilePath (Join-Path $drive 'target') | Format-List FileSystemType, DriveType, Size, SizeRemaining
         fsutil devdrv query "$drive\"
         Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free, Root
@@ -137,7 +139,7 @@ runs:
         add-job-id-key: 'false'
         # The real directory, never the ./target junction: tar would store the
         # junction itself.
-        workspaces: ${{ inputs.dev-drive == 'true' && '. -> .devdrive/target' || '. -> target' }}
+        workspaces: ${{ inputs.dev-drive == 'true' && '. -> ../roboco-devdrive/target' || '. -> target' }}
         # Only main writes; PRs restore main's entry.
         save-if: ${{ github.ref == 'refs/heads/main' }}
         cache-on-failure: 'true'

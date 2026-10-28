@@ -113,7 +113,7 @@ jobs:
       - name: Select the Windows test suites
         # A suite runs on Windows when it has Windows-specific code paths or
         # the desktop links it (Android-only crates run on Linux and in
-        # android.yml). One argument list for the build and the run below:
+        # android.yml). The argument list for the nextest run below:
         #   roboco-harness  lib + the native suites (codex_availability,
         #                   windows_native) + the driver suites whose fixtures
         #                   need no POSIX shell: OpenCode (in-test HTTP/SSE),
@@ -150,9 +150,14 @@ jobs:
           ) + $allTests
           "WINDOWS_TESTS=$($selection -join ' ')" >> $env:GITHUB_ENV
           $selection -join ' '
-      - name: Build tests
-        run: cargo nextest run --release --locked -P ci --no-run @($env:WINDOWS_TESTS -split ' ')
       - name: Windows tests
+        # One invocation builds and runs. A separate `--no-run` step would make
+        # this one recompile ort-sys and everything above it (roboco-voice,
+        # roboco-ui, roboco; 1.5-2 min): its build script downloads the ONNX
+        # runtime during the run and marks it rerun-if-changed, so the second
+        # cargo command always sees it as newer. The log's "Finished" line
+        # and nextest's Summary give the build and run times.
+        #
         # The filter trims the three suites that ran by name before: proto
         # device_paths, the engine's worktree_location_ tests, and the gpui
         # shader layout tests (`not package(roboco*)`: a dependency, which a

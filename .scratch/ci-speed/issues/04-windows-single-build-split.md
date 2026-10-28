@@ -31,8 +31,8 @@
 Baseline: `tests` 75 min p50 warm (≈ 50 expected after 02). Upstream measured CI-release (workspace opt0) 23.7 min vs dev profile 31.5 min cold for the Windows test build, so do **not** switch Windows to the dev profile.
 
 - [ ] One cargo build per job (log: a single `Finished` line for the test build in `tests`, one for `roboco` in `app`)
-- [ ] Coverage list attached: test count before (sum of old steps, deduped) ≤ after
-- [ ] `native_diff_font_geometry` still runs as its own mandatory test and is visible in the summary
+- [x] Coverage list attached: test count before (sum of old steps, deduped) ≤ after
+- [x] `native_diff_font_geometry` still runs as its own mandatory test and is visible in the summary
 - [ ] Measured over ≥ 5 green PR runs + ≥ 3 main runs: `tests` p50 (target ≤ 25 min warm), `app` p50 (target ≤ 15), workflow wall p50 (target ≤ 25)
 - [ ] Cache entries `windows-tests` + `windows-app` together ≤ 3.5 GB
 
@@ -88,4 +88,19 @@ What changed:
 `roboco::tailcat_invite_cli` builds but has 0 tests on Windows (`#![cfg(unix)]`). Ignored tests (6 in ui, 1 in the engine lib) stay ignored.
 
 **Coverage after** (expected): the same 27 binaries and filters, plus `roboco-engine::codex_login_resolution` (03). The harness lib runs once, with `native-fixture`. That feature only adds the two fixture bins and gates `windows_native.rs` (ticket 02), so no lib test is lost. The observed list from the PR run follows below.
+
+**2026-10-29 (PR #43, first run 40739069881 on `176e789b0`; cold: no Windows cache was restored, see 05):**
+
+- **Coverage after (observed):** `Starting 2806 tests across 29 binaries (146 tests skipped)` → `2806 passed`. Diffed against the baseline's PASS lines: **all 2802 baseline tests ran, 0 missing**, and 4 are new (`roboco-engine::codex_login_resolution`). 29 binaries = the 27 above + `codex_login_resolution` + `tailcat_invite_cli` (0 tests on Windows). The 146 skipped are the filter's trims (proto outside `device_paths`, gpui_windows outside `layout`, `worktree_on_run` outside `worktree_location_`) plus the 7 `#[ignore]`d. 0 flaky.
+- `native_diff_font_geometry`: `PASS: roboco-ui changes::tests::native_diff_font_geometry` from the JUnit check step, and its PASS line is in the nextest output.
+- **Timings (cold, no cache restored):**
+
+  | job | before (post-02, warm, 5 runs 10-28) | this PR, run 1 (cold) |
+  |---|---|---|
+  | `tests` | 36.4 / 41.3 / 43.2 / 51.0 / 53.0 (p50 43.2) | **24.9** (test build `Finished … in 16m 26s`, test run 4.9 min `Summary [295 s]`) |
+  | `app` | (inside `tests`: packaging 7.0–10.3) | **21.8** (packaging build `Finished … in 18m 16s`; installer 0.15, startup + CLI smoke < 0.1) |
+  | workflow wall | = `tests` | ≈ 25 (the two jobs run in parallel) |
+
+  Warm numbers come after main seeds `windows-tests`/`windows-app`, measured after merge.
+- **Fix found by run 1: one cargo invocation, not two.** The "Build tests" (`--no-run`) → "Windows tests" split made the second step recompile `ort-sys`, `roboco-voice`, `roboco-ui` and `roboco` (`Finished … in 1m 28s`; 1m 57s in the fallback run). `ort-sys`'s build script downloads the ONNX runtime while it runs and emits `rerun-if-changed` on the result, so the file is always newer than the script's start time and the next cargo command reruns it. The fix merges build and run into one "Windows tests" step, which gives a single `Finished` line, as the acceptance item asks. Build and run times still come from the log (`Finished` and nextest's `Summary`). Applied in the follow-up commit; the one-`Finished` check is on that commit's run.
 

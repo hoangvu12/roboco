@@ -15,9 +15,9 @@
 
 Upstream measurement (cold, same commit): test build 31.7 → 28.2–28.6 min (−11 %), app build 23.1 → 20.6–20.8 min (−11 %).
 
-- [ ] Both switches work (one run with each switch off proves the fallback)
-- [ ] `rustc -vV`/link line in the log shows `rust-lld`; `target` is on the Dev Drive (`Get-Volume`/`fsutil devdrv query` output in the log)
-- [ ] Packaged `roboco.exe` from the `app` job still passes the installer + startup + CLI smoke steps
+- [x] Both switches work (one run with each switch off proves the fallback)
+- [x] `rustc -vV`/link line in the log shows `rust-lld`; `target` is on the Dev Drive (`Get-Volume`/`fsutil devdrv query` output in the log)
+- [x] Packaged `roboco.exe` from the `app` job still passes the installer + startup + CLI smoke steps
 - [ ] Measured before/after over ≥ 5 green runs: `tests` and `app` p50 (expect −2…−3 min each)
 
 ## Comments
@@ -47,4 +47,26 @@ What changed (`.github/actions/windows-ci-setup`, used by both `tests` and `app`
 - **`release.yml` stays on link.exe (decision, no change).** Upstream left release on link.exe too. Shipped binaries change only with a release-profile build that is measured and smoke-tested on its own. `app` covers rust-lld for packaging, installer and startup in CI, so a later switch has evidence to start from. That build is the thin-LTO release profile, though, and LTO linking through lld-link is a different code path. The gain there is a few minutes per tag, not on any PR path.
 - Ledger (this commit, `triage.py sync --rev HEAD --write` + `mark`): `4a0d416cf` → `ported d72b60a98` (03); `68ed902ed` (its Windows CI hunks) → `ported d72b60a98`; `f4abe69b8`, `c168ba5b4` → `ported 7388ff8e6` (04).
 - Lint: `actionlint` clean on `windows.yml` (it also validates the composite action's metadata).
+
+**2026-10-29 (PR #43, commit `176e789b0`: PR run + three `workflow_dispatch` runs, all cold because no Windows cache was restored):**
+
+| run | image | fast-linker / dev-drive | test build (`Finished`) | `tests` job | `app` build (`Finished`) | `app` job |
+|---|---|---|---|---|---|---|
+| 40739069881 (PR) | windows-2022 | on / on | 16m 26s | 24.9 | 18m 16s | 21.8 |
+| 40739136750 (scratch, broken startup expectation) | windows-2022 | on / on | 20m 39s | 28.2 | 19m 01s | 22.7 (failed at startup, on purpose) |
+| 40739091638 (fallback) | windows-2022 | off / off | 21m 48s | 29.2 | 20m 09s | 24.2 |
+| 40739096853 (A/B) | windows-2025 (VS 2026) | on / on | 22m 48s | 31.8 | 20m 36s | 25.5 |
+
+The job minutes include the ort-sys rebuild that 04's follow-up removes (≈ 1.5–2 min in `tests`).
+
+- **Fallbacks work.** The off/off run is green in both jobs. The linker check reports `roboco.exe linked by link.exe (Rich header)`, and there are no Dev Drive steps or `D:` homes.
+- **Evidence (on/on):**
+  - `rustc -vV` and the written config are in the log (`linker = "rust-lld.exe"`).
+  - `roboco.exe linked by rust-lld (no Rich header)`, followed by the installer, startup and CLI-without-HOME steps, all green.
+  - `Get-Volume`: `FileSystemType: ReFS`, 50 GB.
+  - `CARGO_HOME=D:\.cargo RUSTUP_HOME=D:\.rustup`.
+  - `fsutil devdrv query`: on **windows-2022** it is `devdrv is an invalid parameter`. Server 2022 has no native Dev Drive, so the action formats a plain ReFS VHDX there. On **windows-2025** it reports `This is a trusted developer volume` (native `Format-Volume -DevDrive`).
+- **Signal, cold, one run each:** on windows-2022, on/on built 16.4–20.7 min against 21.8 for off/off: −1…−5 min on the test build and −1…−2 on the app build. Two on/on runs of the same commit differed by 4 min, so this is not a measurement yet. Warm p50s after merge decide it.
+- **windows-2025 A/B: slower here.** It was the slowest test build (+1 min over the 2022 fallback, +2…6 over 2022 on/on) and the slowest app job. The jobs stay on windows-2022. The `runner` dispatch input remains for a warm re-check later.
+- **Bug found by run 1, fixed in the follow-up commit.** rust-cache logged `##[error]Error: EPERM: operation not permitted, scandir '…\.devdrive\System Volume Information'` and restored nothing, yet the step stayed green. Its restore scans the workspace, and on windows-2022 the volume root's `System Volume Information` is unreadable. (Not on 2025, whose native Dev Drive root raised no error.) Upstream's mount at `./target` is inside the workspace too and would hit the same error. With the cache never restored, main would never have seeded the Windows caches. Fix: the drive is mounted **beside** the workspace at `${{ github.workspace }}/../roboco-devdrive` (setup-dev-drive `path.resolve`s it). `./target` is a junction to `../roboco-devdrive/target`, and rust-cache gets `workspaces: . -> ../roboco-devdrive/target`. The earlier comment's `.devdrive/` layout is replaced by this one. Restore without the error is checked on the follow-up commit's run; the save is only exercised on main (`save-if`), so the first main run after merge must show `Cache saved` for both keys.
 
