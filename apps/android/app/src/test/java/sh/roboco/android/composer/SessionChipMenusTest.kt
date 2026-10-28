@@ -23,6 +23,7 @@ import sh.roboco.android.session.ChromeInput
 import sh.roboco.android.session.SessionChrome
 import uniffi.roboco_core.ChatConfig
 import uniffi.roboco_core.ContextUsage
+import uniffi.roboco_core.HarnessInfo
 import uniffi.roboco_core.ModelInfo
 import uniffi.roboco_core.ModelOption
 import uniffi.roboco_core.SandboxLevel
@@ -57,8 +58,14 @@ class SessionChipMenusTest {
         var row: SessionRow?,
         var config: ChatConfig?,
         val models: List<ModelInfo> = claudeFallbackModels(),
+        val harnesses: List<HarnessInfo> = emptyList(),
     ) : ChipMenuCore {
         val callLog = mutableListOf<Pair<String, String>>()
+
+        override suspend fun listHarnesses(deviceId: String): List<HarnessInfo> {
+            callLog += "listHarnesses($deviceId)" to threadName()
+            return harnesses
+        }
 
         /** Makes the next `listModels` throw (the fallback path). */
         var listModelsFailure: Throwable? = null
@@ -163,18 +170,25 @@ class SessionChipMenusTest {
         core: FakeChipMenuCore,
         deviceId: String = "device-1",
         contextUsage: ContextUsage? = null,
-    ) {
+        providerSwitch: Boolean = false,
+        turnRunning: Boolean = false,
+        chrome: SessionChrome = SessionChrome(),
+    ): SessionChrome =
         menus.fill(
-            SessionChrome(),
+            chrome,
             ChromeInput(
                 chatId = "chat-a",
-                composer = chipMenuComposerState(deviceId = deviceId, contextUsage = contextUsage),
+                composer = chipMenuComposerState(
+                    deviceId = deviceId,
+                    contextUsage = contextUsage,
+                    providerSwitch = providerSwitch,
+                    turnRunning = turnRunning,
+                ),
                 row = core.row,
                 engine = null,
                 config = core.config,
             ),
         )
-    }
 
     /** The deferred of a chip's menu (single-child convenience). */
     private fun deferredOf(menus: SessionChipMenus, chipId: String): MenuElement.Deferred =
@@ -211,6 +225,105 @@ class SessionChipMenusTest {
         core.awaitWrites(1)
         assertEquals("claude-fable-5-1", core.setConfigs.single().model)
         assertEquals("claude-code", core.setConfigs.single().harness)
+    }
+
+    private fun harness(id: String, label: String, offered: Boolean = true) = HarnessInfo(
+        id = id,
+        label = label,
+        supportsSteering = null,
+        steeringMode = null,
+        reasoningLevels = emptyList(),
+        installed = offered,
+        enabled = null,
+        offered = offered,
+        midTurnSteering = null,
+    )
+
+    @Test
+    fun aHostThatSwitchesOffersItsOtherProvidersWithTheirNotes() {
+        val core = FakeChipMenuCore(
+            row = chipMenuSessionRow(),
+            config = chatConfig(model = "claude-fable-5", reasoning = "xhigh", modelOptions = mapOf("contextWindow" to "1m")),
+            harnesses = listOf(
+                harness("claude-code", "Claude Code"),
+                harness("codex", "Codex"),
+                harness("pi", "Pi", offered = false),
+            ),
+        )
+        val menus = menus(core)
+        val shown = mutableListOf<ModelPickerRequest>()
+        menus.modelPicker = ModelPickerPresenter { shown += it }
+        fill(menus, core, providerSwitch = true)
+        awaitUntil("the providers were read ahead") { core.methodNames().contains("listHarnesses(device-1)") }
+        Thread.sleep(50) // the read-ahead's answer lands on fake-io
+        fill(menus, core, providerSwitch = true)
+
+        menus.menu("model", RecordingPlatform())
+        val request = shown.single()
+        assertEquals(listOf("claude-code", "codex"), request.tabs.map { it.harness })
+        assertEquals("Your next message continues this chat with Codex.", request.tabs[1].footer)
+        assertNull("it can switch: no note", request.note)
+
+        // A pick on Codex's page moves the chat; effort and options reset.
+        request.onPick("codex", ModelPickerRow(id = "gpt-5", label = "GPT 5", detail = null))
+        core.awaitWrites(1)
+        assertEquals(
+            chatConfig(harness = "codex", model = "gpt-5", reasoning = null, modelOptions = emptyMap()),
+            core.setConfigs.single(),
+        )
+    }
+
+    @Test
+    fun midTurnOrOnAnOlderHostOnlyTheOwnProviderWithTheRightNote() {
+        val core = FakeChipMenuCore(row = chipMenuSessionRow(), config = chatConfig(model = "claude-fable-5"))
+        val menus = menus(core)
+        val shown = mutableListOf<ModelPickerRequest>()
+        menus.modelPicker = ModelPickerPresenter { shown += it }
+
+        fill(menus, core, providerSwitch = true, turnRunning = true)
+        menus.menu("model", RecordingPlatform())
+        assertEquals(1, shown.last().tabs.size)
+        assertEquals("You can switch provider when this turn ends.", shown.last().note)
+        // A stale cross-provider pick while it can't switch writes nothing.
+        shown.last().onPick("codex", ModelPickerRow(id = "gpt-5", label = "GPT 5", detail = null))
+
+        fill(menus, core, providerSwitch = false)
+        menus.menu("model", RecordingPlatform())
+        assertEquals(1, shown.last().tabs.size)
+        assertEquals("This computer needs a newer Roboco to switch provider.", shown.last().note)
+        assertTrue("no host read without the capability", core.methodNames().none { it.startsWith("listHarnesses") })
+        Thread.sleep(50)
+        assertTrue("the stale pick wrote nothing", core.setConfigs.isEmpty())
+    }
+
+    @Test
+    fun aChatWithNoModelNamesAndTicksItsDefault() {
+        val core = FakeChipMenuCore(
+            row = chipMenuSessionRow(model = null, modelLabel = null),
+            config = chatConfig(model = null),
+        )
+        val menus = menus(core)
+        val shown = mutableListOf<ModelPickerRequest>()
+        menus.modelPicker = ModelPickerPresenter { shown += it }
+        val chrome = SessionChrome(
+            chips = listOf(ComposerChip(id = "model", title = "Claude Code")),
+        )
+        val filled = fill(menus, core, chrome = chrome)
+        assertEquals("the built-in list's first model names the chip", "Fable 5.1", filled.chips.single().title)
+        menus.menu("model", RecordingPlatform())
+        assertEquals("claude-fable-5-1", shown.single().model)
+    }
+
+    @Test
+    fun theProviderRulesFollowUpstream() {
+        assertNull(providerSwitchNote(canSwitch = true, running = false, hostSwitches = true))
+        assertEquals("You can switch provider when this turn ends.", providerSwitchNote(false, running = true, hostSwitches = true))
+        assertNull("a send on its way, no note", providerSwitchNote(false, running = false, hostSwitches = true))
+        assertEquals("This computer needs a newer Roboco to switch provider.", providerSwitchNote(false, false, false))
+        val base = chatConfig(model = "claude-fable-5", reasoning = "high", modelOptions = mapOf("contextWindow" to "1m"))
+        assertEquals(chatConfig(model = "claude-fable-5-1", reasoning = "high", modelOptions = mapOf("contextWindow" to "1m")),
+            applyProviderPick(base, "claude-code", "claude-fable-5-1"))
+        assertEquals(chatConfig(harness = "codex", model = "gpt-5"), applyProviderPick(base, "codex", "gpt-5"))
     }
 
     @Test
