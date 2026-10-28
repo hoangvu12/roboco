@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use roboco_proto::AgentAccountsSnapshot;
+use roboco_proto::{AgentAccountsSnapshot, AgentLoginPoll, AgentLoginStart};
 
 use crate::engines::EngineHandle;
 use crate::{ClientError, lock};
@@ -133,6 +133,87 @@ impl crate::Client {
         .await
     }
 
+    /// Start signing `harness` in on `device_id`'s engine (`provider`: one
+    /// of the agent's login options, `None` for its default) — upstream
+    /// #966's `device_login_start`, on the engine handle instead of the
+    /// relay. The computer runs the sign-in; the phone opens the reply's
+    /// page. A `callback_port` means the page redirects to the computer's
+    /// loopback, which a phone's browser can't reach on its own.
+    pub async fn start_agent_login(
+        &self,
+        device_id: &str,
+        harness: &str,
+        provider: Option<&str>,
+    ) -> Result<AgentLoginStart, ClientError> {
+        let inner = self.inner_arc();
+        let handle = resolve(&inner, device_id)?;
+        let value = handle
+            .call(
+                roboco_rpc::methods::START_AGENT_LOGIN,
+                serde_json::json!({ "harness": harness, "provider": provider }),
+            )
+            .await?;
+        decode_as(value, "agent login start")
+    }
+
+    /// `PollAgentLogin`: still pending, done, or failed (a page that only
+    /// became known now rides along).
+    pub async fn poll_agent_login(
+        &self,
+        device_id: &str,
+        login_id: &str,
+    ) -> Result<AgentLoginPoll, ClientError> {
+        let inner = self.inner_arc();
+        let handle = resolve(&inner, device_id)?;
+        let value = handle
+            .call(
+                roboco_rpc::methods::POLL_AGENT_LOGIN,
+                serde_json::json!({ "loginId": login_id }),
+            )
+            .await?;
+        decode_as(value, "agent login poll")
+    }
+
+    /// `CompleteAgentLogin`: the code the sign-in page showed, pasted back
+    /// (Claude's paste fallback). Replies with the updated accounts and
+    /// refreshes the cache.
+    pub async fn complete_agent_login(
+        &self,
+        device_id: &str,
+        login_id: &str,
+        code: &str,
+    ) -> Result<AgentAccountsSnapshot, ClientError> {
+        let inner = self.inner_arc();
+        let handle = resolve(&inner, device_id)?;
+        let value = handle
+            .call(
+                roboco_rpc::methods::COMPLETE_AGENT_LOGIN,
+                serde_json::json!({ "loginId": login_id, "code": code.trim() }),
+            )
+            .await?;
+        let snapshot: AgentAccountsSnapshot = decode(value)?;
+        store(&inner, &handle, snapshot.clone());
+        Ok(snapshot)
+    }
+
+    /// Give up on a sign-in, best effort on the computer (fire-and-forget:
+    /// a cancel that can't reach the engine is reaped there by its TTL).
+    pub fn cancel_agent_login(&self, device_id: &str, login_id: &str) {
+        let inner = self.inner_arc();
+        let Ok(handle) = resolve(&inner, device_id) else {
+            return;
+        };
+        let login_id = login_id.to_owned();
+        crate::runtime::shared().spawn(async move {
+            let _ = handle
+                .call(
+                    roboco_rpc::methods::CANCEL_AGENT_LOGIN,
+                    serde_json::json!({ "loginId": login_id }),
+                )
+                .await;
+        });
+    }
+
     /// The newest snapshot for `device_id`'s engine (the cache every
     /// successful list/activate/forget refreshes), so a screen paints at
     /// once and refreshes behind it. `None` before the first success.
@@ -199,7 +280,13 @@ fn decode(value: serde_json::Value) -> Result<AgentAccountsSnapshot, ClientError
     })
 }
 
-fn store(inner: &std::sync::Arc<ClientInner>, handle: &EngineHandle, snapshot: AgentAccountsSnapshot) {
+fn decode_as<T: serde::de::DeserializeOwned>(value: serde_json::Value, what: &str) -> Result<T, ClientError> {
+    serde_json::from_value(value).map_err(|error| ClientError::HostError {
+        message: format!("undecodable {what}: {error}"),
+    })
+}
+
+fn store(inner:&std::sync::Arc<ClientInner>, handle: &EngineHandle, snapshot: AgentAccountsSnapshot) {
     lock(&inner.accounts.snapshots)
         .insert(handle.engine_id().to_owned(), snapshot);
 }

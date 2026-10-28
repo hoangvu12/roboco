@@ -38,14 +38,51 @@ needed), `apps/android/.../accounts/*`.
 
 **Blocked by:** 01. **Blocks:** 35, 36.
 
-**Status:** ready-for-agent
+**Status:** done (2026-10-28, `wave10/android`) — Kotlin compiles in CI only
 
 **Source:** `pass2-features-android.md` N3; `2026-10-28.md` §C, summary §3.
 
-- [ ] FFI exposes the login rules and the start/poll/complete/cancel calls (mobile tests against a fixture engine)
-- [ ] Add account works for a device-code provider and for Claude's paste flow (instrumented flow test against the `android_fixture` engine)
-- [ ] Loopback providers show the interim message until 36
-- [ ] Cancel works mid-flow
-- [ ] Commit records the `cc7da5c2a` slice
+- [x] FFI exposes the login rules and the start/poll/complete/cancel calls (mobile tests against a fixture engine)
+- [~] Add account works for a device-code provider and for Claude's paste flow (JVM model tests; no instrumented flow — see comments)
+- [x] Loopback providers show the interim message until 36
+- [x] Cancel works mid-flow
+- [x] Commit records the `cc7da5c2a` slice
 
 ## Comments
+
+2026-10-28 (wave10/android, lane 3): carried `cc7da5c2a` (#966) by intent.
+
+- Rules: upstream moved the sign-in rules to `zeron_proto::providers`;
+  Roboco now does the same (`crates/proto/src/providers.rs`: `PROVIDERS`,
+  `signs_in`, `login_options`, `switches_accounts`, …, plus upstream's
+  `add_account_label`/`add_option_label(harness, …)`). The desktop
+  re-exports them from `crates/ui/src/settings/accounts.rs` (its own
+  `add_option_label(option, empty)` stays), so there is one copy.
+- Core: `roboco-mobile-client` `start/poll/complete/cancel_agent_login`
+  over the engine handle (no relay, ADR 0004); FFI
+  `client_ffi/providers.rs`: `agent_login_rules(harness)`,
+  `device_login_{start,poll,complete,cancel}` with `DeviceLoginInfo`
+  (`paste_code`, `callback_port`) / `DeviceLoginPollInfo`. No wire change.
+- Finding: Roboco's Claude login is itself loopback (engine-served PKCE
+  on `localhost:<random>`; paste only when no port binds), so "loopback"
+  is decided from the start reply's `callback_port`, not a static
+  provider list. Until 36, a loopback start answers "Finish on the
+  computer" and cancels on the computer.
+- Android: `AccountSignIn` seam (separate from `AccountsCore`, so the
+  read-only surfaces' fakes stay), `AgentAccountsModel` sign-in runner
+  (iOS `DeviceSignIn.run`: page in a Custom Tab, 1.5 s polls for 10 min,
+  the device-code note shown and copied, "Paste the code" alert →
+  `CompleteAgentLogin`, done → re-read, error → "Couldn't sign in"),
+  page sections for every offered agent that signs in, one quiet
+  "Add account"/"Connect a … account" row per login option, the waiting
+  row "Finish signing in in the browser… · Tap to cancel", leaving the
+  page cancels. The about footer now says sign-in runs on the computer.
+- Tests: `cargo test -p roboco-proto --lib providers`,
+  `cargo test -p roboco-mobile --lib client_ffi::providers`,
+  `cargo test -p roboco-mobile-client --test accounts_engine`
+  (start → poll → cancel against a real in-process engine, Claude's
+  engine-served loopback start, offline). JVM: `AccountSignInTest`.
+- Deviation: no instrumented flow. A successful device-code or paste
+  sign-in needs a real provider CLI (Grok/Hermes) or Anthropic's
+  network on the CI runner, and the fixture engine's Claude start is
+  loopback (36's case). Recorded as a manual phone check.

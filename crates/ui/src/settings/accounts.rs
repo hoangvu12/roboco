@@ -131,59 +131,13 @@ pub(crate) fn usage_resets(
         .join(" · ")
 }
 
-/// The provider cards, in display order: (harness, name, CLI command — named
-/// in the empty-state copy, roboco settings.agents.tsx `PROVIDERS`). Every
-/// agent with a login of its own is here; what each one supports is
-/// documented engine-side (`agent_accounts` module docs). Antigravity's
-/// command never prints in the copy — it has no CLI login (see the
-/// empty-state arm).
-pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
-    (HarnessId::ClaudeCode, "Claude Code", "claude"),
-    (HarnessId::Codex, "Codex", "codex"),
-    (HarnessId::Cursor, "Cursor", "cursor-agent"),
-    (HarnessId::Antigravity, "Antigravity", "Antigravity"),
-    (HarnessId::Grok, "Grok", "grok login"),
-    (HarnessId::Devin, "Devin", "devin auth login"),
-    (HarnessId::Opencode, "OpenCode", "opencode auth login"),
-    (HarnessId::Pi, "Pi", "pi"),
-    (HarnessId::Hermes, "Hermes", "hermes auth add"),
-];
-
-/// Whether `harness` has an Accounts section (and sign-in flow). Pure.
-pub fn signs_in(harness: HarnessId) -> bool {
-    PROVIDERS
-        .iter()
-        .any(|(provider, _, _)| *provider == harness)
-}
-
-/// Whether the provider reports plan usage. One that doesn't shows no meters
-/// and no "usage unavailable" note — there is nothing missing. Pure.
-pub fn reports_usage(harness: HarnessId) -> bool {
-    harness != HarnessId::Antigravity
-}
-
-/// Providers whose agent holds exactly ONE login (Antigravity): once it is
-/// connected there is nothing to add — signing in again only re-confirms it.
-pub fn keeps_one_login(harness: HarnessId) -> bool {
-    harness == HarnessId::Antigravity
-}
-
-/// Display name of one agent (upstream `provider_name`) — the fallback
-/// [`LoginOption`] label for single-login agents. Pure.
-pub(crate) fn provider_name(harness: HarnessId) -> &'static str {
-    match harness {
-        HarnessId::ClaudeCode => "Claude Code",
-        HarnessId::Codex => "Codex",
-        HarnessId::Cursor => "Cursor",
-        HarnessId::Antigravity => "Antigravity",
-        HarnessId::Grok => "Grok",
-        HarnessId::Devin => "Devin",
-        HarnessId::Opencode => "OpenCode",
-        HarnessId::Pi => "Pi",
-        HarnessId::Hermes => "Hermes",
-        _ => "Agent",
-    }
-}
+// The pure sign-in rules (which agents sign in, their login options,
+// switching) live in `roboco_proto::providers`, shared with the Android
+// core's `agent_login_rules` (upstream #966 moved them to proto too).
+pub use roboco_proto::providers::{
+    LoginOption, PROVIDERS, keeps_one_login, login_options, provider_name, provider_note,
+    reports_usage, signs_in, switches_accounts,
+};
 
 /// Accounts of one provider, in the engine's order (slot creation). No
 /// active-first re-sort: switching accounts must not move the switched-to
@@ -198,59 +152,6 @@ pub fn provider_accounts(
         .iter()
         .filter(|a| a.harness == harness)
         .collect()
-}
-
-/// Whether roboco switches this agent's logins. Hermes rotates through its
-/// own credential pool (listed, never reordered); Antigravity keeps one.
-pub fn switches_accounts(harness: HarnessId) -> bool {
-    !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity)
-}
-
-/// A standing note under a provider's card, for an agent whose accounts work
-/// differently. Hermes owns its credential pool: roboco lists it and adds to
-/// it through Hermes' own CLI, but never switches or removes its entries.
-/// Pure.
-pub fn provider_note(harness: HarnessId) -> Option<&'static str> {
-    match harness {
-        HarnessId::Hermes => Some(
-            "Hermes manages its own credential pool and rotates through it. Accounts added \
-             here go through `hermes auth add`; remove one with `hermes auth remove`.",
-        ),
-        _ => None,
-    }
-}
-
-/// One way to add an account: agents that keep a login PER model provider
-/// (OpenCode, Pi, Hermes) sign in to a named provider; the rest have one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoginOption {
-    /// The engine's `provider` param (`None` = the agent's only login).
-    pub provider: Option<&'static str>,
-    /// Who the user signs in to.
-    pub label: &'static str,
-}
-
-/// The sign-ins roboco offers for `harness`, in button order. Pure.
-pub fn login_options(harness: HarnessId) -> Vec<LoginOption> {
-    let option = |provider, label| LoginOption {
-        provider: Some(provider),
-        label,
-    };
-    match harness {
-        HarnessId::Opencode => vec![
-            option("openai", "ChatGPT"),
-            option("github-copilot", "GitHub Copilot"),
-        ],
-        HarnessId::Pi => vec![option("openai-codex", "ChatGPT")],
-        HarnessId::Hermes => vec![
-            option("openai-codex", "ChatGPT"),
-            option("nous", "Nous Portal"),
-        ],
-        _ => vec![LoginOption {
-            provider: None,
-            label: provider_name(harness),
-        }],
-    }
 }
 
 /// The add-account button's label for one [`LoginOption`]: a per-provider

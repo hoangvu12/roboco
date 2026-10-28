@@ -8,14 +8,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import sh.roboco.android.design.ActionSheetAction
 import sh.roboco.android.design.ActionSheetModel
 import sh.roboco.android.design.ActionSheetPresenter
 import sh.roboco.android.design.ActionSheetStyle
 import sh.roboco.android.design.AlertButton
 import sh.roboco.android.design.AlertButtonRole
+import sh.roboco.android.design.AlertField
 import sh.roboco.android.design.Alerts
 import sh.roboco.android.design.RobocoAlert
 import sh.roboco.android.design.Toaster
@@ -160,6 +166,18 @@ class AgentAccountsModel(
     private val harnessLabel: (harness: String) -> String = { uniffi.roboco_core.harnessLabel(it) },
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Wave-10 34's "Add account": `null` (the tests of the read-only
+     * page, the previews) draws no add rows at all.
+     */
+    private val signIn: AccountSignIn? = null,
+    /** Opens a sign-in page (production: a Custom Tab). */
+    private val openUrl: (String) -> Unit = {},
+    /** Puts a device code on the clipboard (iOS's `UIPasteboard`). */
+    private val copyText: (String) -> Unit = {},
+    private val pollDelayMs: Long = 1_500L,
+    /** The sign-in's deadline (iOS: ten minutes). */
+    private val signInDeadlineMs: Long = 10 * 60 * 1_000L,
 ) {
     /** The device whose accounts the page shows (the picker's choice). */
     var deviceId: String? by mutableStateOf(null)
@@ -180,6 +198,20 @@ class AgentAccountsModel(
     var refreshing: Boolean by mutableStateOf(false)
         private set
 
+    /** The agents the selected computer offers (the empty sections' source). */
+    var offered: List<String> by mutableStateOf(emptyList())
+        private set
+
+    /** The sign-in under way (its waiting row), if any. */
+    var signingIn: SignInState? by mutableStateOf(null)
+        private set
+
+    private var signInJob: Job? = null
+
+    /** Whether this page can add accounts (a sign-in seam is wired). */
+    val canAddAccounts: Boolean
+        get() = signIn != null
+
     /** The newest probe's wording, for the page's about footer. */
     val updatedText: String?
         get() = snapshot?.let { sh.roboco.android.accounts.updatedText(it, nowMs()) }
@@ -199,6 +231,14 @@ class AgentAccountsModel(
         }
         snapshot = null
         load = AccountsLoad.Loading
+        cancelSignIn()
+        offered = emptyList()
+        signIn?.let { seam ->
+            workScope.launch {
+                val agents = withContext(io) { seam.offered(deviceId) }
+                if (this@AgentAccountsModel.deviceId == deviceId) offered = agents
+            }
+        }
         workScope.launch {
             val cached = withContext(io) { core.cached(deviceId) }
             if (this@AgentAccountsModel.deviceId != deviceId) return@launch
@@ -382,6 +422,160 @@ class AgentAccountsModel(
                 )
             }
         }
+    }
+
+    // ------------------------------------------------------------ Add account
+
+    /**
+     * The page's sections: every agent with logins, plus — once the page
+     * can add accounts — an empty one for each offered agent that signs in
+     * (its "Connect a … account" row). Empty before a snapshot.
+     */
+    fun sections(): List<ProviderGroup> {
+        val current = snapshot ?: return emptyList()
+        val seam = signIn ?: return providerGroups(current)
+        return accountSections(current, offered) { seam.rules(it).signsIn }
+    }
+
+    /** The add rows under `harness`'s accounts (none without a seam). */
+    fun addRows(harness: String): List<AddAccountRow> {
+        val seam = signIn ?: return emptyList()
+        val current = snapshot ?: return emptyList()
+        return addAccountRows(harness, seam.rules(harness), current.accounts)
+    }
+
+    /** Whether the add rows take a tap (nothing else is under way). */
+    val addEnabled: Boolean
+        get() = signingIn == null && switching == null
+
+    /**
+     * An add row's tap: the computer starts that login; the phone opens its
+     * page and follows it to the end (iOS `DeviceSignIn.run`). Runs on
+     * [workScope]; leaving the page cancels it ([cancelSignIn]).
+     */
+    fun onAddRow(row: AddAccountRow) {
+        val deviceId = deviceId ?: return
+        val seam = signIn ?: return
+        if (!addEnabled) return
+        signingIn = SignInState(rowId = row.id, harness = row.harness)
+        signInJob = workScope.launch { runSignIn(seam, deviceId, row) }
+    }
+
+    /**
+     * The waiting row's tap, a device switch and leaving the page: ends
+     * the sign-in here and on the computer (best effort).
+     */
+    fun cancelSignIn() {
+        signInJob?.cancel()
+        signInJob = null
+        signingIn = null
+    }
+
+    private suspend fun runSignIn(seam: AccountSignIn, deviceId: String, row: AddAccountRow) {
+        var loginId: String? = null
+        var finished = false
+        try {
+            val start = withContext(io) { seam.start(deviceId, row.harness, row.provider) }
+            loginId = start.loginId
+            if (start.pasteCode) {
+                if (start.url.isNotEmpty()) openUrl(start.url)
+                val code = askForCode() ?: return
+                val answer = withContext(io) { seam.complete(deviceId, start.loginId, code) }
+                finished = true
+                if (this.deviceId == deviceId) {
+                    snapshot = answer
+                    load = AccountsLoad.Ready
+                }
+                return
+            }
+            if (start.callbackPort != null) {
+                // The page returns to the computer's own loopback, which
+                // this phone's browser can't reach (ticket 36 relays it).
+                alerts.show(
+                    RobocoAlert(
+                        title = SignInCopy.LoopbackTitle,
+                        message = SignInCopy.loopbackMessage(harnessLabel(row.harness), nameOf(deviceId)),
+                        buttons = listOf(AlertButton("OK", role = AlertButtonRole.Cancel)),
+                    ),
+                )
+                return
+            }
+            var opened = false
+            if (start.url.isNotEmpty()) {
+                openUrl(start.url)
+                opened = true
+            }
+            val polls = (signInDeadlineMs / pollDelayMs).coerceAtLeast(1)
+            for (attempt in 0 until polls) {
+                delay(pollDelayMs)
+                val poll = withContext(io) { seam.poll(deviceId, start.loginId) }
+                when (poll.status) {
+                    "done" -> {
+                        finished = true
+                        if (this.deviceId == deviceId) loadOnce(deviceId, force = false, thenForce = false)
+                        return
+                    }
+                    "error" -> {
+                        finished = true
+                        failed(poll.message ?: SignInCopy.Failed)
+                        return
+                    }
+                    else -> {
+                        val url = poll.url
+                        if (url != null && !opened) {
+                            openUrl(url)
+                            opened = true
+                        }
+                        poll.message?.let { note ->
+                            signingIn = signingIn?.copy(message = note)
+                            deviceCodeIn(note)?.let(copyText)
+                        }
+                    }
+                }
+            }
+            failed(SignInCopy.TimedOut)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            failed(signInFailure(t, nameOf(deviceId)))
+        } finally {
+            val id = loginId
+            if (!finished && id != null) seam.cancel(deviceId, id)
+            if (signingIn?.rowId == row.id) signingIn = null
+        }
+    }
+
+    private fun failed(message: String) {
+        alerts.show(
+            RobocoAlert(
+                title = SignInCopy.FailedTitle,
+                message = message,
+                buttons = listOf(AlertButton("OK", role = AlertButtonRole.Cancel)),
+            ),
+        )
+    }
+
+    /** "Paste the code": the trimmed code, or `null` on Cancel / back / an empty field. */
+    private suspend fun askForCode(): String? = suspendCancellableCoroutine { cont ->
+        alerts.show(
+            RobocoAlert(
+                title = SignInCopy.PasteTitle,
+                message = SignInCopy.PasteMessage,
+                field = AlertField(
+                    placeholder = SignInCopy.PastePlaceholder,
+                    capitalization = KeyboardCapitalization.None,
+                    autocorrect = false,
+                ),
+                buttons = listOf(
+                    AlertButton(SignInCopy.Cancel, role = AlertButtonRole.Cancel) {
+                        if (cont.isActive) cont.resume(null)
+                    },
+                    AlertButton(SignInCopy.Continue) { raw ->
+                        if (cont.isActive) cont.resume(raw.trim().ifEmpty { null })
+                    },
+                ),
+            ),
+        )
     }
 
     private fun nameOf(deviceId: String): String = deviceName(deviceId)
