@@ -80,6 +80,16 @@ pub fn ndk_major_version(ndk_home: &Path) -> Option<u32> {
         .and_then(|major| major.parse().ok())
 }
 
+/// The Rust (and clang) target triple for an Android ABI: cargo-ndk builds
+/// `arm64-v8a` into `target/aarch64-linux-android/<profile>/`.
+pub fn target_triple(abi: &str) -> Option<&'static str> {
+    match abi {
+        "arm64-v8a" => Some("aarch64-linux-android"),
+        "x86_64" => Some("x86_64-linux-android"),
+        _ => None,
+    }
+}
+
 /// Whether `cargo-ndk` is runnable from `path_var` (the `PATH` value).
 pub fn find_in_path(path_var: Option<&OsStr>, program: &str) -> Option<PathBuf> {
     let path_var = path_var?;

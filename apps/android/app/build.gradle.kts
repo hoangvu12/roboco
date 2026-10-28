@@ -1,5 +1,6 @@
 import roboco.gradle.AndroidAssetsGen
 import roboco.gradle.AndroidCoreBuild
+import roboco.gradle.HostCore
 import roboco.gradle.LicensesSync
 import roboco.gradle.RepoPaths
 import roboco.gradle.RobocoFonts
@@ -81,12 +82,18 @@ val tailcatEnabled: Boolean = !providers.gradleProperty("robocoSkipTailcat").isP
         .orElse(true)
         .get()
 val coreLanguages = providers.gradleProperty("robocoCoreLanguages").orElse("mobile")
+// ci-speed#07: only the JVM tests load a host core (debugHostDir below), so
+// release and benchmark never build one, and debug builds it only when the
+// invocation may run those tests (HostCore). Without it the xtask reads the
+// bindings out of the first ABI's library (--skip-host).
+val debugHostCore: Boolean = HostCore.needed(gradle.startParameter.taskNames)
 
 val coreSources = files(
     repoRootDir.resolve("Cargo.toml"),
     repoRootDir.resolve("Cargo.lock"),
     repoRootDir.resolve(".cargo/config.toml"),
     fileTree(repoRootDir.resolve("crates/mobile")),
+    fileTree(repoRootDir.resolve("crates/mobile-bindgen")),
     fileTree(repoRootDir.resolve("crates/mobile-client")),
     fileTree(repoRootDir.resolve("crates/text")),
     fileTree(repoRootDir.resolve("crates/markdown")),
@@ -138,6 +145,7 @@ for (buildType in listOf("debug", "release", "benchmark")) {
         languages.set(coreLanguages)
         ndkHome.set(androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath })
         skipIfOutputsExist.set(skipCore)
+        buildHost.set(buildType == "debug" && debugHostCore)
         tailcat.set(tailcatEnabled)
         sources.from(coreSources)
         kotlinDir.set(out.resolve("kotlin"))

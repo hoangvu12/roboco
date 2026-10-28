@@ -44,7 +44,7 @@ set. CI builds the signed ones on `v*` tags (`release.yml`); see
 |---|---|---|
 | `-ProbocoAbis=arm64-v8a,x86_64` / `ROBOCO_ANDROID_ABIS` | both | ABIs the core builds; also the ABI splits (one APK per ABI, no universal APK — android-app#31). Unit-test-only invocations default to `x86_64` (the host emulator ABI) so day-to-day test runs never cross-compile arm64 |
 | `-ProbocoSkipTailcat` / `ROBOCO_ANDROID_TAILCAT=0` | off | build without `libroboco_tailcat.so`, the Go Tailcat transport (android-next#02); pairing a `roboco-tailcat:` invite then reports Tailcat as unavailable. Without it the build needs Go on `PATH` |
-| `-ProbocoSkipCore` | off | skip the Rust core build **while** the bindings, the host lib and every requested ABI's `.so` exist; a missing output still builds (no `UnsatisfiedLinkError`) |
+| `-ProbocoSkipCore` | off | skip the Rust core build **while** the bindings, the host lib (when built, see below) and every requested ABI's `.so` exist; a missing output still builds (no `UnsatisfiedLinkError`) |
 | `-ProbocoCoreProfile=<mobile\|mobile-dist>` | `mobile` (debug), `mobile-dist` (release) | the xtask profile; outputs land in `target/android-core/<profile>` so switching build types never thrashes one directory |
 | `-ProbocoCoreLanguages=<mobile\|all>` | `mobile` | grammar subset for syntax highlighting |
 | `-ProbocoVersionName` / `-ProbocoVersionCode` | from the workspace `Cargo.toml` | version overrides; `versionCode` = `major × 1_000_000 + minor × 1_000 + patch` |
@@ -73,7 +73,7 @@ Generated sources (never committed):
 |---|---|---|
 | UniFFI Kotlin bindings | `buildDebugCore` | `target/android-core/mobile/kotlin` |
 | `jniLibs/<abi>/libroboco_mobile.so` | `buildDebugCore` | `target/android-core/mobile/jniLibs` |
-| host core for Robolectric (JNA) | `buildDebugCore` | `target/android-core/mobile/host` |
+| host core for Robolectric (JNA) | `buildDebugCore`, only when the invocation may run JVM tests (`HostCore`) | `target/android-core/mobile/host` |
 | VectorDrawables + icon PNGs | `generateRobocoAssets` | `app/build/generated/roboco-icons` |
 | fonts + licenses | `syncRobocoFonts` | `app/build/generated/roboco-fonts` |
 | repo `LICENSE` + `THIRD_PARTY_NOTICES.md` | `syncRobocoLicenses` | `app/build/generated/roboco-licenses` |

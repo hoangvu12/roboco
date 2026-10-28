@@ -13,22 +13,15 @@ publish.workspace = true
 name = "roboco_mobile"
 crate-type = ["lib", "cdylib"]
 
-# `uniffi-bindgen` for library-mode Kotlin generation (android-app#10).
-# Built from this crate so generator and runtime share one UniFFI version.
-[[bin]]
-name = "uniffi-bindgen"
-path = "src/bin/uniffi-bindgen.rs"
-required-features = ["bindgen"]
-
 [features]
 default = ["mobile-languages"]
-bindgen = ["uniffi/cli"]
 # Grammar subset forwarded to roboco-syntax: the Android core links the
 # measured "middle set" (~18.9 MB per ABI) unless `--languages all`.
 mobile-languages = ["roboco-syntax/mobile-languages"]
 all-languages = ["roboco-syntax/all-languages"]
 
 [dependencies]
+# Generator side: crates/mobile-bindgen, whose uniffi must match this one.
 uniffi = "0.32"
 roboco-markdown.workspace = true
 roboco-text.workspace = true

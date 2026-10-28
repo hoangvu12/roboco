@@ -92,7 +92,17 @@ local single-ABI build stays single: `./gradlew
 
 Rebuilds with no source changes run no Rust work: the core/assets tasks are
 `UP-TO-DATE`, and `-ProbocoSkipCore` skips them (unless an output is
-missing). Release builds (R8 + the `mobile-dist` core) are heavyweight and
+missing).
+
+The host core (`target/android-core/mobile/host`, what the JVM tests load
+through JNA) is built only by debug invocations that may run JVM tests.
+`assemble*`, `install*` and `connected*AndroidTest` on their own skip it
+(`--skip-host`, `buildSrc` `HostCore`), and the Kotlin bindings are read out
+of the first requested ABI's library instead. The generator is
+`crates/mobile-bindgen` (UniFFI's `uniffi-bindgen` on its own, so making
+bindings never compiles the core for the host). Its `uniffi` must match
+`roboco-mobile`'s; the xtask refuses to run when `Cargo.lock` resolves them
+differently. Release builds (R8 + the `mobile-dist` core) are heavyweight and
 mostly a CI concern — see [Release builds](#release-builds) for the local
 path.
 
