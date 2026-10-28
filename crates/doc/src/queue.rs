@@ -353,8 +353,12 @@ fn index_of(queue: &loro::LoroMovableList, id: &str) -> Option<usize> {
     })
 }
 
+/// Fill a fresh row's map. `id` goes LAST, for the reason
+/// [`crate::SessionDoc::queue_command`] gives: the queue drain reads the
+/// pending transaction from another thread, and `queued_from_json` passes
+/// over a row without an id — so it never sends a row whose origin,
+/// delivery gate or notice sides have not landed yet.
 fn write_queued_map(map: &loro::LoroMap, item: &QueuedMessage) -> Result<(), DocError> {
-    map.insert("id", item.id.as_str())?;
     map.insert("text", item.text.as_str())?;
     map.insert("issuedBy", item.issued_by.as_str())?;
     map.insert("issuedAt", item.issued_at)?;
@@ -385,6 +389,7 @@ fn write_queued_map(map: &loro::LoroMap, item: &QueuedMessage) -> Result<(), Doc
             crate::schema::loro_value_from_json(&serde_json::to_value(sides)?),
         )?;
     }
+    map.insert("id", item.id.as_str())?;
     Ok(())
 }
 
@@ -534,6 +539,36 @@ mod tests {
         assert!(json[1].get("originChatId").is_none());
         let legacy = serde_json::from_value::<Vec<QueuedMessage>>(json).unwrap();
         assert_eq!(legacy[0].origin_chat_id.as_deref(), Some("chat-origin-1"));
+    }
+
+    /// A queue drain reading while a row is written never sees it before its
+    /// later keys land (see `write_queued_map`).
+    #[test]
+    fn a_concurrent_drain_never_reads_a_half_written_row() {
+        const ROWS: usize = 2_000;
+        let doc = std::sync::Arc::new(doc());
+        let writer = {
+            let doc = doc.clone();
+            std::thread::spawn(move || {
+                for i in 0..ROWS {
+                    let mut sent = item(&format!("q{i}"), "from an agent");
+                    sent.origin_chat_id = Some("chat-origin-1".into());
+                    doc.push_queued(&sent).unwrap();
+                }
+            })
+        };
+        while !writer.is_finished() {
+            for row in doc.read_queue().unwrap() {
+                assert_eq!(
+                    row.origin_chat_id.as_deref(),
+                    Some("chat-origin-1"),
+                    "{} read before its origin landed",
+                    row.id
+                );
+            }
+        }
+        writer.join().unwrap();
+        assert_eq!(doc.read_queue().unwrap().len(), ROWS);
     }
 
     #[test]

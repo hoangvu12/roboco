@@ -826,6 +826,9 @@ impl SessionDoc {
         let raw: Vec<serde_json::Value> = serde_json::from_value(commands)?;
         Ok(raw
             .into_iter()
+            // No id yet: an entry `queue_command` is still writing, not a
+            // malformed one.
+            .filter(|v| v.get("id").is_some())
             .filter_map(|v| match serde_json::from_value(v) {
                 Ok(entry) => Some(entry),
                 Err(err) => {
@@ -837,10 +840,17 @@ impl SessionDoc {
     }
 
     /// Append a command entry (rule 1: own entries only, append-only).
+    ///
+    /// The map's keys land one op at a time, and a drain on another thread
+    /// reads the pending transaction before this commits — a freshly opened
+    /// chat's worker drains at once. `id` goes LAST: until it lands the
+    /// entry is unparseable and `read_commands` passes over it, so a drain
+    /// never executes a Run missing a later key (an `originChatId` dropped
+    /// that way made a parent's message read as user-typed, and its side
+    /// chat's turn owed no completion notice).
     pub fn queue_command(&self, entry: &SessionCommandEntry) -> Result<(), DocError> {
         let commands = self.doc.get_list("commands");
         let map = commands.push_container(LoroMap::new())?;
-        map.insert("id", entry.id.as_str())?;
         map.insert(
             "kind",
             serde_json::to_value(entry.kind())?
@@ -871,6 +881,7 @@ impl SessionDoc {
         if let Some(origin_chat_id) = &entry.origin_chat_id {
             map.insert("originChatId", origin_chat_id.as_str())?;
         }
+        map.insert("id", entry.id.as_str())?;
         self.doc.commit();
         Ok(())
     }
@@ -2652,6 +2663,51 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].status, SessionCommandStatus::Applied);
         assert_eq!(commands[0].payload, entry.payload);
+    }
+
+    /// A drain reading the command log while `queue_command` writes never
+    /// sees an entry without its later keys: every entry it parses carries
+    /// the origin it was queued with (the completion_notices flake, where a
+    /// parent's Run executed as user-typed).
+    #[test]
+    fn a_concurrent_drain_never_reads_a_half_written_command() {
+        use crate::commands::{SessionCommandPayload, SessionCommandStatus};
+        const COMMANDS: usize = 2_000;
+        let doc = std::sync::Arc::new(SessionDoc::init("chat-1").unwrap());
+        let writer = {
+            let doc = doc.clone();
+            std::thread::spawn(move || {
+                for i in 0..COMMANDS {
+                    doc.queue_command(&SessionCommandEntry {
+                        origin_chat_id: Some("chat-parent".into()),
+                        id: format!("c{i}"),
+                        payload: SessionCommandPayload::Steer {
+                            prompt: "go".into(),
+                            message_id: None,
+                        },
+                        issued_by: "dev-a".into(),
+                        issued_at: 10,
+                        based_on: None,
+                        expires_at: None,
+                        status: SessionCommandStatus::Pending,
+                        resolution: None,
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        while !writer.is_finished() {
+            for command in doc.read_commands().unwrap() {
+                assert_eq!(
+                    command.origin_chat_id.as_deref(),
+                    Some("chat-parent"),
+                    "{} parsed before its origin landed",
+                    command.id
+                );
+            }
+        }
+        writer.join().unwrap();
+        assert_eq!(doc.read_commands().unwrap().len(), COMMANDS);
     }
 
     #[test]
