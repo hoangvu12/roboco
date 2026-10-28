@@ -133,6 +133,7 @@ Keep a running "PRs" list in this file.
 | `8ccd84a5` | `..\roboco-ci-caches` / `ci/caches-windows` | CI 01, 12, 13, 02, one PR | **PR #35** open, CI running; reviewed OK |
 | `0bf1abec` | `..\roboco-ci-bindgen` / `ci/mobile-bindgen` | CI 07, one PR | **PR #36** open, CI running |
 | `bde0242e` | main checkout, read-only | user bug: two desktops → two fleets + QR too dense to scan; diagnosis | done → spec `.scratch/fleet-merge/` (7 tickets) |
+| `a53396d3` | main checkout, read-only | research: how upstream drives other devices (WorkOS/cloud), mapped onto fleet-agents | running |
 | `76731858` | main checkout, read-only | CI 11 triage (report only) | done → `ed9cd3e19` (ticket 11 + follow-ups 22–24); archived |
 
 ### Next
@@ -174,3 +175,7 @@ Keep a running "PRs" list in this file.
   byte-identical locally (both profiles). It also changes the **release** core path, so besides PR
   CI I dispatched `android.yml` with `perf_apk=true` on the branch (run 40609763310: benchmark
   APK = R8 + mobile-dist core) as the pre-merge proof. Merge needs both green.
+  Attempt 1: benchmark failed in `sdkmanager` (corrupt NDK zip on the runner, before any build);
+  re-run (attempt 2). Its emulator/tablet failures there are the known flakes/tablet red.
+- #35 attempt 1: every check green except `android-emulator` = `KeyboardFlowTest.interactiveDismiss…`
+  10 s timeout (known flake, CI ticket 22; #35 touches no app code) → re-ran failed jobs.
