@@ -135,7 +135,9 @@ class ReportTest(unittest.TestCase):
                     {"path": "x.rs", "state": "conflict", "reason": "", "how": "",
                      "residual": {"used": True, "kept": 1, "why": "",
                                   "dropped": [{"upstream_lines": [3, 9], "added": 6, "removed": 0,
-                                               "first": "pub(crate) enum FileLinkResolution {", "lacking": []}]},
+                                               "first": "pub(crate) enum FileLinkResolution {", "lacking": []},
+                                              {"upstream_lines": [12, 11], "base_lines": [10, 10], "added": 0,
+                                               "removed": 1, "first": "/// See `old` | here", "lacking": []}]},
                      "regions_detail": [{"start": 4, "end": 12, "hint": "prerequisite",
                                          "action": "port the prerequisite first", "why": "w",
                                          "reasons": {"prerequisite": {"commits": [
@@ -153,7 +155,8 @@ class ReportTest(unittest.TestCase):
         self.assertIn("| `x.rs` | 4-12 | port the prerequisite first |", md)
         self.assertIn("111111111 (ticketed wave10-05, 3l)", md)
         self.assertIn("## Residual mode", md)
-        self.assertIn("FileLinkResolution", md)
+        self.assertIn("upstream lines 3-9 (+6/-0): `pub(crate) enum FileLinkResolution {`", md)
+        self.assertIn("upstream^ lines 10-10 (removed) (+0/-1): `` /// See `old` | here ``", md)
         self.assertIn("## Resolved by mergiraf", md)
         self.assertIn("`cargo metadata --format-version 1`", md)
         self.assertIn("`z.rs`: no Roboco file", md)

@@ -252,7 +252,7 @@ def reason_text(key, ev):
     if key == "removed":
         return f"removed: {'/'.join(ev['kinds'])}"
     if "lines" in ev:
-        return f"{key}: {ev['lines']}l" + (f" e.g. `{ev['sample']}`" if ev.get("sample") else "")
+        return f"{key}: {ev['lines']}l" + (f" e.g. {_code(ev['sample'])}" if ev.get("sample") else "")
     return key
 
 
@@ -278,6 +278,12 @@ def write(directory, record):
 
 def _cell(s):
     return str(s).replace("|", "\\|").replace("\n", " ")
+
+
+def _code(s):
+    """Inline code that survives backticks in the text."""
+    s = str(s).replace("\n", " ")
+    return f"`` {s} ``" if "`" in s else f"`{s}`"
 
 
 def markdown(rec):
@@ -314,8 +320,10 @@ def markdown(rec):
                        + ("" if rs["used"] else f" (residual merge not used: {rs['why']})"))
             for h in rs["dropped"]:
                 a, b = h["upstream_lines"]
-                lack = f"; lacking: {', '.join('`' + x[:60] + '`' for x in h['lacking'][:3])}" if h["lacking"] else ""
-                out.append(f"  - upstream lines {a}-{b} (+{h['added']}/-{h['removed']}): `{_cell(h['first'])}`{lack}")
+                where = f"upstream lines {a}-{b}" if a <= b else "upstream^ lines {}-{} (removed)".format(
+                    *h["base_lines"])
+                lack = f"; lacking: {', '.join(_code(x[:60]) for x in h['lacking'][:3])}" if h["lacking"] else ""
+                out.append(f"  - {where} (+{h['added']}/-{h['removed']}): {_code(h['first'])}{lack}")
         out.append("")
     mg = [f for f in rec["files"] if "mergiraf" in f.get("how", "")]
     if mg:
