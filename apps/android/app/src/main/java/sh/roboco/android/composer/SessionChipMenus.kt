@@ -253,7 +253,9 @@ class SessionChipMenus(
     /**
      * Stores the snapshot and returns the chrome **unchanged** — this
      * filler fills no chrome field; the menus only decorate the chips
-     * ticket 78 already filled. No FFI: everything comes from [input].
+     * ticket 78 already filled — except a model-less chat's model chip
+     * (wave-10 39), named from [defaultModel]: the built-in list's
+     * first (a static FFI read), then the host's, loaded on [writeScope].
      */
     override fun fill(chrome: SessionChrome, input: ChromeInput): SessionChrome {
         val usage = input.composer.contextUsage

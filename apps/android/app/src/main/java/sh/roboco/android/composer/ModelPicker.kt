@@ -418,7 +418,7 @@ private fun ModelPickerPage(
                 )
             }
         } else {
-            items(visible, key = { it.id }) { row ->
+            items(visible, key = { "model:${it.id}" }) { row ->
                 ModelRow(
                     row = row,
                     current = current.first == tab.harness && current.second == row.id,

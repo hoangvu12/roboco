@@ -356,6 +356,21 @@ class AccountSignInTest {
         assertTrue(r.model.addEnabled)
     }
 
+    @Test
+    fun aCancelledSignInsCleanupLeavesTheNextOneWaiting() = runTest {
+        val r = rig()
+        r.model.onAddRow(r.addRow("grok"))
+        advanceTimeBy(100)
+        r.model.cancelSignIn()
+        r.model.onAddRow(r.addRow("grok"))
+        advanceTimeBy(100)
+        assertNotNull("the second tap's waiting row stays", r.model.signingIn)
+        assertTrue("still one at a time", !r.model.addEnabled)
+        assertEquals(listOf("cancel:login-1", "start:grok:-", "start:grok:-"), r.signIn.calls.sorted())
+        r.model.cancelSignIn()
+        advanceUntilIdle()
+    }
+
     // ------------------------------------- the error card's Log in (35)
 
     @Test

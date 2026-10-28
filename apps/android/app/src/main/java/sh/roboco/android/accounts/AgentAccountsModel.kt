@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -217,6 +218,9 @@ class AgentAccountsModel(
         private set
 
     private var signInJob: Job? = null
+
+    /** Counts sign-ins, so a cancelled one's cleanup never clears a newer one. */
+    private var signInRun = 0
 
     /** Whether this page can add accounts (a sign-in seam is wired). */
     val canAddAccounts: Boolean
@@ -515,8 +519,9 @@ class AgentAccountsModel(
         val deviceId = deviceId ?: return
         val seam = signIn ?: return
         if (!addEnabled) return
+        val run = ++signInRun
         signingIn = SignInState(rowId = row.id, harness = row.harness)
-        signInJob = workScope.launch { runSignIn(seam, deviceId, row) }
+        signInJob = workScope.launch { runSignIn(seam, deviceId, row, run) }
     }
 
     /**
@@ -542,12 +547,15 @@ class AgentAccountsModel(
         signingIn = null
     }
 
-    private suspend fun runSignIn(seam: AccountSignIn, deviceId: String, row: AddAccountRow) {
+    private suspend fun runSignIn(seam: AccountSignIn, deviceId: String, row: AddAccountRow, run: Int) {
         var loginId: String? = null
         var finished = false
         try {
-            val start = withContext(io) { seam.start(deviceId, row.harness, row.provider) }
-            loginId = start.loginId
+            // A cancel while the computer is starting the login still learns
+            // its id, so the `finally` below ends it there too.
+            val start = withContext(NonCancellable + io) {
+                seam.start(deviceId, row.harness, row.provider).also { loginId = it.loginId }
+            }
             if (start.pasteCode) {
                 if (start.url.isNotEmpty()) openUrl(start.url)
                 val code = askForCode() ?: return
@@ -602,9 +610,9 @@ class AgentAccountsModel(
         } catch (t: Throwable) {
             failed(signInFailure(t, nameOf(deviceId)))
         } finally {
+            if (signInRun == run) signingIn = null
             val id = loginId
-            if (!finished && id != null) seam.cancel(deviceId, id)
-            if (signingIn?.rowId == row.id) signingIn = null
+            if (!finished && id != null) withContext(NonCancellable + io) { seam.cancel(deviceId, id) }
         }
     }
 

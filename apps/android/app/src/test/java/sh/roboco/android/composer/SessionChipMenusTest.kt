@@ -60,7 +60,8 @@ class SessionChipMenusTest {
         val models: List<ModelInfo> = claudeFallbackModels(),
         val harnesses: List<HarnessInfo> = emptyList(),
     ) : ChipMenuCore {
-        val callLog = mutableListOf<Pair<String, String>>()
+        /** Written from the test thread (fill's fallback read) and the io lane at once. */
+        val callLog = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
 
         override suspend fun listHarnesses(deviceId: String): List<HarnessInfo> {
             callLog += "listHarnesses($deviceId)" to threadName()
