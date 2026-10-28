@@ -48,12 +48,12 @@
 
 **Blocked by:** 01-10
 
-**Status:** ready-for-human (needs a phone, a second engine, Tailcat and real browsers)
+**Status:** ready-for-human (automatable parts recorded below; the manual matrix, CI and the review remain)
 
 **Parent:** `.scratch/web-removal/spec.md`
 
-- [ ] Static sweeps are clean. The `cargo tree` checks come back empty.
-- [ ] Node-free release build passes on Windows. Size delta recorded.
+- [x] Static sweeps are clean. The `cargo tree` checks come back empty.
+- [x] Node-free release build passes on Windows. Size delta recorded.
 - [ ] Local test suites are green (workspace, ui lib, CLI pairing, Android unit)
 - [ ] The PR CI run is fully green, including `android-emulator`
 - [ ] Desktop previews: local (7331) and paired LAN + Tailcat (7332) load in Chrome and Edge, survive card close and chat switch, and release after the server stops. No blank tabs.
@@ -64,3 +64,21 @@
 - [ ] Final review is done. The PR body is drafted (not opened without the user's go).
 
 ## Comments
+
+- 2026-10-28 (implementer), at the branch head after merging `origin/main` (`9edbf7f0a`; CI-speed #35, mobile-bindgen #36, settings-scroll #37 and the fleet-redesign specs). Merge conflicts were `release.yml` (main dropped rust-cache, this branch dropped Node: both stay dropped), `ui-tests.yml` (main's concurrency comment kept, `ROBOCO_WEB_DIST` env dropped), `package-windows.ps1` (main's `-AdapterPath` kept, `-SkipWebBuild` dropped), and main's edits to the two deleted web workflows (they stay deleted). `cargo +1.99.0 check --workspace --all-targets` after the merge has the same warning set as before it and no errors.
+- **Static sweep** over `crates apps scripts .github Cargo.toml` for `web-client|ts_rs|wiregen|rust-embed|first_frame_auth|tailcat_relay|browser-helper|crate::browser|RightSurface::Browser|open_web_links_in_roboco|webkit2gtk|ROBOCO_WEB_DIST|pnpm`. The remaining hits are all allowed:
+  - stored `"web-client"` data: `crates/engine-client/src/registry/fixtures/paired-engines-v1.json`, its assertion in `registry/tests.rs`, and Android's `EngineDetailModelTest` capability lists;
+  - `crates/ui/Cargo.toml`'s own `rust-embed` (file icons);
+  - the new settings back-compat test's `"open_web_links_in_roboco"` key;
+  - unrelated `pnpm` agent-CLI detection in `crates/harness` and `crates/engine/src/harness_updates`;
+  - the three negative route assertions in `crates/engine/tests/remote_listener.rs`.
+- `cargo tree -i ts-rs` → "package ID specification `ts-rs` did not match any packages". `cargo tree -p roboco-engine -i rust-embed` → same, for `rust-embed`.
+- `ls .github/workflows` = android, preview-tests, release, theme-artifact, ui-tests, windows, which is exactly the AGENTS.md CI list.
+- Diff stat `web-final..HEAD` (includes main's merged work): 1652 files, +4190 / −220308. Outside `.scratch`: 1594 files, +2552 / −218007. Against the merged `origin/main`, i.e. this PR alone: 1587 files, +1924 / −217903.
+- **Node-free release build:** `cargo +1.99.0 build --release --locked -p roboco` with every node/npm/pnpm/nvm/bun/volta entry stripped from `PATH` (`command -v node` → none, `command -v pnpm` → none) and no `ROBOCO_WEB_DIST`: exit 0 in 18m24s. `target/release/roboco.exe` = 153,597,952 bytes. That build embeds no Tailcat adapter; release builds embed it via `ROBOCO_TAILCAT_EMBED`, and the adapter built from the pinned sources is 28,756,992 bytes. So the estimated release-shaped binary is ≈182.35 MB, against v0.14.0's `roboco-0.14.0-windows-x86_64.exe` at 191,420,416 bytes: **≈ −9.1 MB (−4.7 %)**. This is an estimate: the release used CI's toolchain, while this host built with 1.99.0 (`rust-toolchain.toml` now pins 1.99.1).
+- **Local suites** (see tickets 02–09 for per-ticket runs):
+  - engine native paths (pairing / remote_listener / preview_relay / rooms), `roboco-engine --lib` (only host-only failures), mobile-client including the new origin-rule test, engine-client, preview-relay, proto/doc/update/rpc, `roboco-theme`, and the `roboco` CLI tests (`pairing_cli`, `tailcat_invite_cli`, `room_cli`);
+  - the full `roboco-ui --lib` (release, one thread): 1654 passed plus the fixed `round_trip`;
+  - head re-run after the merge: engine pairing, remote_listener, preview_relay and rooms (3, 4, 2, 9), `roboco-theme` (5), `origin_rule_engine` (1), and `cargo +1.99.0 test --release -p roboco-ui --lib -- --test-threads=1` → **1657 passed, 0 failed, 6 ignored** (313.6 s).
+- **Not run on this host:** `cargo test --workspace` in full (the touched crates' suites ran instead; CI runs `windows.yml` and `ui-tests.yml`). `./gradlew :app:assembleDebug :app:testDebugUnitTest` needs the Android SDK, which is not installed. `./scripts/package-windows.ps1` needs PowerShell 7 and Inno Setup, neither installed; `windows.yml` runs it on the PR. `scripts/package-linux.sh` and the Linux build without WebKitGTK need Linux (`ui-tests` / `release` CI). No `release.yml` dry run, per instructions.
+- Left for the user: the PR CI run, every manual item above (previews on desktop and Android, pairing over LAN and Tailcat, rooms, the 404/403/401 refusals with curl/websocat, an old v0.14.0 data dir), the Roborazzi re-record from ticket 09, and the final review.
