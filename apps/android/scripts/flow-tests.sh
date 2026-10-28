@@ -178,7 +178,9 @@ LOGCAT_PID=$!
   done
 ) >"$ARTIFACTS/host-mon.txt" 2>&1 &
 HOSTMON_PID=$!
-./gradlew :app:connectedDebugAndroidTest \
+# --console=plain: every task's outcome in the log, so a rebuild inside
+# the emulator step would show (CI builds the APKs first, ci-speed 16).
+./gradlew --console=plain :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureQuestion="http://127.0.0.1:$QUESTION_CONTROL" \

@@ -90,6 +90,18 @@ on:
         description: 'Also build the benchmark APK (release speed, debug-signed) and upload it as roboco-android-benchmark'
         type: boolean
         default: false
+      # ci-speed 16's A/B (temporary): the phone emulator's guest CPUs and
+      # system image.
+      emulator_cores:
+        description: 'android-emulator guest CPUs (A/B)'
+        type: choice
+        options: ['2', '4']
+        default: '2'
+      emulator_target:
+        description: 'android-emulator system image (A/B)'
+        type: choice
+        options: [google_apis, google_atd, aosp_atd]
+        default: google_apis
 
 permissions:
   contents: read
@@ -399,9 +411,10 @@ jobs:
           if-no-files-found: ignore
 
   # android-app#30: the instrumented flow suite against the fixture
-  # engines on an API 36 emulator (KVM). flow-tests.sh owns all of the
-  # logic: three android_fixture processes, adb reverse, the suite with
-  # the @Tour annotations excluded, and the artefact harvest. Full tier, or
+  # engines on an API 36 emulator (KVM). The APKs are built first, then
+  # flow-tests.sh owns the rest: three android_fixture processes, adb
+  # reverse, the suite with the @Tour annotations excluded, and the
+  # artefact harvest. Full tier, or
   # a PR touching what the APK or the rig is built from (`android_relevant`).
   android-emulator:
     needs: changes
@@ -448,8 +461,8 @@ jobs:
           cache-dependency-path: adapters/roboco-tailcat/go.sum
       - name: Install Android SDK pieces
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
-      # 17 builds the app inside the script (the Gradle daemon runs the
-      # app's Kotlin + the x86_64 core).
+      # 17 builds the APKs (the Gradle daemon runs the app's Kotlin + the
+      # x86_64 core), before the emulator boots.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -473,6 +486,15 @@ jobs:
             echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
             echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
           } >> "$GITHUB_ENV"
+      # ci-speed 16: both APKs are built before the emulator boots, so
+      # Gradle, rustc and Go get the whole runner instead of sharing it with
+      # an idle guest; inside the emulator step connectedDebugAndroidTest
+      # finds every compile and package task up to date and only installs
+      # and runs. The instrumentation arguments flow-tests.sh passes reach
+      # only the connected test task.
+      - name: Build the app and test APKs
+        working-directory: apps/android
+        run: ./gradlew --console=plain :app:assembleDebug :app:assembleDebugAndroidTest
       # No AVD snapshot cache: it almost never restored, re-uploaded 2.75 GB
       # (the largest cache entry) after green runs, and a cold boot takes
       # ≈ 53 s. -no-snapshot-save skips the snapshot write on exit.
@@ -480,9 +502,10 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 36
-          target: google_apis
+          target: ${{ inputs.emulator_target || 'google_apis' }}
           arch: x86_64
           profile: pixel_7
+          cores: ${{ inputs.emulator_cores || 2 }}
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot-save
           script: bash apps/android/scripts/flow-tests.sh
@@ -561,6 +584,10 @@ jobs:
             echo "ROBOCO_TAILCAT_ADAPTER=$out/roboco-tailcat"
             echo "ROBOCO_TAILCAT_TESTDERP=$out/roboco-tailcat-testderp"
           } >> "$GITHUB_ENV"
+      # Before the emulator boots, as in android-emulator (ci-speed 16).
+      - name: Build the app and test APKs
+        working-directory: apps/android
+        run: ./gradlew --console=plain :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Run the tablet + tour suite
         uses: reactivecircus/android-emulator-runner@v2
         with:
