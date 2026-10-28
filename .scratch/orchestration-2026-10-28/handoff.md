@@ -210,8 +210,9 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 | chat | worktree / branch | scope | state |
 |---|---|---|---|
 | `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | web-removal 02–10 + automatable 11 | running (07) |
-| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | running |
+| `66cf7296` | `..\roboco-w10-android` / `wave10/android` | wave-10 33–43 | **PR #38** open (all 11 committed; 41 partial: drag gesture follow-up; 36 carries a TS derive since web removal hadn't merged); review done → 1 blocker (`OneRowBarShellTest` unplaced-node assert; same in `SessionFlowTest`) + 9 should-fix + nits sent back as one batch (11:50); 36's requester = per-sign-in UUID secret, documented as deviation |
 | `8b19126f` | `..\roboco-settings-scroll` / `fix/settings-scroll` | fleet-redesign 01, own PR | **PR #37** open, reviewed OK; worktree removed (branch pushed); chat archived; mobile-core flake `busy_sends_queue_steer_and_stop_and_send` re-run |
+| `1e9159f7` | main checkout (report only, prototype in `C:\tmp`) | research: faster upstream sync (user asked; rebase ruled out) → `.scratch/upstream-sync-research/report-2026-10-28.md` | running |
 | `3f08770e` | `..\roboco-remote-speed` / `feature/remote-speed` | fleet-redesign 17 then 16 (user-approved speed tickets, `1e9bc22a5`), one PR | running |
 
 - This machine is the user's **Laptop** (not the PC): 16's gate checks Laptop↔PC first, phone↔PC to compare.
