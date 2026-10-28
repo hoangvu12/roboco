@@ -117,6 +117,20 @@ jobs:
     runs-on: ${{ github.event_name == 'schedule' && 'windows-2022' || github.event_name == 'workflow_dispatch' && inputs.tests_runner || 'windows-11-arm' }}
     timeout-minutes: 45
     steps:
+      # The ConPTY tests (roboco-engine terminals::windows_tests) drive Windows
+      # PowerShell 5.1 with 15 s waits. On windows-11-arm its module analysis
+      # cache starts cold: the first cmdlet outside the core (Set-Content,
+      # Split-Path, Start-Process) scans every module on PSModulePath, Az
+      # included, for about 22 s in every new powershell.exe, and nothing is
+      # kept until a process completes a full scan. windows-2022 arrives warm
+      # (0.2 s). One clean `Get-Command` writes the cache (85-117 s measured);
+      # it runs in the background from here and is joined before the tests.
+      - name: Warm Windows PowerShell's command cache (arm64, background)
+        if: runner.arch == 'ARM64'
+        run: |
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $warmup = Start-Process $ps -ArgumentList '-NoProfile', '-NonInteractive', '-Command', 'Get-Command | Out-Null' -WindowStyle Hidden -PassThru
+          "POWERSHELL_WARMUP_PID=$($warmup.Id)" >> $env:GITHUB_ENV
       - uses: actions/checkout@v4
       - uses: ./.github/actions/windows-ci-setup
         with:
@@ -133,6 +147,21 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.144
+      - name: Join the PowerShell cache warmup (arm64)
+        # Fails here, by name, if the cache is still cold, instead of as three
+        # ConPTY timeouts.
+        if: runner.arch == 'ARM64'
+        run: |
+          $wait = [Diagnostics.Stopwatch]::StartNew()
+          $warmup = Get-Process -Id $env:POWERSHELL_WARMUP_PID -ErrorAction SilentlyContinue
+          if ($warmup -and -not $warmup.WaitForExit(300000)) { throw 'The PowerShell cache warmup did not finish in 5 min' }
+          "Joined the warmup after $([int]$wait.Elapsed.TotalSeconds) s"
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $probe = [Diagnostics.Stopwatch]::StartNew()
+          & $ps -NoProfile -NonInteractive -Command 'Split-Path -Leaf (Get-Location) | Out-Null'
+          $seconds = $probe.Elapsed.TotalSeconds
+          "Split-Path in a new powershell.exe: $([Math]::Round($seconds, 1)) s"
+          if ($seconds -gt 5) { throw 'Windows PowerShell command discovery is still cold' }
       - name: Select the Windows test suites
         # A suite runs on Windows when it has Windows-specific code paths or
         # the desktop links it (Android-only crates run on Linux and in
