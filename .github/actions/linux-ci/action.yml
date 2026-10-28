@@ -31,8 +31,9 @@ runs:
     # Hosted-runner apt mirrors occasionally stall for minutes (release.yml
     # once spent 24 min in apt-get). apt-install.sh bounds and retries the
     # download into a .deb directory that main pushes save; everything else
-    # only restores it. The key names the package list, so a list change
-    # starts a fresh entry instead of re-downloading on top of a stale one.
+    # only restores it. The key names the architecture (.debs are per-arch)
+    # and the package list, so a list change starts a fresh entry instead of
+    # re-downloading on top of a stale one.
     - name: apt cache key
       id: apt-key
       if: inputs.apt-packages != ''
@@ -41,7 +42,7 @@ runs:
         APT_PACKAGES: ${{ inputs.apt-packages }}
       run: |
         list=$(printf '%s\n' $APT_PACKAGES | sort | sha256sum | cut -c1-16)
-        echo "key=apt-debs-v1-${ImageOS}-${list}-${{ hashFiles('scripts/ci/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
+        echo "key=apt-debs-v1-${ImageOS}-${RUNNER_ARCH}-${list}-${{ hashFiles('scripts/ci/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
     - name: Restore apt packages
       id: apt-cache
       if: inputs.apt-packages != ''
@@ -69,6 +70,8 @@ runs:
     # Exported for the rest of the job: tests build in the dev profile without
     # debug info (smaller, faster to link). CARGO_* variables are part of the
     # rust-cache key, so every job sharing a key gets the same set from here.
+    # aarch64 (ci-speed 14) keeps the default bfd linker: lld measured no
+    # faster there (ticket 14's A/B) and would add an apt step to every job.
     - name: Build settings
       shell: bash
       run: echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"

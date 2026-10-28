@@ -8,6 +8,11 @@ name: UI tests
 # and UI suites in the optimized profile, the safety net for the dev-profile
 # switch (upstream 5d5d93599).
 #
+# The four PR-tier jobs run on ubuntu-24.04-arm (ci-speed 14): free for
+# public repositories, and the same cold test builds finish 10–28 % sooner
+# there than on ubuntu-24.04 (ticket 14's A/B). The backstop stays on x64, so x64 Linux still gets a
+# daily signal; android.yml stays x64 (aapt2 and the emulator need it).
+#
 # Android-only changes (apps/android/**) do not run this workflow; android.yml
 # covers them.
 
@@ -76,7 +81,7 @@ jobs:
   # asset generator/xtask step.
   core-tests:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +96,7 @@ jobs:
   # Kotlin painter leans on, plus engine-client. Pure Rust, no GPUI system deps.
   mobile-core:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -157,7 +162,7 @@ jobs:
 
   tailcat-adapter:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -193,7 +198,7 @@ jobs:
   # CLI tests run beside it.
   ui-tests:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Cold (no main-seeded linux-ui entry) the dev build is the long pole;
     # lower once ten warm runs are measured.
     timeout-minutes: 45
@@ -216,8 +221,8 @@ jobs:
 
   # The safety net for the dev-profile switch: the core and UI suites in the
   # optimized profile (thin LTO off, as windows.yml does), once a day on main
-  # and on demand. Never saves a cache, so it cannot evict the main-seeded
-  # entries PRs depend on.
+  # and on demand, on x64 (the daily x64 Linux signal, ci-speed 14). Never
+  # saves a cache, so it cannot evict the main-seeded entries PRs depend on.
   release-backstop:
     if: github.event_name == 'schedule' || inputs.release_backstop
     runs-on: ubuntu-24.04

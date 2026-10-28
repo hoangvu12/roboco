@@ -69,7 +69,7 @@ Still zeron-branded on purpose:
 Android builds and tests run on these runners ([ADR 0009](docs/adr/0009-android-client.md)); there are no macOS jobs.
 
 - `windows.yml` — Windows `tests` (one nextest build) and `app` (package, installer, startup) jobs (PR + push)
-- `ui-tests.yml` — ubuntu, nextest on the dev profile, one build per graph: `core-tests` (`scripts/ci/test-core.sh`: harness, engine-local suites, sync, update, MCP, preview, doc, Android asset/xtask tooling), `ui-tests` (`roboco-ui` + the `roboco` CLI tests), `mobile-core`, `tailcat-adapter`; nightly `release-backstop` runs core + UI with `--release`. Not run for `apps/android/**`-only changes
+- `ui-tests.yml` — `ubuntu-24.04-arm`, nextest on the dev profile, one build per graph: `core-tests` (`scripts/ci/test-core.sh`: harness, engine-local suites, sync, update, MCP, preview, doc, Android asset/xtask tooling), `ui-tests` (`roboco-ui` + the `roboco` CLI tests), `mobile-core`, `tailcat-adapter`; nightly `release-backstop` runs core + UI with `--release` on x64 `ubuntu-24.04`. Not run for `apps/android/**`-only changes
 - `web-codegen.yml` — ubuntu: `wiregen --check` wire-type freshness gate + `pnpm -r build` typecheck of `web/`
 - `theme-artifact.yml` — web theme artifact freshness gate (`roboco-theme-export --check`) + `@roboco/theme` typecheck
 - `web-engine-client.yml` — ubuntu: `@roboco/engine-client` vitest suites (codec, scripted fake server, conformance against the real `web_conformance` engine example)
