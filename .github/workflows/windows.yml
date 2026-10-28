@@ -17,7 +17,39 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - name: Windows PowerShell 5.1 command discovery
+      - name: Windows PowerShell 5.1 command discovery (PSModulePath inherited from pwsh, as nextest's children)
+        shell: pwsh
+        run: |
+          $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $bytes = [IO.File]::ReadAllBytes($ps); $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          "OS arch $env:PROCESSOR_ARCHITECTURE; powershell.exe machine 0x{0:X4}" -f [BitConverter]::ToUInt16($bytes, $pe + 4)
+          $cache = "$env:LOCALAPPDATA\Microsoft\Windows\PowerShell\ModuleAnalysisCache"
+          function CacheState { if (Test-Path $cache) { "cache: $((Get-Item $cache).Length) bytes, $((Get-Item $cache).LastWriteTimeUtc)" } else { 'cache: missing' } }
+          CacheState
+          "inherited PSModulePath: $env:PSModulePath"
+          & $ps -NoProfile -Command '$env:PSModulePath -split ";" | ForEach-Object { "{0}  modules={1}" -f $_, @(Get-ChildItem $_ -Directory -ErrorAction SilentlyContinue).Count }'
+          function Time($label, $cmd) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            & $ps -NoProfile -NonInteractive -Command $cmd | Out-Null
+            "{0,-40} {1,6:N1} s" -f $label, $sw.Elapsed.TotalSeconds
+          }
+          Time 'startup only ([Console]::WriteLine)' "[Console]::WriteLine('x')"
+          # A killed process never writes the analysis cache: time a run killed
+          # mid-discovery, then clean exits.
+          $p = Start-Process $ps -ArgumentList '-NoProfile','-Command','Split-Path -Leaf (Get-Location); Start-Sleep 60' -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew(); Start-Sleep 5; $p.Kill(); "killed after 5 s"
+          CacheState
+          Time 'Split-Path/Get-Location #1' 'Split-Path -Leaf (Get-Location)'
+          CacheState
+          Time 'Split-Path/Get-Location #2' 'Split-Path -Leaf (Get-Location)'
+          Time 'Set-Content #1' "Set-Content -NoNewline -Path $env:RUNNER_TEMP\x.txt -Value ok"
+          Time 'Start-Process' "Start-Process -FilePath cmd -ArgumentList '/c','exit' -WindowStyle Hidden -Wait"
+          Time 'Get-Command (all)' 'Get-Command | Measure-Object'
+          CacheState
+          Time 'Split-Path/Get-Location #3' 'Split-Path -Leaf (Get-Location)'
+          & $ps -NoProfile -Command '"PS {0}; CLR {1}" -f $PSVersionTable.PSVersion, $PSVersionTable.CLRVersion'
+          Get-ChildItem "$env:WINDIR\assembly" -Directory | Select-Object -ExpandProperty Name
+      - name: Again, with PSModulePath cleared
         shell: pwsh
         run: |
           $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
