@@ -22,16 +22,7 @@ Manual option: download the portable release ZIP from the [releases page](https:
 
 ### Linux
 
-Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on. The installer rewrites the per-user `roboco.desktop` and icon under `~/.local/share` (or `$XDG_DATA_HOME`) each time it runs, checks that the binary starts before activating it, and reports missing runtime libraries.
-
-The tarballs (x86_64 and aarch64) need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later) and these runtime libraries, including for headless mode because it shares the desktop executable. On Ubuntu or Debian:
-
-```bash
-sudo apt install libxkbcommon-x11-0 libxcb1 libx11-xcb1 libfontconfig1 libfreetype6 \
-  libwayland-client0 libasound2 libvulkan1 libwebkit2gtk-4.1-0
-```
-
-Every release installs each tarball in a clean Ubuntu 22.04 container with only these packages and runs it (`release.yml`'s `linux-smoke`).
+Download a [release tarball](https://github.com/hoangvu12/roboco/releases) and run its `install.sh` (no root needed). It installs into `~/.roboco/app/<version>` behind a `current` symlink and links `~/.local/bin/roboco`, the desktop entry, and the icon to it — the same layout the in-app updater manages, so the install updates itself from then on. The installer rewrites the per-user `roboco.desktop` and icon under `~/.local/share` (or `$XDG_DATA_HOME`) each time it runs, checks that the binary starts before activating it, and reports missing runtime libraries. Linux requires the system ALSA runtime (`libasound.so.2`), including for headless mode because it shares the desktop executable.
 
 ### Android
 

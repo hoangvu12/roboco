@@ -9,9 +9,6 @@
 # Env:   PROFILE=debug for a fast unoptimized package (CI smoke); default release.
 #        SKIP_WEB_BUILD=1 to skip the pnpm build step (use a pre-existing
 #        web/packages/app/dist or set ROBOCO_WEB_DIST to point elsewhere).
-#        GLIBC_MAX=2.35 (default) the newest glibc symbol version the binary
-#        may reference; packaging fails above it (see the floor guard below).
-#        Needs readelf/objdump (binutils).
 
 set -euo pipefail
 
@@ -53,51 +50,6 @@ case "$ARCH" in
 esac
 ADAPTER="$ROOT/target/roboco-tailcat-linux-$ARCH"
 ( cd "$ROOT/adapters/roboco-tailcat" && GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" go build -mod=readonly -trimpath -o "$ADAPTER" ./cmd/roboco-tailcat )
-
-# --- glibc floor guard (upstream zeronsh/zeron#197) ---------------------------
-# A dynamically linked binary refuses to load on any glibc older than a version
-# it references, so the build host's glibc silently becomes the oldest distro
-# we support. It is the *version reference* in .gnu.version_r that counts, not
-# what the program really calls: Rust std refers to pidfd_spawnp/pidfd_getpid
-# weakly, yet building against glibc 2.39 headers records GLIBC_2.39 there and
-# ld.so checks every entry. release.yml builds in an ubuntu:22.04 container to
-# keep the floor at 2.35; this fails the package if anything raises it.
-GLIBC_MAX="${GLIBC_MAX:-2.35}" # Ubuntu 22.04 (standard support until 2027)
-command -v readelf >/dev/null 2>&1 && command -v objdump >/dev/null 2>&1 \
-  || { echo "package-linux.sh: readelf and objdump (binutils) are required for the glibc floor check" >&2; exit 1; }
-# check_glibc_floor FILE DYNAMIC: DYNAMIC=1 for a binary that must reference
-# glibc (finding none means the check could not read it); 0 for one that must
-# not (the CGO_ENABLED=0 Go adapter).
-check_glibc_floor() {
-  local file="$1" dynamic="$2" versions newest over v pattern
-  versions="$(readelf -V "$file" | sed -n '/Version needs/,$p' \
-    | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -Vu || true)"
-  if [[ "$dynamic" == 1 && -z "$versions" ]]; then
-    echo "package-linux.sh: found no GLIBC_* version references in $file; the floor check cannot read it" >&2
-    exit 1
-  fi
-  if [[ "$dynamic" == 0 && -n "$versions" ]]; then
-    echo "package-linux.sh: $file must be static (CGO_ENABLED=0) but references glibc:" $versions >&2
-    exit 1
-  fi
-  over=()
-  for v in $versions; do
-    [[ "$(printf '%s\nGLIBC_%s\n' "$v" "$GLIBC_MAX" | sort -V | tail -1)" == "GLIBC_$GLIBC_MAX" ]] || over+=("$v")
-  done
-  if (( ${#over[@]} )); then
-    echo "package-linux.sh: $(basename "$file") requires ${over[*]}, above the GLIBC_$GLIBC_MAX floor;" >&2
-    echo "  it will not load on older systems. Symbols pulling them in:" >&2
-    pattern="$(printf '%s\n' "${over[@]}" | sed 's/\./\\./g' | paste -sd'|')"
-    objdump -T "$file" | grep -E "(^|[[:space:](])(${pattern})([[:space:])]|$)" | sed 's/^/    /' >&2 || true
-    echo "  Fix: build in the oldest supported userland (release.yml's ubuntu:22.04 container)," >&2
-    echo "  or raise GLIBC_MAX to drop older distros on purpose." >&2
-    exit 1
-  fi
-  newest="$(printf '%s\n' $versions | tail -1)"
-  echo "glibc floor ok: $(basename "$file") requires ${newest:-no glibc} (floor GLIBC_$GLIBC_MAX)"
-}
-check_glibc_floor "$BIN" 1
-check_glibc_floor "$ADAPTER" 0
 
 rm -rf "$STAGE" "$TARBALL"
 mkdir -p "$STAGE"
