@@ -37,10 +37,9 @@ class TabletLayoutTest {
     // usage) - as a second @Rule it launched the activity twice.
     private val launch = FixtureRule()
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+        flowComposeRule(launch) { rule -> rule.mountedActivity() }
 
     @Before
     fun tabletOnly() {

@@ -52,10 +52,9 @@ class PreviewFlowTest {
         enginesFor = { setOf(FixtureEngine.Main) },
     )
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+        flowComposeRule(launch) { rule -> rule.mountedActivity() }
 
     @Test
     fun previewOpensTheRelayedDevServerInApp() {

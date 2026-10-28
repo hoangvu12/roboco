@@ -34,10 +34,9 @@ class TailcatPairingFlowTest {
         pairAtLaunch = false,
     )
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+        flowComposeRule(launch) { rule -> rule.mountedActivity() }
 
     @Test
     fun aTailcatInvitePairsAndTheSessionsLoad() {

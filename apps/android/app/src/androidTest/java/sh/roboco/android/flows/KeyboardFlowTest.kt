@@ -46,10 +46,9 @@ class KeyboardFlowTest {
 
     private val launch = FixtureRule(routeFor = { "chat:chat-deploy" })
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+        flowComposeRule(launch) { rule -> rule.mountedActivity() }
 
     private val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 

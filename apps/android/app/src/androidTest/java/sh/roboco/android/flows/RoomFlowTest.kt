@@ -39,10 +39,9 @@ class RoomFlowTest {
         pairAtLaunch = false,
     )
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+        flowComposeRule(launch) { rule -> rule.mountedActivity() }
 
     private val app: RobocoApplication
         get() = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext

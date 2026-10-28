@@ -23,6 +23,7 @@ import org.junit.runner.RunWith
 import sh.roboco.android.MainActivity
 import sh.roboco.android.design.toggleTag
 import sh.roboco.android.flows.FixtureRule
+import sh.roboco.android.flows.flowComposeRule
 import sh.roboco.android.flows.mountedActivity
 
 /**
@@ -58,10 +59,9 @@ class NotificationSettingsFlowTest {
     /** Launched at rule application: the Settings tab (ticket 36's route extra), the rig's engine paired. */
     private val scenario = FixtureRule(routeFor = { "more" })
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(scenario) { rule -> rule.mountedActivity() }
+        flowComposeRule(scenario) { rule -> rule.mountedActivity() }
 
     @Test
     fun notificationToggleShowsTheKindsOnceAllowed() {

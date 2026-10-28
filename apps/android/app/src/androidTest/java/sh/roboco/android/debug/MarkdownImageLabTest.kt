@@ -20,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import sh.roboco.android.flows.flowComposeRule
 import sh.roboco.android.transcript.widgets.ImageTileReferenceKey
 
 /**
@@ -60,10 +61,9 @@ class MarkdownImageLabTest {
     private val scenario: ActivityScenarioRule<TranscriptLabActivity> =
         ActivityScenarioRule<TranscriptLabActivity>(labIntent())
 
-    @Suppress("DEPRECATION") // the public AndroidComposeTestRule constructor is the one way to hand it a custom rule
     @get:Rule
     val compose: AndroidComposeTestRule<ActivityScenarioRule<TranscriptLabActivity>, TranscriptLabActivity> =
-        AndroidComposeTestRule(scenario) { rule -> rule.mountedLabActivity() }
+        flowComposeRule(scenario) { rule -> rule.mountedLabActivity() }
 
     @Test
     fun markdownImageLoadsAndOpensPreview() {

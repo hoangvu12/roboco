@@ -75,11 +75,13 @@ enum class FixtureEngine(val arg: String, val portArg: String) {
  * ```kotlin
  * private val launch = FixtureRule(routeFor = { "chat:chat-deploy" })
  *
- * @Suppress("DEPRECATION")
  * @get:Rule
  * val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
- *     AndroidComposeTestRule(launch) { rule -> rule.mountedActivity() }
+ *     flowComposeRule(launch) { rule -> rule.mountedActivity() }
  * ```
+ *
+ * [flowComposeRule] is the v2 rule: its composition stays on the main
+ * thread (ci-speed 22).
  */
 class FixtureRule(
     /** The `route` extra per test method name (`null` = none). */

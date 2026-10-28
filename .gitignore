@@ -16,3 +16,9 @@ crates/engine/web-staging/
 agents.md
 .claude
 CLAUDE.md
+# A literal `?` directory: a tool run with an unset HOME/ANDROID_USER_HOME
+# writes `?/.android/…` into the CWD, and Windows cannot check out a path
+# with `?` in it (ci-speed 22; runs 40472984016, 40473003282). Escaped:
+# a bare `?` is a one-character wildcard.
+/\?/
+apps/android/\?/

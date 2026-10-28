@@ -22,6 +22,7 @@ import org.junit.runner.RunWith
 import sh.roboco.android.MainActivity
 import sh.roboco.android.core.WallpaperStore
 import sh.roboco.android.flows.FixtureRule
+import sh.roboco.android.flows.flowComposeRule
 import sh.roboco.android.flows.mountedActivity
 
 /**
@@ -82,10 +83,9 @@ class WallpaperSettingsFlowTest {
         WallpaperStore.resetForTest()
     }
 
-    @Suppress("DEPRECATION")
     @get:Rule
     val compose: AndroidComposeTestRule<FixtureRule, MainActivity> =
-        AndroidComposeTestRule(scenario) { rule -> rule.mountedActivity() }
+        flowComposeRule(scenario) { rule -> rule.mountedActivity() }
 
     @Test
     fun wallpaperSettingsFlow() {

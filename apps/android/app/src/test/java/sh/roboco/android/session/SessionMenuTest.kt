@@ -578,10 +578,12 @@ class SessionMenuTest {
 
         assertEquals("the fresh wrapper came from the engine", 1, engine.frameCalls)
         assertEquals("plainText ran once", 1, staged.plainTextCalls)
-        assertEquals(
-            "plainText ran on the work dispatcher's thread, not main",
-            "session-menu-copy",
-            staged.plainTextThread?.name,
+        // startsWith: coroutine debug mode appends " @coroutine#N" to the
+        // running thread's name (run 39884973551).
+        val threadName = staged.plainTextThread?.name.orEmpty()
+        assertTrue(
+            "plainText ran on the work dispatcher's thread, not main (was '$threadName')",
+            threadName.startsWith("session-menu-copy"),
         )
         assertFalse(staged.plainTextThread === Thread.currentThread())
         assertEquals("the fresh wrapper is closed exactly once", 1, staged.closeCalls)
