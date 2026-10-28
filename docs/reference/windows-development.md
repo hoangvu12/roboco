@@ -102,10 +102,13 @@ grids when the main window loses focus.
 
 ## Verification
 
-[Windows CI](../../.github/workflows/windows.yml) builds the release application
-and tests application startup, agent discovery/protocols, process cleanup,
-ConPTY, locking, UI behavior, and shader layouts. Shared Rust regressions run
-on Linux and macOS. To run the engine and harness checks locally:
+[Windows CI](../../.github/workflows/windows.yml) runs two parallel jobs. `tests`
+builds every Windows suite once with nextest: agent discovery/protocols,
+process cleanup, ConPTY, locking, UI behavior and shader layouts. `app` packages
+the application and checks the installer, startup and the CLI. Both use a CI
+release profile with workspace crates at opt-level 0 and no LTO
+(`.github/actions/windows-ci-setup`). Shared Rust regressions run on Linux. To
+run the engine and harness checks locally:
 
 ```powershell
 cargo test --locked -p roboco-engine -p roboco-harness --lib

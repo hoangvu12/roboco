@@ -1,0 +1,149 @@
+name: Windows CI setup
+description: >-
+  Prepare a windows.yml job: fast disks, toolchain, shader compiler, the CI
+  release profile and linker, and the job's main-seeded Rust cache.
+
+# Defender real-time scanning is already off on GitHub-hosted Windows images
+# (runner-images Configure-WindowsDefender.ps1 disables it and excludes C:\
+# and D:\), so there is no step for it.
+
+inputs:
+  cache-key:
+    description: >-
+      rust-cache shared-key: the dependency graph this job builds. Exactly one
+      job saves each key, and only on main.
+    required: true
+  fast-linker:
+    description: >-
+      Link with rust-lld (ships with the toolchain) instead of link.exe.
+      'false' keeps link.exe, for comparisons.
+    default: 'true'
+  dev-drive:
+    description: >-
+      Build on fast disks: target/ on a fresh ReFS Dev Drive, CARGO_HOME and
+      RUSTUP_HOME on D: instead of the read-optimized system drive. 'false'
+      keeps everything where the image puts it.
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # Dynamic: the VHDX grows as the build writes, up to the size. Mounted
+    # beside the workspace, not at ./target as upstream does: a volume's root
+    # holds a System Volume Information folder nobody may read, and rust-cache
+    # fails on it (windows-2022: its restore scans the workspace and stops at
+    # EPERM; its save would tar the target dir). The real target dir is
+    # ../roboco-devdrive/target, and ./target is a junction to it, so every
+    # script keeps its paths.
+    - name: Dev Drive
+      if: inputs.dev-drive == 'true'
+      uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4.1.0
+      with:
+        drive-size: 50GB
+        drive-format: ReFS
+        drive-type: Dynamic
+        mount-path: ${{ github.workspace }}/../roboco-devdrive
+    - name: target/ on the Dev Drive
+      if: inputs.dev-drive == 'true'
+      shell: pwsh
+      run: |
+        $real = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\roboco-devdrive\target'))
+        New-Item -ItemType Directory -Force -Path $real | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $env:GITHUB_WORKSPACE 'target') -Target $real | Out-Null
+        Get-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'target') | Format-List FullName, LinkType, Target
+    - name: 'Cargo and rustup homes on D:'
+      if: inputs.dev-drive == 'true'
+      shell: pwsh
+      # The registry, the zui/gpui-component git checkouts and the toolchain
+      # (downloaded in every job: the pinned version is not the image's
+      # `stable`) would otherwise be written under the system drive's user
+      # profile. TMP stays put on purpose: the worktree tests exercise Windows
+      # path-length limits and 8.3 aliases under it. This runs before the
+      # toolchain and the Rust cache: both read these variables, and
+      # rust-cache hashes them into its key.
+      run: |
+        if ($env:SystemDrive -ne 'D:' -and (Test-Path -LiteralPath 'D:\')) {
+          $oldHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+          $cargoHome = 'D:\.cargo'
+          $rustupHome = 'D:\.rustup'
+          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
+          # The rustup proxies (cargo, rustc, rustup) and any image tools.
+          Copy-Item -Recurse -Force -LiteralPath (Join-Path $oldHome 'bin') -Destination $cargoHome
+          "CARGO_HOME=$cargoHome" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$rustupHome" >> $env:GITHUB_ENV
+          Join-Path $cargoHome 'bin' >> $env:GITHUB_PATH
+          "CARGO_HOME=$cargoHome RUSTUP_HOME=$rustupHome"
+        } else {
+          "No separate D: drive: CARGO_HOME and RUSTUP_HOME stay on $env:SystemDrive"
+        }
+    - name: Rust toolchain
+      shell: pwsh
+      run: rustup show active-toolchain || rustup toolchain install
+    - name: Locate Windows SDK shader compiler
+      shell: pwsh
+      run: |
+        $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+          Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
+        "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+    - name: CI release profile and linker
+      shell: pwsh
+      # CI only: these binaries are not the shipped ones (release.yml builds
+      # those with the committed profile). Workspace crates build at
+      # opt-level 0; dependencies (gpui, tokio, ...) keep opt-level 3, and the
+      # workflow's CARGO_PROFILE_RELEASE_LTO turns thin LTO off. It stays
+      # `--release` because GPUI compiles its release shaders only there.
+      # Upstream measured this profile against the dev profile on Windows:
+      # 23.7 vs 31.5 min for the test build.
+      #
+      # Written to $CARGO_HOME/config.toml, so Cargo.toml is untouched and
+      # every cargo command in the job sees it, including the one inside
+      # scripts/package-windows.ps1. `package."*"` means every non-workspace
+      # package, so new workspace crates need no edit here.
+      #
+      # The linker goes in the same file (fast-linker): rustc finds rust-lld in
+      # its own tools directory and passes it the MSVC library paths it gives
+      # link.exe. Written for the host triple, so an arm64 runner gets it too.
+      # Upstream measured LLD at about -6 % on its Windows builds
+      # (zeronsh/zeron#1081). release.yml stays on link.exe.
+      env:
+        FAST_LINKER: ${{ inputs.fast-linker }}
+      run: |
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+        $config = Join-Path $cargoHome 'config.toml'
+        Add-Content -LiteralPath $config -Value @(
+          '[profile.release]'
+          'opt-level = 0'
+          '[profile.release.package."*"]'
+          'opt-level = 3'
+        )
+        $rustc = rustc -vV
+        $rustc
+        if ($env:FAST_LINKER -eq 'true') {
+          $hostTriple = ($rustc | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
+          Add-Content -LiteralPath $config -Value @("[target.$hostTriple]", 'linker = "rust-lld.exe"')
+        }
+        Get-Content -LiteralPath $config
+    - name: Build disks
+      if: inputs.dev-drive == 'true'
+      shell: pwsh
+      run: |
+        $drive = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\roboco-devdrive'))
+        Get-Volume -FilePath (Join-Path $drive 'target') | Format-List FileSystemType, DriveType, Size, SizeRemaining
+        fsutil devdrv query "$drive\"
+        Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free, Root
+        exit 0
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        add-job-id-key: 'false'
+        # The real directory, never the ./target junction: tar would store the
+        # junction itself.
+        workspaces: ${{ inputs.dev-drive == 'true' && '. -> ../roboco-devdrive/target' || '. -> target' }}
+        # Only main writes; PRs restore main's entry.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        cache-on-failure: 'true'
+        # Cargo rebuilds workspace crates after every checkout (mtime
+        # freshness), and they are opt-level 0 here, so caching them only
+        # grows the entry.
+        cache-workspace-crates: 'false'

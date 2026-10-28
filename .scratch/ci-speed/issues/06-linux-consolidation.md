@@ -127,3 +127,5 @@ Findings:
 - **Retries worked as intended.** completion_notices (ticket 24) and `resume_at_reset::the_setting_on_arms_the_continuation_automatically` failed once (30 s waits) and passed on retry, reported FLAKY. nextest also flags 3 LEAKs (harness jsonrpc ×2, preview discovery ×1): informational, not failures.
 - **No UI test needs `--release`.** The whole dev-profile UI/CLI suite passed (1733/1733), and so did the release one in the backstop.
 - The composite's nested post steps run ("Post Run ./.github/actions/linux-ci"), so rust-cache will save from inside the action on main.
+
+**2026-10-29 (merge of main after #43, ci-speed 04/05):** ticket 04 landed the same `serial-ui`/`serial-engine-client` groups for every platform, plus `[profile.ci.junit]`. The merge keeps main's unfiltered groups, so the `platform = linux` filter above is gone and windows.yml and ui-tests.yml share one definition. AGENTS.md takes main's `windows.yml` bullet and this branch's `ui-tests.yml` bullet (`preview-tests.yml` stays deleted). windows.yml:127 still names `preview-tests.yml` in a comment; that file is not this branch's.

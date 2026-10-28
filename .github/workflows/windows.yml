@@ -18,6 +18,8 @@ on:
       - 'scripts/test-windows-*.ps1'
       - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
+      - '.github/actions/windows-ci-setup/**'
+      - '.config/nextest.toml'
   # Main runs seed the Rust cache every PR restores (PR-scoped entries are
   # unreadable from other branches).
   push:
@@ -38,18 +40,35 @@ on:
       - 'scripts/test-windows-*.ps1'
       - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
+      - '.github/actions/windows-ci-setup/**'
+      - '.config/nextest.toml'
   workflow_dispatch:
     inputs:
       native_gui:
         description: 'Run native GUI/pixel probes (requires a usable desktop and Direct3D)'
         type: boolean
         default: false
+      # Fallback and A/B switches; pushes and PRs always run with both on.
+      fast_linker:
+        description: 'Link with rust-lld (off: link.exe)'
+        type: boolean
+        default: true
+      dev_drive:
+        description: 'Build on a Dev Drive, Cargo/rustup homes on D: (off: image defaults)'
+        type: boolean
+        default: true
+      runner:
+        description: 'Runner image'
+        type: choice
+        options: [windows-2022, windows-2025]
+        default: windows-2022
 
 # Test-build tuning, following the big Rust projects (rust-analyzer, Zed,
 # Bevy): no incremental compilation, and neutralize the distribution
 # profile's thin LTO for test binaries — LTO buys the shipped binary nothing
 # here and costs most of the release-compile time. release.yml still builds
-# real LTO binaries for distribution.
+# real LTO binaries for distribution. The rest of the CI release profile
+# (workspace crates at opt-level 0) comes from .github/actions/windows-ci-setup.
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_RELEASE_LTO: 'false'
@@ -73,42 +92,123 @@ defaults:
     shell: pwsh
 
 jobs:
+  # Every Windows test suite in ONE nextest build. The separate cargo
+  # invocations this replaces each rebuilt the shared graph with a different
+  # package/feature set; the application build is the `app` job's, in
+  # parallel.
   tests:
-    runs-on: windows-2022
-    # A warm full run took 82 min after agent previews; a colder cache
-    # (the application build alone 9 -> 20 min) cancelled one at 90 with
-    # every step so far green.
-    timeout-minutes: 120
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'windows-2022' }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - name: Locate Windows SDK shader compiler
-        run: |
-          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
-          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/windows-ci-setup
         with:
-          # Only main writes; PRs restore main's entry.
-          shared-key: windows-tests
-          add-job-id-key: 'false'
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: 'true'
-          # Cargo rebuilds workspace crates after every checkout (mtime
-          # freshness), so caching them only grows the entry.
-          cache-workspace-crates: 'false'
+          cache-key: windows-tests
+          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.144
+      - name: Select the Windows test suites
+        # A suite runs on Windows when it has Windows-specific code paths or
+        # the desktop links it (Android-only crates run on Linux and in
+        # android.yml). The argument list for the nextest run below:
+        #   roboco-harness  lib + the native suites (codex_availability,
+        #                   windows_native) + the driver suites whose fixtures
+        #                   need no POSIX shell: OpenCode (in-test HTTP/SSE),
+        #                   the Cursor shim (node), Pi RPC (Rust peer);
+        #                   native-fixture for the whole build
+        #   roboco-engine   lib + worktree paths (upstream #530), harness
+        #                   catalog and login resolution, engine-local suites
+        #   roboco-proto    lib (device_paths only, see the filter)
+        #   roboco-rpc, roboco-ui, gpui_windows (shader layout)  lib
+        #   roboco-preview  lib + discovery (the GetExtendedTcpTable join;
+        #                   preview-tests.yml runs the rest on Linux)
+        #   roboco, roboco-update, roboco-markdown, roboco-engine-client
+        #                   every test target, read from cargo metadata so a
+        #                   new test file is picked up
+        # gpui_windows is a dependency: `-p` finds it through roboco-ui.
+        run: |
+          $everyTarget = 'roboco', 'roboco-update', 'roboco-markdown', 'roboco-engine-client'
+          $metadata = cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $allTests = $metadata.packages | Where-Object { $everyTarget -contains $_.name } |
+            ForEach-Object { $_.targets } | Where-Object { $_.kind -contains 'test' } |
+            ForEach-Object { '--test', $_.name }
+          $selection = @(
+            '-p', 'roboco-harness', '-p', 'roboco-engine', '-p', 'roboco-proto', '-p', 'roboco-rpc',
+            '-p', 'roboco-preview', '-p', 'roboco-ui', '-p', 'gpui_windows',
+            '-p', 'roboco', '-p', 'roboco-update', '-p', 'roboco-markdown', '-p', 'roboco-engine-client',
+            '--features', 'roboco-harness/native-fixture',
+            '--lib', '--bin', 'roboco',
+            '--test', 'codex_availability', '--test', 'windows_native',
+            '--test', 'opencode', '--test', 'cursor_shim', '--test', 'pi_rpc',
+            '--test', 'worktree_on_run', '--test', 'codex_catalog', '--test', 'codex_login_resolution',
+            '--test', 'engine_local', '--test', 'local_first', '--test', 'local_profiles', '--test', 'project_actions_rpc',
+            '--test', 'discovery'
+          ) + $allTests
+          "WINDOWS_TESTS=$($selection -join ' ')" >> $env:GITHUB_ENV
+          $selection -join ' '
+      - name: Windows tests
+        # One invocation builds and runs. A separate `--no-run` step would make
+        # this one recompile ort-sys and everything above it (roboco-voice,
+        # roboco-ui, roboco; 1.5-2 min): its build script downloads the ONNX
+        # runtime during the run and marks it rerun-if-changed, so the second
+        # cargo command always sees it as newer. The log's "Finished" line
+        # and nextest's Summary give the build and run times.
+        #
+        # The filter trims the three suites that ran by name before: proto
+        # device_paths, the engine's worktree_location_ tests, and the gpui
+        # shader layout tests (`not package(roboco*)`: a dependency, which a
+        # package() matcher cannot name). roboco-ui and roboco-engine-client
+        # run one test at a time (.config/nextest.toml test groups);
+        # retries come from the ci profile.
+        env:
+          RUST_BACKTRACE: '1'
+        run: >-
+          cargo nextest run --release --locked -P ci --no-fail-fast @($env:WINDOWS_TESTS -split ' ')
+          -E 'all() - (package(roboco-proto) - test(device_paths)) - (binary_id(roboco-engine::worktree_on_run) - test(worktree_location_)) - ((not package(roboco*)) - test(layout))'
+      - name: UI native font geometry test ran
+        # Upstream 3f19c19e: the real-font assertion measures diff geometry
+        # against DirectWrite (non-headless platform). It used to be its own
+        # step; it is mandatory, so a filter or selection change that drops it
+        # fails here.
+        run: |
+          [xml]$junit = Get-Content -LiteralPath target/nextest/ci/junit.xml -Raw
+          $cases = @($junit.SelectNodes('//testcase') | Where-Object { $_.name -like '*native_diff_font_geometry*' })
+          if ($cases.Count -eq 0) { throw 'native_diff_font_geometry did not run' }
+          foreach ($case in $cases) {
+            if ($case.SelectSingleNode('failure|error|skipped')) { throw "$($case.name) did not pass" }
+            "PASS: $($case.classname) $($case.name)"
+          }
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-tests-junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The application as shipped (with the embedded Tailcat adapter), packaged
+  # and smoke-tested. Its own cache: `cargo build -p roboco` resolves
+  # different dependency features than the test build.
+  app:
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'windows-2022' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/windows-ci-setup
+        with:
+          cache-key: windows-app
+          fast-linker: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+          dev-drive: ${{ github.event_name != 'workflow_dispatch' || inputs.dev_drive }}
       - name: Build the Tailcat adapter (embedded by every cargo build below)
         # crates/engine/build.rs reruns when ROBOCO_TAILCAT_EMBED changes, so
         # every cargo command in this job sees the same value, exported here
-        # before the first one; package-windows.ps1 then embeds this build
-        # instead of building its own (which rebuilt the engine and the app
-        # in packaging, and again in the next test step without it).
+        # before the first one; package-windows.ps1 embeds this build instead
+        # of building its own.
         working-directory: adapters/roboco-tailcat
         env:
           CGO_ENABLED: '0'
@@ -121,74 +221,30 @@ jobs:
           go build -mod=readonly -trimpath -o $adapter ./cmd/roboco-tailcat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "ROBOCO_TAILCAT_EMBED=$adapter" >> $env:GITHUB_ENV
-      - name: Native harness security and integration tests
-        # Runs before the full application build: the hardened process
-        # behavior must fail the PR early, not after the expensive build.
-        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --lib --test codex_availability --test windows_native -P ci
-      # The driver suites whose fixtures run without a POSIX shell: an in-test
-      # HTTP/SSE server (OpenCode), node (the Cursor shim), and the Rust Pi
-      # RPC peer (ticket 06; upstream #977's Windows-portable pi suite). The
-      # shell- and python-fixture suites are unix-only.
-      - name: Portable harness integration tests
-        run: cargo nextest run --release --locked -p roboco-harness --features native-fixture --test opencode --test cursor_shim --test pi_rpc -P ci
       # Packaging's `cargo build --release -p roboco` is the application build.
       - name: Verify portable and installer packaging
         # Exercise the release packaging script on every PR. -SkipWebBuild:
         # the workflow's ROBOCO_WEB_DIST already stages placeholder pages,
         # and the real web bundle is built by web-codegen/release workflows.
         run: ./scripts/package-windows.ps1 -SkipWebBuild -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+      - name: Linker of the packaged roboco.exe
+        # link.exe writes a "Rich" header (its build-tool record) into the DOS
+        # stub; rust-lld writes none.
+        env:
+          FAST_LINKER: ${{ github.event_name != 'workflow_dispatch' || inputs.fast_linker }}
+        run: |
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath target/release/roboco.exe).Path)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          $rich = [Text.Encoding]::ASCII.GetString($bytes, 0, $peOffset).Contains('Rich')
+          "roboco.exe linked by $(if ($rich) { 'link.exe (Rich header)' } else { 'rust-lld (no Rich header)' })"
+          if (($env:FAST_LINKER -eq 'true') -eq $rich) { throw "fast-linker is $env:FAST_LINKER, but the Rich header says otherwise" }
       - name: Installer install/uninstall
         run: ./scripts/test-windows-installer.ps1
-      - name: Shader layout tests
-        run: cargo nextest run --release --locked -p gpui_windows --lib layout -P ci
-      - name: Application and updater tests
-        run: cargo nextest run --release --locked -p roboco -p roboco-update -P ci
-      - name: Worktree path compatibility
-        # Upstream #530: Windows path spellings for custom worktree locations —
-        # the proto device_paths lexical navigation plus the engine's
-        # worktree-location tests (path length limits, two-step add, aliases).
-        run: |
-          cargo nextest run --release --locked -p roboco-proto --lib device_paths -P ci
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo nextest run --release --locked -p roboco-engine --test worktree_on_run worktree_location_ -P ci
-      - name: Engine, RPC, and harness unit tests
-        run: cargo nextest run --release --locked -p roboco-engine -p roboco-rpc -p roboco-harness --lib -P ci
-      - name: Preview discovery tests
-        # agent-previews ticket 02: the Windows listeners() join
-        # (GetExtendedTcpTable + sysinfo). The tests spawn real
-        # marked/unmarked loopback listeners through the crate's
-        # preview-child-server fixture, so they carry no interpreter
-        # dependency on the runner image; Linux/macOS run the same suite in
-        # preview-tests.yml as the unchanged regression gate.
-        run: cargo nextest run --release --locked -p roboco-preview --lib --test discovery -P ci
-      - name: Desktop-linked mobile core crates
-        # The two mobile-core crates the desktop links (`cargo tree -p roboco
-        # -i`). roboco-text/-mobile/-mobile-client are Android-only: ui-tests
-        # mobile-core and android.yml test them, and android.yml's Windows
-        # leg covers the xtask host path (.dll naming, .exe bindgen). The
-        # engine-client tests are timing-sensitive (reconnect backoff,
-        # loopback engines); retries come from the ci nextest profile.
-        run: cargo nextest run --release --locked -p roboco-markdown -p roboco-engine-client -P ci
-      - name: Harness catalog tests
-        run: cargo nextest run --release --locked -p roboco-engine --test codex_catalog -P ci
-      - name: Engine-local integration tests
-        run: cargo nextest run --release --locked -p roboco-engine --test engine_local --test local_first --test local_profiles --test project_actions_rpc -P ci
-      - name: UI native font geometry test
-        # Upstream 3f19c19e: the real-font assertion measures diff geometry
-        # against DirectWrite (non-headless platform). nextest runs it in its
-        # own process, isolated from the headless suite; the split keeps the
-        # real-font assertion and the complete headless suite separately
-        # attributed and both mandatory.
-        env:
-          RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'test(native_diff_font_geometry)' -P ci
-      - name: UI headless tests
-        # Serial on purpose: the gpui test scheduler is not safe under
-        # intra-process parallelism (same constraint as the old
-        # --test-threads=1). Retries come from the ci nextest profile.
-        env:
-          RUST_BACKTRACE: '1'
-        run: cargo nextest run --release --locked -p roboco-ui --lib -E 'not(test(native_diff_font_geometry))' -j 1 -P ci
+      - name: GUI subsystem and redirected CLI output
+        # The packaged roboco.exe is a GUI-subsystem binary (no console flash
+        # at startup), and --help, --version and argument errors still reach
+        # redirected stdout/stderr with the right exit codes.
+        run: ./scripts/test-windows-startup.ps1
       - name: CLI startup without HOME
         run: |
           # Exercise real path resolution without touching the runner's account.
@@ -239,7 +295,7 @@ jobs:
 
   native-gui:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gui }}
-    needs: tests
+    needs: app
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
