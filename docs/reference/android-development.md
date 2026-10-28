@@ -11,7 +11,7 @@ Gradle properties and layout.
 |---|---|---|
 | JDK | 17 (build) + 21 (Robolectric test JVMs) | Temurin; `./gradlew` picks 17, the `Test` tasks request a 21 toolchain launcher |
 | Android SDK | `platforms;android-37.0`, build-tools 35 | `ANDROID_HOME` points at the SDK |
-| NDK | 28.2.13676358 | r28+ aligns ELF to 16 KB by default; `ndkVersion` is pinned in `app/build.gradle.kts` |
+| NDK | 30.0.16248370 | r28+ aligns ELF to 16 KB by default; `ndkVersion` is pinned in `app/build.gradle.kts`. The GitHub runner images ship it (ci-speed 17) |
 | Rust | the exact version in `rust-toolchain.toml` (rustup installs it on first use) | targets `aarch64`/`x86_64-linux-android` |
 | cargo-ndk | 4.1.2 | `cargo xtask android-core` calls it |
 | Go | the `go` line of `adapters/roboco-tailcat/go.mod` (1.27.1) | builds `libroboco_tailcat.so`, the Tailcat transport, with the NDK clang as the cgo compiler; `GOTOOLCHAIN=auto` (the default) fetches the pinned version |
@@ -27,7 +27,7 @@ PowerShell (verify each command against your machine):
 winget install EclipseAdoptium.Temurin.21.JDK
 $sdk = "$env:ANDROID_HOME\cmdline-tools\latest\bin"
 & "$sdk\sdkmanager.bat" --licenses
-& "$sdk\sdkmanager.bat" "platform-tools" "platforms;android-37.0" "ndk;28.2.13676358" `
+& "$sdk\sdkmanager.bat" "platform-tools" "platforms;android-37.0" "ndk;30.0.16248370" `
     "emulator" "system-images;android-36;google_apis;x86_64"
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --version 4.1.2 --locked
@@ -264,7 +264,7 @@ host (ticket 18).
 ## Troubleshooting
 
 - **"no Android NDK found"** from the xtask: set `ANDROID_NDK_HOME` or
-  install `ndk;28.2.13676358` under `$ANDROID_HOME/ndk`. Gradle passes the
+  install `ndk;30.0.16248370` under `$ANDROID_HOME/ndk`. Gradle passes the
   AGP-resolved NDK directory automatically.
 - **`cargo-ndk is missing`**: `cargo install cargo-ndk --version 4.1.2 --locked`.
 - **`go is missing`** from the xtask: install Go, or build without Tailcat

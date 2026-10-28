@@ -135,7 +135,7 @@ Isolation; AEHD is sunset 2026-12-31, HAXM is unused from emulator
 HypervisorPlatform`. Then the same SDK pieces, the AVD, and
 `emulator -accel-check` must report WHPX. `rustup target add
 x86_64-linux-android`, `cargo install cargo-ndk` (NDK r28+;
-28.2.13676358 since 2026-10-12), build the fixture, and run
+30.0.16248370 since 2026-10-29), build the fixture, and run
 `apps\android\scripts\flow-tests.ps1`. Builds go through sccache —
 add worktree roots to sccache's `basedirs`
 ([docs/reference/windows-development.md](../../docs/reference/windows-development.md)).

@@ -214,7 +214,7 @@ fn android_core(argv: &[String]) -> anyhow::Result<()> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "no Android NDK found: set ANDROID_NDK_HOME or install one under \
-                 <sdk>/ndk (sdkmanager \"ndk;28.2.13676358\")"
+                 <sdk>/ndk (sdkmanager \"ndk;30.0.16248370\")"
             )
         })?;
         if !ndk_home.is_dir() {

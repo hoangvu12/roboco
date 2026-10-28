@@ -409,7 +409,9 @@ aboutLibraries {
 android {
     namespace = "sh.roboco.android"
     compileSdk = 37
-    ndkVersion = "28.2.13676358"
+    // The runner images' preinstalled NDK (ci-speed 17); r28+ aligns ELF
+    // to 16 KB by default, and .cargo/config.toml pins it regardless.
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "sh.roboco.android"
@@ -579,6 +581,8 @@ tasks.withType<Test>().configureEach {
         "--add-exports=java.base/jdk.internal.ref=ALL-UNNAMED",
     )
     maxHeapSize = "2g"
+    // ci-speed 17's A/B (temporary): -ProbocoTestForks=N JVM forks.
+    maxParallelForks = providers.gradleProperty("robocoTestForks").map(String::toInt).getOrElse(1)
     // A failure prints its message, causes and stack in the job log. The
     // default short form is just "IllegalStateException at X.kt:32". Record
     // run 38595804909 failed 12 captures that way: no message, and on the

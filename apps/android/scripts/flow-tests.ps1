@@ -14,7 +14,7 @@
 #        emulator -avd roboco36 -no-snapshot-save
 #   5. The Rust core toolchain (the fixture is a host binary):
 #        rustup target add x86_64-linux-android   # for the app's core
-#        cargo install cargo-ndk                  # NDK r28+ (28.2.13676358)
+#        cargo install cargo-ndk                  # NDK r28+ (30.0.16248370)
 #   6. Build the fixture and the app core (sccache picks both up; add this
 #      worktree's root to sccache's basedirs, docs/reference/windows-development.md):
 #        cargo build --locked -p roboco-engine --example android_fixture

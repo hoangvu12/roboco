@@ -102,6 +102,12 @@ on:
         type: choice
         options: [google_apis, google_atd, aosp_atd]
         default: google_apis
+      # ci-speed 17's A/B (temporary): JVM test forks in android (ubuntu).
+      test_forks:
+        description: 'JVM test maxParallelForks in android (ubuntu) (A/B)'
+        type: choice
+        options: ['1', '2']
+        default: '1'
 
 permissions:
   contents: read
@@ -117,7 +123,10 @@ concurrency:
 
 env:
   CARGO_INCREMENTAL: '0'
-  ANDROID_NDK_VERSION: 28.2.13676358
+  # The runner images' NDK 30 (ci-speed 17): preinstalled on ubuntu-24.04
+  # and windows-2022 since 2026-09-17, so the SDK step below downloads
+  # nothing.
+  ANDROID_NDK_VERSION: 30.0.16248370
   CARGO_NDK_VERSION: 4.1.2
   # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS overrides
   # (they would replace the 16 KB PT_LOAD alignment rustflags).
@@ -175,15 +184,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
+      # A prebuilt cargo-ndk (no manifest in install-action, so its
+      # cargo-binstall fallback: a release binary or quickinstall), not a
+      # source build on every ~/.cargo/bin miss (ci-speed 17).
       - name: Install cargo-ndk
-        shell: pwsh
-        run: |
-          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
-          if (-not $installed) {
-            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-        working-directory: .
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -194,15 +201,26 @@ jobs:
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
+      # Preinstalled on the image (ci-speed 17); sdkmanager runs only if an
+      # image update dropped either.
       - name: Install Android SDK pieces
         shell: pwsh
         run: |
-          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
-          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+          $ndk = Join-Path $env:ANDROID_HOME "ndk/$env:ANDROID_NDK_VERSION"
+          $platform = Join-Path $env:ANDROID_HOME "platforms/android-37.0"
+          if ((Test-Path $ndk) -and (Test-Path $platform)) {
+            "NDK $env:ANDROID_NDK_VERSION and android-37.0 are preinstalled"
+          } else {
+            $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager"
+            & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+          }
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # Saves and restores the configuration cache (ci-speed 17); fork PRs
+          # get no secret and just miss.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the benchmark APK
         run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a :app:assembleBenchmark
@@ -245,12 +263,13 @@ jobs:
           save-if: 'false'
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
+      # A prebuilt cargo-ndk (no manifest in install-action, so its
+      # cargo-binstall fallback: a release binary or quickinstall), not a
+      # source build on every ~/.cargo/bin miss (ci-speed 17).
       - name: Install cargo-ndk
-        run: |
-          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
-            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
-          fi
-        working-directory: .
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
       # 17 is the build JDK; 21 runs the Robolectric test JVMs.
       - uses: actions/setup-java@v4
         with:
@@ -265,15 +284,33 @@ jobs:
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
+      # Preinstalled on the image (ci-speed 17); sdkmanager runs only if an
+      # image update dropped either.
       - name: Install Android SDK pieces
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+        run: |
+          if [ -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ] && [ -d "$ANDROID_HOME/platforms/android-37.0" ]; then
+            echo "NDK $ANDROID_NDK_VERSION and android-37.0 are preinstalled"
+          else
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+          fi
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # Saves and restores the configuration cache (ci-speed 17); fork PRs
+          # get no secret and just miss.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           # The one Gradle cache writer, on main pushes only.
           cache-read-only: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # Temporary (ci-speed 17): where debugCompileClasspath and
+      # debugRuntimeClasspath are resolved during configuration (--info
+      # prints the stack trace; --dry-run stops before any task runs).
+      - name: "Diagnose configuration-time resolution (temporary)"
+        continue-on-error: true
+        run: |
+          ./gradlew --info --dry-run -ProbocoAbis=arm64-v8a,x86_64 :app:assembleDebug :app:testDebugUnitTest :buildSrc:test > "$RUNNER_TEMP/config-info.txt" 2>&1 || true
+          grep -n -A80 "was resolved during configuration time" "$RUNNER_TEMP/config-info.txt" | head -400
       - name: Build the debug APK and run the JVM tests
-        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a,x86_64 :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
+        run: ./gradlew --stacktrace -ProbocoAbis=arm64-v8a,x86_64 -ProbocoTestForks=${{ inputs.test_forks || 1 }} :app:assembleDebug :app:testDebugUnitTest :buildSrc:test
       - name: "R8 smoke — unsigned release build (full tier)"
         # Proves R8 plus the JNA/UniFFI keep rules build before a tag
         # (release.yml runs the real signed build). PRs skip it unless
@@ -361,14 +398,13 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
+      # A prebuilt cargo-ndk (no manifest in install-action, so its
+      # cargo-binstall fallback: a release binary or quickinstall), not a
+      # source build on every ~/.cargo/bin miss (ci-speed 17).
       - name: Install cargo-ndk
-        run: |
-          $installed = cargo ndk --version 2> $null | Select-String "cargo-ndk $env:CARGO_NDK_VERSION"
-          if (-not $installed) {
-            cargo install cargo-ndk --version "$env:CARGO_NDK_VERSION" --locked
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-        working-directory: .
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
       # 17 is the build JDK; 21 runs the Robolectric test JVMs.
       - uses: actions/setup-java@v4
         with:
@@ -383,14 +419,25 @@ jobs:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
           cache: false
+      # Preinstalled on the image (ci-speed 17); sdkmanager runs only if an
+      # image update dropped either.
       - name: Install Android SDK pieces
         run: |
-          $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager.bat"
-          & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+          $ndk = Join-Path $env:ANDROID_HOME "ndk/$env:ANDROID_NDK_VERSION"
+          $platform = Join-Path $env:ANDROID_HOME "platforms/android-37.0"
+          if ((Test-Path $ndk) -and (Test-Path $platform)) {
+            "NDK $env:ANDROID_NDK_VERSION and android-37.0 are preinstalled"
+          } else {
+            $sdkmanager = Join-Path $env:ANDROID_HOME "cmdline-tools/latest/bin/sdkmanager.bat"
+            & $sdkmanager --install "ndk;$env:ANDROID_NDK_VERSION" "platforms;android-37.0" | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed" }
+          }
         working-directory: .
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # Saves and restores the configuration cache (ci-speed 17); fork PRs
+          # get no secret and just miss.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the debug APK and run the JVM tests
         run: |
@@ -448,19 +495,28 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: 'true'
           cache-workspace-crates: 'false'
+      # A prebuilt cargo-ndk (no manifest in install-action, so its
+      # cargo-binstall fallback: a release binary or quickinstall), not a
+      # source build on every ~/.cargo/bin miss (ci-speed 17).
       - name: Install cargo-ndk
-        run: |
-          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
-            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
-          fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
       # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
       # built by the same android-core step, one c-shared library per ABI.
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
+      # Preinstalled on the image (ci-speed 17); sdkmanager runs only if an
+      # image update dropped either.
       - name: Install Android SDK pieces
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+        run: |
+          if [ -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ] && [ -d "$ANDROID_HOME/platforms/android-37.0" ]; then
+            echo "NDK $ANDROID_NDK_VERSION and android-37.0 are preinstalled"
+          else
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+          fi
       # 17 builds the APKs (the Gradle daemon runs the app's Kotlin + the
       # x86_64 core), before the emulator boots.
       - uses: actions/setup-java@v4
@@ -469,6 +525,9 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # Saves and restores the configuration cache (ci-speed 17); fork PRs
+          # get no secret and just miss.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture
@@ -548,25 +607,37 @@ jobs:
           add-job-id-key: 'false'
           save-if: 'false' # android-emulator writes the same graph
           cache-workspace-crates: 'false'
+      # A prebuilt cargo-ndk (no manifest in install-action, so its
+      # cargo-binstall fallback: a release binary or quickinstall), not a
+      # source build on every ~/.cargo/bin miss (ci-speed 17).
       - name: Install cargo-ndk
-        run: |
-          if ! cargo ndk --version 2>/dev/null | grep -q "cargo-ndk $CARGO_NDK_VERSION"; then
-            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
-          fi
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
       # android-next#02: the Go Tailcat transport (libroboco_tailcat.so) is
       # built by the same android-core step, one c-shared library per ABI.
       - uses: actions/setup-go@v5
         with:
           go-version-file: adapters/roboco-tailcat/go.mod
           cache-dependency-path: adapters/roboco-tailcat/go.sum
+      # Preinstalled on the image (ci-speed 17); sdkmanager runs only if an
+      # image update dropped either.
       - name: Install Android SDK pieces
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"'
+        run: |
+          if [ -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ] && [ -d "$ANDROID_HOME/platforms/android-37.0" ]; then
+            echo "NDK $ANDROID_NDK_VERSION and android-37.0 are preinstalled"
+          else
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;android-37.0"
+          fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # Saves and restores the configuration cache (ci-speed 17); fork PRs
+          # get no secret and just miss.
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
           cache-read-only: true # android (ubuntu) is the one Gradle cache writer
       - name: Build the fixture engine
         run: cargo build --locked -p roboco-engine --example android_fixture

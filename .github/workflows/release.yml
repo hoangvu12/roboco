@@ -174,7 +174,8 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: '0'
-      ANDROID_NDK_VERSION: 28.2.13676358
+      # The ndkVersion app/build.gradle.kts pins (the runner images' NDK 30).
+      ANDROID_NDK_VERSION: 30.0.16248370
       CARGO_NDK_VERSION: 4.1.2
       # Empty, not merely unset: the xtask refuses non-empty RUSTFLAGS
       # overrides (they would replace the 16 KB PT_LOAD alignment
