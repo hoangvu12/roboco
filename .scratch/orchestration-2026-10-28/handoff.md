@@ -283,6 +283,11 @@ prerequisite of fleet-redesign 12–15); fleet-redesign 02–11, then 12–15.
 ## PRs
 
 - #35 merged `6ee2e4731`, #36 merged `d7b6887d7` (2026-10-28, orchestrator #2).
+- #41 merged `2edb72a7a` (upstream sync: ledger 576 rows `docs/reference/upstream-ledger.tsv`, PR table, `scripts/upstream/`
+  translate/presence/triage + 31 unit tests, weekly-loop docs; no CI covers it, tests run locally). Cleaned up;
+  an empty, locked `..oboco-upstream-tools` folder is left: remove it later. **Wave-10 ports now start with
+  `scripts/upstream/translate.py`; small CLEAN/TRIVIAL ports need no ticket.** First weekly triage after wave 10
+  (pending: zeron #1089 bubble fade, #1088 access modes + plan mode).
 - #40 merged `9ce048640` (fleet-redesign 17 done; 16 built, its gate = the user's Laptop↔PC / phone↔PC check,
   checklist in ticket 16; `pushForDirectPath` in `adapters/roboco-tailcat/path.go` turns pings off). Cleaned up.
 - #37 merged `f1e6ae5fa` (fleet-redesign 01, settings page scrolls; mobile-core flake re-run green). Remote
