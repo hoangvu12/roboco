@@ -34,6 +34,16 @@ import sh.roboco.android.sidechats.SubagentRoute
 data class TabRootRoute(val tab: TabId) : NavRoute
 
 /**
+ * Settings pushed over the Sessions list (wave-10 37, upstream #967's
+ * iPhone `showSettings`): the one-row bar's gear. The bar steps aside
+ * (`hidesBottomBarWhenPushed`), the page gets the back chevron.
+ */
+data object SettingsRoute : NavRoute {
+    override val hidesBottomChrome: Boolean get() = true
+    override val paneTitle: String get() = "Settings"
+}
+
+/**
  * A placeholder pushed page (android-ui-parity #26): "row N" of tab
  * `tab`, pushed by the placeholder roots so per-tab back stacks can be
  * exercised before the real screens exist.
@@ -53,7 +63,9 @@ fun ShellRouteContent(route: NavRoute) {
     when (route) {
         is TabRootRoute -> when (route.tab) {
             // Ticket 46: the Sessions tab's real root.
-            TabId.Sessions -> SessionsScreen()
+            // Wave-10 37: the one-row bar's field filters this list in
+            // place (the sidebar's query path); "" under the tab shell.
+            TabId.Sessions -> SessionsScreen(query = LocalBottomBarSearch.current?.query ?: "")
             // Ticket 49: the Search tab's root — the model + list state
             // live on the entry, so the query, results and scroll survive
             // tab switches (29 refocuses the field on re-entry).
@@ -73,6 +85,9 @@ fun ShellRouteContent(route: NavRoute) {
             TabId.Settings -> Box(Modifier.fillMaxSize().testTag("tab-root-more")) {
                 SettingsScreen()
             }
+        }
+        is SettingsRoute -> Box(Modifier.fillMaxSize().testTag("tab-root-more")) {
+            SettingsScreen()
         }
         is PlaceholderDetailRoute -> PlaceholderDetail(route)
         is LicensesRoute -> LicensesScreen()

@@ -37,7 +37,7 @@ class TransitionTourTest {
     private val device: UiDevice
         get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 
-    /** `testTour`: push + pop, tabs, tab-bar minimize, the new-session sheet in and out. */
+    /** `testTour`: push + pop, Settings and back, scrolling under the bottom bar, the new-session sheet in and out. */
     @Test
     fun tour() {
         record("tour") {
@@ -50,12 +50,12 @@ class TransitionTourTest {
             sleep(2_000)
             device.pressBack()
             sleep(2_000)
-            // Tabs.
-            for (back in listOf("Settings", "Sessions")) {
-                device.findObject(androidx.test.uiautomator.By.desc(back))?.click()
-                sleep(1_000)
-            }
-            // Scroll to minimize the tab bar, then back.
+            // Settings over the list (the one-row bar steps aside), and back.
+            tapTag("bottom-settings")
+            sleep(2_000)
+            device.pressBack()
+            sleep(2_000)
+            // Scroll under the bottom bar, then back.
             val height = device.displayHeight
             device.swipe(device.displayWidth / 2, height / 3, device.displayWidth / 2, height * 4 / 5, 60)
             sleep(1_000)

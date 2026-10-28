@@ -217,6 +217,8 @@ private fun AppRootWithPairing(
                     state = s.tabs,
                     liveCounts = liveCounts,
                     presence = s.presence,
+                    // Wave-10 37: the iPhone's one-row bottom bar.
+                    oneRowBar = true,
                     onRouter = { router -> phoneRouter = router; s.phoneSlot.attach(router) },
                 )
                 phoneRouter?.let { DeepLinkRouterEffect(app.deepLinks, it) }

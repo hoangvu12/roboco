@@ -167,51 +167,59 @@ class SessionFlowTest {
         FlowSemantics.saveScreenshot("front-page-folder.png")
     }
 
-    /** `testTabsAndSearch` (:235): the Settings tab round-trip. */
+    /**
+     * `testSettingsFromBottomBar` (upstream #967): the one-row bar's gear
+     * pushes Settings over the list, the bar steps aside (no New session
+     * over Settings), and back brings the list and the bar back.
+     */
     @Test
-    fun tabsAndSearch() {
+    fun settingsFromBottomBar() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("bottom-settings").fetchSemanticsNodes().isNotEmpty()
         }
-        // The tab cells expose their title as merged Text plus the
-        // `tab-<identifier>` tag (GlassTabBar), never a content description —
-        // the old `onAllNodesWithContentDescription("Settings")[0]` matched
-        // nothing ("Failed to inject touch input", run 38531061823).
-        compose.onNodeWithTag("tab-more").performClick()
+        FlowSemantics.saveScreenshot("bottom-bar.png")
+        compose.onNodeWithTag("bottom-settings").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("Settings").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("settings-screen").fetchSemanticsNodes().isNotEmpty()
         }
-        FlowSemantics.saveScreenshot("settings-tab.png")
-        compose.onNodeWithTag("tab-sessions").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isEmpty()
         }
+        FlowSemantics.saveScreenshot("settings.png")
+        device.pressBack()
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("bottom-settings").assertExists()
     }
 
     /**
-     * `testSearchTabRoundTrip` (:143): Search → back to Sessions /
-     * Settings — the accessory must be back and usable after the close.
+     * `testBottomBarSearch` (upstream #967): the bar's field filters the
+     * Sessions list in place; clearing it brings the list (and New
+     * session) back.
      */
     @Test
-    fun searchTabRoundTrip() {
+    fun bottomBarSearch() {
         compose.waitUntil(timeoutMillis = 10_000) {
-            compose.onAllNodesWithText("Sessions").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
         }
-        // The tabs by their `tab-<identifier>` tags (see tabsAndSearch).
-        for (back in listOf("tab-sessions", "tab-more")) {
-            compose.onNodeWithTag(back).performClick()
-            compose.waitForIdle()
-            compose.onAllNodesWithContentDescription("Search")[0].performClick()
-            compose.waitUntil(timeoutMillis = 5_000) {
-                compose.onAllNodesWithTag("search-field").fetchSemanticsNodes().isNotEmpty()
-            }
-            // Close beside the field leaves search for the tab you came from.
-            compose.onNodeWithTag("search-close").performClick()
-            compose.waitUntil(timeoutMillis = 5_000) {
-                compose.onAllNodesWithTag("new-session").fetchSemanticsNodes().isNotEmpty()
-            }
-            compose.onAllNodesWithTag("new-session")[0].assertExists()
+        compose.onNodeWithTag("search-field").performClick().performTextInput("wrangler")
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isEmpty()
         }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-deploy")).fetchSemanticsNodes().isNotEmpty()
+        }
+        FlowSemantics.saveScreenshot("bottom-bar-search.png")
+        compose.onNodeWithTag("search-clear", useUnmergedTree = true).performClick()
+        if (imeVisible()) {
+            device.pressBack()
+            compose.waitUntil(timeoutMillis = 3_000) { !imeVisible() }
+        }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodes(FlowSemantics.sessionRow("chat-veil")).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("new-session").assertExists()
     }
 
     /** `testPullToRefreshEnds` (:671): the list settles back within 4 dp. */
@@ -1210,8 +1218,8 @@ class SessionFlowTest {
     /** The `route` extra per test method (§6: chat:<id> | new | more | search). */
     private fun routeFor(name: String): String? = when {
         name.startsWith("frontPage") ||
-            name.startsWith("tabsAndSearch") ||
-            name.startsWith("searchTab") ||
+            name.startsWith("settingsFromBottomBar") ||
+            name.startsWith("bottomBarSearch") ||
             name.startsWith("pullToRefresh") ||
             name.startsWith("archiveWithUndo") ||
             name.startsWith("sessionMenuHeaderAndDelete") ||

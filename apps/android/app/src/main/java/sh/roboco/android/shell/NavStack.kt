@@ -305,6 +305,31 @@ class NavStack(root: NavRoute) {
     /** Number of attached [NavStackHost]s; the last detach runs [onHostDetached]. */
     internal var hostCount = 0
 
+    private val chromeOnRootOnlyState = mutableStateOf(false)
+
+    /**
+     * Wave-10 37 (upstream #967/#971): the phone's one-row bottom bar
+     * belongs to the front page alone, so on that stack every entry above
+     * the root hides the bottom chrome — Settings, folders and whatever
+     * they push — whatever its own [NavRoute.hidesBottomChrome] says (the
+     * UIKit `hidesBottomBarWhenPushed` of the iPhone's pushed pages). Off
+     * by default; the phone shell turns it on for the Sessions stack.
+     */
+    var chromeOnRootOnly: Boolean
+        get() = chromeOnRootOnlyState.value
+        set(value) {
+            chromeOnRootOnlyState.value = value
+        }
+
+    /**
+     * Whether [entry] hides the bottom chrome on this stack: its route's
+     * own [NavRoute.hidesBottomChrome], or — with [chromeOnRootOnly] — any
+     * entry but the root. Every chrome reader (the slot's cross-fade, the
+     * host's layers, ticket 30's visibility) asks this, never the route.
+     */
+    fun hidesChrome(entry: NavEntry): Boolean =
+        entry.route.hidesBottomChrome || (chromeOnRootOnly && entryList.firstOrNull()?.id != entry.id)
+
     init {
         entryList.add(NavEntry(navEntryIds.incrementAndGet(), root))
     }
@@ -326,10 +351,10 @@ class NavStack(root: NavRoute) {
     private val bottomChromeState = derivedStateOf {
         val t = _transition.value
         if (t == null || t.cancelled != null) {
-            if (entryList.last().route.hidesBottomChrome) 0f else 1f
+            if (hidesChrome(entryList.last())) 0f else 1f
         } else {
-            val from = if (t.from.route.hidesBottomChrome) 0f else 1f
-            val to = if (t.to.route.hidesBottomChrome) 0f else 1f
+            val from = if (hidesChrome(t.from)) 0f else 1f
+            val to = if (hidesChrome(t.to)) 0f else 1f
             lerp(from, to, t.progress)
         }
     }

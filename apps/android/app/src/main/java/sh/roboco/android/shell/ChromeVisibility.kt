@@ -194,13 +194,13 @@ class ChromeVisibilityController internal constructor(
     fun frame(): ChromeFrame {
         val s = stack
         val t = s.transition
-            ?: return if (s.top.route.hidesBottomChrome) ChromeFrame.Hidden else ChromeFrame.Shown
+            ?: return if (s.hidesChrome(s.top)) ChromeFrame.Hidden else ChromeFrame.Shown
         val push = t.kind == NavKind.Push
         val below = if (push) t.from else t.to
         val above = if (push) t.to else t.from
         val layer = chromePlacement(
-            showBelow = !below.route.hidesBottomChrome,
-            showAbove = !above.route.hidesBottomChrome,
+            showBelow = !s.hidesChrome(below),
+            showAbove = !s.hidesChrome(above),
         )
         val x = navLayerTransforms(t.kind, t.progress, widthPx, rtl, reduceMotion)
         return chromeFrame(layer, x, widthPx, rtl, reduceMotion)
@@ -210,8 +210,8 @@ class ChromeVisibilityController internal constructor(
     fun accessoryContentAlpha(): Float {
         val t = stack.transition
         val reveal = if (t == null) 1f else accessoryRevealAlpha(
-            fromShows = !t.from.route.hidesBottomChrome,
-            toShows = !t.to.route.hidesBottomChrome,
+            fromShows = !stack.hidesChrome(t.from),
+            toShows = !stack.hidesChrome(t.to),
             progress = t.progress,
             reduceMotion = reduceMotion,
         )
@@ -227,7 +227,7 @@ class ChromeVisibilityController internal constructor(
      */
     internal fun onTabChanged(previous: TabId, now: TabId) {
         if (previous == TabId.Search && now != TabId.Search &&
-            !tabs.stack(now).top.route.hidesBottomChrome && !reduceMotion
+            !tabs.stack(now).let { it.hidesChrome(it.top) } && !reduceMotion
         ) {
             fadeJob?.cancel()
             fadeJob = scope.launch {
@@ -239,7 +239,7 @@ class ChromeVisibilityController internal constructor(
 
     /** iOS `prepareAccessoryForReveal()` — expanded, final layout from frame 1. */
     internal fun onTransitionStarted(t: NavTransition) {
-        if (t.from.route.hidesBottomChrome && !t.to.route.hidesBottomChrome) {
+        if (stack.hidesChrome(t.from) && !stack.hidesChrome(t.to)) {
             minimize?.expand(animate = false)
         }
     }

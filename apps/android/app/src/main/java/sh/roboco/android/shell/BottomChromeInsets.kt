@@ -38,12 +38,22 @@ fun bottomChromeContentPadding(barBottom: Dp): Dp =
  * padding agree.
  */
 @Composable
-fun rememberBottomChromeInsets(): BottomChromeInsets {
+fun rememberBottomChromeInsets(oneRowBar: Boolean = false): BottomChromeInsets {
     val density = LocalDensity.current
     val nav = with(density) { WindowInsets.navigationBars.getBottom(density).toDp() }
     val tap = with(density) { WindowInsets.tappableElement.getBottom(density).toDp() }
-    return remember(nav, tap) {
+    return remember(nav, tap, oneRowBar) {
         val bar = tabBarBottomGap(nav, tap)
-        BottomChromeInsets(bar, bottomChromeContentPadding(bar))
+        BottomChromeInsets(
+            bar,
+            if (oneRowBar) oneRowBarContentPadding(bar) else bottomChromeContentPadding(bar),
+        )
     }
 }
+
+/**
+ * Wave-10 37: the list padding under the one-row bar — `barBottom + 48
+ * (the row) + 8`, the same last-row clearance as the tab chrome's.
+ */
+fun oneRowBarContentPadding(barBottom: Dp): Dp =
+    barBottom + SessionsBottomBarMetrics.Height.dp + 8.dp
