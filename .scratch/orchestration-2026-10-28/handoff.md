@@ -118,6 +118,18 @@ meaning all three specs below. The user prefers **short, plain-language** status
 After each PR merges, tell the user in 2–4 plain sentences what changed for them and what's next.
 Keep a running "PRs" list in this file.
 
+## Orchestrator #3 log (chat `aed16e2d`, from 2026-10-29)
+
+| chat | worktree / branch | scope | state |
+|---|---|---|---|
+| `82cbdf25` | `..\roboco-web-removal` / `feature/web-removal` | #39: merge main, strip #38's TS derives, fix `engine-local-regressions` + `ui-tests`, push once, watch CI | running (my turn; notice comes to me) |
+| `bdd1bbe1` | `..\roboco-ci-windows` / `ci/windows-split` | #43 CI 03→04→05 | running; takeover message queued |
+| `a7b1639c` | `..\roboco-ci-linux-android` / `ci/linux-android-tiers` | #44 CI 06, 08, 23 (`core-tests` red at takeover) | running; takeover message queued |
+| `6798cc35` | main checkout, read-only (prototypes `C:\tmp\upstream-less-recoding\`) | research: less re-coding per upstream port (renamed mirror via filter-repo, mergiraf, hot-file split, re-baseline) measured on wave-10 02–32/44–75 → `.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md` | running |
+
+- Next: review #39 when `82cbdf25` reports; review/merge #43/#44 when green; relay the research
+  recommendation to the user in one short message.
+
 ## >>> HANDOFF #3 (2026-10-29, from `efcef7d0` to the next orchestrator): START HERE <<<
 
 The user asked `efcef7d0` to hand off to a new orchestrator chat. New orchestrator: **`aed16e2d`** ("Roboco Orchestrator #3"). Everything below (handoff #2, the
