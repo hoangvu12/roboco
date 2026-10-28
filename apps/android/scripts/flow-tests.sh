@@ -104,13 +104,22 @@ cleanup() {
   for pid in "$MAIN_PID" "$SLOW_PID" "$QUESTION_PID" "$TAILCAT_PID" "$TESTDERP_PID"; do
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
+  [[ -n "${LOGCAT_PID:-}" ]] && kill "$LOGCAT_PID" 2>/dev/null || true
+  [[ -n "${HOSTMON_PID:-}" ]] && kill "$HOSTMON_PID" 2>/dev/null || true
+  # A device lost mid-suite made every adb call below block until the
+  # job's 60-minute timeout: each one is bounded, and the device-loss
+  # evidence (adb's view, the kernel's OOM lines, the emulator's crash
+  # database) is kept first.
+  timeout 15 adb devices -l >"$ARTIFACTS/adb-devices.txt" 2>&1 || true
+  sudo -n dmesg 2>/dev/null | grep -iE "oom|killed process|qemu|out of memory" >"$ARTIFACTS/dmesg-oom.txt" || true
+  cp /tmp/android-runner/emu-crash* "$ARTIFACTS/" 2>/dev/null || true
   # Give the processes a beat to exit, then harvest regardless.
   sleep 1
-  adb logcat -d >"$ARTIFACTS/logcat.txt" 2>/dev/null || true
+  timeout 60 adb logcat -d >"$ARTIFACTS/logcat.txt" 2>/dev/null || true
   # The tests' PNG/mp4/JSON artefacts live in the app's external files dir.
-  adb pull /sdcard/Android/data/sh.roboco.android/files "$ARTIFACTS/app-files" >/dev/null 2>&1 || true
-  adb shell ls /sdcard/roboco-tour-*.mp4 >/dev/null 2>&1 && \
-    adb pull /sdcard/roboco-tour-*.mp4 "$ARTIFACTS/" >/dev/null 2>&1 || true
+  timeout 120 adb pull /sdcard/Android/data/sh.roboco.android/files "$ARTIFACTS/app-files" >/dev/null 2>&1 || true
+  timeout 30 adb shell ls /sdcard/roboco-tour-*.mp4 >/dev/null 2>&1 && \
+    timeout 120 adb pull /sdcard/roboco-tour-*.mp4 "$ARTIFACTS/" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -152,6 +161,23 @@ fi
 # cross too, because a room book dials members by address (the control URLs
 # alone do not carry them). The fixture's /room-invite + /room-join are the
 # rig's room mint/join control endpoints.
+#
+# Evidence that survives a lost device: logcat streamed to the host as it
+# happens, and the host's memory/CPU every 15 s (an OOM-killed or starved
+# emulator shows only as "device not found/offline" in the Gradle log).
+adb logcat -v threadtime >"$ARTIFACTS/logcat-live.txt" 2>&1 &
+LOGCAT_PID=$!
+(
+  while true; do
+    date -u +%T
+    free -m
+    uptime
+    ps -eo pid,rss,pcpu,etime,comm --sort=-rss | head -10
+    echo
+    sleep 15
+  done
+) >"$ARTIFACTS/host-mon.txt" 2>&1 &
+HOSTMON_PID=$!
 ./gradlew :app:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.fixtureMain="http://127.0.0.1:$MAIN_CONTROL" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureSlow="http://127.0.0.1:$SLOW_CONTROL" \
