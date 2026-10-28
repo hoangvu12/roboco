@@ -129,6 +129,13 @@ Keep a running "PRs" list in this file.
 | `b170d20f` | `..\roboco-ci-android-speed` / `ci/android-emulator-speed` | CI 22 → 16 → 17, one PR; 22's named-test retry rule = separate commit, needs the user's OK on ticket-11 defaults before merge | running |
 | `6798cc35` | main checkout, read-only (prototypes `C:\tmp\upstream-less-recoding\`) | research: less re-coding per upstream port (renamed mirror via filter-repo, mergiraf, hot-file split, re-baseline) measured on wave-10 02–32/44–75 → `.scratch/upstream-sync-research/report-2026-10-29-less-recoding.md` | **done** (`505d60bb4`), archived. Result: merging even a renamed mirror = 249 conflicted files/week + revives declined code → ADR 0003 stands. Remaining wave-10 tickets are hard leftovers (56/58 REAL); best combo (translate.py residual mode + mergiraf only when it fully resolves a file + regenerate `Cargo.lock` + per-conflict notes; lane-ordered porting) cuts conflict spots 2,099→1,376 (−34%), ≈ −20–25% porting time (≈35–55 h). Wholesale-take and hot-file refactors don't pay. **Asked the user** decisions 1–5 (report §decisions); not yet answered. |
 
+| `d72f1cd9` | `..\roboco-ci-windows-arm64` / `ci/windows-tests-arm64` | CI 15 (Windows `tests` on arm64; nightly x64 = option b) | running |
+| `8539230d` | `..\roboco-upstream-translate` / `tools/translate-residual` (no sccache basedir: Python only) | translate.py: residual mode, Cargo.lock regenerate, conflict notes, opt-in mergiraf; docs (lane order, hot-file test moves) | running |
+
+- **User decisions 2026-10-29 ("do ur rec"):** CI 15 = option (b) nightly x64; CI 11 defaults OK (22's retry
+  rule approved); upstream less-recoding recs 1, 2, 4, 5 yes, 3 (renamed mirror) later; delete scratch branches:
+  `ci/scratch-startup-broken` deleted; `ci/scratch-arm64-ab` + `ci/scratch-glibc-floor` (from `4879f773`) delete
+  once that worker is done (covered by the same OK).
 - Next: review #39 when `82cbdf25` reports; review/merge #43/#44 when green; relay the research
   recommendation to the user in one short message.
 
