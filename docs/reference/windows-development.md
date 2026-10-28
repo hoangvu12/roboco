@@ -104,9 +104,10 @@ grids when the main window loses focus.
 
 [Windows CI](../../.github/workflows/windows.yml) runs two parallel jobs. `tests`
 builds every Windows suite once with nextest: agent discovery/protocols,
-process cleanup, ConPTY, locking, UI behavior and shader layouts. `app` packages
-the application and checks the installer, startup and the CLI. Both use a CI
-release profile with workspace crates at opt-level 0 and no LTO
+process cleanup, ConPTY, locking, UI behavior and shader layouts. It runs on
+ARM64 (`windows-11-arm`) for PRs and pushes, and once a day on x64. `app`
+packages the x64 application and checks the installer, startup and the CLI.
+Both use a CI release profile with workspace crates at opt-level 0 and no LTO
 (`.github/actions/windows-ci-setup`). Shared Rust regressions run on Linux. To
 run the engine and harness checks locally:
 
