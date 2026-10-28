@@ -491,9 +491,9 @@ mod tests {
         let (recent, side_id) = window
             .update(cx, |shell, window, cx| {
                 shell.active_chat = "main".into();
-                shell.add_browser_surface(None, window, cx);
-                shell.add_browser_surface(None, window, cx);
-                let recent = RightSurface::Browser(shell.browser_seq);
+                shell.add_diff_surface(window, cx);
+                shell.add_diff_surface(window, cx);
+                let recent = RightSurface::Diff(shell.diff_seq);
                 let chat = serde_json::from_value(serde_json::json!({
                     "id": "side", "parentChatId": "main", "deviceId": "local",
                     "archived": false, "createdAt": Utc::now(),
@@ -501,8 +501,8 @@ mod tests {
                 .unwrap();
                 shell.open_side_chat(chat, shell.panel_key(cx), cx);
                 let side_id = shell.side_chat_seq;
-                shell.add_browser_surface(None, window, cx);
-                shell.close_right_surface(RightSurface::Browser(shell.browser_seq), window, cx);
+                shell.add_diff_surface(window, cx);
+                shell.close_right_surface(RightSurface::Diff(shell.diff_seq), window, cx);
                 assert_eq!(
                     shell.resolved_right_active(cx),
                     RightSurface::SideChat(side_id)

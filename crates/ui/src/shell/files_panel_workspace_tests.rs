@@ -387,13 +387,13 @@ fn files_panel_workspace_navigation_and_external_updates() {
                         shell.toggle_right_pane_expand(cx);
                     })
                     .unwrap();
-                // A browser surface coexists with the explorer and keeps its own tab.
+                // A diff surface coexists with the explorer and keeps its own tab.
                 window
                     .update(cx, |shell, window, cx| {
-                        shell.add_browser_surface(None, window, cx)
+                        shell.add_diff_surface(window, cx)
                     })
                     .unwrap();
-                frame(window, cx, output.as_deref(), "05-browser-files").await;
+                frame(window, cx, output.as_deref(), "05-diff-files").await;
                 window
                     .update(cx, |shell, window, cx| {
                         shell.add_file_surface("src/nested/main.rs".into(), window, cx);

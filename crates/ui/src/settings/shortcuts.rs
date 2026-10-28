@@ -875,10 +875,9 @@ pub fn modifier_send_label(is_macos: bool) -> &'static str {
 /// extends the match and appears on the page by construction
 /// (`every_shortcut_lands_in_a_rendered_group` holds the other half: its group
 /// name must be listed here).
-const GROUP_ORDER: [&str; 9] = [
+const GROUP_ORDER: [&str; 8] = [
     "Appearance",
     "Files",
-    "Browser",
     "Panels",
     "Sessions",
     "Projects",
@@ -894,7 +893,6 @@ fn group(id: ShortcutId) -> &'static str {
         ShortcutId::ToggleDictation => "Voice",
         ShortcutId::CaptureAppshot => "Appshots",
         ShortcutId::SaveFile => "Files",
-        ShortcutId::BrowserReload => "Browser",
         ShortcutId::ToggleSidebar
         | ShortcutId::ToggleChanges
         | ShortcutId::ToggleFiles

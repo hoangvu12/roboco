@@ -15,15 +15,6 @@ use std::{
     rc::Rc,
 };
 
-#[cfg(feature = "browser-fixture")]
-thread_local! {
-    static FIXTURE_LINKS: RefCell<std::collections::HashMap<String, (Point<Pixels>, FocusHandle)>> = RefCell::default();
-}
-#[cfg(feature = "browser-fixture")]
-pub(crate) fn fixture_link(target: &str) -> Option<(Point<Pixels>, FocusHandle)> {
-    FIXTURE_LINKS.with(|links| links.borrow().get(target).cloned())
-}
-
 pub struct LinkRanges {
     pub id: SharedString,
     pub child: AnyElement,
@@ -34,7 +25,7 @@ pub struct LinkRanges {
 struct Interaction {
     targets: Vec<LinkTarget>,
     focus: Vec<FocusHandle>,
-    menu_focus: [FocusHandle; 7],
+    menu_focus: [FocusHandle; 6],
     menu_focus_pending: Rc<Cell<bool>>,
     menu: Rc<RefCell<Option<(usize, Point<Pixels>)>>>,
     bounds: Bounds<Pixels>,
@@ -128,15 +119,6 @@ impl Element for LinkRanges {
                     .into_iter()
                     .enumerate()
                 {
-                    #[cfg(feature = "browser-fixture")]
-                    if part == 0 {
-                        FIXTURE_LINKS.with(|links| {
-                            links.borrow_mut().insert(
-                                target.original.clone(),
-                                (rect.center(), state.focus[index].clone()),
-                            )
-                        });
-                    }
                     let menu = state.menu.clone();
                     let keyboard_menu = menu.clone();
                     let focus = state.focus[index].clone();
@@ -295,12 +277,11 @@ impl Element for LinkRanges {
                 let return_focus = state.focus[index].clone();
                 let menu_focus = state.menu_focus.clone();
                 let pending = state.menu_focus_pending.clone();
-                let initial_focus = state.menu_focus[0].clone();
-                // A resolved file link swaps the web actions for rows about
-                // the file itself: "Open in Roboco" opens it in the file
-                // viewer, and the system-level rows mount only when the
-                // owning root lives on this device. The tab cycle visits
-                // only mounted rows.
+                // A resolved file link gets rows about the file itself:
+                // "Open in Roboco" opens it in the file viewer, and the
+                // system-level rows mount only when the owning root lives on
+                // this device. A web link gets Open (the system browser) and
+                // Copy. The tab cycle visits only mounted rows.
                 let file = self
                     .ui
                     .as_ref()
@@ -308,8 +289,9 @@ impl Element for LinkRanges {
                 let cycle: &[usize] = match &file {
                     Some(file) if file.local => &[0, 1, 2, 3],
                     Some(_) => &[0, 3],
-                    None => &[0, 4, 5, 6],
+                    None => &[4, 5],
                 };
+                let initial_focus = state.menu_focus[cycle[0]].clone();
                 let file_resolved = file.is_some();
                 let mut card = crate::popover::popover_card(&theme)
                     .child(
@@ -422,18 +404,14 @@ impl Element for LinkRanges {
                         window.refresh();
                     })
                 };
-                card = card.child(action_row(
-                    LinkAction::Internal,
-                    "Open in Roboco",
-                    if file_resolved {
-                        icons::DOCUMENT
-                    } else {
-                        icons::GLOBE
-                    },
-                    0,
-                    "link-menu-open-roboco",
-                ));
                 if let Some(file) = &file {
+                    card = card.child(action_row(
+                        LinkAction::Internal,
+                        "Open in Roboco",
+                        icons::DOCUMENT,
+                        0,
+                        "link-menu-open-roboco",
+                    ));
                     if file.local {
                         // The system opener goes through a file:// URL —
                         // the resolved path is a filesystem path, not a web
@@ -470,12 +448,11 @@ impl Element for LinkRanges {
                         }),
                     ));
                 }
-                // Browser actions and the web-link preference mean nothing
-                // for a file on disk.
+                // Web actions mean nothing for a file on disk.
                 if !file_resolved {
                     card = card.child(action_row(
                         LinkAction::External,
-                        "Open in external browser",
+                        "Open link",
                         icons::ARROW_UP_RIGHT,
                         4,
                         "link-menu-open-external",
@@ -487,45 +464,6 @@ impl Element for LinkRanges {
                         5,
                         "link-menu-copy-address",
                     ));
-                    let open_in_roboco = crate::settings::current(cx).open_web_links_in_roboco;
-                    let menu = state.menu.clone();
-                    card = card.child(popover::menu_separator()).child(
-                        popover::menu_row(
-                            &theme,
-                            false,
-                            format!("{}-link-{index}-default-destination", self.id),
-                        )
-                        .id("Open links in Roboco")
-                        .debug_selector(|| "link-menu-default-destination".into())
-                        .child(div().w(px(16.)).flex_none().when(open_in_roboco, |el| {
-                            el.child(
-                                icons::icon(icons::CHECK)
-                                    .size(px(16.))
-                                    .text_color(theme.text_muted),
-                            )
-                        }))
-                        .child("Open links in Roboco")
-                        .track_focus(&state.menu_focus[6])
-                        .role(Role::Button)
-                        .aria_label(if open_in_roboco {
-                            "Open links in Roboco, checked"
-                        } else {
-                            "Open links in Roboco, unchecked"
-                        })
-                        .focus_visible(|s| s.bg(crate::theme::card_selected_bg()))
-                        .on_click(move |_, window, cx| {
-                            crate::settings::update(
-                                crate::settings::SavePolicy::Immediate,
-                                cx,
-                                |settings| {
-                                    settings.open_web_links_in_roboco = !open_in_roboco;
-                                },
-                            );
-                            menu.borrow_mut().take();
-                            cx.refresh_windows();
-                            window.refresh();
-                        }),
-                    );
                 }
                 let mut popup = crate::popover::menu_at(
                     "transcript-link-actions",
@@ -986,15 +924,15 @@ mod rendered_tests {
                                 !draw_has_tooltip(window, cx),
                                 "pending hover must not appear over the menu"
                             );
-                            let before = crate::settings::current(cx).open_web_links_in_roboco;
-                            key(window, "down", cx);
-                            key(window, "down", cx);
+                            // The menu starts on Open link; the second row copies.
                             key(window, "down", cx);
                             key(window, "enter", cx);
-                            assert_ne!(
-                                crate::settings::current(cx).open_web_links_in_roboco,
-                                before,
-                                "the fourth menu row toggles the default destination"
+                            assert_eq!(
+                                cx.read_from_clipboard()
+                                    .and_then(|item| item.text())
+                                    .as_deref(),
+                                Some("https://example.com/docs"),
+                                "the second menu row copies the link address"
                             );
                             assert!(activated.borrow().is_empty());
                             window.remove_window();
@@ -1057,8 +995,8 @@ mod rendered_tests {
                 assert_eq!(log.borrow().len(), 2);
                 assert_eq!(log.borrow()[0].target.original, "https://example.com/one");
                 assert_eq!(log.borrow()[1].target.original, "https://example.org/two");
-                // Menu starts on Open in Roboco; choose the external action.
-                for key in ["down", "enter"] {
+                // Menu starts on Open link (the system browser).
+                for key in ["enter"] {
                     window.dispatch_event(
                         gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
                             keystroke: gpui::Keystroke::parse(key).unwrap(),
@@ -1237,7 +1175,6 @@ mod rendered_tests {
         for selector in [
             "link-menu-open-external",
             "link-menu-copy-address",
-            "link-menu-default-destination",
         ] {
             assert!(
                 cx.debug_bounds(selector).is_none(),
@@ -1322,7 +1259,6 @@ mod rendered_tests {
         for selector in [
             "link-menu-open-external",
             "link-menu-copy-address",
-            "link-menu-default-destination",
         ] {
             assert!(
                 cx.debug_bounds(selector).is_none(),
@@ -1373,12 +1309,12 @@ mod rendered_tests {
             });
             cx.simulate_mouse_down(position, MouseButton::Right, gpui::Modifiers::default());
             cx.simulate_mouse_up(position, MouseButton::Right, gpui::Modifiers::default());
-            assert!(cx.debug_bounds("link-menu-open-roboco").is_some());
-            for selector in [
-                "link-menu-open-external",
-                "link-menu-copy-address",
-                "link-menu-default-destination",
-            ] {
+            assert_eq!(
+                cx.debug_bounds("link-menu-open-roboco").is_some(),
+                has_copy_path,
+                "Open in Roboco is a file-link row"
+            );
+            for selector in ["link-menu-open-external", "link-menu-copy-address"] {
                 assert_eq!(
                     cx.debug_bounds(selector).is_some(),
                     !has_copy_path,

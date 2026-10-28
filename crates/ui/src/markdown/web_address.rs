@@ -1,61 +1,7 @@
-//! Browser state shared by the chrome and platform host. No native handles.
+//! Web addresses a transcript or Markdown link may navigate to: explicit
+//! http(s) only, no credentials, controls or malformed escapes. Opening
+//! one hands it to the system browser (ADR 0012).
 use std::net::IpAddr;
-
-/// NSEvent supplies characters, while GPUI bindings name non-printing keys.
-/// Shift+Tab can arrive as NSBackTabCharacter rather than a literal tab.
-#[cfg(any(target_os = "macos", test))]
-pub(super) fn native_shortcut_key(characters: &str) -> &str {
-    match characters {
-        "\t" | "\u{19}" => "tab",
-        other => other,
-    }
-}
-
-#[cfg(test)]
-mod native_shortcut_tests {
-    use super::*;
-
-    #[test]
-    fn native_tabs_match_the_configured_navigation_keystrokes() {
-        for (characters, modifiers, binding) in [
-            ("\t", "ctrl-", "ctrl-tab"),
-            ("\t", "ctrl-shift-", "ctrl-shift-tab"),
-            ("\u{19}", "ctrl-shift-", "ctrl-shift-tab"),
-            ("\t", "alt-", "alt-tab"),
-            ("l", "cmd-", "cmd-l"),
-        ] {
-            let native = format!("{modifiers}{}", native_shortcut_key(characters));
-            assert_eq!(
-                gpui::Keystroke::parse(&native).unwrap(),
-                gpui::Keystroke::parse(&binding).unwrap(),
-            );
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct PageState {
-    pub url: Option<String>,
-    pub title: String,
-    pub loading: bool,
-    pub can_back: bool,
-    pub can_forward: bool,
-    pub error: Option<String>,
-}
-
-impl PageState {
-    pub fn label(&self) -> String {
-        if !self.title.trim().is_empty() {
-            self.title.clone()
-        } else {
-            self.url
-                .as_deref()
-                .and_then(|s| url::Url::parse(s).ok())
-                .and_then(|u| u.host_str().map(str::to_owned))
-                .unwrap_or_else(|| "Browser".into())
-        }
-    }
-}
 
 pub fn loopback(url: &url::Url) -> bool {
     match url.host() {
@@ -128,34 +74,6 @@ pub fn transcript_address(input: &str) -> Result<String, &'static str> {
     normalize_address(input)
 }
 
-pub fn allowed_navigation(address: &str) -> bool {
-    url::Url::parse(address).is_ok_and(|u| {
-        matches!(u.scheme(), "http" | "https")
-            && u.host_str().is_some()
-            && u.username().is_empty()
-            && u.password().is_none()
-    })
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Presentation {
-    #[default]
-    Hidden,
-    Live,
-    /// Keep rendering while GPUI owns drag input.
-    Passthrough,
-}
-
-pub fn presentation(active: bool, dragging: bool) -> Presentation {
-    if !active {
-        Presentation::Hidden
-    } else if dragging {
-        Presentation::Passthrough
-    } else {
-        Presentation::Live
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,23 +107,5 @@ mod tests {
         ] {
             assert!(normalize_address(input).is_err(), "{input}");
         }
-        assert!(!allowed_navigation("javascript:alert(1)"));
-        assert!(!allowed_navigation("https://user@example.com/"));
-    }
-    #[test]
-    fn native_visibility_never_outlives_its_surface() {
-        assert_eq!(presentation(false, false), Presentation::Hidden);
-        assert_eq!(presentation(false, true), Presentation::Hidden);
-        assert_eq!(presentation(true, true), Presentation::Passthrough);
-        assert_eq!(presentation(true, false), Presentation::Live);
-    }
-    #[test]
-    fn tab_labels_fall_back_to_host_then_browser() {
-        let mut page = PageState::default();
-        assert_eq!(page.label(), "Browser");
-        page.url = Some("http://localhost:3000/path".into());
-        assert_eq!(page.label(), "localhost");
-        page.title = "Local preview".into();
-        assert_eq!(page.label(), "Local preview");
     }
 }

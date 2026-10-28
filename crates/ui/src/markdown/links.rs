@@ -10,16 +10,17 @@ impl LinkTarget {
         Self {
             label: label.into(),
             original: original.into(),
-            navigation: crate::browser::model::transcript_address(original),
+            navigation: super::web_address::transcript_address(original),
         }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkAction {
-    /// Normal click or keyboard activation; the user's persisted preference
-    /// decides whether this routes internally or externally.
+    /// Normal click or keyboard activation: a web link opens externally, a
+    /// workspace file link opens in the editor.
     Primary,
-    /// Explicit "Open in Roboco" context-menu action.
+    /// Explicit "Open in Roboco" context-menu action for a workspace file
+    /// link (the editor). Web links have no internal destination.
     Internal,
     External,
     Copy,
@@ -37,9 +38,9 @@ pub struct LinkActivation {
     pub source_session: Option<String>,
 }
 impl LinkActivation {
-    pub fn web_outcome(&self, embedded: bool) -> LinkOutcome {
+    /// A web link always opens in the system browser (ADR 0012).
+    pub fn web_outcome(&self) -> LinkOutcome {
         match &self.target.navigation {
-            Ok(_) if embedded && self.action == LinkAction::Internal => LinkOutcome::Internal,
             Ok(url) => LinkOutcome::External(url.clone()),
             Err(_) => LinkOutcome::Rejected,
         }
@@ -49,28 +50,23 @@ impl LinkActivation {
 mod tests {
     use super::*;
     #[test]
-    fn internal_external_and_unsupported_platform_routes() {
-        let mut a = LinkActivation {
-            target: LinkTarget::new("label", "https://example.com"),
-            action: LinkAction::Internal,
-            source_session: Some("owner".into()),
-        };
-        assert_eq!(a.web_outcome(true), LinkOutcome::Internal);
-        assert_eq!(
-            a.web_outcome(false),
-            LinkOutcome::External("https://example.com/".into())
-        );
-        a.action = LinkAction::External;
-        assert_eq!(
-            a.web_outcome(true),
-            LinkOutcome::External("https://example.com/".into())
-        );
-        a.action = LinkAction::Primary;
-        assert_eq!(
-            a.web_outcome(true),
-            LinkOutcome::External("https://example.com/".into()),
-            "Primary must be resolved by the owning surface"
-        );
+    fn web_links_always_open_externally() {
+        for action in [
+            LinkAction::Primary,
+            LinkAction::Internal,
+            LinkAction::External,
+        ] {
+            let a = LinkActivation {
+                target: LinkTarget::new("label", "https://example.com"),
+                action,
+                source_session: Some("owner".into()),
+            };
+            assert_eq!(
+                a.web_outcome(),
+                LinkOutcome::External("https://example.com/".into()),
+                "{action:?}"
+            );
+        }
     }
     #[test]
     fn rejected_targets_never_fall_back() {
@@ -91,8 +87,7 @@ mod tests {
                 action: LinkAction::Internal,
                 source_session: Some("chat".into()),
             };
-            assert_eq!(a.web_outcome(false), LinkOutcome::Rejected, "{url}");
-            assert_eq!(a.web_outcome(true), LinkOutcome::Rejected, "{url}");
+            assert_eq!(a.web_outcome(), LinkOutcome::Rejected, "{url}");
         }
     }
     #[test]

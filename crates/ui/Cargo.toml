@@ -12,7 +12,6 @@ compact-picker-fixture = ["gpui_platform/test-support"]
 # New project's typed path against a real engine, filmed in process.
 project-path-fixture = ["gpui_platform/test-support"]
 
-browser-fixture = []
 windows-render-fixture = []
 appshots-fixture = ["gpui_platform/test-support"]
 resource-profile = ["gpui/bench", "gpui_platform/test-support"]
@@ -20,14 +19,6 @@ resource-profile = ["gpui/bench", "gpui_platform/test-support"]
 [[example]]
 name = "macos-resource-profile"
 required-features = ["resource-profile"]
-
-[[example]]
-name = "preview-fixture"
-required-features = ["browser-fixture"]
-
-[[example]]
-name = "browser-fixture"
-required-features = ["browser-fixture"]
 
 [[example]]
 name = "windows-render-fixture"
@@ -106,13 +97,9 @@ rust-embed = "=8.7.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 objc = "0.2"
-wry = { version = "0.56", default-features = false, features = ["os-webview"] }
-raw-window-handle = "0.6"
 objc2 = "0.6"
-block2 = "0.6"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSHapticFeedback", "NSBitmapImageRep", "NSImage", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = "0.3.2"
-objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKNavigationDelegate", "WKNavigationAction", "WKSnapshotConfiguration"] }
 core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["elcapitan", "highsierra", "link"] }
 foreign-types = "0.5"
@@ -130,7 +117,7 @@ roboco-engine-client = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 mimalloc.workspace = true
 tracing-subscriber.workspace = true
-# The browser pane preview tests' loopback dev server (ticket-03 idioms).
+# The ports-card preview tests' loopback dev server (ticket-03 idioms).
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

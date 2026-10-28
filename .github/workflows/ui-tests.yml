@@ -10,7 +10,6 @@ on:
       - 'crates/**'
       - 'apps/**'
       - 'adapters/roboco-tailcat/**'
-      - 'scripts/test-linux-browser.sh'
       - '.github/workflows/ui-tests.yml'
   push:
     branches: [main]
@@ -22,7 +21,6 @@ on:
       - 'crates/**'
       - 'apps/**'
       - 'adapters/roboco-tailcat/**'
-      - 'scripts/test-linux-browser.sh'
       - '.github/workflows/ui-tests.yml'
   workflow_dispatch:
 
@@ -218,7 +216,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-dev libxcb1-dev libx11-xcb-dev \
             libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+            libvulkan-dev pkg-config cmake
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2

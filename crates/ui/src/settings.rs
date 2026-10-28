@@ -1011,9 +1011,6 @@ pub struct UiSettings {
     /// Maximum message and docked composer surface width in logical pixels.
     /// The centered new-chat composer keeps its own width.
     pub transcript_width: f32,
-    /// Open a normal web-link activation in the session Browser. Explicit
-    /// context-menu actions remain available regardless of this preference.
-    pub open_web_links_in_roboco: bool,
     /// Compact transcript: a turn's working steps (thinking, tool calls, and
     /// the narration between them) fold into one collapsed accordion, so only
     /// the reply text stays visible.
@@ -1125,7 +1122,6 @@ impl Default for UiSettings {
             diff_wrap: false,
             code_fences_fit_content: false,
             transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
-            open_web_links_in_roboco: true,
             transcript_compact_mode: false,
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
@@ -1181,7 +1177,6 @@ pub enum ShortcutId {
     CaptureAppshot,
     RandomWallpaper,
     SaveFile,
-    BrowserReload,
     ToggleSidebar,
     ToggleChanges,
     ToggleFiles,
@@ -1196,12 +1191,11 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 15 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
         ShortcutId::SaveFile,
-        ShortcutId::BrowserReload,
         ShortcutId::ToggleSidebar,
         ShortcutId::ToggleChanges,
         ShortcutId::ToggleFiles,
@@ -1234,7 +1228,6 @@ impl ShortcutId {
             ShortcutId::CaptureAppshot => "Capture Appshot",
             ShortcutId::RandomWallpaper => "Random wallpaper",
             ShortcutId::SaveFile => "Save file",
-            ShortcutId::BrowserReload => "Reload browser page",
             ShortcutId::ToggleSidebar => "Toggle left sidebar",
             ShortcutId::ToggleChanges => "Toggle right sidebar",
             ShortcutId::ToggleFiles => "Toggle files panel",
@@ -1263,7 +1256,6 @@ impl ShortcutId {
             ShortcutId::CaptureAppshot => "mod-alt-space",
             ShortcutId::RandomWallpaper => "mod-u",
             ShortcutId::SaveFile => "mod-s",
-            ShortcutId::BrowserReload => "mod-shift-r",
             ShortcutId::ToggleSidebar => "mod-b",
             ShortcutId::ToggleChanges => "mod-r",
             ShortcutId::ToggleFiles => "mod-e",
@@ -1312,7 +1304,6 @@ pub struct KeymapConfig {
     pub capture_appshot: String,
     pub random_wallpaper: String,
     pub save_file: String,
-    pub browser_reload: String,
     pub toggle_sidebar: String,
     pub toggle_changes: String,
     pub toggle_files: String,
@@ -1337,7 +1328,6 @@ impl Default for KeymapConfig {
             capture_appshot: ShortcutId::CaptureAppshot.default_combo().into(),
             random_wallpaper: ShortcutId::RandomWallpaper.default_combo().into(),
             save_file: ShortcutId::SaveFile.default_combo().into(),
-            browser_reload: ShortcutId::BrowserReload.default_combo().into(),
             toggle_sidebar: ShortcutId::ToggleSidebar.default_combo().into(),
             toggle_changes: ShortcutId::ToggleChanges.default_combo().into(),
             toggle_files: ShortcutId::ToggleFiles.default_combo().into(),
@@ -1381,7 +1371,6 @@ impl KeymapConfig {
             ShortcutId::CaptureAppshot => &self.capture_appshot,
             ShortcutId::RandomWallpaper => &self.random_wallpaper,
             ShortcutId::SaveFile => &self.save_file,
-            ShortcutId::BrowserReload => &self.browser_reload,
             ShortcutId::ToggleSidebar => &self.toggle_sidebar,
             ShortcutId::ToggleChanges => &self.toggle_changes,
             ShortcutId::ToggleFiles => &self.toggle_files,
@@ -1406,7 +1395,6 @@ impl KeymapConfig {
             ShortcutId::CaptureAppshot => self.capture_appshot = combo,
             ShortcutId::RandomWallpaper => self.random_wallpaper = combo,
             ShortcutId::SaveFile => self.save_file = combo,
-            ShortcutId::BrowserReload => self.browser_reload = combo,
             ShortcutId::ToggleSidebar => self.toggle_sidebar = combo,
             ShortcutId::ToggleChanges => self.toggle_changes = combo,
             ShortcutId::ToggleFiles => self.toggle_files = combo,
@@ -1747,7 +1735,6 @@ impl UiSettings {
             diff_wrap,
             code_fences_fit_content,
             transcript_width,
-            open_web_links_in_roboco,
             transcript_compact_mode,
             files_autosave_enabled,
             files_autosave_delay_ms,
@@ -2055,6 +2042,36 @@ mod tests {
         assert!(!loaded.compact_model_picker);
     }
 
+    /// Settings written before the in-app browser was removed (ADR 0012)
+    /// still carry its preference and its reload shortcut. Both are ignored
+    /// as unknown keys, and every other value survives.
+    #[test]
+    fn settings_with_the_removed_browser_keys_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{
+                "sidebarWidth": 300,
+                "soundEnabled": false,
+                "openWebLinksInRoboco": false,
+                "open_web_links_in_roboco": false,
+                "keymap": {
+                    "saveFile": "mod-s",
+                    "toggleSidebar": "mod-shift-b",
+                    "browserReload": "mod-shift-r",
+                    "browser_reload": "mod-shift-r"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(!loaded.sound_enabled);
+        assert_eq!(loaded.keymap.get(ShortcutId::SaveFile), "mod-s");
+        assert_eq!(loaded.keymap.get(ShortcutId::ToggleSidebar), "mod-shift-b");
+    }
+
     #[test]
     fn composer_send_behavior_is_opt_in_for_old_and_partial_settings() {
         let dir = tempfile::tempdir().unwrap();
@@ -2066,7 +2083,6 @@ mod tests {
 
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.composer_send_behavior, ComposerSendBehavior::Enter);
-        assert!(loaded.open_web_links_in_roboco);
         assert!(loaded.new_thread_composer_background.is_none());
         assert_eq!(
             loaded.new_thread_background_effect,
@@ -2951,7 +2967,6 @@ mod tests {
             diff_wrap: true,
             code_fences_fit_content: true,
             transcript_width: 960.0,
-            open_web_links_in_roboco: false,
             transcript_compact_mode: true,
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
@@ -2988,7 +3003,7 @@ mod tests {
         assert!(json.contains(r#""diffWrap": true"#));
         assert_eq!(UiSettings::load(dir.path()), settings);
         assert!(json.contains(r#""codeFencesFitContent": true"#));
-        assert!(json.contains(r#""openWebLinksInRoboco": false"#));
+        assert!(!json.contains("openWebLinksInRoboco"), "ADR 0012 removed it");
         assert!(json.contains(r#""newThreadBackgroundEffect": "ascii""#));
         assert!(json.contains(r#""reduceMotion": "on""#));
         assert!(json.contains(r#""pauseAnimationsInBackground": true"#));

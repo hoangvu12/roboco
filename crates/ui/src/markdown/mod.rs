@@ -23,6 +23,7 @@ pub use roboco_markdown::{mend, parser};
 pub mod render;
 pub mod selection;
 pub mod veil;
+pub mod web_address;
 
 pub use parser::{Block, BlockTree, IncrementalParser, InlineRun, InlineStyle, parse_full};
 

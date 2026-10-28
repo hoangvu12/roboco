@@ -854,8 +854,8 @@ pub struct AppState {
     registry: Option<EngineRegistry>,
     pub registry_snapshot: RegistrySnapshot,
     /// The client-side preview proxy (ticket 04): binds 127.0.0.1:7332 while
-    /// a remote engine's previews are viewed and relays them over the
-    /// session relay. Created lazily by the first browser pane.
+    /// an opened remote preview's server runs, and relays it over the
+    /// session relay. Created lazily by the first ports-card open.
     pub(crate) preview_proxy: Option<std::sync::Arc<crate::engine_registry::PreviewProxy>>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -2406,7 +2406,7 @@ impl AppState {
         self.registry.as_ref()
     }
     /// The client preview proxy manager, created on first need (the first
-    /// browser pane). Label persistence lives beside the registry's session
+    /// remote server opened from the ports card). Label persistence lives beside the registry's session
     /// store so remote preview URLs survive a client restart.
     pub(crate) fn ensure_preview_proxy(&mut self) -> Option<std::sync::Arc<crate::engine_registry::PreviewProxy>> {
         if self.preview_proxy.is_none() {

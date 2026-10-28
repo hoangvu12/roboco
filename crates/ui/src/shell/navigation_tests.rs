@@ -368,7 +368,7 @@ fn hiding_reopening_and_expanding_preserve_navigation_boundaries(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppContext) {
+fn embedded_terminal_and_diff_focus_route_to_right_tabs(cx: &mut TestAppContext) {
     let (shell, cx) = setup(cx);
     shell.update(cx, |shell, cx| {
         // No engine in this harness: reserve a real emulator tab without
@@ -387,18 +387,7 @@ fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppConte
     assert_surface(&shell, cx, RightSurface::Subagent(1));
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
-            shell.add_browser_surface(None, window, cx);
-        })
-    });
-    cx.update(|window, cx| window.draw(cx).clear());
-    press(cx, true);
-    assert_surface(&shell, cx, RightSurface::Subagent(1));
-    // Exercise the GPUI target the native browser bridge focuses before it
-    // redispatches a shortcut (the native OS event itself needs platform QA).
-    cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| {
-            shell.set_right_active(RightSurface::Browser(1), cx);
-            window.focus(&shell.browsers[&1].focus_handle(cx), cx);
+            shell.add_diff_surface(window, cx);
         })
     });
     cx.update(|window, cx| window.draw(cx).clear());
