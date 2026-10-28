@@ -141,7 +141,8 @@ Keep a running "PRs" list in this file.
 - **Voice removal (user decision 2026-10-29: "remove everywhere, make it a ticket")**: new ci-speed ticket **26**
   (`26-remove-voice-dictation.md`) deletes `crates/voice` + desktop dictation + ONNX Runtime; it unblocks 21
   (22.04 container + glibc guard). Plan: `4879f773` does 26 → 21 as one PR on a new branch in its worktree after
-  its ticket-14 PR merges.
+  its ticket-14 PR merges. **#46 (CI 14) merged `1159b8e07`**; `4879f773` told to start 26 → 21 on
+  `ci/remove-voice-glibc` (same worktree `..\roboco-ci-linux-arm64`; it deletes `ci/linux-arm64-glibc` itself).
 - **Orchestrator rules adopted from the dev-velocity report (no decision needed):** never wait on the user inside
   a turn (ask, end the turn, keep everything else moving); before archiving any chat, hand its live workers over;
   every worker prompt says: ONE background wait for CI, no interim turn ends, and run a read-only review agent
